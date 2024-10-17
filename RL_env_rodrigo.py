@@ -4,6 +4,8 @@ from gymnasium import spaces
 import numpy as np
 import random
 
+# TAKE INTO ACCOUNT THAT THE ACTION IS NOT TO CHOOSE AMONG RULES, BUT TO CHOOSE BETWEEN ACTIONS 
+
 class Term:
     def __init__(self, predicate: str, args: List[str]):
         self.predicate = predicate  # Predicate name
@@ -130,7 +132,7 @@ def get_next_state(state: List[Term], rules: List[Rule], action: List[int], verb
     Given a state, an action, and the rules, return the next state of the environment, and whether it is a finished state
     '''
 
-    new_state, unified = unify_state(state, rules, action, verbose=1)
+    new_state, unified = unify_state(state, rules, action, verbose=0)
     if unified and not new_state:
         done = successful_end = True
         return new_state, done, successful_end
@@ -167,52 +169,64 @@ def action_selection(len_state: int, len_rules: int, ordered=True, num_actions='
 
 
 class LogicProofEnv(gym.Env):
-    def __init__(self, initial_state, rules, max_depth=10):
+    def __init__(self, rules, max_depth=10):
         super(LogicProofEnv, self).__init__()
-        self.state = initial_state  # The initial state of the environment (list of Term objects)
-        self.rules = rules  # The set of rules
+        self.rules = rules
         self.max_depth = max_depth
         self.current_depth = 0
+        self.state = [Term("ancestor", ["charlie", "alice"])]
         
-        # Define the action space: (index in state, index in rules).
-        self.action_space = spaces.MultiDiscrete([len(self.state), len(self.rules)])
-
-        # Define the observation space. You can use an integer representation of the state
-        self.observation_space = spaces.Discrete(100000)  # A large number to represent possible states
+        # Define the observation space as a Box
+        self.max_n_states = 100000
+        self.observation_space = spaces.Discrete(self.max_n_states) 
+        
+        # Initialize action space as a single Discrete space
+        self.action_space = spaces.MultiDiscrete([len(self.state),len(self.rules)])
+        
     
-    def get_query(self):
+    def get_query(self, seed=0):
         predicates = set()
         constants = set()
-        for rule in self.rules: # get the predicates from the heads of the rules
+        for rule in self.rules:
             predicates.add((rule.head.predicate, len(rule.head.args)))
             constants.update([arg for arg in rule.head.args if not is_variable(arg)])
-        # print(f'Predicates: {predicates}, Constants: {constants}')
-        # choose a random predicate
+
+        # Set the random seed for reproducibility
+        random.seed(seed)
+
+        # Choose a random predicate
         predicate_random_choice = random.choice(list(predicates))
         predicate, arity = predicate_random_choice[0], predicate_random_choice[1]
-        # based on the arity of the predicate, get the constants
-        constants = random.sample(constants, arity)
+
+        # Convert constants to a list before sampling
+        constants_list = list(constants)  # Create a list copy
+
+        # Based on the arity of the predicate, get random constants
+        constants = random.sample(constants_list, arity)
+
         return Term(predicate, constants)
 
-    def reset(self):
-        # Reset the environment to the initial state and return the initial observation
-        self.current_depth = 0
 
-        # # I can choose a specific state (query)
-        # self.state = [Term("parent", ["charlie", "A"]), Term("ancestor", ["A", "alice"])]   # [Term("ancestor", ["charlie", "alice"])]
-        
-        # I can choose a random state (query). From the rules, get all the predicates and constantes (arguments) 
-        self.state = [self.get_query()]
-        self.action_space = spaces.MultiDiscrete([len(self.state), len(self.rules)]) # Update the action space
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.current_depth = 0
+        self.state = [self.get_query(seed)]
+        self.update_action_space()
         print(f'Initial state: {[str(atom) for atom in self.state]}')
-        return self.state_to_observation(self.state)
+        return self.state_to_observation(self.state), {}
     
     def step(self, action):
-        # Take the action and update the state, return the next observation, reward, done, and info
-        state_idx, rule_idx = action
+
+        # Ensure action is a 1D array or list with 2 elements
+        if isinstance(action, np.ndarray):
+            action = action.flatten()
         
-        # Apply unification
-        new_state, done, successful_end = get_next_state(self.state, self.rules, action, verbose=1)  
+        if len(action) != 2:
+            raise ValueError(f"Action should contain exactly 2 integers, but got {action}")
+
+        state_idx, rule_idx = action[0], action[1]
+
+        new_state, done, successful_end = get_next_state(self.state, self.rules, (state_idx, rule_idx), verbose=0)  
         
         if done and successful_end:
             reward = 1
@@ -224,15 +238,21 @@ class LogicProofEnv(gym.Env):
 
         if new_state:
             self.state = new_state
+            self.update_action_space()
         
-        return self.state_to_observation(self.state), reward, done, {}
+        return self.state_to_observation(self.state), reward, done, False, {}
+    
+    def update_action_space(self):
+        self.action_space = spaces.MultiDiscrete([len(self.state),len(self.rules)])
     
     def state_to_observation(self, state):
-        # Convert the current state (list of Term objects) into an observation (integer)
-        return np.array([hash(str(atom)) for atom in state])  # A simple hash-based encoding of state
+        # Convert the state to a fixed-size vector
+        return np.array([abs(hash(str(atom))) % self.max_n_states for atom in state])
 
 
 
+
+from stable_baselines3 import PPO
 
 # Define the rules
 rules = [
@@ -243,32 +263,36 @@ rules = [
     Rule(Term("ancestor", ["X", "Y"]), [Term("parent", ["X", "Z"]), Term("ancestor", ["Z", "Y"])]),
 ]
 
-states = [ 
-            [Term("ancestor", ["charlie", "alice"])],
-            [Term("parent", ["charlie", "A"]),Term("ancestor", ["A", "alice"])]
-         ]
-state = states[1]
+# Create the environment
+env = LogicProofEnv(rules)
 
-# Find the proof
-env = LogicProofEnv(state, rules)
-obs = env.reset()
-done = False
+# Create the model
+model = PPO("MlpPolicy", env, verbose=1)
 
-counter = 0
-action_sequences = None # [[0,1],[0,3],[0,0]]
-while not done:
-    print('\n\n***********************************************')
+# Train the agent
+try:
+    model.learn(total_timesteps=1000000)
+except Exception as e:
+    print(f"An error occurred during training: {e}")
 
-    if action_sequences is None:
-        action = env.action_space.sample()
-    else: 
-        # print(f'counter: {counter}, action_sequences: {action_sequences}')
-        action = action_sequences[counter]
+# Test the trained model
+obs, _ = env.reset()
+for i in range(10):
+    print(f"\n\n\ni={i}, depth {env.current_depth}")
+    print(f"State: {[str(atom) for atom in env.state]}")
+    action, _ = model.predict(obs, deterministic=True)
 
-    print(f"Step {env.current_depth}")
-    print(f"State: {[str(atom) for atom in env.state]}")        
+    action = action.flatten()  # Ensure it's 1D
+    if len(action) != 2:
+        action = action[:2]  # Limit to the first two elements
+        # raise ValueError(f"Predicted action has incorrect shape: {action}")
     print(f"Action: {action}")
 
-    obs, reward, done, info = env.step(action)
-    print(f"Reward: {reward}, Done: {done}. Info: {info}")
-    counter += 1
+    obs, reward, done, truncated, info = env.step(action)
+    print(f"Reward: {reward}, Done: {done}")
+    print('WORKED!-----------------------------------------') if reward == 1 else None
+    if done or truncated:
+        obs, _ = env.reset()
+
+# Close the environment when done
+env.close()
