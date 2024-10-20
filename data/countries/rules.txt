@@ -1,0 +1,1 @@
+r0:1:locatedInCS(X,W), locatedInSR(W,Z) -> locatedInCR(X,Z)
