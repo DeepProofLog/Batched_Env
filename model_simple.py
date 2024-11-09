@@ -1,5 +1,6 @@
 from environments.env_logic import BatchLogicProofEnv
-from utils import print_td, print_rollout
+from utils import print_td, print_rollout, get_max_arity
+import janus_swi as janus
 
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
@@ -57,7 +58,14 @@ class EmbeddingFunction:
             Tensor of embeddings with shape [..., embedding_dim]
         """
         # IF I GET "index out of range in self" ERROR, IT IS BECAUSE THE INDICES ARE OUT OF RANGE. ONCE I IMPLEMENT THE LOCAL INDICES, THIS WILL BE SOLVED
-        return torch.embedding(self.embedding_table, indices, padding_idx=0)
+        # Look up the embeddings of predicates and args.
+        pred_arg_embeddings = F.embedding(indices, self.embedding_table, padding_idx=0)
+        # Sum pred & args embeddings to get atom embeddings.
+        atom_embeddings = pred_arg_embeddings.sum(dim=-2)
+        # Sum atom embeddings to get state embeddings.
+        state_embeddings = atom_embeddings.sum(dim=-2)
+
+        return state_embeddings
     
     def to(self, device):
         """Move embedding table to specified device."""
@@ -85,16 +93,16 @@ class PolicyNetwork(nn.Module):
         if indices.dim() == 1:
             indices = indices.unsqueeze(1)
         elif indices.dim() >= 2:
-            indices = indices.unsqueeze(-1)
+            indices = indices.unsqueeze(-3)
         return indices
 
-    def forward(self, action_indices, obs_indices) -> TensorDict:
+    def forward(self, action_indices, action_sub_indices, obs_indices, obs_sub_indices) -> TensorDict:
         # Prepare indices
-        obs_indices = self.format_indices(obs_indices)
+        obs_sub_indices = self.format_indices(obs_sub_indices)
 
         # Obtain embeddings for observations and actions
-        obs_embeddings = self.embedding_function.get_embeddings_batch(obs_indices)
-        action_embeddings = self.embedding_function.get_embeddings_batch(action_indices)
+        obs_embeddings = self.embedding_function.get_embeddings_batch(obs_sub_indices)
+        action_embeddings = self.embedding_function.get_embeddings_batch(action_sub_indices)
 
         # Transform and calculate logits
         obs_features = self.observation_transform(obs_embeddings)
@@ -116,12 +124,12 @@ class PolicyNetwork(nn.Module):
 
     def get_dist(self, tensordict: TensorDict) -> torch.distributions.Categorical:
         """Returns the action distribution based on the current policy."""
-        _, probs, _ = self.forward(tensordict["derived_indices"], tensordict["index"])
+        _, probs, _ = self.forward(tensordict["derived_indices"], tensordict["derived_sub_indices"], tensordict["index"], tensordict["sub_index"])
         return torch.distributions.Categorical(probs=probs)
     
     def forward_dict(self, tensordict: TensorDict) -> TensorDict:
         """Generates actions and updates the TensorDict with probabilities and log-probabilities."""
-        action, probs, sample_log_prob = self.forward(tensordict["derived_indices"], tensordict["index"])
+        action, probs, sample_log_prob = self.forward(tensordict["derived_indices"], tensordict["derived_sub_indices"], tensordict["index"], tensordict["sub_index"])
         tensordict.update({
             "action": action,
             "action_probs": probs,
@@ -140,8 +148,8 @@ class ValueNetwork(nn.Module):
             nn.Linear(64, 1))
         self.embedding_function = embedding_function
         
-    def forward(self, indices) -> TensorDict:
-        value = self.network(self.embedding_function.get_embeddings_batch(indices))
+    def forward(self, sub_indices) -> TensorDict:
+        value = self.network(self.embedding_function.get_embeddings_batch(sub_indices))
         value = value.squeeze(-1)
         return value
 
@@ -159,7 +167,7 @@ def simple_rollout(env: BatchLogicProofEnv, policy: PolicyNetwork = None, batch_
     for i in range(steps):
         # print('i', i,'------------------------------------')
         _data["action"] = env.action_spec.sample() # Random action
-        # _data =  policy.forward_dict(_data) # action taken from polic
+        # _data =  policy.forward_dict(_data) # action taken from policy
         _data = env.step(_data)
         # print_td(_data)
         data.append(_data) # We append it here because we want to keep the "next" data. Those will be datapoint samples
@@ -173,7 +181,7 @@ def simple_rollout(env: BatchLogicProofEnv, policy: PolicyNetwork = None, batch_
  
 def simplified_ppo_train(env,policy_module, value_module, 
                          n_epochs=100, batch_size=32, n_rollout=10,
-                         clip_ratio=0.2, lr=3e-4, gamma=0.99, gae_lambda=0.95):
+                         clip_ratio=0.2, lr=3e-4, gamma=0.99, gae_lambda=0.95, knowledge_f=None, test_f=None, max_arity=1):
     """Main PPO training loop"""
 
     clip_ppo_loss = ClipPPOLoss(
@@ -197,7 +205,8 @@ def simplified_ppo_train(env,policy_module, value_module,
     for epoch in range(n_epochs):
         # COLLECT DATA
         init_td = env.gen_params(batch_size=batch_size)
-        data = simple_rollout(env,steps=3,tensordict=init_td)
+        # data = simple_rollout(env,policy=policy_module.module,steps=3,tensordict=init_td)
+        data = simple_rollout(env, steps=3, tensordict=init_td)
         
         # FORWARD: CALCULATE ADVANTAGES (VALUES) AND POLICY
         data = advantage_module(data)
@@ -226,6 +235,10 @@ def simplified_ppo_train(env,policy_module, value_module,
     return None
 
 # Training configuration
+knowledge_f = "data/ancestor.pl"
+# knowledge_f = "data/countries_s1_train.pl"
+janus.consult(knowledge_f)
+max_arity = get_max_arity(knowledge_f)
 config = {
     "n_epochs": 10000,
     "batch_size": 32,
@@ -233,22 +246,26 @@ config = {
     "clip_ratio": 0.2,
     "lr": 3e-4,
     "gamma": 0.99,
-    "gae_lambda": 0.95
+    "gae_lambda": 0.95,
+    "knowledge_f": knowledge_f,
+    "test_f": None,
+    # "test_f": "data/countries_s1_test.pl",
+    "max_arity": max_arity,
 }
 
-env = BatchLogicProofEnv(batch_size=config["batch_size"])
+env = BatchLogicProofEnv(batch_size=config["batch_size"], knowledge_f=config["knowledge_f"], test_f=config["test_f"], max_arity=config["max_arity"])
 policy_net = PolicyNetwork(EmbeddingFunction())
 value_net = ValueNetwork(EmbeddingFunction())
 
 value_module = TensorDictModule(
                     value_net,
-                    in_keys=["index"],
+                    in_keys=["sub_index"],
                     out_keys=["value"]
                 )
 
 policy_module = TensorDictModule(
                     policy_net,
-                    in_keys=["derived_indices","index"],
+                    in_keys=["derived_sub_indices","sub_index"],
                     out_keys=["action", "action_probs", "sample_log_prob"]
                 )
 
@@ -274,18 +291,26 @@ simplified_ppo_train(env, policy_module, value_module, **config)
 
 
 # This is just to test the environment and the policy----------------------
-batch_size = 2
-env = BatchLogicProofEnv(batch_size=batch_size)
-policy_net = PolicyNetwork(EmbeddingFunction())
-
-init_td = env.reset(env.gen_params(batch_size=batch_size))
-# td = env.rollout(100,tensordict=init_td,
-#                  policy=policy_net,
-#                  auto_reset = False,
-#                  break_when_any_done = False,
-#                  )
-td = simple_rollout(env,steps=3,tensordict=init_td)
-print('rollout',td)
+# batch_size = 2
+# knowledge_f = "data/ancestor.pl"
+# #knowledge_f = "data/countries_s1_train.pl"
+# janus.consult(knowledge_f)
+# max_arity = get_max_arity(knowledge_f)
+# test_f = None
+# #test_f = "data/countries_s1_test.pl"
+#
+# env = BatchLogicProofEnv(batch_size=batch_size, knowledge_f=knowledge_f, test_f=test_f, max_arity=max_arity)
+# policy_net = PolicyNetwork(EmbeddingFunction())
+#
+# init_td = env.reset(env.gen_params(batch_size=batch_size))
+# # td = env.rollout(100,tensordict=init_td,
+# #                  policy=policy_net,
+# #                  auto_reset = False,
+# #                  break_when_any_done = False,
+# #                  )
+# value_net.forward(init_td["sub_index"])
+# td = simple_rollout(env,policy=policy_net,steps=3,tensordict=init_td)
+# print('rollout',td)
 # print_rollout(td)
 # print_td(td, exclude_states=True)
 

@@ -26,17 +26,29 @@ def apply_substitution(term: Term, substitution: Dict[str, str]) -> Term:
     return Term(term.predicate, substituted_args)
 
 def is_variable(arg: str) -> bool:
-    """Check if an argument is a variable (uppercase) or constant (lowercase)."""
-    return arg.isupper()
+    """Check if an argument is a variable."""
+    return arg[0].isupper() or arg[0] == '_'
 
-def extract_var(state):
-    '''Extract the variable from a state by looking for an underscore'''
-    var = re.search(r'_(\d+)', state)
-    if var:
-        return var.group()
-    else:
-        return None
-    
+def extract_var(state: str)-> list:
+    '''Extract unique variables from a state: start with uppercase letter or underscore'''
+    pattern = r'\b[A-Z_][a-zA-Z0-9_]*\b'
+    vars = re.findall(pattern, state)
+    return list(dict.fromkeys(vars))
+
+def get_max_arity(file_path:str)-> int:
+    '''Get the maximum arity of the predicates in the file'''
+    max_arity = 0
+    with open(file_path, "r") as f:
+        lines = f.readlines()
+        for line in lines:
+            clauses = re.findall(r'\w+\(.*?\)', line)
+            for clause in clauses:
+                predicate, args = clause.split("(")
+                arity = len(args.split(","))
+                if arity > max_arity:
+                    max_arity = arity
+    return max_arity
+
 
 def print_rollout(data):
     """Prints each batch and then transposes to print each step in rollout data."""

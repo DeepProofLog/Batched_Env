@@ -1108,3 +1108,4 @@ neighborOf(zimbabwe,mozambique).
 neighborOf(zimbabwe,south_africa).
 neighborOf(zimbabwe,zambia).
 locatedInCR(X,Z) :- locatedInCS(X,W), locatedInSR(W,Z).
+proof_first([H | T], T) :- call(H).
