@@ -66,7 +66,6 @@ class BatchLogicProofEnv(EnvBase):
         self.knowledge_f = knowledge_f
         self.test_f = test_f
 
-
     def _set_seed(self, seed: Optional[int]):
         rng = torch.manual_seed(seed)
         self.rng = rng
@@ -395,4 +394,5 @@ class BatchLogicProofEnv(EnvBase):
                     rule = Rule(head_atom, body)
                 rules.append(rule)
         return rules
+    
 

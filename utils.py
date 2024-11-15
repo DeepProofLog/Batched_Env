@@ -11,12 +11,19 @@ class Term:
     def __str__(self):
         return f"{self.predicate}({', '.join(self.args)})"
 
+    def __repr__(self):
+        return f"{self.predicate}({', '.join(self.args)})"
+    
 class Rule:
     def __init__(self, head: Term, body: List[Term]):
         self.head = head
         self.body = body
 
     def __str__(self):
+        body_str = ", ".join(str(term) for term in self.body)
+        return f"{self.head} :- {body_str}"    
+
+    def __repr__(self):
         body_str = ", ".join(str(term) for term in self.body)
         return f"{self.head} :- {body_str}"    
 
