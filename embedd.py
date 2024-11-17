@@ -10,7 +10,7 @@ from torchrl.envs import EnvBase
 from tensordict import TensorDict, TensorDictBase, NonTensorData
 import re
 import janus_swi as janus
-
+import pickle
 # janus.consult("./data/ancestor.pl")
 # janus.consult("./data/countries_s1_train.pl")
 
@@ -65,6 +65,9 @@ class BatchLogicProofEnv(EnvBase):
 
         self.knowledge_f = knowledge_f
         self.test_f = test_f
+
+        self.create_global_idx()
+        self.read_embeddings()
 
     def _set_seed(self, seed: Optional[int]):
         rng = torch.manual_seed(seed)
@@ -421,21 +424,12 @@ class BatchLogicProofEnv(EnvBase):
     
     def read_embeddings(self):
         '''Read embeddings from a file'''
-        # file_c = './data/countries_s1/constant_embeddings.pkl'
-        # file_p = './data/countries_s1/predicate_embeddings.pkl'
-        file_c = './../../embeddings/constant_embeddings.pkl'
-        file_p = './../../embeddings/predicate_embeddings.pkl'
-        # self.constant_str2idx
-        # self.predicate_str2idx
-        # self.constant_idx2emb
-        # self.predicate_idx2emb
-        import pickle
+        file_c = './data/countries_s1/constant_embeddings.pkl'
+        file_p = './data/countries_s1/predicate_embeddings.pkl'
         with open(file_c, 'rb') as f:
             constant_embeddings = pickle.load(f)
         with open(file_p, 'rb') as f:
             predicate_embeddings = pickle.load(f)
-        print('Constant embeddings:', constant_embeddings)
-        print('Predicate embeddings:', predicate_embeddings)
         # in cte embeddings the key is the domain (we ignore it) and the value is a dict, whose key is the constant and the value is the embedding
         constant_embeddings = {
             constant: emb
@@ -447,17 +441,17 @@ class BatchLogicProofEnv(EnvBase):
             pred.split('(')[0]: emb
             for pred, emb in predicate_embeddings.items()
         }
-        print('Constant embeddings:', constant_embeddings)
-        print('Predicate embeddings:', predicate_embeddings)
         # using the str2idx dicts, create the idx2emb dicts
         self.constant_idx2emb = {self.constant_str2idx[constant]: emb for constant, emb in constant_embeddings.items()}
         self.predicate_idx2emb = {self.predicate_str2idx[predicate]: emb for predicate, emb in predicate_embeddings.items()}
-        print('Constant idx2emb:', self.constant_idx2emb)
-        print('Predicate idx2emb:', self.predicate_idx2emb)
+        
+        # order the embeddings by index
+        self.constant_idx2emb = {idx: self.constant_idx2emb[idx] for idx in sorted(self.constant_idx2emb)}
+        self.predicate_idx2emb = {idx: self.predicate_idx2emb[idx] for idx in sorted(self.predicate_idx2emb)}
+
+
 env = BatchLogicProofEnv(batch_size=1, knowledge_f='./data/countries_s1_train.pl', test_f='./data/countries_s1_test.pl')
 
 # Get rules from a file
 env.create_global_idx()
-# print(env.constant_str2idx)
-# print(env.predicate_str2idx)
 print(env.read_embeddings())
