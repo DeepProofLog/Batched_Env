@@ -24,7 +24,26 @@ from torchrl.objectives.ppo import PPOLoss
 from torchrl.objectives import ClipPPOLoss
 
 
-
+def transE_embedding(predicate_embeddings, constant_embeddings):
+    """
+    TransE function to compute atom embeddings.
+    
+    Arguments:
+    - predicate_embeddings: Tensor of shape (batch_size, embedding_dim)
+    - constant_embeddings: Tensor of shape (batch_size, 2, embedding_dim)
+    
+    Returns:
+    - atom_embeddings: Tensor of shape (batch_size, embedding_dim)
+    """
+    # Separate the constants
+    assert constant_embeddings.size(-2) == 2, "The second dimension of constant_embeddings should be 2 (arity)"
+    assert predicate_embeddings.size(-2) == 1, "The second dimension of predicate_embeddings should be 1"
+    predicate_embeddings = predicate_embeddings.squeeze(-2)
+    constant_1 = constant_embeddings[..., 0, :]  # Shape: (256, 64)
+    constant_2 = constant_embeddings[..., 1, :]  # Shape: (256, 64)
+    # Compute the atom embedding using TransE formula
+    atom_embeddings = predicate_embeddings + (constant_1 - constant_2)
+    return atom_embeddings
 
 
         
@@ -68,9 +87,11 @@ class EmbeddingFunction:
         constant_indices = sub_indices[..., 1:]
         predicate_embeddings = F.embedding(predicate_indices, self.predicate_idx2emb, padding_idx=0)
         constant_embeddings = F.embedding(constant_indices, self.constant_idx2emb, padding_idx=0)
-        pred_arg_embeddings = torch.cat([predicate_embeddings, constant_embeddings], dim=-2)
-        # Sum pred & args embeddings to get atom embeddings.
-        atom_embeddings = pred_arg_embeddings.sum(dim=-2)
+        atom_embeddings = transE_embedding(predicate_embeddings, constant_embeddings)
+
+        # # Sum pred & args embeddings to get atom embeddings.
+        # pred_arg_embeddings = torch.cat([predicate_embeddings, constant_embeddings], dim=-2)
+        # atom_embeddings = pred_arg_embeddings.sum(dim=-2)
         # Sum atom embeddings to get state embeddings.
         state_embeddings = atom_embeddings.sum(dim=-2)
 
