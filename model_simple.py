@@ -34,6 +34,7 @@ class EmbeddingFunction:
         Initialize the embedding function.
         """
         self.device = device
+        self.embed_dim = constant_idx2emb.size(1)
         self.constant_idx2emb = constant_idx2emb
         self.predicate_idx2emb = predicate_idx2emb
         # Set padding embedding (index 0) to zeros
@@ -63,15 +64,15 @@ class EmbeddingFunction:
         # IF I GET "index out of range in self" ERROR, IT IS BECAUSE THE INDICES ARE OUT OF RANGE. ONCE I IMPLEMENT THE LOCAL INDICES, THIS WILL BE SOLVED
         # Look up the embeddings of predicates and args.
         # pred_arg_embeddings = F.embedding(sub_indices, self.embedding_table, padding_idx=0)
-        predicate_indices = sub_indices[..., 0]
+        predicate_indices = sub_indices[..., 0].unsqueeze(-1)
         constant_indices = sub_indices[..., 1:]
         predicate_embeddings = F.embedding(predicate_indices, self.predicate_idx2emb, padding_idx=0)
         constant_embeddings = F.embedding(constant_indices, self.constant_idx2emb, padding_idx=0)
+        pred_arg_embeddings = torch.cat([predicate_embeddings, constant_embeddings], dim=-2)
         # Sum pred & args embeddings to get atom embeddings.
-        # atom_embeddings = pred_arg_embeddings.sum(dim=-2)
+        atom_embeddings = pred_arg_embeddings.sum(dim=-2)
         # Sum atom embeddings to get state embeddings.
-        # state_embeddings = atom_embeddings.sum(dim=-2)
-        state_embeddings = None
+        state_embeddings = atom_embeddings.sum(dim=-2)
 
         return state_embeddings
     
@@ -89,10 +90,10 @@ class EmbeddingFunction:
 
 
 class PolicyNetwork(nn.Module):
-    def __init__(self, embedding_function, embedding_dim: int = 64):
+    def __init__(self, embedding_function):
         super().__init__()
-        self.observation_transform = nn.Linear(embedding_dim, embedding_dim)
-        self.embedding_dim = embedding_dim
+        self.observation_transform = nn.Linear(embedding_function.embed_dim, embedding_function.embed_dim)
+        self.embedding_dim = embedding_function.embed_dim
         self.embedding_function = embedding_function
 
     def format_indices(self, indices):
@@ -118,7 +119,8 @@ class PolicyNetwork(nn.Module):
         logits = torch.matmul(obs_features, action_embeddings.transpose(-2, -1)).squeeze(-2)
 
         # Mask logits and compute probabilities
-        logits = torch.where(action_atom_indices == 0, float('-inf'), logits)
+        logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
+        # logits = torch.where(action_atom_indices == 0, float('-inf'), logits)
         probs = F.softmax(logits, dim=-1)
 
         # PROBABILISTIC:Sample action with probabilities given by probs
@@ -133,7 +135,7 @@ class PolicyNetwork(nn.Module):
 
     def get_dist(self, tensordict: TensorDict) -> torch.distributions.Categorical:
         """Returns the action distribution based on the current policy."""
-        _, probs, _ = self.forward(tensordict["derived_indices"], tensordict["derived_sub_indices"], tensordict["index"], tensordict["sub_index"])
+        _, probs, _ = self.forward(tensordict["derived_atom_indices"], tensordict["derived_sub_indices"], tensordict["atom_index"], tensordict["sub_index"])
         return torch.distributions.Categorical(probs=probs)
     
     def forward_dict(self, tensordict: TensorDict) -> TensorDict:
@@ -149,12 +151,12 @@ class PolicyNetwork(nn.Module):
 
 
 class ValueNetwork(nn.Module):
-    def __init__(self, embedding_function, embedding_dim: int = 64):
+    def __init__(self, embedding_function):
         super().__init__()
         self.network = nn.Sequential(
-            nn.Linear(embedding_dim, 64),
+            nn.Linear(embedding_function.embed_dim, embedding_function.embed_dim),
             nn.ReLU(),
-            nn.Linear(64, 1))
+            nn.Linear(embedding_function.embed_dim, 1))
         self.embedding_function = embedding_function
         
     def forward(self, sub_indices) -> TensorDict:
