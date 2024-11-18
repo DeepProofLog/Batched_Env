@@ -1,5 +1,5 @@
 from environments.env_logic import BatchLogicProofEnv
-from utils import print_td, print_rollout, get_max_arity
+from utils import print_td, print_rollout, get_max_arity, create_global_idx, read_embeddings, create_embed_tables
 import janus_swi as janus
 
 from tensordict import TensorDict
@@ -29,25 +29,18 @@ from torchrl.objectives import ClipPPOLoss
 
         
 class EmbeddingFunction:
-    def __init__(self, num_embeddings: int=1000000, embedding_dim: int = 64, device="cpu"):
+    def __init__(self, constant_idx2emb=None, predicate_idx2emb=None, device="cpu"):
         """
         Initialize the embedding function.
-        
-        Args:
-            num_embeddings: Maximum number of embeddings to support
-            embedding_dim: Dimension of each embedding vector
-            device: Device to store embeddings on
         """
-        self.num_embeddings = num_embeddings
-        self.embedding_dim = embedding_dim
         self.device = device
-        
-        # Initialize embedding table all at once
-        self.embedding_table = torch.randn(num_embeddings, embedding_dim, device=device)
+        self.constant_idx2emb = constant_idx2emb
+        self.predicate_idx2emb = predicate_idx2emb
         # Set padding embedding (index 0) to zeros
-        self.embedding_table[0] = 0
+        self.constant_idx2emb[0] = 0
+        self.predicate_idx2emb[0] = 0
         
-    def get_embeddings_batch(self, indices: torch.Tensor) -> torch.Tensor:
+    def get_embeddings_batch(self, sub_indices: torch.Tensor) -> torch.Tensor:
         """
         Get embeddings for a batch of indices using vectorized operations.
         
@@ -57,26 +50,42 @@ class EmbeddingFunction:
         Returns:
             Tensor of embeddings with shape [..., embedding_dim]
         """
+        # Not consider cache atom embedding for now
+        # unique_indices = atom_indices.unique()
+        # indices_in_dict = torch.tensor([idx in self.atom_idx2emb for idx in unique_indices])
+        # precomputed_embeddings = torch.stack(
+        #     [self.atom_idx2emb[idx.item()] for idx in unique_indices[indices_in_dict]]
+        # )
+        # computed_embeddings = torch.stack(
+        #     [compute_embedding(idx.item()) for idx in unique_indices[~indices_in_dict]]
+        # )
+
         # IF I GET "index out of range in self" ERROR, IT IS BECAUSE THE INDICES ARE OUT OF RANGE. ONCE I IMPLEMENT THE LOCAL INDICES, THIS WILL BE SOLVED
         # Look up the embeddings of predicates and args.
-        pred_arg_embeddings = F.embedding(indices, self.embedding_table, padding_idx=0)
+        # pred_arg_embeddings = F.embedding(sub_indices, self.embedding_table, padding_idx=0)
+        predicate_indices = sub_indices[..., 0]
+        constant_indices = sub_indices[..., 1:]
+        predicate_embeddings = F.embedding(predicate_indices, self.predicate_idx2emb, padding_idx=0)
+        constant_embeddings = F.embedding(constant_indices, self.constant_idx2emb, padding_idx=0)
         # Sum pred & args embeddings to get atom embeddings.
-        atom_embeddings = pred_arg_embeddings.sum(dim=-2)
+        # atom_embeddings = pred_arg_embeddings.sum(dim=-2)
         # Sum atom embeddings to get state embeddings.
-        state_embeddings = atom_embeddings.sum(dim=-2)
+        # state_embeddings = atom_embeddings.sum(dim=-2)
+        state_embeddings = None
 
         return state_embeddings
     
     def to(self, device):
         """Move embedding table to specified device."""
         self.device = device
-        self.embedding_table = self.embedding_table.to(device)
+        self.constant_idx2emb = self.constant_idx2emb.to(device)
+        self.predicate_idx2emb = self.predicate_idx2emb.to(device)
         return self
         
-    @property
-    def weight(self):
-        """Return the embedding table weights."""
-        return self.embedding_table
+    # @property
+    # def weight(self):
+    #     """Return the embedding table weights."""
+    #     return self.embedding_table
 
 
 class PolicyNetwork(nn.Module):
@@ -96,7 +105,7 @@ class PolicyNetwork(nn.Module):
             indices = indices.unsqueeze(-3)
         return indices
 
-    def forward(self, action_indices, action_sub_indices, obs_indices, obs_sub_indices) -> TensorDict:
+    def forward(self, action_atom_indices, action_sub_indices, obs_atom_indices, obs_sub_indices) -> TensorDict:
         # Prepare indices
         obs_sub_indices = self.format_indices(obs_sub_indices)
 
@@ -109,7 +118,7 @@ class PolicyNetwork(nn.Module):
         logits = torch.matmul(obs_features, action_embeddings.transpose(-2, -1)).squeeze(-2)
 
         # Mask logits and compute probabilities
-        logits = torch.where(action_indices == 0, float('-inf'), logits)
+        logits = torch.where(action_atom_indices == 0, float('-inf'), logits)
         probs = F.softmax(logits, dim=-1)
 
         # PROBABILISTIC:Sample action with probabilities given by probs
@@ -129,7 +138,7 @@ class PolicyNetwork(nn.Module):
     
     def forward_dict(self, tensordict: TensorDict) -> TensorDict:
         """Generates actions and updates the TensorDict with probabilities and log-probabilities."""
-        action, probs, sample_log_prob = self.forward(tensordict["derived_indices"], tensordict["derived_sub_indices"], tensordict["index"], tensordict["sub_index"])
+        action, probs, sample_log_prob = self.forward(tensordict["derived_atom_indices"], tensordict["derived_sub_indices"], tensordict["atom_index"], tensordict["sub_index"])
         tensordict.update({
             "action": action,
             "action_probs": probs,
@@ -205,6 +214,7 @@ def simplified_ppo_train(env,policy_module, value_module,
     for epoch in range(n_epochs):
         # COLLECT DATA
         init_td = env.gen_params(batch_size=batch_size)
+        env.reset_atom_var()
         # data = simple_rollout(env,policy=policy_module.module,steps=3,tensordict=init_td)
         data = simple_rollout(env, steps=3, tensordict=init_td)
         
@@ -234,11 +244,27 @@ def simplified_ppo_train(env,policy_module, value_module,
     
     return None
 
-# Training configuration
-knowledge_f = "data/ancestor.pl"
-# knowledge_f = "data/countries_s1_train.pl"
+
+#knowledge_f = "data/ancestor.pl"
+knowledge_f = "data/countries_s1_train.pl"
+#test_f = None,
+test_f = "data/countries_s1_test.pl"
+constant_embed_f = "data/countries_s1/constant_embeddings.pkl"
+predicate_embed_f = "data/countries_s1/predicate_embeddings.pkl"
+
+
 janus.consult(knowledge_f)
 max_arity = get_max_arity(knowledge_f)
+constant_str2idx, predicate_str2idx = create_global_idx(knowledge_f)
+constant_no = max(constant_str2idx.values())
+predicate_no = max(predicate_str2idx.values())
+constant_idx2emb, predicate_idx2emb = read_embeddings(constant_embed_f, predicate_embed_f, constant_str2idx, predicate_str2idx)
+# TODO: current fixed vars, if dynamic, need to create dynamically and may add entry to tensor_dict
+VARIABLE_NO = 500
+constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, predicate_idx2emb, VARIABLE_NO)
+
+
+# Training configuration
 config = {
     "n_epochs": 10000,
     "batch_size": 32,
@@ -247,15 +273,12 @@ config = {
     "lr": 3e-4,
     "gamma": 0.99,
     "gae_lambda": 0.95,
-    "knowledge_f": knowledge_f,
-    "test_f": None,
-    # "test_f": "data/countries_s1_test.pl",
-    "max_arity": max_arity,
 }
 
-env = BatchLogicProofEnv(batch_size=config["batch_size"], knowledge_f=config["knowledge_f"], test_f=config["test_f"], max_arity=config["max_arity"])
-policy_net = PolicyNetwork(EmbeddingFunction())
-value_net = ValueNetwork(EmbeddingFunction())
+env = BatchLogicProofEnv(batch_size=config["batch_size"], knowledge_f=knowledge_f, test_f=test_f, max_arity=max_arity, constant_str2idx=constant_str2idx, predicate_str2idx=predicate_str2idx, constant_no=constant_no, predicate_no=predicate_no, variable_no=VARIABLE_NO)
+embedding_func = EmbeddingFunction(constant_idx2emb, predicate_idx2emb)
+policy_net = PolicyNetwork(embedding_func)
+value_net = ValueNetwork(embedding_func)
 
 value_module = TensorDictModule(
                     value_net,

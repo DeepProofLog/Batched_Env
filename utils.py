@@ -1,7 +1,9 @@
 import re
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import torch
 from tensordict import TensorDict, TensorDictBase, NonTensorData
+import pickle
+import numpy as np
 
 class Term:
     def __init__(self, predicate: str, args: List[str]):
@@ -55,6 +57,99 @@ def get_max_arity(file_path:str)-> int:
                 if arity > max_arity:
                     max_arity = arity
     return max_arity
+
+def get_atom_from_string(atom_str: str) -> Term:
+    predicate, args = atom_str.split("(")
+    args = args[:-1].split(",")
+    # remove any  ")" in the strings in args
+    args = [re.sub(r'\)', '', arg) for arg in args]
+    return Term(predicate, args)
+
+def get_rules_from_file(file_path: str) -> List[Rule]:
+    """Get rules from a file"""
+    rules = []
+    with open(file_path, "r") as f:
+        lines = f.readlines()
+        for line in lines:
+            # if there's no :-, it's a fact, split predicate
+            if ":-" not in line:
+                head = line.strip()
+                rule = Rule(get_atom_from_string(head), [])
+            else:
+                head, body = line.strip().split(":-")
+                body = re.findall(r'\w+\(.*?\)', body)
+                body = [get_atom_from_string(b) for b in body]
+
+                head_atom = get_atom_from_string(head)
+                rule = Rule(head_atom, body)
+            rules.append(rule)
+    return rules
+
+def get_constants_predicates(rules: List[Rule]) -> Tuple[set, set]:
+    """Get the set of constants and predicates from a list of rules"""
+    predicates = set()
+    constants = set()
+    for rule in rules:
+        if not rule.head.predicate == "proof_first":
+            # get from head the predicate and the constants if they are not variables
+            predicates.add(str(rule.head.predicate))
+            constants.update([str(arg) for arg in rule.head.args if not is_variable(arg)])
+            # get from body the predicates and the constants if they are not variables
+            for atom in rule.body:
+                predicates.add(str(atom.predicate))
+                constants.update([str(arg) for arg in atom.args if not is_variable(arg)])
+    return constants, predicates
+
+
+def create_global_idx(file_path:str)-> Tuple[dict, dict]:
+    '''Create a global index for a list of terms. Start idx counting from 1'''
+    rules = get_rules_from_file(file_path)
+    constants, predicates = get_constants_predicates(rules)
+    constant_str2idx = {term: i + 1 for i, term in enumerate(constants)}
+    predicate_str2idx = {term: i + 1 for i, term in enumerate(predicates)}
+    return constant_str2idx, predicate_str2idx
+
+
+def read_embeddings(file_c:str, file_p:str, constant_str2idx:dict, predicate_str2idx:dict)-> Tuple[dict, dict]:
+    '''Read embeddings from a file'''
+    with open(file_c, 'rb') as f:
+        constant_embeddings = pickle.load(f)
+    with open(file_p, 'rb') as f:
+        predicate_embeddings = pickle.load(f)
+    # in cte embeddings the key is the domain (we ignore it) and the value is a dict, whose key is the constant and the value is the embedding
+    constant_embeddings = {
+        constant: emb
+        for domain, domain_dict in constant_embeddings.items()
+        for constant, emb in domain_dict.items()
+    }
+    # in pred embeddings as key take the first str until ( and the value is the embedding
+    predicate_embeddings = {
+        pred.split('(')[0]: emb
+        for pred, emb in predicate_embeddings.items()
+    }
+    # using the str2idx dicts, create the idx2emb dicts
+    constant_idx2emb = {constant_str2idx[constant]: emb for constant, emb in constant_embeddings.items()}
+    predicate_idx2emb = {predicate_str2idx[predicate]: emb for predicate, emb in
+                              predicate_embeddings.items()}
+
+    # order the embeddings by index
+    constant_idx2emb = {idx: constant_idx2emb[idx] for idx in sorted(constant_idx2emb)}
+    predicate_idx2emb = {idx: predicate_idx2emb[idx] for idx in sorted(predicate_idx2emb)}
+    return constant_idx2emb, predicate_idx2emb
+
+def create_embed_tables(constant_idx2emb:dict, predicate_idx2emb:dict, var_no:int)-> Tuple[dict, dict]:
+    '''Create embedding tables for constants + variables and predicates'''
+    # embeddings ndarray to tensor
+    constant_idx2emb = torch.tensor(np.stack([constant_idx2emb[key] for key in constant_idx2emb.keys()]), dtype=torch.float32)
+    predicate_idx2emb = torch.tensor(np.stack([predicate_idx2emb[key] for key in predicate_idx2emb.keys()]), dtype=torch.float32)
+    # TODO: better ways to do variable and T/F embeddings?
+    # random embeddings for True, False and variables
+    embed_dim = constant_idx2emb.size(1)
+    for i in range(2):
+        predicate_idx2emb = torch.cat([predicate_idx2emb, torch.rand(1, embed_dim)], dim=0)
+    for i in range(var_no):
+        constant_idx2emb= torch.cat([constant_idx2emb, torch.rand(1, embed_dim)], dim=0)
+    return constant_idx2emb, predicate_idx2emb
 
 
 def print_rollout(data):

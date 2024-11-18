@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple, Dict, Union
 import random
 from math import prod
-from utils import Term, Rule, is_variable, extract_var
+from utils import Term, Rule, is_variable, extract_var, get_rules_from_file
 from unification.prolog_unification import get_next_state_prolog
 
 import torch
@@ -41,8 +41,8 @@ class BatchedDiscreteTensorSpec(DiscreteTensorSpec):
 class BatchLogicProofEnv(EnvBase):
     batch_locked = False  # Allow dynamic batch sizes
     
-    def __init__(self, batch_size=None, knowledge_f=None, test_f=None, seed=None, max_arity=1, device="cpu"):
-        
+    def __init__(self, batch_size=None, knowledge_f=None, test_f=None, seed=None, max_arity=1, constant_str2idx=None, predicate_str2idx=None, constant_no=0, predicate_no=0, variable_no=0, device="cpu"):
+        '''Initialize the environment'''
         super().__init__(device=device)
         self.batch_size = torch.Size([batch_size])
         self.max_arity = max_arity # Maximum arity of the predicates
@@ -56,17 +56,23 @@ class BatchLogicProofEnv(EnvBase):
         # self._has_dynamic_specs = True # Allow dynamic specs
         self.padding = 15 # Maximum number of possible next states
         self.max_depth = 10 # Maximum depth of the proof tree
-        self.max_vars  = 20 # Maximum number of unique variables in a state, related to next_sub_index
-        self.state_to_index = {} # Map state to index
-        self.id_to_sub_id = {} # Map state index to sub-indices of predicates and arguments
-        self.pred_arg_id = {} # Map predicates and arguments to sub-indices
-        self.next_index = 1  # Next available index. 0 is reserved for padding
-        self.next_sub_index = 21 # Next available sub-index. 0 is reserved for padding, 1-20 for Var1-20
+        self.atom_to_index = {} # Map atom to index
+        self.atom_id_to_sub_id = {} # Map atom index to sub-indices of predicates and arguments
+        self.predicate_str2idx = predicate_str2idx # Global index
+        self.constant_str2idx = constant_str2idx # Global index
+        self.variable_str2idx = {} # Map variable to index
+        self.next_atom_index = 1  # Next available index. 0 is reserved for padding
+        self.constant_no = constant_no # Number of constants
+        self.predicate_no = predicate_no # Number of predicates
+        self.next_var_index = constant_no+1 # Next available index. 0 is reserved for padding
+        self.variable_no = variable_no # Max number of variables
 
         self.knowledge_f = knowledge_f
         self.test_f = test_f
 
+
     def _set_seed(self, seed: Optional[int]):
+        '''Set the seed for the environment'''
         rng = torch.manual_seed(seed)
         self.rng = rng
 
@@ -90,8 +96,17 @@ class BatchLogicProofEnv(EnvBase):
             td = td.expand(batch_size).contiguous()
         return td
 
-    def _make_spec(self, batch_size=None):
+    def reset_atom_var(self):
+        '''Reset the atom and variable dicts and indices'''
+        self.atom_to_index = {}
+        self.atom_id_to_sub_id = {}
+        self.variable_str2idx = {}
+        self.next_atom_index = 1
+        self.next_var_index = self.constant_no+1
 
+
+    def _make_spec(self, batch_size=None):
+        '''Create the observation and action specs'''
         if batch_size is None:
             batch_size = torch.Size([])
             
@@ -101,9 +116,9 @@ class BatchLogicProofEnv(EnvBase):
             device=self.device
         )
 
-        self.index_spec = DiscreteTensorSpec(
+        self.atom_index_spec = DiscreteTensorSpec(
             n=1000000,
-            shape=batch_size,
+            shape=batch_size+torch.Size([self.max_atom]),
             device=self.device
         )
 
@@ -118,12 +133,13 @@ class BatchLogicProofEnv(EnvBase):
         self.possible_states_next_spec = NonTensorSpec(shape=batch_size)
 
         self.observation_spec = CompositeSpec(
-            index=self.index_spec,
+            atom_index=self.atom_index_spec,
             sub_index = self.sub_index_spec,
             reward=self.reward_spec,
             done=self.done_spec,
             derived_states=self.possible_states_next_spec,
-            derived_indices=self.index_spec,
+            derived_atom_indices=self.atom_index_spec,
+            derived_sub_indices=self.sub_index_spec,
             shape=batch_size,
             device=self.device,
             state=NonTensorSpec(shape=batch_size),
@@ -139,37 +155,37 @@ class BatchLogicProofEnv(EnvBase):
         self.current_depth = torch.zeros(batch_shape, dtype=torch.long, device=self.device)
 
         states = []
-        indices = []
+        atom_indices = []
         sub_indices = []
-        for _ in range(prod(batch_shape) if batch_shape else 1):
+        for i in range(prod(batch_shape) if batch_shape else 1):
             seed = torch.randint(0, 1000, (1,), generator=self.rng).item()
             if self.test_f:
                 state = [self.get_test_query(seed, self.test_f)]
             else:
                 state = [self.get_random_query(seed, self.knowledge_f)]
             states.append(state)
-            state_index = self.get_state_index(str(state))
-            indices.append(state_index)
-            sub_index = self.get_sub_index(state_index, state)
+            atom_index, sub_index = self.get_atom_sub_index(i, state)
+            atom_indices.append(atom_index)
             sub_indices.append(sub_index)
-        indices = torch.tensor(indices, device=self.device).view(batch_shape)
+        atom_indices = torch.stack(atom_indices)
         sub_indices = torch.stack(sub_indices)
         # print('states',states)
         # print('indices',indices)
         # print('Initial state:',[[str(atom) for atom in state] for state in states])
         # Get next possible states and their indices
-        derived_states, derived_indices, derived_sub_indices = self.get_next_states_batch(states)
+
+        derived_states, derived_atom_indices, derived_sub_indices = self.get_next_states_batch(states)
         self.update_action_space(derived_states)
 
         out = TensorDict(
             {
-                "index": indices,
+                "atom_index": atom_indices,
                 "sub_index": sub_indices,
                 "state": NonTensorData(data=states, batch_size=batch_shape),
                 "done": torch.zeros(batch_shape, dtype=torch.bool, device=self.device),
                 "reward": torch.zeros(batch_shape, dtype=torch.float32, device=self.device)*(-1),
                 "derived_states": NonTensorData(data=derived_states, batch_size=batch_shape),
-                "derived_indices": derived_indices,
+                "derived_atom_indices": derived_atom_indices,
                 "derived_sub_indices": derived_sub_indices,
             },
             batch_size=batch_shape,
@@ -185,29 +201,29 @@ class BatchLogicProofEnv(EnvBase):
         '''
         # print('Stepping...\n')       
         actions = tensordict["action"]
-        derived_indices = tensordict["derived_indices"]
+        derived_atom_indices = tensordict["derived_atom_indices"]
         derived_states = tensordict["derived_states"]
         derived_sub_indices = tensordict["derived_sub_indices"]
 
         # Given the actions, use the stored derived_states to get the state_next and derived_states_next
         states_next = []
-        indices_next = []
+        atom_indices_next = []
         sub_indices_next = []
         for i, (derived_state, action) in enumerate(zip(derived_states, actions.view(-1))):
             if action >= len(derived_state):
                 raise ValueError(f"State {i} of the batch. Invalid action ({action}). Max action: {len(derived_states[i])}, derived_states: {derived_states[i]}")
             next_state = derived_state[action.item()]
-            next_index = derived_indices[i][action.item()]
+            next_atom_index = derived_atom_indices[i][action.item()]
             next_sub_index = derived_sub_indices[i][action.item()]
             states_next.append(next_state)
-            indices_next.append(next_index)
+            atom_indices_next.append(next_atom_index)
             sub_indices_next.append(next_sub_index)
-        indices_next = torch.tensor(indices_next, device=self.device).view(tensordict.shape)
+        atom_indices_next = torch.stack(atom_indices_next)
         sub_indices_next = torch.stack(sub_indices_next)
 
         done_next, rewards_next = self.get_done_reward(states_next)
         # Get next possible states for the new states, as well as rewards and done
-        derived_states_next, derived_indices_next, derived_sub_indices_next = self.get_next_states_batch(states_next)
+        derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.get_next_states_batch(states_next)
         self.update_action_space(derived_states_next)
 
         
@@ -217,13 +233,13 @@ class BatchLogicProofEnv(EnvBase):
 
         next = TensorDict(
             {
-                "index": indices_next,
+                "atom_index": atom_indices_next,
                 "sub_index": sub_indices_next,
                 "state": NonTensorData(data=states_next, batch_size=tensordict.shape),
                 "done": done_next,
                 "reward": rewards_next,
                 "derived_states": NonTensorData(data=derived_states_next, batch_size=tensordict.shape),
-                "derived_indices": derived_indices_next,
+                "derived_atom_indices": derived_atom_indices_next,
                 "derived_sub_indices": derived_sub_indices_next,
             },
             batch_size=tensordict.shape,
@@ -232,13 +248,15 @@ class BatchLogicProofEnv(EnvBase):
         # print('\nStep done:')
         # print_td(next)
         return next
+
+
     
     def get_next_states_batch(self,states: List[List[Term]]) -> Tuple[List[List[List[Term]]], torch.Tensor, torch.Tensor]:
         """Get next possible states and their indices for all states in the batch"""
         possible_states_next_batch = []
-        possible_indices_next_batch = []
+        possible_atom_indices_next_batch = []
         possible_sub_indices_next_batch = []
-        for state in states:
+        for i, state in enumerate(states):
             # print('    State:',[str(atom) for atom in state])
             possible_states_next = get_next_state_prolog(state)
 
@@ -246,21 +264,25 @@ class BatchLogicProofEnv(EnvBase):
             possible_states_next_batch.append(possible_states_next)
             
             # Get indices for all possible next states
-            possible_indices = [self.get_state_index([state]) for state in possible_states_next]
-            possible_indices_next_batch.append(torch.tensor(possible_indices, device=self.device))
-            possible_sub_indices = [self.get_sub_index(state_id, state) for state_id, state in zip(possible_indices, possible_states_next)]
+            possible_atom_indices = []
+            possible_sub_indices = []
+            for s in possible_states_next:
+                atom_idx, sub_idx = self.get_atom_sub_index(i, s)
+                possible_atom_indices.append(atom_idx)
+                possible_sub_indices.append(sub_idx)
+            possible_atom_indices_next_batch.append(torch.stack(possible_atom_indices))
             possible_sub_indices_next_batch.append(torch.stack(possible_sub_indices))
 
         # Do padding to possible_indices_next_batch, possible_sub_indices_next_batch with 0s
-        max_len = max(len(indices) for indices in possible_indices_next_batch)
+        max_len = max(len(indices) for indices in possible_atom_indices_next_batch)
         if max_len > self.padding:
             raise ValueError(f"Padding is too small. Max length of indices: {max_len}")
-        possible_indices_next_batch = [torch.cat([indices, torch.zeros(self.padding - len(indices), device=self.device, dtype=torch.int64)]) for indices in possible_indices_next_batch]
-        possible_indices_next_batch = torch.stack(possible_indices_next_batch)
+        possible_atom_indices_next_batch = [torch.cat([indices, torch.zeros(self.padding - len(indices), self.max_atom, device=self.device, dtype=torch.int64)]) for indices in possible_atom_indices_next_batch]
+        possible_atom_indices_next_batch = torch.stack(possible_atom_indices_next_batch)
         possible_sub_indices_next_batch = [torch.cat([sub_indices, torch.zeros(self.padding - len(sub_indices), self.max_atom, self.max_arity+1, device=self.device, dtype=torch.int64)]) for sub_indices in possible_sub_indices_next_batch]
         possible_sub_indices_next_batch = torch.stack(possible_sub_indices_next_batch)
 
-        return possible_states_next_batch, possible_indices_next_batch, possible_sub_indices_next_batch
+        return possible_states_next_batch, possible_atom_indices_next_batch, possible_sub_indices_next_batch
     
     def get_done_reward(self,states: List[List[Term]]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get done and reward keys for all states in the batch. To be called in the step() method"""
@@ -297,54 +319,55 @@ class BatchLogicProofEnv(EnvBase):
             device=self.device
         )
 
-    def get_sub_index(self, state_id:int, state: List[Term]) -> torch.Tensor:
-        """Get the sub_index for a state"""
-        if state_id not in self.id_to_sub_id:
-            # Get variables
-            full_state = ",".join(str(s) for s in state)
-            vars = extract_var(full_state)
-            assert len(vars) <= self.max_vars, f"Number of variables ({len(vars)}) exceeds maximum variable number ({self.max_vars})"
-            var_map = {var: i+1 for i, var in enumerate(vars)} # 0 is reserved for padding
+    def get_atom_sub_index(self, batch_index:int, state: List[Term]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get the atom and sub index for a state"""
+        # Get variables
+        full_state = ",".join(str(s) for s in state)
+        vars = extract_var(full_state)
+        for var in vars:
+            if (var != "True") and (var != "False") and (var+str(batch_index) not in self.variable_str2idx):
+                if self.next_var_index > self.constant_no + self.variable_no:
+                    raise ValueError(f"Exceeded the maximum number of variables: {self.variable_no}")
+                else:
+                    index = self.next_var_index
+                    self.variable_str2idx[var+str(batch_index)] = index
+                    self.next_var_index += 1
 
-            # Get sub_index
-            sub_index = torch.zeros(self.max_atom, self.max_arity+1, device=self.device, dtype=torch.int64)
-            for i, atom in enumerate(state):
-                sub_index[i, 0] = self.get_pred_arg_index(atom.predicate)
-                for j, arg in enumerate(atom.args):
-                    if is_variable(arg):
-                        sub_index[i, j+1] = var_map[arg]
+        # Get atom_index and sub_index
+        atom_index =torch.zeros(self.max_atom, device=self.device, dtype=torch.int64)
+        sub_index = torch.zeros(self.max_atom, self.max_arity+1, device=self.device, dtype=torch.int64)
+        for i, atom in enumerate(state):
+            if atom not in self.atom_to_index:
+                self.atom_to_index[atom] = self.next_atom_index
+                atom_index[i] = self.next_atom_index
+                self.next_atom_index += 1
+            else:
+                atom_index[i] = self.atom_to_index[atom]
+            atom_id = atom_index[i].item()
+            if atom_id not in self.atom_id_to_sub_id:
+                try:
+                    if atom.predicate == 'True':
+                        sub_index[i, 0] = self.predicate_no + 1
+                    elif atom.predicate == 'False':
+                        sub_index[i, 0] = self.predicate_no + 2
                     else:
-                        sub_index[i, j+1] = self.get_pred_arg_index(arg)
-            self.id_to_sub_id[state_id] = sub_index
+                        sub_index[i, 0] = self.predicate_str2idx[atom.predicate]
+                    for j, arg in enumerate(atom.args):
+                        if is_variable(arg):
+                            sub_index[i, j+1] = self.variable_str2idx[arg]
+                        else:
+                            sub_index[i, j+1] = self.constant_str2idx[arg]
+                except Exception as e:
+                    print(e)
+                self.atom_id_to_sub_id[atom_id] = sub_index[i]
+            else:
+                sub_index[i] = self.atom_id_to_sub_id[atom_id]
 
-        return self.id_to_sub_id[state_id]
-
-
-    def get_pred_arg_index(self, input: str) -> int:
-        """Get the index of a predicate or argument. If it's not in the dictionary, add it"""
-        # TODO: pred and args currently not separated, okay?
-        if input not in self.pred_arg_id:
-            index = self.next_sub_index
-            self.pred_arg_id[input] = index
-            self.next_sub_index += 1
-        return self.pred_arg_id[input]
-
-
-    def get_state_index(self, state: List[Term]) -> int:
-        """Get the index of a state. If the state is not in the dictionary, add it"""
-        state_key = str(state)
-        if state_key not in self.state_to_index:
-            index = self.next_index
-            self.state_to_index[state_key] = index
-            self.next_index += 1
-        return self.state_to_index[state_key]
-
-
+        return atom_index, sub_index
 
     def get_random_query(self, seed: int = 0, knowledge_f: str = None) -> Term:
         """Generate a random query"""
-
-        rules = self.get_rules_from_file(knowledge_f)
+        rules = get_rules_from_file(knowledge_f)
         predicates = set()
         constants = set()
         for rule in rules:
@@ -361,38 +384,8 @@ class BatchLogicProofEnv(EnvBase):
         return Term(predicate, constants) 
 
     def get_test_query(self, seed: int = 0, test_f: str = None) -> Term:
-        queries = self.get_rules_from_file(test_f)
+        '''Get a query from the test file'''
+        queries = get_rules_from_file(test_f)
         random.seed(seed)
         query = random.choice(queries)
         return query.head
-
-    def get_atom_from_string(self, atom_str: str) -> Term:
-        predicate, args = atom_str.split("(")
-        args = args[:-1].split(",")
-        # remove any  ")" in the strings in args
-        args = [re.sub(r'\)', '', arg) for arg in args]
-        return Term(predicate, args)
-
-    def get_rules_from_file(self, file_path: str) -> List[Rule]:
-        """Get rules from a file"""
-        with open(file_path, "r") as f:
-            lines = f.readlines()
-        rules = []        
-        with open(file_path, "r") as f:
-            lines = f.readlines()
-            for line in lines:
-                # if there's no :-, it's a fact, split predicate
-                if ":-" not in line:    
-                    head = line.strip()
-                    rule = Rule(self.get_atom_from_string(head), [])
-                else:
-                    head, body = line.strip().split(":-")
-                    body = re.findall(r'\w+\(.*?\)', body)
-                    body = [self.get_atom_from_string(b) for b in body]
-
-                    head_atom = self.get_atom_from_string(head)
-                    rule = Rule(head_atom, body)
-                rules.append(rule)
-        return rules
-    
-
