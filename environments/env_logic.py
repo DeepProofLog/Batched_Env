@@ -354,11 +354,11 @@ class BatchLogicProofEnv(EnvBase):
                         sub_index[i, 0] = self.predicate_str2idx[atom.predicate]
                     for j, arg in enumerate(atom.args):
                         if is_variable(arg):
-                            sub_index[i, j+1] = self.variable_str2idx[arg]
+                            sub_index[i, j+1] = self.variable_str2idx[arg+str(batch_index)]
                         else:
                             sub_index[i, j+1] = self.constant_str2idx[arg]
                 except Exception as e:
-                    print(e)
+                    print("The following key is not in dict:", e)
                 self.atom_id_to_sub_id[atom_id] = sub_index[i]
             else:
                 sub_index[i] = self.atom_id_to_sub_id[atom_id]
