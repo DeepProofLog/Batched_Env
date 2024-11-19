@@ -27,4 +27,6 @@ def organize_clauses(input_file, output_file):
     print(f"Organized clauses saved to {output_file}")
 
 # Run the function
-organize_clauses("./data/countries_s1/train.txt", "./data/countries_s1/countries_s1_train_organized.txt")
+# organize_clauses("./data/countries_s1/train.txt", "./data/countries_s1/countries_s1_train_organized.txt")
+organize_clauses("./data/s2_designed/train.txt", "./data/s2_designed/train_organized.txt")
+organize_clauses("./data/s2_designed/test.txt", "./data/s2_designed/test_organized.txt")

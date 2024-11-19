@@ -188,19 +188,22 @@ class ValueNetwork(nn.Module):
 
     
 def simple_rollout(env: BatchLogicProofEnv, policy: PolicyNetwork = None, batch_size: int=2, steps: int=3, tensordict: TensorDict = None) -> TensorDict:
-    ''' CAREFUL!!! pytroch doesnt stack the keys that are lists properly (for the tensors it should be fine). OR maybe it is because of the data_spec. Check it out
-    TO IMPLEMENT: STOP ONLY WHEN ALL THE BATCHES ARE DONE OR STEPS IS REACHED'''
+    ''' CAREFUL!!! pytroch doesnt stack the keys that are lists properly (for the tensors it should be fine). OR maybe it is because of the data_spec. Check it out'''
     data = []
     if tensordict is None:
         _data = env.reset(env.gen_params(batch_size=[batch_size]))
     else:
         _data = env.reset(tensordict)
-    # print_td(_data)
     for i in range(steps):
         # print('i', i,'------------------------------------')
         _data["action"] = env.action_spec.sample() if policy is None else policy.forward_dict(_data)["action"]
         _data = env.step(_data)
-        # print_td(_data)
+
+        # for state, action, derived_states in zip(_data['state'], _data['action'],_data['derived_states'], ):
+        #     print(*state, '-> action', action.item(),'/', len(derived_states))
+        #     print('     ',*derived_states)
+        
+        # print('actions',_data['action'],'rewards',_data['reward'],'dones',_data['done'])
         data.append(_data) # We append it here because we want to keep the "next" data. Those will be datapoint samples
         if _data["done"].all():
             break
@@ -238,10 +241,7 @@ def simplified_ppo_train(env,policy_module, value_module,
         init_td = env.gen_params(batch_size=batch_size)
         env.reset_atom_var()
         # data = simple_rollout(env,policy=policy_module.module,steps=3,tensordict=init_td)
-        print('starting rollout')
         data = simple_rollout(env, steps=3, tensordict=init_td)
-        print_rollout(data)
-        print(aaaa)
         # FORWARD: CALCULATE ADVANTAGES (VALUES) AND POLICY
         data = advantage_module(data)
         # print('data after advantage',data)
@@ -270,11 +270,14 @@ def simplified_ppo_train(env,policy_module, value_module,
 
 
 #knowledge_f = "data/ancestor.pl"
-knowledge_f = "data/countries_s1_train.pl"
+# knowledge_f = "data/countries_s1_train.pl"
 #test_f = None,
-test_f = "data/countries_s1_test.pl"
-constant_embed_f = "data/countries_s1/constant_embeddings.pkl"
-predicate_embed_f = "data/countries_s1/predicate_embeddings.pkl"
+# test_f = "data/countries_s1_test.pl"
+
+knowledge_f = "data/s2_designed/train.pl"
+test_f = "data/s2_designed/test.pl"
+constant_embed_f = "data/s2_designed/constant_embeddings.pkl"
+predicate_embed_f = "data/s2_designed/predicate_embeddings.pkl"
 
 
 janus.consult(knowledge_f)
@@ -291,8 +294,8 @@ constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, pred
 # Training configuration
 config = {
     "n_epochs": 10000,
-    "batch_size": 32,
-    "n_rollout": 10,
+    "batch_size": 2,
+    "n_rollout": 3,
     "clip_ratio": 0.2,
     "lr": 3e-4,
     "gamma": 0.99,
