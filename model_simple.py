@@ -198,8 +198,7 @@ def simple_rollout(env: BatchLogicProofEnv, policy: PolicyNetwork = None, batch_
     # print_td(_data)
     for i in range(steps):
         # print('i', i,'------------------------------------')
-        _data["action"] = env.action_spec.sample() # Random action
-        # _data =  policy.forward_dict(_data) # action taken from policy
+        _data["action"] = env.action_spec.sample() if policy is None else policy.forward_dict(_data)["action"]
         _data = env.step(_data)
         # print_td(_data)
         data.append(_data) # We append it here because we want to keep the "next" data. Those will be datapoint samples
@@ -239,8 +238,10 @@ def simplified_ppo_train(env,policy_module, value_module,
         init_td = env.gen_params(batch_size=batch_size)
         env.reset_atom_var()
         # data = simple_rollout(env,policy=policy_module.module,steps=3,tensordict=init_td)
+        print('starting rollout')
         data = simple_rollout(env, steps=3, tensordict=init_td)
-        
+        print_rollout(data)
+        print(aaaa)
         # FORWARD: CALCULATE ADVANTAGES (VALUES) AND POLICY
         data = advantage_module(data)
         # print('data after advantage',data)
