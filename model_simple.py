@@ -187,7 +187,7 @@ class ValueNetwork(nn.Module):
 
 
     
-def simple_rollout(env: BatchLogicProofEnv, policy: PolicyNetwork = None, batch_size: int=2, steps: int=3, tensordict: TensorDict = None) -> TensorDict:
+def simple_rollout(env: BatchLogicProofEnv, policy: PolicyNetwork = None, batch_size: int=2, steps: int=10, tensordict: TensorDict = None) -> TensorDict:
     ''' CAREFUL!!! pytroch doesnt stack the keys that are lists properly (for the tensors it should be fine). OR maybe it is because of the data_spec. Check it out'''
     data = []
     if tensordict is None:
@@ -199,13 +199,16 @@ def simple_rollout(env: BatchLogicProofEnv, policy: PolicyNetwork = None, batch_
         _data["action"] = env.action_spec.sample() if policy is None else policy.forward_dict(_data)["action"]
         _data = env.step(_data)
 
-        # for state, action, derived_states in zip(_data['state'], _data['action'],_data['derived_states'], ):
+        # for state, action, derived_states,reward,done in zip(_data['state'], _data['action'],_data['derived_states'],_data['reward'], _data['done']):
         #     print(*state, '-> action', action.item(),'/', len(derived_states)-1)
-        #     print('     ',*derived_states,'\n')
+        #     print('reward',reward)
+        #     print('Done',done)
+        #     print('     Derived states:',*derived_states,'\n')
         
         # print('actions',_data['action'],'rewards',_data['reward'],'dones',_data['done'])
         data.append(_data) # We append it here because we want to keep the "next" data. Those will be datapoint samples
         if _data["done"].all():
+            # print('\nDONE',_data["done"])
             break
         _data = step_mdp(_data, keep_other=True,exclude_reward=False,exclude_done=False,exclude_action=False)
 
@@ -236,12 +239,15 @@ def simplified_ppo_train(env,policy_module, value_module,
     )
     advantage_module.set_keys(value="value",value_target="returns")
 
+    policy_optimizer = torch.optim.Adam(policy_module.parameters(), lr=lr)
+    value_optimizer = torch.optim.Adam(value_module.parameters(), lr=lr)
+
     for epoch in range(n_epochs):
         # COLLECT DATA
         init_td = env.gen_params(batch_size=batch_size)
         env.reset_atom_var()
-        # data = simple_rollout(env,policy=policy_module.module,steps=3,tensordict=init_td)
-        data = simple_rollout(env, steps=3, tensordict=init_td)
+        data = simple_rollout(env,policy=policy_module.module,steps=n_rollout,tensordict=init_td)
+        # data = simple_rollout(env, steps=n_rollout, tensordict=init_td)
         # FORWARD: CALCULATE ADVANTAGES (VALUES) AND POLICY
         data = advantage_module(data)
         # print('data after advantage',data)
@@ -249,11 +255,26 @@ def simplified_ppo_train(env,policy_module, value_module,
 
         # PPO LOSS UPDATE
         loss = clip_ppo_loss(data)
+        print('loss objective from loop',loss['loss_objective'])
+        # Update Policy Network
+        policy_optimizer.zero_grad()
+        loss["loss_objective"].backward()
+        policy_optimizer.step()
+
+        # Update Value Network
+        value_optimizer.zero_grad()
+        loss["loss_critic"].backward()
+        value_optimizer.step()
+
+
+        # the reward is the last reward of the rollout for each query
+        reward = data['reward'][:,-1].mean()
+
 
         # LOGGING
         if (epoch + 1) % 10 == 0:
             print(f"Epoch {epoch + 1}",end=", ")
-            print(f"Average Reward: {data['reward'].mean().item():.3f}",end=", ")
+            print(f"Average Reward: {reward.item():.3f}",end=", ")
             print(f"Policy Loss: {loss['loss_objective'].item():.3f}",end=", ")
             print(f"Value Loss: {loss['loss_critic'].item():.3f}",end=", ")
             print(f"Entropy Loss: {loss['loss_entropy'].item():.3f}",end=", ")
@@ -270,9 +291,12 @@ def simplified_ppo_train(env,policy_module, value_module,
 
 
 #knowledge_f = "data/ancestor.pl"
-# knowledge_f = "data/countries_s1_train.pl"
 #test_f = None,
+
+# knowledge_f = "data/countries_s1_train.pl"
 # test_f = "data/countries_s1_test.pl"
+# constant_embed_f = "data/countries_s1/constant_embeddings.pkl"
+# predicate_embed_f = "data/countries_s1/predicate_embeddings.pkl"
 
 knowledge_f = "data/s2_designed/train.pl"
 test_f = "data/s2_designed/test.pl"
@@ -294,8 +318,8 @@ constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, pred
 # Training configuration
 config = {
     "n_epochs": 10000,
-    "batch_size": 2,
-    "n_rollout": 3,
+    "batch_size": 256,
+    "n_rollout": 50,
     "clip_ratio": 0.2,
     "lr": 3e-4,
     "gamma": 0.99,
@@ -324,24 +348,25 @@ policy_module = TensorDictModule(
 if __name__ == "__main__":
 
 
-    # ----------------------Test the environment, policy and value net----------------------
-    init_td = env.reset(env.gen_params(batch_size=config["batch_size"]))
-    # td = env.rollout(100,tensordict=init_td,
-    #                  policy=policy_net,
-    #                  auto_reset = False,
-    #                  break_when_any_done = False,
-    #                  )
-    value_net.forward(init_td["sub_index"])
-    td = simple_rollout(env,policy=policy_net,steps=3,tensordict=init_td)
-    # print('rollout',td)
-    # print_rollout(td)
-    # print_td(td, exclude_states=True)
-    # ---------------------------------------------------------------------------------------------
+    # # ----------------------Test the environment, policy and value net----------------------
+    # init_td = env.reset(env.gen_params(batch_size=config["batch_size"]))
+    # # td = env.rollout(100,tensordict=init_td,
+    # #                  policy=policy_net,
+    # #                  auto_reset = False,
+    # #                  break_when_any_done = False,
+    # #                  )
+    # value_net.forward(init_td["sub_index"])
+    # td = simple_rollout(env,policy=policy_net,steps=config["n_rollout"],tensordict=init_td)
+    # print('reward',td['reward'])
+    # # print('rollout',td)
+    # # print_rollout(td)
+    # # print_td(td, exclude_states=True)
+    # # ---------------------------------------------------------------------------------------------
 
 
 
     # ----------------------Train the model----------------------
-    # simplified_ppo_train(env, policy_module, value_module, **config)
+    simplified_ppo_train(env, policy_module, value_module, **config)
     # -----------------------------------------------------------
 
 
