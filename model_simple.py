@@ -200,8 +200,8 @@ def simple_rollout(env: BatchLogicProofEnv, policy: PolicyNetwork = None, batch_
         _data = env.step(_data)
 
         # for state, action, derived_states in zip(_data['state'], _data['action'],_data['derived_states'], ):
-        #     print(*state, '-> action', action.item(),'/', len(derived_states))
-        #     print('     ',*derived_states)
+        #     print(*state, '-> action', action.item(),'/', len(derived_states)-1)
+        #     print('     ',*derived_states,'\n')
         
         # print('actions',_data['action'],'rewards',_data['reward'],'dones',_data['done'])
         data.append(_data) # We append it here because we want to keep the "next" data. Those will be datapoint samples
@@ -319,49 +319,42 @@ policy_module = TensorDictModule(
                     out_keys=["action", "action_probs", "sample_log_prob"]
                 )
 
-simplified_ppo_train(env, policy_module, value_module, **config)
+
+
+if __name__ == "__main__":
+
+
+    # ----------------------Test the environment, policy and value net----------------------
+    init_td = env.reset(env.gen_params(batch_size=config["batch_size"]))
+    # td = env.rollout(100,tensordict=init_td,
+    #                  policy=policy_net,
+    #                  auto_reset = False,
+    #                  break_when_any_done = False,
+    #                  )
+    value_net.forward(init_td["sub_index"])
+    td = simple_rollout(env,policy=policy_net,steps=3,tensordict=init_td)
+    # print('rollout',td)
+    # print_rollout(td)
+    # print_td(td, exclude_states=True)
+    # ---------------------------------------------------------------------------------------------
+
+
+
+    # ----------------------Train the model----------------------
+    # simplified_ppo_train(env, policy_module, value_module, **config)
+    # -----------------------------------------------------------
 
 
 
 
-
-
-# # NOT SUPPORTED YET
-# policy_module = ProbabilisticActor(
-#     # spec=env.action_spec,
-#     module=policy_module,
-#     in_keys=["derived_indices","index"],
-#     out_keys=["action", "action_probs", "sample_log_prob"],
-#     distribution_class=Categorical,  # Specify the distribution class
-#     return_log_prob=True,
-# )
-
-
-
-
-
-# This is just to test the environment and the policy----------------------
-# batch_size = 2
-# knowledge_f = "data/ancestor.pl"
-# #knowledge_f = "data/countries_s1_train.pl"
-# janus.consult(knowledge_f)
-# max_arity = get_max_arity(knowledge_f)
-# test_f = None
-# #test_f = "data/countries_s1_test.pl"
-#
-# env = BatchLogicProofEnv(batch_size=batch_size, knowledge_f=knowledge_f, test_f=test_f, max_arity=max_arity)
-# policy_net = PolicyNetwork(EmbeddingFunction())
-#
-# init_td = env.reset(env.gen_params(batch_size=batch_size))
-# # td = env.rollout(100,tensordict=init_td,
-# #                  policy=policy_net,
-# #                  auto_reset = False,
-# #                  break_when_any_done = False,
-# #                  )
-# value_net.forward(init_td["sub_index"])
-# td = simple_rollout(env,policy=policy_net,steps=3,tensordict=init_td)
-# print('rollout',td)
-# print_rollout(td)
-# print_td(td, exclude_states=True)
+    # # NOT SUPPORTED YET
+    # policy_module = ProbabilisticActor(
+    #     # spec=env.action_spec,
+    #     module=policy_module,
+    #     in_keys=["derived_indices","index"],
+    #     out_keys=["action", "action_probs", "sample_log_prob"],
+    #     distribution_class=Categorical,  # Specify the distribution class
+    #     return_log_prob=True,
+    # )
 
 
