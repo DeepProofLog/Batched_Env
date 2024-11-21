@@ -217,7 +217,7 @@ def simple_rollout(env: BatchLogicProofEnv, policy: PolicyNetwork = None, batch_
 
  
 def simplified_ppo_train(env,policy_module, value_module, 
-                         n_epochs=100, batch_size=32, n_rollout=10,
+                         n_epochs=100, n_episodes=100000, batch_size=32, n_rollout=10,
                          clip_ratio=0.2, lr=3e-4, gamma=0.99, gae_lambda=0.95, knowledge_f=None, test_f=None, max_arity=1):
     """Main PPO training loop"""
 
@@ -242,50 +242,52 @@ def simplified_ppo_train(env,policy_module, value_module,
     policy_optimizer = torch.optim.Adam(policy_module.parameters(), lr=lr)
     value_optimizer = torch.optim.Adam(value_module.parameters(), lr=lr)
 
-    for epoch in range(n_epochs):
+    for episode in range(n_episodes):
         # COLLECT DATA
         init_td = env.gen_params(batch_size=batch_size)
         env.reset_atom_var()
         data = simple_rollout(env,policy=policy_module.module,steps=n_rollout,tensordict=init_td)
         # data = simple_rollout(env, steps=n_rollout, tensordict=init_td)
         # FORWARD: CALCULATE ADVANTAGES (VALUES) AND POLICY
-        data = advantage_module(data)
-        # print('data after advantage',data)
-        data = policy_module.forward_dict(data)
+        print('\n')
+        for epoch in range(n_epochs):
+            data = advantage_module(data)
+            # print('data after advantage',data)
+            # data = policy_module.forward_dict(data)
 
-        # PPO LOSS UPDATE
-        loss = clip_ppo_loss(data)
-        print('loss objective from loop',loss['loss_objective'])
-        # Update Policy Network
-        policy_optimizer.zero_grad()
-        loss["loss_objective"].backward()
-        policy_optimizer.step()
+            # PPO LOSS UPDATE
+            loss = clip_ppo_loss(data)
+            # print('loss objective from loop',loss['loss_objective'])
+            # Update Policy Network
+            policy_optimizer.zero_grad()
+            loss["loss_objective"].backward()
+            policy_optimizer.step()
 
-        # Update Value Network
-        value_optimizer.zero_grad()
-        loss["loss_critic"].backward()
-        value_optimizer.step()
-
-
-        # the reward is the last reward of the rollout for each query
-        reward = data['reward'][:,-1].mean()
+            # Update Value Network
+            value_optimizer.zero_grad()
+            loss["loss_critic"].backward()
+            value_optimizer.step()
 
 
-        # LOGGING
-        if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch + 1}",end=", ")
-            print(f"Average Reward: {reward.item():.3f}",end=", ")
-            print(f"Policy Loss: {loss['loss_objective'].item():.3f}",end=", ")
-            print(f"Value Loss: {loss['loss_critic'].item():.3f}",end=", ")
-            print(f"Entropy Loss: {loss['loss_entropy'].item():.3f}",end=", ")
+            # the reward is the last reward of the rollout for each query
+            reward = data['reward'][:,-1].mean()
 
-            # print(f"kl_approx: {loss['kl_approx'].item():.3f}",end=", ")
-            # print(f"ESS: {loss['ESS'].item():.3f}",end=", ")
-            # print(f"clip_fraction: {loss['clip_fraction'].item():.3f}",end=", ")
-            # print(f"Entropy: {loss['entropy'].item():.3f}",end=", ")
-            
-            # print(f"Total Loss: {loss.item():.3f}")
-            print("-" * 50)
+
+            # LOGGING
+            if (epoch + 1) % 100 == 0:
+                print(f"Episode {episode}, Epoch {epoch + 1}",end=", ")
+                print(f"Average Reward: {reward.item():.3f}",end=", ")
+                print(f"Policy Loss: {loss['loss_objective'].item():.3f}",end=", ")
+                print(f"Value Loss: {loss['loss_critic'].item():.3f}",end=", ")
+                print(f"Entropy Loss: {loss['loss_entropy'].item():.3f}",end=", ")
+
+                # print(f"kl_approx: {loss['kl_approx'].item():.3f}",end=", ")
+                # print(f"ESS: {loss['ESS'].item():.3f}",end=", ")
+                # print(f"clip_fraction: {loss['clip_fraction'].item():.3f}",end=", ")
+                # print(f"Entropy: {loss['entropy'].item():.3f}",end=", ")
+                
+                # print(f"Total Loss: {loss.item():.3f}")
+                print("-" * 50)
     
     return None
 
@@ -317,8 +319,9 @@ constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, pred
 
 # Training configuration
 config = {
-    "n_epochs": 10000,
-    "batch_size": 256,
+    "n_epochs": 300,
+    "n_episodes": 100000,
+    "batch_size": 3,
     "n_rollout": 50,
     "clip_ratio": 0.2,
     "lr": 3e-4,
