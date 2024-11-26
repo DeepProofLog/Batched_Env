@@ -1,2 +1,0 @@
-r0:1:locatedInCS(X,W), locatedInSR(W,Z) -> locatedInCR(X,Z)
-r1:1:locatedInCS(X,W), locatedInSR(W,Z), neighborOf(X,Y), locatedInCR(Y,Z) -> locatedInCR(X,Z)

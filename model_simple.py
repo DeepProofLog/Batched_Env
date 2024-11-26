@@ -319,9 +319,9 @@ constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, pred
 
 # Training configuration
 config = {
-    "n_epochs": 300,
+    "n_epochs": 2000,
     "n_episodes": 100000,
-    "batch_size": 3,
+    "batch_size": 32,
     "n_rollout": 50,
     "clip_ratio": 0.2,
     "lr": 3e-4,
