@@ -68,7 +68,7 @@ def from_str_to_term(next_state_str: str) -> List[Term]:
     return atoms
 
 
-def get_next_state_prolog(state: List[Term], verbose=0) -> Tuple[List[Term], bool, bool]:
+def get_next_state_prolog(state: List[Term], verbose=0) -> List[List[Term]]:
     print('     state str:', ", ".join([str(atom) for atom in state])) if verbose else None
     # Handle terminal states: If any of the atoms in the state are False, return False. If all the atoms in the state are True, return True
     any_atom_false = any([atom.predicate == 'False' for atom in state]) 

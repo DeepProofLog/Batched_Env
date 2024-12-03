@@ -81,8 +81,10 @@ class BatchLogicProofEnv(EnvBase):
         '''Generate a initial state of the environment'''
         if batch_size is None:
             batch_shape = torch.Size([])
-        else:
+        elif isinstance(batch_size, int):
             batch_shape = torch.Size([batch_size])
+        else:
+            batch_shape = torch.Size(batch_size)
 
         td = TensorDict(
             {
@@ -389,3 +391,5 @@ class BatchLogicProofEnv(EnvBase):
         random.seed(seed)
         query = random.choice(queries)
         return query.head
+
+help(DiscreteTensorSpec)
