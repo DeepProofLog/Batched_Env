@@ -1,0 +1,6 @@
+locatedInCR(armenia,asia).	stack_limit_exceeded
+locatedInCR(azerbaijan,asia).	stack_limit_exceeded
+locatedInCR(malaysia,asia).	stack_limit_exceeded
+locatedInCR(romania,europe).	stack_limit_exceeded
+locatedInCR(costa_rica,americas).	stack_limit_exceeded
+locatedInCR(suriname,americas).	stack_limit_exceeded
