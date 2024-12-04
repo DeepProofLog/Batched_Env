@@ -1,4 +1,4 @@
-from environments.env_logic import BatchLogicProofEnv
+from redundant_code.env_logic_batched import BatchLogicProofEnv
 from utils import print_td, print_rollout, get_max_arity, create_global_idx, read_embeddings, create_embed_tables
 import janus_swi as janus
 
