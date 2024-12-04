@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Union, List, Any, Tuple, Iterable
+from typing import Dict, Union, List, Any, Tuple, Iterable, Optional
 import torch
 from tensordict import TensorDict, TensorDictBase
 from torchrl.envs.utils import step_mdp
@@ -237,7 +237,7 @@ class FileLogger:
         """
         try:
             os.rename(tmp_filename, log_filename_run)
-            print(f"Log file renamed to: {log_filename_run}")
+            # print(f"Log file renamed to: {log_filename_run}")
         except OSError as e:
             print(f"Error renaming log file: {e}")
 
@@ -422,39 +422,3 @@ class FileLogger:
                 f.write(column_names)
             f.write('\n')
             f.write(combined_results)
-
-
-from stable_baselines3.common.callbacks import BaseCallback
- 
-class LogToFileCallback(BaseCallback):
-    def __init__(self, log_file: str, verbose: int = 0):
-        super(LogToFileCallback, self).__init__(verbose)
-        self.log_file = log_file
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-        self.headers_written = False
-
-    def _log_headers(self, headers):
-        """Logs headers to the file."""
-        with open(self.log_file, "w") as f:
-            f.write(";".join(headers) + "\n")
-        self.headers_written = True
-        return headers
-
-    def _log_values(self, logs):
-        """Logs values based on the current headers."""
-        with open(self.log_file, "a") as f:
-            f.write(";".join(f'{v}' for k, v in logs.items())+ "\n")
-
-    def _on_rollout_end(self) -> None:
-        """Logs after each rollout, when meaningful metrics are available."""
-        logs = {key: value for key, value in self.logger.name_to_value.items()}
-        # print('logs:', ', '.join([":".join((str(k), str(np.round(v, 3)))) for k, v in logs.items()]))
-        if logs:
-            if not self.headers_written:
-                self._log_headers(logs)
-            else:
-                self._log_values(logs)
-
-    def _on_step(self) -> bool:
-        """Required by BaseCallback. Returns True to allow training to continue."""
-        return True

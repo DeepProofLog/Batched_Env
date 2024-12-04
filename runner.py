@@ -9,7 +9,7 @@ from utils import FileLogger
 
 if __name__ == "__main__":
 
-    use_logger = False
+    use_logger = True
     logger_path = "./experiments/runs/"
 
     DATASET_NAME = ["ablation_d2"] # "countries_s1" # "countries_s2" # "countries_s3"
@@ -17,7 +17,7 @@ if __name__ == "__main__":
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
     ATOM_EMBEDDING_SIZE = [200]
-    SEED = [[0,1]]
+    SEED = [[0]]
 
     # path to the data    
     data_path = "./data/"
@@ -27,13 +27,13 @@ if __name__ == "__main__":
     test_file = "test.pl"
 
     load_model = False
-    save_model = False
+    save_model = True
     models_path = "./../models/"
     variable_no = 500
     device = "cpu"
 
     # Training parameters
-    timestep_train = 100000
+    timestep_train = 10000
     n_epochs = 10
     n_steps = 2048
     batch_size = 64
