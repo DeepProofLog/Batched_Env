@@ -28,7 +28,7 @@ if __name__ == "__main__":
 
     load_model = False
     save_model = False
-    models_path = "./experiments/models/"
+    models_path = "./../models/"
     variable_no = 500
     device = "cpu"
 

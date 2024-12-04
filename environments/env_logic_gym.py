@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple, Dict, Union
 import random
 from math import prod
-from utils import Term, is_variable, extract_var
+from utils_RL import Term, is_variable, extract_var
 from unification.prolog_unification import get_next_state_prolog
 
 import torch
@@ -200,7 +200,9 @@ class LogicEnv_gym(gym.Env):
             if self.eval:
                 state = self.get_random_queries(self.valid_queries, 1, seed=seed)
             else:
-                # state = self.get_random_queries(self.facts, 1, seed=seed)
+                # state = self.get_random_queries(self.provable_facts, 1, seed=seed)
+                # take q from provable facts
+                # remove that query from provable facts (consult janus again)
                 state = self.get_random_queries(self.valid_queries, 1, seed=seed)
             states.append(state)
             atom_index, sub_index = self.index_manager.get_atom_sub_index(i, state)

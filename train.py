@@ -27,9 +27,9 @@ from stable_baselines3.common.callbacks import (
 
 def main(args,log_filename,use_logger):
 
-    torch.manual_seed(42)
+    torch.manual_seed(args.seed_run_i)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(42)
+        torch.cuda.manual_seed_all(args.seed_run_i)
     random.seed(args.seed_run_i)
     np.random.seed(args.seed_run_i)
 
