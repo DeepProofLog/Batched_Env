@@ -8,7 +8,7 @@ import os
 import random
 import torch
 
-from utils_RL import get_device,simple_rollout, print_state_transition, LogToFileCallback
+from utils import get_device,simple_rollout, print_state_transition, LogToFileCallback
 from dataset import DataHandler, Rule
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from kge import read_embeddings, create_embed_tables, KGEModel, EmbeddingFunction

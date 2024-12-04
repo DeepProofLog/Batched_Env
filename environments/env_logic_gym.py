@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple, Dict, Union
 import random
 from math import prod
-from utils_RL import Term, is_variable, extract_var
+from utils import Term, is_variable, extract_var
 from unification.prolog_unification import get_next_state_prolog
 
 import torch
