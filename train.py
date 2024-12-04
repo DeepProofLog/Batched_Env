@@ -8,19 +8,18 @@ import os
 import random
 import torch
 
-from utils import get_device,simple_rollout, print_state_transition, LogToFileCallback
+from utils import get_device,simple_rollout, print_state_transition
+from my_callbacks import SB3ModelCheckpoint, LogToFileCallback, EvalCallback
 from dataset import DataHandler, Rule
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from kge import read_embeddings, create_embed_tables, KGEModel, EmbeddingFunction
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
-    EvalCallback,
     StopTrainingOnMaxEpisodes,
     StopTrainingOnRewardThreshold,
     CallbackList,
     StopTrainingOnNoModelImprovement,
-    CheckpointCallback
 )
 
 
@@ -105,7 +104,7 @@ def main(args,log_filename,use_logger):
     # TRAIN
     if args.load_model:
         models =  os.listdir(args.models_path)
-        models = [m for m in models if args.model_name in m]
+        models = [m for m in models if args.model_name in m and 'train' in m] # choose best model wrt training, not validation
         models.sort()
         if not models:
             print("No model found in", args.models_path,'!!!')
@@ -117,35 +116,40 @@ def main(args,log_filename,use_logger):
             print("Model not supported !!!!")
             args.load_model = False
         
-    if not args.load_model:
+    if not args.load_model and args.timesteps_train > 0:
         # reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
         # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
+        date = '_'+str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+
         eval_callback = EvalCallback(
             eval_env=eval_env, 
-            best_model_save_path=args.models_path,
-            log_path="./experiments/logs/",
-            eval_freq=10000,
+            model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
+            log_path=log_filename if use_logger else None,
+            eval_freq=5000,
             n_eval_episodes=5,
             deterministic=True,
             render=False,
+            name=args.run_signature+date,
             # callback_on_new_best=reward_threshold_callback,
             # callback_after_eval=no_improvement_callback,
         )
+
         callbacks = [eval_callback]
+
         if use_logger:
             log_callback = LogToFileCallback(log_file=log_filename)
             callbacks.append(log_callback)    
     
         if args.save_model:
-            date = '_'+str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-            checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=args.models_path, name_prefix=args.run_signature+date)
+            checkpoint_callback = SB3ModelCheckpoint(model,monitor='train/loss', frequency=5000, 
+                                                     total_steps=args.timesteps_train, 
+                                                     model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
+                                                     name=args.run_signature+date)
             callbacks.append(checkpoint_callback)
 
         callbacks = CallbackList(callbacks)
-
         model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
-        if args.save_model:
-            model.save(args.models_path+"/"+args.run_signature+date)
+        checkpoint_callback.restore_best_ckpt()
 
 
     # TEST
@@ -154,32 +158,34 @@ def main(args,log_filename,use_logger):
         obs, _ = env.reset_from_query(data[next_query])
         print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
         rewards_list = []
+        episode_len_list = []
         trajectory_reward = 0
+        episode_len = 0
         while next_query < len(data)-1:
             print('query',next_query) if verbose >=1 else None
-            action, _states = model.predict(obs)
+            action, _states = model.predict(obs, deterministic=True)
             obs, rewards, dones, truncated, info = env.step(action)
             print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
             trajectory_reward += rewards
+            episode_len += 1
             if dones:
                 next_query += 1
                 obs, _ = env.reset_from_query(data[next_query])
                 rewards_list.append(trajectory_reward)
+                episode_len_list.append(episode_len)
                 trajectory_reward = 0
+                episode_len = 0
                 print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
-        return rewards_list
+        return rewards_list, episode_len_list
 
-    # Test multiple times the datasets
-    rewards_valid = []
-    rewards_test = []
-    for _ in range(5):
-        rewards_valid += test(data_handler.valid_queries)
-        rewards_test = test(data_handler.test_queries)
 
-    print('VALID: rewards avg',np.round(np.mean(rewards_valid),3), 'std', np.round(np.std(rewards_valid),3))
-    print('TEST: rewards avg',np.round(np.mean(rewards_test),3), 'std', np.round(np.std(rewards_test),3))
+    rewards_valid, episode_len_valid = test(data_handler.valid_queries)
+    rewards_test, episode_len_test = test(data_handler.test_queries)
+
+    print('VALID: rewards avg',np.round(np.mean(rewards_valid),3), 'std', np.round(np.std(rewards_valid),3), 'episode len avg', np.round(np.mean(episode_len_valid),3), 'std', np.round(np.std(episode_len_valid),3))
+    print('TEST: rewards avg',np.round(np.mean(rewards_test),3), 'std', np.round(np.std(rewards_test),3), 'episode len avg', np.round(np.mean(episode_len_test),3), 'std', np.round(np.std(episode_len_test),3))
     
-    valid_metrics = {'reward': np.mean(rewards_valid), 'std_reward': np.std(rewards_valid)}
-    test_metrics = {'reward': np.mean(rewards_test), 'std_reward': np.std(rewards_test)}
+    valid_metrics = {'reward': np.mean(rewards_valid), 'reward_std': np.std(rewards_valid), 'episode_len': np.mean(episode_len_valid), 'episode_len_std': np.std(episode_len_valid)}
+    test_metrics = {'reward': np.mean(rewards_test), 'reward_std': np.std(rewards_test), 'episode_len': np.mean(episode_len_test), 'episode_len_std': np.std(episode_len_test)}
     return valid_metrics, test_metrics
 
