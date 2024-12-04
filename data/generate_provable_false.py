@@ -103,22 +103,40 @@ def get_labeled_data(query_file, catch_errors, use_modified_rules):
 
 
 if __name__ == "__main__":
-    arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('--level', default='s3', type=str)
-    arg_parser.add_argument('--catch_errors', action='store_true')
-    arg_parser.add_argument('--use_modified_rules', action='store_true')
-    arg_parser.add_argument('--use_tabling', action='store_true')
-    args = arg_parser.parse_args()
 
-    root_dir = f"countries_{args.level}/"
-    if args.use_modified_rules:
-        get_pl(root_dir + "rules_mod.txt", [root_dir + "facts.txt", root_dir + "train.txt"], root_dir + "countries_mod.pl",
-              args.catch_errors, args.use_tabling)
-        janus.consult(root_dir+"countries_mod.pl")
-    else:
-        get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+"countries.pl", args.catch_errors, args.use_tabling)
-        janus.consult(root_dir+"countries.pl")
-    print("processing valid.txt")
-    get_labeled_data(root_dir+"valid.txt", args.catch_errors, args.use_modified_rules)
-    print("processing test.txt")
-    get_labeled_data(root_dir+"test.txt", args.catch_errors, args.use_modified_rules)
+    regions = ['oceania', 'asia', 'europe', 'africa', 'americas']
+
+    root_dir = "countries_s2/"
+    file_dir = root_dir + "train.txt"
+    knowledge_dir = root_dir+"countries.pl"
+    janus.consult(knowledge_dir)
+
+    outputs = []
+    provable_true = 0
+
+    with open(file_dir, "r") as f:
+        queries = f.readlines()
+        for q in queries:
+            q = q.strip()
+            matches = re.findall(r'(\b\w+)\(([^)]*)\)', q)
+            for m in matches:
+                predicate = m[0]
+                if predicate == "locatedInCR":
+                    #print(q)
+                    provable_true += 1
+                    country, region = m[1].split(",")
+                    collapses = [f'locatedInCR({country},{r}).' for r in regions if r != region]
+                    #print(collapses)
+                    for c in collapses:
+                        res = janus.query_once(c)
+                        if res['truth']:
+                            output = f"{c}\n"
+                            #print(output)
+                            outputs.append(output)
+
+    of_dir = file_dir.split(".")[0] + "_provable_false.txt"
+    with open(of_dir, "w") as f:
+        for output in outputs:
+            f.write(output)
+
+    print(f'Provable True: {provable_true}')
