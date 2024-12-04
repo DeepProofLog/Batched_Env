@@ -1,6 +1,10 @@
 locatedInCR(armenia,asia).	True
+locatedInCR(armenia,europe).	False
 locatedInCR(azerbaijan,asia).	True
+locatedInCR(azerbaijan,africa).	False
 locatedInCR(malaysia,asia).	True
+locatedInCR(malaysia,oceania).	False
 locatedInCR(romania,europe).	True
+locatedInCR(romania,africa).	False
 locatedInCR(costa_rica,americas).	True
 locatedInCR(suriname,americas).	True

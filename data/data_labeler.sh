@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# s2 & s3 have queries lead to timeout and stack exceed errors
-# modifies rules move recursive clauses to right
-#python data_labeler.py --level "s3" --catch_errors
+python data_labeler.py --folder "ablation" --level "d3" --use_tabling
+#python data_labeler.py --folder "countries" --level "s2" --use_tabling
 
-# s1 has not errors
-python data_labeler.py --level "s1"
+# s1 does not need tabling
+#python data_labeler.py --folder "countries" --level "s1"

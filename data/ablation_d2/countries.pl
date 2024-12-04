@@ -1,7 +1,6 @@
-:- discontiguous neighborOf/2.
 :- discontiguous locatedInCR/2.
-call_with_catch(Goal, TimeOut) :- catch((call_with_time_limit(60, Goal), TimeOut=false), time_limit_exceeded, (writeln('Query timed out'), TimeOut=true)). 
-locatedInCR(X,Z) :- neighborOf(X,Y), locatedInCR(Y,Z).
+:- discontiguous neighborOf/2.
+:- table locatedInCR/2.
 neighborOf(italy,slovenia).
 locatedInCR(dominica,americas).
 neighborOf(central_african_republic,republic_of_the_congo).
@@ -780,3 +779,4 @@ neighborOf(myanmar,china).
 neighborOf(greece,macedonia).
 neighborOf(iran,turkmenistan).
 locatedInCR(maldives,asia).
+locatedInCR(X,Z) :- neighborOf(X,Y), locatedInCR(Y,Z).
