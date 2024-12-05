@@ -10,7 +10,8 @@ from utils import FileLogger
 if __name__ == "__main__":
 
     use_logger = False
-    use_WB = True
+    use_WB = False
+    WB_path = "./../wandb/"
     logger_path = "./experiments/runs/"
 
     DATASET_NAME = ["ablation_d2"] # "countries_s1" # "countries_s2" # "countries_s3"
@@ -19,13 +20,16 @@ if __name__ == "__main__":
     MODEL_NAME = ["PPO"]
     ATOM_EMBEDDING_SIZE = [200]
     SEED = [[0]]
+    MAX_DEPTH = [100]
 
     # path to the data    
     data_path = "./data/"
     domain_file = None
-    train_file = "train.pl"
-    valid_file = "valid.pl"
-    test_file = "test.pl"
+    janus_file = "train.pl"
+    # facts_file = "train.txt"
+    train_file = "train_queries.txt"
+    valid_file = "valid_queries.txt"
+    test_file = "test_queries.txt"
 
     load_model = False
     save_model = False
@@ -34,7 +38,7 @@ if __name__ == "__main__":
     device = "cpu"
 
     # Training parameters
-    timestep_train = 10000
+    timestep_train = 50000
     n_epochs = 10
     n_steps = 2048
     batch_size = 64
@@ -59,7 +63,8 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embedding, kge, model_name, atom_embedding_size, seed in product(DATASET_NAME, LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED):
+    for dataset_name, learn_embedding, kge, model_name, atom_embedding_size, seed, max_depth in product(DATASET_NAME, 
+            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
@@ -68,6 +73,7 @@ if __name__ == "__main__":
         args.dataset_name = dataset_name
         args.data_path = data_path
         args.domain_file = domain_file
+        args.janus_file = janus_file
         args.train_file = train_file
         args.valid_file = valid_file
         args.test_file = test_file
@@ -92,7 +98,7 @@ if __name__ == "__main__":
         args.n_steps = n_steps
         args.batch_size = batch_size
         args.lr = lr
-
+        args.max_depth = max_depth
 
         run_vars = (args.dataset_name, args.kge, args.model_name, args.atom_embedding_size,args.timesteps_train,args.learn_embedding)
         args.run_signature = '-'.join(f'{v}' for v in run_vars) 
@@ -122,7 +128,7 @@ if __name__ == "__main__":
             else:   
                 log_filename_tmp = None
 
-            valid_metrics, test_metrics = main(args,log_filename_tmp,use_logger,use_WB)
+            valid_metrics, test_metrics = main(args,log_filename_tmp,use_logger,use_WB,WB_path)
 
             if use_logger:
                 # Include the results in the logger
@@ -138,7 +144,6 @@ if __name__ == "__main__":
 
         # If we have done all the seeds in args.seed, we can get the average results
         logger.log_avg_results(args.__dict__, args.run_signature,args.seed) if use_logger else None
-
 
     for args in all_args:
         print('Experiment number ', all_args.index(args), ' out of ', len(all_args), ' experiments.')

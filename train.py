@@ -7,13 +7,10 @@ import datetime
 import os
 import random
 import torch
-import wandb
-from wandb.integration.keras import WandbCallback
-from wandb.integration.keras import WandbMetricsLogger
 
 from utils import get_device,simple_rollout, print_state_transition
 from my_callbacks import SB3ModelCheckpoint, LogToFileCallback, EvalCallback
-from dataset import DataHandler, Rule
+from dataset import DataHandler, Rule, DataHandler_corruptions
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from kge import read_embeddings, create_embed_tables, KGEModel, EmbeddingFunction
 
@@ -24,10 +21,12 @@ from stable_baselines3.common.callbacks import (
     CallbackList,
     StopTrainingOnNoModelImprovement,
 )
+from wandb.integration.sb3 import WandbCallback
+import wandb
 
 
 
-def main(args,log_filename,use_logger,use_WB):
+def main(args,log_filename,use_logger,use_WB,WB_path):
 
     torch.manual_seed(args.seed_run_i)
     if torch.cuda.is_available():
@@ -37,12 +36,15 @@ def main(args,log_filename,use_logger,use_WB):
 
     device = get_device(args.device)
 
-    data_handler = DataHandler(
+    data_handler = DataHandler_corruptions(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
+        # facts_file=args.facts_file,
+        janus_file=args.janus_file,
         train_file= args.train_file,
         valid_file=args.valid_file,
-        test_file= args.test_file)
+        test_file= args.test_file
+        )
 
     index_manager = IndexManager(data_handler.constants, 
                                  data_handler.predicates,
@@ -71,17 +73,39 @@ def main(args,log_filename,use_logger,use_WB):
     
     # INIT ENV
     env = LogicEnv_gym(facts=data_handler.facts, 
-                       valid_queries=data_handler.valid_queries, 
-                       test_queries=data_handler.test_queries,
-                       max_arity=data_handler.max_arity,
-                       device=device, 
-                       index_manager=index_manager,
-                       seed=args.seed_run_i)   
+                        train_queries=data_handler.train_queries,
+                        valid_queries=data_handler.valid_queries,
+                        test_queries=data_handler.test_queries,
+
+                        train_labels=data_handler.train_labels,
+                        valid_labels=data_handler.valid_labels, 
+                        test_labels=data_handler.test_labels,
+
+                        train_queries_positive=data_handler.train_queries_positive,
+                        valid_queries_positive=data_handler.valid_queries_positive,
+                        test_queries_positive=data_handler.test_queries_positive,
+
+                        max_arity=data_handler.max_arity,
+                        max_depth=args.max_depth,
+                        device=device, 
+                        index_manager=index_manager,
+                        seed=args.seed_run_i)   
     
     eval_env = LogicEnv_gym(facts=data_handler.facts,
-                            valid_queries=data_handler.valid_queries, 
+                            train_queries=data_handler.train_queries,
+                            valid_queries=data_handler.valid_queries,
                             test_queries=data_handler.test_queries,
+
+                            train_labels=data_handler.train_labels,
+                            valid_labels=data_handler.valid_labels, 
+                            test_labels=data_handler.test_labels,
+
+                            train_queries_positive=data_handler.train_queries_positive,
+                            valid_queries_positive=data_handler.valid_queries_positive,
+                            test_queries_positive=data_handler.test_queries_positive,
+
                             max_arity=data_handler.max_arity,
+                            max_depth=args.max_depth,
                             device=device, 
                             index_manager=index_manager,
                             seed=args.seed_run_i,
@@ -143,35 +167,39 @@ def main(args,log_filename,use_logger,use_WB):
             log_callback = LogToFileCallback(log_file=log_filename)
             callbacks.append(log_callback)    
     
-        if args.save_model:
-            checkpoint_callback = SB3ModelCheckpoint(model,monitor='train/loss', frequency=5000, 
-                                                     total_steps=args.timesteps_train, 
-                                                     model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
-                                                     name=args.run_signature+date)
-            callbacks.append(checkpoint_callback)
-
+        checkpoint_callback = SB3ModelCheckpoint(model,monitor='train/loss', frequency=5000, 
+                                                    total_steps=args.timesteps_train, 
+                                                    model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
+                                                    name=args.run_signature+date)
+        callbacks.append(checkpoint_callback)
 
         # Initialize a W&B run
         if use_WB:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            dir = os.path.join(current_dir, '../..')
-            run = wandb.init(project = "Grounders-exp", name=args.run_signature,
-                    dir=dir,  config = dict(
-                    shuffle_buffer = 1024,
-                    batch_size = args.batch_size,
-                    learning_rate = args.learning_rate,
-                    epochs = args.epochs)) 
-            callbacks.append(WandbMetricsLogger(log_freq=10))
+            run = wandb.init(project = "RL-NeSy", 
+                            group= args.run_signature,
+                            name=args.run_signature+'-seed_{}'.format(args.seed_run_i),
+                            dir=WB_path,  
+                            sync_tensorboard=True,  # Sync SB3's TensorBoard logs to W&B
+                            config = dict(
+                                seed = args.seed_run_i,
+                                shuffle_buffer = 1024,
+                                batch_size = args.batch_size,
+                                learning_rate = args.lr,
+                                epochs = args.n_epochs)) 
+            
+            callbacks.append(WandbCallback(
+                                            # gradient_save_freq=100,
+                                            # model_save_path=WB_path,
+                                            # verbose=2,
+                                            ))
 
 
         callbacks = CallbackList(callbacks)
         model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
-        checkpoint_callback.restore_best_ckpt()
+        # checkpoint_callback.restore_best_ckpt()
 
-        # Close the W&B run
         if use_WB:
-            run.finish()
-
+            run.finish()   
 
     # TEST
     def test(data: list[Rule], verbose: int=0) -> list[float]:
@@ -199,9 +227,12 @@ def main(args,log_filename,use_logger,use_WB):
                 print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
         return rewards_list, episode_len_list
 
-
-    rewards_valid, episode_len_valid = test(data_handler.valid_queries)
-    rewards_test, episode_len_test = test(data_handler.test_queries)
+    print('Testing val set...')
+    positive_valid_queries = [q for q,l in zip(data_handler.valid_queries, data_handler.valid_labels) if l == 1]
+    positive_test_queries = [q for q,l in zip(data_handler.test_queries, data_handler.test_labels) if l == 1]
+    rewards_valid, episode_len_valid = test(positive_valid_queries)
+    print('Testing test set...')
+    rewards_test, episode_len_test = test(positive_test_queries)
 
     print('VALID: rewards avg',np.round(np.mean(rewards_valid),3), 'std', np.round(np.std(rewards_valid),3), 'episode len avg', np.round(np.mean(episode_len_valid),3), 'std', np.round(np.std(episode_len_valid),3))
     print('TEST: rewards avg',np.round(np.mean(rewards_test),3), 'std', np.round(np.std(rewards_test),3), 'episode len avg', np.round(np.mean(episode_len_test),3), 'std', np.round(np.std(episode_len_test),3))

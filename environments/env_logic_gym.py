@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple, Dict, Union
 import random
 from math import prod
-from utils import Term, is_variable, extract_var
+from utils import Term, is_variable, extract_var, print_state_transition
 from unification.prolog_unification import get_next_state_prolog
 
 import torch
@@ -115,9 +115,20 @@ class LogicEnv_gym(gym.Env):
     
     def __init__(self, 
                 facts: List[List[Term]],
+                train_queries: List[List[Term]],
                 valid_queries: List[List[Term]],
                 test_queries: List[List[Term]],
+
+                train_labels: List[int],
+                valid_labels: List[int],
+                test_labels: List[int],
+
+                train_queries_positive: List[List[Term]],
+                valid_queries_positive: List[List[Term]],
+                test_queries_positive: List[List[Term]],
+
                 max_arity: int = 2,
+                max_depth: int = 10,
                 seed: Optional[int] = None,
                 device: torch.device = torch.device("cpu"),
                 index_manager: Optional[IndexManager] = None,
@@ -131,7 +142,7 @@ class LogicEnv_gym(gym.Env):
         self.max_arity = max_arity # Maximum arity of the predicates
         self.max_atom = 10  # Maximum number of atoms in a state
         self.padding = 15 # Maximum number of possible next states
-        self.max_depth = 10 # Maximum depth of the proof tree
+        self.max_depth = max_depth # Maximum depth of the proof tree
         self.index_manager = index_manager
 
         seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
@@ -139,8 +150,18 @@ class LogicEnv_gym(gym.Env):
         self._make_spec()
 
         self.facts = facts
+        self.train_queries = train_queries
         self.valid_queries = valid_queries
         self.test_queries = test_queries
+
+        self.train_labels = train_labels
+        self.valid_labels = valid_labels
+        self.test_labels = test_labels
+
+        self.train_queries_positive = train_queries_positive
+        self.valid_queries_positive = valid_queries_positive
+        self.test_queries_positive = test_queries_positive
+
         self.eval = eval
 
     def _set_seed(self, seed:int):
@@ -198,12 +219,14 @@ class LogicEnv_gym(gym.Env):
         sub_indices = []
         for i in range(1):
             if self.eval:
-                state = self.get_random_queries(self.valid_queries, 1, seed=seed)
+                state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
             else:
                 # state = self.get_random_queries(self.provable_facts, 1, seed=seed)
                 # take q from provable facts
-                # remove that query from provable facts (consult janus again)
-                state = self.get_random_queries(self.valid_queries, 1, seed=seed)
+                # remove that query from provable facts (consult janus again)state, label = self.get_random_queries(self.valid_queries, self.valid_labels, 1, seed=seed)
+                # state, label = self.get_random_queries(self.train_queries, self.train_labels, 1, seed=seed)
+                
+                state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
             states.append(state)
             atom_index, sub_index = self.index_manager.get_atom_sub_index(i, state)
             atom_indices.append(atom_index)
@@ -235,7 +258,10 @@ class LogicEnv_gym(gym.Env):
                'atom_index':atom_index, 
                'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices}
+        # print('reset...')
         # print('obs', [(key, value.shape) for key, value in obs.items()])
+        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
+
         return obs, {}
 
     def step(self, action) -> TensorDictBase:
@@ -243,7 +269,6 @@ class LogicEnv_gym(gym.Env):
         Given the current state, possible next states, an action, and return the next state.
         (It should be: given the current state, and an action, return the next state, but we need to modify it for our case)
         '''
-        # print('Stepping...\n')     
         action = np.array([action])
         action = torch.tensor(action, device=self.device)  
         actions = action
@@ -256,10 +281,8 @@ class LogicEnv_gym(gym.Env):
         atom_indices_next = []
         sub_indices_next = []
         for i, (derived_state, action) in enumerate(zip(derived_states, actions.view(-1))):
-            # print(i,'action,len(derived_state)',action,len(derived_state))
             if action >= len(derived_state):
                 raise ValueError(f"State {i} of the batch. Invalid action ({action}). Max action: {len(derived_states[i])}, derived_states: {derived_states[i]}")
-                # action = torch.tensor([len(derived_state)-1], device=self.device)            
             next_state = derived_state[action.item()]
             next_atom_index = derived_atom_indices[i][action.item()]
             next_sub_index = derived_sub_indices[i][action.item()]
@@ -274,9 +297,9 @@ class LogicEnv_gym(gym.Env):
         derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.get_next_states_batch(states_next)
         self.update_action_space(derived_states_next)
 
-        
         self.current_depth += 1
         self.exceeded_max_depth = (self.current_depth >= self.max_depth)
+        # print('exceeded_max_depth: current depth, max depth', self.current_depth,self.max_depth  ) if self.exceeded_max_depth else None
         done_next = done_next | self.exceeded_max_depth
 
         tensordict = TensorDict(
@@ -317,6 +340,7 @@ class LogicEnv_gym(gym.Env):
         rewards = rewards[0]
         dones = dones[0]
         truncated = bool(self.exceeded_max_depth[0])
+        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
         return obs, rewards, dones, truncated, {}
 
 
@@ -327,7 +351,6 @@ class LogicEnv_gym(gym.Env):
         possible_atom_indices_next_batch = []
         possible_sub_indices_next_batch = []
         for i, state in enumerate(states):
-            # print('    State:',[str(atom) for atom in state])
             possible_states_next = get_next_state_prolog(state)
 
             # Store states and get their indices
@@ -376,14 +399,19 @@ class LogicEnv_gym(gym.Env):
         return done_batch, rewards_batch,
     
     @staticmethod
-    def get_random_queries(queries: List[Rule], n: int, seed: Optional[int] = None) -> List[Term]:
+    def get_random_queries(queries: List[Rule], labels: List[int], n: int, seed: Optional[int] = None) -> List[Term]:
         if not seed: # choose a random seed
             random_instance = random.Random()
         else:
             random_instance = random.Random(seed)
         
         assert n <= len(queries), f"Number of queries ({n}) is greater than the number of queries ({len(queries)})"
-        return random_instance.sample(queries, n)
+        sampled_indices = random_instance.sample(range(len(queries)), n)
+        
+        sampled_queries = [queries[i] for i in sampled_indices]
+        sampled_labels = [labels[i] for i in sampled_indices]
+        
+        return sampled_queries, sampled_labels
     
   
     def reset_from_query(self, query) -> TensorDictBase:
