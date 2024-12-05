@@ -137,6 +137,7 @@ class DataHandler_corruptions():
         
         base_path  = join(base_path, dataset_name)
         janus_path = join(base_path, janus_file)
+        self.janus_path = janus_path
         # facts_path = join(base_path, facts_file)
         train_path = join(base_path, train_file) 
         valid_path = join(base_path, valid_file) if valid_file else None

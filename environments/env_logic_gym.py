@@ -14,6 +14,7 @@ import gymnasium as gym
 import numpy as np
 
 from dataset import Rule
+import janus_swi as janus
 
 
 class IndexManager():
@@ -127,6 +128,8 @@ class LogicEnv_gym(gym.Env):
                 valid_queries_positive: List[List[Term]],
                 test_queries_positive: List[List[Term]],
 
+                janus_file: str=None,
+
                 max_arity: int = 2,
                 max_depth: int = 10,
                 seed: Optional[int] = None,
@@ -161,6 +164,8 @@ class LogicEnv_gym(gym.Env):
         self.train_queries_positive = train_queries_positive
         self.valid_queries_positive = valid_queries_positive
         self.test_queries_positive = test_queries_positive
+
+        self.janus_file = janus_file
 
         self.eval = eval
 
@@ -210,6 +215,42 @@ class LogicEnv_gym(gym.Env):
         max_actions =  torch.tensor(max_actions, device=self.device)
         self.action_space = gym.spaces.Discrete(max_actions.max().item())
 
+
+    def new_consult_janus(self, query: Term):
+        '''Consult janus with new facts
+        1. load the original facts
+        2. save a file with the new facts
+        3. consult janus with the new file
+
+        fact_removed = janus.query(f"retract(({query_str})).")
+        janus.query(f"assertz({fact}).")  # Adds new facts directly to the knowledge base.
+        '''
+        # print('state is in facts:', query in self.facts)
+        # to compare the query, convert it to str by removing the spaces
+        query_str = str(query).replace(' ', '')
+        # 1. load the original facts as they are, and skip the line with the query
+        facts = []
+        query_found = False
+        with open(self.janus_file, "r") as f:
+            lines = f.readlines()
+            for line in lines:
+                if query_str not in line:
+                    facts.append(line)
+                else:
+                    query_found = True
+        if not query_found:
+            raise ValueError(f"Query {query_str} not found in {self.janus_file}")
+        # 2. save a _tmp file with the new facts
+        tmp_file = self.janus_file.replace('.pl', '_tmp.pl')
+        with open(tmp_file, "w") as f:
+            for line in facts:
+                f.write(line)
+        # 3. consult janus with the new file
+        janus.query("retractall((:- _)).") # Removes any clauses (facts and rules).
+        janus.query("retractall(_).") # Removes all facts.
+        janus.consult(tmp_file)
+
+
     def reset(self, seed: Optional[int]= None, options=None) -> TensorDictBase:
         '''Reset the environment to the initial state'''    
         self.current_depth = torch.zeros(1, dtype=torch.long, device=self.device)
@@ -221,11 +262,14 @@ class LogicEnv_gym(gym.Env):
             if self.eval:
                 state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
             else:
-                state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
-
+                # state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
                 # remove that query from provable facts (consult janus again)
                 # correct the reward function
-                # state, label = self.get_random_queries(self.train_queries_positive, self.train_labels, 1, seed=seed)
+                state, label = self.get_random_queries(self.train_queries_positive, self.train_labels, 1, seed=seed)
+                # get the new facts (facts-state) and consult janus again
+                # create a _tmp file with all the info from the original train.pl, but without the query
+                self.new_consult_janus(state[0])
+                # print(aaaaa)
 
             states.append(state)
             atom_index, sub_index = self.index_manager.get_atom_sub_index(i, state)

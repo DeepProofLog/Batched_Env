@@ -85,6 +85,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
                         valid_queries_positive=data_handler.valid_queries_positive,
                         test_queries_positive=data_handler.test_queries_positive,
 
+                        janus_file=data_handler.janus_path,
+
                         max_arity=data_handler.max_arity,
                         max_depth=args.max_depth,
                         device=device, 
