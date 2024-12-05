@@ -60,37 +60,28 @@ def get_labeled_data(query_file, catch_errors, use_modified_rules):
     outputs = []
     for query in queries:
         query = query.strip()
-        print(query)
-        # res = janus.query(query)
-        # for d in res:
-        #     print(d)
-        if catch_errors:
-            try:
-                res = janus.query_once(f"call_with_catch({query[:-1]}, TimeOut)")
+        if query.startswith("locatedInCR"):
+            print(query)
+            if catch_errors:
+                try:
+                    res = janus.query_once(f"call_with_catch({query[:-1]}, TimeOut)")
+                    #for d in res:
+                    if res["TimeOut"] == "true":
+                        output = f"{query}\ttimeout\n"
+                    else:
+                        output = f"{query}\t{res['truth']}\n"
+                except janus.PrologError as e:
+                    print(e)
+                    if "Stack limit (1.0Gb) exceeded" in str(e):
+                        output = f"{query}\tstack_limit_exceeded\n"
+                print(output)
+                outputs.append(output)
+            else:
+                res = janus.query_once(query)
                 #for d in res:
-                if res["TimeOut"] == "true":
-                    output = f"{query}\ttimeout\n"
-                else:
-                    output = f"{query}\t{res['truth']}\n"
-            except janus.PrologError as e:
-                print(e)
-                if "Stack limit (1.0Gb) exceeded" in str(e):
-                    output = f"{query}\tstack_limit_exceeded\n"
-            print(output)
-            outputs.append(output)
-        else:
-            res = janus.query_once(query)
-            #for d in res:
-            output = f"{query}\t{res['truth']}\n"
-            print(output)
-            outputs.append(output)
-        # query = query.strip()[:-1]
-        # print(query)
-        # #print((f"catch(call_with_time_limit(5, {query}), time_limit_exceeded, writeln('Query timed out'))."))
-        # res = janus.query_once(f"catch(call_with_time_limit(5, {query}), time_limit_exceeded, writeln('Query timed out')).")
-        # #print(res)
-        # output = f"{query}\t{res['truth']}\n"
-        # outputs.append(output)
+                output = f"{query}\t{res['truth']}\n"
+                print(output)
+                outputs.append(output)
     if not use_modified_rules:
         output_dir = query_file.split(".")[0] + "_label.txt"
     else:
@@ -104,13 +95,14 @@ def get_labeled_data(query_file, catch_errors, use_modified_rules):
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('--level', default='s3', type=str)
+    arg_parser.add_argument('--folder', default='ablation', type=str)
+    arg_parser.add_argument('--level', default='d3', type=str)
     arg_parser.add_argument('--catch_errors', action='store_true')
     arg_parser.add_argument('--use_modified_rules', action='store_true')
     arg_parser.add_argument('--use_tabling', action='store_true')
     args = arg_parser.parse_args()
 
-    root_dir = f"countries_{args.level}/"
+    root_dir = f"{args.folder}_{args.level}/"
     if args.use_modified_rules:
         get_pl(root_dir + "rules_mod.txt", [root_dir + "facts.txt", root_dir + "train.txt"], root_dir + "countries_mod.pl",
               args.catch_errors, args.use_tabling)
@@ -118,6 +110,8 @@ if __name__ == "__main__":
     else:
         get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+"countries.pl", args.catch_errors, args.use_tabling)
         janus.consult(root_dir+"countries.pl")
+    print("processing train.txt")
+    get_labeled_data(root_dir+"train.txt", args.catch_errors, args.use_modified_rules)
     print("processing valid.txt")
     get_labeled_data(root_dir+"valid.txt", args.catch_errors, args.use_modified_rules)
     print("processing test.txt")
