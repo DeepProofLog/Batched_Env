@@ -209,6 +209,8 @@ class EvalCallback(EventCallback):
             self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
             # self.logger.dump(self.num_timesteps)
             # remove keys that contain the word "eval" or "total_timesteps" instead of using .dump
+            logs = {key: value for key, value in self.logger.name_to_value.items()}
+            print('logs eval:', ', '.join([":".join((str(k), str(np.round(v, 3)))) for k, v in logs.items()]))
             self.logger.name_to_value = {k: v for k, v in self.logger.name_to_value.items() if 
                                          "eval" not in k and "total_timesteps" not in k}
 
@@ -344,7 +346,7 @@ class SB3ModelCheckpoint(BaseCallback):
         #     return
 
         logs = {key: value for key, value in self.logger.name_to_value.items()}
-        # print('logs sb3:', ', '.join([":".join((str(k), str(np.round(v, 3)))) for k, v in logs.items()]))
+        print('logs train:', ', '.join([":".join((str(k), str(np.round(v, 3)))) for k, v in logs.items()]))
         if self.monitor not in logs:
             print(f'Metric "{self.monitor}" not found. Available: {logs.keys()}')
             return
