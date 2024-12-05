@@ -7,6 +7,9 @@ import datetime
 import os
 import random
 import torch
+import wandb
+from wandb.integration.keras import WandbCallback
+from wandb.integration.keras import WandbMetricsLogger
 
 from utils import get_device,simple_rollout, print_state_transition
 from my_callbacks import SB3ModelCheckpoint, LogToFileCallback, EvalCallback
@@ -24,7 +27,7 @@ from stable_baselines3.common.callbacks import (
 
 
 
-def main(args,log_filename,use_logger):
+def main(args,log_filename,use_logger,use_WB):
 
     torch.manual_seed(args.seed_run_i)
     if torch.cuda.is_available():
@@ -147,9 +150,27 @@ def main(args,log_filename,use_logger):
                                                      name=args.run_signature+date)
             callbacks.append(checkpoint_callback)
 
+
+        # Initialize a W&B run
+        if use_WB:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            dir = os.path.join(current_dir, '../..')
+            run = wandb.init(project = "Grounders-exp", name=args.run_signature,
+                    dir=dir,  config = dict(
+                    shuffle_buffer = 1024,
+                    batch_size = args.batch_size,
+                    learning_rate = args.learning_rate,
+                    epochs = args.epochs)) 
+            callbacks.append(WandbMetricsLogger(log_freq=10))
+
+
         callbacks = CallbackList(callbacks)
         model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
         checkpoint_callback.restore_best_ckpt()
+
+        # Close the W&B run
+        if use_WB:
+            run.finish()
 
 
     # TEST

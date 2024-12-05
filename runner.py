@@ -9,7 +9,8 @@ from utils import FileLogger
 
 if __name__ == "__main__":
 
-    use_logger = True
+    use_logger = False
+    use_WB = True
     logger_path = "./experiments/runs/"
 
     DATASET_NAME = ["ablation_d2"] # "countries_s1" # "countries_s2" # "countries_s3"
@@ -27,7 +28,7 @@ if __name__ == "__main__":
     test_file = "test.pl"
 
     load_model = False
-    save_model = True
+    save_model = False
     models_path = "./../models/"
     variable_no = 500
     device = "cpu"
@@ -121,7 +122,7 @@ if __name__ == "__main__":
             else:   
                 log_filename_tmp = None
 
-            valid_metrics, test_metrics = main(args,log_filename_tmp,use_logger)
+            valid_metrics, test_metrics = main(args,log_filename_tmp,use_logger,use_WB)
 
             if use_logger:
                 # Include the results in the logger
