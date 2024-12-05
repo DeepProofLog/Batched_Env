@@ -10,7 +10,7 @@ random.seed(42)
 
 
 
-def generate_collapses(folder, level, collapse_type, full_gt):
+def generate_corruptions(folder, level, corruption_type, full_gt):
 
     root_dir = f"{folder}_{level}/"
     domain_dir = root_dir + "domain2constants.txt"
@@ -37,17 +37,17 @@ def generate_collapses(folder, level, collapse_type, full_gt):
                     matches = re.findall(r'(\b\w+)\(([^)]*)\)', query)
                     for m in matches:
                         country, region = m[1].split(",")
-                        if collapse_type == "tail":
-                            collapses = [f'locatedInCR({country},{r}).' for r in tail_domain if r != region]
-                        elif collapse_type == "head":
-                            collapses = [f'locatedInCR({c},{region}).' for c in head_domain if c != country]
-                        collapses = [c for c in collapses if c not in full_gt]
-                        for c in collapses:
+                        if corruption_type == "tail":
+                            corruptions = [f'locatedInCR({country},{r}).' for r in tail_domain if r != region]
+                        elif corruption_type == "head":
+                            corruptions = [f'locatedInCR({c},{region}).' for c in head_domain if c != country]
+                        corruptions = [c for c in corruptions if c not in full_gt]
+                        for c in corruptions:
                             res = janus.query_once(c)
                             #print(f"{c}\t{res['truth']}")
                             outputs[query].append([c, res['truth']])
 
-        of_dir = root_dir+file.split(".")[0] + "_collapses.json"
+        of_dir = root_dir+file.split(".")[0] + "_corruptions.json"
         with open(of_dir, "w") as of:
             json.dump(outputs, of)
 
@@ -67,28 +67,47 @@ def get_full_gt():
 
     return full_gt
 
-def prepare_queries(folder, level, sample_ratio):
+def prepare_queries(folder, level, sample_type, sample_ratio):
 
     sample_ratio = ast.literal_eval(sample_ratio)
 
     root_dir = f"{folder}_{level}/"
-    file_list = ["train_label_collapses.json", "test_label_collapses.json", "valid_label_collapses.json"]
+    file_list = ["train_label_corruptions.json", "test_label_corruptions.json", "valid_label_corruptions.json"]
     for i in range(len(file_list)):
         with open(root_dir+file_list[i], "r") as f:
-            collapses = json.load(f)
+            corruptions = json.load(f)
         outputs = []
-        for query, collapse in collapses.items():
+        if sample_type == "full_set":
+            all_provable_false = []
+            all_non_provable = []
+        for query, corruption in corruptions.items():
             outputs.append(f"{query}\tTrue\n")
-            provable_false = [c[0] for c in collapse if c[1]]
-            non_provable = [c[0] for c in collapse if not c[1]]
-            if int(sample_ratio[i][0]) > len(provable_false):
-                outputs.extend(provable_false)
+            provable_false = [c[0] for c in corruption if c[1]]
+            non_provable = [c[0] for c in corruption if not c[1]]
+            if sample_type == "full_set":
+                all_provable_false.extend(provable_false)
+                all_non_provable.extend(non_provable)
             else:
-                outputs.extend([f"{q}\tFalse\n" for q in random.sample(provable_false, int(sample_ratio[i][0]))])
-            if int(sample_ratio[i][1]) > len(non_provable):
-                outputs.extend(non_provable)
+                if int(sample_ratio[i][0]) > len(provable_false):
+                    outputs.extend([f"{q}\tFalse\n" for q in provable_false])
+                else:
+                    outputs.extend([f"{q}\tFalse\n" for q in random.sample(provable_false, int(sample_ratio[i][0]))])
+                if int(sample_ratio[i][1]) > len(non_provable):
+                    outputs.extend(f"{q}\tNon-provable\n" for q in non_provable)
+                else:
+                    outputs.extend([f"{q}\tNon-provable\n" for q in random.sample(non_provable, int(sample_ratio[i][1]))])
+        if sample_type == "full_set":
+            provable_true_no = len(outputs)
+            #print(len(outputs), len(all_provable_false), len(all_non_provable))
+            if int(sample_ratio[i][0])*provable_true_no > len(all_provable_false):
+                outputs.extend([f"{q}\tFalse\n" for q in all_provable_false])
             else:
-                outputs.extend([f"{q}\tNon-provable\n" for q in random.sample(non_provable, int(sample_ratio[i][1]))])
+                outputs.extend([f"{q}\tFalse\n" for q in random.sample(all_provable_false, int(sample_ratio[i][0])*provable_true_no)])
+            if int(sample_ratio[i][1])*provable_true_no > len(all_non_provable):
+                outputs.extend(f"{q}\tNon-provable\n" for q in all_non_provable)
+            else:
+                outputs.extend([f"{q}\tNon-provable\n" for q in random.sample(all_non_provable, int(sample_ratio[i][1])*provable_true_no)])
+        random.shuffle(outputs)
         of_dir = root_dir+file_list[i].split("_")[0] + "_queries.txt"
         with open(of_dir, "w") as of:
             of.writelines(outputs)
@@ -99,19 +118,20 @@ def prepare_queries(folder, level, sample_ratio):
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('--task', default='all', type=str)
-    arg_parser.add_argument('--folder', default='countries', type=str)
-    arg_parser.add_argument('--level', default='s3', type=str)
-    arg_parser.add_argument('--collapse_type', default='tail', type=str)
+    arg_parser.add_argument('--task', default='all', type=str, help="generate_corruptions, prepare_queries, all")
+    arg_parser.add_argument('--folder', default='ablation', type=str)
+    arg_parser.add_argument('--level', default='d3', type=str)
+    arg_parser.add_argument('--corruption_type', default='tail', type=str)
+    arg_parser.add_argument('--sample_type', default='full_set', type=str, help="full_set, paired")
     arg_parser.add_argument('--sample_ratio', default='[[1, 0], [1, 0], [1, 0]]', type=str, help="ratio of provable false / provable true and unprovable / provable true for train, test, valid")
     args = arg_parser.parse_args()
 
-    if args.task == "all" or args.task == "generate_collapses":
+    if args.task == "all" or args.task == "generate_corruptions":
         full_gt = get_full_gt()
-        generate_collapses(args.folder, args.level, args.collapse_type, full_gt)
+        generate_corruptions(args.folder, args.level, args.corruption_type, full_gt)
 
     if args.task == "all" or args.task == "prepare_queries":
-        prepare_queries(args.folder, args.level, args.sample_ratio)
+        prepare_queries(args.folder, args.level, args.sample_type, args.sample_ratio)
 
 
 
