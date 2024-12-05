@@ -221,12 +221,12 @@ class LogicEnv_gym(gym.Env):
             if self.eval:
                 state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
             else:
-                # state = self.get_random_queries(self.provable_facts, 1, seed=seed)
-                # take q from provable facts
-                # remove that query from provable facts (consult janus again)state, label = self.get_random_queries(self.valid_queries, self.valid_labels, 1, seed=seed)
-                # state, label = self.get_random_queries(self.train_queries, self.train_labels, 1, seed=seed)
-                
                 state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
+
+                # remove that query from provable facts (consult janus again)
+                # correct the reward function
+                # state, label = self.get_random_queries(self.train_queries_positive, self.train_labels, 1, seed=seed)
+
             states.append(state)
             atom_index, sub_index = self.index_manager.get_atom_sub_index(i, state)
             atom_indices.append(atom_index)
@@ -315,8 +315,6 @@ class LogicEnv_gym(gym.Env):
             },
             )
 
-        # action = np.array([action])
-        # action = torch.tensor(action, device=self.device)
         self.tensordict = tensordict
         self.tensordict["action"] = actions
 
@@ -454,5 +452,4 @@ class LogicEnv_gym(gym.Env):
                'atom_index':atom_index, 
                'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices}
-        # print('obs', [(key, value.shape) for key, value in obs.items()])
         return obs, {}
