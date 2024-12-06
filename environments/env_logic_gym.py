@@ -263,13 +263,8 @@ class LogicEnv_gym(gym.Env):
                 state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
             else:
                 # state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
-                # remove that query from provable facts (consult janus again)
-                # correct the reward function
                 state, label = self.get_random_queries(self.train_queries_positive, self.train_labels, 1, seed=seed)
-                # get the new facts (facts-state) and consult janus again
-                # create a _tmp file with all the info from the original train.pl, but without the query
                 self.new_consult_janus(state[0])
-                # print(aaaaa)
 
             states.append(state)
             atom_index, sub_index = self.index_manager.get_atom_sub_index(i, state)

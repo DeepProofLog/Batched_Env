@@ -9,18 +9,18 @@ from utils import FileLogger
 
 if __name__ == "__main__":
 
-    use_logger = False
+    use_logger = True
     use_WB = False
     WB_path = "./../wandb/"
     logger_path = "./experiments/runs/"
 
-    DATASET_NAME = ["ablation_d2"] # "countries_s1" # "countries_s2" # "countries_s3"
-    LEARN_EMBEDDINGS = [True]
+    DATASET_NAME = ["ablation_d2"] #["ablation_d1","ablation_d2","ablation_d3"] # "countries_s1" # "countries_s2" # "countries_s3"
+    LEARN_EMBEDDINGS = [True] #[True, False]
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
     ATOM_EMBEDDING_SIZE = [200]
-    SEED = [[0]]
-    MAX_DEPTH = [100]
+    SEED = [[0,1,2]]
+    MAX_DEPTH = [100]#,100]
 
     # path to the data    
     data_path = "./data/"
@@ -32,13 +32,14 @@ if __name__ == "__main__":
     test_file = "test_queries.txt"
 
     load_model = False
-    save_model = False
+    save_model = True
     models_path = "./../models/"
     variable_no = 500
     device = "cpu"
 
     # Training parameters
-    timestep_train = 50000
+    TIMESTEP_TRAIN = [50000]
+    # timestep_train = 50000
     n_epochs = 10
     n_steps = 2048
     batch_size = 64
@@ -63,8 +64,8 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embedding, kge, model_name, atom_embedding_size, seed, max_depth in product(DATASET_NAME, 
-            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH):
+    for dataset_name, learn_embedding, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train in product(DATASET_NAME, 
+            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"

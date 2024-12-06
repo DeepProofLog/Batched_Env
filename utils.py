@@ -9,7 +9,6 @@ import numpy as np
 import ast
 from collections import defaultdict
 
-
 class Term:
     def __init__(self, predicate: str, args: List[str]):
         self.predicate = predicate  # Predicate name
@@ -20,6 +19,73 @@ class Term:
 
     def __repr__(self):
         return f"{self.predicate}({', '.join(self.args)})"
+
+
+def get_max_arity(file_path:str)-> int:
+    '''Get the maximum arity of the predicates in the file'''
+    max_arity = 0
+    with open(file_path, "r") as f:
+        lines = f.readlines()
+        for line in lines:
+            clauses = re.findall(r'\w+\(.*?\)', line)
+            for clause in clauses:
+                predicate, args = clause.split("(")
+                arity = len(args.split(","))
+                if arity > max_arity:
+                    max_arity = arity
+    return max_arity
+
+
+class Rule:
+    def __init__(self, head: Term, body: List[Term]):
+        self.head = head
+        self.body = body
+
+    def __str__(self):
+        body_str = ", ".join(str(term) for term in self.body)
+        return f"{self.head} :- {body_str}"    
+
+    def __repr__(self):
+        body_str = ", ".join(str(term) for term in self.body)
+        return f"{self.head} :- {body_str}"    
+    
+
+def get_atom_from_string(atom_str: str) -> Term:
+    predicate, args = atom_str.split("(")
+    args = args[:-1].split(",")
+    # remove any  ")" in the strings in args
+    args = [re.sub(r'\)', '', arg) for arg in args]
+    return Term(predicate, args)
+
+def get_rules_from_file(file_path: str) -> List[Rule]:
+    """Get rules from a file"""
+    rules = []
+    with open(file_path, "r") as f:
+        lines = f.readlines()
+        for line in lines:
+            # if there's no :-, it's a fact, split predicate
+            if ":-" not in line:
+                head = line.strip()
+                rule = Rule(get_atom_from_string(head), [])
+            else:
+                head, body = line.strip().split(":-")
+                body = re.findall(r'\w+\(.*?\)', body)
+                body = [get_atom_from_string(b) for b in body]
+
+                head_atom = get_atom_from_string(head)
+                rule = Rule(head_atom, body)
+            rules.append(rule)
+    return rules
+
+def create_global_idx(file_path:str)-> Tuple[dict, dict]:
+    '''Create a global index for a list of terms. Start idx counting from 1'''
+    rules = get_rules_from_file(file_path)
+    constants, predicates = get_constants_predicates(rules)
+    constant_str2idx = {term: i + 1 for i, term in enumerate(constants)}
+    predicate_str2idx = {term: i + 1 for i, term in enumerate(predicates)}
+    return constant_str2idx, predicate_str2idx
+
+
 
 def simple_rollout(env, policy = None, batch_size: int=2, steps: int=10, tensordict: TensorDict = None, verbose: int=0) -> TensorDict:
     ''' CAREFUL!!! pytroch doesnt stack the keys that are lists properly (for the tensors it should be fine). OR maybe it is because of the data_spec. Check it out'''
