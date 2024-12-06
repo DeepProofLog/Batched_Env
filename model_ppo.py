@@ -1,5 +1,6 @@
 from environments.env_logic_single import LogicProofEnv
-from utils import print_td, print_rollout, get_max_arity, create_global_idx, read_embeddings, create_embed_tables
+from utils import print_td, print_rollout, get_max_arity, create_global_idx
+from kge import read_embeddings, create_embed_tables
 import janus_swi as janus
 
 from tensordict import TensorDict
@@ -306,10 +307,10 @@ def simplified_ppo_train(env,policy_module, value_module,
 
 device = torch.device("cpu")
 
-knowledge_f = "data/s2_designed/train.pl"
-test_f = "data/s2_designed/test.pl"
-constant_embed_f = "data/s2_designed/constant_embeddings.pkl"
-predicate_embed_f = "data/s2_designed/predicate_embeddings.pkl"
+knowledge_f = "data/ablation_d2/train.pl"
+test_f = "data/ablation_d2/test.pl"
+constant_embed_f = "data/ablation_d2/constant_embeddings.pkl"
+predicate_embed_f = "data/ablation_d2/predicate_embeddings.pkl"
 
 
 janus.consult(knowledge_f)
@@ -386,23 +387,23 @@ if __name__ == "__main__":
     # -----------------------------------------------------------
 
 
-    # rollout = env.rollout(10, break_when_any_done=False, policy=policy_module)
-    # print(rollout)
-    # print(rollout["reward"])
-    # print(rollout["state"])
-    #
-    collector = SyncDataCollector(
-        env,
-        policy_module,
-        frames_per_batch=config['frames_per_batch'],
-        total_frames=config['total_frames'],
-        split_trajs=False,
-        device=device,
-    )
-    for i, tensors in enumerate(collector):
-        print(i, tensors['reward'])
-        if i > 1:
-            break
+    rollout = env.rollout(30, break_when_any_done=False, policy=policy_module)
+    print(rollout)
+    print(rollout["reward"])
+    print(rollout["state"])
+
+    # collector = SyncDataCollector(
+    #     env,
+    #     policy_module,
+    #     frames_per_batch=config['frames_per_batch'],
+    #     total_frames=config['total_frames'],
+    #     split_trajs=False,
+    #     device=device,
+    # )
+    # for i, tensors in enumerate(collector):
+    #     print(i, tensors['reward'])
+    #     if i > 1:
+    #         break
     #
     # replay_buffer = ReplayBuffer(
     #     storage=LazyTensorStorage(max_size=config['frames_per_batch']),

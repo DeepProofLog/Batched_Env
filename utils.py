@@ -488,3 +488,18 @@ class FileLogger:
                 f.write(column_names)
             f.write('\n')
             f.write(combined_results)
+
+def get_constants_predicates(rules: List[Rule]) -> Tuple[set, set]:
+    """Get the set of constants and predicates from a list of rules"""
+    predicates = set()
+    constants = set()
+    for rule in rules:
+        if not rule.head.predicate == "proof_first":
+            # get from head the predicate and the constants if they are not variables
+            predicates.add(str(rule.head.predicate))
+            constants.update([str(arg) for arg in rule.head.args if not is_variable(arg)])
+            # get from body the predicates and the constants if they are not variables
+            for atom in rule.body:
+                predicates.add(str(atom.predicate))
+                constants.update([str(arg) for arg in atom.args if not is_variable(arg)])
+    return constants, predicates
