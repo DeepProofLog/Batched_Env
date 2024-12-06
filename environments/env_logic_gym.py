@@ -228,6 +228,11 @@ class LogicEnv_gym(gym.Env):
         # print('state is in facts:', query in self.facts)
         # to compare the query, convert it to str by removing the spaces
         query_str = str(query).replace(' ', '')
+
+        # self.current_query = query_str
+        # print('removing fact:', self.current_query)
+        # janus.query(f"retract(({query_str})).")
+
         # 1. load the original facts as they are, and skip the line with the query
         facts = []
         query_found = False
@@ -300,7 +305,6 @@ class LogicEnv_gym(gym.Env):
         # print('reset...')
         # print('obs', [(key, value.shape) for key, value in obs.items()])
         # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
-
         return obs, {}
 
     def step(self, action) -> TensorDictBase:
@@ -308,6 +312,7 @@ class LogicEnv_gym(gym.Env):
         Given the current state, possible next states, an action, and return the next state.
         (It should be: given the current state, and an action, return the next state, but we need to modify it for our case)
         '''
+        # print('\nStep')      
         action = np.array([action])
         action = torch.tensor(action, device=self.device)  
         actions = action
@@ -377,6 +382,9 @@ class LogicEnv_gym(gym.Env):
         rewards = rewards[0]
         dones = dones[0]
         truncated = bool(self.exceeded_max_depth[0])
+        # if dones and not self.eval:
+        #     print('     adding fact:', self.current_query, dones)
+        #     janus.query(f"assertz({self.current_query}).")
         # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
         return obs, rewards, dones, truncated, {}
 

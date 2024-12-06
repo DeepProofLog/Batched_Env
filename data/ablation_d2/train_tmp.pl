@@ -691,6 +691,7 @@ locatedInCR(gibraltar,europe).
 locatedInCR(canada,americas).
 locatedInCR(saint_pierre_and_miquelon,americas).
 locatedInCR(bahamas,americas).
+locatedInCR(somalia,africa).
 locatedInCR(dominican_republic,americas).
 locatedInCR(northern_mariana_islands,oceania).
 locatedInCR(montserrat,americas).
@@ -710,7 +711,6 @@ locatedInCR(isle_of_man,europe).
 locatedInCR(cocos_keeling_islands,oceania).
 locatedInCR(belize,americas).
 locatedInCR(aruba,americas).
-locatedInCR(japan,asia).
 locatedInCR(norway,europe).
 locatedInCR(equatorial_guinea,africa).
 locatedInCR(curacao,americas).

@@ -20,7 +20,7 @@ if __name__ == "__main__":
     MODEL_NAME = ["PPO"]
     ATOM_EMBEDDING_SIZE = [200]
     SEED = [[0,1,2]]
-    MAX_DEPTH = [100]#,100]
+    MAX_DEPTH = [1000]#,100]
 
     # path to the data    
     data_path = "./data/"
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     device = "cpu"
 
     # Training parameters
-    TIMESTEP_TRAIN = [50000]
+    TIMESTEP_TRAIN = [90000]
     # timestep_train = 50000
     n_epochs = 10
     n_steps = 2048
