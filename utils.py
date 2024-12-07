@@ -19,7 +19,16 @@ class Term:
 
     def __repr__(self):
         return f"{self.predicate}({', '.join(self.args)})"
+    
+    def __eq__(self, other):
+        # Check if the other object is a Term and compare predicate and args
+        if isinstance(other, Term):
+            return self.predicate == other.predicate and self.args == other.args
+        return False
 
+    def __hash__(self):
+        # Allow usage in sets or as dictionary keys
+        return hash((self.predicate, tuple(self.args)))
 
 def get_max_arity(file_path:str)-> int:
     '''Get the maximum arity of the predicates in the file'''

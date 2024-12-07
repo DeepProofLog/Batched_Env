@@ -3,7 +3,8 @@ import janus_swi as janus
 from typing import List,Tuple
 import re
 from utils import is_variable,Term
-    
+import json
+from collections import defaultdict
 class Rule:
     def __init__(self, head: Term, body: List[Term]):
         self.head = head
@@ -151,6 +152,9 @@ class DataHandler_corruptions():
         self.valid_queries, self.valid_labels = get_queries_labels(valid_path)
         self.test_queries, self.test_labels = get_queries_labels(test_path)
 
+        self.train_corruptions = self.get_corruptions(self.train_queries, join(base_path, "train_label_corruptions.json"))
+        self.valid_corruptions = self.get_corruptions(self.valid_queries, join(base_path, "valid_label_corruptions.json"))
+        self.test_corruptions = self.get_corruptions(self.test_queries, join(base_path, "test_label_corruptions.json"))
 
         if use_only_positives:
             self.train_queries = [query for query,label in zip(self.train_queries,self.train_labels) if label == 1]
@@ -167,6 +171,23 @@ class DataHandler_corruptions():
         self.predicates, self.constants = self.get_predicates_and_constants()
         self.max_arity = self.get_max_arity(janus_path)
         self.constant_no, self.predicate_no = len(self.constants), len(self.predicates)
+
+    def get_corruptions(self, queries: List[Term], file_path: str) -> dict[Term, List[Term]]:
+        '''Get corruptions from the json file, in the format
+        {"locatedInCR(armenia,asia).": [["locatedInCR(armenia,oceania).", true], ["locatedInCR(armenia,europe).", true], ["locatedInCR(armenia,africa).", true], [
+        return a dictionary with the query as key, and a list of corruptions that are true as value
+        '''
+        dict_ = defaultdict(list)
+        with open(file_path, "r") as f:
+            corruptions_dict = json.load(f)
+            for query, corruptions in corruptions_dict.items():
+                query = get_atom_from_string(query[:-1])
+                assert query in queries, f"Query {query} not in queries"
+                for corruption, is_provable in corruptions:
+                    corruption = get_atom_from_string(corruption[:-1])
+                    if is_provable:
+                        dict_[query].append(corruption)
+        return dict_
 
     def get_predicates_and_constants(self) -> Tuple[set, set]:
         predicates = set()
