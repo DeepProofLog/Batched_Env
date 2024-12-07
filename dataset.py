@@ -165,8 +165,8 @@ class DataHandler_corruptions():
             self.test_labels = [1 for _ in self.test_queries]
         
         if use_validation_as_train:
-            self.train_queries, self.train_labels = self.valid_queries, self.valid_labels
-            self.valid_queries, self.valid_labels = self.test_queries, self.test_labels
+            self.train_queries, self.train_labels, self.train_corruptions = self.valid_queries, self.valid_labels, self.valid_corruptions
+            self.valid_queries, self.valid_labels, self.valid_corruptions = self.test_queries, self.test_labels, self.test_corruptions
 
         self.predicates, self.constants = self.get_predicates_and_constants()
         self.max_arity = self.get_max_arity(janus_path)

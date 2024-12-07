@@ -1,5 +1,7 @@
 from typing import List, Union, Dict, Type, Optional, Callable, Tuple
 
+from utils import Term
+
 from tensordict import TensorDict
 import torch
 from torch import nn
@@ -26,8 +28,6 @@ import numpy as np
 import torch as th
 
 from stable_baselines3.common.on_policy_algorithm import obs_as_tensor
-
-
 from stable_baselines3 import PPO
 
 
@@ -152,8 +152,26 @@ class PPO_custom(PPO):
         return True
 
 
+def eval_test_corruptions(  data: list[Term],
+                            labels: list[int],
+                            env: gym.Env,
+                            model: PPO_custom,
+                            deterministic: bool = True,
+                            verbose:int=0) -> Tuple[list[float], list[int]]:
+    '''
+    For every query in data, evaluate the model on that query and its corruptions (based on the logprobs) and rank the query and its corruptions
+    How many corruptions do we have to consider? all the corruptions? or just the top k? All the corruptions, even though a proof is not found,
+        there will be a prob returned by the model. Actually for corruptions we encourage the model not to find a proof (implying assigning a low
+        prob to the query) 
+    should we take into account if the queries are proven to calculate the rank? no, just the logprob
 
-def eval_test(data: list[Rule], 
+    Calculate the reward, episode_len for the positive queries, as well as their MRR
+
+    '''
+    return None
+
+
+def eval_test(data: list[Term], 
             labels: list[int],
             env: gym.Env,
             model: PPO, 
