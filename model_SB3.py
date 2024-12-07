@@ -234,9 +234,9 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         # # return actions together with probs 
         # # pad actions to the len of probs to be able to stack them
         # print('actions', actions.shape, actions)
-        # print('probs', probs.shape, probs)
+        # print('log_prob', log_prob.shape, log_prob)
         # actions = actions.unsqueeze(-1)
-        # actions = torch.cat((actions, probs), dim=-1)        
+        # actions = torch.cat((actions, log_prob), dim=-1)        
         # print('actions', actions.shape, actions)
         return actions, values, log_prob
 

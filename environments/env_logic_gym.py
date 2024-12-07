@@ -313,7 +313,6 @@ class LogicEnv_gym(gym.Env):
         # distr = action[0,1:]
         # action = int(action[0,0])
         # print('final action in step:', action)
-        self.tensordict['label'] = 1   # !!!!!!!!!!!!!!!!DELETEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
 
         action = np.array([action])
         action = torch.tensor(action, device=self.device)  
