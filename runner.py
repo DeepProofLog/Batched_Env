@@ -9,7 +9,7 @@ from utils import FileLogger
 
 if __name__ == "__main__":
 
-    use_logger = True
+    use_logger = False
     use_WB = False
     WB_path = "./../wandb/"
     logger_path = "./experiments/runs/"
@@ -19,8 +19,8 @@ if __name__ == "__main__":
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
     ATOM_EMBEDDING_SIZE = [200]
-    SEED = [[0,1,2]]
-    MAX_DEPTH = [1000]#,100]
+    SEED = [[0]]
+    MAX_DEPTH = [20]#,100]
 
     # path to the data    
     data_path = "./data/"
@@ -32,13 +32,13 @@ if __name__ == "__main__":
     test_file = "test_queries.txt"
 
     load_model = False
-    save_model = True
+    save_model = False
     models_path = "./../models/"
     variable_no = 500
     device = "cpu"
 
     # Training parameters
-    TIMESTEP_TRAIN = [90000]
+    TIMESTEP_TRAIN = [10000]
     # timestep_train = 50000
     n_epochs = 10
     n_steps = 2048

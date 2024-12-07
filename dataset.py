@@ -133,7 +133,9 @@ class DataHandler_corruptions():
                     # facts_file: str,
                     train_file: str = None,
                     valid_file: str = None,
-                    test_file: str = None):
+                    test_file: str = None,
+                    use_validation_as_train: bool = False,
+                    use_only_positives: bool = False):
         
         base_path  = join(base_path, dataset_name)
         janus_path = join(base_path, janus_file)
@@ -149,9 +151,18 @@ class DataHandler_corruptions():
         self.valid_queries, self.valid_labels = get_queries_labels(valid_path)
         self.test_queries, self.test_labels = get_queries_labels(test_path)
 
-        self.train_queries_positive = [query for query,label in zip(self.train_queries,self.train_labels) if label == 1]
-        self.valid_queries_positive = [query for query,label in zip(self.valid_queries,self.valid_labels) if label == 1]
-        self.test_queries_positive = [query for query,label in zip(self.test_queries,self.test_labels) if label == 1]
+
+        if use_only_positives:
+            self.train_queries = [query for query,label in zip(self.train_queries,self.train_labels) if label == 1]
+            self.valid_queries = [query for query,label in zip(self.valid_queries,self.valid_labels) if label == 1]
+            self.test_queries = [query for query,label in zip(self.test_queries,self.test_labels) if label == 1]
+            self.train_labels = [1 for _ in self.train_queries]
+            self.valid_labels = [1 for _ in self.valid_queries]
+            self.test_labels = [1 for _ in self.test_queries]
+        
+        if use_validation_as_train:
+            self.train_queries, self.train_labels = self.valid_queries, self.valid_labels
+            self.valid_queries, self.valid_labels = self.test_queries, self.test_labels
 
         self.predicates, self.constants = self.get_predicates_and_constants()
         self.max_arity = self.get_max_arity(janus_path)

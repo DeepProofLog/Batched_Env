@@ -7,6 +7,7 @@ import datetime
 import os
 import random
 import torch
+from typing import Tuple
 
 from utils import get_device,simple_rollout, print_state_transition
 from my_callbacks import SB3ModelCheckpoint, LogToFileCallback, EvalCallback
@@ -43,8 +44,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
         janus_file=args.janus_file,
         train_file= args.train_file,
         valid_file=args.valid_file,
-        test_file= args.test_file
-        )
+        test_file= args.test_file,
+        use_only_positives=True,
+        use_validation_as_train=True)
 
     index_manager = IndexManager(data_handler.constants, 
                                  data_handler.predicates,
@@ -72,44 +74,16 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
 
     
     # INIT ENV
-    env = LogicEnv_gym(facts=data_handler.facts, 
-                        train_queries=data_handler.train_queries,
-                        valid_queries=data_handler.valid_queries,
-                        test_queries=data_handler.test_queries,
-
-                        train_labels=data_handler.train_labels,
-                        valid_labels=data_handler.valid_labels, 
-                        test_labels=data_handler.test_labels,
-
-                        train_queries_positive=data_handler.train_queries_positive,
-                        valid_queries_positive=data_handler.valid_queries_positive,
-                        test_queries_positive=data_handler.test_queries_positive,
-
-                        janus_file=data_handler.janus_path,
-
-                        max_arity=data_handler.max_arity,
-                        max_depth=args.max_depth,
+    env = LogicEnv_gym(max_depth=args.max_depth,
                         device=device, 
                         index_manager=index_manager,
+                        data_handler=data_handler,
                         seed=args.seed_run_i)   
     
-    eval_env = LogicEnv_gym(facts=data_handler.facts,
-                            train_queries=data_handler.train_queries,
-                            valid_queries=data_handler.valid_queries,
-                            test_queries=data_handler.test_queries,
-
-                            train_labels=data_handler.train_labels,
-                            valid_labels=data_handler.valid_labels, 
-                            test_labels=data_handler.test_labels,
-
-                            train_queries_positive=data_handler.train_queries_positive,
-                            valid_queries_positive=data_handler.valid_queries_positive,
-                            test_queries_positive=data_handler.test_queries_positive,
-
-                            max_arity=data_handler.max_arity,
-                            max_depth=args.max_depth,
+    eval_env = LogicEnv_gym(max_depth=args.max_depth,
                             device=device, 
                             index_manager=index_manager,
+                            data_handler=data_handler,
                             seed=args.seed_run_i,
                             eval=True) 
 
@@ -146,32 +120,29 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
             args.load_model = False
         
     if not args.load_model and args.timesteps_train > 0:
-        # reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
+        
         # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
+        reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
         date = '_'+str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
-        eval_callback = EvalCallback(
-            eval_env=eval_env, 
-            model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
-            log_path=log_filename if use_logger else None,
-            eval_freq=5000,
-            n_eval_episodes=5,
-            deterministic=True,
-            render=False,
-            name=args.run_signature+date,
-            # callback_on_new_best=reward_threshold_callback,
-            # callback_after_eval=no_improvement_callback,
-        )
+        eval_callback = EvalCallback(eval_env=eval_env, 
+                                    model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
+                                    log_path=log_filename if use_logger else None,
+                                    eval_freq=5000,
+                                    n_eval_episodes=len(data_handler.valid_queries),
+                                    deterministic=True,
+                                    render=False,
+                                    name=args.run_signature+date,
+                                    callback_on_new_best=reward_threshold_callback,
+                                    # callback_after_eval=no_improvement_callback,
+                                    )
 
         callbacks = [eval_callback]
-
-        if use_logger:
-            log_callback = LogToFileCallback(log_file=log_filename)
-            callbacks.append(log_callback)    
     
         checkpoint_callback = SB3ModelCheckpoint(model,monitor='train/loss', frequency=5000, 
                                                     total_steps=args.timesteps_train, 
                                                     model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
+                                                    log_path = log_filename if use_logger else None,
                                                     name=args.run_signature+date)
         callbacks.append(checkpoint_callback)
 
@@ -199,43 +170,23 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
         callbacks = CallbackList(callbacks)
         model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
         # checkpoint_callback.restore_best_ckpt()
+        eval_callback.restore_best_ckpt()
 
         if use_WB:
             run.finish()   
 
     # TEST
-    def test(data: list[Rule], verbose: int=0) -> list[float]:
-        next_query = 0
-        obs, _ = env.reset_from_query(data[next_query])
-        print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
-        rewards_list = []
-        episode_len_list = []
-        trajectory_reward = 0
-        episode_len = 0
-        while next_query < len(data)-1:
-            print('query',next_query) if verbose >=1 else None
-            action, _states = model.predict(obs, deterministic=True)
-            obs, rewards, dones, truncated, info = env.step(action)
-            print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
-            trajectory_reward += rewards
-            episode_len += 1
-            if dones:
-                next_query += 1
-                obs, _ = env.reset_from_query(data[next_query])
-                rewards_list.append(trajectory_reward)
-                episode_len_list.append(episode_len)
-                trajectory_reward = 0
-                episode_len = 0
-                print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
-        return rewards_list, episode_len_list
-
+    from model_SB3 import eval_test
+    print('Testing train set...')
+    rewards_train, episode_len_train = eval_test(eval_env.train_queries,eval_env.train_labels,eval_env,model,deterministic=True)
     print('Testing val set...')
-    positive_valid_queries = [q for q,l in zip(data_handler.valid_queries, data_handler.valid_labels) if l == 1]
-    positive_test_queries = [q for q,l in zip(data_handler.test_queries, data_handler.test_labels) if l == 1]
-    rewards_valid, episode_len_valid = test(positive_valid_queries)
+    rewards_valid, episode_len_valid = eval_test(eval_env.valid_queries,eval_env.valid_labels,eval_env,model,deterministic=True)
     print('Testing test set...')
-    rewards_test, episode_len_test = test(positive_test_queries)
+    rewards_test, episode_len_test = eval_test(eval_env.test_queries,eval_env.test_labels,eval_env,model,deterministic=True)
 
+
+
+    print('TRAIN: rewards avg',np.round(np.mean(rewards_train),3), 'std', np.round(np.std(rewards_train),3), 'episode len avg', np.round(np.mean(episode_len_train),3), 'std', np.round(np.std(episode_len_train),3))
     print('VALID: rewards avg',np.round(np.mean(rewards_valid),3), 'std', np.round(np.std(rewards_valid),3), 'episode len avg', np.round(np.mean(episode_len_valid),3), 'std', np.round(np.std(episode_len_valid),3))
     print('TEST: rewards avg',np.round(np.mean(rewards_test),3), 'std', np.round(np.std(rewards_test),3), 'episode len avg', np.round(np.mean(episode_len_test),3), 'std', np.round(np.std(episode_len_test),3))
     

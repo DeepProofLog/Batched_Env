@@ -10,7 +10,41 @@ from stable_baselines3.common.type_aliases import PyTorchObs
 from stable_baselines3.common.distributions import (Distribution,make_proba_distribution)
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
+  
+from utils import print_state_transition
+from dataset import Rule
+from environments.env_logic_gym import LogicEnv_gym
+from stable_baselines3 import PPO
 
+def eval_test(data: list[Rule], 
+            labels: list[int],
+            env: gym.Env,
+            model: PPO, 
+            deterministic: bool = True,
+            verbose:int=0) -> Tuple[list[float], list[int]]:
+    next_query = 0
+    obs, _ = env.reset_from_query(data[next_query],labels[next_query])
+    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+    rewards_list = []
+    episode_len_list = []
+    trajectory_reward = 0
+    episode_len = 0
+    while next_query < len(data)-1:
+        print('query',next_query) if verbose >=1 else None
+        action, _states = model.predict(obs, deterministic=deterministic)
+        obs, rewards, dones, truncated, info = env.step(action)
+        print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
+        trajectory_reward += rewards
+        episode_len += 1
+        if dones:
+            next_query += 1
+            obs, _ = env.reset_from_query(data[next_query],labels[next_query])
+            rewards_list.append(trajectory_reward)
+            episode_len_list.append(episode_len)
+            trajectory_reward = 0
+            episode_len = 0
+            print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+    return rewards_list, episode_len_list
 
 class PolicyNetwork(nn.Module):
     def __init__(self, embed_dim=200):
@@ -196,6 +230,14 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         actions = distribution.get_actions(deterministic=deterministic) # new sampled probs
         log_prob = distribution.log_prob(actions)
         actions = actions.reshape((-1, *self.action_space.shape))  
+
+        # # return actions together with probs 
+        # # pad actions to the len of probs to be able to stack them
+        # print('actions', actions.shape, actions)
+        # print('probs', probs.shape, probs)
+        # actions = actions.unsqueeze(-1)
+        # actions = torch.cat((actions, probs), dim=-1)        
+        # print('actions', actions.shape, actions)
         return actions, values, log_prob
 
 

@@ -15,7 +15,7 @@ import numpy as np
 
 from dataset import Rule
 import janus_swi as janus
-
+from dataset import DataHandler_corruptions
 
 class IndexManager():
 
@@ -115,26 +115,11 @@ class LogicEnv_gym(gym.Env):
     batch_locked = False  # Allow dynamic batch sizes
     
     def __init__(self, 
-                facts: List[List[Term]],
-                train_queries: List[List[Term]],
-                valid_queries: List[List[Term]],
-                test_queries: List[List[Term]],
-
-                train_labels: List[int],
-                valid_labels: List[int],
-                test_labels: List[int],
-
-                train_queries_positive: List[List[Term]],
-                valid_queries_positive: List[List[Term]],
-                test_queries_positive: List[List[Term]],
-
-                janus_file: str=None,
-
-                max_arity: int = 2,
                 max_depth: int = 10,
                 seed: Optional[int] = None,
                 device: torch.device = torch.device("cpu"),
                 index_manager: Optional[IndexManager] = None,
+                data_handler: Optional[DataHandler_corruptions] = None,
                 eval=False
                 ):
         
@@ -142,7 +127,7 @@ class LogicEnv_gym(gym.Env):
         super().__init__()
         self.device = device
 
-        self.max_arity = max_arity # Maximum arity of the predicates
+        self.max_arity=data_handler.max_arity # Maximum arity of the predicates
         self.max_atom = 10  # Maximum number of atoms in a state
         self.padding = 15 # Maximum number of possible next states
         self.max_depth = max_depth # Maximum depth of the proof tree
@@ -152,22 +137,18 @@ class LogicEnv_gym(gym.Env):
         self._set_seed(seed)
         self._make_spec()
 
-        self.facts = facts
-        self.train_queries = train_queries
-        self.valid_queries = valid_queries
-        self.test_queries = test_queries
+        self.facts=data_handler.facts,        
 
-        self.train_labels = train_labels
-        self.valid_labels = valid_labels
-        self.test_labels = test_labels
-
-        self.train_queries_positive = train_queries_positive
-        self.valid_queries_positive = valid_queries_positive
-        self.test_queries_positive = test_queries_positive
-
-        self.janus_file = janus_file
+        self.train_queries, self.train_labels = data_handler.train_queries, data_handler.train_labels
+        self.valid_queries, self.valid_labels = data_handler.valid_queries, data_handler.valid_labels
+        self.test_queries, self.test_labels = data_handler.test_queries, data_handler.test_labels
+        
+        self.janus_file=data_handler.janus_path
 
         self.eval = eval
+
+        self.eval_idx = 0 # Index to go through all the eval queries
+        self.eval_len = len(self.valid_queries) # Number of eval queries (to reset the index)
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment'''
@@ -225,7 +206,6 @@ class LogicEnv_gym(gym.Env):
         fact_removed = janus.query(f"retract(({query_str})).")
         janus.query(f"assertz({fact}).")  # Adds new facts directly to the knowledge base.
         '''
-        # print('state is in facts:', query in self.facts)
         # to compare the query, convert it to str by removing the spaces
         query_str = str(query).replace(' ', '')
 
@@ -243,8 +223,12 @@ class LogicEnv_gym(gym.Env):
                     facts.append(line)
                 else:
                     query_found = True
-        if not query_found:
-            raise ValueError(f"Query {query_str} not found in {self.janus_file}")
+
+        # if query not found, either it is an error or it is a val query, so we can skip it
+        if not query_found: 
+            # raise ValueError(f"Query {query_str} not found in {self.janus_file}")
+            return None
+        
         # 2. save a _tmp file with the new facts
         tmp_file = self.janus_file.replace('.pl', '_tmp.pl')
         with open(tmp_file, "w") as f:
@@ -255,8 +239,25 @@ class LogicEnv_gym(gym.Env):
         janus.query("retractall(_).") # Removes all facts.
         janus.consult(tmp_file)
 
-
     def reset(self, seed: Optional[int]= None, options=None) -> TensorDictBase:
+        if self.eval:
+            # state, label = self.get_random_queries(self.valid_queries, self.valid_labels, 1, seed=seed)
+            if self.eval_idx == self.eval_len:
+                self.eval_idx = 0
+            state, label = [self.valid_queries[self.eval_idx]], [self.valid_labels[self.eval_idx]]
+            self.eval_idx += 1
+        else:
+            state, label = self.get_random_queries(self.train_queries, self.train_labels, 1, seed=seed)
+            if label[0] == 1:
+                self.new_consult_janus(state[0])
+
+        return self._reset(state, label)
+    
+    def reset_from_query(self, query, label) -> TensorDictBase:
+
+        return self._reset([query], [label]) 
+
+    def _reset(self, query, label) -> TensorDictBase:
         '''Reset the environment to the initial state'''    
         self.current_depth = torch.zeros(1, dtype=torch.long, device=self.device)
 
@@ -264,13 +265,7 @@ class LogicEnv_gym(gym.Env):
         atom_indices = []
         sub_indices = []
         for i in range(1):
-            if self.eval:
-                state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
-            else:
-                # state, label = self.get_random_queries(self.valid_queries_positive, self.valid_labels, 1, seed=seed)
-                state, label = self.get_random_queries(self.train_queries_positive, self.train_labels, 1, seed=seed)
-                self.new_consult_janus(state[0])
-
+            state, label = query, label
             states.append(state)
             atom_index, sub_index = self.index_manager.get_atom_sub_index(i, state)
             atom_indices.append(atom_index)
@@ -286,6 +281,7 @@ class LogicEnv_gym(gym.Env):
                 "atom_index": atom_indices,
                 "sub_index": sub_indices,
                 "state": NonTensorData(data=states),
+                "label": torch.tensor(label[0], device=self.device),
                 "done": torch.zeros(1, dtype=torch.bool, device=self.device),
                 "reward": torch.zeros(1, dtype=torch.float32, device=self.device)*(-1),
                 "derived_states": NonTensorData(data=derived_states),
@@ -313,6 +309,12 @@ class LogicEnv_gym(gym.Env):
         (It should be: given the current state, and an action, return the next state, but we need to modify it for our case)
         '''
         # print('\nStep')      
+        # print('action in step:', action)
+        # distr = action[0,1:]
+        # action = int(action[0,0])
+        # print('final action in step:', action)
+        self.tensordict['label'] = 1   # !!!!!!!!!!!!!!!!DELETEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+
         action = np.array([action])
         action = torch.tensor(action, device=self.device)  
         actions = action
@@ -336,7 +338,7 @@ class LogicEnv_gym(gym.Env):
         atom_indices_next = torch.stack(atom_indices_next)
         sub_indices_next = torch.stack(sub_indices_next)
 
-        done_next, rewards_next = self.get_done_reward(states_next)
+        done_next, rewards_next = self.get_done_reward(states_next,self.tensordict['label'].item())
         # Get next possible states for the new states, as well as rewards and done
         derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.get_next_states_batch(states_next)
         self.update_action_space(derived_states_next)
@@ -346,11 +348,16 @@ class LogicEnv_gym(gym.Env):
         # print('exceeded_max_depth: current depth, max depth', self.current_depth,self.max_depth  ) if self.exceeded_max_depth else None
         done_next = done_next | self.exceeded_max_depth
 
+        if done_next:
+            self.tensordict['label'] = None # Reset the label to None, to be sure that it is not used in the next step
+
         tensordict = TensorDict(
             {
                 "atom_index": atom_indices_next,
                 "sub_index": sub_indices_next,
                 "state": NonTensorData(data=states_next),
+                "label": self.tensordict['label'],
+                "label": self.tensordict['label'],
                 "done": done_next,
                 "reward": rewards_next,
                 "derived_states": NonTensorData(data=derived_states_next),
@@ -422,8 +429,9 @@ class LogicEnv_gym(gym.Env):
 
         return possible_states_next_batch, possible_atom_indices_next_batch, possible_sub_indices_next_batch
     
-    def get_done_reward(self,states: List[List[Term]]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_done_reward(self,states: List[List[Term]], label: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get done and reward keys for all states in the batch. To be called in the step() method"""
+        assert label is not None, f"Label is None"
 
         batch_size = len(states)
 
@@ -435,13 +443,22 @@ class LogicEnv_gym(gym.Env):
 
         done_batch = torch.tensor(done_batch, device=self.device)
         successful_batch = torch.tensor(successful_batch, device=self.device)
+        label_tensor = torch.tensor(label, device=self.device) # ATTENTION: THIS IS NOT INTENDED FOR THE BATCH MODE
+        # rewards_batch = torch.where(
+        #     done_batch & successful_batch, 
+        #     torch.ones(batch_size, device=self.device), 
+        #     torch.zeros(batch_size, device=self.device)
+        # )
+        
         rewards_batch = torch.where(
-            done_batch & successful_batch, 
-            torch.ones(batch_size, device=self.device), 
+            (done_batch & successful_batch & (label_tensor == 1)),
+            torch.ones(batch_size, device=self.device),
             torch.zeros(batch_size, device=self.device)
         )
+        # if done_batch[0] and label == 0:
+            # print('done, successful, reward', done_batch[0], successful_batch[0], rewards_batch[0])
 
-        return done_batch, rewards_batch,
+        return done_batch, rewards_batch
     
     @staticmethod
     def get_random_queries(queries: List[Rule], labels: List[int], n: int, seed: Optional[int] = None) -> List[Term]:
@@ -449,54 +466,11 @@ class LogicEnv_gym(gym.Env):
             random_instance = random.Random()
         else:
             random_instance = random.Random(seed)
-        
         assert n <= len(queries), f"Number of queries ({n}) is greater than the number of queries ({len(queries)})"
         sampled_indices = random_instance.sample(range(len(queries)), n)
-        
         sampled_queries = [queries[i] for i in sampled_indices]
         sampled_labels = [labels[i] for i in sampled_indices]
         
         return sampled_queries, sampled_labels
     
   
-    def reset_from_query(self, query) -> TensorDictBase:
-        '''Reset the environment to the initial state with a given query'''
-        self.current_depth = torch.zeros(1, dtype=torch.long, device=self.device)
-
-        states = []
-        atom_indices = []
-        sub_indices = []
-        for i in range(1):
-            state = [query]
-            states.append(state)
-            atom_index, sub_index = self.index_manager.get_atom_sub_index(i, state)
-            atom_indices.append(atom_index)
-            sub_indices.append(sub_index)
-        atom_indices = torch.stack(atom_indices)
-        sub_indices = torch.stack(sub_indices)
-
-        derived_states, derived_atom_indices, derived_sub_indices = self.get_next_states_batch(states)
-        self.update_action_space(derived_states)
-
-        self.tensordict = TensorDict(
-            {
-                "atom_index": atom_indices,
-                "sub_index": sub_indices,
-                "state": NonTensorData(data=states),
-                "done": torch.zeros(1, dtype=torch.bool, device=self.device),
-                "reward": torch.zeros(1, dtype=torch.float32, device=self.device)*(-1),
-                "derived_states": NonTensorData(data=derived_states),
-                "derived_atom_indices": derived_atom_indices,
-                "derived_sub_indices": derived_sub_indices,
-            },
-        )
-
-        sub_index = self.tensordict['sub_index'].cpu().numpy()
-        atom_index = self.tensordict['atom_index'].cpu().numpy()
-        derived_atom_indices = self.tensordict['derived_atom_indices'].cpu().numpy()
-        derived_sub_indices = self.tensordict['derived_sub_indices'].cpu().numpy()
-        obs = {'sub_index':sub_index, 
-               'atom_index':atom_index, 
-               'derived_atom_indices':derived_atom_indices, 
-               'derived_sub_indices':derived_sub_indices}
-        return obs, {}

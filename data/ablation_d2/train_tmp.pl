@@ -711,6 +711,7 @@ locatedInCR(isle_of_man,europe).
 locatedInCR(cocos_keeling_islands,oceania).
 locatedInCR(belize,americas).
 locatedInCR(aruba,americas).
+locatedInCR(japan,asia).
 locatedInCR(norway,europe).
 locatedInCR(equatorial_guinea,africa).
 locatedInCR(curacao,americas).
