@@ -10,8 +10,8 @@ import torch
 from typing import Tuple
 
 from utils import get_device,simple_rollout, print_state_transition
-from my_callbacks import SB3ModelCheckpoint, LogToFileCallback, EvalCallback
-from dataset import DataHandler, Rule, DataHandler_corruptions
+from my_callbacks import SB3ModelCheckpoint, EvalCallback
+from dataset import DataHandler, DataHandler_corruptions
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from kge import read_embeddings, create_embed_tables, KGEModel, EmbeddingFunction
 
@@ -34,6 +34,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
         torch.cuda.manual_seed_all(args.seed_run_i)
     random.seed(args.seed_run_i)
     np.random.seed(args.seed_run_i)
+
+    date = '_'+str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
     device = get_device(args.device)
 
@@ -89,6 +91,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
 
     # INIT MODEL
     if args.model_name == "PPO":
+        # from model_SB3 import PPO_custom as PPO
         model = PPO(CustomActorCriticPolicy, 
                     env,
                     learning_rate=args.lr,
@@ -123,7 +126,6 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
         
         # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
-        date = '_'+str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
         eval_callback = EvalCallback(eval_env=eval_env, 
                                     model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
@@ -169,7 +171,6 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
 
         callbacks = CallbackList(callbacks)
         model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
-        # checkpoint_callback.restore_best_ckpt()
         eval_callback.restore_best_ckpt()
 
         if use_WB:

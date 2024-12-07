@@ -308,12 +308,6 @@ class LogicEnv_gym(gym.Env):
         Given the current state, possible next states, an action, and return the next state.
         (It should be: given the current state, and an action, return the next state, but we need to modify it for our case)
         '''
-        # print('\nStep')      
-        # print('action in step:', action)
-        # distr = action[0,1:]
-        # action = int(action[0,0])
-        # print('final action in step:', action)
-
         action = np.array([action])
         action = torch.tensor(action, device=self.device)  
         actions = action
