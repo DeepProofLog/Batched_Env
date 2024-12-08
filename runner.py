@@ -21,6 +21,7 @@ if __name__ == "__main__":
     ATOM_EMBEDDING_SIZE = [200]
     SEED = [[0]]
     MAX_DEPTH = [20]#,100]
+    RESTORE_BEST_MODEL = [True]
 
     # path to the data    
     data_path = "./data/"
@@ -64,8 +65,8 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embedding, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train in product(DATASET_NAME, 
-            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN):
+    for dataset_name, learn_embedding, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model in product(DATASET_NAME, 
+            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_MODEL):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
@@ -91,6 +92,7 @@ if __name__ == "__main__":
         args.device = device
         args.seed = seed
         
+        args.restore_best_model = restore_best_model
         args.load_model = load_model
         args.save_model = save_model
         args.models_path = models_path+dataset_name

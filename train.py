@@ -171,7 +171,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
 
         callbacks = CallbackList(callbacks)
         model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
-        eval_callback.restore_best_ckpt()
+        if args.restore_best_model:
+            eval_callback.restore_best_ckpt()
 
         if use_WB:
             run.finish()   
