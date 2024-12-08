@@ -41,20 +41,27 @@ def get_pl(rule_file, fact_files, output_file, catch_errors, use_tabling):
     predicates_1, rules = get_prolog_rules(rule_file)
     predicates_2, facts = get_prolog_facts(fact_files)
     predicates = {**predicates_1, **predicates_2}
+    outputs = []
     with open(output_file, "w") as f:
         for predicate, arity in predicates.items():
+            outputs.append(f":- discontiguous {predicate}/{arity}.\n")
             f.write(f":- discontiguous {predicate}/{arity}.\n")
         if use_tabling:
+            outputs.append(":- table locatedInCR/2.\n")
             f.write(":- table locatedInCR/2.\n")
         for fact in facts:
+            outputs.append(fact)
             f.write(fact)
         if catch_errors:
+            outputs.append("call_with_catch(Goal, TimeOut) :- catch((call_with_time_limit(60, Goal), TimeOut=false), time_limit_exceeded, (writeln('Query timed out'), TimeOut=true)).\n")
             f.write("call_with_catch(Goal, TimeOut) :- catch((call_with_time_limit(60, Goal), TimeOut=false), time_limit_exceeded, (writeln('Query timed out'), TimeOut=true)). \n")
         for rule in rules:
+            outputs.append(rule)
             f.write(rule)
-    return None
+    return "".join(outputs)
 
-def get_labeled_data(query_file, catch_errors, use_modified_rules):
+
+def get_labeled_data(query_file, catch_errors, use_modified_rules, full_fact):
     with open(query_file, "r") as f:
         queries = f.readlines()
     outputs = []
@@ -62,6 +69,20 @@ def get_labeled_data(query_file, catch_errors, use_modified_rules):
         query = query.strip()
         if query.startswith("locatedInCR"):
             print(query)
+            full_facts = full_fact.split("\n")
+            print(len(full_facts))
+            if query in full_facts:
+                print("query in full_facts")
+                full_facts.remove(query)
+            with open("countries_sub.pl", "w") as f1:
+                print(len(full_facts))
+                f1.write("\n".join(full_facts))
+            f1.close()
+            #print("\n".join(full_facts))
+            janus.query_once("abolish(neighborOf/2).")
+            janus.query_once("abolish(locatedInCR/2).")
+            janus.query_once("abolish_all_tables.")
+            janus.consult("countries_sub.pl")
             if catch_errors:
                 try:
                     res = janus.query_once(f"call_with_catch({query[:-1]}, TimeOut)")
@@ -77,6 +98,8 @@ def get_labeled_data(query_file, catch_errors, use_modified_rules):
                 print(output)
                 outputs.append(output)
             else:
+                # res = janus.query_once("listing.")
+                # print(res)
                 res = janus.query_once(query)
                 #for d in res:
                 output = f"{query}\t{res['truth']}\n"
@@ -95,24 +118,25 @@ def get_labeled_data(query_file, catch_errors, use_modified_rules):
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('--folder', default='ablation', type=str)
-    arg_parser.add_argument('--level', default='d3', type=str)
+    arg_parser.add_argument('--folder', default='countries', type=str)
+    arg_parser.add_argument('--level', default='s1', type=str)
     arg_parser.add_argument('--catch_errors', action='store_true')
     arg_parser.add_argument('--use_modified_rules', action='store_true')
-    arg_parser.add_argument('--use_tabling', action='store_true')
+    arg_parser.add_argument('--use_tabling', action='store_false')
     args = arg_parser.parse_args()
 
     root_dir = f"{args.folder}_{args.level}/"
     if args.use_modified_rules:
-        get_pl(root_dir + "rules_mod.txt", [root_dir + "facts.txt", root_dir + "train.txt"], root_dir + "countries_mod.pl",
+        full_fact = get_pl(root_dir + "rules_mod.txt", [root_dir + "facts.txt", root_dir + "train.txt"], root_dir + "countries_mod.pl",
               args.catch_errors, args.use_tabling)
-        janus.consult(root_dir+"countries_mod.pl")
+        #janus.consult(root_dir+"countries_mod.pl")
     else:
-        get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+"countries.pl", args.catch_errors, args.use_tabling)
-        janus.consult(root_dir+"countries.pl")
+        full_fact = get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+"countries.pl", args.catch_errors, args.use_tabling)
+        #janus.consult(root_dir+"countries.pl")
+
     print("processing train.txt")
-    get_labeled_data(root_dir+"train.txt", args.catch_errors, args.use_modified_rules)
+    get_labeled_data(root_dir+"train.txt", args.catch_errors, args.use_modified_rules, full_fact)
     print("processing valid.txt")
-    get_labeled_data(root_dir+"valid.txt", args.catch_errors, args.use_modified_rules)
+    get_labeled_data(root_dir+"valid.txt", args.catch_errors, args.use_modified_rules, full_fact)
     print("processing test.txt")
-    get_labeled_data(root_dir+"test.txt", args.catch_errors, args.use_modified_rules)
+    get_labeled_data(root_dir+"test.txt", args.catch_errors, args.use_modified_rules, full_fact)

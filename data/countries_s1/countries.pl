@@ -2,6 +2,7 @@
 :- discontiguous locatedInCS/2.
 :- discontiguous locatedInSR/2.
 :- discontiguous neighborOf/2.
+:- table locatedInCR/2.
 neighborOf(kosovo,macedonia).
 locatedInCS(seychelles,eastern_africa).
 neighborOf(armenia,turkey).
