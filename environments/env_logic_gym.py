@@ -132,6 +132,7 @@ class LogicEnv_gym(gym.Env):
         self.padding = 15 # Maximum number of possible next states
         self.max_depth = max_depth # Maximum depth of the proof tree
         self.index_manager = index_manager
+        self.predicates_arity = data_handler.predicates_arity
 
         seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
         self._set_seed(seed)
@@ -235,8 +236,9 @@ class LogicEnv_gym(gym.Env):
             for line in facts:
                 f.write(line)
         # 3. consult janus with the new file
-        janus.query("retractall((:- _)).") # Removes any clauses (facts and rules).
-        janus.query("retractall(_).") # Removes all facts.
+        for predicate, arity in self.predicates_arity:
+            janus.query_once(f"abolish({predicate}/{arity}).")
+        janus.query_once("abolish_all_tables.")
         janus.consult(tmp_file)
 
     def reset(self, seed: Optional[int]= None, options=None) -> TensorDictBase:

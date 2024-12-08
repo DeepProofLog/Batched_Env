@@ -70,25 +70,36 @@ class DataHandler():
         self.valid_queries, _ = get_rules_from_file(valid_path)
         self.test_queries, _ = get_rules_from_file(test_path)
         janus.consult(train_path)
-        self.predicates, self.constants = self.get_predicates_and_constants()
+        self.predicates, self.constants, self.predicates_arity = self.get_predicates_and_constants()
 
         self.max_arity = self.get_max_arity(train_path)
         self.constant_no, self.predicate_no = len(self.constants), len(self.predicates)
 
-    def get_predicates_and_constants(self) -> Tuple[set, set]:
+    def get_predicates_and_constants(self) -> Tuple[set, set, dict]:
         predicates = set()
         constants = set()
+        predicates_arity = {}
         for rule in self.rules:
             # proof_first not related to query generation
             if not rule.head.predicate == "proof_first":
                 # predicates.add((rule.head.predicate, len(rule.head.args)))
-                predicates.add((rule.head.predicate))
+                predicate = rule.head.predicate
+                predicates.add((predicate))
                 constants.update([arg for arg in rule.head.args if not is_variable(arg)])
+                if predicate not in predicates_arity:
+                    predicates_arity[predicate] = len(rule.head.args)
+                for atom in rule.body:
+                    predicates.add((atom.predicate))
+                    constants.update([arg for arg in atom.args if not is_variable(arg)])
+                    if atom.predicate not in predicates_arity:
+                        predicates_arity[atom.predicate] = len(atom.args)
         for atom in self.facts:
             # predicates.add((atom.predicate, len(atom.args)))
             predicates.add((atom.predicate))
             constants.update([arg for arg in atom.args if not is_variable(arg)])
-        return predicates, constants
+            if atom.predicate not in predicates_arity:
+                predicates_arity[atom.predicate] = len(atom.args)
+        return predicates, constants, predicates_arity
 
     def get_max_arity(self, file_path:str)-> int:
         '''Get the maximum arity of the predicates in the file'''
@@ -168,7 +179,7 @@ class DataHandler_corruptions():
             self.train_queries, self.train_labels, self.train_corruptions = self.valid_queries, self.valid_labels, self.valid_corruptions
             self.valid_queries, self.valid_labels, self.valid_corruptions = self.test_queries, self.test_labels, self.test_corruptions
 
-        self.predicates, self.constants = self.get_predicates_and_constants()
+        self.predicates, self.constants, self.predicates_arity = self.get_predicates_and_constants()
         self.max_arity = self.get_max_arity(janus_path)
         self.constant_no, self.predicate_no = len(self.constants), len(self.predicates)
 
@@ -189,20 +200,32 @@ class DataHandler_corruptions():
                         dict_[query].append(corruption)
         return dict_
 
-    def get_predicates_and_constants(self) -> Tuple[set, set]:
+    def get_predicates_and_constants(self) -> Tuple[set, set, dict]:
         predicates = set()
         constants = set()
+        predicates_arity = {}
         for rule in self.rules:
             # proof_first not related to query generation
             if not rule.head.predicate == "proof_first":
                 # predicates.add((rule.head.predicate, len(rule.head.args)))
-                predicates.add((rule.head.predicate))
+                predicate = rule.head.predicate
+                predicates.add((predicate))
                 constants.update([arg for arg in rule.head.args if not is_variable(arg)])
+                if predicate not in predicates_arity:
+                    predicates_arity[predicate] = len(rule.head.args)
+                for atom in rule.body:
+                    predicates.add((atom.predicate))
+                    constants.update([arg for arg in atom.args if not is_variable(arg)])
+                    if atom.predicate not in predicates_arity:
+                        predicates_arity[atom.predicate] = len(atom.args)
         for atom in self.facts:
             # predicates.add((atom.predicate, len(atom.args)))
             predicates.add((atom.predicate))
             constants.update([arg for arg in atom.args if not is_variable(arg)])
-        return predicates, constants
+            if atom.predicate not in predicates_arity:
+                predicates_arity[atom.predicate] = len(atom.args)
+        return predicates, constants, predicates_arity
+
 
     def get_max_arity(self, file_path:str)-> int:
         '''Get the maximum arity of the predicates in the file'''
