@@ -26,7 +26,7 @@ bash data_preparation.sh
    - folder: e.g. "ablation"
    - level: e.g. "d3"
    - corruption_type: "tail" / "head"
-   - sample_type: "full_set" / "paired"; sample ratio on set level / for each provable true query
+   - sample_type: "full_set" - sample according to ratio on set level / "paired" - sample according to ratio for each provable true query / "all_possible" - include all provable false / "all_possible_both" - include all provable false and non-provable, e.g. '[full_set, all_possible, all_possible]'
    - sample_ration: ratio of provable false / provable true and non-provable / provable true for train, test, valid, e.g. "[[1, 0], [1, 0], [1, 0]]"
 
 3. Outputs:
