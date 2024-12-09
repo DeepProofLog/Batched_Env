@@ -706,7 +706,6 @@ locatedInCR(australia,oceania).
 locatedInCR(guam,oceania).
 locatedInCR(bahrain,asia).
 locatedInCR(singapore,asia).
-locatedInCR(zambia,africa).
 locatedInCR(malaysia,asia).
 locatedInCR(samoa,oceania).
 locatedInCR(anguilla,americas).
@@ -730,6 +729,7 @@ locatedInCR(luxembourg,europe).
 locatedInCR(iceland,europe).
 locatedInCR(falkland_islands,americas).
 locatedInCR(slovenia,europe).
+locatedInCR(british_virgin_islands,americas).
 locatedInCR(mayotte,africa).
 locatedInCR(iran,asia).
 locatedInCR(bhutan,asia).

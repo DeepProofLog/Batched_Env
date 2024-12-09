@@ -48,74 +48,6 @@ def get_rules_from_file(file_path: str) -> List[Rule]:
     return queries,rules
 
 
-class DataHandler():
-    def __init__(self, dataset_name: str,
-                    base_path: str,
-                    train_file: str = None,
-                    valid_file: str = None,
-                    test_file: str = None):
-        self.dataset_name = dataset_name
-        self.base_path = base_path
-        self.train_file = train_file
-        self.valid_file = valid_file
-        self.test_file = test_file
-        
-        base_path  = join(base_path, dataset_name)
-        train_path = join(base_path, train_file) 
-        valid_path = join(base_path, valid_file) if valid_file else None
-        test_path = join(base_path, test_file)
-
-        self.train_queries, self.rules = get_rules_from_file(train_path)
-        self.facts = self.train_queries
-        self.valid_queries, _ = get_rules_from_file(valid_path)
-        self.test_queries, _ = get_rules_from_file(test_path)
-        janus.consult(train_path)
-        self.predicates, self.constants, self.predicates_arity = self.get_predicates_and_constants()
-
-        self.max_arity = self.get_max_arity(train_path)
-        self.constant_no, self.predicate_no = len(self.constants), len(self.predicates)
-
-    def get_predicates_and_constants(self) -> Tuple[set, set, dict]:
-        predicates = set()
-        constants = set()
-        predicates_arity = {}
-        for rule in self.rules:
-            # proof_first not related to query generation
-            if not rule.head.predicate == "proof_first":
-                # predicates.add((rule.head.predicate, len(rule.head.args)))
-                predicate = rule.head.predicate
-                predicates.add((predicate))
-                constants.update([arg for arg in rule.head.args if not is_variable(arg)])
-                if predicate not in predicates_arity:
-                    predicates_arity[predicate] = len(rule.head.args)
-                for atom in rule.body:
-                    predicates.add((atom.predicate))
-                    constants.update([arg for arg in atom.args if not is_variable(arg)])
-                    if atom.predicate not in predicates_arity:
-                        predicates_arity[atom.predicate] = len(atom.args)
-        for atom in self.facts:
-            # predicates.add((atom.predicate, len(atom.args)))
-            predicates.add((atom.predicate))
-            constants.update([arg for arg in atom.args if not is_variable(arg)])
-            if atom.predicate not in predicates_arity:
-                predicates_arity[atom.predicate] = len(atom.args)
-        return predicates, constants, predicates_arity
-
-    def get_max_arity(self, file_path:str)-> int:
-        '''Get the maximum arity of the predicates in the file'''
-        max_arity = 0
-        with open(file_path, "r") as f:
-            lines = f.readlines()
-            for line in lines:
-                clauses = re.findall(r'\w+\(.*?\)', line)
-                for clause in clauses:
-                    predicate, args = clause.split("(")
-                    arity = len(args.split(","))
-                    if arity > max_arity:
-                        max_arity = arity
-        return max_arity
-
-
 
 def get_queries_labels(path:str)-> Tuple[List[Term],List[bool]]:
     '''Get queries and labels from a file'''
@@ -130,7 +62,7 @@ def get_queries_labels(path:str)-> Tuple[List[Term],List[bool]]:
     return queries, labels
 
 
-class DataHandler_corruptions():
+class DataHandler():
     '''
     Instead of the normal test,valid txt files, we load a file with the corruptions
     Each query will have a label indicating true or false, i.e. if the query is a corruption or not
@@ -163,6 +95,10 @@ class DataHandler_corruptions():
         self.valid_queries, self.valid_labels = get_queries_labels(valid_path)
         self.test_queries, self.test_labels = get_queries_labels(test_path)
 
+        print('ratio of positives in train', sum(self.train_labels)/len(self.train_labels))
+        print('                      valid', sum(self.valid_labels)/len(self.valid_labels))
+        print('                      test', sum(self.test_labels)/len(self.test_labels))
+
         self.train_corruptions = self.get_corruptions(self.train_queries, join(base_path, "train_label_corruptions.json"))
         self.valid_corruptions = self.get_corruptions(self.valid_queries, join(base_path, "valid_label_corruptions.json"))
         self.test_corruptions = self.get_corruptions(self.test_queries, join(base_path, "test_label_corruptions.json"))
@@ -171,13 +107,21 @@ class DataHandler_corruptions():
             self.train_queries = [query for query,label in zip(self.train_queries,self.train_labels) if label == 1]
             self.valid_queries = [query for query,label in zip(self.valid_queries,self.valid_labels) if label == 1]
             self.test_queries = [query for query,label in zip(self.test_queries,self.test_labels) if label == 1]
-            self.train_labels = [1 for _ in self.train_queries]
-            self.valid_labels = [1 for _ in self.valid_queries]
-            self.test_labels = [1 for _ in self.test_queries]
+            self.train_labels = [1 for _ in range(len(self.train_queries))]
+            self.valid_labels = [1 for _ in range(len(self.valid_queries))]
+            self.test_labels = [1 for _ in range(len(self.test_queries))]
         
         if use_validation_as_train:
             self.train_queries, self.train_labels, self.train_corruptions = self.valid_queries, self.valid_labels, self.valid_corruptions
             self.valid_queries, self.valid_labels, self.valid_corruptions = self.test_queries, self.test_labels, self.test_corruptions
+
+        self.janus_facts = []
+        with open(janus_path, "r") as f:
+            self.janus_facts = f.readlines()
+            # lines = f.readlines()
+            # print("lines",lines)
+            # for line in lines:
+                # self.janus_facts.append(line.strip())
 
         self.predicates, self.constants, self.predicates_arity = self.get_predicates_and_constants()
         self.max_arity = self.get_max_arity(janus_path)

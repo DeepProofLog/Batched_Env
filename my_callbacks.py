@@ -195,6 +195,7 @@ class EvalCallback(EventCallback):
         eval_freq: int = 10000,
         log_path: Optional[str] = None,
         model_path: Optional[str] = None,
+        save_model: bool = False,
         deterministic: bool = True,
         render: bool = False,
         verbose: int = 1,
@@ -205,8 +206,8 @@ class EvalCallback(EventCallback):
 
         self.name = name
         self.best_epoch = None
-        self.best_model_state_dict = None
         self.best_value = None
+        self.save_model = save_model
 
         self.callback_on_new_best = callback_on_new_best
         if self.callback_on_new_best is not None:
@@ -352,13 +353,11 @@ class EvalCallback(EventCallback):
                 if self.verbose >= 1:
                     print("New best mean reward!")
 
-                if self.model_path:
-                    self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
-                    self.write_info()
+                self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
+                self.write_info()
 
                 self.best_epoch = self.num_timesteps
                 self.best_value = self.best_mean_reward
-                self.best_model_state_dict = self.model.policy.state_dict()
                     
                 # Trigger callback on new best model, if needed
                 if self.callback_on_new_best is not None:
@@ -406,16 +405,18 @@ class EvalCallback(EventCallback):
     def restore_best_ckpt(self):
         """Restore the best model."""
         if self.best_epoch: # use best model from best_model
-            if self.best_model_state_dict is not None:
-                # Copy model parameters
-                self.model.policy.load_state_dict(self.best_model_state_dict)
-                # Copy optimizer state if needed
-                if hasattr(self.model, 'optimizer'):
-                    raise NotImplementedError("Optimizer state restoration is not implemented yet (there shuold be none)")
-
-                print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_value:.3f}.')
+            self.model.load(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
+            print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_value:.3f}.')
         else:
             print(f'No best model found for {self.name}.')
+    
+    def _on_training_end(self) -> bool:
+        # Write the completion message to the info file
+        self.write_info()
+        # delete the model if not save_model
+        if not self.save_model:
+            os.remove(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
+            
 
 
 
@@ -558,7 +559,7 @@ class SB3ModelCheckpoint(BaseCallback):
 
     def _log_values(self, logs):
         """Logs values based on the current headers."""
-        with open(self.log_file, "a") as f:
+        with open(self.log_path, "a") as f:
             f.write(";".join(f'{k}:{v}' for k, v in logs.items())+ "\n")
 
     def write_info(self):

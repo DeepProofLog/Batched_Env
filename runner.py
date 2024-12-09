@@ -9,19 +9,23 @@ from utils import FileLogger
 
 if __name__ == "__main__":
 
+    RESTORE_BEST_MODEL = [True] #[True,False]
+    TIMESTEP_TRAIN = [10000]
+    load_model = True
+    save_model = True
+    
     use_logger = False
     use_WB = False
     WB_path = "./../wandb/"
     logger_path = "./experiments/runs/"
 
-    DATASET_NAME = ["ablation_d2"] #["ablation_d1","ablation_d2","ablation_d3"] # "countries_s1" # "countries_s2" # "countries_s3"
-    LEARN_EMBEDDINGS = [True] #[True, False]
+    DATASET_NAME =  ["ablation_d2",] #["ablation_d1","ablation_d2","ablation_d3","countries_s1", "countries_s2", "countries_s3"]
+    LEARN_EMBEDDINGS = [True]
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
-    ATOM_EMBEDDING_SIZE = [200]
-    SEED = [[0]]
-    MAX_DEPTH = [20]#,100]
-    RESTORE_BEST_MODEL = [True]
+    ATOM_EMBEDDING_SIZE = [200]#[50,200]
+    SEED = [[0]] #[[0,1,2,3,4]]
+    MAX_DEPTH = [20] #[20,100]
 
     # path to the data    
     data_path = "./data/"
@@ -32,17 +36,13 @@ if __name__ == "__main__":
     valid_file = "valid_queries.txt"
     test_file = "test_queries.txt"
 
-    load_model = False
-    save_model = False
     models_path = "./../models/"
     variable_no = 500
     device = "cpu"
 
     # Training parameters
-    TIMESTEP_TRAIN = [10000]
-    # timestep_train = 50000
     n_epochs = 10
-    n_steps = 2048
+    n_steps = 2048 # number of steps to collect in each rollout
     batch_size = 64
     lr = 3e-4
 
@@ -65,7 +65,7 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embedding, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model in product(DATASET_NAME, 
+    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model in product(DATASET_NAME, 
             LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_MODEL):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
@@ -80,7 +80,7 @@ if __name__ == "__main__":
         args.valid_file = valid_file
         args.test_file = test_file
         
-        args.learn_embedding = learn_embedding
+        args.learn_embeddings = learn_embeddings
         args.kge = kge
         args.model_name = model_name
         args.atom_embedding_size = atom_embedding_size
@@ -103,7 +103,8 @@ if __name__ == "__main__":
         args.lr = lr
         args.max_depth = max_depth
 
-        run_vars = (args.dataset_name, args.kge, args.model_name, args.atom_embedding_size,args.timesteps_train,args.learn_embedding)
+        run_vars = (args.dataset_name, args.kge, args.model_name, args.atom_embedding_size,args.max_depth,
+                    args.learn_embeddings,args.timesteps_train,args.restore_best_model)
         args.run_signature = '-'.join(f'{v}' for v in run_vars) 
 
         all_args.append(copy.deepcopy(args)) # append a hard copy of the args to the list of all_args

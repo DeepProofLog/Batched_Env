@@ -660,7 +660,6 @@ locatedInCR(palau,oceania).
 locatedInCR(andorra,europe).
 locatedInCR(mongolia,asia).
 locatedInCR(senegal,africa).
-locatedInCR(reunion,africa).
 locatedInCR(south_georgia,americas).
 locatedInCR(fiji,oceania).
 locatedInCR(haiti,americas).

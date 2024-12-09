@@ -67,7 +67,9 @@ class PPO_custom(PPO):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
-
+        cumulative_log_probs = 0
+        # check that the number of environments is 1
+        assert env.num_envs == 1, "cumulative_log_probs only works with one environment"
         while n_steps < n_rollout_steps:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
@@ -94,7 +96,6 @@ class PPO_custom(PPO):
                     # as we are sampling from an unbounded Gaussian distribution
                     clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
-            # print('log_probs',log_probs)
             new_obs, rewards, dones, infos = env.step(clipped_actions)
             # print('new_obs',[(k,v.shape) for k,v in new_obs.items()])
             # print('rewards',rewards.shape,'dones',dones.shape,'infos',infos)
@@ -139,6 +140,12 @@ class PPO_custom(PPO):
             self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones
 
+
+            if self._last_episode_starts:
+                # print('cumulative log probs from previous query',cumulative_log_probs)
+                cumulative_log_probs = 0
+            cumulative_log_probs += log_probs
+            
         with th.no_grad():
             # Compute value for the last timestep
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
@@ -152,6 +159,43 @@ class PPO_custom(PPO):
         return True
 
 
+
+def eval_test(  data: list[Term],
+                labels: list[int],
+                env: gym.Env,
+                model: PPO,
+                deterministic: bool = True,
+                verbose:int=0) -> Tuple[list[float], list[int], list[float]]:
+
+    rewards_list,episode_len_list, log_probs= [], [], []
+    next_query, trajectory_reward, episode_len, cum_log_prob = 0, 0, 0, 0
+
+    obs, _ = env.reset_from_query(data[next_query],labels[next_query])
+    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+    while next_query < len(data)-1:
+        # action, _states = model.predict(obs, deterministic=deterministic)
+        obs_tensor = obs_as_tensor(obs, model.device)
+        action, values, log_prob = model.policy(obs_tensor, deterministic=deterministic)
+        cum_log_prob += log_prob.detach().numpy()
+        
+        obs, rewards, dones, truncated, info = env.step(action)
+        print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
+        trajectory_reward, episode_len, log_prob = trajectory_reward + rewards, episode_len + 1, log_prob + log_prob
+
+        if dones:
+            rewards_list.append(trajectory_reward)
+            episode_len_list.append(episode_len)
+            log_probs.append(cum_log_prob)
+
+            # print(' done,truncated,rewards',dones,truncated,rewards)
+            next_query += 1
+            obs, _ = env.reset_from_query(data[next_query],labels[next_query])
+            # print('\nquery',next_query, 'with label',labels[next_query])
+            trajectory_reward, episode_len, cum_log_prob = 0, 0, 0
+            print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+    return rewards_list, episode_len_list, log_probs
+    
+
 def eval_test_corruptions(  data: list[Term],
                             labels: list[int],
                             env: gym.Env,
@@ -159,47 +203,44 @@ def eval_test_corruptions(  data: list[Term],
                             deterministic: bool = True,
                             verbose:int=0) -> Tuple[list[float], list[int]]:
     '''
-    For every query in data, evaluate the model on that query and its corruptions (based on the logprobs) and rank the query and its corruptions
-    How many corruptions do we have to consider? all the corruptions? or just the top k? All the corruptions, even though a proof is not found,
-        there will be a prob returned by the model. Actually for corruptions we encourage the model not to find a proof (implying assigning a low
-        prob to the query) 
-    should we take into account if the queries are proven to calculate the rank? no, just the logprob
-
-    Calculate the reward, episode_len for the positive queries, as well as their MRR
-
+    For every query in data, evaluate the model on that query and all its corruptions (based on the logprobs) and rank the query and its corruptions (MRR)
+    By now we are returning, for postive queries, the reward (how many are proven, with their ratio), and their prob distribution. Same for negatives
     '''
-    return None
+    # 1. split the data in positives and negatives
+    (data_pos, labels_pos) = zip(*[(data[i],labels[i]) for i in range(len(data)) if labels[i] == 1])
+    (data_neg, labels_neg) = zip(*[(data[i],labels[i]) for i in range(len(data)) if labels[i] == 0])
+    
+    # 2. evaluate the model on the positive/negative queries
+    rewards_list_pos, episode_len_list_pos, log_probs_pos = eval_test(data_pos, labels_pos, env, model, deterministic, verbose)
+    rewards_list_neg, episode_len_list_neg, log_probs_neg = eval_test(data_neg, labels_neg, env, model, deterministic, verbose)
+    
+    mean_rwd_pos, std_rwd_pos = np.round(np.mean(rewards_list_pos),3), np.round(np.std(rewards_list_pos),3)
+    mean_rwd_neg, std_rwd_neg = np.round(np.mean(rewards_list_neg),3), np.round(np.std(rewards_list_neg),3)
+    mean_len_pos, std_len_pos = np.round(np.mean(episode_len_list_pos),3), np.round(np.std(episode_len_list_pos),3)
+    mean_len_neg, std_len_neg = np.round(np.mean(episode_len_list_neg),3), np.round(np.std(episode_len_list_neg),3)
+    mean_log_probs_pos, std_log_probs_pos = np.round(np.mean(log_probs_pos),3), np.round(np.std(log_probs_pos),3) 
+    mean_log_probs_neg, std_log_probs_neg = np.round(np.mean(log_probs_neg),3), np.round(np.std(log_probs_neg),3)
 
+    print('\nPositive queries:',len(rewards_list_pos), 'Negative queries:',len(rewards_list_neg))
+    print('Positive queries rewards:',mean_rwd_pos,'+/-', std_rwd_pos)
+    print('Negative queries rewards:',mean_rwd_neg,'+/-', std_rwd_neg)
+    print('Positive queries episode len:',mean_len_pos, '+/-', std_len_pos)
+    print('Negative queries episode len:',mean_len_neg, '+/-', std_len_neg)
+    print('Positive queries log probs:',mean_log_probs_pos, '+/-', std_log_probs_pos)
+    print('Negative queries log probs:',mean_log_probs_neg, '+/-', std_log_probs_neg)
+    
+    #plot the log probs points. In the title, round the numbers
+    import matplotlib.pyplot as plt
+    plt.title("Log probs: \npositive {:.2f} +/- {:.2f} \nnegative {:.2f} +/- {:.2f}".format(mean_log_probs_pos, std_log_probs_pos, mean_log_probs_neg, std_log_probs_neg))
+    plt.scatter(range(len(log_probs_pos)), log_probs_pos, color='blue')
+    plt.scatter(range(len(log_probs_neg)), log_probs_neg, color='red')
+    plt.xlabel('query')
+    plt.ylabel('log probs')
+    # positive in blue, negative in red
+    plt.legend(['positive','negative'])
+    plt.show()
 
-def eval_test(data: list[Term], 
-            labels: list[int],
-            env: gym.Env,
-            model: PPO, 
-            deterministic: bool = True,
-            verbose:int=0) -> Tuple[list[float], list[int]]:
-    next_query = 0
-    obs, _ = env.reset_from_query(data[next_query],labels[next_query])
-    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
-    rewards_list = []
-    episode_len_list = []
-    trajectory_reward = 0
-    episode_len = 0
-    while next_query < len(data)-1:
-        print('query',next_query) if verbose >=1 else None
-        action, _states = model.predict(obs, deterministic=deterministic)
-        obs, rewards, dones, truncated, info = env.step(action)
-        print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
-        trajectory_reward += rewards
-        episode_len += 1
-        if dones:
-            next_query += 1
-            obs, _ = env.reset_from_query(data[next_query],labels[next_query])
-            rewards_list.append(trajectory_reward)
-            episode_len_list.append(episode_len)
-            trajectory_reward = 0
-            episode_len = 0
-            print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
-    return rewards_list, episode_len_list
+    return rewards_list_pos + rewards_list_neg, episode_len_list_pos + episode_len_list_neg,
 
 class PolicyNetwork(nn.Module):
     def __init__(self, embed_dim=200):

@@ -11,7 +11,7 @@ from typing import Tuple
 
 from utils import get_device,simple_rollout, print_state_transition
 from my_callbacks import SB3ModelCheckpoint, EvalCallback
-from dataset import DataHandler, DataHandler_corruptions
+from dataset import DataHandler
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from kge import read_embeddings, create_embed_tables, KGEModel, EmbeddingFunction
 
@@ -39,16 +39,15 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
 
     device = get_device(args.device)
 
-    data_handler = DataHandler_corruptions(
+    data_handler = DataHandler(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
-        # facts_file=args.facts_file,
         janus_file=args.janus_file,
         train_file= args.train_file,
         valid_file=args.valid_file,
         test_file= args.test_file,
-        use_only_positives=True,
-        use_validation_as_train=True)
+        use_only_positives=False,
+        use_validation_as_train=False)
 
     index_manager = IndexManager(data_handler.constants, 
                                  data_handler.predicates,
@@ -58,7 +57,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
                                  max_arity=data_handler.max_arity, 
                                  device=device)
 
-    if args.learn_embedding:
+    if args.learn_embeddings:
         embedder = KGEModel(data_handler.constant_no, 
                         data_handler.predicate_no,
                         args.variable_no,
@@ -91,7 +90,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
 
     # INIT MODEL
     if args.model_name == "PPO":
-        # from model_SB3 import PPO_custom as PPO
+        from model_SB3 import PPO_custom as PPO
         model = PPO(CustomActorCriticPolicy, 
                     env,
                     learning_rate=args.lr,
@@ -109,15 +108,19 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
 
     # TRAIN
     if args.load_model:
-        models =  os.listdir(args.models_path)
-        models = [m for m in models if args.model_name in m and 'train' in m] # choose best model wrt training, not validation
-        models.sort()
-        if not models:
-            print("No model found in", args.models_path,'!!!')
+        model_path = os.path.join(args.models_path, args.run_signature)
+        if not os.path.exists(model_path):
+            print("No model found in", model_path,'!!!')
             args.load_model = False
         elif args.model_name == "PPO":
-            print("Loading model from", args.models_path+"/"+models[-1])
-            model = PPO.load(args.models+"/"+models[-1], device=device)
+            models = [m for m in os.listdir(model_path) if 'zip' in m and 'best_eval' in m]
+            models.sort()
+            if len(models) == 0:
+                print("No model found in", model_path,'!!!')
+                args.load_model = False
+            else:
+                print("Loading model from", os.path.join(model_path,models[-1]))
+                model = PPO.load(os.path.join(model_path,models[-1]), env=None, device=device)
         else:
             print("Model not supported !!!!")
             args.load_model = False
@@ -128,14 +131,15 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
 
         eval_callback = EvalCallback(eval_env=eval_env, 
-                                    model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
+                                    model_path=os.path.join(args.models_path, args.run_signature),
+                                    save_model=args.save_model,
                                     log_path=log_filename if use_logger else None,
-                                    eval_freq=5000,
+                                    eval_freq=10000,
                                     n_eval_episodes=len(data_handler.valid_queries),
                                     deterministic=True,
                                     render=False,
                                     name=args.run_signature+date,
-                                    callback_on_new_best=reward_threshold_callback,
+                                    callback_on_new_best=reward_threshold_callback if args.restore_best_model else None,
                                     # callback_after_eval=no_improvement_callback,
                                     )
 
@@ -178,20 +182,31 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
             run.finish()   
 
     # TEST
-    from model_SB3 import eval_test
-    print('Testing train set...')
+    from model_SB3 import eval_test_corruptions as eval_test
+
+    # from stable_baselines3.common.evaluation import evaluate_policy
+    # print('Testing train set...')
+    # eval_env.eval_dataset,eval_env.eval_len = 'train', len(data_handler.train_queries)
+    # rewards_train, episode_len_train = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.train_queries),deterministic=True,return_episode_rewards=True)
+    # print('Testing val set...')
+    # eval_env.eval_dataset,eval_env.eval_len = 'validation', len(data_handler.valid_queries)
+    # rewards_valid, episode_len_valid = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.valid_queries),deterministic=True,return_episode_rewards=True)
+    # print('Testing test set...')
+    # eval_env.eval_dataset,eval_env.eval_len = 'test', len(data_handler.test_queries)
+    # rewards_test, episode_len_test = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.test_queries),deterministic=True,return_episode_rewards=True)
+
+    print('\nTesting train set...')
     rewards_train, episode_len_train = eval_test(eval_env.train_queries,eval_env.train_labels,eval_env,model,deterministic=True)
-    print('Testing val set...')
+    print('\nTesting val set...')
     rewards_valid, episode_len_valid = eval_test(eval_env.valid_queries,eval_env.valid_labels,eval_env,model,deterministic=True)
-    print('Testing test set...')
+    print('\nTesting test set...')
     rewards_test, episode_len_test = eval_test(eval_env.test_queries,eval_env.test_labels,eval_env,model,deterministic=True)
 
-
-
-    print('TRAIN: rewards avg',np.round(np.mean(rewards_train),3), 'std', np.round(np.std(rewards_train),3), 'episode len avg', np.round(np.mean(episode_len_train),3), 'std', np.round(np.std(episode_len_train),3))
+    print('\nTRAIN: rewards avg',np.round(np.mean(rewards_train),3), 'std', np.round(np.std(rewards_train),3), 'episode len avg', np.round(np.mean(episode_len_train),3), 'std', np.round(np.std(episode_len_train),3))
     print('VALID: rewards avg',np.round(np.mean(rewards_valid),3), 'std', np.round(np.std(rewards_valid),3), 'episode len avg', np.round(np.mean(episode_len_valid),3), 'std', np.round(np.std(episode_len_valid),3))
     print('TEST: rewards avg',np.round(np.mean(rewards_test),3), 'std', np.round(np.std(rewards_test),3), 'episode len avg', np.round(np.mean(episode_len_test),3), 'std', np.round(np.std(episode_len_test),3))
-    
+
+
     valid_metrics = {'reward': np.mean(rewards_valid), 'reward_std': np.std(rewards_valid), 'episode_len': np.mean(episode_len_valid), 'episode_len_std': np.std(episode_len_valid)}
     test_metrics = {'reward': np.mean(rewards_test), 'reward_std': np.std(rewards_test), 'episode_len': np.mean(episode_len_test), 'episode_len_std': np.std(episode_len_test)}
     return valid_metrics, test_metrics

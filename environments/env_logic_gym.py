@@ -15,7 +15,7 @@ import numpy as np
 
 from dataset import Rule
 import janus_swi as janus
-from dataset import DataHandler_corruptions
+from dataset import DataHandler
 
 class IndexManager():
 
@@ -119,7 +119,7 @@ class LogicEnv_gym(gym.Env):
                 seed: Optional[int] = None,
                 device: torch.device = torch.device("cpu"),
                 index_manager: Optional[IndexManager] = None,
-                data_handler: Optional[DataHandler_corruptions] = None,
+                data_handler: Optional[DataHandler] = None,
                 eval=False
                 ):
         
@@ -134,8 +134,8 @@ class LogicEnv_gym(gym.Env):
         self.index_manager = index_manager
         self.predicates_arity = data_handler.predicates_arity
 
-        seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
-        self._set_seed(seed)
+        self.seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
+        self._set_seed(self.seed)
         self._make_spec()
 
         self.facts=data_handler.facts,        
@@ -144,10 +144,11 @@ class LogicEnv_gym(gym.Env):
         self.valid_queries, self.valid_labels = data_handler.valid_queries, data_handler.valid_labels
         self.test_queries, self.test_labels = data_handler.test_queries, data_handler.test_labels
         
-        self.janus_file=data_handler.janus_path
+        self.janus_file = data_handler.janus_path
+        self.janus_facts = data_handler.janus_facts
 
         self.eval = eval
-
+        self.eval_dataset = 'validation' # by default, evaluate on the validation set. It can be changed to 'test' or 'train'
         self.eval_idx = 0 # Index to go through all the eval queries
         self.eval_len = len(self.valid_queries) # Number of eval queries (to reset the index)
 
@@ -215,38 +216,53 @@ class LogicEnv_gym(gym.Env):
         # janus.query(f"retract(({query_str})).")
 
         # 1. load the original facts as they are, and skip the line with the query
-        facts = []
-        query_found = False
-        with open(self.janus_file, "r") as f:
-            lines = f.readlines()
-            for line in lines:
-                if query_str not in line:
-                    facts.append(line)
-                else:
-                    query_found = True
+        # facts = []
+        # query_found = False
+        # with open(self.janus_file, "r") as f:
+        #     lines = f.readlines()
+        #     for line in lines:
+        #         if query_str not in line:
+        #             facts.append(line)
+        #         else:
+        #             query_found = True
+        # # if query not found, either it is an error or it is a val query, so we can skip it
+        # if not query_found: 
+        #     raise ValueError(f"Query {query_str} not found in {self.janus_file}")
+        #     return None
 
-        # if query not found, either it is an error or it is a val query, so we can skip it
-        if not query_found: 
-            # raise ValueError(f"Query {query_str} not found in {self.janus_file}")
-            return None
-        
+        facts = [line for line in self.janus_facts if query_str not in line]
+        assert len(facts) == len(self.janus_facts) - 1, f"Length of facts: {len(facts)}, Length of janus_facts: {len(self.janus_facts)}"
+
         # 2. save a _tmp file with the new facts
         tmp_file = self.janus_file.replace('.pl', '_tmp.pl')
         with open(tmp_file, "w") as f:
             for line in facts:
                 f.write(line)
-        # 3. consult janus with the new file
-        for predicate, arity in self.predicates_arity:
+
+        # 3. abolish all the facts and tables in janus        
+        for predicate, arity in self.predicates_arity.items():
             janus.query_once(f"abolish({predicate}/{arity}).")
         janus.query_once("abolish_all_tables.")
+        
+        # 4. consult janus with the new file
         janus.consult(tmp_file)
 
     def reset(self, seed: Optional[int]= None, options=None) -> TensorDictBase:
         if self.eval:
             # state, label = self.get_random_queries(self.valid_queries, self.valid_labels, 1, seed=seed)
+            if self.eval_dataset == 'validation':
+                eval_dataset = self.valid_queries
+                eval_labels = self.valid_labels
+            elif self.eval_dataset == 'test':
+                eval_dataset = self.test_queries
+                eval_labels = self.test_labels
+            elif self.eval_dataset == 'train':
+                eval_dataset = self.train_queries
+                eval_labels = self.train_labels
+
             if self.eval_idx == self.eval_len:
                 self.eval_idx = 0
-            state, label = [self.valid_queries[self.eval_idx]], [self.valid_labels[self.eval_idx]]
+            state, label = [eval_dataset[self.eval_idx]], [eval_labels[self.eval_idx]]
             self.eval_idx += 1
         else:
             state, label = self.get_random_queries(self.train_queries, self.train_labels, 1, seed=seed)
@@ -300,8 +316,7 @@ class LogicEnv_gym(gym.Env):
                'atom_index':atom_index, 
                'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices}
-        # print('reset...')
-        # print('obs', [(key, value.shape) for key, value in obs.items()])
+        # print('\nresetting')
         # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
         return obs, {}
 
@@ -310,6 +325,7 @@ class LogicEnv_gym(gym.Env):
         Given the current state, possible next states, an action, and return the next state.
         (It should be: given the current state, and an action, return the next state, but we need to modify it for our case)
         '''
+        # print('step')
         action = np.array([action])
         action = torch.tensor(action, device=self.device)  
         actions = action
@@ -388,6 +404,10 @@ class LogicEnv_gym(gym.Env):
         #     print('     adding fact:', self.current_query, dones)
         #     janus.query(f"assertz({self.current_query}).")
         # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
+
+        # if dones:
+        #     print('dones,truncated,rewards', dones,truncated,rewards)
+
         return obs, rewards, dones, truncated, {}
 
 
@@ -450,9 +470,6 @@ class LogicEnv_gym(gym.Env):
             torch.ones(batch_size, device=self.device),
             torch.zeros(batch_size, device=self.device)
         )
-        # if done_batch[0] and label == 0:
-            # print('done, successful, reward', done_batch[0], successful_batch[0], rewards_batch[0])
-
         return done_batch, rewards_batch
     
     @staticmethod
