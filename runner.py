@@ -10,7 +10,7 @@ from utils import FileLogger
 if __name__ == "__main__":
 
     RESTORE_BEST_MODEL = [True] #[True,False]
-    TIMESTEP_TRAIN = [10000]
+    TIMESTEP_TRAIN = [20000]
     load_model = True
     save_model = True
     

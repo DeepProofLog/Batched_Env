@@ -10,7 +10,7 @@ from stable_baselines3.common.callbacks import BaseCallback, EventCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 
 # from train import eval_test
-from model_SB3 import eval_test
+from model_eval import eval_test
 from utils import Term
 
 # def evaluate_policy(

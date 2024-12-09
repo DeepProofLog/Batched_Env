@@ -182,7 +182,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
             run.finish()   
 
     # TEST
-    from model_SB3 import eval_test_corruptions as eval_test
+    from model_eval import eval_test_corruptions as eval_test
 
     # from stable_baselines3.common.evaluation import evaluate_policy
     # print('Testing train set...')
