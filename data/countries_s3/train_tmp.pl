@@ -327,7 +327,6 @@ locatedInCS(zambia,eastern_africa).
 neighborOf(chad,central_african_republic).
 neighborOf(france,andorra).
 neighborOf(indonesia,papua_new_guinea).
-locatedInCR(uruguay,americas).
 locatedInCR(aland_islands,europe).
 neighborOf(myanmar,thailand).
 neighborOf(sierra_leone,guinea).
@@ -1021,6 +1020,7 @@ neighborOf(iran,iraq).
 neighborOf(senegal,mauritania).
 neighborOf(netherlands,germany).
 neighborOf(benin,togo).
+locatedInCR(south_korea,asia).
 neighborOf(austria,switzerland).
 neighborOf(kosovo,montenegro).
 neighborOf(china,macau).

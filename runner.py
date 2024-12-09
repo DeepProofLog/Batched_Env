@@ -9,24 +9,24 @@ from utils import FileLogger
 
 if __name__ == "__main__":
 
-    RESTORE_BEST_MODEL = [False] #[True,False]
-    TIMESTEP_TRAIN = [40000]
+    RESTORE_BEST_MODEL = [True,False]
+    TIMESTEP_TRAIN = [50000]
     ONLY_POSITIVES = [False]
     load_model = False
     save_model = True
     
-    use_logger = False
+    use_logger = True
     use_WB = False
     WB_path = "./../wandb/"
     logger_path = "./experiments/runs/"
 
-    DATASET_NAME =  ["countries_s3",] #["ablation_d1","ablation_d2","ablation_d3","countries_s1", "countries_s2", "countries_s3"]
+    DATASET_NAME =  ["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
     LEARN_EMBEDDINGS = [True]
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
-    ATOM_EMBEDDING_SIZE = [200]#[50,200]
-    SEED = [[0]] #[[0,1,2,3,4]]
-    MAX_DEPTH = [20] #[20,100]
+    ATOM_EMBEDDING_SIZE = [50,200]
+    SEED = [[0,1,2,3,4]]
+    MAX_DEPTH = [20,100]
 
     # path to the data    
     data_path = "./data/"
