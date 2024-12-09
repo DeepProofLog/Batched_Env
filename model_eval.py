@@ -23,7 +23,10 @@ def eval_test(  data: list[Term],
         # action, _states = model.predict(obs, deterministic=deterministic)
         obs_tensor = obs_as_tensor(obs, model.device)
         action, values, log_prob = model.policy(obs_tensor, deterministic=deterministic)
-        cum_log_prob += log_prob.detach().numpy()
+        # convert log_prob to float
+        log_prob = log_prob.detach().cpu().numpy().item()
+        cum_log_prob += log_prob
+
         
         obs, rewards, dones, truncated, info = env.step(action)
         print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
@@ -41,9 +44,64 @@ def eval_test(  data: list[Term],
             trajectory_reward, episode_len, cum_log_prob = 0, 0, 0
             print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     return rewards_list, episode_len_list, log_probs
-    
+
 
 def eval_test_corruptions(  data: list[Term],
+                            labels: list[int],
+                            corruptions: dict[Term, list[Term]],
+                            env: gym.Env,
+                            model: PPO,
+                            deterministic: bool = True,
+                            verbose:int=0) -> Tuple[list[float], list[int], list[float]]:
+    '''
+    For every positive query, get its corruptions, evaluate the model on the query and all its corruptions (based on the logprobs) and rank the query and its corruptions (MRR)
+
+    '''
+    mrr_list, rewards_list_pos, episode_len_list_pos, log_probs_list_pos, rewards_list_neg, episode_len_list_neg, log_probs_list_neg = [], [], [], [], [], [], []
+    (data_pos, labels_pos) = zip(*[(data[i],labels[i]) for i in range(len(data)) if labels[i] == 1])
+    for query in data_pos:
+        corruptions_query = corruptions[query]
+        if len(corruptions_query) == 0:
+            continue
+        data_query = [query] + corruptions_query
+        labels_query = [1] + [0 for _ in range(len(corruptions_query))]
+        rewards, episode_len, log_probs = eval_test(data_query, labels_query, env, model, deterministic, verbose)
+        
+        # get the rank of the postive query (first element of the list)
+        # print('query:',query, 'corruptions:',corruptions_query)
+        # print('log probs:',log_probs)
+        rank = np.argsort(log_probs)[::-1].tolist().index(0)
+        mrr = 1/(rank+1)
+        mrr_list.append(mrr)
+
+        rewards_list_pos.append(rewards[0])
+        episode_len_list_pos.append(episode_len[0])
+        log_probs_list_pos.append(log_probs[0])
+
+        rewards_list_neg += rewards[1:]
+        episode_len_list_neg += episode_len[1:]
+        log_probs_list_neg += log_probs[1:]
+    
+    mean_mrr, std_mrr = np.round(np.mean(mrr_list),3), np.round(np.std(mrr_list),3)
+    mean_rwd_pos, std_rwd_pos = np.round(np.mean(rewards_list_pos),3), np.round(np.std(rewards_list_pos),3)
+    mean_rwd_neg, std_rwd_neg = np.round(np.mean(rewards_list_neg),3), np.round(np.std(rewards_list_neg),3)
+    mean_len_pos, std_len_pos = np.round(np.mean(episode_len_list_pos),3), np.round(np.std(episode_len_list_pos),3)
+    mean_len_neg, std_len_neg = np.round(np.mean(episode_len_list_neg),3), np.round(np.std(episode_len_list_neg),3)
+    mean_log_probs_pos, std_log_probs_pos = np.round(np.mean(log_probs_list_pos),3), np.round(np.std(log_probs_list_pos),3)
+    mean_log_probs_neg, std_log_probs_neg = np.round(np.mean(log_probs_list_neg),3), np.round(np.std(log_probs_list_neg),3)
+
+    print('\nPositive queries:',len(rewards_list_pos), 'Negative queries:',len(rewards_list_neg), ' Ratio', round(len(rewards_list_pos)/(len(rewards_list_pos)+len(rewards_list_neg)),2))
+    print('MRR:',mean_mrr,'+/-', std_mrr)
+    print('Positive queries rewards:',mean_rwd_pos,'+/-', std_rwd_pos)
+    print('Negative queries rewards:',mean_rwd_neg,'+/-', std_rwd_neg)
+    print('Positive queries episode len:',mean_len_pos, '+/-', std_len_pos)
+    print('Negative queries episode len:',mean_len_neg, '+/-', std_len_neg)
+    print('Positive queries log probs:',mean_log_probs_pos, '+/-', std_log_probs_pos)
+    print('Negative queries log probs:',mean_log_probs_neg, '+/-', std_log_probs_neg)
+    return rewards_list_pos + rewards_list_neg, episode_len_list_pos + episode_len_list_neg
+
+
+def eval_test_pos_neg(  data: list[Term],
                             labels: list[int],
                             env: gym.Env,
                             model: PPO,
@@ -63,8 +121,10 @@ def eval_test_corruptions(  data: list[Term],
     
     mean_rwd_pos, std_rwd_pos = np.round(np.mean(rewards_list_pos),3), np.round(np.std(rewards_list_pos),3)
     mean_rwd_neg, std_rwd_neg = np.round(np.mean(rewards_list_neg),3), np.round(np.std(rewards_list_neg),3)
+
     mean_len_pos, std_len_pos = np.round(np.mean(episode_len_list_pos),3), np.round(np.std(episode_len_list_pos),3)
     mean_len_neg, std_len_neg = np.round(np.mean(episode_len_list_neg),3), np.round(np.std(episode_len_list_neg),3)
+
     mean_log_probs_pos, std_log_probs_pos = np.round(np.mean(log_probs_pos),3), np.round(np.std(log_probs_pos),3) 
     mean_log_probs_neg, std_log_probs_neg = np.round(np.mean(log_probs_neg),3), np.round(np.std(log_probs_neg),3)
 
@@ -87,4 +147,4 @@ def eval_test_corruptions(  data: list[Term],
     plt.legend(['positive','negative'])
     plt.show()
 
-    return rewards_list_pos + rewards_list_neg, episode_len_list_pos + episode_len_list_neg,
+    return rewards_list_pos + rewards_list_neg, episode_len_list_pos + episode_len_list_neg

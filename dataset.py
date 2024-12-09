@@ -113,8 +113,8 @@ def get_corruptions(queries: List[Term], file_path: str) -> dict[Term, List[Term
             query = get_atom_from_string(query[:-1])
             assert query in queries, f"Query {query} not in queries"
             for corruption, is_provable in corruptions:
-                corruption = get_atom_from_string(corruption[:-1])
                 if is_provable:
+                    corruption = get_atom_from_string(corruption[:-1])
                     dict_[query].append(corruption)
     return dict_
 

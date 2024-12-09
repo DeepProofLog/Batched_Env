@@ -196,11 +196,11 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
     # rewards_test, episode_len_test = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.test_queries),deterministic=True,return_episode_rewards=True)
 
     print('\nTesting train set...')
-    rewards_train, episode_len_train = eval_test(eval_env.train_queries,eval_env.train_labels,eval_env,model,deterministic=True)
+    rewards_train, episode_len_train = eval_test(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,deterministic=True) 
     print('\nTesting val set...')
-    rewards_valid, episode_len_valid = eval_test(eval_env.valid_queries,eval_env.valid_labels,eval_env,model,deterministic=True)
+    rewards_valid, episode_len_valid = eval_test(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model,deterministic=True)
     print('\nTesting test set...')
-    rewards_test, episode_len_test = eval_test(eval_env.test_queries,eval_env.test_labels,eval_env,model,deterministic=True)
+    rewards_test, episode_len_test = eval_test(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model,deterministic=True)
 
     print('\nTRAIN: rewards avg',np.round(np.mean(rewards_train),3), 'std', np.round(np.std(rewards_train),3), 'episode len avg', np.round(np.mean(episode_len_train),3), 'std', np.round(np.std(episode_len_train),3))
     print('VALID: rewards avg',np.round(np.mean(rewards_valid),3), 'std', np.round(np.std(rewards_valid),3), 'episode len avg', np.round(np.mean(episode_len_valid),3), 'std', np.round(np.std(episode_len_valid),3))
