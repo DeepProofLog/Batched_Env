@@ -46,7 +46,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
         train_file= args.train_file,
         valid_file=args.valid_file,
         test_file= args.test_file,
-        use_only_positives=False,
+        use_only_positives=args.only_positives,
         use_validation_as_train=False)
 
     index_manager = IndexManager(data_handler.constants, 
@@ -182,25 +182,22 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
             run.finish()   
 
     # TEST
-    from model_eval import eval_test_corruptions as eval_test
-
-    # from stable_baselines3.common.evaluation import evaluate_policy
-    # print('Testing train set...')
-    # eval_env.eval_dataset,eval_env.eval_len = 'train', len(data_handler.train_queries)
-    # rewards_train, episode_len_train = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.train_queries),deterministic=True,return_episode_rewards=True)
-    # print('Testing val set...')
-    # eval_env.eval_dataset,eval_env.eval_len = 'validation', len(data_handler.valid_queries)
-    # rewards_valid, episode_len_valid = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.valid_queries),deterministic=True,return_episode_rewards=True)
-    # print('Testing test set...')
-    # eval_env.eval_dataset,eval_env.eval_len = 'test', len(data_handler.test_queries)
-    # rewards_test, episode_len_test = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.test_queries),deterministic=True,return_episode_rewards=True)
-
-    print('\nTesting train set...')
-    rewards_train, episode_len_train = eval_test(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,deterministic=True) 
-    print('\nTesting val set...')
-    rewards_valid, episode_len_valid = eval_test(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model,deterministic=True)
-    print('\nTesting test set...')
-    rewards_test, episode_len_test = eval_test(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model,deterministic=True)
+    if args.only_positives:
+        from model_eval import eval_test
+        print('\nTesting train set...')
+        rewards_train, episode_len_train, _ = eval_test(eval_env.train_queries,eval_env.train_labels,eval_env,model,consult_janus=True)
+        print('\nTesting val set...')
+        rewards_valid, episode_len_valid, _ = eval_test(eval_env.valid_queries,eval_env.valid_labels,eval_env,model)
+        print('\nTesting test set...')
+        rewards_test, episode_len_test, _ = eval_test(eval_env.test_queries,eval_env.test_labels,eval_env,model)
+    else:
+        from model_eval import eval_test_corruptions
+        print('\nTesting train set...')
+        rewards_train, episode_len_train = eval_test_corruptions(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,consult_janus=True) 
+        print('\nTesting val set...')
+        rewards_valid, episode_len_valid = eval_test_corruptions(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model)
+        print('\nTesting test set...')
+        rewards_test, episode_len_test = eval_test_corruptions(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model)
 
     print('\nTRAIN: rewards avg',np.round(np.mean(rewards_train),3), 'std', np.round(np.std(rewards_train),3), 'episode len avg', np.round(np.mean(episode_len_train),3), 'std', np.round(np.std(episode_len_train),3))
     print('VALID: rewards avg',np.round(np.mean(rewards_valid),3), 'std', np.round(np.std(rewards_valid),3), 'episode len avg', np.round(np.mean(episode_len_valid),3), 'std', np.round(np.std(episode_len_valid),3))

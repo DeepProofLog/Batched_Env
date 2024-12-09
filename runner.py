@@ -9,9 +9,10 @@ from utils import FileLogger
 
 if __name__ == "__main__":
 
-    RESTORE_BEST_MODEL = [True] #[True,False]
-    TIMESTEP_TRAIN = [20000]
-    load_model = True
+    RESTORE_BEST_MODEL = [False] #[True,False]
+    TIMESTEP_TRAIN = [40000]
+    ONLY_POSITIVES = [False]
+    load_model = False
     save_model = True
     
     use_logger = False
@@ -19,7 +20,7 @@ if __name__ == "__main__":
     WB_path = "./../wandb/"
     logger_path = "./experiments/runs/"
 
-    DATASET_NAME =  ["ablation_d2",] #["ablation_d1","ablation_d2","ablation_d3","countries_s1", "countries_s2", "countries_s3"]
+    DATASET_NAME =  ["countries_s3",] #["ablation_d1","ablation_d2","ablation_d3","countries_s1", "countries_s2", "countries_s3"]
     LEARN_EMBEDDINGS = [True]
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
@@ -65,13 +66,15 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model in product(DATASET_NAME, 
-            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_MODEL):
+    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model,only_positives in product(DATASET_NAME, 
+            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_MODEL,ONLY_POSITIVES):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
         constant_embedding_size = predicate_embedding_size = atom_embedding_size
         
+        args.only_positives = only_positives
+
         args.dataset_name = dataset_name
         args.data_path = data_path
         args.domain_file = domain_file

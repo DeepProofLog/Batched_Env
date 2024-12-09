@@ -52,6 +52,8 @@ def get_rules_from_file(file_path: str) -> List[Rule]:
             if ":-" not in line:
                 head = line.strip()
                 queries.append(get_atom_from_string(head))
+            elif line.startswith(":-"):
+                continue
             else:
                 head, body = line.strip().split(":-")
                 body = re.findall(r'\w+\(.*?\)', body)

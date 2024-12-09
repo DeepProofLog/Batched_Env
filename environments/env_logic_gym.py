@@ -129,7 +129,7 @@ class LogicEnv_gym(gym.Env):
 
         self.max_arity=data_handler.max_arity # Maximum arity of the predicates
         self.max_atom = 10  # Maximum number of atoms in a state
-        self.padding = 15 # Maximum number of possible next states
+        self.padding = 20 # Maximum number of possible next states
         self.max_depth = max_depth # Maximum depth of the proof tree
         self.index_manager = index_manager
         self.predicates_arity = data_handler.predicates_arity
@@ -211,25 +211,6 @@ class LogicEnv_gym(gym.Env):
         # to compare the query, convert it to str by removing the spaces
         query_str = str(query).replace(' ', '')
 
-        # self.current_query = query_str
-        # print('removing fact:', self.current_query)
-        # janus.query(f"retract(({query_str})).")
-
-        # 1. load the original facts as they are, and skip the line with the query
-        # facts = []
-        # query_found = False
-        # with open(self.janus_file, "r") as f:
-        #     lines = f.readlines()
-        #     for line in lines:
-        #         if query_str not in line:
-        #             facts.append(line)
-        #         else:
-        #             query_found = True
-        # # if query not found, either it is an error or it is a val query, so we can skip it
-        # if not query_found: 
-        #     raise ValueError(f"Query {query_str} not found in {self.janus_file}")
-        #     return None
-
         facts = [line for line in self.janus_facts if query_str not in line]
         assert len(facts) == len(self.janus_facts) - 1, f"Length of facts: {len(facts)}, Length of janus_facts: {len(self.janus_facts)}"
 
@@ -271,7 +252,9 @@ class LogicEnv_gym(gym.Env):
 
         return self._reset(state, label)
     
-    def reset_from_query(self, query, label) -> TensorDictBase:
+    def reset_from_query(self, query, label, consult_janus=False) -> TensorDictBase:
+        if consult_janus and label == 1:
+            self.new_consult_janus(query)
 
         return self._reset([query], [label]) 
 

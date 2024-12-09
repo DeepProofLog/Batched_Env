@@ -741,7 +741,6 @@ locatedInCR(isle_of_man,europe).
 locatedInCR(seychelles,africa).
 locatedInCR(madagascar,africa).
 locatedInCR(bahamas,americas).
-locatedInCR(rwanda,africa).
 locatedInCR(maldives,asia).
 locatedInCR(singapore,asia).
 locatedInCR(montserrat,americas).
