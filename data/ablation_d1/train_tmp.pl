@@ -676,7 +676,6 @@ locatedInCR(south_africa,africa).
 locatedInCR(british_indian_ocean_territory,africa).
 locatedInCR(brazil,americas).
 locatedInCR(guernsey,europe).
-locatedInCR(india,asia).
 locatedInCR(ukraine,europe).
 locatedInCR(seychelles,africa).
 locatedInCR(saint_pierre_and_miquelon,americas).
@@ -808,5 +807,6 @@ locatedInCR(austria,europe).
 locatedInCR(lithuania,europe).
 locatedInCR(saint_vincent_and_the_grenadines,americas).
 locatedInCR(taiwan,asia).
+locatedInCR(yemen,asia).
 locatedInCR(X,Z) :- neighborOf(X,Y), locatedInCR(Y,Z).
 proof_first([H | T], T) :- call(H).

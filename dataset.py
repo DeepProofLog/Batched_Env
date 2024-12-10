@@ -155,9 +155,9 @@ class DataHandler():
         self.valid_queries, self.valid_labels = get_queries_labels(valid_path)
         self.test_queries, self.test_labels = get_queries_labels(test_path)
 
-        print('ratio of positives in train', sum(self.train_labels)/len(self.train_labels))
-        print('                      valid', sum(self.valid_labels)/len(self.valid_labels))
-        print('                      test', sum(self.test_labels)/len(self.test_labels))
+        print('ratio of positives in train', '{:.2f}'.format(sum(self.train_labels)/len(self.train_labels)))
+        print('                      valid', '{:.2f}'.format(sum(self.valid_labels)/len(self.valid_labels)))
+        print('                      test', '{:.2f}'.format(sum(self.test_labels)/len(self.test_labels)))
 
         self.train_corruptions = get_corruptions(self.train_queries, join(base_path, "train_label_corruptions.json"))
         self.valid_corruptions = get_corruptions(self.valid_queries, join(base_path, "valid_label_corruptions.json"))

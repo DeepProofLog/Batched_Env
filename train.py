@@ -27,15 +27,13 @@ import wandb
 
 
 
-def main(args,log_filename,use_logger,use_WB,WB_path):
+def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     torch.manual_seed(args.seed_run_i)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed_run_i)
     random.seed(args.seed_run_i)
     np.random.seed(args.seed_run_i)
-
-    date = '_'+str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
     device = get_device(args.device)
 
@@ -138,7 +136,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
                                     n_eval_episodes=len(data_handler.valid_queries),
                                     deterministic=True,
                                     render=False,
-                                    name=args.run_signature+date,
+                                    name=args.run_signature+date+'-seed_{}'.format(args.seed_run_i),
                                     callback_on_new_best=reward_threshold_callback if args.restore_best_model else None,
                                     # callback_after_eval=no_improvement_callback,
                                     )
@@ -149,7 +147,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
                                                     total_steps=args.timesteps_train, 
                                                     model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
                                                     log_path = log_filename if use_logger else None,
-                                                    name=args.run_signature+date)
+                                                    name=args.run_signature+date+'-seed_{}'.format(args.seed_run_i))
         callbacks.append(checkpoint_callback)
 
         # Initialize a W&B run
@@ -185,26 +183,25 @@ def main(args,log_filename,use_logger,use_WB,WB_path):
     if args.only_positives:
         from model_eval import eval_test
         print('\nTesting train set...')
-        rewards_train, episode_len_train, _ = eval_test(eval_env.train_queries,eval_env.train_labels,eval_env,model,consult_janus=True)
+        metrics_train = eval_test(eval_env.train_queries,eval_env.train_labels,eval_env,model,consult_janus=True)
+        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_train.items()], sep='\n')
         print('\nTesting val set...')
-        rewards_valid, episode_len_valid, _ = eval_test(eval_env.valid_queries,eval_env.valid_labels,eval_env,model)
+        metrics_valid = eval_test(eval_env.valid_queries,eval_env.valid_labels,eval_env,model)
+        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_valid.items()], sep='\n')
         print('\nTesting test set...')
-        rewards_test, episode_len_test, _ = eval_test(eval_env.test_queries,eval_env.test_labels,eval_env,model)
+        metrics_test = eval_test(eval_env.test_queries,eval_env.test_labels,eval_env,model)
+        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_test.items()], sep='\n')
     else:
         from model_eval import eval_test_corruptions
         print('\nTesting train set...')
-        rewards_train, episode_len_train = eval_test_corruptions(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,consult_janus=True) 
+        metrics_train = eval_test_corruptions(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,consult_janus=True) 
+        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_train.items()], sep='\n')
         print('\nTesting val set...')
-        rewards_valid, episode_len_valid = eval_test_corruptions(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model)
+        metrics_valid = eval_test_corruptions(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model)
+        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_valid.items()], sep='\n')
         print('\nTesting test set...')
-        rewards_test, episode_len_test = eval_test_corruptions(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model)
+        metrics_test = eval_test_corruptions(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model)
+        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_test.items()], sep='\n')
 
-    print('\nTRAIN: rewards avg',np.round(np.mean(rewards_train),3), 'std', np.round(np.std(rewards_train),3), 'episode len avg', np.round(np.mean(episode_len_train),3), 'std', np.round(np.std(episode_len_train),3))
-    print('VALID: rewards avg',np.round(np.mean(rewards_valid),3), 'std', np.round(np.std(rewards_valid),3), 'episode len avg', np.round(np.mean(episode_len_valid),3), 'std', np.round(np.std(episode_len_valid),3))
-    print('TEST: rewards avg',np.round(np.mean(rewards_test),3), 'std', np.round(np.std(rewards_test),3), 'episode len avg', np.round(np.mean(episode_len_test),3), 'std', np.round(np.std(episode_len_test),3))
-
-
-    valid_metrics = {'reward': np.mean(rewards_valid), 'reward_std': np.std(rewards_valid), 'episode_len': np.mean(episode_len_valid), 'episode_len_std': np.std(episode_len_valid)}
-    test_metrics = {'reward': np.mean(rewards_test), 'reward_std': np.std(rewards_test), 'episode_len': np.mean(episode_len_test), 'episode_len_std': np.std(episode_len_test)}
-    return valid_metrics, test_metrics
+    return metrics_train, metrics_valid, metrics_test
 

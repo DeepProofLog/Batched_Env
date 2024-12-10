@@ -6,19 +6,20 @@ import copy
 import os
 import numpy as np
 from utils import FileLogger
+import datetime
 
 if __name__ == "__main__":
 
     RESTORE_BEST_MODEL = [True,False]
     TIMESTEP_TRAIN = [50000]
     ONLY_POSITIVES = [False]
-    load_model = False
+    load_model = True
     save_model = True
     
     use_logger = True
     use_WB = False
     WB_path = "./../wandb/"
-    logger_path = "./experiments/runs/"
+    logger_path = "./runs/"
 
     DATASET_NAME =  ["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
     LEARN_EMBEDDINGS = [True]
@@ -119,13 +120,13 @@ if __name__ == "__main__":
             logger = FileLogger(base_folder=logger_path)
             if logger.exists_experiment(args.__dict__):
                 return
-            
+
         for seed in args.seed:
+            date = '_'+str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
             args.seed_run_i = seed
             print("Seed", seed, " in ", args.seed)
             print("\nRun vars:", args.run_signature, '\n',args,'\n')
             if use_logger:
-                date = logger.date
                 log_filename_tmp = os.path.join(logger_path,'_tmp_log-{}-{}-seed_{}.csv'.format(args.run_signature,date,seed))
                 if logger.exists_run(args.run_signature,seed):   
                     continue
@@ -135,16 +136,16 @@ if __name__ == "__main__":
             else:   
                 log_filename_tmp = None
 
-            valid_metrics, test_metrics = main(args,log_filename_tmp,use_logger,use_WB,WB_path)
+            train_metrics, valid_metrics, test_metrics = main(args,log_filename_tmp,use_logger,use_WB,WB_path,date)
 
             if use_logger:
                 # Include the results in the logger
                 logged_data = copy.deepcopy(args)
-                dicts_to_log = {'valid':valid_metrics,'test':test_metrics}
+                dicts_to_log = {'train':train_metrics,'valid':valid_metrics,'test':test_metrics}
                 # write the info about the results in the tmp file 
                 logger.log(log_filename_tmp,logged_data.__dict__,dicts_to_log)
                 # Rename to not be temporal anymore
-                mean_rwd = np.round(np.mean(test_metrics['reward']),3)
+                mean_rwd = np.round(np.mean(test_metrics['rewards_mean']),3)
                 log_filename_run_name = os.path.join(logger_path,'indiv_runs', '_ind_log-{}-{}-{}-seed_{}.csv'.format(
                                                             args.run_signature,date,mean_rwd,seed))
                 logger.finalize_log_file(log_filename_tmp,log_filename_run_name)

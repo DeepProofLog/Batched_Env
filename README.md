@@ -14,8 +14,9 @@ bash data_labeler.sh
    - use_modified_rules: include this to put recursive predicates on the right-most, not used now
 
 2. Outputs:
-   - countries.pl: consulted by janus
+   - countries.pl: created by data_labeller and used in data_preparation
    - train_label.txt, test_label.txt, valid_label.txt
+      - Composed of the same queries as original file, with label True (they are provable) and False (they are not provable)
   
 ### Prepare train, test, valid queries. Include two tasks: generate corruptions and sample corruptions to build query files
 ```
@@ -31,4 +32,7 @@ bash data_preparation.sh
 
 3. Outputs:
    - train_label_corruptions.json, test_label_corruptions.json, valid_label_corruptions.json
+      - For each query from train/val/test, it has all its corruptions, and whether they are provable or not
    - train_queries.txt, test_queries.txt, valid_queries.txt
+      - Composed of original queries from train/val/test with corruptions that can be provable or not 
+      - Labels: True (provable true, i.e. query from dataset), False (provable False, i.e. corruptions provable), non-provable-False (non-provable False, i.e. corruptions non provable)

@@ -98,41 +98,39 @@ def eval_test_corruptions(  data: list[Term],
         rewards_list_neg.extend(rewards[1:])
         episode_len_list_neg.extend(episode_len[1:])
         log_probs_list_neg.extend(log_probs[1:])
-    
-    mean_mrr, std_mrr = np.round(np.mean(mrr_list),3), np.round(np.std(mrr_list),3)
-    mean_rwd_pos, std_rwd_pos = np.round(np.mean(rewards_list_pos),3), np.round(np.std(rewards_list_pos),3)
-    mean_rwd_neg, std_rwd_neg = np.round(np.mean(rewards_list_neg),3), np.round(np.std(rewards_list_neg),3)
-    mean_len_pos, std_len_pos = np.round(np.mean(episode_len_list_pos),3), np.round(np.std(episode_len_list_pos),3)
-    mean_len_neg, std_len_neg = np.round(np.mean(episode_len_list_neg),3), np.round(np.std(episode_len_list_neg),3)
-    mean_log_probs_pos, std_log_probs_pos = np.round(np.mean(log_probs_list_pos),3), np.round(np.std(log_probs_list_pos),3)
-    mean_log_probs_neg, std_log_probs_neg = np.round(np.mean(log_probs_list_neg),3), np.round(np.std(log_probs_list_neg),3)
 
-    print('\nPositive queries:',len(rewards_list_pos), 'Negative queries:',len(rewards_list_neg), ' Ratio', round(len(rewards_list_pos)/(len(rewards_list_pos)+len(rewards_list_neg)),2))
-    print('MRR:',mean_mrr,'+/-', std_mrr)
-    print('Positive queries rewards:',mean_rwd_pos,'+/-', std_rwd_pos)
-    print('Negative queries rewards:',mean_rwd_neg,'+/-', std_rwd_neg)
-    print('Positive queries episode len:',mean_len_pos, '+/-', std_len_pos)
-    print('Negative queries episode len:',mean_len_neg, '+/-', std_len_neg)
-    print('Positive queries log probs:',mean_log_probs_pos, '+/-', std_log_probs_pos)
-    print('Negative queries log probs:',mean_log_probs_neg, '+/-', std_log_probs_neg)
-    return rewards_list_pos + rewards_list_neg, episode_len_list_pos + episode_len_list_neg
+    info = {'pos_queries':len(rewards_list_pos), 'neg_queries':len(rewards_list_neg), 'ratio_pos_queries':round(len(rewards_list_pos)/(len(rewards_list_pos)+len(rewards_list_neg)),2),
+            'mrr_mean':np.mean(mrr_list), 'mrr_std':np.std(mrr_list),
+            'rewards_pos_mean':np.mean(rewards_list_pos), 'rewards_pos_std':np.std(rewards_list_pos),
+            'rewards_neg_mean':np.mean(rewards_list_neg), 'rewards_neg_std':np.std(rewards_list_neg),
+            'rewards_mean':np.mean(rewards_list_pos+rewards_list_neg), 'rewards_std':np.std(rewards_list_pos+rewards_list_neg),
 
-    # info = {'mrr_mean':np.mean(mrr_list), 'mrr_std':np.std(mrr_list),
-    #         'rewards_pos_mean':np.mean(rewards_list_pos), 'rewards_pos_std':np.std(rewards_list_pos),
-    #         'rewards_neg_mean':np.mean(rewards_list_neg), 'rewards_neg_std':np.std(rewards_list_neg),
-    #         'rewards_mean':np.mean(rewards_list_pos+rewards_list_neg), 'rewards_std':np.std(rewards_list_pos+rewards_list_neg),
+            'episode_len_pos_mean':np.mean(episode_len_list_pos), 'episode_len_pos_std':np.std(episode_len_list_pos),
+            'episode_len_neg_mean':np.mean(episode_len_list_neg), 'episode_len_neg_std':np.std(episode_len_list_neg),
+            'episode_len_mean':np.mean(episode_len_list_pos+episode_len_list_neg), 'episode_len_std':np.std(episode_len_list_pos+episode_len_list_neg),
 
-    #         'episode_len_pos_mean':np.mean(episode_len_list_pos), 'episode_len_pos_std':np.std(episode_len_list_pos),
-    #         'episode_len_neg_mean':np.mean(episode_len_list_neg), 'episode_len_neg_std':np.std(episode_len_list_neg),
-    #         'episode_len_mean':np.mean(episode_len_list_pos+episode_len_list_neg), 'episode_len_std':np.std(episode_len_list_pos+episode_len_list_neg),
+            'log_probs_pos_mean':np.mean(log_probs_list_pos), 'log_probs_pos_std':np.std(log_probs_list_pos),
+            'log_probs_neg_mean':np.mean(log_probs_list_neg), 'log_probs_neg_std':np.std(log_probs_list_neg),
+            'log_probs_mean':np.mean(log_probs_list_pos+log_probs_list_neg), 'log_probs_std':np.std(log_probs_list_pos+log_probs_list_neg)
+            }
+    return info
 
-    #         'log_probs_pos_mean':np.mean(log_probs_list_pos), 'log_probs_pos_std':np.std(log_probs_list_pos),
-    #         'log_probs_neg_mean':np.mean(log_probs_list_neg), 'log_probs_neg_std':np.std(log_probs_list_neg),
-    #         'log_probs_mean':np.mean(log_probs_list_pos+log_probs_list_neg), 'log_probs_std':np.std(log_probs_list_pos+log_probs_list_neg)
-    #         }
-    # return info
+    # mean_mrr, std_mrr = np.round(np.mean(mrr_list),3), np.round(np.std(mrr_list),3)
+    # mean_rwd_pos, std_rwd_pos = np.round(np.mean(rewards_list_pos),3), np.round(np.std(rewards_list_pos),3)
+    # mean_rwd_neg, std_rwd_neg = np.round(np.mean(rewards_list_neg),3), np.round(np.std(rewards_list_neg),3)
+    # mean_len_pos, std_len_pos = np.round(np.mean(episode_len_list_pos),3), np.round(np.std(episode_len_list_pos),3)
+    # mean_len_neg, std_len_neg = np.round(np.mean(episode_len_list_neg),3), np.round(np.std(episode_len_list_neg),3)
+    # mean_log_probs_pos, std_log_probs_pos = np.round(np.mean(log_probs_list_pos),3), np.round(np.std(log_probs_list_pos),3)
+    # mean_log_probs_neg, std_log_probs_neg = np.round(np.mean(log_probs_list_neg),3), np.round(np.std(log_probs_list_neg),3)
 
-
+    # print('\nPositive queries:',len(rewards_list_pos), 'Negative queries:',len(rewards_list_neg), ' Ratio', round(len(rewards_list_pos)/(len(rewards_list_pos)+len(rewards_list_neg)),2))
+    # print('MRR:',mean_mrr,'+/-', std_mrr)
+    # print('Positive queries rewards:',mean_rwd_pos,'+/-', std_rwd_pos)
+    # print('Negative queries rewards:',mean_rwd_neg,'+/-', std_rwd_neg)
+    # print('Positive queries episode len:',mean_len_pos, '+/-', std_len_pos)
+    # print('Negative queries episode len:',mean_len_neg, '+/-', std_len_neg)
+    # print('Positive queries log probs:',mean_log_probs_pos, '+/-', std_log_probs_pos)
+    # print('Negative queries log probs:',mean_log_probs_neg, '+/-', std_log_probs_neg)
 
 
 def eval_test_pos_neg(  data: list[Term],
