@@ -115,24 +115,6 @@ def eval_test_corruptions(  data: list[Term],
             }
     return info
 
-    # mean_mrr, std_mrr = np.round(np.mean(mrr_list),3), np.round(np.std(mrr_list),3)
-    # mean_rwd_pos, std_rwd_pos = np.round(np.mean(rewards_list_pos),3), np.round(np.std(rewards_list_pos),3)
-    # mean_rwd_neg, std_rwd_neg = np.round(np.mean(rewards_list_neg),3), np.round(np.std(rewards_list_neg),3)
-    # mean_len_pos, std_len_pos = np.round(np.mean(episode_len_list_pos),3), np.round(np.std(episode_len_list_pos),3)
-    # mean_len_neg, std_len_neg = np.round(np.mean(episode_len_list_neg),3), np.round(np.std(episode_len_list_neg),3)
-    # mean_log_probs_pos, std_log_probs_pos = np.round(np.mean(log_probs_list_pos),3), np.round(np.std(log_probs_list_pos),3)
-    # mean_log_probs_neg, std_log_probs_neg = np.round(np.mean(log_probs_list_neg),3), np.round(np.std(log_probs_list_neg),3)
-
-    # print('\nPositive queries:',len(rewards_list_pos), 'Negative queries:',len(rewards_list_neg), ' Ratio', round(len(rewards_list_pos)/(len(rewards_list_pos)+len(rewards_list_neg)),2))
-    # print('MRR:',mean_mrr,'+/-', std_mrr)
-    # print('Positive queries rewards:',mean_rwd_pos,'+/-', std_rwd_pos)
-    # print('Negative queries rewards:',mean_rwd_neg,'+/-', std_rwd_neg)
-    # print('Positive queries episode len:',mean_len_pos, '+/-', std_len_pos)
-    # print('Negative queries episode len:',mean_len_neg, '+/-', std_len_neg)
-    # print('Positive queries log probs:',mean_log_probs_pos, '+/-', std_log_probs_pos)
-    # print('Negative queries log probs:',mean_log_probs_neg, '+/-', std_log_probs_neg)
-
-
 def eval_test_pos_neg(  data: list[Term],
                             labels: list[int],
                             env: gym.Env,
