@@ -486,7 +486,8 @@ class FileLogger:
         column_names = ';'.join(column_names)
 
         values_args = [str(v) for k, v in args_dict.items()]
-        values_avg_results = [ str([np.round(v[0], 3), np.round(v[1], 3)]) for k, v in avg_results.items()]
+        values_avg_results = [str([float(np.round(v[0], 3)), float(np.round(v[1], 3))])for k, v in avg_results.items()
+]
         combined_results = ';'.join(values_args + values_avg_results)
 
         print("Writing results to", file_csv)

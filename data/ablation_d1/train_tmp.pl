@@ -647,7 +647,6 @@ neighborOf(poland,germany).
 neighborOf(nepal,china).
 locatedInCR(botswana,africa).
 locatedInCR(maldives,asia).
-locatedInCR(guinea,africa).
 locatedInCR(pitcairn_islands,oceania).
 locatedInCR(belize,americas).
 locatedInCR(svalbard_and_jan_mayen,europe).
@@ -676,6 +675,7 @@ locatedInCR(south_africa,africa).
 locatedInCR(british_indian_ocean_territory,africa).
 locatedInCR(brazil,americas).
 locatedInCR(guernsey,europe).
+locatedInCR(india,asia).
 locatedInCR(ukraine,europe).
 locatedInCR(seychelles,africa).
 locatedInCR(saint_pierre_and_miquelon,americas).

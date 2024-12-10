@@ -13,7 +13,7 @@ if __name__ == "__main__":
     RESTORE_BEST_MODEL = [True,False]
     TIMESTEP_TRAIN = [50000]
     ONLY_POSITIVES = [False]
-    load_model = True
+    load_model = False
     save_model = True
     
     use_logger = True
@@ -146,6 +146,8 @@ if __name__ == "__main__":
                 logger.log(log_filename_tmp,logged_data.__dict__,dicts_to_log)
                 # Rename to not be temporal anymore
                 mean_rwd = np.round(np.mean(test_metrics['rewards_mean']),3)
+                mean_rwd = "{:.3f}".format(mean_rwd)
+                # print the mean reward with 3 decimals 
                 log_filename_run_name = os.path.join(logger_path,'indiv_runs', '_ind_log-{}-{}-{}-seed_{}.csv'.format(
                                                             args.run_signature,date,mean_rwd,seed))
                 logger.finalize_log_file(log_filename_tmp,log_filename_run_name)
