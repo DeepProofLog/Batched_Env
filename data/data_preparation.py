@@ -79,8 +79,8 @@ def get_full_gt():
         with open(file_path, "r") as file:
             for line in file.readlines():
                 query, value = line.strip().split("\t")
-                if value == "True":
-                    full_gt.add(query)
+                # if value == "True":
+                full_gt.add(query)
 
     return full_gt
 
@@ -141,8 +141,8 @@ def prepare_queries(folder, level, sample_type, sample_ratio):
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('--task', default='all', type=str, help="generate_corruptions, prepare_queries, all")
-    arg_parser.add_argument('--folder', default='countries', type=str)
-    arg_parser.add_argument('--level', default='s3', type=str)
+    arg_parser.add_argument('--folder', default='ablation', type=str)
+    arg_parser.add_argument('--level', default='d3', type=str)
     arg_parser.add_argument('--corruption_type', default='tail', type=str)
     arg_parser.add_argument('--sample_type', default='[full_set, all_possible, all_possible]', type=str, help="full_set, paired, all_possible, all_possible_both")
     arg_parser.add_argument('--sample_ratio', default='[[1, 0], [1, 0], [1, 0]]', type=str, help="ratio of provable false / provable true and unprovable / provable true for train, test, valid")

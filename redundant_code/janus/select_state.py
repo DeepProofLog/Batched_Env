@@ -4,9 +4,10 @@ import re
 import random
 random.seed(23)
 
-janus.consult("ancestor.pl")
+#janus.consult("ancestor.pl")
+janus.consult("countries.pl")
 
-state = deque(["ancestor(charlie, alice)"])
+state = deque(["locatedInCR(italy, europe)"])
 
 while state:
     print("\n\n"+"*"*50)

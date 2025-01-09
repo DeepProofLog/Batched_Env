@@ -1,3 +1,5 @@
+from pydantic.v1.validators import validate_json
+
 from train import main
 import argparse
 import ast
@@ -7,38 +9,74 @@ import os
 import numpy as np
 from utils import FileLogger
 import datetime
+import sys
+
 
 if __name__ == "__main__":
 
+    class Tee:
+        def __init__(self, file_path):
+            self.file = open(file_path, "w")
+            self.stdout = sys.stdout
+
+        def write(self, message):
+            self.file.write(message)
+            self.stdout.write(message)
+
+        def flush(self):
+            self.file.flush()
+            self.stdout.flush()
+
+
+    # Redirect stdout to the Tee class
+    # sys.stdout = Tee("output.log")
+
     RESTORE_BEST_MODEL = [True,False]
+    # RESTORE_BEST_MODEL = [True]
     TIMESTEP_TRAIN = [50000]
     ONLY_POSITIVES = [False]
+    LIMIT_SPACE = [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     load_model = False
     save_model = True
+    dynamic_neg = True
+    # in validation and test, we use all provable corruptions
+    train_neg_pos_ratio = 1
+
     
     use_logger = True
     use_WB = False
     WB_path = "./../wandb/"
     logger_path = "./runs/"
 
-    DATASET_NAME =  ["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
+    # DATASET_NAME =  ["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
+    DATASET_NAME = ["ablation_d1"]
     LEARN_EMBEDDINGS = [True]
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
     ATOM_EMBEDDING_SIZE = [50,200]
-    SEED = [[0,1,2,3,4]]
-    MAX_DEPTH = [20,100]
+    # ATOM_EMBEDDING_SIZE = [200]
+    # SEED = [[0,1,2,3,4]]
+    SEED = [[0, 1, 2]]
+    # MAX_DEPTH = [20,100]
+    MAX_DEPTH = [20]
 
     # path to the data    
     data_path = "./data/"
     domain_file = None
     janus_file = "train.pl"
     # facts_file = "train.txt"
-    train_file = "train_queries.txt"
-    valid_file = "valid_queries.txt"
-    test_file = "test_queries.txt"
+    train_txt = "train_queries.txt"
+    train_json = "train_label_corruptions.json"
+    valid_txt = "valid_queries.txt"
+    test_txt = "test_queries.txt"
+    if dynamic_neg:
+        train_file = train_json
+    else:
+        train_file = train_txt
+    valid_file = valid_txt
+    test_file = test_txt
 
-    models_path = "./../models/"
+    models_path = "models/"
     variable_no = 500
     device = "cpu"
 
@@ -49,7 +87,6 @@ if __name__ == "__main__":
     lr = 3e-4
 
 
-    
     # If take inputs from the command line, overwrite the default values
     parser = argparse.ArgumentParser(description='Description of your script')  
     parser.add_argument("--d", default = None, help="dataset",nargs='+')
@@ -67,14 +104,17 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model,only_positives in product(DATASET_NAME, 
-            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_MODEL,ONLY_POSITIVES):
+    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model,only_positives, limit_space in product(DATASET_NAME,
+            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_MODEL,ONLY_POSITIVES, LIMIT_SPACE):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
         constant_embedding_size = predicate_embedding_size = atom_embedding_size
         
         args.only_positives = only_positives
+        args.dynamic_neg = dynamic_neg
+        args.train_neg_pos_ratio = train_neg_pos_ratio
+        args.limit_space = limit_space
 
         args.dataset_name = dataset_name
         args.data_path = data_path
@@ -108,8 +148,9 @@ if __name__ == "__main__":
         args.max_depth = max_depth
 
         run_vars = (args.dataset_name, args.kge, args.model_name, args.atom_embedding_size,args.max_depth,
-                    args.learn_embeddings,args.timesteps_train,args.restore_best_model)
-        args.run_signature = '-'.join(f'{v}' for v in run_vars) 
+                    args.learn_embeddings,args.timesteps_train,args.restore_best_model, args.dynamic_neg, args.train_neg_pos_ratio, args.limit_space)
+        args.run_signature = '-'.join(f'{v}' for v in run_vars)
+        print(args.run_signature)
 
         all_args.append(copy.deepcopy(args)) # append a hard copy of the args to the list of all_args
 
@@ -118,8 +159,8 @@ if __name__ == "__main__":
 
         if use_logger:
             logger = FileLogger(base_folder=logger_path)
-            if logger.exists_experiment(args.__dict__):
-                return
+            # if logger.exists_experiment(args.__dict__):
+            #     return
 
         for seed in args.seed:
             date = '_'+str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
@@ -128,8 +169,8 @@ if __name__ == "__main__":
             print("\nRun vars:", args.run_signature, '\n',args,'\n')
             if use_logger:
                 log_filename_tmp = os.path.join(logger_path,'_tmp_log-{}-{}-seed_{}.csv'.format(args.run_signature,date,seed))
-                if logger.exists_run(args.run_signature,seed):   
-                    continue
+                # if logger.exists_run(args.run_signature,seed):
+                #     continue
                 # else:
                 #     print("Seed number ", seed, " not done. Exit")
                 #     continue

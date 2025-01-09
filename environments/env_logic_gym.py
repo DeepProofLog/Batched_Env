@@ -120,12 +120,17 @@ class LogicEnv_gym(gym.Env):
                 device: torch.device = torch.device("cpu"),
                 index_manager: Optional[IndexManager] = None,
                 data_handler: Optional[DataHandler] = None,
+                dynamic_neg: bool = False,
+                train_neg_pos_ratio: int = 1,
+                limit_space: bool = True,
                 eval=False
                 ):
         
         '''Initialize the environment'''
         super().__init__()
         self.device = device
+
+        self.dynamic_neg = dynamic_neg
 
         self.max_arity=data_handler.max_arity # Maximum arity of the predicates
         self.max_atom = 10  # Maximum number of atoms in a state
@@ -138,14 +143,22 @@ class LogicEnv_gym(gym.Env):
         self._set_seed(self.seed)
         self._make_spec()
 
-        self.facts=data_handler.facts,        
+        self.facts=data_handler.facts
 
-        self.train_queries, self.train_labels = data_handler.train_queries, data_handler.train_labels
+        if not self.dynamic_neg:
+            self.train_queries, self.train_labels = data_handler.train_queries, data_handler.train_labels
+        else:
+            self.pos_train_queries, self.neg_train_queries = data_handler.pos_train_queries, data_handler.neg_train_queries
+            self.counter = 0  # Determine whether to sample from positive or negative queries
+            self.train_neg_pos_ratio = train_neg_pos_ratio
         self.valid_queries, self.valid_labels = data_handler.valid_queries, data_handler.valid_labels
         self.test_queries, self.test_labels = data_handler.test_queries, data_handler.test_labels
         
         self.janus_file = data_handler.janus_path
         self.janus_facts = data_handler.janus_facts
+
+        self.memory = [] # Store grounded predicates, avoid loop
+        self.limit_space = limit_space # two ways to avoid loop: limit action space, stop when a state has been visited
 
         self.eval = eval
         self.eval_dataset = 'validation' # by default, evaluate on the validation set. It can be changed to 'test' or 'train'
@@ -246,12 +259,21 @@ class LogicEnv_gym(gym.Env):
             state, label = [eval_dataset[self.eval_idx]], [eval_labels[self.eval_idx]]
             self.eval_idx += 1
         else:
-            state, label = self.get_random_queries(self.train_queries, self.train_labels, 1, seed=seed)
+            if not self.dynamic_neg:
+                state, label = self.get_random_queries(self.train_queries, self.train_labels, 1, seed=seed)
+            else:
+                if self.counter % (int(self.train_neg_pos_ratio)+1) == 0:
+                    state, label = self.get_random_queries(self.pos_train_queries, [1]*len(self.pos_train_queries), 1, seed=seed)
+                else:
+                    state, label = self.get_random_queries(self.neg_train_queries, [0]*len(self.neg_train_queries), 1, seed=seed)
+                self.counter += 1
             if label[0] == 1:
                 self.new_consult_janus(state[0])
+            # print(f'state: {state}, label: {label}')
 
         return self._reset(state, label)
     
+    # is this used anywhere?
     def reset_from_query(self, query, label, consult_janus=False) -> TensorDictBase:
         if consult_janus and label == 1:
             self.new_consult_janus(query)
@@ -262,12 +284,16 @@ class LogicEnv_gym(gym.Env):
         '''Reset the environment to the initial state'''    
         self.current_depth = torch.zeros(1, dtype=torch.long, device=self.device)
 
+        self.index_manager.reset_atom_var()
+
         states = []
         atom_indices = []
         sub_indices = []
+        self.memory = []
         for i in range(1):
             state, label = query, label
             states.append(state)
+            self.memory.append([state])
             atom_index, sub_index = self.index_manager.get_atom_sub_index(i, state)
             atom_indices.append(atom_index)
             sub_indices.append(sub_index)
@@ -275,6 +301,8 @@ class LogicEnv_gym(gym.Env):
         sub_indices = torch.stack(sub_indices)
 
         derived_states, derived_atom_indices, derived_sub_indices = self.get_next_states_batch(states)
+        if self.limit_space:
+            derived_states, derived_atom_indices, derived_sub_indices = self.limit_action_space(derived_states, derived_atom_indices, derived_sub_indices)
         self.update_action_space(derived_states)
 
         self.tensordict = TensorDict(
@@ -290,7 +318,7 @@ class LogicEnv_gym(gym.Env):
                 "derived_sub_indices": derived_sub_indices,
             },
         )
-
+        # hardcode cpu here?
         sub_index = self.tensordict['sub_index'].cpu().numpy()
         atom_index = self.tensordict['atom_index'].cpu().numpy()
         derived_atom_indices = self.tensordict['derived_atom_indices'].cpu().numpy()
@@ -327,14 +355,25 @@ class LogicEnv_gym(gym.Env):
             next_atom_index = derived_atom_indices[i][action.item()]
             next_sub_index = derived_sub_indices[i][action.item()]
             states_next.append(next_state)
+            # if not extract_var(",".join(map(str, next_state))):
+            #     self.memory[i].append(next_state)
             atom_indices_next.append(next_atom_index)
             sub_indices_next.append(next_sub_index)
         atom_indices_next = torch.stack(atom_indices_next)
         sub_indices_next = torch.stack(sub_indices_next)
 
         done_next, rewards_next = self.get_done_reward(states_next,self.tensordict['label'].item())
-        # Get next possible states for the new states, as well as rewards and done
-        derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.get_next_states_batch(states_next)
+        if not self.limit_space and states_next[0] in self.memory[0]:
+            derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.end_in_false(derived_atom_indices.size(), derived_sub_indices.size())
+        else:
+            derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.get_next_states_batch(states_next)
+            for i in range(len(states_next)):
+                if not extract_var(",".join(map(str, states_next[i]))):
+                    self.memory[i].append(states_next[i])
+            if self.limit_space:
+                derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.limit_action_space(derived_states_next, derived_atom_indices_next, derived_sub_indices_next)
+        if all(len(elem)==0 for elem in derived_states_next):
+            derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.end_in_false(derived_atom_indices.size(), derived_sub_indices.size())
         self.update_action_space(derived_states_next)
 
         self.current_depth += 1
@@ -350,7 +389,6 @@ class LogicEnv_gym(gym.Env):
                 "atom_index": atom_indices_next,
                 "sub_index": sub_indices_next,
                 "state": NonTensorData(data=states_next),
-                "label": self.tensordict['label'],
                 "label": self.tensordict['label'],
                 "done": done_next,
                 "reward": rewards_next,
@@ -467,5 +505,39 @@ class LogicEnv_gym(gym.Env):
         sampled_labels = [labels[i] for i in sampled_indices]
         
         return sampled_queries, sampled_labels
-    
+
+
+    def limit_action_space(self, derived_states: List[List[List[Term]]], derived_atom_indices: torch.Tensor, derived_sub_indices: torch.Tensor) -> Tuple[List[List[List[Term]]], torch.Tensor, torch.Tensor]:
+        mask = [[state not in self.memory[i] for state in derived_states[i]] for i in range(len(derived_states))]
+        cutted_derived_states = [[state for state, m in zip(derived_states[i], mask[i]) if m] for i in range(len(derived_states))]
+        mask = torch.tensor(mask, device=self.device)
+        mask_broadcasted = torch.cat([mask, torch.zeros(mask.size(0), derived_atom_indices.size(1)-mask.size(1))], dim=1)
+        mask_broadcasted = mask_broadcasted.unsqueeze(-1)
+        cutted_derived_atom_indices = derived_atom_indices * mask_broadcasted
+        valid_id = torch.any(cutted_derived_atom_indices!=0, dim=-1)
+        valid = cutted_derived_atom_indices[valid_id]
+        valid = valid.unsqueeze(0)
+        cutted_derived_atom_indices = torch.cat([valid, torch.zeros(derived_atom_indices.size(0), derived_atom_indices.size(1)-valid.size(1), derived_atom_indices.size(2), device=self.device, dtype=torch.int64)], dim=1)
+        mask_broadcasted = mask_broadcasted.unsqueeze(-1)
+        cutted_derived_sub_indices = derived_sub_indices * mask_broadcasted
+        valid_id = torch.any(cutted_derived_sub_indices!=0, dim=(-1, -2))
+        valid = cutted_derived_sub_indices[valid_id]
+        valid = valid.unsqueeze(0)
+        cutted_derived_sub_indices = torch.cat([valid, torch.zeros(derived_sub_indices.size(0), derived_sub_indices.size(1)-valid.size(1), derived_sub_indices.size(2), derived_sub_indices.size(3), device=self.device, dtype=torch.int64)], dim=1)
+        return cutted_derived_states, cutted_derived_atom_indices, cutted_derived_sub_indices
+
+
+    def end_in_false(self, atom_indices_shape: torch.Size, sub_indices_shape: torch.Size) -> Tuple[List[List[List[Term]]], torch.Tensor, torch.Tensor]:
+        false_state = Term(predicate="False", args=[])
+        derived_states_next = [[[false_state]]]
+        derived_atom_indices_next = torch.zeros(atom_indices_shape, device=self.device, dtype=torch.int64)
+        derived_sub_indices_next = torch.zeros(sub_indices_shape, device=self.device, dtype=torch.int64)
+        if false_state not in self.index_manager.atom_to_index:
+            self.index_manager.atom_to_index[false_state] = self.index_manager.next_atom_index
+            self.index_manager.next_atom_index += 1
+        false_sub_id = torch.tensor([self.index_manager.predicate_no + 2, 0, 0], device=self.device, dtype=torch.int64)
+        derived_atom_indices_next[0, 0, 0] = self.index_manager.atom_to_index[false_state]
+        derived_sub_indices_next[0, 0, 0] = false_sub_id
+        return derived_states_next, derived_atom_indices_next, derived_sub_indices_next
+
   

@@ -45,7 +45,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         valid_file=args.valid_file,
         test_file= args.test_file,
         use_only_positives=args.only_positives,
-        use_validation_as_train=False)
+        use_validation_as_train=False,
+        dynamic_neg=args.dynamic_neg,
+        train_neg_pos_ratio=args.train_neg_pos_ratio)
 
     index_manager = IndexManager(data_handler.constants, 
                                  data_handler.predicates,
@@ -77,13 +79,19 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         device=device, 
                         index_manager=index_manager,
                         data_handler=data_handler,
-                        seed=args.seed_run_i)   
+                        seed=args.seed_run_i,
+                       dynamic_neg=args.dynamic_neg,
+                       train_neg_pos_ratio=args.train_neg_pos_ratio,
+                       limit_space=args.limit_space)
     
     eval_env = LogicEnv_gym(max_depth=args.max_depth,
                             device=device, 
                             index_manager=index_manager,
                             data_handler=data_handler,
                             seed=args.seed_run_i,
+                            dynamic_neg=args.dynamic_neg,
+                            train_neg_pos_ratio=args.train_neg_pos_ratio,
+                            limit_space=args.limit_space,
                             eval=True) 
 
     # INIT MODEL
@@ -194,13 +202,16 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     else:
         from model_eval import eval_test_corruptions
         print('\nTesting train set...')
-        metrics_train = eval_test_corruptions(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,consult_janus=True) 
+        if not args.dynamic_neg:
+            metrics_train = eval_test_corruptions(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,verbose=1,consult_janus=True)
+        else:
+            metrics_train = eval_test_corruptions(eval_env.pos_train_queries,[1]*len(eval_env.pos_train_queries), data_handler.train_corruptions, eval_env,model,verbose=1,consult_janus=True)
         print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_train.items()], sep='\n')
         print('\nTesting val set...')
-        metrics_valid = eval_test_corruptions(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model)
+        metrics_valid = eval_test_corruptions(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model,verbose=1)
         print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_valid.items()], sep='\n')
         print('\nTesting test set...')
-        metrics_test = eval_test_corruptions(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model)
+        metrics_test = eval_test_corruptions(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model,verbose=1)
         print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_test.items()], sep='\n')
 
     return metrics_train, metrics_valid, metrics_test

@@ -8,10 +8,11 @@ locatedInCR_with_depth(X, Z, Recursion, MaxDepth, Depth, Proof) :-
 locatedInCR_with_depth(X, Z, Recursion, MaxDepth, Depth, Proof) :-
     Recursion < MaxDepth,
     neighborOf(X, Y),
+    neighborOf(Y, K),
     Next_Recursion is Recursion + 1,
-    locatedInCR_with_depth(Y, Z, Next_Recursion, MaxDepth, SubDepth, SubProof),
+    locatedInCR_with_depth(K, Z, Next_Recursion, MaxDepth, SubDepth, SubProof),
     Depth is SubDepth + 1,
-    Proof = [neighborOf(X, Y) | SubProof].
+    Proof = [neighborOf(X, Y), neighborOf(Y, K) | SubProof].
 
 % Query to Return Depth and Proofs
 query_with_depth(X, Z, MaxDepth, Depths, Proofs) :-

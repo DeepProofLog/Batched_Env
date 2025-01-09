@@ -368,8 +368,8 @@ class FileLogger:
                         pos_run_signature = headers.index('run_signature')
                     if headers is not None:
                         try:
-                            file_signature = line.split(';')[pos_run_signature]                        
-                            if file_signature in args['run_signature']:
+                            file_signature = line.split(';')[pos_run_signature]
+                            if file_signature == args['run_signature']:
                                 print("Skipping training, it has been already done for", args['run_signature'],"\n")
                                 return True
                         except:

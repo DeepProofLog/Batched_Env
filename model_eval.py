@@ -37,6 +37,7 @@ def eval_test(  data: list[Term],
         # action, _states = model.predict(obs, deterministic=deterministic)
         obs_tensor = obs_as_tensor(obs, model.device)
         action, values, log_prob = model.policy(obs_tensor, deterministic=deterministic)
+        print(f'action:{action}, values:{values}, log_prob:{log_prob}, prob:{np.exp(log_prob.detach().cpu().numpy().item())}') if verbose >=1 else None
         log_prob = log_prob.detach().cpu().numpy().item()
         cum_log_prob += log_prob
 
@@ -49,6 +50,7 @@ def eval_test(  data: list[Term],
             rewards_list.append(trajectory_reward)
             episode_len_list.append(episode_len)
             log_probs.append(cum_log_prob)
+            print(f'reward {trajectory_reward}, episode len {episode_len}, cum log prob {cum_log_prob}') if verbose >=1 else None
 
             # print(' done,truncated,rewards',dones,truncated,rewards)
             next_query += 1

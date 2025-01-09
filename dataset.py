@@ -77,6 +77,19 @@ def get_queries_labels(path:str)-> Tuple[List[Term],List[bool]]:
             labels.append(1 if label == "True" else (0 if label == "False" else '?'))
     return queries, labels
 
+def get_queries(path:str)-> Tuple[List[Term],List[Term]]:
+    '''Get queries from a file'''
+    pos_queries = []
+    neg_queries = []
+    with open(path, "r") as f:
+        dicts = json.load(f)
+        for key, value in dicts.items():
+            pos_queries.append(get_atom_from_string(key))
+            for q, l in value:
+                if l:
+                    neg_queries.append(get_atom_from_string(q))
+    return pos_queries, neg_queries
+
 def get_predicates_and_constants(rules: List[Rule], facts: List[Term]) -> Tuple[set[str], set[str], dict[str,int]]:
     predicates = set()
     constants = set()
@@ -139,7 +152,9 @@ class DataHandler():
                     valid_file: str = None,
                     test_file: str = None,
                     use_validation_as_train: bool = False,
-                    use_only_positives: bool = False):
+                    use_only_positives: bool = False,
+                    dynamic_neg: bool = False,
+                    train_neg_pos_ratio: int = 1):
         
         base_path  = join(base_path, dataset_name)
         janus_path = join(base_path, janus_file)
@@ -151,15 +166,25 @@ class DataHandler():
         janus.consult(janus_path)
 
         self.facts, self.rules = get_rules_from_file(janus_path)
-        self.train_queries, self.train_labels = get_queries_labels(train_path)
+        if not dynamic_neg:
+            self.train_queries, self.train_labels = get_queries_labels(train_path)
+        else:
+            self.pos_train_queries, self.neg_train_queries = get_queries(train_path)
         self.valid_queries, self.valid_labels = get_queries_labels(valid_path)
         self.test_queries, self.test_labels = get_queries_labels(test_path)
 
-        print('ratio of positives in train', '{:.2f}'.format(sum(self.train_labels)/len(self.train_labels)))
+        if not dynamic_neg:
+            print('ratio of positives in train', '{:.2f}'.format(sum(self.train_labels)/len(self.train_labels)))
+        else:
+            print('ratio of positives in train', '{:.2f}'.format(1/int(train_neg_pos_ratio)+1))
         print('                      valid', '{:.2f}'.format(sum(self.valid_labels)/len(self.valid_labels)))
         print('                      test', '{:.2f}'.format(sum(self.test_labels)/len(self.test_labels)))
 
-        self.train_corruptions = get_corruptions(self.train_queries, join(base_path, "train_label_corruptions.json"))
+        # why get corruptions here?
+        if not dynamic_neg:
+            self.train_corruptions = get_corruptions(self.train_queries, join(base_path, "train_label_corruptions.json"))
+        else:
+            self.train_corruptions = get_corruptions(self.pos_train_queries, join(base_path, "train_label_corruptions.json"))
         self.valid_corruptions = get_corruptions(self.valid_queries, join(base_path, "valid_label_corruptions.json"))
         self.test_corruptions = get_corruptions(self.test_queries, join(base_path, "test_label_corruptions.json"))
 
