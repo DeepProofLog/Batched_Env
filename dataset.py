@@ -146,8 +146,8 @@ class DataHandler():
     '''
     def __init__(self, dataset_name: str,
                     base_path: str,
+                    facts_file: str,
                     janus_file: str,
-                    # facts_file: str,
                     train_file: str = None,
                     valid_file: str = None,
                     test_file: str = None,
@@ -157,9 +157,10 @@ class DataHandler():
                     train_neg_pos_ratio: int = 1):
         
         base_path  = join(base_path, dataset_name)
+        facts_path = join(base_path, facts_file)
         janus_path = join(base_path, janus_file)
         self.janus_path = janus_path
-        # facts_path = join(base_path, facts_file)
+
         train_path = join(base_path, train_file) 
         valid_path = join(base_path, valid_file) if valid_file else None
         test_path = join(base_path, test_file)
@@ -176,7 +177,7 @@ class DataHandler():
         if not dynamic_neg:
             print('ratio of positives in train', '{:.2f}'.format(sum(self.train_labels)/len(self.train_labels)))
         else:
-            print('ratio of positives in train', '{:.2f}'.format(1/int(train_neg_pos_ratio)+1))
+            print('ratio of positives in train', '{:.2f}'.format(1/(int(train_neg_pos_ratio)+1)))
         print('                      valid', '{:.2f}'.format(sum(self.valid_labels)/len(self.valid_labels)))
         print('                      test', '{:.2f}'.format(sum(self.test_labels)/len(self.test_labels)))
 

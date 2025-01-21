@@ -1,3 +1,7 @@
+:- dynamic neighborOf/2.
+:- dynamic locatedInCR/2.
+:- discontiguous neighborOf/2.
+:- discontiguous locatedInCR/2.
 neighborOf(burkina_faso,ivory_coast).
 neighborOf(mali,burkina_faso).
 neighborOf(morocco,algeria).
@@ -694,7 +698,6 @@ locatedInCR(brunei,asia).
 locatedInCR(marshall_islands,oceania).
 locatedInCR(grenada,americas).
 locatedInCR(vanuatu,oceania).
-locatedInCR(guinea_bissau,africa).
 locatedInCR(uganda,africa).
 locatedInCR(new_caledonia,oceania).
 locatedInCR(sweden,europe).
@@ -741,6 +744,7 @@ locatedInCR(isle_of_man,europe).
 locatedInCR(seychelles,africa).
 locatedInCR(madagascar,africa).
 locatedInCR(bahamas,americas).
+locatedInCR(rwanda,africa).
 locatedInCR(maldives,asia).
 locatedInCR(singapore,asia).
 locatedInCR(montserrat,americas).

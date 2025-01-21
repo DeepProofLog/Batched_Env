@@ -674,7 +674,6 @@ locatedInCR(united_states_minor_outlying_islands,americas).
 locatedInCR(south_georgia,americas).
 locatedInCR(south_africa,africa).
 locatedInCR(british_indian_ocean_territory,africa).
-locatedInCR(brazil,americas).
 locatedInCR(guernsey,europe).
 locatedInCR(india,asia).
 locatedInCR(ukraine,europe).
@@ -687,6 +686,7 @@ locatedInCR(south_sudan,africa).
 locatedInCR(sao_tome_and_principe,africa).
 locatedInCR(isle_of_man,europe).
 locatedInCR(comoros,africa).
+locatedInCR(sweden,europe).
 locatedInCR(french_polynesia,oceania).
 locatedInCR(jersey,europe).
 locatedInCR(cocos_keeling_islands,oceania).

@@ -10,7 +10,7 @@ import torch
 from typing import Tuple
 
 from utils import get_device,simple_rollout, print_state_transition
-from my_callbacks import SB3ModelCheckpoint, EvalCallback
+from my_callbacks import SB3ModelCheckpoint, EvalCallback, EpochTimingCallback
 from dataset import DataHandler
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from kge import read_embeddings, create_embed_tables, KGEModel, EmbeddingFunction
@@ -40,6 +40,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     data_handler = DataHandler(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
+        facts_file=args.facts_file,
         janus_file=args.janus_file,
         train_file= args.train_file,
         valid_file=args.valid_file,
@@ -132,7 +133,11 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
             args.load_model = False
         
     if not args.load_model and args.timesteps_train > 0:
-        
+
+        timing_callback = EpochTimingCallback(verbose=1)
+
+        callbacks = [timing_callback]
+
         # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
 
@@ -149,7 +154,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     # callback_after_eval=no_improvement_callback,
                                     )
 
-        callbacks = [eval_callback]
+        callbacks.append(eval_callback)
     
         checkpoint_callback = SB3ModelCheckpoint(model,monitor='train/loss', frequency=5000, 
                                                     total_steps=args.timesteps_train, 

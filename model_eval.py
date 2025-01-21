@@ -33,7 +33,7 @@ def eval_test(  data: list[Term],
 
     obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
     print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
-    while next_query < len(data)-1:
+    while next_query < len(data):
         # action, _states = model.predict(obs, deterministic=deterministic)
         obs_tensor = obs_as_tensor(obs, model.device)
         action, values, log_prob = model.policy(obs_tensor, deterministic=deterministic)
@@ -42,7 +42,7 @@ def eval_test(  data: list[Term],
         cum_log_prob += log_prob
 
         
-        obs, rewards, dones, truncated, info = env.step(action)
+        obs, rewards, dones, truncated, info = env.step(action[0])
         print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
         trajectory_reward, episode_len, log_prob = trajectory_reward + rewards, episode_len + 1, log_prob + log_prob
 
@@ -54,10 +54,11 @@ def eval_test(  data: list[Term],
 
             # print(' done,truncated,rewards',dones,truncated,rewards)
             next_query += 1
-            obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
-            # print('\nquery',next_query, 'with label',labels[next_query])
-            trajectory_reward, episode_len, cum_log_prob = 0, 0, 0
-            print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+            if next_query < len(data):
+                obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
+                # print('\nquery',next_query, 'with label',labels[next_query])
+                trajectory_reward, episode_len, cum_log_prob = 0, 0, 0
+                print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     
     if return_dict:
         return {'rewards_mean':np.mean(rewards_list), 'rewards_std':np.std(rewards_list), 
@@ -83,23 +84,24 @@ def eval_test_corruptions(  data: list[Term],
     (data_pos, labels_pos) = zip(*[(data[i],labels[i]) for i in range(len(data)) if labels[i] == 1])
     for query in data_pos:
         corruptions_query = corruptions[query]
-        if len(corruptions_query) == 0:
-            continue
+        # if len(corruptions_query) == 0:
+        #     continue
         data_query = [query] + corruptions_query
         labels_query = [1] + [0 for _ in range(len(corruptions_query))]
         rewards, episode_len, log_probs = eval_test(data_query, labels_query, env, model, deterministic, verbose, return_dict=False, consult_janus=consult_janus)
-        
-        rank = np.argsort(log_probs)[::-1].tolist().index(0)
-        mrr = 1/(rank+1)
-        mrr_list.append(mrr)
 
         rewards_list_pos.append(rewards[0])
         episode_len_list_pos.append(episode_len[0])
         log_probs_list_pos.append(log_probs[0])
 
-        rewards_list_neg.extend(rewards[1:])
-        episode_len_list_neg.extend(episode_len[1:])
-        log_probs_list_neg.extend(log_probs[1:])
+        if len(corruptions_query) > 0:
+            rank = np.argsort(log_probs)[::-1].tolist().index(0)
+            mrr = 1/(rank+1)
+            mrr_list.append(mrr)
+
+            rewards_list_neg.extend(rewards[1:])
+            episode_len_list_neg.extend(episode_len[1:])
+            log_probs_list_neg.extend(log_probs[1:])
 
     info = {'pos_queries':len(rewards_list_pos), 'neg_queries':len(rewards_list_neg), 'ratio_pos_queries':round(len(rewards_list_pos)/(len(rewards_list_pos)+len(rewards_list_neg)),2),
             'mrr_mean':np.mean(mrr_list), 'mrr_std':np.std(mrr_list),

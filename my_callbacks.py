@@ -592,3 +592,50 @@ class SB3ModelCheckpoint(BaseCallback):
         else:
             print(f'No best model found for {self.name}.')
 
+
+import time
+from stable_baselines3.common.callbacks import BaseCallback
+
+class EpochTimingCallback(BaseCallback):
+    """
+    Custom callback to measure and print the time taken for each epoch.
+    """
+    def __init__(self, verbose=0):
+        super(EpochTimingCallback, self).__init__(verbose)
+        self.verbose = verbose
+        self.epoch_start_time = None
+        self.epoch_end_times = []
+
+    def _on_rollout_start(self) -> None:
+        """
+        Called at the start of a new rollout (beginning of an epoch in PPO).
+        """
+        self.epoch_start_time = time.time()
+
+    def _on_rollout_end(self) -> None:
+        """
+        Called at the end of a rollout (end of an epoch in PPO).
+        """
+        if self.epoch_start_time is not None:
+            epoch_time = time.time() - self.epoch_start_time
+            self.epoch_end_times.append(epoch_time)
+            if self.verbose > 0:
+                print(f"Epoch {len(self.epoch_end_times)} completed in {epoch_time:.2f} seconds.")
+
+    def _on_training_end(self) -> None:
+        """
+        Called once the training is completed.
+        """
+        total_time = sum(self.epoch_end_times)
+        avg_time = total_time / len(self.epoch_end_times) if self.epoch_end_times else 0
+        if self.verbose > 0:
+            print(f"\nTraining completed!")
+            print(f"Total training time: {total_time:.2f} seconds.")
+            print(f"Average epoch time: {avg_time:.2f} seconds.")
+
+    def _on_step(self) -> bool:
+        """
+        Dummy implementation of the required abstract method `_on_step`.
+        This callback does not act on steps.
+        """
+        return True

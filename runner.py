@@ -28,15 +28,14 @@ if __name__ == "__main__":
             self.stdout.flush()
 
 
-    # Redirect stdout to the Tee class
-    # sys.stdout = Tee("output.log")
-
-    RESTORE_BEST_MODEL = [True,False]
-    # RESTORE_BEST_MODEL = [True]
+    # RESTORE_BEST_MODEL = [True,False]
+    RESTORE_BEST_MODEL = [True]
     TIMESTEP_TRAIN = [50000]
+    # TIMESTEP_TRAIN = [500]
     ONLY_POSITIVES = [False]
-    LIMIT_SPACE = [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
-    load_model = False
+    # LIMIT_SPACE = [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
+    LIMIT_SPACE = [True]
+    load_model = True
     save_model = True
     dynamic_neg = True
     # in validation and test, we use all provable corruptions
@@ -49,22 +48,22 @@ if __name__ == "__main__":
     logger_path = "./runs/"
 
     # DATASET_NAME =  ["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
-    DATASET_NAME = ["ablation_d1"]
+    DATASET_NAME = ["ablation_d3"]
     LEARN_EMBEDDINGS = [True]
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
-    ATOM_EMBEDDING_SIZE = [50,200]
-    # ATOM_EMBEDDING_SIZE = [200]
+    # ATOM_EMBEDDING_SIZE = [50,200]
+    ATOM_EMBEDDING_SIZE = [200]
     # SEED = [[0,1,2,3,4]]
-    SEED = [[0, 1, 2]]
+    SEED = [[0]]
     # MAX_DEPTH = [20,100]
     MAX_DEPTH = [20]
 
     # path to the data    
     data_path = "./data/"
     domain_file = None
+    facts_file = "train.txt"
     janus_file = "train.pl"
-    # facts_file = "train.txt"
     train_txt = "train_queries.txt"
     train_json = "train_label_corruptions.json"
     valid_txt = "valid_queries.txt"
@@ -119,6 +118,7 @@ if __name__ == "__main__":
         args.dataset_name = dataset_name
         args.data_path = data_path
         args.domain_file = domain_file
+        args.facts_file = facts_file
         args.janus_file = janus_file
         args.train_file = train_file
         args.valid_file = valid_file
@@ -151,6 +151,8 @@ if __name__ == "__main__":
                     args.learn_embeddings,args.timesteps_train,args.restore_best_model, args.dynamic_neg, args.train_neg_pos_ratio, args.limit_space)
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         print(args.run_signature)
+        # Redirect stdout to the Tee class
+        sys.stdout = Tee(f"output-{args.run_signature}.log")
 
         all_args.append(copy.deepcopy(args)) # append a hard copy of the args to the list of all_args
 

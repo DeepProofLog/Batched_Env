@@ -1,3 +1,7 @@
+:- dynamic neighborOf/2.
+:- dynamic locatedInCR/2.
+:- discontiguous neighborOf/2.
+:- discontiguous locatedInCR/2.
 neighborOf(burkina_faso,ivory_coast).
 neighborOf(mali,burkina_faso).
 neighborOf(morocco,algeria).

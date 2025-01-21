@@ -143,21 +143,19 @@ def extract_var(state: str)-> list:
 
 def print_state_transition(state, derived_states, reward, done, action=None, truncated=None):
     if action is not None:
-        for state_, action_, derived_states_, reward_, done_ in zip(state, action, derived_states, reward, done):
-            print(state_, '( action', action_.item(),')')
-            # print(*state_, '-> action', action_.item(),'/', len(derived_states_)-1)
-            print('Reward',reward_)
-            print('Done',done_)
-            print('Truncated',truncated) if truncated is not None else None
-            print('     Derived states:',*derived_states_,'\n')
+        print(state, '( action', action.item(),')')
+        # print(*state_, '-> action', action_.item(),'/', len(derived_states_)-1)
+        print('Reward',reward.item())
+        print('Done',done.item())
+        print('Truncated',truncated) if truncated is not None else None
+        print('     Derived states:',*derived_states,'\n')
     else:
         print('Reset-----------')
-        for state_, derived_states_, reward_, done_ in zip(state, derived_states, reward, done):
-            print(state_)
-            print('Reward',reward_)
-            print('Done',done_)
-            print('Truncated',truncated) if truncated is not None else None
-            print('     Derived states:',*derived_states_,'\n')
+        print(state)
+        print('Reward',reward.item())
+        print('Done',done.item())
+        print('Truncated',truncated) if truncated is not None else None
+        print('     Derived states:',*derived_states,'\n')
 
 def print_rollout(data):
     """Prints each batch and then transposes to print each step in rollout data."""
