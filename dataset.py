@@ -1,10 +1,15 @@
 from os.path import join 
 import janus_swi as janus
-from typing import List,Tuple
+from typing import List,Tuple,Dict
 import re
 from utils import is_variable,Term
 import json
 from collections import defaultdict
+import re
+
+import math
+import torch
+from utils import is_variable,Term
 class Rule:
     def __init__(self, head: Term, body: List[Term]):
         self.head = head
@@ -41,7 +46,7 @@ def get_max_arity(file_path:str)-> int:
     return max_arity
 
 
-def get_rules_from_file(file_path: str) -> List[Rule]:
+def get_rules_from_file(file_path: str) -> Tuple[List[Term], List[Rule]]:
     """Get rules from a file"""
     rules = []
     queries = []
@@ -66,7 +71,7 @@ def get_rules_from_file(file_path: str) -> List[Rule]:
 
 
 def get_queries_labels(path:str)-> Tuple[List[Term],List[bool]]:
-    '''Get queries and labels from a file'''
+    '''Get queries and labels (whether they are provable) from a file'''
     queries = []
     labels = []
     with open(path, "r") as f:
@@ -78,7 +83,7 @@ def get_queries_labels(path:str)-> Tuple[List[Term],List[bool]]:
     return queries, labels
 
 def get_queries(path:str)-> Tuple[List[Term],List[Term]]:
-    '''Get queries from a file'''
+    '''Get queries from a file, and the corresponding negative queries (togehter with their labels indicating if they are provable)'''
     pos_queries = []
     neg_queries = []
     with open(path, "r") as f:
@@ -146,18 +151,18 @@ class DataHandler():
     '''
     def __init__(self, dataset_name: str,
                     base_path: str,
-                    facts_file: str,
                     janus_file: str,
                     train_file: str = None,
                     valid_file: str = None,
                     test_file: str = None,
-                    use_validation_as_train: bool = False,
-                    use_only_positives: bool = False,
+                    standard_corruptions: bool = False,
+
                     dynamic_neg: bool = False,
-                    train_neg_pos_ratio: int = 1):
+                    train_neg_pos_ratio: int = 1,
+                    name: str = None):
+
         
         base_path  = join(base_path, dataset_name)
-        facts_path = join(base_path, facts_file)
         janus_path = join(base_path, janus_file)
         self.janus_path = janus_path
 
@@ -181,26 +186,10 @@ class DataHandler():
         print('                      valid', '{:.2f}'.format(sum(self.valid_labels)/len(self.valid_labels)))
         print('                      test', '{:.2f}'.format(sum(self.test_labels)/len(self.test_labels)))
 
-        # why get corruptions here?
-        if not dynamic_neg:
-            self.train_corruptions = get_corruptions(self.train_queries, join(base_path, "train_label_corruptions.json"))
-        else:
+        if dynamic_neg: # dont we already have the train corruptions in neg_train_queries?
             self.train_corruptions = get_corruptions(self.pos_train_queries, join(base_path, "train_label_corruptions.json"))
-        self.valid_corruptions = get_corruptions(self.valid_queries, join(base_path, "valid_label_corruptions.json"))
-        self.test_corruptions = get_corruptions(self.test_queries, join(base_path, "test_label_corruptions.json"))
-
-        if use_only_positives:
-            self.train_queries = [query for query,label in zip(self.train_queries,self.train_labels) if label == 1]
-            self.valid_queries = [query for query,label in zip(self.valid_queries,self.valid_labels) if label == 1]
-            self.test_queries = [query for query,label in zip(self.test_queries,self.test_labels) if label == 1]
-            self.train_labels = [1 for _ in range(len(self.train_queries))]
-            self.valid_labels = [1 for _ in range(len(self.valid_queries))]
-            self.test_labels = [1 for _ in range(len(self.test_queries))]
-        
-        if use_validation_as_train:
-            self.train_queries, self.train_labels, self.train_corruptions = self.valid_queries, self.valid_labels, self.valid_corruptions
-            self.valid_queries, self.valid_labels, self.valid_corruptions = self.test_queries, self.test_labels, self.test_corruptions
-
+            self.valid_corruptions = get_corruptions(self.valid_queries, join(base_path, "valid_label_corruptions.json"))
+            self.test_corruptions = get_corruptions(self.test_queries, join(base_path, "test_label_corruptions.json"))
         self.janus_facts = []
         with open(janus_path, "r") as f:
             self.janus_facts = f.readlines()
@@ -214,14 +203,118 @@ class DataHandler():
         self.constant_no, self.predicate_no = len(self.constants), len(self.predicates)
 
 
-        # def create_corruptions(self, queries: List[Term], n_corruptions: int, mode: str='head_tail') -> List[Tuple[Term, bool]]:
-        #     '''
-        #     Given a list of queries, generate n (tail or head) corruptions for each query
-        #     To create a corruption, 
-        #         If it is tail corruption, we change the last constant of the query by a random set of constants. Check that the corruption is not in the facts
-        #         If it is head corruption, we change the first constant of the query by a random set of constant. Check that the corruption is not in the facts
-        #     '''
+        self.entity2domain = None
+        self.domain2entity = None
+        if standard_corruptions:
+            if 'countries' in self.name or 'ablation' in self.name:
+                # load the domain file
+                domain_file = join(base_path, "domain2constants.txt")
+                self.entity2domain = {}
+                self.domain2entity = defaultdict(list)
+                with open(domain_file, "r") as f:
+                    lines = f.readlines()
+                    for line in lines:
+                        line = line.strip()
+                        domain, *entities = line.split()
+                        for entity in entities:
+                            self.entity2domain[entity] = domain
+                            self.domain2entity[domain].append(entity)
+
+           
 
 
-            
+
+
+
+from pykeen.sampling import BasicNegativeSampler
+from typing_extensions import TypeAlias 
+LongTensor: TypeAlias = torch.LongTensor  
+
+class BasicNegativeSamplerDomain(BasicNegativeSampler):
+
+    def __init__(self, 
+                mapped_triples,
+                domain2idx: Dict[str, int],
+                entity2domain: Dict[int, str], 
+                num_negs_per_pos: int = 5,
+                filtered: bool = True,
+                corruption_scheme: List[str] = ['tail'],
+                ):
+        """
+        Initialize the BasicNegativeSamplerDomain.
+
+        Args:
+            mapped_triples: The mapped triples.
+            domain2idx (Dict[str, int]): A dictionary mapping domains to indices.
+            entity2domain (Dict[int, str]): A dictionary mapping entities to domains.
+            num_negs_per_pos (int): The number of negative samples per positive triple.
+            filtered (bool): Whether to use filtered negative sampling.
+            corruption_scheme (List[str]): The corruption scheme.
+        """
+        super().__init__(mapped_triples=mapped_triples,
+                         num_negs_per_pos=num_negs_per_pos,
+                         filtered=filtered,
+                         corruption_scheme=corruption_scheme)
+        
+        self.domain2idx = domain2idx
+        self.entity2domain = entity2domain
+        self.idx2domain = {idx: domain for domain, idxs in domain2idx.items() for idx in idxs}
+        self.domain_entities = {}
+        for entity, domain in self.entity2domain.items():
+            if domain not in self.domain_entities:
+                self.domain_entities[domain] = []
+            self.domain_entities[domain].append(entity)
+        for domain in self.domain_entities:
+            self.domain_entities[domain] = torch.tensor(self.domain_entities[domain], dtype=torch.long, device=mapped_triples.device)
+
+
+    def corrupt_batch(self, positive_batch: LongTensor) -> LongTensor:  # noqa: D102
+        batch_shape = positive_batch.shape[:-1]
+        # clone positive batch for corruption (.repeat_interleave creates a copy)
+        negative_batch = positive_batch.view(-1, 3).repeat_interleave(self.num_negs_per_pos, dim=0)
+        # Bind the total number of negatives to sample in this batch
+        total_num_negatives = negative_batch.shape[0]
+
+        # Equally corrupt all sides
+        split_idx = int(math.ceil(total_num_negatives / len(self._corruption_indices)))
+        # Do not detach, as no gradients should flow into the indices.
+        for index, start in zip(self._corruption_indices, range(0, total_num_negatives, split_idx)):
+            stop = min(start + split_idx, total_num_negatives)
+
+            for i in range(start, stop):
+                original_entity = negative_batch[i, index].item()
+                original_domain = self.entity2domain[original_entity]
+
+                possible_entities = self.domain_entities[original_domain]
+                
+                replacement_index = torch.randint(high=len(possible_entities), size=(1,), device=negative_batch.device).item()
+                replacement_entity = possible_entities[replacement_index].item()
+                while replacement_entity==original_entity: #make sure that the entity is different
+                  replacement_index = torch.randint(high=len(possible_entities), size=(1,), device=negative_batch.device).item()
+                  replacement_entity = possible_entities[replacement_index].item()
+                negative_batch[i, index] = replacement_entity
+        return negative_batch.view(*batch_shape, self.num_negs_per_pos, 3)
+    
+
+def get_sampler(data_handler: DataHandler, 
+                index_manager, 
+                triples_factory
+                ):
+
+    if 'countries' or 'ablation' in data_handler.dataset_name:
+        domain2idx = {domain: [index_manager.constant_str2idx[e] for e in entities] for domain, entities in data_handler.domain2entity.items()}
+        entity2domain: Dict[int, str] = {index_manager.constant_str2idx[e]: domain for domain, entities in data_handler.domain2entity.items() for e in entities}
+        sampler = BasicNegativeSamplerDomain(mapped_triples=triples_factory.mapped_triples,  # Pass mapped_triples instead
+                                            domain2idx=domain2idx,
+                                            entity2domain=entity2domain,
+                                            num_negs_per_pos=1,
+                                            filtered=True,
+                                            corruption_scheme=['tail'],)
+    else:
+        sampler = BasicNegativeSampler(mapped_triples=triples_factory.mapped_triples,  # Pass mapped_triples instead
+                                    num_negs_per_pos=1,
+                                    filtered=True,
+                                    corruption_scheme=['tail'])
+    
+    return sampler
 

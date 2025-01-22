@@ -353,8 +353,8 @@ class EvalCallback(EventCallback):
                 if self.verbose >= 1:
                     print("New best mean reward!")
 
-                self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
-                self.write_info()
+                # self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
+                # self.write_info()
 
                 self.best_epoch = self.num_timesteps
                 self.best_value = self.best_mean_reward
@@ -393,8 +393,8 @@ class EvalCallback(EventCallback):
         if not self.model_path:
             return
         info = {
-            'best_value': float(self.best_mean_reward),
-            'epoch': self.n_calls,
+            'best_metric_value': float(self.best_mean_reward),
+            'current_timestep': self.n_calls, # epoch
             'metric': 'best_mean_reward',
             'num_timesteps': self.num_timesteps,
         }
@@ -405,7 +405,13 @@ class EvalCallback(EventCallback):
     def restore_best_ckpt(self):
         """Restore the best model."""
         if self.best_epoch: # use best model from best_model
-            self.model.load(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
+            # add to a list the models that contain self.name and are in the model_path
+            model_files = [f for f in os.listdir(self.model_path) if self.name in f]
+            # assert there is only one model with the name
+            assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}"
+            # load the model
+            self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=True)
+            # self.model.load(os.path.join(self.model_path, f"best_eval_{self.name}.zip"),print_system_info=True)
             print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_value:.3f}.')
         else:
             print(f'No best model found for {self.name}.')
@@ -549,6 +555,9 @@ class SB3ModelCheckpoint(BaseCallback):
     def _on_training_end(self) -> bool:
         # Write the completion message to the info file
         self.write_info()
+        if self.model_path:
+            self.model_.save(os.path.join(self.model_path, f"last_epoch_{self.name}.zip"))
+            self.write_info()
 
     def _log_headers(self, headers):
         """Logs headers to the file."""
@@ -574,7 +583,7 @@ class SB3ModelCheckpoint(BaseCallback):
             'timesteps': self.num_timesteps,
             'finished_train': self.num_timesteps >= self.total_steps,
         }
-        info_path = os.path.join(self.model_path,f'train_info_{self.name}.json')
+        info_path = os.path.join(self.model_path,f'last_epoch_{self.name}.json')
         with open(info_path, 'w') as f:
             json.dump(info, f, indent=4)
 

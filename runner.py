@@ -32,10 +32,9 @@ if __name__ == "__main__":
     RESTORE_BEST_MODEL = [True]
     TIMESTEP_TRAIN = [50000]
     # TIMESTEP_TRAIN = [500]
-    ONLY_POSITIVES = [False]
     # LIMIT_SPACE = [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     LIMIT_SPACE = [True]
-    load_model = True
+    LOAD_MODEL = ['last_epoch'] #['best_eval', 'last_epoch']
     save_model = True
     dynamic_neg = True
     # in validation and test, we use all provable corruptions
@@ -62,7 +61,6 @@ if __name__ == "__main__":
     # path to the data    
     data_path = "./data/"
     domain_file = None
-    facts_file = "train.txt"
     janus_file = "train.pl"
     train_txt = "train_queries.txt"
     train_json = "train_label_corruptions.json"
@@ -103,22 +101,22 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model,only_positives, limit_space in product(DATASET_NAME,
-            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_MODEL,ONLY_POSITIVES, LIMIT_SPACE):
+    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model, limit_space, load_model in product(DATASET_NAME,
+            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_MODEL, LIMIT_SPACE, LOAD_MODEL):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
         constant_embedding_size = predicate_embedding_size = atom_embedding_size
         
-        args.only_positives = only_positives
         args.dynamic_neg = dynamic_neg
+        args.standard_corruptions = False
+
         args.train_neg_pos_ratio = train_neg_pos_ratio
         args.limit_space = limit_space
 
         args.dataset_name = dataset_name
         args.data_path = data_path
         args.domain_file = domain_file
-        args.facts_file = facts_file
         args.janus_file = janus_file
         args.train_file = train_file
         args.valid_file = valid_file

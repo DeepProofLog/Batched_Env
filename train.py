@@ -25,6 +25,10 @@ from stable_baselines3.common.callbacks import (
 from wandb.integration.sb3 import WandbCallback
 import wandb
 
+from dataset import BasicNegativeSamplerDomain
+from pykeen.triples import TriplesFactory
+from typing import Dict
+
 
 
 def main(args,log_filename,use_logger,use_WB,WB_path,date):
@@ -40,15 +44,14 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     data_handler = DataHandler(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
-        facts_file=args.facts_file,
         janus_file=args.janus_file,
         train_file= args.train_file,
         valid_file=args.valid_file,
         test_file= args.test_file,
-        use_only_positives=args.only_positives,
-        use_validation_as_train=False,
         dynamic_neg=args.dynamic_neg,
-        train_neg_pos_ratio=args.train_neg_pos_ratio)
+        standard_corruptions=args.standard_corruptions,
+        train_neg_pos_ratio=args.train_neg_pos_ratio,
+        name=args.dataset_name)
 
     index_manager = IndexManager(data_handler.constants, 
                                  data_handler.predicates,
@@ -57,6 +60,17 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                  args.variable_no,
                                  max_arity=data_handler.max_arity, 
                                  device=device)
+    
+    if args.standard_corruptions:
+        np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts],dtype=str)
+        triples_factory = TriplesFactory.from_labeled_triples(triples=np_facts,
+                                                            entity_to_id=index_manager.constant_str2idx,
+                                                            relation_to_id=index_manager.predicate_str2idx,
+                                                            compact_id=False,
+                                                            create_inverse_triples=False)
+        from dataset import get_sampler
+        data_handler.sampler = get_sampler(data_handler=data_handler, index_manager=index_manager, triples_factory=triples_factory)
+        data_handler.triples_factory = triples_factory
 
     if args.learn_embeddings:
         embedder = KGEModel(data_handler.constant_no, 
@@ -81,9 +95,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         index_manager=index_manager,
                         data_handler=data_handler,
                         seed=args.seed_run_i,
-                       dynamic_neg=args.dynamic_neg,
-                       train_neg_pos_ratio=args.train_neg_pos_ratio,
-                       limit_space=args.limit_space)
+                        dynamic_neg=args.dynamic_neg,
+                        train_neg_pos_ratio=args.train_neg_pos_ratio,
+                        limit_space=args.limit_space)
     
     eval_env = LogicEnv_gym(max_depth=args.max_depth,
                             device=device, 
@@ -114,22 +128,19 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     
 
     # TRAIN
+    model_path = os.path.join(args.models_path,args.run_signature, args.run_signature + f'_seed-{args.seed_run_i}')
+    model_name = args.run_signature+date+'-seed_{}'.format(args.seed_run_i)
     if args.load_model:
-        model_path = os.path.join(args.models_path, args.run_signature)
-        if not os.path.exists(model_path):
-            print("No model found in", model_path,'!!!')
-            args.load_model = False
-        elif args.model_name == "PPO":
-            models = [m for m in os.listdir(model_path) if 'zip' in m and 'best_eval' in m]
-            models.sort()
-            if len(models) == 0:
-                print("No model found in", model_path,'!!!')
-                args.load_model = False
+        try:
+            models = sorted(
+                [m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m])
+            if models:
+                print(f"Loading model from {os.path.join(model_path, models[-1])}")
+                model = PPO.load(os.path.join(model_path, models[-1]), env=eval_env, device=device)
             else:
-                print("Loading model from", os.path.join(model_path,models[-1]))
-                model = PPO.load(os.path.join(model_path,models[-1]), env=None, device=device)
-        else:
-            print("Model not supported !!!!")
+                raise FileNotFoundError(f"No suitable model found in {model_path}")
+        except (FileNotFoundError, ValueError) as e:
+            print(e)
             args.load_model = False
         
     if not args.load_model and args.timesteps_train > 0:
@@ -142,14 +153,14 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
 
         eval_callback = EvalCallback(eval_env=eval_env, 
-                                    model_path=os.path.join(args.models_path, args.run_signature),
+                                    model_path=model_path if args.save_model else None,
                                     save_model=args.save_model,
                                     log_path=log_filename if use_logger else None,
                                     eval_freq=10000,
                                     n_eval_episodes=len(data_handler.valid_queries),
                                     deterministic=True,
                                     render=False,
-                                    name=args.run_signature+date+'-seed_{}'.format(args.seed_run_i),
+                                    name=model_name,
                                     callback_on_new_best=reward_threshold_callback if args.restore_best_model else None,
                                     # callback_after_eval=no_improvement_callback,
                                     )
@@ -158,16 +169,16 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     
         checkpoint_callback = SB3ModelCheckpoint(model,monitor='train/loss', frequency=5000, 
                                                     total_steps=args.timesteps_train, 
-                                                    model_path=os.path.join(args.models_path, args.run_signature) if args.save_model else None,
+                                                    model_path=model_path if args.save_model else None,
                                                     log_path = log_filename if use_logger else None,
-                                                    name=args.run_signature+date+'-seed_{}'.format(args.seed_run_i))
+                                                    name=model_name,)
         callbacks.append(checkpoint_callback)
 
         # Initialize a W&B run
         if use_WB:
             run = wandb.init(project = "RL-NeSy", 
                             group= args.run_signature,
-                            name=args.run_signature+'-seed_{}'.format(args.seed_run_i),
+                            name=model_name,
                             dir=WB_path,  
                             sync_tensorboard=True,  # Sync SB3's TensorBoard logs to W&B
                             config = dict(
@@ -186,38 +197,29 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
         callbacks = CallbackList(callbacks)
         model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
-        if args.restore_best_model:
-            eval_callback.restore_best_ckpt()
+        # if args.restore_best_model:
+        #     eval_callback.restore_best_ckpt()
 
         if use_WB:
             run.finish()   
 
     # TEST
-    if args.only_positives:
-        from model_eval import eval_test
-        print('\nTesting train set...')
-        metrics_train = eval_test(eval_env.train_queries,eval_env.train_labels,eval_env,model,consult_janus=True)
-        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_train.items()], sep='\n')
-        print('\nTesting val set...')
-        metrics_valid = eval_test(eval_env.valid_queries,eval_env.valid_labels,eval_env,model)
-        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_valid.items()], sep='\n')
-        print('\nTesting test set...')
-        metrics_test = eval_test(eval_env.test_queries,eval_env.test_labels,eval_env,model)
-        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_test.items()], sep='\n')
+    from model_eval import eval_test_corruptions
+    def print_eval_info(metrics: Dict[str, float]):
+        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()], sep='\n')
+
+    print('\nTesting train set...')
+    if not args.dynamic_neg:
+        metrics_train = eval_test_corruptions(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,verbose=1,consult_janus=True)
     else:
-        from model_eval import eval_test_corruptions
-        print('\nTesting train set...')
-        if not args.dynamic_neg:
-            metrics_train = eval_test_corruptions(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,verbose=1,consult_janus=True)
-        else:
-            metrics_train = eval_test_corruptions(eval_env.pos_train_queries,[1]*len(eval_env.pos_train_queries), data_handler.train_corruptions, eval_env,model,verbose=1,consult_janus=True)
-        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_train.items()], sep='\n')
-        print('\nTesting val set...')
-        metrics_valid = eval_test_corruptions(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model,verbose=1)
-        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_valid.items()], sep='\n')
-        print('\nTesting test set...')
-        metrics_test = eval_test_corruptions(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model,verbose=1)
-        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics_test.items()], sep='\n')
+        metrics_train = eval_test_corruptions(eval_env.pos_train_queries,[1]*len(eval_env.pos_train_queries), data_handler.train_corruptions, eval_env,model,verbose=1,consult_janus=True)
+    print_eval_info(metrics_train)
+    print('\nTesting val set...')
+    metrics_valid = eval_test_corruptions(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model,verbose=1)
+    print_eval_info(metrics_valid)
+    print('\nTesting test set...')
+    metrics_test = eval_test_corruptions(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model,verbose=1)
+    print_eval_info(metrics_test)
 
     return metrics_train, metrics_valid, metrics_test
 

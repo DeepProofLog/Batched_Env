@@ -32,25 +32,26 @@ def eval_test(  data: list[Term],
     next_query, trajectory_reward, episode_len, cum_log_prob = 0, 0, 0, 0
 
     obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
-    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+    # print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     while next_query < len(data):
         # action, _states = model.predict(obs, deterministic=deterministic)
         obs_tensor = obs_as_tensor(obs, model.device)
         action, values, log_prob = model.policy(obs_tensor, deterministic=deterministic)
-        print(f'action:{action}, values:{values}, log_prob:{log_prob}, prob:{np.exp(log_prob.detach().cpu().numpy().item())}') if verbose >=1 else None
+        # print(f'action:{action}, values:{values}, log_prob:{log_prob}, prob:{np.exp(log_prob.detach().cpu().numpy().item())}') if verbose >=1 else None
         log_prob = log_prob.detach().cpu().numpy().item()
         cum_log_prob += log_prob
 
         
         obs, rewards, dones, truncated, info = env.step(action[0])
-        print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
+        # obs, rewards, dones, truncated, info = env.step(action)
+        # print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
         trajectory_reward, episode_len, log_prob = trajectory_reward + rewards, episode_len + 1, log_prob + log_prob
 
         if dones:
             rewards_list.append(trajectory_reward)
             episode_len_list.append(episode_len)
             log_probs.append(cum_log_prob)
-            print(f'reward {trajectory_reward}, episode len {episode_len}, cum log prob {cum_log_prob}') if verbose >=1 else None
+            # print(f'reward {trajectory_reward}, episode len {episode_len}, cum log prob {cum_log_prob}') if verbose >=1 else None
 
             # print(' done,truncated,rewards',dones,truncated,rewards)
             next_query += 1
@@ -58,7 +59,7 @@ def eval_test(  data: list[Term],
                 obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
                 # print('\nquery',next_query, 'with label',labels[next_query])
                 trajectory_reward, episode_len, cum_log_prob = 0, 0, 0
-                print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+                # print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     
     if return_dict:
         return {'rewards_mean':np.mean(rewards_list), 'rewards_std':np.std(rewards_list), 
