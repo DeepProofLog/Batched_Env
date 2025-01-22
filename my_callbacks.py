@@ -195,7 +195,6 @@ class EvalCallback(EventCallback):
         eval_freq: int = 10000,
         log_path: Optional[str] = None,
         model_path: Optional[str] = None,
-        save_model: bool = False,
         deterministic: bool = True,
         render: bool = False,
         verbose: int = 1,
@@ -207,7 +206,6 @@ class EvalCallback(EventCallback):
         self.name = name
         self.best_epoch = None
         self.best_value = None
-        self.save_model = save_model
 
         self.callback_on_new_best = callback_on_new_best
         if self.callback_on_new_best is not None:
@@ -353,8 +351,9 @@ class EvalCallback(EventCallback):
                 if self.verbose >= 1:
                     print("New best mean reward!")
 
-                # self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
-                # self.write_info()
+                if self.model_path:
+                    self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
+                    self.write_info()
 
                 self.best_epoch = self.num_timesteps
                 self.best_value = self.best_mean_reward
@@ -406,9 +405,8 @@ class EvalCallback(EventCallback):
         """Restore the best model."""
         if self.best_epoch: # use best model from best_model
             # add to a list the models that contain self.name and are in the model_path
-            model_files = [f for f in os.listdir(self.model_path) if self.name in f]
-            # assert there is only one model with the name
-            assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}"
+            model_files = [f for f in os.listdir(self.model_path) if self.name in f and '.zip' in f and 'best_eval' in f]
+            assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}: {model_files}"
             # load the model
             self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=True)
             # self.model.load(os.path.join(self.model_path, f"best_eval_{self.name}.zip"),print_system_info=True)
@@ -418,9 +416,10 @@ class EvalCallback(EventCallback):
     
     def _on_training_end(self) -> bool:
         # Write the completion message to the info file
-        self.write_info()
-        # delete the model if not save_model
-        if not self.save_model:
+        if self.model_path:
+            self.write_info()
+        else:
+            # delete the model if not save_model
             os.remove(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
             
 
@@ -549,12 +548,11 @@ class SB3ModelCheckpoint(BaseCallback):
 
             # Save model
             if self.model_path:
-                self.model_.save(os.path.join(self.model_path, f"best_train_{self.name}.zip"))
+                self.model_.save(os.path.join(self.model_path, f"last_epoch_{self.name}.zip"))
                 self.write_info()
     
     def _on_training_end(self) -> bool:
         # Write the completion message to the info file
-        self.write_info()
         if self.model_path:
             self.model_.save(os.path.join(self.model_path, f"last_epoch_{self.name}.zip"))
             self.write_info()
@@ -590,17 +588,16 @@ class SB3ModelCheckpoint(BaseCallback):
     def restore_best_ckpt(self):
         """Restore the best model."""
         if self.best_epoch: # use best model from best_model
-            if self.best_model_state_dict is not None:
-                # Copy model parameters
-                self.model_.policy.load_state_dict(self.best_model_state_dict)
-                # Copy optimizer state if needed
-                if hasattr(self.model_, 'optimizer'):
-                    raise NotImplementedError("Optimizer state restoration is not implemented yet (there shuold be none)")
-
-                print(f'Restored best model from step {self.best_epoch}, with {self.monitor}={self.best_value:.3f}.')
+            # add to a list the models that contain self.name and are in the model_path
+            model_files = [f for f in os.listdir(self.model_path) if self.name in f and '.zip' in f and 'last_epoch_' in f]
+            # assert there is only one model with the name
+            assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}"
+            # load the model
+            self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=True)
+            # self.model.load(os.path.join(self.model_path, f"best_eval_{self.name}.zip"),print_system_info=True)
+            print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_value:.3f}.')
         else:
             print(f'No best model found for {self.name}.')
-
 
 import time
 from stable_baselines3.common.callbacks import BaseCallback

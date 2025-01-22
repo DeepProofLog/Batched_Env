@@ -28,13 +28,13 @@ if __name__ == "__main__":
             self.stdout.flush()
 
 
-    # RESTORE_BEST_MODEL = [True,False]
-    RESTORE_BEST_MODEL = [True]
-    TIMESTEP_TRAIN = [50000]
+    # RESTORE_BEST_VAL_MODEL = [True,False]
+    RESTORE_BEST_VAL_MODEL = [False]
+    TIMESTEP_TRAIN = [2000]
     # TIMESTEP_TRAIN = [500]
     # LIMIT_SPACE = [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     LIMIT_SPACE = [True]
-    LOAD_MODEL = ['last_epoch'] #['best_eval', 'last_epoch']
+    LOAD_MODEL = ['best_eval'] #['best_eval', 'last_epoch', False]
     save_model = True
     dynamic_neg = True
     # in validation and test, we use all provable corruptions
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     # ATOM_EMBEDDING_SIZE = [50,200]
     ATOM_EMBEDDING_SIZE = [200]
     # SEED = [[0,1,2,3,4]]
-    SEED = [[0]]
+    SEED = [[5]]
     # MAX_DEPTH = [20,100]
     MAX_DEPTH = [20]
 
@@ -82,6 +82,7 @@ if __name__ == "__main__":
     n_steps = 2048 # number of steps to collect in each rollout
     batch_size = 64
     lr = 3e-4
+    eval_freq = 1000
 
 
     # If take inputs from the command line, overwrite the default values
@@ -101,8 +102,8 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_model, limit_space, load_model in product(DATASET_NAME,
-            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_MODEL, LIMIT_SPACE, LOAD_MODEL):
+    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_val_model, limit_space, load_model in product(DATASET_NAME,
+            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_VAL_MODEL, LIMIT_SPACE, LOAD_MODEL):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
@@ -134,23 +135,27 @@ if __name__ == "__main__":
         args.device = device
         args.seed = seed
         
-        args.restore_best_model = restore_best_model
+        args.restore_best_val_model = restore_best_val_model 
+        # raise a warning if restore_best_val_model is true and load_model=='last_epoch'
+        if restore_best_val_model and load_model=='last_epoch':
+            print("\n\nWARNING: restore_best_val_model is True and load_model is 'last_epoch', instead of best_eval. You may not get the same eval results\n\n")
         args.load_model = load_model
         args.save_model = save_model
         args.models_path = models_path+dataset_name
         args.timesteps_train = timestep_train
         args.n_epochs = n_epochs
         args.n_steps = n_steps
+        args.eval_freq = eval_freq
         args.batch_size = batch_size
         args.lr = lr
         args.max_depth = max_depth
 
         run_vars = (args.dataset_name, args.kge, args.model_name, args.atom_embedding_size,args.max_depth,
-                    args.learn_embeddings,args.timesteps_train,args.restore_best_model, args.dynamic_neg, args.train_neg_pos_ratio, args.limit_space)
+                    args.learn_embeddings,args.timesteps_train,args.restore_best_val_model, args.dynamic_neg, args.train_neg_pos_ratio, args.limit_space)
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         print(args.run_signature)
-        # Redirect stdout to the Tee class
-        sys.stdout = Tee(f"output-{args.run_signature}.log")
+        # # Redirect stdout to the Tee class
+        # sys.stdout = Tee(f"output-{args.run_signature}.log")
 
         all_args.append(copy.deepcopy(args)) # append a hard copy of the args to the list of all_args
 

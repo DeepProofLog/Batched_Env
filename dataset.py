@@ -161,6 +161,8 @@ class DataHandler():
                     train_neg_pos_ratio: int = 1,
                     name: str = None):
 
+        self.name = name
+        self.standard_corruptions = standard_corruptions
         
         base_path  = join(base_path, dataset_name)
         janus_path = join(base_path, janus_file)

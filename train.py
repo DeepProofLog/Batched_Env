@@ -154,14 +154,13 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
         eval_callback = EvalCallback(eval_env=eval_env, 
                                     model_path=model_path if args.save_model else None,
-                                    save_model=args.save_model,
                                     log_path=log_filename if use_logger else None,
-                                    eval_freq=10000,
+                                    eval_freq=args.eval_freq,
                                     n_eval_episodes=len(data_handler.valid_queries),
                                     deterministic=True,
                                     render=False,
                                     name=model_name,
-                                    callback_on_new_best=reward_threshold_callback if args.restore_best_model else None,
+                                    callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
                                     # callback_after_eval=no_improvement_callback,
                                     )
 
@@ -197,8 +196,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
         callbacks = CallbackList(callbacks)
         model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
-        # if args.restore_best_model:
-        #     eval_callback.restore_best_ckpt()
+        if args.restore_best_val_model:
+            eval_callback.restore_best_ckpt()
 
         if use_WB:
             run.finish()   
