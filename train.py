@@ -53,13 +53,28 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         train_neg_pos_ratio=args.train_neg_pos_ratio,
         name=args.dataset_name)
 
-    index_manager = IndexManager(data_handler.constants, 
-                                 data_handler.predicates,
-                                 data_handler.constant_no, 
-                                 data_handler.predicate_no,
-                                 args.variable_no,
-                                 max_arity=data_handler.max_arity, 
-                                 device=device)
+    if args.rule_depend_var:
+        index_manager = IndexManager(data_handler.constants,
+                                     data_handler.predicates,
+                                     data_handler.variables,
+                                     data_handler.constant_no,
+                                     data_handler.predicate_no,
+                                     data_handler.variable_no,
+                                     rules = data_handler.rules,
+                                     rule_depend_var=args.rule_depend_var,
+                                     max_arity=data_handler.max_arity,
+                                     device=device)
+    else:
+        index_manager = IndexManager(data_handler.constants,
+                                     data_handler.predicates,
+                                     set(),
+                                     data_handler.constant_no,
+                                     data_handler.predicate_no,
+                                     args.variable_no,
+                                     rules=data_handler.rules,
+                                     rule_depend_var=args.rule_depend_var,
+                                     max_arity=data_handler.max_arity,
+                                     device=device)
     
     if args.standard_corruptions:
         np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts],dtype=str)
@@ -73,18 +88,31 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         data_handler.triples_factory = triples_factory
 
     if args.learn_embeddings:
-        embedder = KGEModel(data_handler.constant_no, 
-                        data_handler.predicate_no,
-                        args.variable_no,
-                        args.kge,
-                        constant_embedding_size=args.constant_embedding_size,
-                        predicate_embedding_size=args.predicate_embedding_size,
-                        atom_embedding_size=args.atom_embedding_size,
-                        device=device)
+        if args.rule_depend_var:
+            embedder = KGEModel(data_handler.constant_no,
+                            data_handler.predicate_no,
+                            data_handler.variable_no,
+                            args.kge,
+                            constant_embedding_size=args.constant_embedding_size,
+                            predicate_embedding_size=args.predicate_embedding_size,
+                            atom_embedding_size=args.atom_embedding_size,
+                            device=device)
+        else:
+            embedder = KGEModel(data_handler.constant_no,
+                            data_handler.predicate_no,
+                            args.variable_no,
+                            args.kge,
+                            constant_embedding_size=args.constant_embedding_size,
+                            predicate_embedding_size=args.predicate_embedding_size,
+                            atom_embedding_size=args.atom_embedding_size,
+                            device=device)
     else:
         constant_str2idx, predicate_str2idx = index_manager.constant_str2idx, index_manager.predicate_str2idx
         constant_idx2emb, predicate_idx2emb = read_embeddings(args.constant_emb_file, args.predicate_emb_file, constant_str2idx, predicate_str2idx)
-        constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, predicate_idx2emb, args.variable_no)
+        if args.rule_depend_var:
+            constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, predicate_idx2emb, data_handler.variable_no)
+        else:
+            constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, predicate_idx2emb, args.variable_no)
         embedder = EmbeddingFunction(constant_idx2emb, predicate_idx2emb, device=device)
 
 
@@ -97,7 +125,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         seed=args.seed_run_i,
                         dynamic_neg=args.dynamic_neg,
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
-                        limit_space=args.limit_space)
+                        limit_space=args.limit_space,
+                        dynamic_consult=args.dynamic_consult)
     
     eval_env = LogicEnv_gym(max_depth=args.max_depth,
                             device=device, 
@@ -107,6 +136,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                             dynamic_neg=args.dynamic_neg,
                             train_neg_pos_ratio=args.train_neg_pos_ratio,
                             limit_space=args.limit_space,
+                            dynamic_consult=args.dynamic_consult,
                             eval=True) 
 
     # INIT MODEL
@@ -128,8 +158,10 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     
 
     # TRAIN
-    model_path = os.path.join(args.models_path,args.run_signature, args.run_signature + f'_seed-{args.seed_run_i}')
-    model_name = args.run_signature+date+'-seed_{}'.format(args.seed_run_i)
+    #model_path = os.path.join(args.models_path,args.run_signature, args.run_signature + f'_seed-{args.seed_run_i}')
+    #model_name = args.run_signature+date+'-seed_{}'.format(args.seed_run_i)
+    model_path = "models/countries_s3_exact/countries_s3_exact-transe-PPO-200-20-True-50000-False-True-1-False-False-False/countries_s3_exact-transe-PPO-200-20-True-50000-False-True-1-False-False-False_seed-0"
+    #model_name = "countries_s2_exact-transe-PPO-200-20-True-50000-True-True-1-False-False-False_seed-0"
     if args.load_model:
         try:
             models = sorted(

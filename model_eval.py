@@ -5,6 +5,7 @@ import gymnasium as gym
 from utils import Term, print_state_transition
 from stable_baselines3.common.on_policy_algorithm import obs_as_tensor
 from stable_baselines3 import PPO
+from sklearn.metrics import average_precision_score
 
 
 
@@ -32,34 +33,34 @@ def eval_test(  data: list[Term],
     next_query, trajectory_reward, episode_len, cum_log_prob = 0, 0, 0, 0
 
     obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
-    # print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     while next_query < len(data):
         # action, _states = model.predict(obs, deterministic=deterministic)
         obs_tensor = obs_as_tensor(obs, model.device)
         action, values, log_prob = model.policy(obs_tensor, deterministic=deterministic)
-        # print(f'action:{action}, values:{values}, log_prob:{log_prob}, prob:{np.exp(log_prob.detach().cpu().numpy().item())}') if verbose >=1 else None
+        print(f'action:{action}, values:{values}, log_prob:{log_prob}, prob:{np.exp(log_prob.detach().cpu().numpy().item())}') if verbose >=1 else None
         log_prob = log_prob.detach().cpu().numpy().item()
         cum_log_prob += log_prob
 
         
         obs, rewards, dones, truncated, info = env.step(action[0])
         # obs, rewards, dones, truncated, info = env.step(action)
-        # print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
+        print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
         trajectory_reward, episode_len, log_prob = trajectory_reward + rewards, episode_len + 1, log_prob + log_prob
 
         if dones:
             rewards_list.append(trajectory_reward)
             episode_len_list.append(episode_len)
             log_probs.append(cum_log_prob)
-            # print(f'reward {trajectory_reward}, episode len {episode_len}, cum log prob {cum_log_prob}') if verbose >=1 else None
+            print(f'reward {trajectory_reward}, episode len {episode_len}, cum log prob {cum_log_prob}') if verbose >=1 else None
 
             # print(' done,truncated,rewards',dones,truncated,rewards)
             next_query += 1
             if next_query < len(data):
                 obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
-                # print('\nquery',next_query, 'with label',labels[next_query])
+                print('\nquery',next_query, 'with label',labels[next_query])
                 trajectory_reward, episode_len, cum_log_prob = 0, 0, 0
-                # print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+                print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     
     if return_dict:
         return {'rewards_mean':np.mean(rewards_list), 'rewards_std':np.std(rewards_list), 
@@ -104,6 +105,10 @@ def eval_test_corruptions(  data: list[Term],
             episode_len_list_neg.extend(episode_len[1:])
             log_probs_list_neg.extend(log_probs[1:])
 
+    scores = log_probs_list_pos + log_probs_list_neg
+    labels = [1] * len(log_probs_list_pos) + [0] * len(log_probs_list_neg)
+    auc_pr = average_precision_score(labels, scores)
+
     info = {'pos_queries':len(rewards_list_pos), 'neg_queries':len(rewards_list_neg), 'ratio_pos_queries':round(len(rewards_list_pos)/(len(rewards_list_pos)+len(rewards_list_neg)),2),
             'mrr_mean':np.mean(mrr_list), 'mrr_std':np.std(mrr_list),
             'rewards_pos_mean':np.mean(rewards_list_pos), 'rewards_pos_std':np.std(rewards_list_pos),
@@ -116,7 +121,9 @@ def eval_test_corruptions(  data: list[Term],
 
             'log_probs_pos_mean':np.mean(log_probs_list_pos), 'log_probs_pos_std':np.std(log_probs_list_pos),
             'log_probs_neg_mean':np.mean(log_probs_list_neg), 'log_probs_neg_std':np.std(log_probs_list_neg),
-            'log_probs_mean':np.mean(log_probs_list_pos+log_probs_list_neg), 'log_probs_std':np.std(log_probs_list_pos+log_probs_list_neg)
+            'log_probs_mean':np.mean(log_probs_list_pos+log_probs_list_neg), 'log_probs_std':np.std(log_probs_list_pos+log_probs_list_neg),
+
+            'auc_pr':auc_pr
             }
     return info
 

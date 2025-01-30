@@ -65,7 +65,7 @@ def get_rules_from_file(file_path: str) -> Tuple[List[Term], List[Rule]]:
                 body = [get_atom_from_string(b) for b in body]
                 head_atom = get_atom_from_string(head)
                 rules.append(Rule(head_atom, body))
-    rules = [rule for rule in rules if not rule.head.predicate != "proof_first"]
+    rules = [rule for rule in rules if rule.head.predicate != "proof_first"]
     return queries,rules
 
 
@@ -95,22 +95,32 @@ def get_queries(path:str)-> Tuple[List[Term],List[Term]]:
                     neg_queries.append(get_atom_from_string(q))
     return pos_queries, neg_queries
 
-def get_predicates_and_constants(rules: List[Rule], facts: List[Term]) -> Tuple[set[str], set[str], dict[str,int]]:
+def get_predicates_and_arguments(rules: List[Rule], facts: List[Term]) -> Tuple[set[str], dict[str,int], set[str], set[str]]:
     predicates = set()
     constants = set()
+    variables = set()
     predicates_arity = {}
-    for rule in rules:
+    for i in range(len(rules)):
         # proof_first not related to query generation
+        rule = rules[i]
         if not rule.head.predicate == "proof_first":
             # predicates.add((rule.head.predicate, len(rule.head.args)))
             predicate = rule.head.predicate
             predicates.add((predicate))
-            constants.update([arg for arg in rule.head.args if not is_variable(arg)])
+            for arg in rule.head.args:
+                if is_variable(arg):
+                    variables.add(f"RULE{i}_{arg}")
+                else:
+                    constants.add(arg)
             if predicate not in predicates_arity:
                 predicates_arity[predicate] = len(rule.head.args)
             for atom in rule.body:
                 predicates.add((atom.predicate))
-                constants.update([arg for arg in atom.args if not is_variable(arg)])
+                for arg in atom.args:
+                    if is_variable(arg):
+                        variables.add(f"RULE{i}_{arg}")
+                    else:
+                        constants.add(arg)
                 if atom.predicate not in predicates_arity:
                     predicates_arity[atom.predicate] = len(atom.args)
     for atom in facts:
@@ -119,7 +129,7 @@ def get_predicates_and_constants(rules: List[Rule], facts: List[Term]) -> Tuple[
         constants.update([arg for arg in atom.args if not is_variable(arg)])
         if atom.predicate not in predicates_arity:
             predicates_arity[atom.predicate] = len(atom.args)
-    return predicates, constants, predicates_arity
+    return predicates, predicates_arity, constants, variables
 
 def get_corruptions(queries: List[Term], file_path: str) -> dict[Term, List[Term]]:
     '''Get corruptions from the json file, in the format
@@ -200,9 +210,9 @@ class DataHandler():
             # for line in lines:
                 # self.janus_facts.append(line.strip())
 
-        self.predicates, self.constants, self.predicates_arity = get_predicates_and_constants(self.rules, self.facts)
+        self.predicates, self.predicates_arity, self.constants, self.variables = get_predicates_and_arguments(self.rules, self.facts)
         self.max_arity = get_max_arity(janus_path)
-        self.constant_no, self.predicate_no = len(self.constants), len(self.predicates)
+        self.constant_no, self.predicate_no, self.variable_no = len(self.constants), len(self.predicates), len(self.variables)
 
 
         self.entity2domain = None

@@ -66,6 +66,19 @@ def get_atom_from_string(atom_str: str) -> Term:
     args = [re.sub(r'\)', '', arg) for arg in args]
     return Term(predicate, args)
 
+def get_rule_from_string(rule_str: str) -> Rule:
+    if ":-" not in rule_str:
+        head = rule_str.strip()
+        rule = Rule(get_atom_from_string(head), [])
+    else:
+        head, body = rule_str.strip().split(":-")
+        body = re.findall(r'\w+\(.*?\)', body)
+        body = [get_atom_from_string(b) for b in body]
+
+        head_atom = get_atom_from_string(head)
+        rule = Rule(head_atom, body)
+    return rule
+
 def get_rules_from_file(file_path: str) -> List[Rule]:
     """Get rules from a file"""
     rules = []
@@ -73,16 +86,7 @@ def get_rules_from_file(file_path: str) -> List[Rule]:
         lines = f.readlines()
         for line in lines:
             # if there's no :-, it's a fact, split predicate
-            if ":-" not in line:
-                head = line.strip()
-                rule = Rule(get_atom_from_string(head), [])
-            else:
-                head, body = line.strip().split(":-")
-                body = re.findall(r'\w+\(.*?\)', body)
-                body = [get_atom_from_string(b) for b in body]
-
-                head_atom = get_atom_from_string(head)
-                rule = Rule(head_atom, body)
+            rule = get_rule_from_string(line)
             rules.append(rule)
     return rules
 

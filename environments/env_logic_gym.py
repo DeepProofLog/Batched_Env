@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple, Dict, Union
 import random
 from math import prod
-from utils import Term, is_variable, extract_var, print_state_transition
+from utils import Term, is_variable, extract_var, print_state_transition, get_rule_from_string
 from unification.prolog_unification import get_next_state_prolog
 
 import torch
@@ -21,9 +21,12 @@ class IndexManager():
 
     def __init__(self, constants: set, 
                 predicates: set,
+                variables:set,
                 constant_no: int,
                 predicate_no: int,
                 variable_no: int,
+                rules: List[Rule],
+                rule_depend_var: bool = True,
                 max_atom: int = 10,
                 max_arity: int = 2,
                 device: torch.device = torch.device("cpu")):
@@ -31,20 +34,26 @@ class IndexManager():
         self.device = device
         self.constants = constants
         self.predicates = predicates
+        self.variables = variables
         self.constant_no = constant_no
         self.variable_no = variable_no
         self.predicate_no = predicate_no
+        self.rules = rules
+        self.rule_depend_var = rule_depend_var
         self.max_atom = max_atom  # Maximum number of atoms in a state
         self.max_arity = max_arity # Maximum arity of the predicates
 
         # LOCAL INDEXES
         self.atom_to_index = {} # Map atom to index
         self.atom_id_to_sub_id = {} # Map atom index to sub-indices of predicates and arguments
-        self.variable_str2idx = {} # Map variable to index
         self.next_atom_index = 1  # Next available index. 0 is reserved for padding
-        self.next_var_index = constant_no+1 # Next available index. 0 is reserved for padding
+        if not self.rule_depend_var:
+            self.variable_str2idx = {} # Map variable to index
+            self.next_var_index = constant_no+1 # Next available index. 0 is reserved for padding
 
         self.create_global_idx()
+        if self.rule_depend_var:
+            self.rule_features_vars()
 
     def create_global_idx(self):
         '''Create a global index for a list of terms. Start idx counting from 1'''
@@ -52,28 +61,61 @@ class IndexManager():
         self.predicate_str2idx = {term: i + 1 for i, term in enumerate(sorted(self.predicates))}
         self.constant_idx2str = {i + 1: term for i, term in enumerate(sorted(self.constants))}
         self.predicate_idx2str = {i + 1: term for i, term in enumerate(sorted(self.predicates))}
+        if self.rule_depend_var:
+            self.variable_str2idx = {term: i + 1 + self.constant_no for i, term in enumerate(sorted(self.variables))}
+            self.variable_idx2str = {i + 1 + self.constant_no: term for i, term in enumerate(sorted(self.variables))}
 
-    def reset_atom_var(self):
+
+    def rule_features_vars(self):
+        self.rule_feats_vars = {}
+        for i in range(len(self.rules)):
+            rule = self.rules[i]
+            if rule.head.predicate not in self.rule_feats_vars:
+                self.rule_feats_vars[rule.head.predicate] = [f'RULE{i}_{arg}' for arg in rule.head.args]
+            feature = ""
+            vars = []
+            for atom in rule.body:
+                feature = feature+atom.predicate
+                vars.append([f'RULE{i}_{arg}' for arg in atom.args])
+            self.rule_feats_vars[feature] = vars
+
+    def reset_atom(self):
         '''Reset the atom and variable dicts and indices'''
         self.atom_to_index = {}
         self.atom_id_to_sub_id = {}
-        self.variable_str2idx = {}
         self.next_atom_index = 1
-        self.next_var_index = self.constant_no+1
+        if not self.rule_depend_var:
+            self.variable_str2idx = {}
+            self.next_var_index = self.constant_no+1
+
+    def substitute_variables(self, state: List[Term]) -> List[Term]:
+        if not ((len(state) == 1 and (state[0].predicate == 'True' or state[0].predicate == 'False')) or (not extract_var(",".join(str(s) for s in state)))):
+            state_feat = "".join(atom.predicate for atom in state)
+            assert state_feat in self.rule_feats_vars, f"State feature not in rule_feats_vars: {state_feat}"
+            for i in range(len(state)):
+                atom = state[i]
+                for j in range(len(atom.args)):
+                    if is_variable(atom.args[j]):
+                        atom.args[j] = self.rule_feats_vars[state_feat][i][j]
+        return state
+
 
     def get_atom_sub_index(self, state: List[Term]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get the atom and sub index for a state"""
-        # Get variables
-        full_state = ",".join(str(s) for s in state)
-        vars = extract_var(full_state)
-        for var in vars:
-            if (var != "True") and (var != "False") and (var not in self.variable_str2idx):
-                if self.next_var_index > self.constant_no + self.variable_no:
-                    raise ValueError(f"Exceeded the maximum number of variables: {self.variable_no}")
-                else:
-                    index = self.next_var_index
-                    self.variable_str2idx[var] = index
-                    self.next_var_index += 1
+        if self.rule_depend_var:
+            state = self.substitute_variables(state)
+        else:
+            #Get variables
+            full_state = ",".join(str(s) for s in state)
+            vars = extract_var(full_state)
+            for var in vars:
+                if (var != "True") and (var != "False") and (var not in self.variable_str2idx):
+                    if self.next_var_index > self.constant_no + self.variable_no:
+                        raise ValueError(f"Exceeded the maximum number of variables: {self.variable_no}")
+                    else:
+                        index = self.next_var_index
+                        self.variable_str2idx[var] = index
+                        self.next_var_index += 1
 
         # Get atom_index and sub_index
         atom_index =torch.zeros(self.max_atom, device=self.device, dtype=torch.int64)
@@ -125,6 +167,7 @@ class LogicEnv_gym(gym.Env):
                 dynamic_neg: bool = False,
                 train_neg_pos_ratio: int = 1,
                 limit_space: bool = True,
+                dynamic_consult: bool = True,
                 eval=False
                 ):
         
@@ -166,7 +209,9 @@ class LogicEnv_gym(gym.Env):
         self.memory = set() # Store grounded predicates, avoid loop
         self.limit_space = limit_space # two ways to avoid loop: limit action space, stop when a state has been visited
 
-        self.last_query = None
+        self.dynamic_consult = dynamic_consult
+        #self.last_query = None
+        self.current_query = None
 
         self.eval = eval
         self.eval_dataset = 'validation' # by default, evaluate on the validation set. It can be changed to 'test' or 'train'
@@ -299,31 +344,44 @@ class LogicEnv_gym(gym.Env):
             self.counter += 1
 
             if label == 1:
-                #self.new_consult_janus(state[0])
-                self.dynamic_consult_janus(state)
+                if not self.dynamic_consult:
+                    self.new_consult_janus(state)
+                else:
+                    if state in self.facts:
+                        janus.query_once(f"retract({str(state)}).")
+                # self.dynamic_consult_janus(state)
+
+        if self.dynamic_consult:
+            self.current_query = state
 
         return self._reset([state], label)
 
 
     def reset_from_query(self, query, label, consult_janus=False):
         if consult_janus and label == 1:
-            #self.new_consult_janus(query)
-            self.dynamic_consult_janus(query)
+            if not self.dynamic_consult:
+                self.new_consult_janus(query)
+            else:
+                if query in self.facts:
+                    janus.query_once(f"retract({str(query)}).")
+            # self.dynamic_consult_janus(query)
+        if self.dynamic_consult:
+            self.current_query = query
 
         return self._reset([query], label)
 
     def _reset(self, query, label):
         '''Reset the environment to the initial state'''    
         self.current_depth = torch.tensor(0, device=self.device)
-        self.index_manager.reset_atom_var()
+        self.index_manager.reset_atom()
         self.memory = set()
 
         self.memory.add(",".join(str(q) for q in query))
         atom_index, sub_index = self.index_manager.get_atom_sub_index(query)
 
         derived_states, derived_atom_indices, derived_sub_indices = self.get_next_states(query)
-        if self.limit_space:
-            derived_states, derived_atom_indices, derived_sub_indices = self.limit_action_space(derived_states, derived_atom_indices, derived_sub_indices)
+        # if self.limit_space:
+        #     derived_states, derived_atom_indices, derived_sub_indices = self.limit_action_space(derived_states, derived_atom_indices, derived_sub_indices)
         self.update_action_space(derived_states)
 
         self.tensordict = TensorDict(
@@ -395,7 +453,14 @@ class LogicEnv_gym(gym.Env):
         done_next = done_next | self.exceeded_max_depth
 
         if done_next:
+            if self.dynamic_consult:
+                if self.tensordict['label'] == 1 and self.current_query in self.facts:
+                    janus.query_once(f"asserta({str(self.current_query)}).")
+                    self.current_query = None
             self.tensordict['label'] = None # Reset the label to None, to be sure that it is not used in the next step
+
+
+
 
         tensordict = TensorDict(
             {

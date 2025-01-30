@@ -1,3 +1,7 @@
+:- dynamic neighborOf/2.
+:- dynamic locatedInCR/2.
+:- discontiguous neighborOf/2.
+:- discontiguous locatedInCR/2.
 neighborOf(zambia,mozambique).
 neighborOf(france,belgium).
 neighborOf(croatia,serbia).

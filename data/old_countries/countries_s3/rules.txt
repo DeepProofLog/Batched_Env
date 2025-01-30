@@ -1,0 +1,1 @@
+r0:1:neighborOf(X,Y), neighborOf(Y,K), locatedInCR(K,Z) -> locatedInCR(X,Z)

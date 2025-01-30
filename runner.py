@@ -28,13 +28,13 @@ if __name__ == "__main__":
             self.stdout.flush()
 
 
-    # RESTORE_BEST_VAL_MODEL = [True,False]
+    #RESTORE_BEST_VAL_MODEL = [True,False]
     RESTORE_BEST_VAL_MODEL = [False]
-    TIMESTEP_TRAIN = [2000]
+    TIMESTEP_TRAIN = [50000]
     # TIMESTEP_TRAIN = [500]
-    # LIMIT_SPACE = [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
-    LIMIT_SPACE = [True]
-    LOAD_MODEL = ['best_eval'] #['best_eval', 'last_epoch', False]
+    #LIMIT_SPACE = [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
+    LIMIT_SPACE = [False]
+    LOAD_MODEL = ['last_epoch'] #['best_eval', 'last_epoch', False]
     save_model = True
     dynamic_neg = True
     # in validation and test, we use all provable corruptions
@@ -47,16 +47,20 @@ if __name__ == "__main__":
     logger_path = "./runs/"
 
     # DATASET_NAME =  ["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
-    DATASET_NAME = ["ablation_d3"]
+    DATASET_NAME = ["countries_s3_exact"]
     LEARN_EMBEDDINGS = [True]
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
-    # ATOM_EMBEDDING_SIZE = [50,200]
+    #ATOM_EMBEDDING_SIZE = [50,200]
     ATOM_EMBEDDING_SIZE = [200]
-    # SEED = [[0,1,2,3,4]]
-    SEED = [[5]]
+    #SEED = [[0,1,2,3,4]]
+    SEED = [[0]]
     # MAX_DEPTH = [20,100]
     MAX_DEPTH = [20]
+    #RULE_DEPEND_VAR = [True, False]   # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
+    RULE_DEPEND_VAR = [False]
+    #DYNAMIC_CONSULT = [True, False]
+    DYNAMIC_CONSULT = [False]
 
     # path to the data    
     data_path = "./data/"
@@ -102,8 +106,8 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_val_model, limit_space, load_model in product(DATASET_NAME,
-            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_VAL_MODEL, LIMIT_SPACE, LOAD_MODEL):
+    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_val_model, limit_space, load_model, rule_depend_var, dynamic_consult in product(DATASET_NAME,
+            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_VAL_MODEL, LIMIT_SPACE, LOAD_MODEL, RULE_DEPEND_VAR, DYNAMIC_CONSULT):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
@@ -122,6 +126,7 @@ if __name__ == "__main__":
         args.train_file = train_file
         args.valid_file = valid_file
         args.test_file = test_file
+        args.dynamic_consult = dynamic_consult
         
         args.learn_embeddings = learn_embeddings
         args.kge = kge
@@ -131,6 +136,7 @@ if __name__ == "__main__":
         args.predicate_embedding_size = predicate_embedding_size
         args.constant_emb_file = constant_emb_file
         args.predicate_emb_file = predicate_emb_file
+        args.rule_depend_var = rule_depend_var
         args.variable_no = variable_no
         args.device = device
         args.seed = seed
@@ -151,11 +157,11 @@ if __name__ == "__main__":
         args.max_depth = max_depth
 
         run_vars = (args.dataset_name, args.kge, args.model_name, args.atom_embedding_size,args.max_depth,
-                    args.learn_embeddings,args.timesteps_train,args.restore_best_val_model, args.dynamic_neg, args.train_neg_pos_ratio, args.limit_space)
+                    args.learn_embeddings,args.timesteps_train,args.restore_best_val_model, args.dynamic_neg, args.train_neg_pos_ratio, args.limit_space, args.rule_depend_var, args.dynamic_consult)
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         print(args.run_signature)
         # # Redirect stdout to the Tee class
-        # sys.stdout = Tee(f"output-{args.run_signature}.log")
+        sys.stdout = Tee(f"output-{args.run_signature}.log")
 
         all_args.append(copy.deepcopy(args)) # append a hard copy of the args to the list of all_args
 

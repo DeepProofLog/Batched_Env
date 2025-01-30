@@ -30,11 +30,12 @@ def generate_corruptions(folder, level, corruption_type, full_gt):
     file_list = ["train_label.txt", "test_label.txt", "valid_label.txt"]
 
     for file in file_list:
+        print(file)
         outputs = {}
         with open(root_dir+file, "r") as f:
             queries = f.readlines()
             for q in queries:
-                # print(q)
+                print(q)
                 # sub_knowledge = knowledge.copy()
                 query, value = q.strip().split("\t")
                 if value == "True":
@@ -49,6 +50,7 @@ def generate_corruptions(folder, level, corruption_type, full_gt):
                             corruptions = [f'locatedInCR({c},{region}).' for c in head_domain if c != country]
                         corruptions = [c for c in corruptions if c not in full_gt]
                         for c in corruptions:
+                            print(c)
                             sub_knowledge = knowledge.copy()
                             if c in sub_knowledge:
                                 sub_knowledge.remove(c)
@@ -73,7 +75,7 @@ def generate_corruptions(folder, level, corruption_type, full_gt):
 def get_full_gt():
     full_gt = set()
     current_dir = Path(".")
-    label_files = list(current_dir.rglob("*label*.txt"))
+    label_files = list(current_dir.rglob("*label.txt"))
 
     for file_path in label_files:
         with open(file_path, "r") as file:
@@ -141,8 +143,8 @@ def prepare_queries(folder, level, sample_type, sample_ratio):
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('--task', default='all', type=str, help="generate_corruptions, prepare_queries, all")
-    arg_parser.add_argument('--folder', default='ablation', type=str)
-    arg_parser.add_argument('--level', default='d3', type=str)
+    arg_parser.add_argument('--folder', default='countries', type=str)
+    arg_parser.add_argument('--level', default='s3', type=str)
     arg_parser.add_argument('--corruption_type', default='tail', type=str)
     arg_parser.add_argument('--sample_type', default='[full_set, all_possible, all_possible]', type=str, help="full_set, paired, all_possible, all_possible_both")
     arg_parser.add_argument('--sample_ratio', default='[[1, 0], [1, 0], [1, 0]]', type=str, help="ratio of provable false / provable true and unprovable / provable true for train, test, valid")

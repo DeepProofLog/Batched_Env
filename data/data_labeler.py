@@ -183,8 +183,8 @@ def get_depth_proof(inf_dir, rule_dir, full_facts, max_depth):
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('--folder', default='ablation', type=str)
-    arg_parser.add_argument('--level', default='d1', type=str)
+    arg_parser.add_argument('--folder', default='countries', type=str)
+    arg_parser.add_argument('--level', default='s3', type=str)
     arg_parser.add_argument('--catch_errors', action='store_true')
     arg_parser.add_argument('--use_modified_rules', action='store_true')
     arg_parser.add_argument('--use_tabling', action='store_false')
@@ -199,17 +199,17 @@ if __name__ == "__main__":
         full_rules, full_facts = get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+"countries.pl", args.catch_errors, args.use_tabling)
         #janus.consult(root_dir+"countries.pl")
 
-    # print("processing train.txt")
-    # get_labeled_data(root_dir+"train.txt", args.catch_errors, args.use_modified_rules, full_rules)
-    # print("processing valid.txt")
-    # get_labeled_data(root_dir+"valid.txt", args.catch_errors, args.use_modified_rules, full_rules)
-    # print("processing test.txt")
-    # get_labeled_data(root_dir+"test.txt", args.catch_errors, args.use_modified_rules, full_rules)
+    print("processing train.txt")
+    get_labeled_data(root_dir+"train.txt", args.catch_errors, args.use_modified_rules, full_rules)
+    print("processing valid.txt")
+    get_labeled_data(root_dir+"valid.txt", args.catch_errors, args.use_modified_rules, full_rules)
+    print("processing test.txt")
+    get_labeled_data(root_dir+"test.txt", args.catch_errors, args.use_modified_rules, full_rules)
 
-    max_depth = 10
-    print("processing train_label_corruptions.json")
-    get_depth_proof(root_dir + "train_label_corruptions.json", root_dir + "rules_with_depth.txt", full_facts, max_depth)
-    print("processing valid_label_corruptions.json")
-    get_depth_proof(root_dir+"valid_label_corruptions.json", root_dir + "rules_with_depth.txt", full_facts, max_depth)
-    print("processing test_label_corruptions.json")
-    get_depth_proof(root_dir+"test_label_corruptions.json", root_dir + "rules_with_depth.txt", full_facts, max_depth)
+    # max_depth = 10
+    # print("processing train_label_corruptions.json")
+    # get_depth_proof(root_dir + "train_label_corruptions.json", root_dir + "rules_with_depth.txt", full_facts, max_depth)
+    # print("processing valid_label_corruptions.json")
+    # get_depth_proof(root_dir+"valid_label_corruptions.json", root_dir + "rules_with_depth.txt", full_facts, max_depth)
+    # print("processing test_label_corruptions.json")
+    # get_depth_proof(root_dir+"test_label_corruptions.json", root_dir + "rules_with_depth.txt", full_facts, max_depth)
