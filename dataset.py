@@ -150,7 +150,129 @@ def get_corruptions(queries: List[Term], file_path: str) -> dict[Term, List[Term
 
 
 
-class DataHandler():
+from data.mnist_addition.MNIST import addition, multiplication
+import numpy as np
+
+class DataHandlerMnist:
+    """Handles MNIST data with corruption support in a simplified structure"""
+    
+    def __init__(self, dataset_name: str, base_path: str, janus_file: str, name: str = None):
+
+        self.name = name
+        self.standard_corruptions = False
+        self.dynamic_neg = False
+        self.n_digits = 2
+
+        # Basic setup
+        self.base_path = join(base_path, dataset_name)
+        self.janus_path = join(self.base_path, janus_file)
+        self.max_arity = 5
+
+        # Load data
+        self._load_janus_data()
+        self._load_datasets()
+        self._process_datasets()
+        self._setup_constants()
+        # self._print_debug_info()
+        
+    def _load_janus_data(self):
+        """Load Janus facts and rules"""
+        janus.consult(self.janus_path)
+        with open(self.janus_path, "r") as f:
+            self.janus_facts = f.readlines()
+        self.facts, self.rules = get_rules_from_file(self.janus_path)
+
+    def _load_datasets(self):
+        """Load all datasets at once"""
+        self.datasets = {
+            'train': addition(n=self.n_digits, dataset="train", seed=42),
+            'valid': addition(n=self.n_digits, dataset="val", seed=42),
+            'test': addition(n=self.n_digits, dataset="test", seed=42)
+        }
+
+    def _process_datasets(self):
+        """Process all datasets similarly"""
+        queries = {}
+        self.images = defaultdict(list)
+        self.image_strings = {}
+        d = 0  # Image counter
+        
+        for set_name in ['train', 'valid', 'test']:
+            # Store raw data
+            labels, digits, l1, l2 = [], [], [], []
+            for i in range(10):  # 10 samples per set
+                dl1, dl2, label, dgts = self.datasets[set_name][i]
+                labels.append(label)
+                digits.append(dgts)
+                l1.append(dl1)
+                l2.append(dl2)
+            
+            # Create image strings
+            img_strings = []
+            for dgts in digits:
+                group = []
+                for digit in dgts:
+                    group.extend([f"im_{d+i}" for i in range(len(digit))])
+                    d += len(digit)
+                img_strings.append(group)
+            
+            # Create queries
+            queries[set_name] = [
+                Term("addition", [*imgs, str(label)])
+                for imgs, label in zip(img_strings, labels)
+            ]
+            # Store queries
+            setattr(self, f'{set_name}_queries', queries[set_name])
+            # Store processed data
+            setattr(self, f'{set_name}_labels', labels)
+
+            self.image_strings[set_name] = img_strings
+            
+            # Store images
+            im_dict = defaultdict(list)
+            for dgts, dl1, dl2 in zip(digits, l1, l2):
+                im_dict[str(dgts)] = (dl1, dl2)
+            self.images.update(im_dict)
+
+    def _setup_constants(self):
+        """Setup constants and predicates"""
+        # Collect all image IDs
+        all_images = []
+        for set_name in ['train', 'valid', 'test']:
+            all_images.extend([img for group in self.image_strings[set_name] for img in group])
+        
+        # Collect all labels
+        all_labels = []
+        for set_name in ['train', 'valid', 'test']:
+            all_labels.extend(map(str, getattr(self, f'{set_name}_labels')))
+        
+        # Set constants
+        self.constants = set(all_images + all_labels)
+        self.constants_images = set(all_images)
+        
+        # Predicate setup
+        self.predicates = {"addition", "digit"}
+        self.predicates_arity = {"addition": 3, "digit": 2}
+        self.variables = set(['RULE0_Z','RULE0_Y', 'RULE0_X', 'RULE0_Y2', 'RULE0_X2'])
+        self.constant_no, self.constant_images_no, self.predicate_no, self.variable_no = \
+            len(self.constants), len(self.constants_images), len(self.predicates), len(self.variables)
+
+    def _print_debug_info(self):
+        """Print debugging information"""
+        print(f"\nTrain queries: {len(self.train_queries), self.train_queries}")
+        print(f"\nValid queries: {len(self.valid_queries), self.valid_queries}")
+        print(f"\nTest queries: {len(self.test_queries), self.test_queries}")
+        print(f"\nImages: {len(self.images), [(i, c[0].shape, c[1].shape) for i, c in self.images.items()]}")
+        print(f"\nConstant images: {self.constant_images_no, self.constants_images}")
+        print(f"\nConstants: {self.constant_no, self.constants}")
+        print(f"\nPredicates: {self.predicate_no, self.predicates}")
+        print(f"\nVariables: {self.variable_no, self.variables}")
+        print(f"\nMax arity: {self.max_arity}")
+
+
+
+
+class DataHandlerKGE():
     '''
     Instead of the normal test,valid txt files, we load a file with the corruptions
     Each query will have a label indicating true or false, i.e. if the query is a corruption or not
@@ -166,7 +288,6 @@ class DataHandler():
                     valid_file: str = None,
                     test_file: str = None,
                     standard_corruptions: bool = False,
-
                     dynamic_neg: bool = False,
                     train_neg_pos_ratio: int = 1,
                     name: str = None):
@@ -202,13 +323,10 @@ class DataHandler():
             self.train_corruptions = get_corruptions(self.pos_train_queries, join(base_path, "train_label_corruptions.json"))
             self.valid_corruptions = get_corruptions(self.valid_queries, join(base_path, "valid_label_corruptions.json"))
             self.test_corruptions = get_corruptions(self.test_queries, join(base_path, "test_label_corruptions.json"))
+        
         self.janus_facts = []
         with open(janus_path, "r") as f:
             self.janus_facts = f.readlines()
-            # lines = f.readlines()
-            # print("lines",lines)
-            # for line in lines:
-                # self.janus_facts.append(line.strip())
 
         self.predicates, self.predicates_arity, self.constants, self.variables = get_predicates_and_arguments(self.rules, self.facts)
         self.max_arity = get_max_arity(janus_path)
@@ -234,7 +352,13 @@ class DataHandler():
 
            
 
-
+class DataHandler:
+    ''' class that calls to DataHandlerMnist if the dataset is mnist_addition, and DataHandlerKGE otherwise'''
+    def __init__(self, dataset_name: str, base_path: str, janus_file: str, train_file: str = None, valid_file: str = None, test_file: str = None, standard_corruptions: bool = False, dynamic_neg: bool = False, train_neg_pos_ratio: int = 1, name: str = None):
+        if dataset_name == "mnist_addition":
+            self.info = DataHandlerMnist(dataset_name, base_path, janus_file, name)
+        else:
+            self.info = DataHandlerKGE(dataset_name, base_path, janus_file, train_file, valid_file, test_file, standard_corruptions, dynamic_neg, train_neg_pos_ratio, name)
 
 
 

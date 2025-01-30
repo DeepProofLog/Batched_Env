@@ -28,39 +28,27 @@ if __name__ == "__main__":
             self.stdout.flush()
 
 
-    #RESTORE_BEST_VAL_MODEL = [True,False]
-    RESTORE_BEST_VAL_MODEL = [False]
-    TIMESTEP_TRAIN = [50000]
-    # TIMESTEP_TRAIN = [500]
-    #LIMIT_SPACE = [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
-    LIMIT_SPACE = [False]
-    LOAD_MODEL = ['last_epoch'] #['best_eval', 'last_epoch', False]
-    save_model = True
-    dynamic_neg = True
-    # in validation and test, we use all provable corruptions
-    train_neg_pos_ratio = 1
-
-    
+    RESTORE_BEST_VAL_MODEL = [False] #[True,False]
+    TIMESTEP_TRAIN = [2000]
+    LIMIT_SPACE = [True] # [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
+    LOAD_MODEL = [False] #['best_eval', 'last_epoch', False]
+    save_model = False
+    train_neg_pos_ratio = 1 # in validation and test, we use all provable corruptions
+   
     use_logger = True
     use_WB = False
     WB_path = "./../wandb/"
     logger_path = "./runs/"
 
-    # DATASET_NAME =  ["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
-    DATASET_NAME = ["countries_s3_exact"]
+    DATASET_NAME =  ["mnist_addition"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
     LEARN_EMBEDDINGS = [True]
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
-    #ATOM_EMBEDDING_SIZE = [50,200]
-    ATOM_EMBEDDING_SIZE = [200]
-    #SEED = [[0,1,2,3,4]]
-    SEED = [[0]]
-    # MAX_DEPTH = [20,100]
-    MAX_DEPTH = [20]
-    #RULE_DEPEND_VAR = [True, False]   # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
-    RULE_DEPEND_VAR = [False]
-    #DYNAMIC_CONSULT = [True, False]
-    DYNAMIC_CONSULT = [False]
+    ATOM_EMBEDDING_SIZE = [200] #[50,200]
+    SEED = [[0]] # [[0,1,2,3,4]]
+    MAX_DEPTH = [20] # [20,100]
+    RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
+    DYNAMIC_CONSULT = [False] # [True, False]
 
     # path to the data    
     data_path = "./data/"
@@ -70,15 +58,11 @@ if __name__ == "__main__":
     train_json = "train_label_corruptions.json"
     valid_txt = "valid_queries.txt"
     test_txt = "test_queries.txt"
-    if dynamic_neg:
-        train_file = train_json
-    else:
-        train_file = train_txt
-    valid_file = valid_txt
-    test_file = test_txt
 
     models_path = "models/"
-    variable_no = 500
+    # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 
+    # this is ignored and the number of variables is determined by the number of variables in the rules
+    variable_no = 500 
     device = "cpu"
 
     # Training parameters
@@ -112,14 +96,24 @@ if __name__ == "__main__":
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
         constant_embedding_size = predicate_embedding_size = atom_embedding_size
-        
-        args.dynamic_neg = dynamic_neg
-        args.standard_corruptions = False
 
         args.train_neg_pos_ratio = train_neg_pos_ratio
         args.limit_space = limit_space
 
+        args.dynamic_neg = True
+        args.standard_corruptions = False
+
         args.dataset_name = dataset_name
+        if dataset_name == "mnist_addition":
+            args.dynamic_neg = args.standard_corruptions = False
+    
+        if args.dynamic_neg:
+            train_file = train_json
+        else:
+            train_file = train_txt
+        valid_file = valid_txt
+        test_file = test_txt
+
         args.data_path = data_path
         args.domain_file = domain_file
         args.janus_file = janus_file

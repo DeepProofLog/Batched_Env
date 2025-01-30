@@ -73,7 +73,6 @@ def get_next_state_prolog(state: List[Term], verbose=0) -> List[List[Term]]:
     # Handle terminal states: If any of the atoms in the state are False, return False. If all the atoms in the state are True, return True
     any_atom_false = any([atom.predicate == 'False' for atom in state]) 
     all_atoms_true = all([atom.predicate == 'True' for atom in state])
-    # print('Any atom False:', any_atom_false, 'All atoms True:', all_atoms_true)
     if any_atom_false:
         next_states = [[Term('False', [])]]
     elif all_atoms_true:
@@ -89,4 +88,48 @@ def get_next_state_prolog(state: List[Term], verbose=0) -> List[List[Term]]:
             atoms = from_str_to_term(next_state_str)
             next_states.append(atoms)
     print('         Next states:', [[str(atom) for atom in state] for state in next_states]) if verbose else None
+    return next_states
+
+def get_next_state_prolog_mnist(state: List[Term], verbose=0) -> List[List[Term]]:
+    # Handle terminal states: If any of the atoms in the state are False, return False. If all the atoms in the state are True, return True
+    any_atom_false = any([atom.predicate == 'False' for atom in state]) 
+    all_atoms_true = all([atom.predicate == 'True' for atom in state])
+    if any_atom_false:
+        next_states = [[Term('False', [])]]
+    elif all_atoms_true:
+        next_states = [[Term('True', [])]]
+    else:
+        # merge the arguments 0 and 1 into a single argument str([arg0, arg1]) and the arguments 2 and 3 into a single argument str([arg2, arg3])
+        # we had them splitted because it is easier for embedding treatment, but for prolog we need to merge them
+        # Now we check that the length of the arguments is 5 for the predicate addition and 3 for the predicate digit, but with N-digits it will be 1+2N and 1+N
+        for atom in state:
+            if atom.predicate == 'addition':
+                assert len(atom.args) == 5, f'Error: The length of the arguments of the atom {atom} is not 5 in predicate addition'
+                atom.args = ['['+str(atom.args[0])+'-'+str(atom.args[1])+']', '['+str(atom.args[2])+'-'+str(atom.args[3])+']', atom.args[4]]
+            elif atom.predicate == 'digit':
+                assert len(atom.args) == 3, f'Error: The length of the arguments of the atom {atom} is not 3 in predicate digit'
+                atom.args = ['['+str(atom.args[0])+'-'+str(atom.args[1])+']', atom.args[2]]
+        print('\nState:', state) if verbose else None
+        # Remove the True atoms from the next states and convert them to a list of strings
+        state = [str(atom) for atom in state if atom.predicate != 'True']
+        state = ", ".join([str(atom) for atom in state])
+        print('State str:',state) if verbose else None
+        next_states_str = get_actions_prolog(state, verbose=0)
+        # Convert the list of strings to a list of Term object
+        next_states = []
+        for next_state_str in next_states_str:
+            print('Next state str:', next_state_str) if verbose else None
+            atoms = from_str_to_term(next_state_str)
+            for atom in atoms: 
+                new_args = []
+                for i, arg in enumerate(atom.args):
+                    if (arg.startswith('[') and arg.endswith(']')) and arg.count('-') == 1 and 'im_' in arg:
+                        split = arg[1:-1].split('-')
+                        new_args.append(split[0])
+                        new_args.append(split[1])
+                    else:
+                        new_args.append(arg)
+                atom.args = new_args
+            next_states.append(atoms)
+    print('Next states', next_states) if verbose else None
     return next_states
