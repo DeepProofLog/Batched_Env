@@ -1,0 +1,35 @@
+Experiment number  0  out of  1  experiments.
+Seed 0  in  [0]
+
+Run vars: countries_s2-transe-PPO-50-20-True-1500-False-True-1-True-False-False 
+ Namespace(train_neg_pos_ratio=1, limit_space=True, dynamic_neg=True, standard_corruptions=False, dataset_name='countries_s2', data_path='./data/', domain_file=None, janus_file='train.pl', train_file='train_label_corruptions.json', valid_file='valid_queries.txt', test_file='test_queries.txt', dynamic_consult=False, learn_embeddings=True, kge='transe', model_name='PPO', atom_embedding_size=50, constant_embedding_size=50, predicate_embedding_size=50, constant_emb_file='./data/countries_s2/constant_embeddings.pkl', predicate_emb_file='./data/countries_s2/predicate_embeddings.pkl', rule_depend_var=False, variable_no=500, device='cpu', seed=[0], restore_best_val_model=False, load_model=False, save_model=False, models_path='models/countries_s2', timesteps_train=1500, n_epochs=10, n_steps=2048, eval_freq=1000, batch_size=64, lr=0.0003, max_depth=20, run_signature='countries_s2-transe-PPO-50-20-True-1500-False-True-1-True-False-False', seed_run_i=0) 
+
+ratio of positives in train 0.50
+                      valid 0.30
+                      test 0.30
+Using cpu device
+Wrapping the env with a `Monitor` wrapper
+Wrapping the env in a DummyVecEnv.
+Eval num_timesteps=1000, episode_reward=0.30 +/- 0.46
+Episode length: 11.37 +/- 7.70
+New best mean reward!
+Eval num_timesteps=2000, episode_reward=0.30 +/- 0.46
+Episode length: 11.37 +/- 7.70
+Epoch 1 completed in 4.74 seconds.
+Metric "train/loss" not found. Available: dict_keys([])
+---------------------------------
+| rollout/           |          |
+|    ep_len_mean     | 9.38     |
+|    ep_rew_mean     | 0.5      |
+| time/              |          |
+|    fps             | 430      |
+|    iterations      | 1        |
+|    time_elapsed    | 4        |
+|    total_timesteps | 2048     |
+---------------------------------
+
+Training completed!
+Total training time: 4.74 seconds.
+Average epoch time: 4.74 seconds.
+
+Testing train set...

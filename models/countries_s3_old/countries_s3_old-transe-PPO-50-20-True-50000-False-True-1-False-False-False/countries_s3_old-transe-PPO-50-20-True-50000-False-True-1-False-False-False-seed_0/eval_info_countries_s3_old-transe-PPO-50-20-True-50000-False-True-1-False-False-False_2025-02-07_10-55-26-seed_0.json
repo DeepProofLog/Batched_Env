@@ -1,0 +1,6 @@
+{
+    "best_metric_value": 0.11904761904761904,
+    "current_timestep": 51200,
+    "metric": "best_mean_reward",
+    "num_timesteps": 51200
+}

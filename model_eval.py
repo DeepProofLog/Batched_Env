@@ -9,17 +9,6 @@ from sklearn.metrics import average_precision_score
 
 
 
-# from stable_baselines3.common.evaluation import evaluate_policy
-# print('Testing train set...')
-# eval_env.eval_dataset,eval_env.eval_len = 'train', len(data_handler.train_queries)
-# rewards_train, episode_len_train = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.train_queries),deterministic=True,return_episode_rewards=True)
-# print('Testing val set...')
-# eval_env.eval_dataset,eval_env.eval_len = 'validation', len(data_handler.valid_queries)
-# rewards_valid, episode_len_valid = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.valid_queries),deterministic=True,return_episode_rewards=True)
-# print('Testing test set...')
-# eval_env.eval_dataset,eval_env.eval_len = 'test', len(data_handler.test_queries)
-# rewards_test, episode_len_test = evaluate_policy(model,eval_env,n_eval_episodes=len(data_handler.test_queries),deterministic=True,return_episode_rewards=True)
-
 def eval_test(  data: list[Term],
                 labels: list[int],
                 env: gym.Env,
@@ -44,7 +33,6 @@ def eval_test(  data: list[Term],
 
         
         obs, rewards, dones, truncated, info = env.step(action[0])
-        # obs, rewards, dones, truncated, info = env.step(action)
         print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
         trajectory_reward, episode_len, log_prob = trajectory_reward + rewards, episode_len + 1, log_prob + log_prob
 
@@ -53,12 +41,11 @@ def eval_test(  data: list[Term],
             episode_len_list.append(episode_len)
             log_probs.append(cum_log_prob)
             print(f'reward {trajectory_reward}, episode len {episode_len}, cum log prob {cum_log_prob}') if verbose >=1 else None
-
-            # print(' done,truncated,rewards',dones,truncated,rewards)
+            print(' done,truncated,rewards',dones,truncated,rewards) if verbose >=1 else None
             next_query += 1
             if next_query < len(data):
                 obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
-                print('\nquery',next_query, 'with label',labels[next_query])
+                print('\nquery',next_query, 'with label',labels[next_query]) if verbose >=1 else None
                 trajectory_reward, episode_len, cum_log_prob = 0, 0, 0
                 print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     
@@ -70,24 +57,24 @@ def eval_test(  data: list[Term],
     return rewards_list, episode_len_list, log_probs
 
 
-def eval_test_corruptions(  data: list[Term],
-                            labels: list[int],
-                            corruptions: dict[Term, list[Term]],
-                            env: gym.Env,
-                            model: PPO,
-                            deterministic: bool = True,
-                            verbose:int=0,
-                            consult_janus:bool=False) -> Tuple[list[float], list[int], list[float]]:
+
+
+
+def eval_test_corruptions(  
+                        data: list[Term],
+                        corruptions: dict[Term, list[Term]],
+                        env: gym.Env,
+                        model: PPO,
+                        deterministic: bool = True,
+                        verbose:int=0,
+                        consult_janus:bool=False) -> Tuple[list[float], list[int], list[float]]:
     '''
     For every positive query, get its corruptions, evaluate the model on the query and all its corruptions (based on the logprobs) and rank the query and its corruptions (MRR)
 
     '''
     mrr_list, rewards_list_pos, episode_len_list_pos, log_probs_list_pos, rewards_list_neg, episode_len_list_neg, log_probs_list_neg = [], [], [], [], [], [], []
-    (data_pos, labels_pos) = zip(*[(data[i],labels[i]) for i in range(len(data)) if labels[i] == 1])
-    for query in data_pos:
+    for query in data:
         corruptions_query = corruptions[query]
-        # if len(corruptions_query) == 0:
-        #     continue
         data_query = [query] + corruptions_query
         labels_query = [1] + [0 for _ in range(len(corruptions_query))]
         rewards, episode_len, log_probs = eval_test(data_query, labels_query, env, model, deterministic, verbose, return_dict=False, consult_janus=consult_janus)
@@ -126,6 +113,9 @@ def eval_test_corruptions(  data: list[Term],
             'auc_pr':auc_pr
             }
     return info
+
+
+
 
 def eval_test_pos_neg(  data: list[Term],
                             labels: list[int],

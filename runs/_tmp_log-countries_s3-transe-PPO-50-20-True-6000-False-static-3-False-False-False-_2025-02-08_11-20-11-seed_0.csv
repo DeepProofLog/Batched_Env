@@ -1,0 +1,2 @@
+train/learning_rate:0.0003;train/entropy_loss:-0.5472517540678382;train/policy_gradient_loss:-0.02921980952960439;train/value_loss:0.12911834595724941;train/approx_kl:0.024127773940563202;train/clip_fraction:0.2048828125;train/loss:0.06667298823595047;train/explained_variance:-0.2026691436767578;train/n_updates:10;train/clip_range:0.2
+eval/mean_reward:0.5263157894736842;eval/std_reward:0.49930699897395464;eval/mean_ep_length:4.7894736842105265;eval/std_ep_length:2.5869906794620015;eval/num_timesteps:5000

@@ -1,0 +1,588 @@
+Experiment number  0  out of  1  experiments.
+Seed 0  in  [0]
+
+Run vars: countries_s3_old-transe-PPO-50-20-True-50000-False-False-1-False-False-False 
+ Namespace(train_neg_pos_ratio=1, limit_space=False, dynamic_neg=False, standard_corruptions=False, dataset_name='countries_s3_old', data_path='./data/', domain_file=None, janus_file='train.pl', train_file='train_queries.txt', valid_file='valid_queries.txt', test_file='test_queries.txt', dynamic_consult=False, learn_embeddings=True, kge='transe', model_name='PPO', atom_embedding_size=50, constant_embedding_size=50, predicate_embedding_size=50, constant_emb_file='./data/countries_s3_old/constant_embeddings.pkl', predicate_emb_file='./data/countries_s3_old/predicate_embeddings.pkl', rule_depend_var=False, variable_no=500, device='cpu', seed=[0], restore_best_val_model=False, load_model=False, save_model=True, models_path='models/countries_s3_old', timesteps_train=50000, n_epochs=10, n_steps=2048, eval_freq=5000, batch_size=64, lr=0.0003, max_depth=20, run_signature='countries_s3_old-transe-PPO-50-20-True-50000-False-False-1-False-False-False', seed_run_i=0) 
+
+ratio of positives in train 0.50
+                      valid 0.29
+                      test 0.30
+Using cpu device
+Wrapping the env with a `Monitor` wrapper
+Wrapping the env in a DummyVecEnv.
+Epoch 1 completed in 2.95 seconds.
+Metric "train/loss" not found. Available: dict_keys([])
+---------------------------------
+| rollout/           |          |
+|    ep_len_mean     | 8.83     |
+|    ep_rew_mean     | 0.14     |
+| time/              |          |
+|    fps             | 688      |
+|    iterations      | 1        |
+|    time_elapsed    | 2        |
+|    total_timesteps | 2048     |
+---------------------------------
+Epoch 2 completed in 2.66 seconds.
+Improved train/loss to 0.0296
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 9.32        |
+|    ep_rew_mean          | 0.15        |
+| time/                   |             |
+|    fps                  | 580         |
+|    iterations           | 2           |
+|    time_elapsed         | 7           |
+|    total_timesteps      | 4096        |
+| train/                  |             |
+|    approx_kl            | 0.016389214 |
+|    clip_fraction        | 0.198       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.787      |
+|    explained_variance   | -0.0627     |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0296      |
+|    n_updates            | 10          |
+|    policy_gradient_loss | -0.0183     |
+|    value_loss           | 0.0808      |
+-----------------------------------------
+Eval num_timesteps=5000, episode_reward=0.01 +/- 0.11
+Episode length: 6.14 +/- 1.51
+New best mean reward!
+Epoch 3 completed in 3.14 seconds.
+Improved train/loss to 0.0219
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 9.58        |
+|    ep_rew_mean          | 0.14        |
+| time/                   |             |
+|    fps                  | 523         |
+|    iterations           | 3           |
+|    time_elapsed         | 11          |
+|    total_timesteps      | 6144        |
+| train/                  |             |
+|    approx_kl            | 0.018644135 |
+|    clip_fraction        | 0.194       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.787      |
+|    explained_variance   | 0.0445      |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0219      |
+|    n_updates            | 20          |
+|    policy_gradient_loss | -0.0178     |
+|    value_loss           | 0.0567      |
+-----------------------------------------
+Epoch 4 completed in 2.97 seconds.
+Improved train/loss to 0.0024
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.54        |
+|    ep_rew_mean          | 0.2         |
+| time/                   |             |
+|    fps                  | 511         |
+|    iterations           | 4           |
+|    time_elapsed         | 16          |
+|    total_timesteps      | 8192        |
+| train/                  |             |
+|    approx_kl            | 0.016382147 |
+|    clip_fraction        | 0.174       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.761      |
+|    explained_variance   | 0.086       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.00243     |
+|    n_updates            | 30          |
+|    policy_gradient_loss | -0.0153     |
+|    value_loss           | 0.0516      |
+-----------------------------------------
+Eval num_timesteps=10000, episode_reward=0.05 +/- 0.21
+Episode length: 6.75 +/- 2.28
+New best mean reward!
+Epoch 5 completed in 3.41 seconds.
+Improved train/loss to -0.0122
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.58        |
+|    ep_rew_mean          | 0.32        |
+| time/                   |             |
+|    fps                  | 484         |
+|    iterations           | 5           |
+|    time_elapsed         | 21          |
+|    total_timesteps      | 10240       |
+| train/                  |             |
+|    approx_kl            | 0.013758333 |
+|    clip_fraction        | 0.148       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.729      |
+|    explained_variance   | 0.156       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0122     |
+|    n_updates            | 40          |
+|    policy_gradient_loss | -0.0126     |
+|    value_loss           | 0.0624      |
+-----------------------------------------
+Epoch 6 completed in 3.34 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.58        |
+|    ep_rew_mean          | 0.22        |
+| time/                   |             |
+|    fps                  | 478         |
+|    iterations           | 6           |
+|    time_elapsed         | 25          |
+|    total_timesteps      | 12288       |
+| train/                  |             |
+|    approx_kl            | 0.014398789 |
+|    clip_fraction        | 0.151       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.704      |
+|    explained_variance   | 0.179       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.00075    |
+|    n_updates            | 50          |
+|    policy_gradient_loss | -0.015      |
+|    value_loss           | 0.087       |
+-----------------------------------------
+Epoch 7 completed in 3.37 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.57        |
+|    ep_rew_mean          | 0.34        |
+| time/                   |             |
+|    fps                  | 466         |
+|    iterations           | 7           |
+|    time_elapsed         | 30          |
+|    total_timesteps      | 14336       |
+| train/                  |             |
+|    approx_kl            | 0.017224519 |
+|    clip_fraction        | 0.164       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.674      |
+|    explained_variance   | 0.184       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.000649    |
+|    n_updates            | 60          |
+|    policy_gradient_loss | -0.0181     |
+|    value_loss           | 0.0786      |
+-----------------------------------------
+Eval num_timesteps=15000, episode_reward=0.05 +/- 0.21
+Episode length: 6.32 +/- 1.81
+Epoch 8 completed in 3.97 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.39        |
+|    ep_rew_mean          | 0.31        |
+| time/                   |             |
+|    fps                  | 447         |
+|    iterations           | 8           |
+|    time_elapsed         | 36          |
+|    total_timesteps      | 16384       |
+| train/                  |             |
+|    approx_kl            | 0.014654089 |
+|    clip_fraction        | 0.151       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.635      |
+|    explained_variance   | 0.274       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0227      |
+|    n_updates            | 70          |
+|    policy_gradient_loss | -0.0139     |
+|    value_loss           | 0.083       |
+-----------------------------------------
+Epoch 9 completed in 4.69 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 7.55        |
+|    ep_rew_mean          | 0.4         |
+| time/                   |             |
+|    fps                  | 424         |
+|    iterations           | 9           |
+|    time_elapsed         | 43          |
+|    total_timesteps      | 18432       |
+| train/                  |             |
+|    approx_kl            | 0.011682222 |
+|    clip_fraction        | 0.143       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.6        |
+|    explained_variance   | 0.257       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0289      |
+|    n_updates            | 80          |
+|    policy_gradient_loss | -0.0124     |
+|    value_loss           | 0.0819      |
+-----------------------------------------
+Eval num_timesteps=20000, episode_reward=0.05 +/- 0.21
+Episode length: 6.89 +/- 1.76
+Epoch 10 completed in 5.11 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 7.97        |
+|    ep_rew_mean          | 0.33        |
+| time/                   |             |
+|    fps                  | 406         |
+|    iterations           | 10          |
+|    time_elapsed         | 50          |
+|    total_timesteps      | 20480       |
+| train/                  |             |
+|    approx_kl            | 0.012885482 |
+|    clip_fraction        | 0.118       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.585      |
+|    explained_variance   | 0.323       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0519      |
+|    n_updates            | 90          |
+|    policy_gradient_loss | -0.011      |
+|    value_loss           | 0.0821      |
+-----------------------------------------
+Epoch 11 completed in 4.50 seconds.
+----------------------------------------
+| rollout/                |            |
+|    ep_len_mean          | 8.46       |
+|    ep_rew_mean          | 0.26       |
+| time/                   |            |
+|    fps                  | 397        |
+|    iterations           | 11         |
+|    time_elapsed         | 56         |
+|    total_timesteps      | 22528      |
+| train/                  |            |
+|    approx_kl            | 0.01019016 |
+|    clip_fraction        | 0.111      |
+|    clip_range           | 0.2        |
+|    entropy_loss         | -0.544     |
+|    explained_variance   | 0.384      |
+|    learning_rate        | 0.0003     |
+|    loss                 | 0.0177     |
+|    n_updates            | 100        |
+|    policy_gradient_loss | -0.00858   |
+|    value_loss           | 0.0747     |
+----------------------------------------
+Epoch 12 completed in 4.40 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8           |
+|    ep_rew_mean          | 0.31        |
+| time/                   |             |
+|    fps                  | 390         |
+|    iterations           | 12          |
+|    time_elapsed         | 62          |
+|    total_timesteps      | 24576       |
+| train/                  |             |
+|    approx_kl            | 0.013742743 |
+|    clip_fraction        | 0.142       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.577      |
+|    explained_variance   | 0.43        |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0173      |
+|    n_updates            | 110         |
+|    policy_gradient_loss | -0.0102     |
+|    value_loss           | 0.0697      |
+-----------------------------------------
+Eval num_timesteps=25000, episode_reward=0.05 +/- 0.21
+Episode length: 7.25 +/- 2.18
+Epoch 13 completed in 4.74 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.82        |
+|    ep_rew_mean          | 0.28        |
+| time/                   |             |
+|    fps                  | 383         |
+|    iterations           | 13          |
+|    time_elapsed         | 69          |
+|    total_timesteps      | 26624       |
+| train/                  |             |
+|    approx_kl            | 0.009476688 |
+|    clip_fraction        | 0.0994      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.552      |
+|    explained_variance   | 0.39        |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0289      |
+|    n_updates            | 120         |
+|    policy_gradient_loss | -0.00846    |
+|    value_loss           | 0.0702      |
+-----------------------------------------
+Epoch 14 completed in 3.95 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 9.27        |
+|    ep_rew_mean          | 0.28        |
+| time/                   |             |
+|    fps                  | 382         |
+|    iterations           | 14          |
+|    time_elapsed         | 74          |
+|    total_timesteps      | 28672       |
+| train/                  |             |
+|    approx_kl            | 0.011674557 |
+|    clip_fraction        | 0.134       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.566      |
+|    explained_variance   | 0.463       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0089      |
+|    n_updates            | 130         |
+|    policy_gradient_loss | -0.0106     |
+|    value_loss           | 0.0564      |
+-----------------------------------------
+Eval num_timesteps=30000, episode_reward=0.08 +/- 0.28
+Episode length: 7.21 +/- 1.90
+New best mean reward!
+Epoch 15 completed in 4.71 seconds.
+----------------------------------------
+| rollout/                |            |
+|    ep_len_mean          | 8.63       |
+|    ep_rew_mean          | 0.33       |
+| time/                   |            |
+|    fps                  | 376        |
+|    iterations           | 15         |
+|    time_elapsed         | 81         |
+|    total_timesteps      | 30720      |
+| train/                  |            |
+|    approx_kl            | 0.00968321 |
+|    clip_fraction        | 0.119      |
+|    clip_range           | 0.2        |
+|    entropy_loss         | -0.548     |
+|    explained_variance   | 0.551      |
+|    learning_rate        | 0.0003     |
+|    loss                 | 0.0196     |
+|    n_updates            | 140        |
+|    policy_gradient_loss | -0.0103    |
+|    value_loss           | 0.0437     |
+----------------------------------------
+Epoch 16 completed in 4.16 seconds.
+Improved train/loss to -0.0201
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.55        |
+|    ep_rew_mean          | 0.3         |
+| time/                   |             |
+|    fps                  | 372         |
+|    iterations           | 16          |
+|    time_elapsed         | 87          |
+|    total_timesteps      | 32768       |
+| train/                  |             |
+|    approx_kl            | 0.013215462 |
+|    clip_fraction        | 0.123       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.541      |
+|    explained_variance   | 0.64        |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0201     |
+|    n_updates            | 150         |
+|    policy_gradient_loss | -0.00925    |
+|    value_loss           | 0.044       |
+-----------------------------------------
+Epoch 17 completed in 4.40 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.42        |
+|    ep_rew_mean          | 0.35        |
+| time/                   |             |
+|    fps                  | 368         |
+|    iterations           | 17          |
+|    time_elapsed         | 94          |
+|    total_timesteps      | 34816       |
+| train/                  |             |
+|    approx_kl            | 0.011207039 |
+|    clip_fraction        | 0.112       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.523      |
+|    explained_variance   | 0.671       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.00241     |
+|    n_updates            | 160         |
+|    policy_gradient_loss | -0.01       |
+|    value_loss           | 0.0423      |
+-----------------------------------------
+Eval num_timesteps=35000, episode_reward=0.08 +/- 0.28
+Episode length: 6.96 +/- 1.99
+Epoch 18 completed in 4.73 seconds.
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 7.66         |
+|    ep_rew_mean          | 0.36         |
+| time/                   |              |
+|    fps                  | 363          |
+|    iterations           | 18           |
+|    time_elapsed         | 101          |
+|    total_timesteps      | 36864        |
+| train/                  |              |
+|    approx_kl            | 0.0136546055 |
+|    clip_fraction        | 0.149        |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.538       |
+|    explained_variance   | 0.753        |
+|    learning_rate        | 0.0003       |
+|    loss                 | 0.00915      |
+|    n_updates            | 170          |
+|    policy_gradient_loss | -0.0117      |
+|    value_loss           | 0.0306       |
+------------------------------------------
+Epoch 19 completed in 4.39 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.07        |
+|    ep_rew_mean          | 0.3         |
+| time/                   |             |
+|    fps                  | 359         |
+|    iterations           | 19          |
+|    time_elapsed         | 108         |
+|    total_timesteps      | 38912       |
+| train/                  |             |
+|    approx_kl            | 0.010098372 |
+|    clip_fraction        | 0.117       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.524      |
+|    explained_variance   | 0.75        |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.00544     |
+|    n_updates            | 180         |
+|    policy_gradient_loss | -0.00846    |
+|    value_loss           | 0.0354      |
+-----------------------------------------
+Eval num_timesteps=40000, episode_reward=0.05 +/- 0.21
+Episode length: 7.64 +/- 2.17
+Epoch 20 completed in 5.36 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 7.97        |
+|    ep_rew_mean          | 0.36        |
+| time/                   |             |
+|    fps                  | 350         |
+|    iterations           | 20          |
+|    time_elapsed         | 116         |
+|    total_timesteps      | 40960       |
+| train/                  |             |
+|    approx_kl            | 0.011628982 |
+|    clip_fraction        | 0.12        |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.482      |
+|    explained_variance   | 0.684       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0175      |
+|    n_updates            | 190         |
+|    policy_gradient_loss | -0.011      |
+|    value_loss           | 0.0441      |
+-----------------------------------------
+Epoch 21 completed in 4.14 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 9.16        |
+|    ep_rew_mean          | 0.3         |
+| time/                   |             |
+|    fps                  | 349         |
+|    iterations           | 21          |
+|    time_elapsed         | 123         |
+|    total_timesteps      | 43008       |
+| train/                  |             |
+|    approx_kl            | 0.014674591 |
+|    clip_fraction        | 0.125       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.504      |
+|    explained_variance   | 0.761       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0296      |
+|    n_updates            | 200         |
+|    policy_gradient_loss | -0.00968    |
+|    value_loss           | 0.0353      |
+-----------------------------------------
+Eval num_timesteps=45000, episode_reward=0.10 +/- 0.29
+Episode length: 7.64 +/- 2.41
+New best mean reward!
+Epoch 22 completed in 4.96 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 9.26        |
+|    ep_rew_mean          | 0.3         |
+| time/                   |             |
+|    fps                  | 343         |
+|    iterations           | 22          |
+|    time_elapsed         | 131         |
+|    total_timesteps      | 45056       |
+| train/                  |             |
+|    approx_kl            | 0.016521972 |
+|    clip_fraction        | 0.115       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.507      |
+|    explained_variance   | 0.645       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.00331    |
+|    n_updates            | 210         |
+|    policy_gradient_loss | -0.0127     |
+|    value_loss           | 0.0441      |
+-----------------------------------------
+Epoch 23 completed in 4.16 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.64        |
+|    ep_rew_mean          | 0.37        |
+| time/                   |             |
+|    fps                  | 340         |
+|    iterations           | 23          |
+|    time_elapsed         | 138         |
+|    total_timesteps      | 47104       |
+| train/                  |             |
+|    approx_kl            | 0.016475804 |
+|    clip_fraction        | 0.135       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.506      |
+|    explained_variance   | 0.686       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.00943     |
+|    n_updates            | 220         |
+|    policy_gradient_loss | -0.0107     |
+|    value_loss           | 0.0407      |
+-----------------------------------------
+Epoch 24 completed in 5.06 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 7.73        |
+|    ep_rew_mean          | 0.41        |
+| time/                   |             |
+|    fps                  | 337         |
+|    iterations           | 24          |
+|    time_elapsed         | 145         |
+|    total_timesteps      | 49152       |
+| train/                  |             |
+|    approx_kl            | 0.012918038 |
+|    clip_fraction        | 0.127       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.505      |
+|    explained_variance   | 0.787       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.0208      |
+|    n_updates            | 230         |
+|    policy_gradient_loss | -0.00993    |
+|    value_loss           | 0.0282      |
+-----------------------------------------
+Eval num_timesteps=50000, episode_reward=0.12 +/- 0.32
+Episode length: 7.75 +/- 2.44
+New best mean reward!
+Epoch 25 completed in 6.18 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.31        |
+|    ep_rew_mean          | 0.4         |
+| time/                   |             |
+|    fps                  | 334         |
+|    iterations           | 25          |
+|    time_elapsed         | 152         |
+|    total_timesteps      | 51200       |
+| train/                  |             |
+|    approx_kl            | 0.012660926 |
+|    clip_fraction        | 0.104       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.499      |
+|    explained_variance   | 0.758       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.00243     |
+|    n_updates            | 240         |
+|    policy_gradient_loss | -0.00902    |
+|    value_loss           | 0.0372      |
+-----------------------------------------
+
+Training completed!
+Total training time: 105.46 seconds.
+Average epoch time: 4.22 seconds.
+
+Testing train set...

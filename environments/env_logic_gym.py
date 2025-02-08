@@ -182,7 +182,7 @@ class LogicEnv_gym(gym.Env):
                 device: torch.device = torch.device("cpu"),
                 index_manager: Optional[IndexManager] = None,
                 data_handler: Optional[DataHandler] = None,
-                dynamic_neg: bool = False,
+                corruption_mode: Optional[str] = None,
                 train_neg_pos_ratio: int = 1,
                 limit_space: bool = True,
                 dynamic_consult: bool = True,
@@ -193,7 +193,7 @@ class LogicEnv_gym(gym.Env):
         super().__init__()
         self.device = device
 
-        self.dynamic_neg = dynamic_neg
+        self.corruption_mode = corruption_mode
 
         self.max_arity=data_handler.max_arity # Maximum arity of the predicates
         self.max_atom = 10  # Maximum number of atoms in a state
@@ -205,25 +205,24 @@ class LogicEnv_gym(gym.Env):
         self.seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
         self._set_seed(self.seed)
         self._make_spec()
+        self.current_seed = self.seed # seed to select random queries
 
         self.dataset_name = data_handler.name
         self.facts=data_handler.facts
 
-        self.counter = 0  # Determine whether to sample from positive or negative queries in KGE settings
-        self.standard_corruptions = data_handler.standard_corruptions
-        assert not (self.standard_corruptions and self.dynamic_neg), "Both standard_corruptions and dynamic_neg cannot be True at the same time"
-        if self.standard_corruptions:
+        if 'static' in self.corruption_mode or 'dynamic' in self.corruption_mode:
+            self.counter = 0  # Determine whether to sample from positive or negative queries in KGE settings
+
+        if self.corruption_mode == "dynamic":
             self.sampler = data_handler.sampler
             self.triples_factory = data_handler.triples_factory
-            self.train_queries, self.train_labels = data_handler.train_queries, data_handler.train_labels
-        if self.dynamic_neg:
-            self.pos_train_queries, self.neg_train_queries = data_handler.pos_train_queries, data_handler.neg_train_queries
-            self.train_neg_pos_ratio = train_neg_pos_ratio
-        else:
-            self.train_queries, self.train_labels = data_handler.train_queries, data_handler.train_labels
 
-        self.valid_queries, self.valid_labels = data_handler.valid_queries, data_handler.valid_labels
-        self.test_queries, self.test_labels = data_handler.test_queries, data_handler.test_labels
+        self.train_neg_pos_ratio = train_neg_pos_ratio
+        self.train_queries = data_handler.train_queries
+        self.neg_train_queries = data_handler.neg_train_queries
+
+        self.valid_queries = data_handler.valid_queries
+        self.test_queries = data_handler.test_queries
         
         self.janus_file = data_handler.janus_path
         self.janus_facts = data_handler.janus_facts
@@ -326,42 +325,47 @@ class LogicEnv_gym(gym.Env):
 
 
     def reset(self, seed: Optional[int]= None, options=None):
-        if self.eval:
-            # state, label = self.get_random_queries(self.valid_queries, self.valid_labels, 1, seed=seed)
+        if self.eval: 
+            '''Only use this during training with the callback EvalCallback and the env initialised with eval=True. 
+            We just test in this case positive queries. Can be adapted to test negative queries as well by using the counter
+            and passing neg_{train/val/test}_queries. For final eval, we use reset from query'''
             if self.eval_dataset == 'validation':
                 eval_dataset = self.valid_queries
-                eval_labels = self.valid_labels
             elif self.eval_dataset == 'test':
                 eval_dataset = self.test_queries
-                eval_labels = self.test_labels
             elif self.eval_dataset == 'train':
                 eval_dataset = self.train_queries
-                eval_labels = self.train_labels
 
-            if self.eval_idx == self.eval_len:
+            if self.eval_idx == self.eval_len: # reset the index
                 self.eval_idx = 0
-            state, label = eval_dataset[self.eval_idx], eval_labels[self.eval_idx]
+            state, label = eval_dataset[self.eval_idx], 1
             self.eval_idx += 1
 
         else:
-
-            if self.standard_corruptions:
-                state, _ = self.get_random_queries(self.train_queries, 1, seed=seed)
-                label = 1 if self.counter % (int(self.train_neg_pos_ratio) + 1) == 0 else 0
-                if label == 0:
-                    state = self.get_negatives(state)  # Assuming get_negatives returns (state, label) or updates state in place.
+            
+            if self.corruption_mode == "dynamic":
+                state, _ = self.get_random_queries(self.train_queries, n=1, seed=self.seed)
+                label = 1
+                if self.counter % (int(self.train_neg_pos_ratio) + 1) != 0:
+                    state = self.get_negatives(state)
+                    assert len(state) == 1, f"Length of negatives: {len(state)}"
+                    state = state[0] # In train there shuold be only one negative
+                    label = 0
                 self.counter += 1
 
-            elif self.dynamic_neg:
-                queries = self.pos_train_queries if self.counter % (int(self.train_neg_pos_ratio) + 1) == 0 else self.neg_train_queries
-                label = 1 if queries is self.pos_train_queries else 0
-                state, _ = self.get_random_queries(queries, 1, seed=seed) 
+            elif 'static' in self.corruption_mode:
+                if self.counter % (int(self.train_neg_pos_ratio) + 1) == 0:
+                    state, _ = self.get_random_queries(self.train_queries, n=1, seed=self.seed) 
+                    label = 1
+                else:
+                    state, _ = self.get_random_queries(self.neg_train_queries, n=1, seed=self.seed) 
+                    label = 0
                 self.counter += 1
 
-            else:  # Default case (no standard_corruptions or dynamic_neg)
-                state, _ = self.get_random_queries(self.train_queries, 1, seed=seed)
-                label = 1 
-
+            else:  # Default case
+                state, _ = self.get_random_queries(self.train_queries, n=1, seed=self.seed)
+                label = 1
+                
             if label == 1 and not self.dynamic_consult:
                 self.new_consult_janus(state)
             elif label == 1 and self.dynamic_consult and state in self.facts:
@@ -376,6 +380,8 @@ class LogicEnv_gym(gym.Env):
 
 
     def reset_from_query(self, query, label, consult_janus=False):
+        ''' Reset the environment from a given query and label. Consult janus is needed when 
+        doing eval of train queries that are in the facts'''
         if consult_janus and label == 1:
             if not self.dynamic_consult:
                 self.new_consult_janus(query)
@@ -506,18 +512,20 @@ class LogicEnv_gym(gym.Env):
         # if dones and not self.eval:
         #     print('     adding fact:', self.current_query, dones)
         #     janus.query(f"assertz({self.current_query}).")
-        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
-        
         # if dones:
         #     print('dones,truncated,rewards', dones,truncated,rewards)
 
+        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
+        # if self.counter == 2:
+        #     print(endddddddddd)
+        # print(enddddddddddddddddddddd)
         return obs, reward, done, truncated, {}
 
 
     
     def get_next_states(self,state: List[Term]) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
         """Get next possible states and their indices for all states in the batch"""
-        possible_states_next = get_next_state_prolog(state, verbose=1) if self.dataset_name != "mnist_addition" else get_next_state_prolog_mnist(state, verbose=1)
+        possible_states_next = get_next_state_prolog(state, verbose=0) if self.dataset_name != "mnist_addition" else get_next_state_prolog_mnist(state, verbose=1)
         possible_atom_indices = []
         possible_sub_indices = []
 
@@ -555,15 +563,17 @@ class LogicEnv_gym(gym.Env):
         reward = torch.tensor(1, device=self.device) if (done and successful and label_tensor == 1) else torch.tensor(0,device=self.device)
         return done, reward
     
-    @staticmethod
-    def get_random_queries(queries: List[Rule], 
-                           n: int, 
+    def get_random_queries(self,
+                           queries: List[Rule], 
+                           n: int = 1, 
                            labels: List[int] = None, 
                            seed: Optional[int] = None):
-        if not seed:
-            random_instance = random.Random()
-        else:
-            random_instance = random.Random(seed)
+        self.current_seed += 1
+        random_instance = random.Random(self.current_seed)
+        # if seed is None:
+        #     random_instance = random.Random()
+        # else:
+        #     random_instance = random.Random(seed)
         assert n <= len(queries), f"Number of queries ({n}) is greater than the number of queries ({len(queries)})"
         sampled_indices = random_instance.sample(range(len(queries)), n)
         sampled_queries = [queries[i] for i in sampled_indices]
@@ -611,8 +621,9 @@ class LogicEnv_gym(gym.Env):
         derived_sub_indices_next[0, 0] = false_sub_id
         return derived_states_next, derived_atom_indices_next, derived_sub_indices_next
 
+
     def get_negatives(self,state):
-        query = [(state[0].args[0], state[0].predicate, state[0].args[1])] # convert query to (cte, pred, cte) format
+        query = [(state.args[0], state.predicate, state.args[1])] # convert query to (cte, pred, cte) format
         positive_batch = self.triples_factory.map_triples(np.array(query))
         negative_batch = self.sampler.corrupt_batch(positive_batch)
         negative_batch_str = []

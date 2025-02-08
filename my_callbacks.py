@@ -408,8 +408,7 @@ class EvalCallback(EventCallback):
             model_files = [f for f in os.listdir(self.model_path) if self.name in f and '.zip' in f and 'best_eval' in f]
             assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}: {model_files}"
             # load the model
-            self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=True)
-            # self.model.load(os.path.join(self.model_path, f"best_eval_{self.name}.zip"),print_system_info=True)
+            self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=False)
             print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_value:.3f}.')
         else:
             print(f'No best model found for {self.name}.')
@@ -417,11 +416,7 @@ class EvalCallback(EventCallback):
     def _on_training_end(self) -> bool:
         # Write the completion message to the info file
         if self.model_path:
-            self.write_info()
-        else:
-            # delete the model if not save_model
-            os.remove(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
-            
+            self.write_info()       
 
 
 

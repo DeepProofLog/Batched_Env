@@ -11,11 +11,11 @@ from utils import FileLogger
 import datetime
 import sys
 
-
 if __name__ == "__main__":
 
     class Tee:
         def __init__(self, file_path):
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
             self.file = open(file_path, "w")
             self.stdout = sys.stdout
 
@@ -27,51 +27,52 @@ if __name__ == "__main__":
             self.file.flush()
             self.stdout.flush()
 
-
-    RESTORE_BEST_VAL_MODEL = [False] #[True,False]
-    TIMESTEP_TRAIN = [2000]
     LIMIT_SPACE = [True] # [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
-    LOAD_MODEL = [False] #['best_eval', 'last_epoch', False]
-    save_model = False
-    train_neg_pos_ratio = 1 # in validation and test, we use all provable corruptions
-   
+    RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
+    DYNAMIC_CONSULT = [False] # [True, False]
+    CORRUPTION_MODE =  ['static'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
+    TRAIN_NEG_POS_RATIO = [1] # in validation and test, we use all corruptions
+
+    # include_non_provable = False # just modifies the get_corruptions_dict
+    # end_proof_action = False
+    # reward_type = 1
+    # rule_file = "train_false_rules.pl" if include_non_provable else "train.pl"
+
+    # Loggin settings 
     use_logger = True
     use_WB = False
     WB_path = "./../wandb/"
     logger_path = "./runs/"
 
-    DATASET_NAME =  ["mnist_addition"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
+    RESTORE_BEST_VAL_MODEL = [True] #[True,False]
+    LOAD_MODEL = [False] #['best_eval', 'last_epoch', False]
+    save_model = True #['best_eval', 'last_epoch', False]
+    
+    DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
     LEARN_EMBEDDINGS = [True]
     KGE = ['transe']
     MODEL_NAME = ["PPO"]
-    ATOM_EMBEDDING_SIZE = [200] #[50,200]
+    ATOM_EMBEDDING_SIZE = [50] #[50,200]
     SEED = [[0]] # [[0,1,2,3,4]]
     MAX_DEPTH = [20] # [20,100]
-    RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
-    DYNAMIC_CONSULT = [False] # [True, False]
 
-    # path to the data    
+    # Paths    
     data_path = "./data/"
-    domain_file = None
-    janus_file = "train.pl"
-    train_txt = "train_queries.txt"
-    train_json = "train_label_corruptions.json"
-    valid_txt = "valid_queries.txt"
-    test_txt = "test_queries.txt"
-
     models_path = "models/"
-    # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 
-    # this is ignored and the number of variables is determined by the number of variables in the rules
-    variable_no = 500 
-    device = "cpu"
+    janus_file = "train.pl"
 
     # Training parameters
+    TIMESTEP_TRAIN = [50000]
+    eval_freq = 5000
     n_epochs = 10
     n_steps = 2048 # number of steps to collect in each rollout
     batch_size = 64
     lr = 3e-4
-    eval_freq = 1000
 
+    # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 
+    # this is ignored and the number of variables is determined by the number of variables in the rules
+    variable_no = 500 
+    device = "cpu"
 
     # If take inputs from the command line, overwrite the default values
     parser = argparse.ArgumentParser(description='Description of your script')  
@@ -90,8 +91,10 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_val_model, limit_space, load_model, rule_depend_var, dynamic_consult in product(DATASET_NAME,
-            LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_VAL_MODEL, LIMIT_SPACE, LOAD_MODEL, RULE_DEPEND_VAR, DYNAMIC_CONSULT):
+    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_val_model, \
+    limit_space, load_model, rule_depend_var, dynamic_consult,corruption_mode, train_neg_pos_ratio in product(DATASET_NAME,
+        LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_VAL_MODEL, LIMIT_SPACE,
+        LOAD_MODEL, RULE_DEPEND_VAR, DYNAMIC_CONSULT,CORRUPTION_MODE, TRAIN_NEG_POS_RATIO):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
@@ -99,20 +102,20 @@ if __name__ == "__main__":
 
         args.train_neg_pos_ratio = train_neg_pos_ratio
         args.limit_space = limit_space
-
-        args.dynamic_neg = True
-        args.standard_corruptions = False
+        args.corruption_mode = corruption_mode
 
         args.dataset_name = dataset_name
         if dataset_name == "mnist_addition":
-            args.dynamic_neg = args.standard_corruptions = False
+            args.corruption_mode = None
     
-        if args.dynamic_neg:
-            train_file = train_json
-        else:
-            train_file = train_txt
-        valid_file = valid_txt
-        test_file = test_txt
+        if args.corruption_mode == "static":
+            train_file = "train_label_corruptions.json"
+            valid_file = "valid_label_corruptions.json"
+            test_file  = "test_label_corruptions.json"
+        elif args.corruption_mode == "dynamic":
+            train_file = "train_label.txt"
+            valid_file = "valid_label.txt"
+            test_file = "test_label.txt"
 
         args.data_path = data_path
         args.domain_file = domain_file
@@ -151,11 +154,10 @@ if __name__ == "__main__":
         args.max_depth = max_depth
 
         run_vars = (args.dataset_name, args.kge, args.model_name, args.atom_embedding_size,args.max_depth,
-                    args.learn_embeddings,args.timesteps_train,args.restore_best_val_model, args.dynamic_neg, args.train_neg_pos_ratio, args.limit_space, args.rule_depend_var, args.dynamic_consult)
+                    args.learn_embeddings,args.timesteps_train,args.restore_best_val_model, args.corruption_mode, args.train_neg_pos_ratio, args.limit_space, args.rule_depend_var, args.dynamic_consult)
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
-        print(args.run_signature)
         # # Redirect stdout to the Tee class
-        sys.stdout = Tee(f"output-{args.run_signature}.log")
+        sys.stdout = Tee(f"output/output-{args.run_signature}.log")
 
         all_args.append(copy.deepcopy(args)) # append a hard copy of the args to the list of all_args
 

@@ -1,0 +1,155 @@
+Experiment number  0  out of  1  experiments.
+Seed 0  in  [0]
+
+Run vars: countries_s3-transe-PPO-50-20-True-6000-False-True-1-False-False-True 
+ Namespace(train_neg_pos_ratio=1, limit_space=False, dynamic_neg=True, standard_corruptions=False, dataset_name='countries_s3', data_path='./data/', domain_file=None, janus_file='train.pl', train_file='train_label_corruptions.json', valid_file='valid_queries.txt', test_file='test_queries.txt', dynamic_consult=True, learn_embeddings=True, kge='transe', model_name='PPO', atom_embedding_size=50, constant_embedding_size=50, predicate_embedding_size=50, constant_emb_file='./data/countries_s3/constant_embeddings.pkl', predicate_emb_file='./data/countries_s3/predicate_embeddings.pkl', rule_depend_var=False, variable_no=500, device='cpu', seed=[0], restore_best_val_model=False, load_model=False, save_model=True, models_path='models/countries_s3', timesteps_train=6000, n_epochs=10, n_steps=2048, eval_freq=5000, batch_size=64, lr=0.0003, max_depth=20, run_signature='countries_s3-transe-PPO-50-20-True-6000-False-True-1-False-False-True', seed_run_i=0) 
+
+ratio of positives in train 0.50
+                      valid 0.39
+                      test 0.39
+Using cpu device
+Wrapping the env with a `Monitor` wrapper
+Wrapping the env in a DummyVecEnv.
+Epoch 1 completed in 1.89 seconds.
+Metric "train/loss" not found. Available: dict_keys([])
+---------------------------------
+| rollout/           |          |
+|    ep_len_mean     | 7.51     |
+|    ep_rew_mean     | 0.27     |
+| time/              |          |
+|    fps             | 1080     |
+|    iterations      | 1        |
+|    time_elapsed    | 1        |
+|    total_timesteps | 2048     |
+---------------------------------
+Epoch 2 completed in 1.83 seconds.
+Improved train/loss to -0.0010
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.21        |
+|    ep_rew_mean          | 0.2         |
+| time/                   |             |
+|    fps                  | 664         |
+|    iterations           | 2           |
+|    time_elapsed         | 6           |
+|    total_timesteps      | 4096        |
+| train/                  |             |
+|    approx_kl            | 0.023232019 |
+|    clip_fraction        | 0.159       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.535      |
+|    explained_variance   | -0.0701     |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.00103    |
+|    n_updates            | 10          |
+|    policy_gradient_loss | -0.0148     |
+|    value_loss           | 0.0779      |
+-----------------------------------------
+Eval num_timesteps=5000, episode_reward=0.11 +/- 0.32
+Episode length: 6.55 +/- 2.37
+New best mean reward!
+Epoch 3 completed in 2.50 seconds.
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 8.48        |
+|    ep_rew_mean          | 0.27        |
+| time/                   |             |
+|    fps                  | 537         |
+|    iterations           | 3           |
+|    time_elapsed         | 11          |
+|    total_timesteps      | 6144        |
+| train/                  |             |
+|    approx_kl            | 0.018512467 |
+|    clip_fraction        | 0.141       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.544      |
+|    explained_variance   | 0.275       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.000972   |
+|    n_updates            | 20          |
+|    policy_gradient_loss | -0.0113     |
+|    value_loss           | 0.0463      |
+-----------------------------------------
+
+Training completed!
+Total training time: 6.22 seconds.
+Average epoch time: 2.07 seconds.
+
+Testing train set...
+pos_queries: 33
+neg_queries: 48
+ratio_pos_queries: 0.410
+mrr_mean: 0.917
+mrr_std: 0.220
+rewards_pos_mean: 0.545
+rewards_pos_std: 0.498
+rewards_neg_mean: 0.000
+rewards_neg_std: 0.000
+rewards_mean: 0.222
+rewards_std: 0.416
+episode_len_pos_mean: 5.424
+episode_len_pos_std: 3.677
+episode_len_neg_mean: 8.458
+episode_len_neg_std: 2.371
+episode_len_mean: 7.222
+episode_len_std: 3.326
+log_probs_pos_mean: -1.684
+log_probs_pos_std: 1.886
+log_probs_neg_mean: -2.980
+log_probs_neg_std: 1.510
+log_probs_mean: -2.452
+log_probs_std: 1.790
+auc_pr: 0.763
+
+Testing val set...
+pos_queries: 24
+neg_queries: 38
+ratio_pos_queries: 0.390
+mrr_mean: 0.860
+mrr_std: 0.237
+rewards_pos_mean: 0.333
+rewards_pos_std: 0.471
+rewards_neg_mean: 0.000
+rewards_neg_std: 0.000
+rewards_mean: 0.129
+rewards_std: 0.335
+episode_len_pos_mean: 5.333
+episode_len_pos_std: 2.925
+episode_len_neg_mean: 7.158
+episode_len_neg_std: 1.740
+episode_len_mean: 6.452
+episode_len_std: 2.441
+log_probs_pos_mean: -1.955
+log_probs_pos_std: 1.593
+log_probs_neg_mean: -2.929
+log_probs_neg_std: 1.295
+log_probs_mean: -2.552
+log_probs_std: 1.495
+auc_pr: 0.660
+
+Testing test set...
+pos_queries: 24
+neg_queries: 38
+ratio_pos_queries: 0.390
+mrr_mean: 0.842
+mrr_std: 0.268
+rewards_pos_mean: 0.125
+rewards_pos_std: 0.331
+rewards_neg_mean: 0.000
+rewards_neg_std: 0.000
+rewards_mean: 0.048
+rewards_std: 0.215
+episode_len_pos_mean: 6.500
+episode_len_pos_std: 1.848
+episode_len_neg_mean: 7.158
+episode_len_neg_std: 2.171
+episode_len_mean: 6.903
+episode_len_std: 2.077
+log_probs_pos_mean: -2.169
+log_probs_pos_std: 1.126
+log_probs_neg_mean: -2.437
+log_probs_neg_std: 1.194
+log_probs_mean: -2.333
+log_probs_std: 1.175
+auc_pr: 0.495
+Writing results to ./runs/averaged_runs/experiments.csv

@@ -196,24 +196,35 @@ class TransE(nn.Module):
         self.to(device)
 
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
-
-        predicate_emb = predicate_emb.squeeze(-2)  # Remove unnecessary dimension if present
+        predicate_emb = predicate_emb.squeeze(-2)
+        head, tail = constant_embs[..., 0, :], constant_embs[..., 1, :]
         predicate_emb = self.dropout(predicate_emb)
-        constant_embs = self.dropout(constant_embs)  # Apply dropout to all constants
-
-        n = constant_embs.shape[-2]  # Get the number of constants
-        # Initialize the combined embedding with the predicate embedding
-        embeddings = predicate_emb
-
-        # Iterate through the constants and apply the operations
-        for i in range(n):
-            constant_emb = constant_embs[..., i, :]
-            embeddings = embeddings - constant_emb
-                
+        head = self.dropout(head)
+        tail = self.dropout(tail)
+        embeddings = predicate_emb + head - tail
         if self.regularization > 0:
             self.add_loss(self.regularization * embeddings.norm(p=2))
-            
         return embeddings
+
+    # def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
+
+    #     predicate_emb = predicate_emb.squeeze(-2)  # Remove unnecessary dimension if present
+    #     predicate_emb = self.dropout(predicate_emb)
+    #     constant_embs = self.dropout(constant_embs)  # Apply dropout to all constants
+
+    #     n = constant_embs.shape[-2]  # Get the number of constants
+    #     # Initialize the combined embedding with the predicate embedding
+    #     embeddings = predicate_emb
+
+    #     # Iterate through the constants and apply the operations
+    #     for i in range(n):
+    #         constant_emb = constant_embs[..., i, :]
+    #         embeddings = embeddings - constant_emb
+                
+    #     if self.regularization > 0:
+    #         self.add_loss(self.regularization * embeddings.norm(p=2))
+            
+    #     return embeddings
 
 class Concat(nn.Module):
     """TransE layer for computing atom embeddings."""

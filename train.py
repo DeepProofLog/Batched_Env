@@ -26,6 +26,8 @@ from pykeen.triples import TriplesFactory
 
 def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
+    print(args.run_signature)
+
     torch.manual_seed(args.seed_run_i)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed_run_i)
@@ -41,9 +43,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         train_file= args.train_file,
         valid_file=args.valid_file,
         test_file= args.test_file,
-        dynamic_neg=args.dynamic_neg,
-        standard_corruptions=args.standard_corruptions,
-        train_neg_pos_ratio=args.train_neg_pos_ratio,
+        corruption_mode=args.corruption_mode,
         name=args.dataset_name)
     data_handler= data_handler.info
 
@@ -60,7 +60,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                 max_arity=data_handler.max_arity,
                                 device=device)
     
-    if args.standard_corruptions:
+    if args.corruption_mode == 'dynamic':
         np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts],dtype=str)
         triples_factory = TriplesFactory.from_labeled_triples(triples=np_facts,
                                                             entity_to_id=index_manager.constant_str2idx,
@@ -83,7 +83,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         index_manager=index_manager,
                         data_handler=data_handler,
                         seed=args.seed_run_i,
-                        dynamic_neg=args.dynamic_neg,
+                        corruption_mode=args.corruption_mode,
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
                         limit_space=args.limit_space,
                         dynamic_consult=args.dynamic_consult)
@@ -93,7 +93,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                             index_manager=index_manager,
                             data_handler=data_handler,
                             seed=args.seed_run_i,
-                            dynamic_neg=args.dynamic_neg,
+                            corruption_mode=args.corruption_mode,
                             train_neg_pos_ratio=args.train_neg_pos_ratio,
                             limit_space=args.limit_space,
                             dynamic_consult=args.dynamic_consult,
@@ -118,7 +118,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     
 
     # TRAIN
-    model_path = os.path.join(args.models_path,args.run_signature, args.run_signature + f'_seed-{args.seed_run_i}')
+    model_path = os.path.join(args.models_path,args.run_signature, args.run_signature + f'-seed_{args.seed_run_i}')
     model_name = args.run_signature+date+'-seed_{}'.format(args.seed_run_i)
     if args.load_model:
         try:
@@ -194,21 +194,21 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     # TEST
     from model_eval import eval_test_corruptions
-    def print_eval_info(metrics: Dict[str, float]):
+    def print_eval_info(set: str,metrics: Dict[str, float]):
+        print(f'\n{set} set metrics:')
         print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()], sep='\n')
+    
+    if args.corruption_mode == 'dynamic':
+        raise NotImplementedError('Dynamic corruption mode not implemented for evaluation, need to modify corrupt_batch to get all negatives')
+    
+    metrics_train = eval_test_corruptions(data_handler.train_queries,data_handler.train_corruptions,eval_env,model,verbose=0,consult_janus=True)    
+    print_eval_info('Train',metrics_train)
 
-    print('\nTesting train set...')
-    if not args.dynamic_neg:
-        metrics_train = eval_test_corruptions(eval_env.train_queries,eval_env.train_labels,data_handler.train_corruptions,eval_env,model,verbose=1,consult_janus=True)
-    else:
-        metrics_train = eval_test_corruptions(eval_env.pos_train_queries,[1]*len(eval_env.pos_train_queries), data_handler.train_corruptions, eval_env,model,verbose=1,consult_janus=True)
-    print_eval_info(metrics_train)
-    print('\nTesting val set...')
-    metrics_valid = eval_test_corruptions(eval_env.valid_queries,eval_env.valid_labels,data_handler.valid_corruptions,eval_env,model,verbose=1)
-    print_eval_info(metrics_valid)
-    print('\nTesting test set...')
-    metrics_test = eval_test_corruptions(eval_env.test_queries,eval_env.test_labels,data_handler.test_corruptions,eval_env,model,verbose=1)
-    print_eval_info(metrics_test)
+    metrics_valid = eval_test_corruptions(data_handler.valid_queries,data_handler.valid_corruptions,eval_env,model,verbose=0)
+    print_eval_info('Validation',metrics_valid)
+
+    metrics_test = eval_test_corruptions(data_handler.test_queries,data_handler.test_corruptions,eval_env,model,verbose=0)
+    print_eval_info('Test',metrics_test)
 
     return metrics_train, metrics_valid, metrics_test
 
