@@ -118,7 +118,6 @@ if __name__ == "__main__":
             test_file = "test_label.txt"
 
         args.data_path = data_path
-        args.domain_file = domain_file
         args.janus_file = janus_file
         args.train_file = train_file
         args.valid_file = valid_file
