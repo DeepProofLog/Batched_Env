@@ -10,7 +10,7 @@ from stable_baselines3.common.callbacks import BaseCallback, EventCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 
 # from train import eval_test
-from model_eval import eval_test
+from model_eval import eval
 from utils import Term
 
 # def evaluate_policy(
@@ -155,7 +155,7 @@ def evaluate_custom(queries: List[Term],
                     env: gym.Env,
                     model: "type_aliases.PolicyPredictor",
                     deterministic: bool = True,):
-    rewards, episode_len = eval_test(queries,labels,env,model,deterministic=deterministic)
+    rewards, episode_len = eval(queries,labels,env,model,deterministic=deterministic)
     return rewards, episode_len
 
 class EvalCallback(EventCallback):

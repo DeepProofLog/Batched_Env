@@ -5,6 +5,7 @@ from typing import Dict, List
 from pykeen.sampling import BasicNegativeSampler
 from typing_extensions import TypeAlias 
 LongTensor: TypeAlias = torch.LongTensor  
+import math
 
 class BasicNegativeSamplerDomain(BasicNegativeSampler):
     def __init__(self,
@@ -64,30 +65,7 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
                 negative_batch[i, index] = replacement_entity
         return negative_batch.view(*batch_shape, self.num_negs_per_pos, 3)
     
-
-
-class AllNegativeSamplerDomain(BasicNegativeSamplerDomain):
-    def __init__(
-        self,
-        mapped_triples: torch.Tensor,
-        domain2idx: Dict[str, List[int]],
-        entity2domain: Dict[int, str],
-        num_entities: int,
-        num_negs_per_pos: int = 1,  # Note: not used in enumeration
-        filtered: bool = True,
-        corruption_scheme: List[str] = ['tail']
-    ):
-        super().__init__(
-            mapped_triples=mapped_triples,
-            domain2idx=domain2idx,
-            entity2domain=entity2domain,
-            num_negs_per_pos=num_negs_per_pos,
-            filtered=filtered,
-            corruption_scheme=corruption_scheme
-        )
-        self.num_entities = num_entities
-
-    def corrupt_batch(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
+    def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
         """
         For each positive triple, generate negatives by enumerating all entities in the same domain
         (excluding the original entity) for each corruption index.
@@ -109,7 +87,8 @@ class AllNegativeSamplerDomain(BasicNegativeSamplerDomain):
             negative_batches.append(torch.stack(triple_negatives, dim=0))
         return negative_batches
 
-class AllNegativeSampler(BasicNegativeSampler):
+
+class BasicNegativeSamplerCustom(BasicNegativeSampler):
     def __init__(
         self,
         mapped_triples: torch.Tensor,
@@ -126,7 +105,7 @@ class AllNegativeSampler(BasicNegativeSampler):
         )
         self.num_entities = num_entities
 
-    def corrupt_batch(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
+    def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
         """
         For each positive triple, generate all possible negatives by replacing the target entity
         with every other entity in the entire entity set.
@@ -164,7 +143,7 @@ def get_sampler(data_handler: DataHandler,
                                             filtered=True,
                                             corruption_scheme=['tail'],)
     else:
-        sampler = BasicNegativeSampler(mapped_triples=triples_factory.mapped_triples,  # Pass mapped_triples instead
+        sampler = BasicNegativeSamplerCustom(mapped_triples=triples_factory.mapped_triples,  # Pass mapped_triples instead
                                     num_negs_per_pos=1,
                                     filtered=True,
                                     corruption_scheme=['tail'])    

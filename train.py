@@ -5,11 +5,13 @@ import torch
 from typing import Dict
 
 from environments.env_logic_gym import LogicEnv_gym, IndexManager
-from utils import get_device
+from utils import get_device, print_eval_info
 from my_callbacks import SB3ModelCheckpoint, EvalCallback, EpochTimingCallback
 from dataset import DataHandler
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from kge import get_kge
+from neg_sampling import get_sampler
+from model_eval import eval_corruptions
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
@@ -44,7 +46,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         valid_file=args.valid_file,
         test_file= args.test_file,
         corruption_mode=args.corruption_mode,
-        name=args.dataset_name)
+        name=args.dataset_name,
+        non_provable_corruptions=args.non_provable_corruptions,
+        non_provable_queries=args.non_provable_queries,)
     data_handler= data_handler.info
 
     index_manager = IndexManager(data_handler.constants,
@@ -67,12 +71,15 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                                             relation_to_id=index_manager.predicate_str2idx,
                                                             compact_id=False,
                                                             create_inverse_triples=False)
-        from dataset import get_sampler
         data_handler.sampler = get_sampler(data_handler=data_handler, index_manager=index_manager, triples_factory=triples_factory)
         data_handler.triples_factory = triples_factory
 
-    kge_getter = get_kge(args, data_handler, index_manager, device, 
-                         n_body_constants=data_handler.n_digits if args.dataset_name == 'mnist_addition' else None # to concat the body atoms
+    kge_getter = get_kge(args, 
+                         data_handler, 
+                         index_manager, 
+                         device, 
+                         n_body_constants=data_handler.n_digits if args.dataset_name == 'mnist_addition' else None, # to concat the body atoms
+                         end_proof_action = args.end_proof_action,
                          )
     embedder = kge_getter.kge
 
@@ -86,7 +93,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         corruption_mode=args.corruption_mode,
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
                         limit_space=args.limit_space,
-                        dynamic_consult=args.dynamic_consult)
+                        dynamic_consult=args.dynamic_consult,
+                        end_proof_action=args.end_proof_action,)
     
     eval_env = LogicEnv_gym(max_depth=args.max_depth,
                             device=device, 
@@ -97,6 +105,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                             train_neg_pos_ratio=args.train_neg_pos_ratio,
                             limit_space=args.limit_space,
                             dynamic_consult=args.dynamic_consult,
+                            end_proof_action=args.end_proof_action,
                             eval=True) 
 
     # INIT MODEL
@@ -192,23 +201,57 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         if use_WB:
             run.finish()   
 
-    # TEST
-    from model_eval import eval_test_corruptions
-    def print_eval_info(set: str,metrics: Dict[str, float]):
-        print(f'\n{set} set metrics:')
-        print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()], sep='\n')
-    
+    # TEST   
     if args.corruption_mode == 'dynamic':
-        raise NotImplementedError('Dynamic corruption mode not implemented for evaluation, need to modify corrupt_batch to get all negatives')
-    
-    metrics_train = eval_test_corruptions(data_handler.train_queries,data_handler.train_corruptions,eval_env,model,verbose=0,consult_janus=True)    
-    print_eval_info('Train',metrics_train)
+        metrics_train = eval_corruptions(data_handler.train_queries,
+                                                eval_env,
+                                                model,
+                                                verbose=0,
+                                                consult_janus=True,
+                                                corruption_mode='dynamic')    
+        print_eval_info('Train',metrics_train)
 
-    metrics_valid = eval_test_corruptions(data_handler.valid_queries,data_handler.valid_corruptions,eval_env,model,verbose=0)
-    print_eval_info('Validation',metrics_valid)
+        metrics_valid = eval_corruptions(data_handler.valid_queries,
+                                                eval_env,
+                                                model,
+                                                verbose=0,
+                                                corruption_mode='dynamic')
+        print_eval_info('Validation',metrics_valid)
 
-    metrics_test = eval_test_corruptions(data_handler.test_queries,data_handler.test_corruptions,eval_env,model,verbose=0)
-    print_eval_info('Test',metrics_test)
+        metrics_test = eval_corruptions(data_handler.test_queries,
+                                                  eval_env,
+                                                  model,
+                                                  verbose=0,
+                                                  corruption_mode='dynamic')
+        print_eval_info('Test',metrics_test)
+
+
+    if args.corruption_mode == 'static':
+        metrics_train = eval_corruptions(data_handler.train_queries,
+                                                eval_env,
+                                                model,
+                                                corruptions=data_handler.train_corruptions,
+                                                verbose=0,
+                                                consult_janus=True,
+                                                corruption_mode='static')    
+        print_eval_info('Train',metrics_train)
+
+        metrics_valid = eval_corruptions(data_handler.valid_queries,
+                                                eval_env,
+                                                model,
+                                                corruptions=data_handler.valid_corruptions,
+                                                verbose=0,
+                                                corruption_mode='static'
+                                                )
+        print_eval_info('Validation',metrics_valid)
+
+        metrics_test = eval_corruptions(data_handler.test_queries,
+                                               eval_env,
+                                               model,
+                                               corruptions=data_handler.test_corruptions,
+                                               verbose=0,
+                                               corruption_mode='static')
+        print_eval_info('Test',metrics_test)
 
     return metrics_train, metrics_valid, metrics_test
 

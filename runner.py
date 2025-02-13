@@ -39,7 +39,7 @@ if __name__ == "__main__":
     # rule_file = "train_false_rules.pl" if include_non_provable else "train.pl"
 
     # Loggin settings 
-    use_logger = True
+    use_logger = False
     use_WB = False
     WB_path = "./../wandb/"
     logger_path = "./runs/"
@@ -62,7 +62,7 @@ if __name__ == "__main__":
     janus_file = "train.pl"
 
     # Training parameters
-    TIMESTEP_TRAIN = [50000]
+    TIMESTEP_TRAIN = [20000]
     eval_freq = 5000
     n_epochs = 10
     n_steps = 2048 # number of steps to collect in each rollout
@@ -71,7 +71,7 @@ if __name__ == "__main__":
 
     # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 
     # this is ignored and the number of variables is determined by the number of variables in the rules
-    variable_no = 500 
+    variable_no = 500
     device = "cpu"
 
     # If take inputs from the command line, overwrite the default values
@@ -103,6 +103,15 @@ if __name__ == "__main__":
         args.train_neg_pos_ratio = train_neg_pos_ratio
         args.limit_space = limit_space
         args.corruption_mode = corruption_mode
+        args.non_provable_queries = False
+        args.non_provable_corruptions = False
+        if not args.non_provable_corruptions and args.corruption_mode == "dynamic":
+            print("\n\nSKIPPING EXPERIMENT: non_provable_corruptions with dynamic corruptions is not supported\n\n")
+            continue
+        if args.non_provable_queries and args.corruption_mode == "static":
+            print("\n\nSKIPPING EXPERIMENT: non_provable_queries with static corruptions is not yet supported\n\n")
+            continue
+        args.end_proof_action = False
 
         args.dataset_name = dataset_name
         if dataset_name == "mnist_addition":
@@ -156,7 +165,8 @@ if __name__ == "__main__":
                     args.learn_embeddings,args.timesteps_train,args.restore_best_val_model, args.corruption_mode, args.train_neg_pos_ratio, args.limit_space, args.rule_depend_var, args.dynamic_consult)
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         # # Redirect stdout to the Tee class
-        sys.stdout = Tee(f"output/output-{args.run_signature}.log")
+        if use_logger:
+            sys.stdout = Tee(f"output/output-{args.run_signature}.log")
 
         all_args.append(copy.deepcopy(args)) # append a hard copy of the args to the list of all_args
 

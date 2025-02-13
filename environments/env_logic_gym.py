@@ -127,7 +127,7 @@ class IndexManager():
             full_state = ",".join(str(s) for s in state)
             vars = extract_var(full_state)
             for var in vars:
-                if (var != "True") and (var != "False") and (var not in self.variable_str2idx):
+                if (var != "True") and (var != "False") and (var!= "End") and (var not in self.variable_str2idx):
                     if self.next_var_index > self.constant_no + self.variable_no:
                         raise ValueError(f"Exceeded the maximum number of variables: {self.variable_no}")
                     else:
@@ -152,6 +152,8 @@ class IndexManager():
                         sub_index[i, 0] = self.predicate_no + 1
                     elif atom.predicate == 'False':
                         sub_index[i, 0] = self.predicate_no + 2
+                    elif atom.predicate == 'End':
+                        sub_index[i, 0] = self.predicate_no + 3 # idx reserved for the action 'end of the proof'
                     else:
                         sub_index[i, 0] = self.predicate_str2idx[atom.predicate]
                     for j, arg in enumerate(atom.args):
@@ -186,7 +188,8 @@ class LogicEnv_gym(gym.Env):
                 train_neg_pos_ratio: int = 1,
                 limit_space: bool = True,
                 dynamic_consult: bool = True,
-                eval=False
+                eval=False,
+                end_proof_action: bool = False,
                 ):
         
         '''Initialize the environment'''
@@ -229,9 +232,9 @@ class LogicEnv_gym(gym.Env):
 
         self.memory = set() # Store grounded predicates, avoid loop
         self.limit_space = limit_space # two ways to avoid loop: limit action space, stop when a state has been visited
+        self.end_proof_action = end_proof_action # Add the action 'end of the proof' to the action space
 
         self.dynamic_consult = dynamic_consult
-        #self.last_query = None
         self.current_query = None
 
         self.eval = eval
@@ -458,7 +461,8 @@ class LogicEnv_gym(gym.Env):
                     self.memory.add(",".join(str(s) for s in next_state))
             if self.limit_space:
                 derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.limit_action_space(derived_states_next, derived_atom_indices_next, derived_sub_indices_next)
-
+                if len(derived_states_next) == 1 and derived_states_next[0][0].predicate == 'End':
+                    derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.end_in_false(derived_atom_indices.size(), derived_sub_indices.size())
         if all(len(elem)==0 for elem in derived_states_next):
             derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.end_in_false(derived_atom_indices.size(), derived_sub_indices.size())
         self.update_action_space(derived_states_next)
@@ -516,16 +520,33 @@ class LogicEnv_gym(gym.Env):
         #     print('dones,truncated,rewards', dones,truncated,rewards)
 
         # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
-        # if self.counter == 2:
-        #     print(endddddddddd)
-        # print(enddddddddddddddddddddd)
         return obs, reward, done, truncated, {}
 
 
     
     def get_next_states(self,state: List[Term]) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
         """Get next possible states and their indices for all states in the batch"""
+
+        # print('\nstate:', state)
+        if self.end_proof_action: # filter the end of the proof action
+            assert len(state) > 0, f"State is empty"
+            if len(state) > 1:
+                state = [atom for atom in state if atom.predicate != 'End']
+            else:
+                if state[0].predicate == 'End':
+                    state = [Term(predicate='False', args=[])]
+        # print('updated state:', state)
         possible_states_next = get_next_state_prolog(state, verbose=0) if self.dataset_name != "mnist_addition" else get_next_state_prolog_mnist(state, verbose=1)
+        # print('possible_states_next:', possible_states_next)
+        if self.end_proof_action:
+            append = False
+            for next_state in possible_states_next:
+                if any([atom.predicate != 'True' and atom.predicate != 'False' for atom in next_state]):
+                    append = True
+                    break
+            if append:
+                possible_states_next.append([Term(predicate='End', args=[])])
+        # print('updated possible_states_next:', possible_states_next,'\n')
         possible_atom_indices = []
         possible_sub_indices = []
 
@@ -543,7 +564,6 @@ class LogicEnv_gym(gym.Env):
         
         possible_atom_indices = torch.cat([possible_atom_indices, torch.zeros(self.padding - len(possible_atom_indices), self.max_atom, device=self.device, dtype=torch.int64)])
         possible_sub_indices = torch.cat([possible_sub_indices, torch.zeros(self.padding - len(possible_sub_indices), self.max_atom, self.max_arity+1, device=self.device, dtype=torch.int64)])
-
         return possible_states_next, possible_atom_indices, possible_sub_indices
     
     def get_done_reward(self,state: List[Term], label: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -556,6 +576,11 @@ class LogicEnv_gym(gym.Env):
         done = any_atom_false or all_atoms_true
         successful = all_atoms_true
 
+        if self.end_proof_action and any([atom.predicate == 'End' for atom in state]):
+            assert len(state) == 1, f"Length of state: {len(state)} should be 1 when the action is 'End'"
+            done = True
+            successful = False
+
         done = torch.tensor(done, device=self.device)
         successful = torch.tensor(successful, device=self.device)
         label_tensor = torch.tensor(label, device=self.device)
@@ -566,14 +591,10 @@ class LogicEnv_gym(gym.Env):
     def get_random_queries(self,
                            queries: List[Rule], 
                            n: int = 1, 
-                           labels: List[int] = None, 
-                           seed: Optional[int] = None):
+                           labels: List[int] = None):
         self.current_seed += 1
         random_instance = random.Random(self.current_seed)
-        # if seed is None:
-        #     random_instance = random.Random()
-        # else:
-        #     random_instance = random.Random(seed)
+
         assert n <= len(queries), f"Number of queries ({n}) is greater than the number of queries ({len(queries)})"
         sampled_indices = random_instance.sample(range(len(queries)), n)
         sampled_queries = [queries[i] for i in sampled_indices]
@@ -622,10 +643,13 @@ class LogicEnv_gym(gym.Env):
         return derived_states_next, derived_atom_indices_next, derived_sub_indices_next
 
 
-    def get_negatives(self,state):
+    def get_negatives(self, state, all_negatives=False):
         query = [(state.args[0], state.predicate, state.args[1])] # convert query to (cte, pred, cte) format
         positive_batch = self.triples_factory.map_triples(np.array(query))
-        negative_batch = self.sampler.corrupt_batch(positive_batch)
+        if all_negatives:
+            negative_batch = self.sampler.corrupt_batch_all(positive_batch)
+        else:
+            negative_batch = self.sampler.corrupt_batch(positive_batch)
         negative_batch_str = []
         for batch in negative_batch:
             for n in batch:

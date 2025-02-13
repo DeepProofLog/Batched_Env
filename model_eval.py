@@ -1,5 +1,5 @@
 
-from typing import Tuple
+from typing import Tuple, Optional
 import numpy as np
 import gymnasium as gym
 from utils import Term, print_state_transition
@@ -9,7 +9,7 @@ from sklearn.metrics import average_precision_score
 
 
 
-def eval_test(  data: list[Term],
+def eval(  data: list[Term],
                 labels: list[int],
                 env: gym.Env,
                 model: PPO,
@@ -58,26 +58,30 @@ def eval_test(  data: list[Term],
 
 
 
-
-
-def eval_test_corruptions(  
+def eval_corruptions(  
                         data: list[Term],
-                        corruptions: dict[Term, list[Term]],
                         env: gym.Env,
                         model: PPO,
+                        corruptions: Optional[dict[Term, list[Term]]] = None,
                         deterministic: bool = True,
                         verbose:int=0,
-                        consult_janus:bool=False) -> Tuple[list[float], list[int], list[float]]:
+                        consult_janus:bool=False,
+                        corruption_mode: str = 'static',
+                        ) -> Tuple[list[float], list[int], list[float]]:
     '''
     For every positive query, get its corruptions, evaluate the model on the query and all its corruptions (based on the logprobs) and rank the query and its corruptions (MRR)
 
     '''
     mrr_list, rewards_list_pos, episode_len_list_pos, log_probs_list_pos, rewards_list_neg, episode_len_list_neg, log_probs_list_neg = [], [], [], [], [], [], []
     for query in data:
-        corruptions_query = corruptions[query]
+        if corruption_mode == 'static':
+            corruptions_query = corruptions[query]
+        elif corruption_mode == 'dynamic':
+            corruptions_query = env.get_negatives(query, all_negatives=True)
+            
         data_query = [query] + corruptions_query
         labels_query = [1] + [0 for _ in range(len(corruptions_query))]
-        rewards, episode_len, log_probs = eval_test(data_query, labels_query, env, model, deterministic, verbose, return_dict=False, consult_janus=consult_janus)
+        rewards, episode_len, log_probs = eval(data_query, labels_query, env, model, deterministic, verbose, return_dict=False, consult_janus=consult_janus)
 
         rewards_list_pos.append(rewards[0])
         episode_len_list_pos.append(episode_len[0])

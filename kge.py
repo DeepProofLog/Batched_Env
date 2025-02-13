@@ -166,7 +166,7 @@ class PredicateEmbeddings(nn.Module):
     def __init__(self, num_predicates: int, embedding_dim: int, regularization=0.0, device="cpu"):
         super(PredicateEmbeddings, self).__init__()
         #+1 for True, +1 for False, +1 for padding
-        self.embedder = nn.Embedding(num_predicates+1+2, embedding_dim, padding_idx=0)
+        self.embedder = nn.Embedding(num_predicates+3, embedding_dim, padding_idx=0)
         self.regularization = regularization
         self.device = device
         self.to(device)
@@ -417,15 +417,16 @@ class get_kge():
                 data_handler: DataHandler, 
                 index_manager: IndexManager, 
                 device: str, 
-                n_body_constants: Optional[int] = None):
+                n_body_constants: Optional[int] = None,
+                end_proof_action: bool = False):
         
         self.n_body_constants = n_body_constants
+        self.end_proof_action = end_proof_action
         self.kge = self._create_kge(args, data_handler, index_manager, device)
-
     def _create_kge(self, args, data_handler, index_manager, device):
         if args.learn_embeddings:
             kge_model = KGEModel(data_handler.constant_no,
-                                 data_handler.predicate_no,
+                                 data_handler.predicate_no if not self.end_proof_action else data_handler.predicate_no + 1,
                                  data_handler.variable_no if args.rule_depend_var else args.variable_no,
                                  args.kge,
                                  constant_embedding_size=args.constant_embedding_size,

@@ -135,14 +135,14 @@ def get_rules_from_file(file_path: str) -> Tuple[List[Term], List[Rule]]:
 #     return pos_queries, neg_queries
 
 
-def get_provable_queries(path:str)-> Tuple[List[Term],List[bool]]:
-    '''Get queries and labels (whether they are provable) from {set}_queries.txt file'''
+def get_provable_queries(path:str, non_provable_queries: bool = False)-> List[Term]:
+    '''Get queries and labels (whether they are provable) from {set}_label.txt file'''
     queries = []
     with open(path, "r") as f:
         lines = f.readlines()
         for line in lines:
             query, label = line.strip().split("\t")
-            if label == "True":
+            if label == "True" or non_provable_queries:
                 queries.append(get_atom_from_string(query))
     return queries
 
@@ -163,7 +163,7 @@ def get_corruptions(queries: List[Term], file_path: str) -> dict[Term, List[Term
                     dict_[query].append(corruption)
     return dict_
 
-def get_corruptions_dict(file_path: str) -> dict[Term, List[Term]]:
+def get_corruptions_dict(file_path: str, non_provable_corruptions: bool = False) -> dict[Term, List[Term]]:
     '''Get corruptions from the json file, in the format
     {"locatedInCR(armenia,asia).": [["locatedInCR(armenia,oceania).", true], ["locatedInCR(armenia,europe).", true], ["locatedInCR(armenia,africa).", true], [
     return a dictionary with the query as key, and a list of corruptions that are true as value
@@ -174,7 +174,7 @@ def get_corruptions_dict(file_path: str) -> dict[Term, List[Term]]:
         for query, corruptions in corruptions_dict.items():
             query = get_atom_from_string(query[:-1])
             for corruption, is_provable in corruptions:
-                if is_provable:
+                if is_provable or non_provable_corruptions:
                     corruption = get_atom_from_string(corruption[:-1])
                     dict_[query].append(corruption)
     return dict_
@@ -318,7 +318,9 @@ class DataHandlerKGE():
                     test_file: str = None,
                     # str, with an optinoal None
                     corruption_mode: Optional[str] = None,
-                    name: str = None):
+                    name: str = None,
+                    non_provable_corruptions: bool = False,
+                    non_provable_queries: bool = False):
 
         self.name = name
         
@@ -334,9 +336,9 @@ class DataHandlerKGE():
         self.facts, self.rules = get_rules_from_file(janus_path)
 
         if 'static' in corruption_mode:
-            self.train_corruptions = get_corruptions_dict(train_path)
-            self.valid_corruptions = get_corruptions_dict(valid_path)
-            self.test_corruptions   = get_corruptions_dict(test_path)
+            self.train_corruptions = get_corruptions_dict(train_path,non_provable_corruptions)
+            self.valid_corruptions = get_corruptions_dict(valid_path,non_provable_corruptions)
+            self.test_corruptions   = get_corruptions_dict(test_path,non_provable_corruptions)
 
             # renamed from pos_train_queries to train_queries to be consistent with valid and test
             # we dont need neg_train_queries, as we have the corruptions in the train_corruptions that we use in evaluation
@@ -346,9 +348,9 @@ class DataHandlerKGE():
             self.test_queries = list(self.test_corruptions.keys())
 
         elif 'dynamic' in corruption_mode:
-            self.train_queries = get_provable_queries(train_path)
-            self.valid_queries = get_provable_queries(valid_path)
-            self.test_queries = get_provable_queries(test_path)
+            self.train_queries = get_provable_queries(train_path, non_provable_queries)
+            self.valid_queries = get_provable_queries(valid_path, non_provable_queries)
+            self.test_queries = get_provable_queries(test_path, non_provable_queries)
 
             self.train_corruptions = self.valid_corruptions = self.test_corruptions = self.neg_train_queries = None
 
@@ -382,10 +384,31 @@ class DataHandlerKGE():
 
 class DataHandler:
     ''' class that calls to DataHandlerMnist if the dataset is mnist_addition, and DataHandlerKGE otherwise'''
-    def __init__(self, dataset_name: str, base_path: str, janus_file: str, train_file: str = None, valid_file: str = None, test_file: str = None, corruption_mode: Optional[str] = None, name: str = None):
+    def __init__(self, dataset_name: str, 
+                 base_path: str, 
+                 janus_file: str, 
+                 train_file: str = None, 
+                 valid_file: str = None, 
+                 test_file: str = None, 
+                 corruption_mode: Optional[str] = None, 
+                 name: str = None,
+                 non_provable_corruptions: bool = False,
+                 non_provable_queries: bool = False):
         if dataset_name == "mnist_addition":
-            self.info = DataHandlerMnist(dataset_name, base_path, janus_file, name)
+            self.info = DataHandlerMnist(dataset_name, 
+                                         base_path, 
+                                         janus_file, 
+                                         name)
         else:
-            self.info = DataHandlerKGE(dataset_name, base_path, janus_file, train_file, valid_file, test_file, corruption_mode, name)
+            self.info = DataHandlerKGE(dataset_name, 
+                                       base_path, 
+                                       janus_file, 
+                                       train_file, 
+                                       valid_file, 
+                                       test_file, 
+                                       corruption_mode, 
+                                       name,
+                                       non_provable_corruptions,
+                                       non_provable_queries)
 
 

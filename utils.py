@@ -9,6 +9,10 @@ import numpy as np
 import ast
 from collections import defaultdict
 
+def print_eval_info(set: str,metrics: Dict[str, float]):
+    print(f'\n{set} set metrics:')
+    print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()], sep='\n')
+
 class Term:
     def __init__(self, predicate: str, args: List[str]):
         self.predicate = predicate  # Predicate name
@@ -154,7 +158,7 @@ def print_state_transition(state, derived_states, reward, done, action=None, tru
         print('Truncated',truncated) if truncated is not None else None
         print('     Derived states:',*derived_states,'\n')
     else:
-        print('Reset-----------')
+        print('\n\nReset-----------------------------')
         print(state)
         print('Reward',reward.item())
         print('Done',done.item())
