@@ -5,7 +5,7 @@ import torch.nn as nn
 import numpy as np
 import pickle
 from typing import Tuple
-
+import math
 
 def read_embeddings(file_c:str, file_p:str, constant_str2idx:dict, predicate_str2idx:dict)-> Tuple[dict, dict]:
     '''Read embeddings from a file'''
@@ -55,11 +55,11 @@ def transE_embedding(predicate_embeddings: torch.Tensor, constant_embeddings: to
     TransE function to compute atom embeddings.
     
     Arguments:
-    - predicate_embeddings: Tensor of shape (batch_size, embedding_dim)
-    - constant_embeddings: Tensor of shape (batch_size, 2, embedding_dim)
+    - predicate_embeddings: Tensor of shape (batch_size,..., embedding_dim)
+    - constant_embeddings: Tensor of shape (batch_size,..., 2, embedding_dim)
     
     Returns:
-    - atom_embeddings: Tensor of shape (batch_size, embedding_dim)
+    - atom_embeddings: Tensor of shape (batch_size,..., embedding_dim)
     """
     # Separate the constants
     assert constant_embeddings.size(-2) == 2, "The second dimension of constant_embeddings should be 2 (arity)"
@@ -226,12 +226,155 @@ class TransE(nn.Module):
             
     #     return embeddings
 
+
+class ComplEx(nn.Module):
+    """
+    PyTorch implementation of the ComplEx layer.
+    
+    Expects:
+      - predicate_emb: tensor of shape (batch_size,..., 2 * embedding_size)
+      - constant_embs: tensor of shape (batch_size,..., 2, 2 * embedding_size)
+        where constant_embs[:, 0, :] is the head and constant_embs[:, 1, :] is the tail.
+    """
+    def __init__(self, dropout_rate: float = 0.0, 
+                 regularization: float = 0.0, 
+                 regularization_n3: float = 0.0,
+                 device="cpu"):
+        super(ComplEx, self).__init__()
+        self.dropout = nn.Dropout(p=dropout_rate)
+        self.regularization = regularization
+        self.regularization_n3 = regularization_n3
+        self.device = device
+        self.to(device)
+    
+    def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
+        predicate_emb = predicate_emb.squeeze(-2)
+        # Reset any accumulated regularization loss
+        self.reg_loss = 0.0
+
+        # Apply dropout to both predicate and constant embeddings.
+        predicate_emb = self.dropout(predicate_emb)
+        constant_embs = self.dropout(constant_embs)
+
+        # Split predicate embedding into real and imaginary parts.
+        # Expect predicate_emb shape: (batch_size,..., 2 * embedding_size)
+        Rr, Ri = torch.chunk(predicate_emb, 2, dim=-1)  # each: (batch_size,..., embedding_size)
+        # Extract head and tail embeddings.
+        # Expect constant_embs shape: (batch_size,..., 2, 2 * embedding_size)
+        head, tail = constant_embs[..., 0, :], constant_embs[..., 1, :]
+
+        # Split head and tail into their real and imaginary parts.
+        h_r, h_i = torch.chunk(head, 2, dim=-1)
+        t_r, t_i = torch.chunk(tail, 2, dim=-1)
+
+        # Compute ComplEx score:
+        # e1 = h_r * t_r * Rr, e2 = h_i * t_i * Rr, e3 = h_r * t_i * Ri, e4 = h_i * t_r * Ri.
+        # Final score: e1 + e2 + e3 - e4.
+        e1 = h_r * t_r * Rr
+        e2 = h_i * t_i * Rr
+        e3 = h_r * t_i * Ri
+        e4 = h_i * t_r * Ri
+        embeddings = e1 + e2 + e3 - e4
+
+        # Optionally add L2 regularization loss on the relation embeddings.
+        if self.regularization > 0:
+            self.reg_loss += self.regularization * (Rr.norm(p=2) + Ri.norm(p=2))
+        # Optionally add a third-order regularization loss.
+        if self.regularization_n3 > 0:
+            abs_head = head.abs()
+            abs_tail = tail.abs()
+            abs_R = torch.cat([Rr.abs(), Ri.abs()], dim=1)
+            self.reg_loss += self.regularization_n3 * (
+                torch.sum(abs_head ** 3) +
+                torch.sum(abs_tail ** 3) +
+                torch.sum(abs_R ** 3)
+            )
+        return embeddings
+
+
+class RotatE(nn.Module):
+    """
+    PyTorch implementation of the RotatE layer.
+    
+    Implements the relation as a rotation in the complex space.
+    
+    Expects:
+      - predicate_emb: tensor of shape (batch_size,..., embedding_size)
+          (each value is interpreted as an angle, later scaled by norm_factor)
+      - constant_embs: tensor of shape (batch_size,..., 2, 2 * atom_embedding_size)
+          where constant_embs[:, 0, :] is the head and constant_embs[:, 1, :] is the tail,
+          with head/tail split into real and imaginary parts.
+    """
+    margin = 6.0  # also called gamma
+    epsilon = 0.5
+
+    def __init__(self, atom_embedding_size: int, 
+                 dropout_rate: float = 0.0, 
+                 regularization: float = 0.0, 
+                 regularization_n3: float = 0.0,
+                 device="cpu"):
+        super(RotatE, self).__init__()
+        self.atom_embedding_size = atom_embedding_size
+        self.regularization = regularization
+        self.regularization_n3 = regularization_n3
+        self.device = device
+        self.to(device)
+        self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate > 0 else nn.Identity()
+        
+        # Determine the scaling factor.
+        self.embedding_range = (self.margin + self.epsilon) / atom_embedding_size
+        self.norm_factor = math.pi / self.embedding_range
+
+    def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
+        predicate_emb = predicate_emb.squeeze(-2)
+
+        # Reset any accumulated regularization loss.
+        self.reg_loss = 0.0
+
+        # Apply dropout.
+        predicate_emb = self.dropout(predicate_emb)
+        constant_embs = self.dropout(constant_embs)
+
+        # Extract head and tail embeddings.
+        head, tail = constant_embs[..., 0, :], constant_embs[..., 1, :]
+
+        # Handle empty batch edge case.
+        if head.size(0) == 0 or tail.size(0) == 0:
+            return torch.zeros((0, self.atom_embedding_size), device=self.device)
+
+        # Split head and tail into real and imaginary parts.
+        re_head, im_head = torch.chunk(head, 2, dim=-1)
+        re_tail, im_tail = torch.chunk(tail, 2, dim=-1)
+
+        # Scale the predicate embedding (interpreted as a phase/angle).
+        phase_relation = predicate_emb * self.norm_factor
+        re_relation = torch.cos(phase_relation)
+        im_relation = torch.sin(phase_relation)
+
+        # Rotate the tail entity and subtract the head entity.
+        re_score = re_relation * re_tail + im_relation * im_tail - re_head
+        im_score = re_relation * im_tail - im_relation * re_tail - im_head
+
+        # Compute the L2 norm per embedding dimension.
+        # (Using clamp to avoid numerical issues.)
+        score = torch.sqrt(torch.clamp(re_score ** 2 + im_score ** 2, min=1e-9))
+
+        # (Optional) add regularization on predicate_emb, head, tail, etc.
+        # if self.regularization > 0:
+        #     self.reg_loss += self.regularization * predicate_emb.norm(p=2)
+        # if self.regularization_n3 > 0:
+        #     self.reg_loss += self.regularization_n3 * (
+        #         torch.sum(torch.abs(head) ** 3) +
+        #         torch.sum(torch.abs(tail) ** 3)
+        #     )
+        return score
+
 class Concat(nn.Module):
     """TransE layer for computing atom embeddings."""
-    def __init__(self, n,embedding_dim: int, dropout_rate: float=0.0, regularization: float=0.0, device="cpu"):
+    def __init__(self, n,atom_embedding_dim: int, dropout_rate: float=0.0, regularization: float=0.0, device="cpu"):
         super(Concat, self).__init__()
-        self.linear1 = nn.Linear(2*embedding_dim, embedding_dim)
-        self.linear2 = nn.Linear(2*embedding_dim, embedding_dim)
+        self.linear1 = nn.Linear(2*atom_embedding_dim, atom_embedding_dim)
+        self.linear2 = nn.Linear(2*atom_embedding_dim, atom_embedding_dim)
         self.dropout = nn.Dropout(p=dropout_rate)
         self.regularization = regularization
         self.device = device
@@ -261,15 +404,17 @@ class Concat(nn.Module):
         return embeddings
 
 
-def KGEFactory(name, embedding_dim: int, n_body_constants=None, regularization: float=0.0, dropout_rate: float=0.0, device="cpu") -> nn.Module:
+def KGEFactory(name, atom_embedding_dim: int, n_body_constants=None, regularization: float=0.0, dropout_rate: float=0.0, device="cpu") -> nn.Module:
     if name.casefold() == 'transe':
-        return TransE(dropout_rate, regularization, device)
+        return TransE(device=device)
+    elif name.casefold() == 'complex':
+        return ComplEx(device=device)
+    elif name.casefold() == 'rotate':
+        return RotatE(atom_embedding_dim,device=device)
     elif name.casefold() == 'concat':
-        return Concat(n_body_constants, dropout_rate, regularization, embedding_dim, device)
+        return Concat(n_body_constants, atom_embedding_dim, device=device)
     else:
         raise ValueError(f"Unknown KGE model: {name}")
-
-
 
 
 class HybridConstantEmbedder(nn.Module):
@@ -384,7 +529,7 @@ class KGEModel(nn.Module):
         
         self.kge_embedder = KGEFactory(
             name=kge, #if n_image_constants == 0 else 'concat',
-            embedding_dim=atom_embedding_size,
+            atom_embedding_dim=atom_embedding_size,
             regularization=kge_regularization,
             dropout_rate=kge_dropout_rate,
             device=device,

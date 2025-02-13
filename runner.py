@@ -50,7 +50,7 @@ if __name__ == "__main__":
     
     DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
     LEARN_EMBEDDINGS = [True]
-    KGE = ['transe']
+    KGE = ['transe'] #['complex','rotate','transe']
     MODEL_NAME = ["PPO"]
     ATOM_EMBEDDING_SIZE = [50] #[50,200]
     SEED = [[0]] # [[0,1,2,3,4]]
@@ -99,6 +99,11 @@ if __name__ == "__main__":
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
         constant_embedding_size = predicate_embedding_size = atom_embedding_size
+        if kge == "complex":
+            constant_embedding_size = 2*atom_embedding_size
+            predicate_embedding_size = 2*atom_embedding_size
+        if kge == "rotate":
+            constant_embedding_size = 2*atom_embedding_size
 
         args.train_neg_pos_ratio = train_neg_pos_ratio
         args.limit_space = limit_space

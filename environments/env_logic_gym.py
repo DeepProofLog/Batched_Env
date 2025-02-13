@@ -432,7 +432,7 @@ class LogicEnv_gym(gym.Env):
                'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices}
 
-        print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
+        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
         return obs, {}
 
     def step(self, action):
@@ -519,7 +519,7 @@ class LogicEnv_gym(gym.Env):
         # if dones:
         #     print('dones,truncated,rewards', dones,truncated,rewards)
 
-        print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
+        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
         return obs, reward, done, truncated, {}
 
 
@@ -527,7 +527,6 @@ class LogicEnv_gym(gym.Env):
     def get_next_states(self,state: List[Term]) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
         """Get next possible states and their indices for all states in the batch"""
 
-        # print('\nstate:', state)
         if self.end_proof_action: # filter the end of the proof action
             assert len(state) > 0, f"State is empty"
             if len(state) > 1:
@@ -535,9 +534,9 @@ class LogicEnv_gym(gym.Env):
             else:
                 if state[0].predicate == 'End':
                     state = [Term(predicate='False', args=[])]
-        # print('updated state:', state)
+
         possible_states_next = get_next_state_prolog(state, verbose=0) if self.dataset_name != "mnist_addition" else get_next_state_prolog_mnist(state, verbose=1)
-        # print('possible_states_next:', possible_states_next)
+
         if self.end_proof_action:
             append = False
             for next_state in possible_states_next:
@@ -546,7 +545,7 @@ class LogicEnv_gym(gym.Env):
                     break
             if append:
                 possible_states_next.append([Term(predicate='End', args=[])])
-        # print('updated possible_states_next:', possible_states_next,'\n')
+
         possible_atom_indices = []
         possible_sub_indices = []
 
