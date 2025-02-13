@@ -347,7 +347,7 @@ class LogicEnv_gym(gym.Env):
         else:
             
             if self.corruption_mode == "dynamic":
-                state, _ = self.get_random_queries(self.train_queries, n=1, seed=self.seed)
+                state, _ = self.get_random_queries(self.train_queries, n=1)
                 label = 1
                 if self.counter % (int(self.train_neg_pos_ratio) + 1) != 0:
                     state = self.get_negatives(state)
@@ -358,15 +358,15 @@ class LogicEnv_gym(gym.Env):
 
             elif 'static' in self.corruption_mode:
                 if self.counter % (int(self.train_neg_pos_ratio) + 1) == 0:
-                    state, _ = self.get_random_queries(self.train_queries, n=1, seed=self.seed) 
+                    state, _ = self.get_random_queries(self.train_queries, n=1) 
                     label = 1
                 else:
-                    state, _ = self.get_random_queries(self.neg_train_queries, n=1, seed=self.seed) 
+                    state, _ = self.get_random_queries(self.neg_train_queries, n=1) 
                     label = 0
                 self.counter += 1
 
             else:  # Default case
-                state, _ = self.get_random_queries(self.train_queries, n=1, seed=self.seed)
+                state, _ = self.get_random_queries(self.train_queries, n=1)
                 label = 1
                 
             if label == 1 and not self.dynamic_consult:
@@ -431,8 +431,8 @@ class LogicEnv_gym(gym.Env):
                'atom_index':atom_index, 
                'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices}
-        # print('\nresetting')
-        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
+
+        print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
         return obs, {}
 
     def step(self, action):
@@ -519,7 +519,7 @@ class LogicEnv_gym(gym.Env):
         # if dones:
         #     print('dones,truncated,rewards', dones,truncated,rewards)
 
-        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
+        print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
         return obs, reward, done, truncated, {}
 
 
