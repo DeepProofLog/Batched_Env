@@ -50,7 +50,8 @@ if __name__ == "__main__":
     
     DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
     LEARN_EMBEDDINGS = [True]
-    KGE = ['transe'] #['complex','rotate','transe']
+    ATOM_EMBEDDER = ['complex'] #['complex','rotate','transe']
+    STATE_EMBEDDER = ['concat'] 
     MODEL_NAME = ["PPO"]
     ATOM_EMBEDDING_SIZE = [50] #[50,200]
     SEED = [[0]] # [[0,1,2,3,4]]
@@ -91,18 +92,18 @@ if __name__ == "__main__":
     
     # Do the hparam search
     all_args = []
-    for dataset_name, learn_embeddings, kge, model_name, atom_embedding_size, seed, max_depth,timestep_train,restore_best_val_model, \
-    limit_space, load_model, rule_depend_var, dynamic_consult,corruption_mode, train_neg_pos_ratio in product(DATASET_NAME,
-        LEARN_EMBEDDINGS, KGE, MODEL_NAME, ATOM_EMBEDDING_SIZE, SEED, MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_VAL_MODEL, LIMIT_SPACE,
-        LOAD_MODEL, RULE_DEPEND_VAR, DYNAMIC_CONSULT,CORRUPTION_MODE, TRAIN_NEG_POS_RATIO):
+    for dataset_name,learn_embeddings,atom_embedder,state_embedder,model_name,atom_embedding_size,seed,max_depth,timestep_train,restore_best_val_model,\
+    limit_space,load_model,rule_depend_var,dynamic_consult,corruption_mode,train_neg_pos_ratio in product(DATASET_NAME,
+        LEARN_EMBEDDINGS,ATOM_EMBEDDER,STATE_EMBEDDER,MODEL_NAME,ATOM_EMBEDDING_SIZE,SEED,MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_VAL_MODEL,LIMIT_SPACE,
+        LOAD_MODEL,RULE_DEPEND_VAR,DYNAMIC_CONSULT,CORRUPTION_MODE,TRAIN_NEG_POS_RATIO):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
         constant_embedding_size = predicate_embedding_size = atom_embedding_size
-        if kge == "complex":
+        if atom_embedder == "complex":
             constant_embedding_size = 2*atom_embedding_size
             predicate_embedding_size = 2*atom_embedding_size
-        if kge == "rotate":
+        if atom_embedder == "rotate":
             constant_embedding_size = 2*atom_embedding_size
 
         args.train_neg_pos_ratio = train_neg_pos_ratio
@@ -139,9 +140,13 @@ if __name__ == "__main__":
         args.dynamic_consult = dynamic_consult
         
         args.learn_embeddings = learn_embeddings
-        args.kge = kge
+        args.atom_embedder = atom_embedder
+        args.state_embedder = state_embedder
         args.model_name = model_name
-        args.atom_embedding_size = atom_embedding_size
+        args.padding_atoms = 10
+        args.padding_states = 20
+        args.atom_embedding_size = atom_embedding_size #if atom_embedder != "concat" else it is (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
+        # args.state_embedding_size = atom_embedding_size #if state_embedder != "concat" else it is atom_embedding_size*padding_atoms
         args.constant_embedding_size = constant_embedding_size
         args.predicate_embedding_size = predicate_embedding_size
         args.constant_emb_file = constant_emb_file
@@ -166,7 +171,7 @@ if __name__ == "__main__":
         args.lr = lr
         args.max_depth = max_depth
 
-        run_vars = (args.dataset_name, args.kge, args.model_name, args.atom_embedding_size,args.max_depth,
+        run_vars = (args.dataset_name, args.atom_embedder, args.model_name, args.atom_embedding_size,args.max_depth,
                     args.learn_embeddings,args.timesteps_train,args.restore_best_val_model, args.corruption_mode, args.train_neg_pos_ratio, args.limit_space, args.rule_depend_var, args.dynamic_consult)
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         # # Redirect stdout to the Tee class

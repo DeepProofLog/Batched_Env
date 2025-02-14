@@ -36,8 +36,6 @@ def get_prolog_facts(file_dirs):
         for predicate, arity in predicates_with_arity:
             if predicate not in predicates:
                 predicates[predicate] = arity
-    # add a \n to the last fact
-    facts[-1] = facts[-1] + "\n"
     return predicates, facts
 
 def get_pl(rule_file, fact_files, output_file, catch_errors, use_tabling):
@@ -52,13 +50,9 @@ def get_pl(rule_file, fact_files, output_file, catch_errors, use_tabling):
             full_facts.append(f":- discontiguous {predicate}/{arity}.\n")
             f.write(f":- discontiguous {predicate}/{arity}.\n")
         if use_tabling:
-            for predicate, arity in predicates.items():
-                outputs.append(f":- table {predicate}/{arity}.\n")
-                full_facts.append(f":- table {predicate}/{arity}.\n")
-                f.write(f":- table {predicate}/{arity}.\n")
-            # outputs.append(":- table locatedInCR/2.\n")
-            # full_facts.append(":- table locatedInCR/2.\n")
-            # f.write(":- table locatedInCR/2.\n")
+            outputs.append(":- table locatedInCR/2.\n")
+            full_facts.append(":- table locatedInCR/2.\n")
+            f.write(":- table locatedInCR/2.\n")
         for fact in facts:
             outputs.append(fact)
             full_facts.append(fact)
@@ -69,38 +63,31 @@ def get_pl(rule_file, fact_files, output_file, catch_errors, use_tabling):
         for rule in rules:
             outputs.append(rule)
             f.write(rule)
-    return "".join(outputs), "".join(full_facts), predicates_1
+    return "".join(outputs), "".join(full_facts)
 
 
-def get_labeled_data(dataset,query_file, catch_errors, use_modified_rules, full_rule,rule_heads, mode="train"):
-    """ Get the label for the queries in the query_file using the full_rule """
-    # print('full_rule', full_rule)
+def get_labeled_data(query_file, catch_errors, use_modified_rules, full_rule):
     with open(query_file, "r") as f:
         queries = f.readlines()
     outputs = []
-    rule_predicates = list(rule_heads.keys())
-    print('rule_predicates', rule_predicates)
-    for i,query in enumerate(queries):
+    for query in queries:
         query = query.strip()
-        print('i,query',i,query)
-        if any(query.startswith(rule_head) for rule_head in rule_predicates):
+        if query.startswith("locatedInCR"):
+            #print(query)
             full_rules = full_rule.split("\n")
+            #print(len(full_rules))
             if query in full_rules:
-                if mode != "train":
-                    raise ValueError(f"Query {query} is in the full_rules")
-                print("query in full_rules")
+                #print("query in full_rules")
                 full_rules.remove(query)
-            with open(f'{dataset}_sub.pl', "w") as f1:
+            with open("countries_sub.pl", "w") as f1:
                 #print(len(full_rules))
                 f1.write("\n".join(full_rules))
             f1.close()
             #print("\n".join(full_rules))
-            # janus.query_once("abolish(neighborOf/2).")
-            # janus.query_once("abolish(locatedInCR/2).")
-            for predicate, arity in rule_heads.items():
-                janus.query_once(f"abolish({predicate}/{arity}).")
+            janus.query_once("abolish(neighborOf/2).")
+            janus.query_once("abolish(locatedInCR/2).")
             janus.query_once("abolish_all_tables.")
-            janus.consult(f'{dataset}_sub.pl')
+            janus.consult("countries_sub.pl")
             if catch_errors:
                 try:
                     res = janus.query_once(f"call_with_catch({query[:-1]}, TimeOut)")
@@ -196,27 +183,28 @@ def get_depth_proof(inf_dir, rule_dir, full_facts, max_depth):
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('--dataset', default='kinship_family', type=str)
+    arg_parser.add_argument('--folder', default='countries', type=str)
+    arg_parser.add_argument('--level', default='s3', type=str)
     arg_parser.add_argument('--catch_errors', action='store_true')
     arg_parser.add_argument('--use_modified_rules', action='store_true')
-    arg_parser.add_argument('--use_tabling', action='store_true', default=True)
+    arg_parser.add_argument('--use_tabling', action='store_false')
     args = arg_parser.parse_args()
 
-    current_dir = os.getcwd()
-    root_dir = f"{current_dir}/data/{args.dataset}/"
+    root_dir = f"{args.folder}_{args.level}/"
     if args.use_modified_rules:
-        full_rules, full_facts, predicates_rules = get_pl(root_dir + "rules_mod.txt",[root_dir + "facts.txt", root_dir + "train.txt"], root_dir + "countries_mod.pl",
+        full_rules, full_facts = get_pl(root_dir + "rules_mod.txt",[root_dir + "facts.txt", root_dir + "train.txt"], root_dir + "countries_mod.pl",
               args.catch_errors, args.use_tabling)
         #janus.consult(root_dir+"countries_mod.pl")
     else:
-        full_rules, full_facts, predicates_rules = get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+"countries.pl", args.catch_errors, args.use_tabling)
+        full_rules, full_facts = get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+"countries.pl", args.catch_errors, args.use_tabling)
         #janus.consult(root_dir+"countries.pl")
+
     print("processing train.txt")
-    get_labeled_data(args.dataset,root_dir+"train.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="train")
+    get_labeled_data(root_dir+"train.txt", args.catch_errors, args.use_modified_rules, full_rules)
     print("processing valid.txt")
-    get_labeled_data(args.dataset,root_dir+"valid.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="valid")
+    get_labeled_data(root_dir+"valid.txt", args.catch_errors, args.use_modified_rules, full_rules)
     print("processing test.txt")
-    get_labeled_data(args.dataset,root_dir+"test.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="test")
+    get_labeled_data(root_dir+"test.txt", args.catch_errors, args.use_modified_rules, full_rules)
 
     # max_depth = 10
     # print("processing train_label_corruptions.json")

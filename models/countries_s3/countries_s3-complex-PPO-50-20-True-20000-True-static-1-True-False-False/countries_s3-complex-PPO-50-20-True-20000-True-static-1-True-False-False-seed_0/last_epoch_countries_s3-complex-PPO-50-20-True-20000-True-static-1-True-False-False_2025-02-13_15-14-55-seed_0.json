@@ -1,8 +1,0 @@
-{
-    "best_value": 0.017106371000409126,
-    "epoch": 6144,
-    "metric": "train/loss",
-    "maximize": false,
-    "timesteps": 10000,
-    "finished_train": false
-}

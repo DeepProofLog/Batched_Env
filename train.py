@@ -9,7 +9,7 @@ from utils import get_device, print_eval_info
 from my_callbacks import SB3ModelCheckpoint, EvalCallback, EpochTimingCallback
 from dataset import DataHandler
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
-from kge import get_kge
+from embeddings import get_embedder
 from neg_sampling import get_sampler
 from model_eval import eval_corruptions
 
@@ -62,7 +62,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                 rules=data_handler.rules,
                                 rule_depend_var=args.rule_depend_var,
                                 max_arity=data_handler.max_arity,
-                                device=device)
+                                device=device,
+                                padding_atoms=args.padding_atoms)
     
     if args.corruption_mode == 'dynamic':
         np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts],dtype=str)
@@ -74,14 +75,21 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         data_handler.sampler = get_sampler(data_handler=data_handler, index_manager=index_manager, triples_factory=triples_factory)
         data_handler.triples_factory = triples_factory
 
-    kge_getter = get_kge(args, 
+    embedder_getter = get_embedder(args, 
                          data_handler, 
                          index_manager, 
                          device, 
-                         n_body_constants=data_handler.n_digits if args.dataset_name == 'mnist_addition' else None, # to concat the body atoms
-                         end_proof_action = args.end_proof_action,
+                        #  n_body_constants=data_handler.n_digits if args.dataset_name == 'mnist_addition' else None, # to concat the body atoms
                          )
-    embedder = kge_getter.kge
+    embedder = embedder_getter.embedder
+
+    # Define the state_embedding_size for the model
+    print(f"Embedder: {args.atom_embedder}")
+    args.atom_embedding_size = args.atom_embedding_size if args.atom_embedder != "concat" else (1+data_handler.max_arity)*args.atom_embedding_size
+    print(f"Atom embedding size: {args.atom_embedding_size}")
+    args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" else args.atom_embedding_size*args.padding_atoms
+    print(f"State embedding size: {args.state_embedding_size}")
+    embedder.embed_dim = args.state_embedding_size
 
    
     # INIT ENV
@@ -94,7 +102,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
                         limit_space=args.limit_space,
                         dynamic_consult=args.dynamic_consult,
-                        end_proof_action=args.end_proof_action,)
+                        end_proof_action=args.end_proof_action,
+                        padding_atoms=args.padding_atoms,
+                        padding_states=args.padding_states,)
     
     eval_env = LogicEnv_gym(max_depth=args.max_depth,
                             device=device, 
@@ -106,7 +116,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                             limit_space=args.limit_space,
                             dynamic_consult=args.dynamic_consult,
                             end_proof_action=args.end_proof_action,
-                            eval=True) 
+                            padding_atoms=args.padding_atoms,
+                            padding_states=args.padding_states,
+                            eval=True)
 
     # INIT MODEL
     if args.model_name == "PPO":

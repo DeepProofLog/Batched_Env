@@ -29,7 +29,7 @@ class IndexManager():
                 constants_images: set = (),
                 constant_images_no: int = 0,
                 rule_depend_var: bool = True,
-                max_atom: int = 10,
+                padding_atoms: int = 10,
                 max_arity: int = 2,
                 device: torch.device = torch.device("cpu")):
         
@@ -46,7 +46,7 @@ class IndexManager():
 
         self.rules = rules
         self.rule_depend_var = rule_depend_var # If True, the variables are dependent on the rules, if False, the variables are set in the runner
-        self.max_atom = max_atom  # Maximum number of atoms in a state
+        self.padding_atoms = padding_atoms  # Maximum number of atoms in a state
         self.max_arity = max_arity # Maximum arity of the predicates
 
         # LOCAL INDEXES
@@ -136,8 +136,8 @@ class IndexManager():
                         self.next_var_index += 1
 
         # Get atom_index and sub_index
-        atom_index =torch.zeros(self.max_atom, device=self.device, dtype=torch.int64)
-        sub_index = torch.zeros(self.max_atom, self.max_arity+1, device=self.device, dtype=torch.int64)
+        atom_index =torch.zeros(self.padding_atoms, device=self.device, dtype=torch.int64)
+        sub_index = torch.zeros(self.padding_atoms, self.max_arity+1, device=self.device, dtype=torch.int64)
         for i, atom in enumerate(state):
             if atom not in self.atom_to_index:
                 self.atom_to_index[atom] = self.next_atom_index
@@ -190,6 +190,8 @@ class LogicEnv_gym(gym.Env):
                 dynamic_consult: bool = True,
                 eval=False,
                 end_proof_action: bool = False,
+                padding_atoms: int = 10,
+                padding_states: int = 20,
                 ):
         
         '''Initialize the environment'''
@@ -199,8 +201,8 @@ class LogicEnv_gym(gym.Env):
         self.corruption_mode = corruption_mode
 
         self.max_arity=data_handler.max_arity # Maximum arity of the predicates
-        self.max_atom = 10  # Maximum number of atoms in a state
-        self.padding = 20 # Maximum number of possible next states
+        self.padding_atoms = padding_atoms  # Maximum number of atoms in a state
+        self.padding_states = padding_states # Maximum number of possible next states
         self.max_depth = max_depth # Maximum depth of the proof tree
         self.index_manager = index_manager
         self.predicates_arity = data_handler.predicates_arity
@@ -254,25 +256,25 @@ class LogicEnv_gym(gym.Env):
             'sub_index': gym.spaces.Box(
                 low=float('-inf'),
                 high=float('inf'),
-                shape=torch.Size([self.max_atom])+torch.Size([self.max_arity+1]),
+                shape=torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
                 dtype=np.int64,
             ),
             'atom_index': gym.spaces.Box(
                 low=float('-inf'),
                 high=float('inf'),
-                shape=torch.Size([self.max_atom]),
+                shape=torch.Size([self.padding_atoms]),
                 dtype=np.int64,
             ),
             'derived_atom_indices': gym.spaces.Box(
                 low=float('-inf'),
                 high=float('inf'),
-                shape=torch.Size([self.padding])+torch.Size([self.max_atom]),
+                shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms]),
                 dtype=np.int64,
             ),
             'derived_sub_indices': gym.spaces.Box(
                 low=float('-inf'),
                 high=float('inf'),
-                shape=torch.Size([self.padding])+torch.Size([self.max_atom])+torch.Size([self.max_arity+1]),
+                shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
                 dtype=np.int64,
             ),
             
@@ -557,12 +559,12 @@ class LogicEnv_gym(gym.Env):
         possible_atom_indices = torch.stack(possible_atom_indices)
         possible_sub_indices = torch.stack(possible_sub_indices)
 
-        # Do padding with 0s
-        if len(possible_atom_indices) > self.padding:
-            raise ValueError(f"Padding is too small. number of next states: {len(possible_atom_indices)}, padding: {self.padding}")
+        # Do padding_states with 0s
+        if len(possible_atom_indices) > self.padding_states:
+            raise ValueError(f"Padding_states is too small. number of next states: {len(possible_atom_indices)}, padding_states: {self.padding_states}")
         
-        possible_atom_indices = torch.cat([possible_atom_indices, torch.zeros(self.padding - len(possible_atom_indices), self.max_atom, device=self.device, dtype=torch.int64)])
-        possible_sub_indices = torch.cat([possible_sub_indices, torch.zeros(self.padding - len(possible_sub_indices), self.max_atom, self.max_arity+1, device=self.device, dtype=torch.int64)])
+        possible_atom_indices = torch.cat([possible_atom_indices, torch.zeros(self.padding_states - len(possible_atom_indices), self.padding_atoms, device=self.device, dtype=torch.int64)])
+        possible_sub_indices = torch.cat([possible_sub_indices, torch.zeros(self.padding_states - len(possible_sub_indices), self.padding_atoms, self.max_arity+1, device=self.device, dtype=torch.int64)])
         return possible_states_next, possible_atom_indices, possible_sub_indices
     
     def get_done_reward(self,state: List[Term], label: int) -> Tuple[torch.Tensor, torch.Tensor]:

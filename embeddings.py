@@ -162,8 +162,6 @@ class TransE(nn.Module):
         self.to(device)
 
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
-        # print('predicate_emb:',predicate_emb.shape)
-        # print('constant_embs:',constant_embs.shape)
         predicate_emb = predicate_emb.squeeze(-2)
         head, tail = constant_embs[..., 0, :], constant_embs[..., 1, :]
         predicate_emb = self.dropout(predicate_emb)
@@ -323,18 +321,18 @@ class RotatE(nn.Module):
             )
         return score
 
-class Concat(nn.Module):
-    """TransE layer for computing atom embeddings."""
+class Concat_Atoms(nn.Module):
+    """Concat the predicate and constant embeddings."""
     def __init__(self, 
-                 atom_embedding_dim: int, 
-                 dropout_rate: float=0.0, 
-                 regularization: float=0.0, 
-                 device="cpu"):
-        super(Concat, self).__init__()
+                atom_embedding_dim: int, 
+                max_arity: int,
+                dropout_rate: float=0.0, 
+                regularization: float=0.0, 
+                device="cpu"):
+        super(Concat_Atoms, self).__init__()
+        self.max_arity = max_arity
         self.dropout_rate = dropout_rate
         self.regularization = regularization
-        self.linear1 = nn.Linear(2*atom_embedding_dim, atom_embedding_dim)
-        self.linear2 = nn.Linear(2*atom_embedding_dim, atom_embedding_dim)
         if dropout_rate > 0:
             self.dropout = nn.Dropout(p=dropout_rate)
         if regularization > 0:
@@ -343,32 +341,60 @@ class Concat(nn.Module):
         self.to(device)
 
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
+        predicate_emb = predicate_emb.squeeze(-2)  # Remove unnecessary dimension if present
         if self.dropout_rate > 0:
             predicate_emb = self.dropout(predicate_emb)
             constant_embs = self.dropout(constant_embs)  
             
-        n = constant_embs.shape[-2]  # Get the number of constants
-        # reduce the constants to a single embedding by applying a linear layer. After that, combine it with the predicate embedding
-        for i in range(n):
-            constant_emb = constant_embs[..., i, :]
-            if i == 0:
-                embeddings = constant_emb
-            else:
-                embeddings = self.linear1(torch.cat([embeddings, constant_emb], dim=-1))
-        # apply a linear layer to the combined embeddings
-        embeddings = self.linear2(torch.cat([embeddings, predicate_emb.squeeze(-2)], dim=-1))
+        # Determine the number of constants in the constant_embs
+        num_constants = constant_embs.size(-2)
+        # Pad the embeddings with zeros to reach 10 constants
+        if num_constants < self.max_arity:
+            padding_tensor = torch.zeros(*constant_embs.shape[:-2], self.max_arity - num_constants, constant_embs.size(-1), device=self.device)
+            constant_embs = torch.cat([constant_embs, padding_tensor], dim=-2)
+        # Concatenate constant embeddings along the last dimension
+        constant_embs = constant_embs.view(*constant_embs.shape[:-2], -1)
+        embeddings = torch.cat([predicate_emb, constant_embs], dim=-1)
 
+        
+        
         if self.regularization > 0:
             self.add_loss(self.regularization * embeddings.norm(p=2))
             
         return embeddings
 
+class Concat_States(nn.Module):
+    """Concat the atom embeddings."""
+    def __init__(self, 
+                padding_atoms: int,
+                dropout_rate: float=0.0, 
+                regularization: float=0.0, 
+                device="cpu"):
+        super(Concat_States, self).__init__()
+        self.padding_atoms = padding_atoms
+        self.dropout_rate = dropout_rate
+        self.regularization = regularization
+        if dropout_rate > 0:
+            self.dropout = nn.Dropout(p=dropout_rate)
+        if regularization > 0:
+            self.regularization = regularization
+        self.device = device
+        self.to(device)
+
+    def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
+        if self.dropout_rate > 0:
+            atom_embeddings = self.dropout(atom_embeddings)
+        if self.regularization > 0:
+            self.add_loss(self.regularization * atom_embeddings.norm(p=2))
+
+        # Concatenate constant embeddings along the last dimension
+        atom_embeddings = atom_embeddings.view(*atom_embeddings.shape[:-2], -1)
+        return atom_embeddings
 
 
-
-class Sum(nn.Module):
+class Sum_state(nn.Module):
     def __init__(self, dropout_rate: float=0.0, regularization: float=0.0, device="cpu"): 
-        super(Sum, self).__init__()
+        super(Sum_state, self).__init__()
         self.dropout_rate = dropout_rate
         self.regularization = regularization
         if dropout_rate > 0:
@@ -377,44 +403,36 @@ class Sum(nn.Module):
         self.to(device)
 
     def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
-        # print('atom_embeddings:',atom_embeddings.shape)
         if self.dropout_rate > 0:
             atom_embeddings = self.dropout(atom_embeddings)
         if self.regularization > 0:
             self.add_loss(self.regularization * atom_embeddings.norm(p=2))
         return atom_embeddings.sum(dim=-2)
     
-# class Sum_atoms(nn.Module):
-    # """For atom or state embeddings, simply sum the embeddings of the constants&predicates or atoms."""
-    # def __init__(self, dropout_rate: float=0.0, regularization: float=0.0, device="cpu"): 
-    #     super(Sum, self).__init__()
-    #     self.dropout_rate = dropout_rate
-    #     self.regularization = regularization
-    #     if dropout_rate > 0:
-    #         self.dropout = nn.Dropout(p=dropout_rate)
-    #     self.device = device
-    #     self.to(device)
+class Sum_atom(nn.Module):
+    """For atom or state embeddings, simply sum the embeddings of the constants&predicates or atoms."""
+    def __init__(self, dropout_rate: float=0.0, regularization: float=0.0, device="cpu"): 
+        super(Sum_atom, self).__init__()
+        self.dropout_rate = dropout_rate
+        self.regularization = regularization
+        if dropout_rate > 0:
+            self.dropout = nn.Dropout(p=dropout_rate)
+        self.device = device
+        self.to(device)
 
-    # def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
+    def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
 
-    #     predicate_emb = predicate_emb.squeeze(-2)  # Remove unnecessary dimension if present
-    #     if self.dropout_rate > 0:
-    #         predicate_emb = self.dropout(predicate_emb)
-    #         constant_embs = self.dropout(constant_embs)  # Apply dropout to all constants
+        predicate_emb = predicate_emb.squeeze(-2)  # Remove unnecessary dimension if present
+        if self.dropout_rate > 0:
+            predicate_emb = self.dropout(predicate_emb)
+            constant_embs = self.dropout(constant_embs)  # Apply dropout to all constants
 
-    #     n = constant_embs.shape[-2]  # Get the number of constants
-    #     # Initialize the combined embedding with the predicate embedding
-    #     embeddings = predicate_emb
-
-    #     # Iterate through the constants and apply the operations
-    #     for i in range(n):
-    #         constant_emb = constant_embs[..., i, :]
-    #         embeddings = embeddings - constant_emb
+        embeddings = predicate_emb - constant_embs.sum(dim=-2)
                 
-    #     if self.regularization > 0:
-    #         self.add_loss(self.regularization * embeddings.norm(p=2))
+        if self.regularization > 0:
+            self.add_loss(self.regularization * embeddings.norm(p=2))
             
-    #     return embeddings
+        return embeddings
 
 
 
@@ -525,8 +543,9 @@ class PredicateEmbeddings(nn.Module):
 
       
 
-def EmbFactory(name: str='transe', 
+def Emb_Atom_Factory(name: str='transe', 
             embedding_dim: int=-1, 
+            max_arity: int=2,
             regularization: float=0.0,
             dropout_rate: float=0.0,
             device="cpu") -> nn.Module:
@@ -538,19 +557,34 @@ def EmbFactory(name: str='transe',
     elif name.casefold() == 'rotate':
         return RotatE(embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
     elif name.casefold() == 'concat':
-        return Concat(embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
+        return Concat_Atoms(embedding_dim, max_arity, dropout_rate=dropout_rate, regularization=regularization, device=device)
     elif name.casefold() == 'sum':
-        return Sum(dropout_rate=dropout_rate, regularization=regularization, device=device)
-        # return Sum_states(dropout_rate=dropout_rate, regularization=regularization, device=device)
+        return Sum_atom(dropout_rate=dropout_rate, regularization=regularization, device=device)
     else:
         raise ValueError(f"Unknown KGE model: {name}")
 
+
+def Emb_State_Factory(name: str='transe', 
+            embedding_dim: int=-1, 
+            padding_atoms: int=10,
+            regularization: float=0.0,
+            dropout_rate: float=0.0,
+            device="cpu") -> nn.Module:
+    
+    if name.casefold() == 'concat':
+        return Concat_States(padding_atoms, dropout_rate=dropout_rate, regularization=regularization, device=device)
+    elif name.casefold() == 'sum':
+        return Sum_state(dropout_rate=dropout_rate, regularization=regularization, device=device)
+    else:
+        raise ValueError(f"Unknown KGE model: {name}")
 
 class EmbedderLearnable(nn.Module):
     def __init__(self, 
                  n_constants: int = 0, 
                  n_predicates: int = 0, 
                  n_vars: int = 0, 
+                 max_arity: int = 2,
+                 padding_atoms: int = 10,
                  atom_embedder: str = 'transe', 
                  state_embedder: str = 'sum',
                  constant_embedding_size: int = 64, 
@@ -604,17 +638,18 @@ class EmbedderLearnable(nn.Module):
             device=device
         )
 
-        self.atom_embedder = EmbFactory(
+        self.atom_embedder = Emb_Atom_Factory(
             name=atom_embedder, #if n_image_constants == 0 else 'concat',
             embedding_dim=atom_embedding_size,
+            max_arity=max_arity,
             regularization=kge_regularization,
             dropout_rate=kge_dropout_rate,
             device=device
         )
 
-        self.state_embedder = EmbFactory(
+        self.state_embedder = Emb_State_Factory(
             name=state_embedder,
-            # embedding_dim=state_embedding_size,
+            padding_atoms=padding_atoms,
             regularization=kge_regularization,
             dropout_rate=kge_dropout_rate,
             device=device
@@ -624,7 +659,6 @@ class EmbedderLearnable(nn.Module):
     def get_embeddings_batch(self, sub_indices: torch.Tensor) -> torch.Tensor:
         predicate_indices = sub_indices[..., 0].unsqueeze(-1)
         constant_indices = sub_indices[..., 1:]
-        
         constant_embeddings = self.constant_embedder(constant_indices)
         predicate_embeddings = self.predicate_embedder(predicate_indices)
         
@@ -656,6 +690,8 @@ class get_embedder():
                 n_constants=data_handler.constant_no,
                 n_predicates=data_handler.predicate_no if not args.end_proof_action else data_handler.predicate_no + 1,
                 n_vars=data_handler.variable_no if args.rule_depend_var else args.variable_no,
+                max_arity=data_handler.max_arity,
+                padding_atoms = args.padding_atoms,
                 atom_embedder=args.atom_embedder,
                 state_embedder=args.state_embedder,
                 constant_embedding_size=args.constant_embedding_size,

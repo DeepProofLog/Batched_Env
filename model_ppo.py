@@ -1,6 +1,6 @@
 from environments.env_logic_single import LogicProofEnv
 from utils import print_td, print_rollout, get_max_arity, create_global_idx
-from kge import read_embeddings, create_embed_tables
+from embeddings import read_embeddings, create_embed_tables
 import janus_swi as janus
 
 from tensordict import TensorDict

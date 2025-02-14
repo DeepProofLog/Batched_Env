@@ -38,7 +38,6 @@ locatedInCS(belize,central_america).
 locatedInCS(benin,western_africa).
 locatedInCR(bermuda,americas).
 locatedInCS(bermuda,northern_america).
-locatedInCR(bhutan,asia).
 locatedInCS(bhutan,southern_asia).
 locatedInCS(bolivia,south_america).
 locatedInCS(bosnia_and_herzegovina,southern_europe).
@@ -323,6 +322,7 @@ locatedInCS(vanuatu,melanesia).
 locatedInCR(vanuatu,oceania).
 locatedInCR(vatican_city,europe).
 locatedInCS(vatican_city,southern_europe).
+locatedInCR(vietnam,asia).
 locatedInCS(vietnam,south_eastern_asia).
 locatedInCR(wallis_and_futuna,oceania).
 locatedInCS(wallis_and_futuna,polynesia).
