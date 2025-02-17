@@ -1,0 +1,3 @@
+aunt(1369,1287).	True
+aunt(1369,1287).	True
+aunt(1682,512).	True

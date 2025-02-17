@@ -13,6 +13,12 @@ def get_prolog_rules(file_dir):
             rule = line.strip().split(":")[-1]
             body = rule.split("->")[0].strip()
             head = rule.split("->")[1].strip()
+            # raise an error if the vars in the body or head are not letters
+            if not all(re.match(r'[a-zA-Z]', var) for var in re.findall(r'\b\w+\b', body + head)):
+                raise ValueError(f"Vars in the body or head of the rule {line} are not letters")
+            # if the vars are not in capital, make them capital
+            body = re.sub(r'\b([a-z])\b', lambda x: x.group(1).upper(), body)
+            head = re.sub(r'\b([a-z])\b', lambda x: x.group(1).upper(), head)
             prolog_rule = f"{head} :- {body}.\n"
             rules.append(prolog_rule)
             matches = re.findall(r'(\b\w+)\(([^)]*)\)', prolog_rule)
@@ -72,39 +78,50 @@ def get_pl(rule_file, fact_files, output_file, catch_errors, use_tabling):
     return "".join(outputs), "".join(full_facts), predicates_1
 
 
-def get_labeled_data(dataset,query_file, catch_errors, use_modified_rules, full_rule,rule_heads, mode="train"):
+def get_labeled_data(dataset_tmp,query_file, catch_errors, use_modified_rules, full_rule,rule_heads, mode="train"):
     """ Get the label for the queries in the query_file using the full_rule """
-    # print('full_rule', full_rule)
+    if not use_modified_rules:
+        output_dir = query_file.split(".")[0] + "_label.txt"
+    else:
+        output_dir = query_file.split(".")[0] + "_mod_label.txt"
+    
+    #clear the output file
+    with open(output_dir, "w") as f:
+        f.write("") 
+
     with open(query_file, "r") as f:
         queries = f.readlines()
     outputs = []
     rule_predicates = list(rule_heads.keys())
-    print('rule_predicates', rule_predicates)
     for i,query in enumerate(queries):
         query = query.strip()
-        print('i,query',i,query)
+        # print('i,query',i,query)
+
+        #  If the query is the head of a rule, it is possible to prove it
         if any(query.startswith(rule_head) for rule_head in rule_predicates):
             full_rules = full_rule.split("\n")
+
+            # Remove the query from the full_rules if it is in the full_rules
             if query in full_rules:
                 if mode != "train":
                     raise ValueError(f"Query {query} is in the full_rules")
-                print("query in full_rules")
                 full_rules.remove(query)
-            with open(f'{dataset}_sub.pl', "w") as f1:
-                #print(len(full_rules))
+
+            # Print it in the sub.pl file
+            with open(f'{dataset_tmp}_sub.pl', "w") as f1:
                 f1.write("\n".join(full_rules))
             f1.close()
-            #print("\n".join(full_rules))
-            # janus.query_once("abolish(neighborOf/2).")
-            # janus.query_once("abolish(locatedInCR/2).")
+
+            # Consult the sub.pl file. Abolish the tables and the predicates to avoid conflicts with the full_rules
             for predicate, arity in rule_heads.items():
                 janus.query_once(f"abolish({predicate}/{arity}).")
             janus.query_once("abolish_all_tables.")
-            janus.consult(f'{dataset}_sub.pl')
+            janus.consult(f'{dataset_tmp}_sub.pl')
+
             if catch_errors:
                 try:
                     res = janus.query_once(f"call_with_catch({query[:-1]}, TimeOut)")
-                    #for d in res:
+                    # print('res',[d for d in res])
                     if res["TimeOut"] == "true":
                         output = f"{query}\ttimeout\n"
                     else:
@@ -113,40 +130,36 @@ def get_labeled_data(dataset,query_file, catch_errors, use_modified_rules, full_
                     print(e)
                     if "Stack limit (1.0Gb) exceeded" in str(e):
                         output = f"{query}\tstack_limit_exceeded\n"
-                print(output)
+                print('output',i,output)
                 outputs.append(output)
             else:
                 # res = janus.query_once("listing.")
-                # print(res)
                 res = janus.query_once(query)
-                #for d in res:
+                # print('res',[d for d in res])
                 output = f"{query}\t{res['truth']}\n"
-                print(output)
+                print('output',i,output)
                 outputs.append(output)
-    if not use_modified_rules:
-        output_dir = query_file.split(".")[0] + "_label.txt"
-    else:
-        output_dir = query_file.split(".")[0] + "_mod_label.txt"
-    with open(output_dir, "w") as f:
-        for output in outputs:
-            f.write(output)
+
+        with open(output_dir, "a") as f:
+            for output in outputs:
+                f.write(output)
     return None
 
 
-def get_one_depth_proof(query, rules, full_facts, max_depth):
+def get_one_depth_proof(dataset,query, rules, full_facts, max_depth, rule_heads):
     #print(query)
     facts = full_facts.split("\n")
     if query in facts:
         #print("remove query")
         facts.remove(query)
     full_rules = facts + rules
-    with open("countries_sub.pl", "w") as f1:
+    with open(f"{dataset}_sub.pl", "w") as f1:
         f1.write("\n".join(full_rules))
     f1.close()
-    janus.query_once("abolish(neighborOf/2).")
-    janus.query_once("abolish(locatedInCR/2).")
+    for predicate, arity in rule_heads.items():
+        janus.query_once(f"abolish({predicate}/{arity}).")
     janus.query_once("abolish_all_tables.")
-    janus.consult("countries_sub.pl")
+    janus.consult(f'{dataset}_sub.pl')
     args = query.split("(")[1].replace(").", "").split(",")
     min_depth = 100
     min_proof = None
@@ -197,26 +210,28 @@ def get_depth_proof(inf_dir, rule_dir, full_facts, max_depth):
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('--dataset', default='kinship_family', type=str)
-    arg_parser.add_argument('--catch_errors', action='store_true')
-    arg_parser.add_argument('--use_modified_rules', action='store_true')
+    arg_parser.add_argument('--catch_errors', action='store_true', default=False)
+    arg_parser.add_argument('--use_modified_rules', action='store_true', default=False)
     arg_parser.add_argument('--use_tabling', action='store_true', default=True)
     args = arg_parser.parse_args()
 
     current_dir = os.getcwd()
     root_dir = f"{current_dir}/data/{args.dataset}/"
+
     if args.use_modified_rules:
         full_rules, full_facts, predicates_rules = get_pl(root_dir + "rules_mod.txt",[root_dir + "facts.txt", root_dir + "train.txt"], root_dir + "countries_mod.pl",
               args.catch_errors, args.use_tabling)
         #janus.consult(root_dir+"countries_mod.pl")
     else:
-        full_rules, full_facts, predicates_rules = get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+"countries.pl", args.catch_errors, args.use_tabling)
+        full_rules, full_facts, predicates_rules = get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+ args.dataset+".pl", args.catch_errors, args.use_tabling)
         #janus.consult(root_dir+"countries.pl")
+
     print("processing train.txt")
-    get_labeled_data(args.dataset,root_dir+"train.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="train")
+    get_labeled_data(root_dir+args.dataset,root_dir+"train.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="train")
     print("processing valid.txt")
-    get_labeled_data(args.dataset,root_dir+"valid.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="valid")
+    get_labeled_data(root_dir+args.dataset,root_dir+"valid.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="valid")
     print("processing test.txt")
-    get_labeled_data(args.dataset,root_dir+"test.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="test")
+    get_labeled_data(root_dir+args.dataset,root_dir+"test.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="test")
 
     # max_depth = 10
     # print("processing train_label_corruptions.json")

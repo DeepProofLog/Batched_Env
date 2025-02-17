@@ -9829,6 +9829,7 @@ nephew(149,357).
 nephew(1676,2700).
 nephew(1034,255).
 nephew(2693,465).
+nephew(1023,1241).
 nephew(991,1025).
 nephew(334,324).
 nephew(1574,1571).
@@ -19866,51 +19867,51 @@ wife(2285,2289).
 wife(135,271).
 wife(2764,2747).
 wife(2559,2553).
-son(a,b) :- brother(a,h), mother(b,h).
-niece(a,b) :- daughter(a,h), sister(h,b).
-niece(a,b) :- brother(b,h), daughter(a,h).
-daughter(a,b) :- daughter(h,b), sister(a,h).
-nephew(a,b) :- sister(b,h), son(a,h).
-mother(a,b) :- brother(b,h), mother(a,h).
-son(a,b) :- brother(a,h), daughter(h,b).
-aunt(a,b) :- father(h,b), sister(a,h).
-niece(a,b) :- sister(a,h), uncle(b,h).
-niece(a,b) :- daughter(a,h), sister(b,h).
-father(a,b) :- brother(b,h), father(a,h).
-aunt(a,b) :- mother(h,b), sister(a,h).
-daughter(a,b) :- mother(b,h), sister(a,h).
-uncle(a,b) :- brother(a,h), father(h,b).
-aunt(a,b) :- aunt(a,h), sister(h,b).
-uncle(a,b) :- brother(a,h), daughter(b,h).
-aunt(a,b) :- aunt(a,h), brother(h,b).
-son(a,b) :- brother(a,h), son(h,b).
-niece(a,b) :- nephew(h,b), sister(a,h).
-aunt(a,b) :- aunt(a,h), brother(b,h).
-aunt(a,b) :- aunt(a,h), sister(b,h).
-nephew(a,b) :- aunt(b,h), brother(a,h).
-daughter(a,b) :- sister(a,h), son(h,b).
-aunt(a,b) :- sister(a,h), son(b,h).
-husband(a,b) :- father(a,h), mother(b,h).
-sister(a,b) :- brother(b,h), sister(a,h).
-husband(a,b) :- wife(b,a).
-wife(a,b) :- husband(b,a).
-aunt(a,b) :- daughter(b,h), sister(a,h).
-nephew(a,b) :- brother(h,b), son(a,h).
-nephew(a,b) :- brother(a,h), nephew(h,b).
-brother(a,b) :- brother(a,h), sister(b,h).
-uncle(a,b) :- brother(h,b), uncle(a,h).
-nephew(a,b) :- brother(a,h), niece(h,b).
-uncle(a,b) :- sister(h,b), uncle(a,h).
-uncle(a,b) :- sister(b,h), uncle(a,h).
-uncle(a,b) :- brother(b,h), uncle(a,h).
-niece(a,b) :- brother(h,b), daughter(a,h).
-uncle(a,b) :- brother(a,h), son(b,h).
-nephew(a,b) :- brother(a,h), uncle(b,h).
-nephew(a,b) :- brother(b,h), son(a,h).
-wife(a,b) :- father(b,h), mother(a,h).
-daughter(a,b) :- father(b,h), sister(a,h).
-father(a,b) :- brother(h,b), father(a,h).
-mother(a,b) :- brother(h,b), mother(a,h).
-niece(a,b) :- aunt(b,h), sister(a,h).
-father(a,b) :- father(a,h), sister(h,b).
-son(a,b) :- brother(a,h), father(b,h).
+son(A,B) :- brother(A,H), mother(B,H).
+niece(A,B) :- daughter(A,H), sister(H,B).
+niece(A,B) :- brother(B,H), daughter(A,H).
+daughter(A,B) :- daughter(H,B), sister(A,H).
+nephew(A,B) :- sister(B,H), son(A,H).
+mother(A,B) :- brother(B,H), mother(A,H).
+son(A,B) :- brother(A,H), daughter(H,B).
+aunt(A,B) :- father(H,B), sister(A,H).
+niece(A,B) :- sister(A,H), uncle(B,H).
+niece(A,B) :- daughter(A,H), sister(B,H).
+father(A,B) :- brother(B,H), father(A,H).
+aunt(A,B) :- mother(H,B), sister(A,H).
+daughter(A,B) :- mother(B,H), sister(A,H).
+uncle(A,B) :- brother(A,H), father(H,B).
+aunt(A,B) :- aunt(A,H), sister(H,B).
+uncle(A,B) :- brother(A,H), daughter(B,H).
+aunt(A,B) :- aunt(A,H), brother(H,B).
+son(A,B) :- brother(A,H), son(H,B).
+niece(A,B) :- nephew(H,B), sister(A,H).
+aunt(A,B) :- aunt(A,H), brother(B,H).
+aunt(A,B) :- aunt(A,H), sister(B,H).
+nephew(A,B) :- aunt(B,H), brother(A,H).
+daughter(A,B) :- sister(A,H), son(H,B).
+aunt(A,B) :- sister(A,H), son(B,H).
+husband(A,B) :- father(A,H), mother(B,H).
+sister(A,B) :- brother(B,H), sister(A,H).
+husband(A,B) :- wife(B,A).
+wife(A,B) :- husband(B,A).
+aunt(A,B) :- daughter(B,H), sister(A,H).
+nephew(A,B) :- brother(H,B), son(A,H).
+nephew(A,B) :- brother(A,H), nephew(H,B).
+brother(A,B) :- brother(A,H), sister(B,H).
+uncle(A,B) :- brother(H,B), uncle(A,H).
+nephew(A,B) :- brother(A,H), niece(H,B).
+uncle(A,B) :- sister(H,B), uncle(A,H).
+uncle(A,B) :- sister(B,H), uncle(A,H).
+uncle(A,B) :- brother(B,H), uncle(A,H).
+niece(A,B) :- brother(H,B), daughter(A,H).
+uncle(A,B) :- brother(A,H), son(B,H).
+nephew(A,B) :- brother(A,H), uncle(B,H).
+nephew(A,B) :- brother(B,H), son(A,H).
+wife(A,B) :- father(B,H), mother(A,H).
+daughter(A,B) :- father(B,H), sister(A,H).
+father(A,B) :- brother(H,B), father(A,H).
+mother(A,B) :- brother(H,B), mother(A,H).
+niece(A,B) :- aunt(B,H), sister(A,H).
+father(A,B) :- father(A,H), sister(H,B).
+son(A,B) :- brother(A,H), father(B,H).
