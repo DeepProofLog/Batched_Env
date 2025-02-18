@@ -191,6 +191,7 @@ locatedInSR(melanesia,oceania).
 locatedInSR(micronesia,oceania).
 locatedInSR(middle_africa,africa).
 locatedInCS(moldova,eastern_europe).
+locatedInCR(moldova,europe).
 locatedInCR(mongolia,asia).
 locatedInCS(mongolia,eastern_asia).
 locatedInCS(montenegro,southern_europe).
@@ -989,4 +990,5 @@ neighborOf(israel,palestine).
 neighborOf(jordan,palestine).
 neighborOf(chad,sudan).
 locatedInCR(X,Z) :- neighborOf(X,Y), locatedInCR(Y,Z).
+locatedInCR(_, _) :- false.
 proof_first([H | T], T) :- call(H).

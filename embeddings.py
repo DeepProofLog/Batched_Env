@@ -142,15 +142,333 @@ class EmbedderNonLearnable:
 
 
 
+class RNN(nn.Module):
+    """RNN-based layer for computing atom embeddings with specific input shapes.
+
+    Expected input shapes:
+      - predicate_emb: [B, n_states, n_atoms, 1, embed_dim]
+      - constant_embs: [B, n_states, n_atoms, 2, embed_dim]
+    Returns:
+      - output: [B, n_states, n_atoms, embed_dim]
+    """
+    def __init__(
+        self,
+        embed_dim: int,
+        dropout_rate: float = 0.0,
+        regularization: float = 0.0,
+        device: str = "cpu"
+    ):
+        super(RNN, self).__init__()
+        self.embed_dim = embed_dim
+        self.dropout = nn.Dropout(p=dropout_rate)
+        self.regularization = regularization
+        self.device = device
+        
+        # GRU expects inputs of shape (seq_len, batch, input_size)
+        self.gru = nn.GRU(input_size=embed_dim, hidden_size=embed_dim, num_layers=1)
+        self.to(device)
+    
+    def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            predicate_emb: Tensor of shape [B, n_states, n_atoms, 1, embed_dim]
+            constant_embs: Tensor of shape [B, n_states, n_atoms, 2, embed_dim]
+                           where the fourth dimension is the arity.
+        Returns:
+            output: Tensor of shape [B, n_states, n_atoms, embed_dim]
+        """
+        # Apply dropout
+        predicate_emb = self.dropout(predicate_emb)
+        constant_embs = self.dropout(constant_embs)
+        
+        # Remove the arity dimension from predicate_emb (which is 1)
+        # New shape: [B, n_states, n_atoms, embed_dim]
+        predicate_emb = predicate_emb.squeeze(-2)
+        
+        # Prepare initial hidden state h0 for the GRU.
+        # GRU expects h0 shape: (num_layers, batch, embed_dim)
+        # Here, we combine batch, n_states, and n_atoms into one dimension.
+        B, n_states, n_atoms, embed_dim = predicate_emb.shape
+        h0 = predicate_emb.reshape(B * n_states * n_atoms, embed_dim)  # [B*n_states*n_atoms, embed_dim]
+        h0 = h0.unsqueeze(0)  # [1, B*n_states*n_atoms, embed_dim]
+        
+        # Prepare the constant embeddings as a sequence for the GRU.
+        # constant_embs has shape: [B, n_states, n_atoms, 2, embed_dim]
+        # We want to create a tensor of shape: [seq_len, B*n_states*n_atoms, embed_dim] with seq_len=2.
+        seq = constant_embs.permute(3, 0, 1, 2, 4)  # now shape: [2, B, n_states, n_atoms, embed_dim]
+        seq = seq.reshape(2, B * n_states * n_atoms, embed_dim)  # [2, B*n_states*n_atoms, embed_dim]
+        
+        # (Optional debugging prints)
+        # print('constant_embs:', constant_embs.shape)
+        # print('predicate_emb:', predicate_emb.shape)
+        # print('seq:', seq.shape)
+        # print('h0:', h0.shape)
+        
+        # Run GRU: we only need the final hidden state.
+        _, hidden = self.gru(seq, h0)  # hidden shape: [1, B*n_states*n_atoms, embed_dim]
+        output = hidden.squeeze(0)  # shape: [B*n_states*n_atoms, embed_dim]
+        
+        # Reshape output back to [B, n_states, n_atoms, embed_dim]
+        output = output.reshape(B, n_states, n_atoms, embed_dim)
+        
+        # (Optional) Add regularization loss.
+        if self.regularization > 0:
+            self.add_loss(self.regularization * output.norm(p=2))
+        
+        return output
+
+    def add_loss(self, loss: torch.Tensor):
+        # This function should be connected to your overall loss management.
+        # For example, you could store the loss in an attribute or add it to a list.
+        pass
+
+class RNN_state(nn.Module):
+    def __init__(self, embed_dim: int, dropout_rate: float = 0.0, regularization: float = 0.0, device="cpu"):
+        """
+        Args:
+            embed_dim: The embedding dimension.
+            dropout_rate: Dropout probability.
+            regularization: Coefficient for L2 regularization loss.
+            device: Device for computation.
+        """
+        super(RNN_state, self).__init__()
+        self.embed_dim = embed_dim
+        self.dropout_rate = dropout_rate
+        self.regularization = regularization
+        if dropout_rate > 0:
+            self.dropout = nn.Dropout(p=dropout_rate)
+        self.gru = nn.GRU(input_size=embed_dim, hidden_size=embed_dim, num_layers=1, batch_first=True)
+        self.device = device
+        self.to(device)
+
+    def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            atom_embeddings: Tensor of shape [B, n_states, n_atoms, embed_dim]
+        Returns:
+            output: Tensor of shape [B, n_states, embed_dim]
+        """
+
+        if self.dropout_rate > 0:
+            atom_embeddings = self.dropout(atom_embeddings)
+
+        B, n_states, n_atoms, embed_dim = atom_embeddings.shape
+        # Flatten batch and state dimensions: shape becomes [B*n_states, n_atoms, embed_dim]
+        flat_atoms = atom_embeddings.reshape(B * n_states, n_atoms, embed_dim)
+        
+        # Process the atom sequence with GRU.
+        # h_n has shape [1, B*n_states, embed_dim]; we use its squeezed version as the state embedding.
+        _, h_n = self.gru(flat_atoms)
+        state_emb = h_n.squeeze(0)  # shape: [B*n_states, embed_dim]
+        
+        # Reshape back to [B, n_states, embed_dim]
+        state_emb = state_emb.reshape(B, n_states, embed_dim)
+        
+        if self.regularization > 0:
+            self.add_loss(self.regularization * state_emb.norm(p=2))
+            
+        return state_emb
+
+    def add_loss(self, loss: torch.Tensor):
+        # This function should be integrated with your overall loss management.
+        pass
 
 
+class Transformer_state(nn.Module):
+    def __init__(self, embed_dim: int, dropout_rate: float = 0.0, regularization: float = 0.0, device="cpu", num_heads: int = 1):
+        """
+        Args:
+            embed_dim: The embedding dimension.
+            dropout_rate: Dropout probability.
+            regularization: Coefficient for L2 regularization loss.
+            device: Device for computation.
+            num_heads: Number of attention heads.
+        """
+        super(Transformer_state, self).__init__()
+        self.embed_dim = embed_dim
+        self.dropout_rate = dropout_rate
+        self.regularization = regularization
+        if dropout_rate > 0:
+            self.dropout = nn.Dropout(p=dropout_rate)
+        self.device = device
+        
+        # A learned query vector for aggregating the atom embeddings.
+        # It will be broadcast to each state instance.
+        self.query = nn.Parameter(torch.randn(1, 1, embed_dim))
+        # MultiheadAttention expects inputs as (seq_len, batch, embed_dim)
+        self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+        self.to(device)
+
+    def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            atom_embeddings: Tensor of shape [B, n_states, n_atoms, embed_dim]
+        Returns:
+            output: Tensor of shape [B, n_states, embed_dim]
+        """
+        if self.dropout_rate > 0:
+            atom_embeddings = self.dropout(atom_embeddings)
+        
+        B, n_states, n_atoms, embed_dim = atom_embeddings.shape
+        # Flatten batch and state dimensions to process each state's atoms independently.
+        # New shape: [B*n_states, n_atoms, embed_dim]
+        flat_atoms = atom_embeddings.reshape(B * n_states, n_atoms, embed_dim)
+        
+        # Rearrange to (seq_len, batch, embed_dim) for multi-head attention.
+        flat_atoms = flat_atoms.transpose(0, 1)  # shape: [n_atoms, B*n_states, embed_dim]
+        
+        # Prepare the query for each state instance.
+        # Expand the learned query to shape [1, B*n_states, embed_dim]
+        query = self.query.expand(1, B * n_states, embed_dim)
+        
+        # Run multi-head attention: query attends to the sequence of atom embeddings.
+        attn_output, _ = self.attention(query, flat_atoms, flat_atoms)
+        # attn_output is of shape [1, B*n_states, embed_dim]; remove the sequence dimension.
+        state_emb = attn_output.squeeze(0)  # shape: [B*n_states, embed_dim]
+        
+        # Reshape back to [B, n_states, embed_dim]
+        state_emb = state_emb.reshape(B, n_states, embed_dim)
+        
+        if self.regularization > 0:
+            self.add_loss(self.regularization * state_emb.norm(p=2))
+        
+        return state_emb
+
+    def add_loss(self, loss: torch.Tensor):
+        # Integrate with your overall loss handling here.
+        pass
+
+class Transformer(nn.Module):
+    """Transformer-based layer for computing atom embeddings.
+    
+    Expected input shapes:
+      - predicate_emb: [B, n_states, n_atoms, 1, embed_dim]
+      - constant_embs: [B, n_states, n_atoms, 2, embed_dim]
+      
+    Returns:
+      - output: [B, n_states, n_atoms, embed_dim]
+    """
+    def __init__(
+        self,
+        embed_dim: int,
+        dropout_rate: float = 0.0,
+        regularization: float = 0.0,
+        device: str = "cpu",
+        num_heads: int = 1
+    ):
+        super(Transformer, self).__init__()
+        self.embed_dim = embed_dim
+        self.dropout = nn.Dropout(dropout_rate)
+        self.regularization = regularization
+        self.device = device
+        
+        # nn.MultiheadAttention expects input of shape (seq_len, batch, embed_dim)
+        self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+        self.to(device)
+    
+    def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            predicate_emb: Tensor of shape [B, n_states, n_atoms, 1, embed_dim]
+            constant_embs: Tensor of shape [B, n_states, n_atoms, 2, embed_dim]
+        Returns:
+            output: Tensor of shape [B, n_states, n_atoms, embed_dim]
+        """
+        # Apply dropout
+        predicate_emb = self.dropout(predicate_emb)
+        constant_embs = self.dropout(constant_embs)
+        
+        # Remove the singleton arity dimension from predicate_emb
+        # New shape: [B, n_states, n_atoms, embed_dim]
+        predicate_emb = predicate_emb.squeeze(3)
+        B, n_states, n_atoms, embed_dim = predicate_emb.shape
+        flat_batch = B * n_states * n_atoms
+        
+        # Prepare the query: reshape to [flat_batch, embed_dim] then add a sequence dim → [1, flat_batch, embed_dim]
+        query = predicate_emb.reshape(flat_batch, embed_dim).unsqueeze(0)
+        
+        # Prepare key and value from constant_embs:
+        # constant_embs: [B, n_states, n_atoms, 2, embed_dim] → [flat_batch, 2, embed_dim]
+        const_seq = constant_embs.reshape(flat_batch, 2, embed_dim)
+        # Transpose to (seq_len, batch, embed_dim): [2, flat_batch, embed_dim]
+        key = const_seq.transpose(0, 1)
+        value = key  # same as key
+        
+        # Run multi-head attention
+        attn_output, _ = self.attention(query, key, value)
+        # attn_output is [1, flat_batch, embed_dim] → remove sequence dim and reshape
+        output = attn_output.squeeze(0).reshape(B, n_states, n_atoms, embed_dim)
+        
+        if self.regularization > 0:
+            self.add_loss(self.regularization * output.norm(p=2))
+        
+        return output
+
+    def add_loss(self, loss: torch.Tensor):
+        # Integrate with your overall loss handling
+        pass
 
 
-
-
-
-
-
+class Attention(nn.Module):
+    """Attention-based layer for computing atom embeddings using dot-product attention.
+    
+    Expected input shapes:
+      - predicate_emb: [B, n_states, n_atoms, 1, embed_dim]
+      - constant_embs: [B, n_states, n_atoms, 2, embed_dim]
+      
+    Returns:
+      - output: [B, n_states, n_atoms, embed_dim]
+    """
+    def __init__(
+        self,
+        embed_dim: int,
+        dropout_rate: float = 0.0,
+        regularization: float = 0.0,
+        device: str = "cpu"
+    ):
+        super(Attention, self).__init__()
+        self.embed_dim = embed_dim
+        self.dropout = nn.Dropout(dropout_rate)
+        self.regularization = regularization
+        self.device = device
+        self.to(device)
+    
+    def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            predicate_emb: Tensor of shape [B, n_states, n_atoms, 1, embed_dim]
+            constant_embs: Tensor of shape [B, n_states, n_atoms, 2, embed_dim]
+        Returns:
+            output: Tensor of shape [B, n_states, n_atoms, embed_dim]
+        """
+        # Apply dropout
+        predicate_emb = self.dropout(predicate_emb)
+        constant_embs = self.dropout(constant_embs)
+        
+        # Remove the singleton arity dimension from predicate_emb
+        # New shape: [B, n_states, n_atoms, embed_dim]
+        predicate_emb = predicate_emb.squeeze(3)
+        
+        # Compute dot-product attention scores.
+        # Expand predicate_emb to [B, n_states, n_atoms, 1, embed_dim] (if not already) 
+        # then multiply element-wise with constant_embs and sum over embed_dim.
+        scores = (predicate_emb.unsqueeze(3) * constant_embs).sum(dim=-1)  # [B, n_states, n_atoms, 2]
+        
+        # Compute attention weights with softmax along the arity dimension (dim=-1).
+        attn_weights = torch.softmax(scores, dim=-1)  # [B, n_states, n_atoms, 2]
+        
+        # Weighted sum of the constant embeddings using the attention weights.
+        # Multiply weights (expanded to have embed_dim) and sum over the arity dimension.
+        output = (attn_weights.unsqueeze(-1) * constant_embs).sum(dim=3)  # [B, n_states, n_atoms, embed_dim]
+        
+        if self.regularization > 0:
+            self.add_loss(self.regularization * output.norm(p=2))
+        
+        return output
+    
+    def add_loss(self, loss: torch.Tensor):
+        # Integrate with your overall loss handling
+        pass
 
 class TransE(nn.Module):
     """TransE layer for computing atom embeddings."""
@@ -560,6 +878,12 @@ def Emb_Atom_Factory(name: str='transe',
         return Concat_Atoms(embedding_dim, max_arity, dropout_rate=dropout_rate, regularization=regularization, device=device)
     elif name.casefold() == 'sum':
         return Sum_atom(dropout_rate=dropout_rate, regularization=regularization, device=device)
+    elif name.casefold() == 'transformer':
+        return Transformer(embed_dim=embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
+    elif name.casefold() == 'rnn':
+        return RNN(embed_dim=embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
+    elif name.casefold() == 'attention':
+        return Attention(embed_dim=embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
     else:
         raise ValueError(f"Unknown KGE model: {name}")
 
@@ -575,6 +899,10 @@ def Emb_State_Factory(name: str='transe',
         return Concat_States(padding_atoms, dropout_rate=dropout_rate, regularization=regularization, device=device)
     elif name.casefold() == 'sum':
         return Sum_state(dropout_rate=dropout_rate, regularization=regularization, device=device)
+    elif name.casefold() == 'rnn':
+        return RNN_state(embed_dim=embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
+    elif name.casefold() == 'transformer':
+        return Transformer_state(embed_dim=embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
     else:
         raise ValueError(f"Unknown KGE model: {name}")
 
@@ -649,6 +977,7 @@ class EmbedderLearnable(nn.Module):
 
         self.state_embedder = Emb_State_Factory(
             name=state_embedder,
+            embedding_dim=atom_embedding_size,
             padding_atoms=padding_atoms,
             regularization=kge_regularization,
             dropout_rate=kge_dropout_rate,

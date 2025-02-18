@@ -50,8 +50,8 @@ if __name__ == "__main__":
     
     DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
     LEARN_EMBEDDINGS = [True]
-    ATOM_EMBEDDER = ['complex'] #['complex','rotate','transe']
-    STATE_EMBEDDER = ['concat'] 
+    ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe']
+    STATE_EMBEDDER = ['transformer'] 
     MODEL_NAME = ["PPO"]
     ATOM_EMBEDDING_SIZE = [50] #[50,200]
     SEED = [[0]] # [[0,1,2,3,4]]
@@ -111,6 +111,11 @@ if __name__ == "__main__":
         args.corruption_mode = corruption_mode
         args.non_provable_queries = False
         args.non_provable_corruptions = False
+        args.false_rules = False
+
+        if args.false_rules:
+            args.janus_file = "train_false_rules.pl"
+
         if not args.non_provable_corruptions and args.corruption_mode == "dynamic":
             print("\n\nSKIPPING EXPERIMENT: non_provable_corruptions with dynamic corruptions is not supported\n\n")
             continue
@@ -212,11 +217,12 @@ if __name__ == "__main__":
                 # write the info about the results in the tmp file 
                 logger.log(log_filename_tmp,logged_data.__dict__,dicts_to_log)
                 # Rename to not be temporal anymore
-                mean_rwd = np.round(np.mean(test_metrics['rewards_mean']),3)
-                mean_rwd = "{:.3f}".format(mean_rwd)
+                rewards_pos_mean = np.round(np.mean(test_metrics['rewards_pos_mean']),3)
+                mrr = np.round(np.mean(test_metrics['mrr_mean']),3)
+                metrics = "{:.3f}_{:.3f}".format(rewards_pos_mean,mrr)
                 # print the mean reward with 3 decimals 
                 log_filename_run_name = os.path.join(logger_path,'indiv_runs', '_ind_log-{}-{}-{}-seed_{}.csv'.format(
-                                                            args.run_signature,date,mean_rwd,seed))
+                                                            args.run_signature,date,metrics,seed))
                 logger.finalize_log_file(log_filename_tmp,log_filename_run_name)
 
         # If we have done all the seeds in args.seed, we can get the average results

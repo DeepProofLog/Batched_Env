@@ -151,7 +151,27 @@ class PPO_custom(PPO):
 class PolicyNetwork(nn.Module):
     def __init__(self, embed_dim=200):
         super().__init__()
+
         self.observation_transform = nn.Linear(embed_dim, embed_dim)
+
+        # self.observation_transform = nn.Sequential(
+        #     nn.Linear(embed_dim, embed_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(embed_dim, embed_dim))
+
+        # hidden_dim = int(embed_dim * 1.5)
+        # dropout_prob = 0.1
+        # self.observation_transform = nn.Sequential(
+        #     nn.Linear(embed_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.LayerNorm(hidden_dim),
+        #     nn.Dropout(dropout_prob),
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.LayerNorm(hidden_dim),
+        #     nn.Dropout(dropout_prob),
+        #     nn.Linear(hidden_dim, embed_dim)
+        # )
 
     def forward(self, obs_embeddings, action_embeddings, action_atom_indices) -> TensorDict:
         # Transform and calculate logits
@@ -167,10 +187,27 @@ class PolicyNetwork(nn.Module):
 class ValueNetwork(nn.Module):
     def __init__(self, embed_dim=200):
         super().__init__()
+
         self.network = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, 1))
+
+        # hidden_dim = int(embed_dim * 1.5)
+        # dropout_prob = 0.1
+        # self.network = nn.Sequential(
+        #     nn.Linear(embed_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.LayerNorm(hidden_dim),
+        #     nn.Dropout(dropout_prob),
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.LayerNorm(hidden_dim),
+        #     nn.Dropout(dropout_prob),
+        #     nn.Linear(hidden_dim, hidden_dim // 2),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_dim // 2, 1)
+        # )
         
     def forward(self, obs_embeddings) -> TensorDict:
         value = self.network(obs_embeddings)
