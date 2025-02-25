@@ -87,6 +87,8 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
             negative_batches.append(torch.stack(triple_negatives, dim=0))
         return negative_batches
 
+from typing import Collection, Optional, Union,Literal
+Target = Literal["head", "relation", "tail"]
 
 class BasicNegativeSamplerCustom(BasicNegativeSampler):
     def __init__(
@@ -95,7 +97,7 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         num_entities: int,
         num_negs_per_pos: int = 1,  # Note: not used in enumeration
         filtered: bool = True,
-        corruption_scheme: List[str] = ['tail']
+        corruption_scheme: Optional[Collection[Target]] = None
     ):
         super().__init__(
             mapped_triples=mapped_triples,
@@ -130,10 +132,11 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
 
 def get_sampler(data_handler: DataHandler, 
                 index_manager, 
-                triples_factory
+                triples_factory,
+                corruption_scheme: Optional[Collection[Target]] = None
                 ):
 
-    if 'countries' or 'ablation' in data_handler.dataset_name:
+    if 'countries' in data_handler.dataset_name or 'ablation' in data_handler.dataset_name:
         domain2idx = {domain: [index_manager.constant_str2idx[e] for e in entities] for domain, entities in data_handler.domain2entity.items()}
         entity2domain: Dict[int, str] = {index_manager.constant_str2idx[e]: domain for domain, entities in data_handler.domain2entity.items() for e in entities}
         sampler = BasicNegativeSamplerDomain(mapped_triples=triples_factory.mapped_triples,  # Pass mapped_triples instead
@@ -141,10 +144,14 @@ def get_sampler(data_handler: DataHandler,
                                             entity2domain=entity2domain,
                                             num_negs_per_pos=1,
                                             filtered=True,
-                                            corruption_scheme=['tail'],)
+                                            corruption_scheme=corruption_scheme)
     else:
-        sampler = BasicNegativeSamplerCustom(mapped_triples=triples_factory.mapped_triples,  # Pass mapped_triples instead
-                                    num_negs_per_pos=1,
-                                    filtered=True,
-                                    corruption_scheme=['tail'])    
+        sampler = BasicNegativeSamplerCustom(   
+            mapped_triples=triples_factory.mapped_triples,  # Pass mapped_triples instead
+            num_entities=triples_factory.num_entities,
+            num_negs_per_pos=2,
+            filtered=True,
+            corruption_scheme=corruption_scheme,
+        )
+
     return sampler

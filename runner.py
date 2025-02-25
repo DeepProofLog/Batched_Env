@@ -30,32 +30,31 @@ if __name__ == "__main__":
     LIMIT_SPACE = [True] # [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
     DYNAMIC_CONSULT = [False] # [True, False]
+    FALSE_RULES = [False] 
+    END_PROOF_ACTION = [False]
+    # reward_type = 1
+
+    # Dataset settings
+    DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
+    SEED = [[0]] # [[0,1,2,3,4]]
+    LEARN_EMBEDDINGS = [True]
+    ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe']
+    STATE_EMBEDDER = ['sum'] 
+    PADDING_ATOMS = [10]
+    PADDING_STATES = [20]
+    ATOM_EMBEDDING_SIZE = [50] #[50,200]
     CORRUPTION_MODE =  ['static'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
     TRAIN_NEG_POS_RATIO = [1] # in validation and test, we use all corruptions
 
-    # include_non_provable = False # just modifies the get_corruptions_dict
-    # end_proof_action = False
-    # reward_type = 1
-    # rule_file = "train_false_rules.pl" if include_non_provable else "train.pl"
+    RESTORE_BEST_VAL_MODEL = [True] #[True,False]
+    load_model = False #['best_eval', 'last_epoch', False]
+    save_model = True #['best_eval', 'last_epoch', False]
 
     # Loggin settings 
     use_logger = False
     use_WB = False
     WB_path = "./../wandb/"
     logger_path = "./runs/"
-
-    RESTORE_BEST_VAL_MODEL = [True] #[True,False]
-    LOAD_MODEL = [False] #['best_eval', 'last_epoch', False]
-    save_model = True #['best_eval', 'last_epoch', False]
-    
-    DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3"]
-    LEARN_EMBEDDINGS = [True]
-    ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe']
-    STATE_EMBEDDER = ['transformer'] 
-    MODEL_NAME = ["PPO"]
-    ATOM_EMBEDDING_SIZE = [50] #[50,200]
-    SEED = [[0]] # [[0,1,2,3,4]]
-    MAX_DEPTH = [20] # [20,100]
 
     # Paths    
     data_path = "./data/"
@@ -64,7 +63,10 @@ if __name__ == "__main__":
 
     # Training parameters
     TIMESTEP_TRAIN = [20000]
+    MODEL_NAME = ["PPO"]
+    MAX_DEPTH = [20] # [20,100]
     eval_freq = 5000
+    n_eval_episodes = 100
     n_epochs = 10
     n_steps = 2048 # number of steps to collect in each rollout
     batch_size = 64
@@ -93,9 +95,9 @@ if __name__ == "__main__":
     # Do the hparam search
     all_args = []
     for dataset_name,learn_embeddings,atom_embedder,state_embedder,model_name,atom_embedding_size,seed,max_depth,timestep_train,restore_best_val_model,\
-    limit_space,load_model,rule_depend_var,dynamic_consult,corruption_mode,train_neg_pos_ratio in product(DATASET_NAME,
+    limit_space,rule_depend_var,dynamic_consult,corruption_mode,train_neg_pos_ratio,false_rules,end_proof_action,padding_atoms,padding_states in product(DATASET_NAME,
         LEARN_EMBEDDINGS,ATOM_EMBEDDER,STATE_EMBEDDER,MODEL_NAME,ATOM_EMBEDDING_SIZE,SEED,MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_VAL_MODEL,LIMIT_SPACE,
-        LOAD_MODEL,RULE_DEPEND_VAR,DYNAMIC_CONSULT,CORRUPTION_MODE,TRAIN_NEG_POS_RATIO):
+        RULE_DEPEND_VAR,DYNAMIC_CONSULT,CORRUPTION_MODE,TRAIN_NEG_POS_RATIO,FALSE_RULES,END_PROOF_ACTION,PADDING_ATOMS,PADDING_STATES):
 
         constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
         predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
@@ -106,13 +108,18 @@ if __name__ == "__main__":
         if atom_embedder == "rotate":
             constant_embedding_size = 2*atom_embedding_size
 
+        args.end_proof_action = False
         args.train_neg_pos_ratio = train_neg_pos_ratio
         args.limit_space = limit_space
         args.corruption_mode = corruption_mode
         args.non_provable_queries = False
         args.non_provable_corruptions = False
-        args.false_rules = False
-
+        
+        args.corruption_scheme = ['head','tail']
+        if 'countries' in dataset_name or 'ablation in dataset_name' in dataset_name:
+            args.corruption_scheme = ['tail']
+        
+        args.false_rules = false_rules
         if args.false_rules:
             args.janus_file = "train_false_rules.pl"
 
@@ -122,7 +129,6 @@ if __name__ == "__main__":
         if args.non_provable_queries and args.corruption_mode == "static":
             print("\n\nSKIPPING EXPERIMENT: non_provable_queries with static corruptions is not yet supported\n\n")
             continue
-        args.end_proof_action = False
 
         args.dataset_name = dataset_name
         if dataset_name == "mnist_addition":
@@ -132,10 +138,14 @@ if __name__ == "__main__":
             train_file = "train_label_corruptions.json"
             valid_file = "valid_label_corruptions.json"
             test_file  = "test_label_corruptions.json"
-        elif args.corruption_mode == "dynamic":
+        elif args.corruption_mode == "dynamic" and not args.non_provable_queries:
             train_file = "train_label.txt"
             valid_file = "valid_label.txt"
             test_file = "test_label.txt"
+        elif args.corruption_mode == "dynamic" and args.non_provable_queries:
+            train_file = "train.txt"
+            valid_file = "valid.txt"
+            test_file = "test.txt"
 
         args.data_path = data_path
         args.janus_file = janus_file
@@ -148,8 +158,8 @@ if __name__ == "__main__":
         args.atom_embedder = atom_embedder
         args.state_embedder = state_embedder
         args.model_name = model_name
-        args.padding_atoms = 10
-        args.padding_states = 20
+        args.padding_atoms = padding_atoms
+        args.padding_states = padding_states
         args.atom_embedding_size = atom_embedding_size #if atom_embedder != "concat" else it is (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
         # args.state_embedding_size = atom_embedding_size #if state_embedder != "concat" else it is atom_embedding_size*padding_atoms
         args.constant_embedding_size = constant_embedding_size
@@ -172,6 +182,7 @@ if __name__ == "__main__":
         args.n_epochs = n_epochs
         args.n_steps = n_steps
         args.eval_freq = eval_freq
+        args.n_eval_episodes = n_eval_episodes
         args.batch_size = batch_size
         args.lr = lr
         args.max_depth = max_depth

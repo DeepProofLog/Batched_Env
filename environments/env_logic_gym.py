@@ -2,7 +2,9 @@ from typing import List, Optional, Tuple, Dict, Union
 import random
 from math import prod
 from utils import Term, is_variable, extract_var, print_state_transition, get_rule_from_string
-from unification.prolog_unification import get_next_state_prolog, get_next_state_prolog_mnist
+# from unification.prolog_unification import get_next_unification_prolog
+from unification.python_unification import get_next_unification_python
+from unification.prolog_unification_v2 import get_next_unification_prolog
 
 import torch
 from tensordict import TensorDict, TensorDictBase, NonTensorData
@@ -120,6 +122,11 @@ class IndexManager():
 
     def get_atom_sub_index(self, state: List[Term]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get the atom and sub index for a state"""
+        # print('variable_str2idx:',self.variable_str2idx)
+        # print('constant_str2idx:',self.constant_str2idx)
+        # print('predicate_str2idx:',self.predicate_str2idx)
+        # print('self.atom_id_to_sub_id:',self.atom_id_to_sub_id)
+        # print('self.atom_to_index:',self.atom_to_index)
         if self.rule_depend_var:
             state = self.substitute_variables(state)
         else:
@@ -134,6 +141,7 @@ class IndexManager():
                         index = self.next_var_index
                         self.variable_str2idx[var] = index
                         self.next_var_index += 1
+            # print('vars:',vars)
 
         # Get atom_index and sub_index
         atom_index =torch.zeros(self.padding_atoms, device=self.device, dtype=torch.int64)
@@ -145,6 +153,7 @@ class IndexManager():
                 self.next_atom_index += 1
             else:
                 atom_index[i] = self.atom_to_index[atom]
+            # print('     atom:',atom,self.atom_to_index[atom],atom_index[i])
             atom_id = atom_index[i].item()
             if atom_id not in self.atom_id_to_sub_id:
                 try:
@@ -156,13 +165,16 @@ class IndexManager():
                         sub_index[i, 0] = self.predicate_no + 3 # idx reserved for the action 'end of the proof'
                     else:
                         sub_index[i, 0] = self.predicate_str2idx[atom.predicate]
+                    # print('sub_index pred:',sub_index[i, 0])
                     for j, arg in enumerate(atom.args):
                         if is_variable(arg):
                             sub_index[i, j+1] = self.variable_str2idx[arg]
                         else:
                             sub_index[i, j+1] = self.constant_str2idx[arg]
+                        # print('sub_index:',sub_index[i, j+1])
                 except Exception as e:
                     print("The following key is not in dict:", e)
+                # print('sub_index:',sub_index[i])
                 self.atom_id_to_sub_id[atom_id] = sub_index[i]
             else:
                 sub_index[i] = self.atom_id_to_sub_id[atom_id]
@@ -174,7 +186,7 @@ class IndexManager():
 
 
 
-
+from typing import List
 class LogicEnv_gym(gym.Env):
     batch_locked = False  # Allow dynamic batch sizes
     
@@ -185,10 +197,12 @@ class LogicEnv_gym(gym.Env):
                 index_manager: Optional[IndexManager] = None,
                 data_handler: Optional[DataHandler] = None,
                 corruption_mode: Optional[str] = None,
+                corruption_scheme: Optional[List[str]] = None,
                 train_neg_pos_ratio: int = 1,
                 limit_space: bool = True,
                 dynamic_consult: bool = True,
                 eval=False,
+                n_eval_episodes=None,
                 end_proof_action: bool = False,
                 padding_atoms: int = 10,
                 padding_states: int = 20,
@@ -196,6 +210,10 @@ class LogicEnv_gym(gym.Env):
         
         '''Initialize the environment'''
         super().__init__()
+
+        self.engine = 'prolog'
+        # self.engine = 'python'
+
         self.device = device
 
         self.corruption_mode = corruption_mode
@@ -212,7 +230,7 @@ class LogicEnv_gym(gym.Env):
         self._make_spec()
         self.current_seed = self.seed # seed to select random queries
 
-        self.dataset_name = data_handler.name
+        self.dataset_name = data_handler.dataset_name
         self.facts=data_handler.facts
 
         if 'static' in self.corruption_mode or 'dynamic' in self.corruption_mode:
@@ -221,6 +239,7 @@ class LogicEnv_gym(gym.Env):
         if self.corruption_mode == "dynamic":
             self.sampler = data_handler.sampler
             self.triples_factory = data_handler.triples_factory
+            self.corruption_scheme = corruption_scheme
 
         self.train_neg_pos_ratio = train_neg_pos_ratio
         self.train_queries = data_handler.train_queries
@@ -238,11 +257,17 @@ class LogicEnv_gym(gym.Env):
 
         self.dynamic_consult = dynamic_consult
         self.current_query = None
+        self.current_label = None
 
         self.eval = eval
         self.eval_dataset = 'validation' # by default, evaluate on the validation set. It can be changed to 'test' or 'train'
         self.eval_idx = 0 # Index to go through all the eval queries
         self.eval_len = len(self.valid_queries) # Number of eval queries (to reset the index)
+        self.n_eval_episodes = n_eval_episodes
+        # generate a random sequence of indices to go through the eval queries (in case we dont want to evaluate on the whole dataset)
+        self.eval_seq = list(range(self.eval_len))
+        # random.Random(0).shuffle(self.eval_seq) # to get the same sequence every time
+
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment'''
@@ -330,6 +355,8 @@ class LogicEnv_gym(gym.Env):
 
 
     def reset(self, seed: Optional[int]= None, options=None):
+        # if self.current_seed == 10:  
+        #     print(soidvs)
         if self.eval: 
             '''Only use this during training with the callback EvalCallback and the env initialised with eval=True. 
             We just test in this case positive queries. Can be adapted to test negative queries as well by using the counter
@@ -341,9 +368,11 @@ class LogicEnv_gym(gym.Env):
             elif self.eval_dataset == 'train':
                 eval_dataset = self.train_queries
 
-            if self.eval_idx == self.eval_len: # reset the index
+            if self.eval_idx == self.n_eval_episodes: # reset the index
                 self.eval_idx = 0
-            state, label = eval_dataset[self.eval_idx], 1
+            # print('eval_idx', self.eval_idx,'/', self.n_eval_episodes, self.eval_seq[self.eval_idx],)
+
+            state, label = eval_dataset[self.eval_seq[self.eval_idx]], 1
             self.eval_idx += 1
 
         else:
@@ -353,6 +382,14 @@ class LogicEnv_gym(gym.Env):
                 label = 1
                 if self.counter % (int(self.train_neg_pos_ratio) + 1) != 0:
                     state = self.get_negatives(state)
+
+                    # Alternate between head and tail
+                    if not hasattr(self, 'negation_toggle'):
+                        self.negation_toggle = 0  # Initialize if it doesn't exist
+                    if len(self.corruption_scheme) > 1:
+                        state = [state[self.negation_toggle]]  
+                        self.negation_toggle = 1 - self.negation_toggle  # Flip for next time get head or tail
+                    
                     assert len(state) == 1, f"Length of negatives: {len(state)}"
                     state = state[0] # In train there shuold be only one negative
                     label = 0
@@ -374,12 +411,10 @@ class LogicEnv_gym(gym.Env):
             if label == 1 and not self.dynamic_consult:
                 self.new_consult_janus(state)
             elif label == 1 and self.dynamic_consult and state in self.facts:
-                janus.query_once(f"retract({str(state)}).") # RODRIGO:DONT WE HAVE TO ADD THE STATE AFTERWARDS?
-            # elif label == 1:   RODRIGO:CAN THIS BE DELETED?
-                # self.dynamic_consult_janus(state)
+                janus.query_once(f"retract({str(state)}).")
 
-        if self.dynamic_consult:
-            self.current_query = state
+        self.current_query = state
+        self.current_label = label
 
         return self._reset([state], label)
 
@@ -391,10 +426,10 @@ class LogicEnv_gym(gym.Env):
             if not self.dynamic_consult:
                 self.new_consult_janus(query)
             elif self.dynamic_consult and query in self.facts: 
-                    janus.query_once(f"retract({str(query)}).") # RODRIGO:DONT WE HAVE TO ADD THE STATE AFTERWARDS?
-            # self.dynamic_consult_janus(query) RODRIGO:CAN THIS BE DELETED?
-        if self.dynamic_consult:
-            self.current_query = query
+                    janus.query_once(f"retract({str(query)}).") 
+
+        self.current_query = query
+        self.current_label = label
 
         return self._reset([query], label)
 
@@ -435,6 +470,7 @@ class LogicEnv_gym(gym.Env):
                'derived_sub_indices':derived_sub_indices}
 
         # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
+        # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()))
         return obs, {}
 
     def step(self, action):
@@ -472,13 +508,16 @@ class LogicEnv_gym(gym.Env):
         self.current_depth += 1
         self.exceeded_max_depth = (self.current_depth >= self.max_depth)
         done_next = done_next | self.exceeded_max_depth
-
+        # Handle episode completion
         if done_next:
-            if self.dynamic_consult:
-                if self.tensordict['label'] == 1 and self.current_query in self.facts:
+            # print('REWARD!!!!', reward_next) if reward_next.item() != 0 else None
+            # Restore facts in knowledge base if this was a positive query
+            if self.current_label == 1 and self.current_query in self.facts:
+                if self.dynamic_consult:
+                    # Re-add the current query to Janus knowledge base
                     janus.query_once(f"asserta({str(self.current_query)}).")
-                    self.current_query = None
-            self.tensordict['label'] = None # Reset the label to None, to be sure that it is not used in the next step
+            # Clear current query reference and label
+            self.current_query, self.current_label = None, None
 
         tensordict = TensorDict(
             {
@@ -508,20 +547,10 @@ class LogicEnv_gym(gym.Env):
 
         reward = self.tensordict['reward'].numpy()
         done = self.tensordict['done'].numpy()
-        # RODRIGO: CAN WE REMOVE THIS?
-        # for rewards, get an float value, for dones, get a boolean value
-        # if rewards.shape[0] != 1 or dones.shape[0] != 1 or self.exceeded_max_depth.shape[0] != 1:
-        #     not_valid_shape = f"Invalid shape. rewards: {rewards.shape}, dones: {dones.shape}, exceeded_max_depth: {self.exceeded_max_depth.shape}"
-        #     raise ValueError(not_valid_shape)
         truncated = bool(self.exceeded_max_depth)
-        # RODRIGO: CAN WE REMOVE THIS?
-        # if dones and not self.eval:
-        #     print('     adding fact:', self.current_query, dones)
-        #     janus.query(f"assertz({self.current_query}).")
-        # if dones:
-        #     print('dones,truncated,rewards', dones,truncated,rewards)
 
         # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
+        # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()))
         return obs, reward, done, truncated, {}
 
 
@@ -537,7 +566,15 @@ class LogicEnv_gym(gym.Env):
                 if state[0].predicate == 'End':
                     state = [Term(predicate='False', args=[])]
 
-        possible_states_next = get_next_state_prolog(state, verbose=0) if self.dataset_name != "mnist_addition" else get_next_state_prolog_mnist(state, verbose=1)
+        if self.engine == 'prolog':
+            possible_states_next = get_next_unification_prolog(state, verbose=0)
+        else:
+            possible_states_next = get_next_unification_python(state,
+                                                        # pass the self.facts - the self.current_query
+                                                        facts=[fact for fact in self.facts if fact != self.current_query] if self.current_label == 1 else self.facts,
+                                                        rules=self.index_manager.rules,
+                                                        verbose=0
+                                                        )
 
         if self.end_proof_action:
             append = False
@@ -552,7 +589,9 @@ class LogicEnv_gym(gym.Env):
         possible_sub_indices = []
 
         for s in possible_states_next:
+            # print('\n\nstate:',s)
             atom_idx, sub_idx = self.index_manager.get_atom_sub_index(s)
+            # print('atom_idx:',atom_idx,'\n\n')
             possible_atom_indices.append(atom_idx)
             possible_sub_indices.append(sub_idx)
 
@@ -646,14 +685,22 @@ class LogicEnv_gym(gym.Env):
 
     def get_negatives(self, state, all_negatives=False):
         query = [(state.args[0], state.predicate, state.args[1])] # convert query to (cte, pred, cte) format
+        # print('query',query)
         positive_batch = self.triples_factory.map_triples(np.array(query))
+        # print('positive_batch',positive_batch)
         if all_negatives:
             negative_batch = self.sampler.corrupt_batch_all(positive_batch)
         else:
             negative_batch = self.sampler.corrupt_batch(positive_batch)
+        # print('negative batch',negative_batch)
         negative_batch_str = []
         for batch in negative_batch:
             for n in batch:
+                # print('n',n,n[0].item())
+                # assert that there are no 0s in the negative batch
+                # print('e1,e2 negative',self.index_manager.constant_idx2str[n[0].item()],self.index_manager.constant_idx2str[n[2].item()])
+                assert self.index_manager.constant_idx2str[n[0].item()] != 0, "Negative batch contains 0s"
+                assert self.index_manager.constant_idx2str[n[2].item()] != 0, "Negative batch contains 0s"
                 negative_batch_str.append((self.index_manager.constant_idx2str[n[0].item()],self.index_manager.predicate_idx2str[n[1].item()],
                                         self.index_manager.constant_idx2str[n[2].item()]))
         state = [Term(predicate=n[1].strip(), args=[n[0].strip(), n[2].strip()]) for n in negative_batch_str] # convert each negative back to Term format

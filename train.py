@@ -46,11 +46,10 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         valid_file=args.valid_file,
         test_file= args.test_file,
         corruption_mode=args.corruption_mode,
-        name=args.dataset_name,
         non_provable_corruptions=args.non_provable_corruptions,
         non_provable_queries=args.non_provable_queries,)
     data_handler= data_handler.info
-
+    args.n_eval_episodes = len(data_handler.valid_queries) if args.n_eval_episodes == -1 else min(args.n_eval_episodes, len(data_handler.valid_queries))
     index_manager = IndexManager(data_handler.constants,
                                 data_handler.predicates,
                                 data_handler.variables if args.rule_depend_var else set(),
@@ -72,7 +71,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                                             relation_to_id=index_manager.predicate_str2idx,
                                                             compact_id=False,
                                                             create_inverse_triples=False)
-        data_handler.sampler = get_sampler(data_handler=data_handler, index_manager=index_manager, triples_factory=triples_factory)
+        
+        data_handler.sampler = get_sampler(data_handler=data_handler, index_manager=index_manager, triples_factory=triples_factory,
+                                           corruption_scheme=args.corruption_scheme)
         data_handler.triples_factory = triples_factory
 
     embedder_getter = get_embedder(args, 
@@ -99,6 +100,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         data_handler=data_handler,
                         seed=args.seed_run_i,
                         corruption_mode=args.corruption_mode,
+                        corruption_scheme=args.corruption_scheme,
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
                         limit_space=args.limit_space,
                         dynamic_consult=args.dynamic_consult,
@@ -112,13 +114,15 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                             data_handler=data_handler,
                             seed=args.seed_run_i,
                             corruption_mode=args.corruption_mode,
+                            corruption_scheme=args.corruption_scheme,
                             train_neg_pos_ratio=args.train_neg_pos_ratio,
                             limit_space=args.limit_space,
                             dynamic_consult=args.dynamic_consult,
                             end_proof_action=args.end_proof_action,
                             padding_atoms=args.padding_atoms,
                             padding_states=args.padding_states,
-                            eval=True)
+                            eval=True,
+                            n_eval_episodes=args.n_eval_episodes,)
 
     # INIT MODEL
     if args.model_name == "PPO":
@@ -167,7 +171,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     model_path=model_path if args.save_model else None,
                                     log_path=log_filename if use_logger else None,
                                     eval_freq=args.eval_freq,
-                                    n_eval_episodes=len(data_handler.valid_queries),
+                                    n_eval_episodes=args.n_eval_episodes,
                                     deterministic=True,
                                     render=False,
                                     name=model_name,

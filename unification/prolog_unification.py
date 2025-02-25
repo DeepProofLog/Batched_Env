@@ -3,74 +3,120 @@ from collections import deque
 from typing import List
 from utils import Term
 import janus_swi as janus
+from collections import defaultdict
+
+
+# When we have a query that takes too much inference or stack, we get the following warning:
+    # _swipl.close_query(self.state)
+# janus_swi.janus.PrologError: swipl.next_solution(): not inner query
+# This is because in the query we are trying to unify a variable with a value that is not instantiated.
+# There is no problem, but if we want to avoid the warning, we can modify the del method of the janus.query object
+
+_orig_del = janus.query.__del__
+
+def patched_del(self):
+    try:
+        _orig_del(self)
+    except janus.janus.PrologError as e:
+        if "not inner query" in str(e):
+            # Suppress the warning
+            pass
+        else:
+            raise e
+
+janus.query.__del__ = patched_del
+
+
+def filter_actions_prolog(res, verbose: int=0) -> List[str]:
+    """
+    Filter the actions from the prolog query result
+    When it takes too many inference steps or stack, it raises a warning, so we avoid it
+    Also, sometime it enters infinte loop of possible next actions, so we break it
+    """
+
+    actions = []
+    try:
+        while True:
+            d = res.next()
+            if d:
+                # assert that there is only one state in each next action
+                assert d["T"].count('[') == 1 and d["T"].count(']') == 1
+                print(f'        atom {d}') if verbose else None
+                if d["T"][1:-1] in actions:
+                    print(f'        action {d} already in actions') if verbose else None
+                    break
+                actions.append(d["T"][1:-1])
+            else:
+                break
+    except janus.janus.PrologError as e:
+        if "Arguments are not sufficiently instantiated" in str(e):
+            print(f'        end of valid solutions: {e}') if verbose else None
+            pass
+        else:
+            print(f'        re-raise error: {e}') if verbose else None
+            pass
+    finally:
+        res.close()
+    return actions
 
 
 def get_actions_prolog(state: str, verbose: int=0) -> List[str]:
-
-    print('State str:', state) if verbose else None
+    # janus.query_once("set_prolog_flag(stack_limit, 2147483648)")
+    print('\n\n--------------\nState str:', state) if verbose else None
     state = deque(re.findall(r'\w+\(.*?\)', state))
-    print('State deque:', state) if verbose else None
     # get the first element of the state
     s = state.popleft()
-    print('State popleft:', s) if verbose else None
-    actions = []
-    # for digit query only
-    # if s.startswith('digit(') and s:
+    print('State popleft:', s,' State:', state) if verbose else None
 
-    # We get 'truth' and 'B' from the query, which is whether the query is true or not, 
-    # and the value of the query
-    print('Query:', f"clause({s}, _B), term_string(_B, B)") if verbose else None
-    res = janus.query(f"clause({s}, _B), term_string(_B, B).")
-
-    res_dict = {}
-    for d in res:
-        if "truth" in res_dict:
-            res_dict["truth"].append(d['truth'])
-        else:
-            res_dict["truth"] = [d['truth']]
-        if "B" in d:
-            body = d['B']
-        else:
-            body = None
-        if "B" in res_dict:
-            res_dict["B"].append(body)
-        else:
-            res_dict["B"] = [body]
-    print('Res_dict:', res_dict) if verbose else None
-
-    # If res["truth"] is false, it means the clause is not true
-    if res_dict["truth"] == [False]:
-        print(f'There is no substitution') if verbose else None
-        print(f'Actions: ["False"]') if verbose else None
-        return ["False()"]
-    # the clause is a fact
-    elif any(t and (b is None or b == "true") for t, b in zip(res_dict["truth"], res_dict["B"])) and not state:
-        print(f'it is a fact') if verbose else None
-        print(f'Actions: ["True"]') if verbose else None
-        return ["True()"]
-    # substitution step
-    elif all(b == "true" for b in res_dict["B"]) and state:
-        state_list = "[" + s + ", " + ", ".join(state) + "]"
-        res = janus.query(f"proof_first({str(state_list)}, _T), term_string(_T, T)")
+    if not state:
+        res = janus.query(
+            f"clause({s}, _B), term_string(_B, B)"
+            # f"catch((clause({s}, _B), term_string(_B, B)), error(resource_error(stack), _), false)"
+            # f"call_with_inference_limit((clause({s}, _B), term_string(_B, B)), 1000000, R)"
+            )
+        
+        res_dict = defaultdict(list)
         for d in res:
-            actions.append(d["T"][1:-1])
-        print(f' possible actions are {"; ".join(actions)}') if verbose else None
-    # rule-matching step
-    else:
-        if len(res_dict["B"]) == 1 and not re.findall(r'\w+\(.*?\)', res_dict["B"][0]):
-            res = janus.query_once(f"{res_dict["B"][0]}.")["truth"]
-            # TODO: might not work for reordering
-            if res:
-                print(f'Action: True') if verbose else None
-                return ["True()"]
-            else:
-                print(f'Action: False') if verbose else None
-                return ["False()"]
+            body = d.get('B')
+            truth = d.get('truth')
+            # If there's only one action and it's a fact, return True action
+            if truth == True and body == "true":
+                print('It is a fact') if verbose else None
+                print('Actions: ["True"]') if verbose else None
+                actions = ["True()"]
+            # elif truth == False:
+            #     pass
+            elif truth == True and body != "true":
+                res_dict["truth"].append(truth)
+                res_dict["B"].append(body)
+        
+        print('Res dict:', res_dict,'\n') if verbose else None
+
+        if not res_dict:
+            print('There is no action/substitution') if verbose else None
+            print('Actions: ["False"]') if verbose else None
+            actions = ["False()"]
         else:
+            print('It is a rule match') if verbose else None
+            print('Actions:', res_dict["B"]) if verbose else None
             actions = res_dict["B"]
-            print(f' possible actions are {"; ".join(actions)}') if verbose else None
+        
+    else:
+        state_list = "[" + s + ", " + ", ".join(state) + "]"
+        print('State list:', state_list) if verbose else None
+        res = janus.query(
+            f"proof_first({state_list}, _T), term_string(_T, T)"
+            # f"catch((proof_first({state_list}, _T), term_string(_T, T)), error(resource_error(stack), _), false)"
+            # f"call_with_inference_limit((proof_first({state_list}, _T), term_string(_T, T)), 100000000, R)"
+            )
+        actions = filter_actions_prolog(res, verbose=verbose)
+        if not actions:
+            print('Actions: ["False"]') if verbose else None
+            actions = ["False()"]
+        print(f' Actions: {actions}') if verbose else None
     return actions
 
+            
 
 def from_str_to_term(next_state_str: str) -> List[Term]:
     ''' Convert a string to a list of Term objects '''
@@ -86,7 +132,7 @@ def from_str_to_term(next_state_str: str) -> List[Term]:
     return atoms
 
 
-def get_next_state_prolog(state: List[Term], verbose=0) -> List[List[Term]]:
+def get_next_unification(state: List[Term], verbose=0) -> List[List[Term]]:
     print('     state str:', ", ".join([str(atom) for atom in state])) if verbose else None
     # Handle terminal states: If any of the atoms in the state are False, return False. If all the atoms in the state are True, return True
     any_atom_false = any([atom.predicate == 'False' for atom in state]) 

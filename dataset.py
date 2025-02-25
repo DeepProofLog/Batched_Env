@@ -135,15 +135,20 @@ def get_rules_from_file(file_path: str) -> Tuple[List[Term], List[Rule]]:
 #     return pos_queries, neg_queries
 
 
-def get_provable_queries(path:str, non_provable_queries: bool = False)-> List[Term]:
+
+def get_queries(path:str, non_provable_queries: bool = False)-> List[Term]:
     '''Get queries and labels (whether they are provable) from {set}_label.txt file'''
     queries = []
     with open(path, "r") as f:
         lines = f.readlines()
         for line in lines:
-            query, label = line.strip().split("\t")
-            if label == "True" or non_provable_queries:
+            if non_provable_queries:
+                query = line.strip()
                 queries.append(get_atom_from_string(query))
+            else:
+                query, label = line.strip().split("\t")
+                if label == "True" or non_provable_queries:
+                    queries.append(get_atom_from_string(query))
     return queries
 
 def get_corruptions(queries: List[Term], file_path: str) -> dict[Term, List[Term]]:
@@ -189,7 +194,7 @@ class DataHandlerMnist:
     
     def __init__(self, dataset_name: str, base_path: str, janus_file: str, name: str = None):
 
-        self.name = name
+        self.dataset_name = name
         self.corruption_mode = None
         self.n_digits = 2
 
@@ -318,11 +323,10 @@ class DataHandlerKGE():
                     test_file: str = None,
                     # str, with an optinoal None
                     corruption_mode: Optional[str] = None,
-                    name: str = None,
                     non_provable_corruptions: bool = False,
                     non_provable_queries: bool = False):
 
-        self.name = name
+        self.dataset_name = dataset_name
         
         base_path  = join(base_path, dataset_name)
         janus_path = join(base_path, janus_file)
@@ -348,11 +352,11 @@ class DataHandlerKGE():
             self.test_queries = list(self.test_corruptions.keys())
 
         elif 'dynamic' in corruption_mode:
-            self.train_queries = get_provable_queries(train_path, non_provable_queries)
-            self.valid_queries = get_provable_queries(valid_path, non_provable_queries)
-            self.test_queries = get_provable_queries(test_path, non_provable_queries)
-
+            self.train_queries = get_queries(train_path, non_provable_queries)
+            self.valid_queries = get_queries(valid_path, non_provable_queries)
+            self.test_queries = get_queries(test_path, non_provable_queries)
             self.train_corruptions = self.valid_corruptions = self.test_corruptions = self.neg_train_queries = None
+
 
         self.janus_facts = []
         with open(janus_path, "r") as f:
@@ -366,7 +370,7 @@ class DataHandlerKGE():
         self.entity2domain = None
         self.domain2entity = None
         if corruption_mode == "dynamic":
-            if 'countries' in self.name or 'ablation' in self.name:
+            if 'countries' in self.dataset_name or 'ablation' in self.dataset_name:
                 # load the domain file
                 domain_file = join(base_path, "domain2constants.txt")
                 self.entity2domain = {}
@@ -398,7 +402,7 @@ class DataHandler:
             self.info = DataHandlerMnist(dataset_name, 
                                          base_path, 
                                          janus_file, 
-                                         name)
+                                         )
         else:
             self.info = DataHandlerKGE(dataset_name, 
                                        base_path, 
@@ -407,7 +411,6 @@ class DataHandler:
                                        valid_file, 
                                        test_file, 
                                        corruption_mode, 
-                                       name,
                                        non_provable_corruptions,
                                        non_provable_queries)
 

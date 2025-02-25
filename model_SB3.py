@@ -295,6 +295,12 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
         obs_sub_indices = observations["sub_index"]
         action_sub_indices = observations["derived_sub_indices"]
         action_atom_indices = observations["derived_atom_indices"]
+
+        # print('obs_sub_indices:',obs_sub_indices.shape, list(obs_sub_indices[:3,0,:].numpy()))
+        # print('action_sub_indices:',action_sub_indices.shape, list(action_sub_indices[0,:3,0,:].numpy()))
+        # print('action_atom_indices:',action_atom_indices.shape, list(action_atom_indices[0,:3,:3].numpy()),'\n')
+
+
         obs_sub_indices = self.format_indices(obs_sub_indices)
 
         obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.long())
