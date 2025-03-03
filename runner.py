@@ -27,7 +27,7 @@ if __name__ == "__main__":
             self.file.flush()
             self.stdout.flush()
 
-    LIMIT_SPACE = [True] # [True, False]  # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
+    LIMIT_SPACE = [True] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
     DYNAMIC_CONSULT = [False] # [True, False]
     FALSE_RULES = [False] 
@@ -35,20 +35,20 @@ if __name__ == "__main__":
     # reward_type = 1
 
     # Dataset settings
-    DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
+    DATASET_NAME =  ["kinship_family"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
     SEED = [[0]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe']
     STATE_EMBEDDER = ['sum'] 
-    PADDING_ATOMS = [10]
-    PADDING_STATES = [20]
-    ATOM_EMBEDDING_SIZE = [50] #[50,200]
-    CORRUPTION_MODE =  ['static'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
+    PADDING_ATOMS = [40]
+    PADDING_STATES = [3000]
+    ATOM_EMBEDDING_SIZE = [50]
+    CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
     TRAIN_NEG_POS_RATIO = [1] # in validation and test, we use all corruptions
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
     load_model = False #['best_eval', 'last_epoch', False]
-    save_model = True #['best_eval', 'last_epoch', False]
+    save_model = False #['best_eval', 'last_epoch', False]
 
     # Loggin settings 
     use_logger = False
@@ -62,7 +62,7 @@ if __name__ == "__main__":
     janus_file = "train.pl"
 
     # Training parameters
-    TIMESTEP_TRAIN = [20000]
+    TIMESTEP_TRAIN = [5001]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
     eval_freq = 5000
@@ -113,7 +113,7 @@ if __name__ == "__main__":
         args.limit_space = limit_space
         args.corruption_mode = corruption_mode
         args.non_provable_queries = False
-        args.non_provable_corruptions = False
+        args.non_provable_corruptions = True
         
         args.corruption_scheme = ['head','tail']
         if 'countries' in dataset_name or 'ablation in dataset_name' in dataset_name:

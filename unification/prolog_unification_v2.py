@@ -123,6 +123,10 @@ def get_actions_prolog(state: str, verbose: int=0) -> List[str]:
 
 def from_str_to_term(next_state_str: str) -> List[Term]:
     ''' Convert a string to a list of Term objects '''
+    if next_state_str == 'true' or next_state_str == 'True' or next_state_str == 'True()':
+        return [Term('True', [])]
+    elif next_state_str == 'false' or next_state_str == 'False' or next_state_str == 'False()':
+        return [Term('False', [])]
     atom_strs = re.findall(r'\w+\(.*?\)', next_state_str)
     atoms = []
     for atom_str in atom_strs:
@@ -153,6 +157,8 @@ def get_next_unification_prolog(state: List[Term], verbose=0) -> List[List[Term]
         next_states = []
         for next_state_str in next_states_str:
             atoms = from_str_to_term(next_state_str)
+            if atoms[0].predicate == 'True':
+                return [[Term('True', [])]]
             next_states.append(atoms)
     print('         Next states:', [[str(atom) for atom in state] for state in next_states]) if verbose else None
     return next_states

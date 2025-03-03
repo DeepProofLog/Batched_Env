@@ -177,33 +177,40 @@ def get_next_unification_python(state: List[Term], facts: List[Term], rules: Lis
     # Try unifying with facts
     print('\n\n**********\nQuery:', query, 'Remaining state:', remaining_state,'\n') if verbose else None
     print('unification with facts') if verbose else None
-    fact_subs = unify_with_facts(query, facts, verbose=0)
-    # print('Fact substitutions:', fact_subs) if verbose else None
-    for subs in fact_subs:
+    fact_substitutions = unify_with_facts(query, facts, verbose=0)
+    for subs in fact_substitutions:
         # print('Substitution:', subs) if verbose else None
         if subs.get('True') == 'True':
-            # If fact matched exactly, continue with remaining state
+            # If it was a fact with no substitutions, continue with remaining state
             new_state = remaining_state.copy()
             if new_state:
-                # print('New state:', new_state) if verbose else None
                 next_states.append(new_state)
             else:
-                # print('New state: True') if verbose else None
                 return [[Term('True', [])]]
         else:
             # Apply substitutions to remaining state
             new_state = [apply_substitution(term, subs) for term in remaining_state]
-            # print('New state:', new_state) if verbose else None
             next_states.append(new_state)
+
+    # For the next states, the ones that are (true) facts, we can substite them by True term
+    for i in range(len(next_states)):
+        next_state = next_states[i]
+        # substitute the facts by True
+        for j in range(len(next_state)):
+            atom = next_state[j]
+            if not any(is_variable(arg) for arg in atom.args) and atom in facts:
+                next_states[i][j] = Term('True', [])
+        # if one next state is True, return True
+        if all(term.predicate == 'True' for term in next_state):
+            return [[Term('True', [])]]
+
     print('Next states:', next_states) if verbose else None
     # Try unifying with rules
     print('\nunification with rules') if verbose else None
     rule_results = unify_with_rules(query, rules, verbose=0)
     for i, (body, subs) in enumerate(rule_results):
-        # print('\nRule',rules[i], '\nSubstitution:', subs,'\nBody:', body) if verbose else None
         # Apply substitutions to remaining state
         new_remaining = [apply_substitution(term, subs) for term in remaining_state]
-        # print('New remaining state:', new_remaining) if verbose else None
         # Combine rule body with remaining state
         new_state = body + new_remaining
         print('New state:', rules[i], new_state) if verbose else None

@@ -97,7 +97,8 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         num_entities: int,
         num_negs_per_pos: int = 1,  # Note: not used in enumeration
         filtered: bool = True,
-        corruption_scheme: Optional[Collection[Target]] = None
+        corruption_scheme: Optional[Collection[Target]] = None,
+        padding_indices: Optional[Collection[int]] = None,
     ):
         super().__init__(
             mapped_triples=mapped_triples,
@@ -106,28 +107,51 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
             corruption_scheme=corruption_scheme
         )
         self.num_entities = num_entities
+        self.padding_indices = set(padding_indices) if padding_indices else set()
 
     def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
         """
         For each positive triple, generate all possible negatives by replacing the target entity
-        with every other entity in the entire entity set.
+        with every other entity in the entire entity set, excluding padding indices.
         """
         negative_batches = []
+        all_entities = torch.arange(self.num_entities, device=positive_batch.device)
+        valid_entities = [e for e in all_entities.tolist() if e not in self.padding_indices]
+        valid_entities_tensor = torch.tensor(valid_entities, device=positive_batch.device)
+
         for triple in positive_batch:
             triple_negatives = []
             for index in self._corruption_indices:
                 original_entity = triple[index].item()
-                # Create a tensor of all entities and exclude the original entity.
-                all_entities = torch.arange(self.num_entities, device=triple.device)
-                candidates = all_entities[all_entities != original_entity]
-                # Enumerate over all candidates.
-                for candidate in candidates.tolist():
+                candidates = valid_entities_tensor[valid_entities_tensor != original_entity]
+                for candidate in candidates:
                     neg_triple = triple.clone()
                     neg_triple[index] = candidate
                     triple_negatives.append(neg_triple)
-            # Stack negatives for this triple (note: number may vary if multiple indices are corrupted)
             negative_batches.append(torch.stack(triple_negatives, dim=0))
         return negative_batches
+
+    # def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
+    #     """
+    #     For each positive triple, generate all possible negatives by replacing the target entity
+    #     with every other entity in the entire entity set.
+    #     """
+    #     negative_batches = []
+    #     for triple in positive_batch:
+    #         triple_negatives = []
+    #         for index in self._corruption_indices:
+    #             original_entity = triple[index].item()
+    #             # Create a tensor of all entities and exclude the original entity.
+    #             all_entities = torch.arange(self.num_entities, device=triple.device)
+    #             candidates = all_entities[all_entities != original_entity]
+    #             # Enumerate over all candidates.
+    #             for candidate in candidates.tolist():
+    #                 neg_triple = triple.clone()
+    #                 neg_triple[index] = candidate
+    #                 triple_negatives.append(neg_triple)
+    #         # Stack negatives for this triple (note: number may vary if multiple indices are corrupted)
+    #         negative_batches.append(torch.stack(triple_negatives, dim=0))
+    #     return negative_batches
     
 
 def get_sampler(data_handler: DataHandler, 
@@ -139,7 +163,7 @@ def get_sampler(data_handler: DataHandler,
     if 'countries' in data_handler.dataset_name or 'ablation' in data_handler.dataset_name:
         domain2idx = {domain: [index_manager.constant_str2idx[e] for e in entities] for domain, entities in data_handler.domain2entity.items()}
         entity2domain: Dict[int, str] = {index_manager.constant_str2idx[e]: domain for domain, entities in data_handler.domain2entity.items() for e in entities}
-        sampler = BasicNegativeSamplerDomain(mapped_triples=triples_factory.mapped_triples,  # Pass mapped_triples instead
+        sampler = BasicNegativeSamplerDomain(mapped_triples=triples_factory.mapped_triples, 
                                             domain2idx=domain2idx,
                                             entity2domain=entity2domain,
                                             num_negs_per_pos=1,
@@ -147,11 +171,12 @@ def get_sampler(data_handler: DataHandler,
                                             corruption_scheme=corruption_scheme)
     else:
         sampler = BasicNegativeSamplerCustom(   
-            mapped_triples=triples_factory.mapped_triples,  # Pass mapped_triples instead
+            mapped_triples=triples_factory.mapped_triples, 
             num_entities=triples_factory.num_entities,
             num_negs_per_pos=2,
             filtered=True,
             corruption_scheme=corruption_scheme,
+            padding_indices={0},
         )
 
     return sampler

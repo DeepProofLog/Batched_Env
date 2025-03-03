@@ -146,6 +146,7 @@ class IndexManager():
         # Get atom_index and sub_index
         atom_index =torch.zeros(self.padding_atoms, device=self.device, dtype=torch.int64)
         sub_index = torch.zeros(self.padding_atoms, self.max_arity+1, device=self.device, dtype=torch.int64)
+        assert len(state) <= self.padding_atoms, f"Length of state: {len(state)} is greater than padding_atoms: {self.padding_atoms}"
         for i, atom in enumerate(state):
             if atom not in self.atom_to_index:
                 self.atom_to_index[atom] = self.next_atom_index
@@ -211,8 +212,8 @@ class LogicEnv_gym(gym.Env):
         '''Initialize the environment'''
         super().__init__()
 
-        self.engine = 'prolog'
-        # self.engine = 'python'
+        # self.engine = 'prolog'
+        self.engine = 'python'
 
         self.device = device
 
@@ -422,7 +423,7 @@ class LogicEnv_gym(gym.Env):
     def reset_from_query(self, query, label, consult_janus=False):
         ''' Reset the environment from a given query and label. Consult janus is needed when 
         doing eval of train queries that are in the facts'''
-        if consult_janus and label == 1:
+        if consult_janus and label == 1 and self.engine == 'prolog':
             if not self.dynamic_consult:
                 self.new_consult_janus(query)
             elif self.dynamic_consult and query in self.facts: 
@@ -470,7 +471,7 @@ class LogicEnv_gym(gym.Env):
                'derived_sub_indices':derived_sub_indices}
 
         # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
-        # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()))
+        # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
         return obs, {}
 
     def step(self, action):
@@ -550,7 +551,7 @@ class LogicEnv_gym(gym.Env):
         truncated = bool(self.exceeded_max_depth)
 
         # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
-        # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()))
+        # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
         return obs, reward, done, truncated, {}
 
 
@@ -568,7 +569,7 @@ class LogicEnv_gym(gym.Env):
 
         if self.engine == 'prolog':
             possible_states_next = get_next_unification_prolog(state, verbose=0)
-        else:
+        elif self.engine == 'python':
             possible_states_next = get_next_unification_python(state,
                                                         # pass the self.facts - the self.current_query
                                                         facts=[fact for fact in self.facts if fact != self.current_query] if self.current_label == 1 else self.facts,
@@ -696,11 +697,10 @@ class LogicEnv_gym(gym.Env):
         negative_batch_str = []
         for batch in negative_batch:
             for n in batch:
-                # print('n',n,n[0].item())
-                # assert that there are no 0s in the negative batch
+                # print('n',n)
                 # print('e1,e2 negative',self.index_manager.constant_idx2str[n[0].item()],self.index_manager.constant_idx2str[n[2].item()])
-                assert self.index_manager.constant_idx2str[n[0].item()] != 0, "Negative batch contains 0s"
-                assert self.index_manager.constant_idx2str[n[2].item()] != 0, "Negative batch contains 0s"
+                assert self.index_manager.constant_idx2str[n[0].item()] != 0, f"Negative batch contains 0s, used for padding,{n}"
+                assert self.index_manager.constant_idx2str[n[2].item()] != 0, f"Negative batch contains 0s, used for padding,{n}"
                 negative_batch_str.append((self.index_manager.constant_idx2str[n[0].item()],self.index_manager.predicate_idx2str[n[1].item()],
                                         self.index_manager.constant_idx2str[n[2].item()]))
         state = [Term(predicate=n[1].strip(), args=[n[0].strip(), n[2].strip()]) for n in negative_batch_str] # convert each negative back to Term format
