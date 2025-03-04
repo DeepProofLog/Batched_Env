@@ -219,54 +219,45 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     # TEST   
     if args.corruption_mode == 'dynamic':
+
+        print('Train set eval...')
         metrics_train = eval_corruptions(data_handler.train_queries,
-                                                eval_env,
-                                                model,
-                                                verbose=0,
-                                                consult_janus=True,
-                                                corruption_mode='dynamic')    
+                                            eval_env,model,verbose=0,
+                                            corruption_mode='dynamic')    
         print_eval_info('Train',metrics_train)
 
+        print('Val set eval...')
         metrics_valid = eval_corruptions(data_handler.valid_queries,
-                                                eval_env,
-                                                model,
-                                                verbose=0,
-                                                corruption_mode='dynamic')
+                                            eval_env,model,verbose=0,
+                                            corruption_mode='dynamic')  
         print_eval_info('Validation',metrics_valid)
 
+        print('Test set eval...')
         metrics_test = eval_corruptions(data_handler.test_queries,
-                                                  eval_env,
-                                                  model,
-                                                  verbose=0,
-                                                  corruption_mode='dynamic')
+                                            eval_env,model,verbose=0,
+                                            corruption_mode='dynamic')  
         print_eval_info('Test',metrics_test)
-
 
     if args.corruption_mode == 'static':
         metrics_train = eval_corruptions(data_handler.train_queries,
-                                                eval_env,
-                                                model,
+                                                eval_env,model,
                                                 corruptions=data_handler.train_corruptions,
-                                                verbose=0,
-                                                consult_janus=True,
+                                                verbose=0,consult_janus=True,
                                                 corruption_mode='static')    
         print_eval_info('Train',metrics_train)
 
         metrics_valid = eval_corruptions(data_handler.valid_queries,
-                                                eval_env,
-                                                model,
-                                                corruptions=data_handler.valid_corruptions,
-                                                verbose=0,
-                                                corruption_mode='static'
-                                                )
+                                            eval_env,model,
+                                            corruptions=data_handler.valid_corruptions,
+                                            verbose=0,corruption_mode='static')
         print_eval_info('Validation',metrics_valid)
 
         metrics_test = eval_corruptions(data_handler.test_queries,
-                                               eval_env,
-                                               model,
-                                               corruptions=data_handler.test_corruptions,
-                                               verbose=0,
-                                               corruption_mode='static')
+                                            eval_env,
+                                            model,
+                                            corruptions=data_handler.test_corruptions,
+                                            verbose=0,corruption_mode='static')
+
         print_eval_info('Test',metrics_test)
 
     return metrics_train, metrics_valid, metrics_test

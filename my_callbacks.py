@@ -406,6 +406,7 @@ class EvalCallback(EventCallback):
         if self.best_epoch: # use best model from best_model
             # add to a list the models that contain self.name and are in the model_path
             model_files = [f for f in os.listdir(self.model_path) if self.name in f and '.zip' in f and 'best_eval' in f]
+
             assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}: {model_files}"
             # load the model
             self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=False)

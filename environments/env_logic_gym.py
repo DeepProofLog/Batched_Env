@@ -2,8 +2,8 @@ from typing import List, Optional, Tuple, Dict, Union
 import random
 from math import prod
 from utils import Term, is_variable, extract_var, print_state_transition, get_rule_from_string
-# from unification.prolog_unification import get_next_unification_prolog
 from unification.python_unification import get_next_unification_python
+# from unification.prolog_unification import get_next_unification_prolog
 from unification.prolog_unification_v2 import get_next_unification_prolog
 
 import torch
@@ -207,6 +207,7 @@ class LogicEnv_gym(gym.Env):
                 end_proof_action: bool = False,
                 padding_atoms: int = 10,
                 padding_states: int = 20,
+                verbose: int = 0,
                 ):
         
         '''Initialize the environment'''
@@ -215,6 +216,7 @@ class LogicEnv_gym(gym.Env):
         # self.engine = 'prolog'
         self.engine = 'python'
 
+        self.verbose = verbose
         self.device = device
 
         self.corruption_mode = corruption_mode
@@ -469,9 +471,9 @@ class LogicEnv_gym(gym.Env):
                'atom_index':atom_index, 
                'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices}
-
-        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
-        # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
+        if self.verbose:
+            print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
+            print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
         return obs, {}
 
     def step(self, action):
@@ -549,9 +551,9 @@ class LogicEnv_gym(gym.Env):
         reward = self.tensordict['reward'].numpy()
         done = self.tensordict['done'].numpy()
         truncated = bool(self.exceeded_max_depth)
-
-        # print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
-        # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
+        if self.verbose:
+            print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
+            print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
         return obs, reward, done, truncated, {}
 
 

@@ -24,7 +24,7 @@ def eval(  data: list[Term],
     obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
     print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     while next_query < len(data):
-        print(f'\rquery {next_query}/{len(data)}', end='', flush=True)
+        print(f'\rCorruption {next_query}/{len(data)}', end='', flush=True)
         # action, _states = model.predict(obs, deterministic=deterministic)
         obs_tensor = obs_as_tensor(obs, model.device)
         action, values, log_prob = model.policy(obs_tensor, deterministic=deterministic)
@@ -82,7 +82,7 @@ def eval_corruptions(
             
         data_query = [query] + corruptions_query
         labels_query = [1] + [0 for _ in range(len(corruptions_query))]
-        print(f'\rprocessing {i+1}/{len(data)}', end='', flush=True)
+        print(f'\Query {i+1}/{len(data)}', end='', flush=True)
         rewards, episode_len, log_probs = eval(data_query, labels_query, env, model, deterministic, verbose, return_dict=False, consult_janus=consult_janus)
 
         rewards_list_pos.append(rewards[0])
