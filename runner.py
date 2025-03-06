@@ -27,11 +27,11 @@ if __name__ == "__main__":
             self.file.flush()
             self.stdout.flush()
 
-    LIMIT_SPACE = [True, False] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
-    RULE_DEPEND_VAR = [False, True] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
-    DYNAMIC_CONSULT = [False,True] # [True, False]
-    FALSE_RULES = [False,True] 
-    END_PROOF_ACTION = [False,True]
+    LIMIT_SPACE = [True] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
+    RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
+    DYNAMIC_CONSULT = [True] # [True, False]
+    FALSE_RULES = [False] 
+    END_PROOF_ACTION = [False]
     # reward_type = 1
 
     # Dataset settings
@@ -43,9 +43,9 @@ if __name__ == "__main__":
     PADDING_ATOMS = [5]
     PADDING_STATES = [20]
     ATOM_EMBEDDING_SIZE = [50]
-    CORRUPTION_MODE =  ['static','dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
-    NON_PROVABLE_QUERIES = [False,True]
-    NON_PROVABLE_CORRUPTIONS = [False,True]
+    CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
+    NON_PROVABLE_QUERIES = [True]
+    NON_PROVABLE_CORRUPTIONS = [True]
     TRAIN_NEG_POS_RATIO = [1] # in validation and test, we use all corruptions
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
@@ -68,7 +68,8 @@ if __name__ == "__main__":
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
     eval_freq = 5000
-    n_eval_episodes = 100
+    valid_negatives = 100
+    test_negatives = -1
     n_epochs = 10
     n_steps = 2048 # number of steps to collect in each rollout
     batch_size = 64
@@ -215,7 +216,8 @@ if __name__ == "__main__":
         args.n_epochs = n_epochs
         args.n_steps = n_steps
         args.eval_freq = eval_freq
-        args.n_eval_episodes = n_eval_episodes
+        args.valid_negatives = valid_negatives
+        args.test_negatives = test_negatives
         args.batch_size = batch_size
         args.lr = lr
         args.max_depth = max_depth

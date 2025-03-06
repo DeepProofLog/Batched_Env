@@ -203,7 +203,7 @@ class LogicEnv_gym(gym.Env):
                 limit_space: bool = True,
                 dynamic_consult: bool = True,
                 eval=False,
-                n_eval_episodes=None,
+                valid_negatives=None,
                 end_proof_action: bool = False,
                 padding_atoms: int = 10,
                 padding_states: int = 20,
@@ -266,7 +266,7 @@ class LogicEnv_gym(gym.Env):
         self.eval_dataset = 'validation' # by default, evaluate on the validation set. It can be changed to 'test' or 'train'
         self.eval_idx = 0 # Index to go through all the eval queries
         self.eval_len = len(self.valid_queries) # Number of eval queries (to reset the index)
-        self.n_eval_episodes = n_eval_episodes
+        self.valid_negatives = valid_negatives
         # generate a random sequence of indices to go through the eval queries (in case we dont want to evaluate on the whole dataset)
         self.eval_seq = list(range(self.eval_len))
         # random.Random(0).shuffle(self.eval_seq) # to get the same sequence every time
@@ -371,9 +371,9 @@ class LogicEnv_gym(gym.Env):
             elif self.eval_dataset == 'train':
                 eval_dataset = self.train_queries
 
-            if self.eval_idx == self.n_eval_episodes: # reset the index
+            if self.eval_idx == self.valid_negatives: # reset the index
                 self.eval_idx = 0
-            # print('eval_idx', self.eval_idx,'/', self.n_eval_episodes, self.eval_seq[self.eval_idx],)
+            # print('eval_idx', self.eval_idx,'/', self.valid_negatives, self.eval_seq[self.eval_idx],)
 
             state, label = eval_dataset[self.eval_seq[self.eval_idx]], 1
             self.eval_idx += 1
@@ -473,7 +473,7 @@ class LogicEnv_gym(gym.Env):
                'derived_sub_indices':derived_sub_indices}
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
-            print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
+            # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
         return obs, {}
 
     def step(self, action):
@@ -553,7 +553,7 @@ class LogicEnv_gym(gym.Env):
         truncated = bool(self.exceeded_max_depth)
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
-            print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
+            # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
         return obs, reward, done, truncated, {}
 
 

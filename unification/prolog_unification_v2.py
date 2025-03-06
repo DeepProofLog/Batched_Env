@@ -39,6 +39,11 @@ def get_actions_prolog(state: str, verbose: int=0) -> List[str]:
             res_dict["B"] = [body]
     print('Res_dict:', res_dict) if verbose else None
 
+    # if res is empty, it means there is no substitution
+    if not res_dict:
+        print(f'There is no substitution') if verbose else None
+        print(f'Actions: ["False"]') if verbose else None
+        return ["False()"]
     # If res["truth"] is false, it means the clause is not true
     if res_dict["truth"] == [False]:
         print(f'There is no substitution') if verbose else None

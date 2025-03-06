@@ -357,6 +357,23 @@ class DataHandlerKGE():
             self.test_queries = get_queries(test_path, non_provable_queries)
             self.train_corruptions = self.valid_corruptions = self.test_corruptions = self.neg_train_queries = None
 
+            # if there're queries with predicates not in the rules, exclude them
+            rules_head_predicates = set([rule.head.predicate for rule in self.rules])
+            exclude_train = len([query for query in self.train_queries if query.predicate not in rules_head_predicates])
+            exclude_valid = len([query for query in self.valid_queries if query.predicate not in rules_head_predicates])    
+            exclude_test = len([query for query in self.test_queries if query.predicate not in rules_head_predicates])
+            if exclude_train>0:
+                print(f"Number of train queries excluded: {exclude_train}. Ratio excluded: {round(exclude_train/len(self.train_queries),3)}")
+            if exclude_valid>0:
+                print(f"Number of valid queries excluded: {exclude_valid}. Ratio excluded: {round(exclude_valid/len(self.valid_queries),3)}")
+            if exclude_test>0:
+                print(f"Number of test queries excluded: {exclude_test}. Ratio excluded: {round(exclude_test/len(self.test_queries),3)}")
+            
+            # filter the train queries whose predicates are not in the rules
+            self.train_queries = [query for query in self.train_queries if query.predicate in rules_head_predicates]
+            self.valid_queries = [query for query in self.valid_queries if query.predicate in rules_head_predicates]
+            self.test_queries = [query for query in self.test_queries if query.predicate in rules_head_predicates]
+
 
         self.janus_facts = []
         with open(janus_path, "r") as f:

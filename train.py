@@ -49,7 +49,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         non_provable_corruptions=args.non_provable_corruptions,
         non_provable_queries=args.non_provable_queries,)
     data_handler= data_handler.info
-    args.n_eval_episodes = len(data_handler.valid_queries) if args.n_eval_episodes == -1 else min(args.n_eval_episodes, len(data_handler.valid_queries))
+    args.valid_negatives = len(data_handler.valid_queries) if args.valid_negatives == -1 else min(args.valid_negatives, len(data_handler.valid_queries))
+    args.test_negatives = len(data_handler.test_queries) if args.test_negatives == -1 else min(args.test_negatives, len(data_handler.test_queries))
+
     index_manager = IndexManager(data_handler.constants,
                                 data_handler.predicates,
                                 data_handler.variables if args.rule_depend_var else set(),
@@ -122,7 +124,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                             padding_atoms=args.padding_atoms,
                             padding_states=args.padding_states,
                             eval=True,
-                            n_eval_episodes=args.n_eval_episodes,)
+                            valid_negatives=args.valid_negatives,)
 
     # INIT MODEL
     if args.model_name == "PPO":
@@ -171,7 +173,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     model_path=model_path if args.save_model else None,
                                     log_path=log_filename if use_logger else None,
                                     eval_freq=args.eval_freq,
-                                    n_eval_episodes=args.n_eval_episodes,
+                                    n_eval_episodes=args.valid_negatives,
                                     deterministic=True,
                                     render=False,
                                     name=model_name,
@@ -218,47 +220,34 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
             run.finish()   
 
     # TEST   
-    if args.corruption_mode == 'dynamic':
 
+    print('Test set eval...')
+    metrics_test = eval_corruptions(data_handler.test_queries,
+                                        eval_env,model,verbose=0,
+                                        corruption_mode=args.corruption_mode,
+                                        corruptions=data_handler.test_corruptions,
+                                        n_corruptions=args.test_negatives)  
+    print_eval_info('Test',metrics_test)
+
+    print('Val set eval...')
+    metrics_valid = eval_corruptions(data_handler.valid_queries,
+                                        eval_env,model,verbose=0,
+                                        corruption_mode=args.corruption_mode,
+                                        corruptions=data_handler.valid_corruptions,
+                                        n_corruptions=args.valid_negatives)  
+    print_eval_info('Validation',metrics_valid)
+
+    if 'countries' in args.dataset_name:
         print('Train set eval...')
         metrics_train = eval_corruptions(data_handler.train_queries,
                                             eval_env,model,verbose=0,
-                                            corruption_mode='dynamic')    
+                                            corruption_mode=args.corruption_mode,
+                                            corruptions=data_handler.train_corruptions,
+                                            n_corruptions=args.train_neg_pos_ratio)    
         print_eval_info('Train',metrics_train)
 
-        print('Val set eval...')
-        metrics_valid = eval_corruptions(data_handler.valid_queries,
-                                            eval_env,model,verbose=0,
-                                            corruption_mode='dynamic')  
-        print_eval_info('Validation',metrics_valid)
 
-        print('Test set eval...')
-        metrics_test = eval_corruptions(data_handler.test_queries,
-                                            eval_env,model,verbose=0,
-                                            corruption_mode='dynamic')  
-        print_eval_info('Test',metrics_test)
 
-    if args.corruption_mode == 'static':
-        metrics_train = eval_corruptions(data_handler.train_queries,
-                                                eval_env,model,
-                                                corruptions=data_handler.train_corruptions,
-                                                verbose=0,consult_janus=True,
-                                                corruption_mode='static')    
-        print_eval_info('Train',metrics_train)
-
-        metrics_valid = eval_corruptions(data_handler.valid_queries,
-                                            eval_env,model,
-                                            corruptions=data_handler.valid_corruptions,
-                                            verbose=0,corruption_mode='static')
-        print_eval_info('Validation',metrics_valid)
-
-        metrics_test = eval_corruptions(data_handler.test_queries,
-                                            eval_env,
-                                            model,
-                                            corruptions=data_handler.test_corruptions,
-                                            verbose=0,corruption_mode='static')
-
-        print_eval_info('Test',metrics_test)
 
     return metrics_train, metrics_valid, metrics_test
 

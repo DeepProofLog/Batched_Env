@@ -31,13 +31,15 @@ def eval(  data: list[Term],
         print(f'action:{action}, values:{values}, log_prob:{log_prob}, prob:{np.exp(log_prob.detach().cpu().numpy().item())}') if verbose >=1 else None
         log_prob = log_prob.detach().cpu().numpy().item()
         cum_log_prob += log_prob
-
         
         obs, rewards, dones, truncated, info = env.step(action[0])
         print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
         trajectory_reward, episode_len, log_prob = trajectory_reward + rewards, episode_len + 1, log_prob + log_prob
 
         if dones:
+            if rewards == 0:
+                cum_log_prob -= 100
+                
             rewards_list.append(trajectory_reward)
             episode_len_list.append(episode_len)
             log_probs.append(cum_log_prob)
@@ -68,7 +70,7 @@ def eval_corruptions(
                         verbose:int=0,
                         consult_janus:bool=False,
                         corruption_mode: str = 'static',
-                        ) -> Tuple[list[float], list[int], list[float]]:
+                        n_corruptions: int = 10) -> Tuple[list[float], list[int], list[float]]:
     '''
     For every positive query, get its corruptions, evaluate the model on the query and all its corruptions (based on the logprobs) and rank the query and its corruptions (MRR)
 
@@ -76,9 +78,9 @@ def eval_corruptions(
     mrr_list, rewards_list_pos, episode_len_list_pos, log_probs_list_pos, rewards_list_neg, episode_len_list_neg, log_probs_list_neg = [], [], [], [], [], [], []
     for i,query in enumerate(data):
         if corruption_mode == 'static':
-            corruptions_query = corruptions[query]
+            corruptions_query = corruptions[query][:n_corruptions]
         elif corruption_mode == 'dynamic':
-            corruptions_query = env.get_negatives(query, all_negatives=True)
+            corruptions_query = env.get_negatives(query, all_negatives=True)[:n_corruptions]
             
         data_query = [query] + corruptions_query
         labels_query = [1] + [0 for _ in range(len(corruptions_query))]
