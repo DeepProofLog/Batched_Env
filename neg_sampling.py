@@ -130,28 +130,6 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
                     triple_negatives.append(neg_triple)
             negative_batches.append(torch.stack(triple_negatives, dim=0))
         return negative_batches
-
-    # def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
-    #     """
-    #     For each positive triple, generate all possible negatives by replacing the target entity
-    #     with every other entity in the entire entity set.
-    #     """
-    #     negative_batches = []
-    #     for triple in positive_batch:
-    #         triple_negatives = []
-    #         for index in self._corruption_indices:
-    #             original_entity = triple[index].item()
-    #             # Create a tensor of all entities and exclude the original entity.
-    #             all_entities = torch.arange(self.num_entities, device=triple.device)
-    #             candidates = all_entities[all_entities != original_entity]
-    #             # Enumerate over all candidates.
-    #             for candidate in candidates.tolist():
-    #                 neg_triple = triple.clone()
-    #                 neg_triple[index] = candidate
-    #                 triple_negatives.append(neg_triple)
-    #         # Stack negatives for this triple (note: number may vary if multiple indices are corrupted)
-    #         negative_batches.append(torch.stack(triple_negatives, dim=0))
-    #     return negative_batches
     
 
 def get_sampler(data_handler: DataHandler, 

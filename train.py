@@ -20,6 +20,8 @@ from stable_baselines3.common.callbacks import (
     CallbackList,
     StopTrainingOnNoModelImprovement,
 )
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.env_util import make_vec_env
 from wandb.integration.sb3 import WandbCallback
 import wandb
 from pykeen.triples import TriplesFactory
@@ -87,20 +89,21 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     embedder = embedder_getter.embedder
 
     # Define the state_embedding_size for the model
-    print(f"Embedder: {args.atom_embedder}")
     args.atom_embedding_size = args.atom_embedding_size if args.atom_embedder != "concat" else (1+data_handler.max_arity)*args.atom_embedding_size
-    print(f"Atom embedding size: {args.atom_embedding_size}")
     args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" else args.atom_embedding_size*args.padding_atoms
-    print(f"State embedding size: {args.state_embedding_size}")
     embedder.embed_dim = args.state_embedding_size
 
+    # Set number of environments (add this to command line args if needed)
+    args.n_envs = getattr(args, 'n_envs', 4)  # Default to 4 environments if not specified
    
-    # INIT ENV
-    env = LogicEnv_gym(max_depth=args.max_depth,
+    # Define environment creation function
+    def make_env(eval_mode=False, seed=0):
+        def _init():
+            env = LogicEnv_gym(max_depth=args.max_depth,
                         device=device, 
                         index_manager=index_manager,
                         data_handler=data_handler,
-                        seed=args.seed_run_i,
+                        seed=seed,
                         corruption_mode=args.corruption_mode,
                         corruption_scheme=args.corruption_scheme,
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
@@ -108,8 +111,16 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         dynamic_consult=args.dynamic_consult,
                         end_proof_action=args.end_proof_action,
                         padding_atoms=args.padding_atoms,
-                        padding_states=args.padding_states,)
-    
+                        padding_states=args.padding_states,
+                        eval=eval_mode,
+                        valid_negatives=args.valid_negatives if eval_mode else None)
+            return env
+        return _init
+
+    # Create vectorized environments for training
+    env = SubprocVecEnv([make_env(eval_mode=False, seed=args.seed_run_i + i) for i in range(args.n_envs)])
+
+    # Keep a single environment for evaluation
     eval_env = LogicEnv_gym(max_depth=args.max_depth,
                             device=device, 
                             index_manager=index_manager,
@@ -132,7 +143,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         model = PPO(CustomActorCriticPolicy, 
                     env,
                     learning_rate=args.lr,
-                    n_steps=args.n_steps,
+                    n_steps=args.n_steps // args.n_envs,  # Adjust steps per environment
                     batch_size=args.batch_size,
                     n_epochs=args.n_epochs,
                     verbose=1, 
@@ -153,7 +164,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                 [m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m])
             if models:
                 print(f"Loading model from {os.path.join(model_path, models[-1])}")
-                model = PPO.load(os.path.join(model_path, models[-1]), env=eval_env, device=device)
+                model = PPO.load(os.path.join(model_path, models[-1]), env=env, device=device)
             else:
                 raise FileNotFoundError(f"No suitable model found in {model_path}")
         except (FileNotFoundError, ValueError) as e:
@@ -202,6 +213,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                 shuffle_buffer = 1024,
                                 batch_size = args.batch_size,
                                 learning_rate = args.lr,
+                                n_envs = args.n_envs,
                                 epochs = args.n_epochs)) 
             
             callbacks.append(WandbCallback(
@@ -229,15 +241,15 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                         n_corruptions=args.test_negatives)  
     print_eval_info('Test',metrics_test)
 
-    print('Val set eval...')
-    metrics_valid = eval_corruptions(data_handler.valid_queries,
-                                        eval_env,model,verbose=0,
-                                        corruption_mode=args.corruption_mode,
-                                        corruptions=data_handler.valid_corruptions,
-                                        n_corruptions=args.valid_negatives)  
-    print_eval_info('Validation',metrics_valid)
+    if 'kinship' not in args.dataset_name:
+        print('Val set eval...')
+        metrics_valid = eval_corruptions(data_handler.valid_queries,
+                                            eval_env,model,verbose=0,
+                                            corruption_mode=args.corruption_mode,
+                                            corruptions=data_handler.valid_corruptions,
+                                            n_corruptions=args.valid_negatives)  
+        print_eval_info('Validation',metrics_valid)
 
-    if 'countries' in args.dataset_name:
         print('Train set eval...')
         metrics_train = eval_corruptions(data_handler.train_queries,
                                             eval_env,model,verbose=0,

@@ -18,176 +18,8 @@ import numpy as np
 from dataset import Rule
 import janus_swi as janus
 from dataset import DataHandler
+from environments.index_manager import IndexManager
 
-class IndexManager():
-
-    def __init__(self, constants: set, 
-                predicates: set,
-                variables:set,
-                constant_no: int,
-                predicate_no: int,
-                variable_no: int,
-                rules: List[Rule],
-                constants_images: set = (),
-                constant_images_no: int = 0,
-                rule_depend_var: bool = True,
-                padding_atoms: int = 10,
-                max_arity: int = 2,
-                device: torch.device = torch.device("cpu")):
-        
-        self.device = device
-        self.constants = constants
-        self.predicates = predicates
-        self.variables = variables # if rule_depend_var is the number of variables in the rules, if not, it is set in the runner
-        self.constant_no = constant_no
-        self.variable_no = variable_no
-        self.predicate_no = predicate_no
-
-        self.constants_images = constants_images
-        self.constant_images_no = constant_images_no
-
-        self.rules = rules
-        self.rule_depend_var = rule_depend_var # If True, the variables are dependent on the rules, if False, the variables are set in the runner
-        self.padding_atoms = padding_atoms  # Maximum number of atoms in a state
-        self.max_arity = max_arity # Maximum arity of the predicates
-
-        # LOCAL INDEXES
-        self.atom_to_index = {} # Map atom to index
-        self.atom_id_to_sub_id = {} # Map atom index to sub-indices of predicates and arguments
-        self.next_atom_index = 1  # Next available index. 0 is reserved for padding
-        if not self.rule_depend_var:
-            self.variable_str2idx = {} # Map variable to index
-            self.next_var_index = constant_no+1 # Next available index. 0 is reserved for padding
-
-        self.create_global_idx()
-        if self.rule_depend_var:
-            self.rule_features_vars()
-
-    def create_global_idx(self):
-        '''Create a global index for a list of terms. Start idx counting from 1
-        If there are images, reserve the first indexes for the images'''
-        if self.constant_images_no>0:
-            constants_wout_images = [const for const in self.constants if const not in self.constants_images]
-            self.constant_str2idx = {term: i + 1 for i, term in enumerate(sorted(self.constants_images))}
-            self.constant_str2idx.update({term: i + 1 + self.constant_images_no for i, term in enumerate(sorted(constants_wout_images))})
-            self.constant_idx2str = {i + 1: term for i, term in enumerate(sorted(self.constants_images))}
-            self.constant_idx2str.update({i + 1 + self.constant_images_no: term for i, term in enumerate(sorted(constants_wout_images))})
-        else:
-            self.constant_str2idx = {term: i + 1 for i, term in enumerate(sorted(self.constants))}
-            self.constant_idx2str = {i + 1: term for i, term in enumerate(sorted(self.constants))}
-
-        self.predicate_str2idx = {term: i + 1 for i, term in enumerate(sorted(self.predicates))}
-        self.predicate_idx2str = {i + 1: term for i, term in enumerate(sorted(self.predicates))}
-
-        if self.rule_depend_var:
-            self.variable_str2idx = {term: i + 1 + self.constant_no for i, term in enumerate(sorted(self.variables))}
-            self.variable_idx2str = {i + 1 + self.constant_no: term for i, term in enumerate(sorted(self.variables))}
-
-
-    def rule_features_vars(self):
-        """Create a dictionary with the features (body predicates) and variables of the rules?????"""
-        self.rule_feats_vars = {}
-        for i in range(len(self.rules)):
-            rule = self.rules[i]
-            if rule.head.predicate not in self.rule_feats_vars:
-                self.rule_feats_vars[rule.head.predicate] = [f'RULE{i}_{arg}' for arg in rule.head.args]
-            feature = ""
-            vars = []
-            for atom in rule.body:
-                feature = feature+atom.predicate
-                vars.append([f'RULE{i}_{arg}' for arg in atom.args])
-            self.rule_feats_vars[feature] = vars
-
-    def reset_atom(self):
-        '''Reset the atom and variable dicts and indices'''
-        self.atom_to_index = {}
-        self.atom_id_to_sub_id = {}
-        self.next_atom_index = 1
-        if not self.rule_depend_var:
-            self.variable_str2idx = {}
-            self.next_var_index = self.constant_no+1
-
-    def substitute_variables(self, state: List[Term]) -> List[Term]:
-        """Substitute variables in a state by the variables in the rule????"""
-        if not ((len(state) == 1 and (state[0].predicate == 'True' or state[0].predicate == 'False')) or (not extract_var(",".join(str(s) for s in state)))):
-            state_feat = "".join(atom.predicate for atom in state)
-            assert state_feat in self.rule_feats_vars, f"State feature not in rule_feats_vars: {state_feat}"
-            for i in range(len(state)):
-                atom = state[i]
-                for j in range(len(atom.args)):
-                    if is_variable(atom.args[j]):
-                        atom.args[j] = self.rule_feats_vars[state_feat][i][j]
-        return state
-
-
-    def get_atom_sub_index(self, state: List[Term]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get the atom and sub index for a state"""
-        # print('variable_str2idx:',self.variable_str2idx)
-        # print('constant_str2idx:',self.constant_str2idx)
-        # print('predicate_str2idx:',self.predicate_str2idx)
-        # print('self.atom_id_to_sub_id:',self.atom_id_to_sub_id)
-        # print('self.atom_to_index:',self.atom_to_index)
-        if self.rule_depend_var:
-            state = self.substitute_variables(state)
-        else:
-            #Get variables
-            full_state = ",".join(str(s) for s in state)
-            vars = extract_var(full_state)
-            for var in vars:
-                if (var != "True") and (var != "False") and (var!= "End") and (var not in self.variable_str2idx):
-                    if self.next_var_index > self.constant_no + self.variable_no:
-                        raise ValueError(f"Exceeded the maximum number of variables: {self.variable_no}")
-                    else:
-                        index = self.next_var_index
-                        self.variable_str2idx[var] = index
-                        self.next_var_index += 1
-            # print('vars:',vars)
-
-        # Get atom_index and sub_index
-        atom_index =torch.zeros(self.padding_atoms, device=self.device, dtype=torch.int64)
-        sub_index = torch.zeros(self.padding_atoms, self.max_arity+1, device=self.device, dtype=torch.int64)
-        assert len(state) <= self.padding_atoms, f"Length of state: {len(state)} is greater than padding_atoms: {self.padding_atoms}"
-        for i, atom in enumerate(state):
-            if atom not in self.atom_to_index:
-                self.atom_to_index[atom] = self.next_atom_index
-                atom_index[i] = self.next_atom_index
-                self.next_atom_index += 1
-            else:
-                atom_index[i] = self.atom_to_index[atom]
-            # print('     atom:',atom,self.atom_to_index[atom],atom_index[i])
-            atom_id = atom_index[i].item()
-            if atom_id not in self.atom_id_to_sub_id:
-                try:
-                    if atom.predicate == 'True':
-                        sub_index[i, 0] = self.predicate_no + 1
-                    elif atom.predicate == 'False':
-                        sub_index[i, 0] = self.predicate_no + 2
-                    elif atom.predicate == 'End':
-                        sub_index[i, 0] = self.predicate_no + 3 # idx reserved for the action 'end of the proof'
-                    else:
-                        sub_index[i, 0] = self.predicate_str2idx[atom.predicate]
-                    # print('sub_index pred:',sub_index[i, 0])
-                    for j, arg in enumerate(atom.args):
-                        if is_variable(arg):
-                            sub_index[i, j+1] = self.variable_str2idx[arg]
-                        else:
-                            sub_index[i, j+1] = self.constant_str2idx[arg]
-                        # print('sub_index:',sub_index[i, j+1])
-                except Exception as e:
-                    print("The following key is not in dict:", e)
-                # print('sub_index:',sub_index[i])
-                self.atom_id_to_sub_id[atom_id] = sub_index[i]
-            else:
-                sub_index[i] = self.atom_id_to_sub_id[atom_id]
-
-        return atom_index, sub_index
-    
-
-
-
-
-
-from typing import List
 class LogicEnv_gym(gym.Env):
     batch_locked = False  # Allow dynamic batch sizes
     
@@ -213,15 +45,15 @@ class LogicEnv_gym(gym.Env):
         '''Initialize the environment'''
         super().__init__()
 
-        # self.engine = 'prolog'
-        self.engine = 'python'
+        self.engine = 'prolog'
+        # self.engine = 'python'
 
         self.verbose = verbose
         self.device = device
 
         self.corruption_mode = corruption_mode
 
-        self.max_arity=data_handler.max_arity # Maximum arity of the predicates
+        self.max_arity = data_handler.max_arity # Maximum arity of the predicates
         self.padding_atoms = padding_atoms  # Maximum number of atoms in a state
         self.padding_states = padding_states # Maximum number of possible next states
         self.max_depth = max_depth # Maximum depth of the proof tree
@@ -257,10 +89,12 @@ class LogicEnv_gym(gym.Env):
         self.memory = set() # Store grounded predicates, avoid loop
         self.limit_space = limit_space # two ways to avoid loop: limit action space, stop when a state has been visited
         self.end_proof_action = end_proof_action # Add the action 'end of the proof' to the action space
+        self.predicate_false_offset = index_manager.predicate_false_offset
 
         self.dynamic_consult = dynamic_consult
         self.current_query = None
         self.current_label = None
+        self.last_query = None  # Track last query for dynamic consulting
 
         self.eval = eval
         self.eval_dataset = 'validation' # by default, evaluate on the validation set. It can be changed to 'test' or 'train'
@@ -347,6 +181,7 @@ class LogicEnv_gym(gym.Env):
         janus.consult(tmp_file)
 
     def dynamic_consult_janus(self, query: Term):
+        '''Dynamically manage facts in Janus by retracting and re-asserting as needed'''
         if self.last_query and not self.last_query == query:
             janus.query_once(f"asserta({str(self.last_query)}).")
 
@@ -358,8 +193,7 @@ class LogicEnv_gym(gym.Env):
 
 
     def reset(self, seed: Optional[int]= None, options=None):
-        # if self.current_seed == 10:  
-        #     print(soidvs)
+        '''Reset the environment and get a new query based on the environment configuration'''
         if self.eval: 
             '''Only use this during training with the callback EvalCallback and the env initialised with eval=True. 
             We just test in this case positive queries. Can be adapted to test negative queries as well by using the counter
@@ -373,7 +207,6 @@ class LogicEnv_gym(gym.Env):
 
             if self.eval_idx == self.valid_negatives: # reset the index
                 self.eval_idx = 0
-            # print('eval_idx', self.eval_idx,'/', self.valid_negatives, self.eval_seq[self.eval_idx],)
 
             state, label = eval_dataset[self.eval_seq[self.eval_idx]], 1
             self.eval_idx += 1
@@ -513,7 +346,6 @@ class LogicEnv_gym(gym.Env):
         done_next = done_next | self.exceeded_max_depth
         # Handle episode completion
         if done_next:
-            # print('REWARD!!!!', reward_next) if reward_next.item() != 0 else None
             # Restore facts in knowledge base if this was a positive query
             if self.current_label == 1 and self.current_query in self.facts:
                 if self.dynamic_consult:
@@ -592,9 +424,7 @@ class LogicEnv_gym(gym.Env):
         possible_sub_indices = []
 
         for s in possible_states_next:
-            # print('\n\nstate:',s)
             atom_idx, sub_idx = self.index_manager.get_atom_sub_index(s)
-            # print('atom_idx:',atom_idx,'\n\n')
             possible_atom_indices.append(atom_idx)
             possible_sub_indices.append(sub_idx)
 
@@ -635,6 +465,7 @@ class LogicEnv_gym(gym.Env):
                            queries: List[Rule], 
                            n: int = 1, 
                            labels: List[int] = None):
+        """Get random queries from a list of queries"""
         self.current_seed += 1
         random_instance = random.Random(self.current_seed)
 
@@ -649,25 +480,6 @@ class LogicEnv_gym(gym.Env):
             return sampled_queries, sampled_labels
 
 
-    def limit_action_space(self, derived_states: List[List[Term]], derived_atom_indices: torch.Tensor, derived_sub_indices: torch.Tensor) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
-        """Limit the action space by removing the states that have been visited""" # RODRIGO: Could you rename var names to make it more readable?
-        mask = [",".join(str(s) for s in state) not in self.memory for state in derived_states]
-        cutted_derived_states = [state for state, m in zip(derived_states, mask) if m]
-        mask = torch.tensor(mask, device=self.device)
-        mask_broadcasted = torch.cat([mask, torch.zeros(derived_atom_indices.size(0)-mask.size(0))])
-        mask_broadcasted = mask_broadcasted.unsqueeze(-1)
-        cutted_derived_atom_indices = derived_atom_indices * mask_broadcasted
-        valid_id = torch.any(cutted_derived_atom_indices!=0, dim=-1)
-        valid = cutted_derived_atom_indices[valid_id]
-        cutted_derived_atom_indices = torch.cat([valid, torch.zeros(derived_atom_indices.size(0)-valid.size(0), derived_atom_indices.size(1), device=self.device, dtype=torch.int64)])
-        mask_broadcasted = mask_broadcasted.unsqueeze(-1)
-        cutted_derived_sub_indices = derived_sub_indices * mask_broadcasted
-        valid_id = torch.any(cutted_derived_sub_indices!=0, dim=(-1, -2))
-        valid = cutted_derived_sub_indices[valid_id]
-        cutted_derived_sub_indices = torch.cat([valid, torch.zeros(derived_sub_indices.size(0)-valid.size(0), derived_sub_indices.size(1), derived_sub_indices.size(2), device=self.device, dtype=torch.int64)])
-        return cutted_derived_states, cutted_derived_atom_indices, cutted_derived_sub_indices
-
-
     def end_in_false(self, atom_indices_shape: torch.Size, sub_indices_shape: torch.Size) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
         " Return a state that ends in False"
         false_state = Term(predicate="False", args=[])
@@ -680,30 +492,121 @@ class LogicEnv_gym(gym.Env):
             self.index_manager.atom_to_index[false_state] = self.index_manager.next_atom_index
             self.index_manager.next_atom_index += 1
 
-        false_sub_id = torch.tensor([self.index_manager.predicate_no + 2, 0, 0], device=self.device, dtype=torch.int64)
+        false_sub_id = torch.tensor([self.index_manager.predicate_no + self.predicate_false_offset, 0, 0], device=self.device, dtype=torch.int64)
         derived_atom_indices_next[0, 0] = self.index_manager.atom_to_index[false_state]
         derived_sub_indices_next[0, 0] = false_sub_id
         return derived_states_next, derived_atom_indices_next, derived_sub_indices_next
 
 
     def get_negatives(self, state, all_negatives=False):
+        """Generate negative examples by corrupting a positive example"""
         query = [(state.args[0], state.predicate, state.args[1])] # convert query to (cte, pred, cte) format
-        # print('query',query)
         positive_batch = self.triples_factory.map_triples(np.array(query))
-        # print('positive_batch',positive_batch)
+        
         if all_negatives:
             negative_batch = self.sampler.corrupt_batch_all(positive_batch)
         else:
             negative_batch = self.sampler.corrupt_batch(positive_batch)
-        # print('negative batch',negative_batch)
+            # if there is a 0, replace it with another constant from the same batch
+            if any([n[0].item()==0 for batch in negative_batch for n in batch]):
+                for batch in negative_batch:
+                    for n in batch:
+                        if n[0].item() == 0:
+                            n[0] = torch.tensor(random.choice(list(n[0].item() for n in batch if n[0].item() != 0)), device=self.device)
+            if any([n[2].item()==0 for batch in negative_batch for n in batch]):
+                for batch in negative_batch:
+                    for n in batch:
+                        if n[2].item() == 0:
+                            n[2] = torch.tensor(random.choice(list(n[2].item() for n in batch if n[2].item() != 0)), device=self.device)
+            
+
         negative_batch_str = []
         for batch in negative_batch:
             for n in batch:
-                # print('n',n)
-                # print('e1,e2 negative',self.index_manager.constant_idx2str[n[0].item()],self.index_manager.constant_idx2str[n[2].item()])
                 assert self.index_manager.constant_idx2str[n[0].item()] != 0, f"Negative batch contains 0s, used for padding,{n}"
                 assert self.index_manager.constant_idx2str[n[2].item()] != 0, f"Negative batch contains 0s, used for padding,{n}"
                 negative_batch_str.append((self.index_manager.constant_idx2str[n[0].item()],self.index_manager.predicate_idx2str[n[1].item()],
                                         self.index_manager.constant_idx2str[n[2].item()]))
         state = [Term(predicate=n[1].strip(), args=[n[0].strip(), n[2].strip()]) for n in negative_batch_str] # convert each negative back to Term format
         return state
+
+
+    def limit_action_space(self, derived_states: List[List[Term]], derived_atom_indices: torch.Tensor, derived_sub_indices: torch.Tensor) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
+        """Limit the action space by removing states that have been visited to prevent loops.
+        
+        Args:
+            derived_states: List of possible next states
+            derived_atom_indices: Tensor of atom indices for next states
+            derived_sub_indices: Tensor of sub-indices for next states
+            
+        Returns:
+            Tuple containing:
+            - filtered_states: List of states after removing visited ones
+            - filtered_atom_indices: Tensor of atom indices after filtering
+            - filtered_sub_indices: Tensor of sub-indices after filtering
+        """
+        # Create a mask identifying states that have not been visited
+        unvisited_mask = [",".join(str(s) for s in state) not in self.memory for state in derived_states]
+        
+        # Filter the derived states list using the mask
+        filtered_states = [state for state, is_unvisited in zip(derived_states, unvisited_mask) if is_unvisited]
+        
+        # Convert the mask to a tensor and pad it to match derived_atom_indices size
+        unvisited_mask_tensor = torch.tensor(unvisited_mask, device=self.device)
+        padded_mask = torch.cat([unvisited_mask_tensor, 
+                               torch.zeros(derived_atom_indices.size(0) - unvisited_mask_tensor.size(0), 
+                                          device=self.device)])
+        
+        # Apply the mask to atom indices
+        broadcast_mask_2d = padded_mask.unsqueeze(-1)
+        filtered_atom_indices = derived_atom_indices * broadcast_mask_2d
+        
+        # Filter out rows that are all zeros and keep track of valid indices
+        valid_atom_rows = torch.any(filtered_atom_indices != 0, dim=-1)
+        valid_atom_indices = filtered_atom_indices[valid_atom_rows]
+        
+        # Pad the filtered atom indices back to original size
+        filtered_atom_indices = torch.cat([
+            valid_atom_indices, 
+            torch.zeros(derived_atom_indices.size(0) - valid_atom_indices.size(0), 
+                       derived_atom_indices.size(1), 
+                       device=self.device, 
+                       dtype=torch.int64)
+        ])
+        
+        # Apply the mask to sub indices
+        broadcast_mask_3d = broadcast_mask_2d.unsqueeze(-1)
+        filtered_sub_indices = derived_sub_indices * broadcast_mask_3d
+        
+        # Filter out rows that are all zeros and keep track of valid indices
+        valid_sub_rows = torch.any(filtered_sub_indices != 0, dim=(-1, -2))
+        valid_sub_indices = filtered_sub_indices[valid_sub_rows]
+        
+        # Pad the filtered sub indices back to original size
+        filtered_sub_indices = torch.cat([
+            valid_sub_indices, 
+            torch.zeros(derived_sub_indices.size(0) - valid_sub_indices.size(0), 
+                       derived_sub_indices.size(1), 
+                       derived_sub_indices.size(2), 
+                       device=self.device, 
+                       dtype=torch.int64)
+        ])
+        
+        return filtered_states, filtered_atom_indices, filtered_sub_indices
+    
+        # """Limit the action space by removing the states that have been visited""" # RODRIGO: Could you rename var names to make it more readable?
+        # mask = [",".join(str(s) for s in state) not in self.memory for state in derived_states]
+        # cutted_derived_states = [state for state, m in zip(derived_states, mask) if m]
+        # mask = torch.tensor(mask, device=self.device)
+        # mask_broadcasted = torch.cat([mask, torch.zeros(derived_atom_indices.size(0)-mask.size(0))])
+        # mask_broadcasted = mask_broadcasted.unsqueeze(-1)
+        # cutted_derived_atom_indices = derived_atom_indices * mask_broadcasted
+        # valid_id = torch.any(cutted_derived_atom_indices!=0, dim=-1)
+        # valid = cutted_derived_atom_indices[valid_id]
+        # cutted_derived_atom_indices = torch.cat([valid, torch.zeros(derived_atom_indices.size(0)-valid.size(0), derived_atom_indices.size(1), device=self.device, dtype=torch.int64)])
+        # mask_broadcasted = mask_broadcasted.unsqueeze(-1)
+        # cutted_derived_sub_indices = derived_sub_indices * mask_broadcasted
+        # valid_id = torch.any(cutted_derived_sub_indices!=0, dim=(-1, -2))
+        # valid = cutted_derived_sub_indices[valid_id]
+        # cutted_derived_sub_indices = torch.cat([valid, torch.zeros(derived_sub_indices.size(0)-valid.size(0), derived_sub_indices.size(1), derived_sub_indices.size(2), device=self.device, dtype=torch.int64)])
+        # return cutted_derived_states, cutted_derived_atom_indices, cutted_derived_sub_indices

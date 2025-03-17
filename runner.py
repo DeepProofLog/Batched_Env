@@ -34,18 +34,18 @@ if __name__ == "__main__":
     END_PROOF_ACTION = [False]
     # reward_type = 1
 
-    # Dataset settings
+    # Dataset settings 
     DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
-    SEED = [[0,1,2]] # [[0,1,2,3,4]]
+    SEED = [[0]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe']
     STATE_EMBEDDER = ['sum'] 
     PADDING_ATOMS = [5]
     PADDING_STATES = [20]
     ATOM_EMBEDDING_SIZE = [50]
-    CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
-    NON_PROVABLE_QUERIES = [True]
-    NON_PROVABLE_CORRUPTIONS = [True]
+    CORRUPTION_MODE =  ['static'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
+    NON_PROVABLE_QUERIES = [False]
+    NON_PROVABLE_CORRUPTIONS = [False]
     TRAIN_NEG_POS_RATIO = [1] # in validation and test, we use all corruptions
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
@@ -64,7 +64,7 @@ if __name__ == "__main__":
     janus_file = "train.pl"
 
     # Training parameters
-    TIMESTEP_TRAIN = [30001]
+    TIMESTEPS_TRAIN = [30001]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
     eval_freq = 5000
@@ -125,35 +125,54 @@ if __name__ == "__main__":
     if args.atom_embedding_size: ATOM_EMBEDDING_SIZE = [int(args.atom_embedding_size)]
     print('Running experiments for the following parameters:','DATASET_NAME:',DATASET_NAME,'MODEL_NAME:',MODEL_NAME,'SEED:',SEED)
     
-    # Do the hparam search
-    all_args = []
-    for dataset_name,model_name,learn_embeddings,atom_embedder,state_embedder,atom_embedding_size,seed,max_depth,timestep_train,restore_best_val_model,\
-        limit_space,rule_depend_var,dynamic_consult,corruption_mode,train_neg_pos_ratio,false_rules,end_proof_action,padding_atoms,padding_states,\
-        non_provable_queries,non_provable_corruptions in product(DATASET_NAME,MODEL_NAME,LEARN_EMBEDDINGS,ATOM_EMBEDDER,STATE_EMBEDDER,ATOM_EMBEDDING_SIZE,
-        SEED,MAX_DEPTH,TIMESTEP_TRAIN,RESTORE_BEST_VAL_MODEL,LIMIT_SPACE,RULE_DEPEND_VAR,DYNAMIC_CONSULT,CORRUPTION_MODE,TRAIN_NEG_POS_RATIO,FALSE_RULES,
-        END_PROOF_ACTION,PADDING_ATOMS,PADDING_STATES,NON_PROVABLE_QUERIES,NON_PROVABLE_CORRUPTIONS):
+    # Create a dictionary of all parameters
+    param_dict = {
+        'dataset_name': DATASET_NAME,
+        'model_name': MODEL_NAME,
+        'learn_embeddings': LEARN_EMBEDDINGS,
+        'atom_embedder': ATOM_EMBEDDER,
+        'state_embedder': STATE_EMBEDDER,
+        'atom_embedding_size': ATOM_EMBEDDING_SIZE,
+        'seed': SEED,
+        'max_depth': MAX_DEPTH,
+        'timesteps_train': TIMESTEPS_TRAIN,
+        'restore_best_val_model': RESTORE_BEST_VAL_MODEL,
+        'limit_space': LIMIT_SPACE,
+        'rule_depend_var': RULE_DEPEND_VAR,
+        'dynamic_consult': DYNAMIC_CONSULT,
+        'corruption_mode': CORRUPTION_MODE,
+        'train_neg_pos_ratio': TRAIN_NEG_POS_RATIO,
+        'false_rules': FALSE_RULES,
+        'end_proof_action': END_PROOF_ACTION,
+        'padding_atoms': PADDING_ATOMS,
+        'padding_states': PADDING_STATES,
+        'non_provable_queries': NON_PROVABLE_QUERIES,
+        'non_provable_corruptions': NON_PROVABLE_CORRUPTIONS
+    }
 
-        constant_emb_file = data_path+dataset_name+"/constant_embeddings.pkl"
-        predicate_emb_file = data_path+dataset_name+"/predicate_embeddings.pkl"
-        constant_embedding_size = predicate_embedding_size = atom_embedding_size
-        if atom_embedder == "complex":
-            constant_embedding_size = 2*atom_embedding_size
-            predicate_embedding_size = 2*atom_embedding_size
-        if atom_embedder == "rotate":
-            constant_embedding_size = 2*atom_embedding_size
+    # Generate all combinations using product
+    param_combinations = list(product(*param_dict.values()))
+    param_names = param_dict.keys()
+    total_experiments = len(param_combinations)
+
+    # Iterate over combinations with named parameters
+    all_args = []
+    for exp_idx, params in enumerate(param_combinations):
+        args = argparse.Namespace(**dict(zip(param_names, params)))
+
+        constant_embedding_size = predicate_embedding_size = args.atom_embedding_size
+        if args.atom_embedder == "complex":
+            constant_embedding_size = 2*args.atom_embedding_size
+            predicate_embedding_size = 2*args.atom_embedding_size
+        if args.atom_embedder == "rotate":
+            constant_embedding_size = 2*args.atom_embedding_size
 
         args.end_proof_action = False
-        args.train_neg_pos_ratio = train_neg_pos_ratio
-        args.limit_space = limit_space
-        args.corruption_mode = corruption_mode
-        args.non_provable_queries = non_provable_queries
-        args.non_provable_corruptions = non_provable_corruptions
         
         args.corruption_scheme = ['head','tail']
-        if 'countries' in dataset_name or 'ablation in dataset_name' in dataset_name:
+        if 'countries' in args.dataset_name or 'ablation in dataset_name' in args.dataset_name:
             args.corruption_scheme = ['tail']
         
-        args.false_rules = false_rules
         if args.false_rules:
             args.janus_file = "train_false_rules.pl"
 
@@ -164,8 +183,7 @@ if __name__ == "__main__":
             print("\n\nSKIPPING EXPERIMENT: non_provable_queries with static corruptions is not yet supported\n\n")
             continue
 
-        args.dataset_name = dataset_name
-        if dataset_name == "mnist_addition":
+        if args.dataset_name == "mnist_addition":
             args.corruption_mode = None
     
         if args.corruption_mode == "static":
@@ -186,33 +204,20 @@ if __name__ == "__main__":
         args.train_file = train_file
         args.valid_file = valid_file
         args.test_file = test_file
-        args.dynamic_consult = dynamic_consult
         
-        args.learn_embeddings = learn_embeddings
-        args.atom_embedder = atom_embedder
-        args.state_embedder = state_embedder
-        args.model_name = model_name
-        args.padding_atoms = padding_atoms
-        args.padding_states = padding_states
-        args.atom_embedding_size = atom_embedding_size #if atom_embedder != "concat" else it is (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
-        # args.state_embedding_size = atom_embedding_size #if state_embedder != "concat" else it is atom_embedding_size*padding_atoms
+
+        args.atom_embedding_size = args.atom_embedding_size #if args.atom_embedder != "concat" else it is (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
+        args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" else args.atom_embedding_size*args.padding_atoms
         args.constant_embedding_size = constant_embedding_size
         args.predicate_embedding_size = predicate_embedding_size
-        args.constant_emb_file = constant_emb_file
-        args.predicate_emb_file = predicate_emb_file
-        args.rule_depend_var = rule_depend_var
         args.variable_no = variable_no
         args.device = device
-        args.seed = seed
         
-        args.restore_best_val_model = restore_best_val_model 
-        # raise a warning if restore_best_val_model is true and load_model=='last_epoch'
-        if restore_best_val_model and load_model=='last_epoch':
+        if args.restore_best_val_model and load_model=='last_epoch':
             print("\n\nWARNING: restore_best_val_model is True and load_model is 'last_epoch', instead of best_eval. You may not get the same eval results\n\n")
         args.load_model = load_model
         args.save_model = save_model
-        args.models_path = models_path+dataset_name
-        args.timesteps_train = timestep_train
+        args.models_path = models_path+args.dataset_name
         args.n_epochs = n_epochs
         args.n_steps = n_steps
         args.eval_freq = eval_freq
@@ -220,10 +225,9 @@ if __name__ == "__main__":
         args.test_negatives = test_negatives
         args.batch_size = batch_size
         args.lr = lr
-        args.max_depth = max_depth
 
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,args.padding_atoms,args.padding_states,
-                    args.corruption_mode, non_provable_queries, args.non_provable_corruptions,args.train_neg_pos_ratio, 
+                    args.corruption_mode, args.non_provable_queries, args.non_provable_corruptions,args.train_neg_pos_ratio, 
                     args.dynamic_consult, args.false_rules, args.end_proof_action, args.limit_space, args.rule_depend_var,
                     args.max_depth,args.restore_best_val_model)
         
@@ -231,9 +235,9 @@ if __name__ == "__main__":
         # # Redirect stdout to the Tee class
         # if use_logger:
         #     sys.stdout = Tee(f"output/output-{args.run_signature}.log")
-
         all_args.append(copy.deepcopy(args)) # append a hard copy of the args to the list of all_args
 
+        
 
     def main_wrapper(args):
 
