@@ -60,10 +60,8 @@ class LogicEnv_gym(gym.Env):
         self.index_manager = index_manager
         self.predicates_arity = data_handler.predicates_arity
 
-        self.seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
-        self._set_seed(self.seed)
+        self._set_seed(seed)
         self._make_spec()
-        self.current_seed = self.seed # seed to select random queries
 
         self.dataset_name = data_handler.dataset_name
         self.facts=data_handler.facts
@@ -108,8 +106,11 @@ class LogicEnv_gym(gym.Env):
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment'''
+        self.seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
         rng = torch.manual_seed(seed)
         self.rng = rng
+        # create a seed generator for the environment
+        self.seed_gen = random.Random(seed)
 
 
     def _make_spec(self):
@@ -344,8 +345,20 @@ class LogicEnv_gym(gym.Env):
         self.current_depth += 1
         self.exceeded_max_depth = (self.current_depth >= self.max_depth)
         done_next = done_next | self.exceeded_max_depth
+        
+        # Track episode info for SB3
+        info = {}
+        
         # Handle episode completion
         if done_next:
+            # Add episode info for Stable Baselines
+            reward_value = float(reward_next.item())
+            episode_length = int(self.current_depth)
+            info["episode"] = {
+                "r": reward_value,
+                "l": episode_length
+            }
+            
             # Restore facts in knowledge base if this was a positive query
             if self.current_label == 1 and self.current_query in self.facts:
                 if self.dynamic_consult:
@@ -386,7 +399,7 @@ class LogicEnv_gym(gym.Env):
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
             # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
-        return obs, reward, done, truncated, {}
+        return obs, reward, done, truncated, info
 
 
     
@@ -466,11 +479,8 @@ class LogicEnv_gym(gym.Env):
                            n: int = 1, 
                            labels: List[int] = None):
         """Get random queries from a list of queries"""
-        self.current_seed += 1
-        random_instance = random.Random(self.current_seed)
-
         assert n <= len(queries), f"Number of queries ({n}) is greater than the number of queries ({len(queries)})"
-        sampled_indices = random_instance.sample(range(len(queries)), n)
+        sampled_indices = self.seed_gen.sample(range(len(queries)), n)
         sampled_queries = [queries[i] for i in sampled_indices]
         sampled_labels = [labels[i] for i in sampled_indices] if labels else [None]
 
@@ -555,7 +565,7 @@ class LogicEnv_gym(gym.Env):
         unvisited_mask_tensor = torch.tensor(unvisited_mask, device=self.device)
         padded_mask = torch.cat([unvisited_mask_tensor, 
                                torch.zeros(derived_atom_indices.size(0) - unvisited_mask_tensor.size(0), 
-                                          device=self.device)])
+                               device=self.device)])
         
         # Apply the mask to atom indices
         broadcast_mask_2d = padded_mask.unsqueeze(-1)

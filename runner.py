@@ -35,17 +35,17 @@ if __name__ == "__main__":
     # reward_type = 1
 
     # Dataset settings 
-    DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
-    SEED = [[0]] # [[0,1,2,3,4]]
+    DATASET_NAME =  ["kinship_family"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
+    SEED = [[1]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe']
     STATE_EMBEDDER = ['sum'] 
     PADDING_ATOMS = [5]
     PADDING_STATES = [20]
     ATOM_EMBEDDING_SIZE = [50]
-    CORRUPTION_MODE =  ['static'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
+    CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
     NON_PROVABLE_QUERIES = [False]
-    NON_PROVABLE_CORRUPTIONS = [False]
+    NON_PROVABLE_CORRUPTIONS = [True]
     TRAIN_NEG_POS_RATIO = [1] # in validation and test, we use all corruptions
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
@@ -67,12 +67,13 @@ if __name__ == "__main__":
     TIMESTEPS_TRAIN = [30001]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
-    eval_freq = 5000
     valid_negatives = 100
     test_negatives = -1
-    n_epochs = 10
+    eval_freq = 5000
     n_steps = 2048 # number of steps to collect in each rollout
-    batch_size = 64
+    n_envs = 100 # number of environments to run in parallel. Total number of rollouts is n_envs*n_steps
+    n_epochs = 10 # number of epochs to train the model with the collected rollout
+    batch_size = (n_envs * n_steps) // 100  # Ensure batch size is a factor of n_envs * n_steps (for the buffer)
     lr = 3e-4
 
     # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 
@@ -218,11 +219,12 @@ if __name__ == "__main__":
         args.load_model = load_model
         args.save_model = save_model
         args.models_path = models_path+args.dataset_name
-        args.n_epochs = n_epochs
-        args.n_steps = n_steps
-        args.eval_freq = eval_freq
         args.valid_negatives = valid_negatives
         args.test_negatives = test_negatives
+        args.eval_freq = eval_freq
+        args.n_envs = n_envs
+        args.n_steps = n_steps
+        args.n_epochs = n_epochs
         args.batch_size = batch_size
         args.lr = lr
 

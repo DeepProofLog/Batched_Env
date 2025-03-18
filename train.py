@@ -93,11 +93,12 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" else args.atom_embedding_size*args.padding_atoms
     embedder.embed_dim = args.state_embedding_size
 
-    # Set number of environments (add this to command line args if needed)
-    args.n_envs = getattr(args, 'n_envs', 4)  # Default to 4 environments if not specified
+
+    args.n_envs = getattr(args, 'n_envs', 100)
+    args.eval_envs = getattr(args, 'eval_envs', 10)  # Default to 10 eval environments
    
     # Define environment creation function
-    def make_env(eval_mode=False, seed=0):
+    def make_env(eval_mode=False, seed=0, valid_negatives=None):
         def _init():
             env = LogicEnv_gym(max_depth=args.max_depth,
                         device=device, 
@@ -113,29 +114,18 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         padding_atoms=args.padding_atoms,
                         padding_states=args.padding_states,
                         eval=eval_mode,
-                        valid_negatives=args.valid_negatives if eval_mode else None)
+                        valid_negatives=valid_negatives if eval_mode else None)
             return env
         return _init
 
     # Create vectorized environments for training
-    env = SubprocVecEnv([make_env(eval_mode=False, seed=args.seed_run_i + i) for i in range(args.n_envs)])
+    env_seeds = np.random.randint(0, 2**10, size=args.n_envs)
+    env = DummyVecEnv([make_env(eval_mode=False, seed=int(env_seeds[i])) for i in range(args.n_envs)])
 
-    # Keep a single environment for evaluation
-    eval_env = LogicEnv_gym(max_depth=args.max_depth,
-                            device=device, 
-                            index_manager=index_manager,
-                            data_handler=data_handler,
-                            seed=args.seed_run_i,
-                            corruption_mode=args.corruption_mode,
-                            corruption_scheme=args.corruption_scheme,
-                            train_neg_pos_ratio=args.train_neg_pos_ratio,
-                            limit_space=args.limit_space,
-                            dynamic_consult=args.dynamic_consult,
-                            end_proof_action=args.end_proof_action,
-                            padding_atoms=args.padding_atoms,
-                            padding_states=args.padding_states,
-                            eval=True,
-                            valid_negatives=args.valid_negatives,)
+    # Create multiple environments for evaluation
+    eval_env_seeds = np.random.randint(0, 2**10, size=args.eval_envs)
+    eval_env = DummyVecEnv([make_env(eval_mode=True, seed=int(eval_env_seeds[i]), 
+                                    valid_negatives=args.valid_negatives) for i in range(args.eval_envs)])
 
     # INIT MODEL
     if args.model_name == "PPO":
@@ -164,7 +154,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                 [m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m])
             if models:
                 print(f"Loading model from {os.path.join(model_path, models[-1])}")
-                model = PPO.load(os.path.join(model_path, models[-1]), env=env, device=device)
+                model = PPO.load(os.path.join(model_path, models[-1]), env=eval_env, device=device)
             else:
                 raise FileNotFoundError(f"No suitable model found in {model_path}")
         except (FileNotFoundError, ValueError) as e:
@@ -183,7 +173,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         eval_callback = EvalCallback(eval_env=eval_env, 
                                     model_path=model_path if args.save_model else None,
                                     log_path=log_filename if use_logger else None,
-                                    eval_freq=args.eval_freq,
+                                    eval_freq=max(int(args.eval_freq/args.n_envs),1),
                                     n_eval_episodes=args.valid_negatives,
                                     deterministic=True,
                                     render=False,
@@ -194,7 +184,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
         callbacks.append(eval_callback)
     
-        checkpoint_callback = SB3ModelCheckpoint(model,monitor='train/loss', frequency=5000, 
+        checkpoint_callback = SB3ModelCheckpoint(model,monitor="rollout/ep_rew_mean", frequency=5000, 
                                                     total_steps=args.timesteps_train, 
                                                     model_path=model_path if args.save_model else None,
                                                     log_path = log_filename if use_logger else None,
@@ -235,28 +225,31 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     print('Test set eval...')
     metrics_test = eval_corruptions(data_handler.test_queries,
-                                        eval_env,model,verbose=0,
+                                        eval_env, model, verbose=0,
                                         corruption_mode=args.corruption_mode,
                                         corruptions=data_handler.test_corruptions,
-                                        n_corruptions=args.test_negatives)  
-    print_eval_info('Test',metrics_test)
+                                        n_corruptions=args.test_negatives,
+                                        n_eval_envs=args.eval_envs)  
+    print_eval_info('Test', metrics_test)
 
     if 'kinship' not in args.dataset_name:
         print('Val set eval...')
         metrics_valid = eval_corruptions(data_handler.valid_queries,
-                                            eval_env,model,verbose=0,
+                                            eval_env, model, verbose=0,
                                             corruption_mode=args.corruption_mode,
                                             corruptions=data_handler.valid_corruptions,
-                                            n_corruptions=args.valid_negatives)  
-        print_eval_info('Validation',metrics_valid)
+                                            n_corruptions=args.valid_negatives,
+                                            n_eval_envs=args.eval_envs)  
+        print_eval_info('Validation', metrics_valid)
 
         print('Train set eval...')
         metrics_train = eval_corruptions(data_handler.train_queries,
-                                            eval_env,model,verbose=0,
+                                            eval_env, model, verbose=0,
                                             corruption_mode=args.corruption_mode,
                                             corruptions=data_handler.train_corruptions,
-                                            n_corruptions=args.train_neg_pos_ratio)    
-        print_eval_info('Train',metrics_train)
+                                            n_corruptions=args.train_neg_pos_ratio,
+                                            n_eval_envs=args.eval_envs)    
+        print_eval_info('Train', metrics_train)
 
 
 

@@ -1,4 +1,3 @@
-
 from typing import Tuple, Optional
 import numpy as np
 import gymnasium as gym
@@ -17,24 +16,43 @@ def eval(  data: list[Term],
                 verbose:int=0,
                 return_dict:bool=True,
                 consult_janus:bool=False) -> Tuple[list[float], list[int], list[float]]:
-
-    rewards_list,episode_len_list, log_probs= [], [], []
+    """
+    Evaluate the model on a set of queries.
+    Works with both single and vectorized environments.
+    """
+    rewards_list, episode_len_list, log_probs = [], [], []
     next_query, trajectory_reward, episode_len, cum_log_prob = 0, 0, 0, 0
 
-    obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
-    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+    # Check if we're working with a vectorized environment
+    is_vec_env = hasattr(env, 'envs') and hasattr(env, 'num_envs')
+    
+    # If this is a vectorized environment but we're calling on a specific sub-env, use that sub-env's reset_from_query
+    if is_vec_env and hasattr(env, 'reset_from_query'):
+        obs, _ = env.reset_from_query(data[next_query], labels[next_query], consult_janus=consult_janus)
+    else:
+        # Standard case - single environment or properly initialized vectorized env
+        obs, _ = env.reset_from_query(data[next_query], labels[next_query], consult_janus=consult_janus)
+    
+    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'], env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+    
     while next_query < len(data):
         print(f'\rCorruption {next_query}/{len(data)}', end='', flush=True)
-        # action, _states = model.predict(obs, deterministic=deterministic)
+        
+        # Get action from model
         obs_tensor = obs_as_tensor(obs, model.device)
         action, values, log_prob = model.policy(obs_tensor, deterministic=deterministic)
         print(f'action:{action}, values:{values}, log_prob:{log_prob}, prob:{np.exp(log_prob.detach().cpu().numpy().item())}') if verbose >=1 else None
         log_prob = log_prob.detach().cpu().numpy().item()
         cum_log_prob += log_prob
         
+        # Take step in environment
         obs, rewards, dones, truncated, info = env.step(action[0])
-        print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
-        trajectory_reward, episode_len, log_prob = trajectory_reward + rewards, episode_len + 1, log_prob + log_prob
+        
+        # Handle tensordict access based on environment type
+        if hasattr(env, 'tensordict'):
+            print_state_transition(env.tensordict['state'], env.tensordict['derived_states'], env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'], truncated=truncated) if verbose >=1 else None
+        
+        trajectory_reward, episode_len = trajectory_reward + rewards, episode_len + 1
 
         if dones:
             if rewards == 0:
@@ -44,18 +62,24 @@ def eval(  data: list[Term],
             episode_len_list.append(episode_len)
             log_probs.append(cum_log_prob)
             print(f'reward {trajectory_reward}, episode len {episode_len}, cum log prob {cum_log_prob}') if verbose >=1 else None
-            print(' done,truncated,rewards',dones,truncated,rewards) if verbose >=1 else None
+            print(' done,truncated,rewards', dones, truncated, rewards) if verbose >=1 else None
             next_query += 1
             if next_query < len(data):
-                obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
-                print('\nquery',next_query, 'with label',labels[next_query]) if verbose >=1 else None
+                obs, _ = env.reset_from_query(data[next_query], labels[next_query], consult_janus=consult_janus)
+                print('\nquery', next_query, 'with label', labels[next_query]) if verbose >=1 else None
                 trajectory_reward, episode_len, cum_log_prob = 0, 0, 0
-                print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+                if hasattr(env, 'tensordict'):
+                    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'], env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     
     if return_dict:
-        return {'rewards_mean':np.mean(rewards_list), 'rewards_std':np.std(rewards_list), 
-                'episode_len_mean':np.mean(episode_len_list), 'episode_len_std':np.std(episode_len_list), 
-                'log_probs_mean':np.mean(log_probs), 'log_probs_std':np.std(log_probs)}
+        return {
+            'rewards_mean': np.mean(rewards_list), 
+            'rewards_std': np.std(rewards_list), 
+            'episode_len_mean': np.mean(episode_len_list), 
+            'episode_len_std': np.std(episode_len_list), 
+            'log_probs_mean': np.mean(log_probs), 
+            'log_probs_std': np.std(log_probs)
+        }
 
     return rewards_list, episode_len_list, log_probs
 
@@ -70,35 +94,65 @@ def eval_corruptions(
                         verbose:int=0,
                         consult_janus:bool=False,
                         corruption_mode: str = 'static',
-                        n_corruptions: int = 10) -> Tuple[list[float], list[int], list[float]]:
+                        n_corruptions: int = 10,
+                        n_eval_envs: int = 1) -> Tuple[list[float], list[int], list[float]]:
     '''
     For every positive query, get its corruptions, evaluate the model on the query and all its corruptions (based on the logprobs) and rank the query and its corruptions (MRR)
-
+    Now supports multiple environments for parallel evaluation.
     '''
     mrr_list, rewards_list_pos, episode_len_list_pos, log_probs_list_pos, rewards_list_neg, episode_len_list_neg, log_probs_list_neg = [], [], [], [], [], [], []
-    for i,query in enumerate(data):
-        if corruption_mode == 'static':
-            corruptions_query = corruptions[query][:n_corruptions]
-        elif corruption_mode == 'dynamic':
-            corruptions_query = env.get_negatives(query, all_negatives=True)[:n_corruptions]
+    
+    # If using a vectorized environment, we need to process queries in batches
+    is_vec_env = hasattr(env, 'num_envs')
+    num_envs = env.num_envs if is_vec_env else 1
+    
+    # Process queries in batches if using vectorized environment
+    for i in range(0, len(data), num_envs):
+        batch_queries = data[i:i+num_envs]
+        print(f'\rQueries {i+1}-{min(i+num_envs, len(data))}/{len(data)}', end='', flush=True)
+        
+        # Process each query in the batch
+        batch_results = []
+        for j, query in enumerate(batch_queries):
+            if corruption_mode == 'static':
+                corruptions_query = corruptions[query][:n_corruptions]
+            elif corruption_mode == 'dynamic':
+                corruptions_query = env.get_negatives(query, all_negatives=True)[:n_corruptions]
+                
+            data_query = [query] + corruptions_query
+            labels_query = [1] + [0 for _ in range(len(corruptions_query))]
             
-        data_query = [query] + corruptions_query
-        labels_query = [1] + [0 for _ in range(len(corruptions_query))]
-        print(f'\Query {i+1}/{len(data)}', end='', flush=True)
-        rewards, episode_len, log_probs = eval(data_query, labels_query, env, model, deterministic, verbose, return_dict=False, consult_janus=consult_janus)
+            # If using single env, evaluate directly
+            if not is_vec_env:
+                rewards, episode_len, log_probs = eval(data_query, labels_query, env, model, 
+                                                     deterministic, verbose, return_dict=False, 
+                                                     consult_janus=consult_janus)
+                batch_results.append((rewards, episode_len, log_probs))
+            else:
+                # If using multiple envs, use env_idx to set which environment to use
+                env_idx = j % num_envs
+                # For vectorized environments, we need to select the appropriate environment
+                # We extract the specific environment from the VecEnv
+                sub_env = env.envs[env_idx]
+                rewards, episode_len, log_probs = eval(data_query, labels_query, sub_env, model, 
+                                                     deterministic, verbose, return_dict=False, 
+                                                     consult_janus=consult_janus)
+                batch_results.append((rewards, episode_len, log_probs))
+        
+        # Process results from the batch
+        for rewards, episode_len, log_probs in batch_results:
+            rewards_list_pos.append(rewards[0])
+            episode_len_list_pos.append(episode_len[0])
+            log_probs_list_pos.append(log_probs[0])
 
-        rewards_list_pos.append(rewards[0])
-        episode_len_list_pos.append(episode_len[0])
-        log_probs_list_pos.append(log_probs[0])
+            if len(rewards) > 1:  # If we have corruptions
+                rank = np.argsort(log_probs)[::-1].tolist().index(0)
+                mrr = 1/(rank+1)
+                mrr_list.append(mrr)
 
-        if len(corruptions_query) > 0:
-            rank = np.argsort(log_probs)[::-1].tolist().index(0)
-            mrr = 1/(rank+1)
-            mrr_list.append(mrr)
-
-            rewards_list_neg.extend(rewards[1:])
-            episode_len_list_neg.extend(episode_len[1:])
-            log_probs_list_neg.extend(log_probs[1:])
+                rewards_list_neg.extend(rewards[1:])
+                episode_len_list_neg.extend(episode_len[1:])
+                log_probs_list_neg.extend(log_probs[1:])
 
     scores = log_probs_list_pos + log_probs_list_neg
     labels = [1] * len(log_probs_list_pos) + [0] * len(log_probs_list_neg)
