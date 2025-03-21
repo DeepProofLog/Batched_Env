@@ -53,6 +53,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     data_handler= data_handler.info
     args.valid_negatives = len(data_handler.valid_queries) if args.valid_negatives == -1 else min(args.valid_negatives, len(data_handler.valid_queries))
     args.test_negatives = len(data_handler.test_queries) if args.test_negatives == -1 else min(args.test_negatives, len(data_handler.test_queries))
+    args.n_eval_episodes = len(data_handler.valid_queries) if args.n_eval_episodes == -1 else min(args.n_eval_episodes, len(data_handler.valid_queries))
 
     index_manager = IndexManager(data_handler.constants,
                                 data_handler.predicates,
@@ -95,10 +96,10 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
 
     args.n_envs = getattr(args, 'n_envs', 100)
-    args.eval_envs = getattr(args, 'eval_envs', 10)  # Default to 10 eval environments
+    args.n_eval_envs = getattr(args, 'n_eval_envs', 10)  # Default to 10 eval environments
    
     # Define environment creation function
-    def make_env(eval_mode=False, seed=0, valid_negatives=None):
+    def make_env(eval_mode=False, seed=0, n_eval_episodes=None):
         def _init():
             env = LogicEnv_gym(max_depth=args.max_depth,
                         device=device, 
@@ -114,18 +115,23 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         padding_atoms=args.padding_atoms,
                         padding_states=args.padding_states,
                         eval=eval_mode,
-                        valid_negatives=valid_negatives if eval_mode else None)
+                        n_eval_episodes=n_eval_episodes if eval_mode else None)
             return env
         return _init
 
     # Create vectorized environments for training
     env_seeds = np.random.randint(0, 2**10, size=args.n_envs)
     env = DummyVecEnv([make_env(eval_mode=False, seed=int(env_seeds[i])) for i in range(args.n_envs)])
+    # env = SubprocVecEnv([make_env(eval_mode=False, seed=int(env_seeds[i])) for i in range(args.n_envs)])
+    # env = make_vec_env(make_env, n_envs=args.n_envs, env_kwargs={'eval_mode':False, 'seed':args.seed_run_i})  
+    # env = make_env(eval_mode=False, seed=args.seed_run_i)
 
     # Create multiple environments for evaluation
-    eval_env_seeds = np.random.randint(0, 2**10, size=args.eval_envs)
+    eval_env_seeds = np.random.randint(0, 2**10, size=args.n_eval_envs)
     eval_env = DummyVecEnv([make_env(eval_mode=True, seed=int(eval_env_seeds[i]), 
-                                    valid_negatives=args.valid_negatives) for i in range(args.eval_envs)])
+                                    n_eval_episodes=args.n_eval_episodes) for i in range(args.n_eval_envs)])
+    # eval_env = SubprocVecEnv([make_env(eval_mode=True, seed=int(eval_env_seeds[i]), 
+    #                                 n_eval_episodes=args.n_eval_episodes) for i in range(args.n_eval_envs)])
 
     # INIT MODEL
     if args.model_name == "PPO":
@@ -138,6 +144,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                     n_epochs=args.n_epochs,
                     verbose=1, 
                     device=device,
+                    ent_coef=0.1,
                     policy_kwargs={'features_extractor_class':CustomCombinedExtractor,
                                     'features_extractor_kwargs':{'features_dim':embedder.embed_dim,
                                                                     'embedder': embedder}})
@@ -173,8 +180,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         eval_callback = EvalCallback(eval_env=eval_env, 
                                     model_path=model_path if args.save_model else None,
                                     log_path=log_filename if use_logger else None,
-                                    eval_freq=max(int(args.eval_freq/args.n_envs),1),
-                                    n_eval_episodes=args.valid_negatives,
+                                    eval_freq=max(int(args.eval_freq//args.n_envs),1),
+                                    n_eval_episodes=args.n_eval_episodes,
                                     deterministic=True,
                                     render=False,
                                     name=model_name,
@@ -223,13 +230,13 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     # TEST   
 
-    print('Test set eval...')
+    print('\nTest set eval...')
     metrics_test = eval_corruptions(data_handler.test_queries,
                                         eval_env, model, verbose=0,
                                         corruption_mode=args.corruption_mode,
                                         corruptions=data_handler.test_corruptions,
                                         n_corruptions=args.test_negatives,
-                                        n_eval_envs=args.eval_envs)  
+                                        n_eval_envs=args.n_eval_envs)  
     print_eval_info('Test', metrics_test)
 
     if 'kinship' not in args.dataset_name:
@@ -239,7 +246,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                             corruption_mode=args.corruption_mode,
                                             corruptions=data_handler.valid_corruptions,
                                             n_corruptions=args.valid_negatives,
-                                            n_eval_envs=args.eval_envs)  
+                                            n_eval_envs=args.n_eval_envs)  
         print_eval_info('Validation', metrics_valid)
 
         print('Train set eval...')
@@ -248,9 +255,11 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                             corruption_mode=args.corruption_mode,
                                             corruptions=data_handler.train_corruptions,
                                             n_corruptions=args.train_neg_pos_ratio,
-                                            n_eval_envs=args.eval_envs)    
+                                            n_eval_envs=args.n_eval_envs)    
         print_eval_info('Train', metrics_train)
-
+    else:
+        metrics_train = {k: 0 for k in metrics_test.keys()}
+        metrics_valid = {k: 0 for k in metrics_test.keys()}
 
 
 

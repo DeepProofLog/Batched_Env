@@ -5,24 +5,7 @@ from typing import List, Tuple
 from utils import extract_var, Term
 import janus_swi as janus
 
-
-def get_actions_prolog(state: str, verbose: int=0) -> List[str]:
-
-    print('State str:', state) if verbose else None
-    state = deque(re.findall(r'\w+\(.*?\)', state))
-    print('State deque:', state) if verbose else None
-    # get the first element of the state
-    s = state.popleft()
-    print('State popleft:', s) if verbose else None
-    actions = []
-    # for digit query only
-    # if s.startswith('digit(') and s:
-
-    # We get 'truth' and 'B' from the query, which is whether the query is true or not, 
-    # and the value of the query
-    print('Query:', f"clause({s}, _B), term_string(_B, B)") if verbose else None
-    res = janus.query(f"clause({s}, _B), term_string(_B, B).")
-
+def get_res_dict(res: List[dict]) -> dict:
     res_dict = {}
     for d in res:
         if "truth" in res_dict:
@@ -37,44 +20,84 @@ def get_actions_prolog(state: str, verbose: int=0) -> List[str]:
             res_dict["B"].append(body)
         else:
             res_dict["B"] = [body]
-    print('Res_dict:', res_dict) if verbose else None
+    return res_dict
 
-    # if res is empty, it means there is no substitution
-    if not res_dict:
-        print(f'There is no substitution') if verbose else None
-        print(f'Actions: ["False"]') if verbose else None
-        return ["False()"]
-    # If res["truth"] is false, it means the clause is not true
-    if res_dict["truth"] == [False]:
-        print(f'There is no substitution') if verbose else None
-        print(f'Actions: ["False"]') if verbose else None
-        return ["False()"]
-    # the clause is a fact
-    elif any(t and (b is None or b == "true") for t, b in zip(res_dict["truth"], res_dict["B"])) and not state:
-        print(f'it is a fact') if verbose else None
-        print(f'Actions: ["True"]') if verbose else None
-        return ["True()"]
-    # substitution step
-    elif all(b == "true" for b in res_dict["B"]) and state:
+def get_actions_prolog(state: str, verbose: int=0) -> List[str]:
+
+    state = deque(re.findall(r'\w+\(.*?\)', state))
+    # get the first element of the state
+    s = state.popleft()
+    print('     State deque:', state) if verbose else None
+    print('     State popleft:', s) if verbose else None
+    actions = []
+    
+
+    if not state:
+        # We get 'truth' and 'B' from the query, which is whether the query is true or not, 
+        # and the value of the query
+        print('     Query:', f"clause({s}, _B), term_string(_B, B)") if verbose else None
+        res = janus.query(f"clause({s}, _B), term_string(_B, B).")
+        res_dict = get_res_dict(res)
+        print('     Res_dict:', res_dict) if verbose else None
+        # if res is empty, it means there is no substitution
+        if not res_dict:
+            print(f'     There is no substitution') if verbose else None
+            print(f'     Actions: ["False"]') if verbose else None
+            return ["False()"]
+
+        # If it's false, there'll be only one next state. res["truth"] is false, it means the clause is not true
+        if res_dict["truth"] == [False]:
+            print(f'     There is no substitution') if verbose else None
+            print(f'     Actions: ["False"]') if verbose else None
+            return ["False()"]
+        
+
+        # if any next state is a fact or True, return True
+        if any(t==True and (b is None or b == "true") for t, b in zip(res_dict["truth"], res_dict["B"])) and not state:
+            print(f'     it is a fact') if verbose else None
+            print(f'     Actions: ["True"]') if verbose else None
+            return ["True()"]
+        
+        # otherwise, return the possible actions
+        elif all(b == True for b in res_dict["truth"]):
+            actions = res_dict["B"]
+            print(f'     possible actions are {"; ".join(actions)}') if verbose else None
+        else:
+            raise ValueError(f'     Error: This case should not happen')
+
+    else:
+        # prove the first atom and do a unification with the remaining atoms of the state
         state_list = "[" + s + ", " + ", ".join(state) + "]"
+        print('     State list:', state_list) if verbose else None
         res = janus.query(f"proof_first({str(state_list)}, _T), term_string(_T, T)")
         for d in res:
+            if d["T"] == "true": # if any next state is true, return True
+                actions = ["True()"]
+                break
+            elif d["T"] == "false": # if any next state is false, continue, and if later it's empty, return False
+                continue
             actions.append(d["T"][1:-1])
-        print(f' possible actions are {"; ".join(actions)}') if verbose else None
-    # rule-matching step
-    else:
-        if len(res_dict["B"]) == 1 and not re.findall(r'\w+\(.*?\)', res_dict["B"][0]):
-            res = janus.query_once(f"{res_dict["B"][0]}.")["truth"]
-            # TODO: might not work for reordering
-            if res:
-                print(f'Action: True') if verbose else None
-                return ["True()"]
-            else:
-                print(f'Action: False') if verbose else None
-                return ["False()"]
-        else:
-            actions = res_dict["B"]
-            print(f' possible actions are {"; ".join(actions)}') if verbose else None
+        if not actions:
+            actions = ["False()"]
+        print(f'     possible actions_ are {"; ".join(actions)}') if verbose else None
+    
+    
+    # # rule-matching step
+    # else:
+    #     # print(' all(b == "true" for b in res_dict["B"])',res_dict["B"],[b == "true" for b in res_dict["B"]],all(b == "true" for b in res_dict["B"]),'state',state)
+    #     if len(res_dict["B"]) == 1 and not re.findall(r'\w+\(.*?\)', res_dict["B"][0]):
+    #         res = janus.query_once(f"{res_dict["B"][0]}.")["truth"]
+    #         # TODO: might not work for reordering
+    #         if res:
+    #             print(f'     Action: True') if verbose else None
+    #             return ["True()"]
+    #         else:
+    #             print(f'     Action: False') if verbose else None
+    #             return ["False()"]
+    #     else:
+    #         actions = res_dict["B"]
+    #         print(f'     possible actions are {"; ".join(actions)}') if verbose else None
+
     return actions
 
 # def get_actions_prolog(state: str, verbose: int=0) -> List[str]:
@@ -157,15 +180,16 @@ def get_next_unification_prolog(state: List[Term], verbose=0) -> List[List[Term]
         # Remove the True atoms from the next states and convert them to a list of strings
         state = [str(atom) for atom in state if atom.predicate != 'True']
         state = ", ".join([str(atom) for atom in state])
-        next_states_str = get_actions_prolog(state, verbose=0)
+        next_states_str = get_actions_prolog(state, verbose=1)
         # Convert the list of strings to a list of Term object
         next_states = []
         for next_state_str in next_states_str:
             atoms = from_str_to_term(next_state_str)
             if atoms[0].predicate == 'True':
-                return [[Term('True', [])]]
+                next_states = [[Term('True', [])]]
+                break
             next_states.append(atoms)
-    print('         Next states:', [[str(atom) for atom in state] for state in next_states]) if verbose else None
+    print('     Next states:', [[str(atom) for atom in state] for state in next_states],'\n') if verbose else None
     return next_states
 
 def get_next_state_prolog_mnist(state: List[Term], verbose=0) -> List[List[Term]]:

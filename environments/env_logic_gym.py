@@ -35,20 +35,22 @@ class LogicEnv_gym(gym.Env):
                 limit_space: bool = True,
                 dynamic_consult: bool = True,
                 eval=False,
-                valid_negatives=None,
+                n_eval_episodes=None,
                 end_proof_action: bool = False,
                 padding_atoms: int = 10,
                 padding_states: int = 20,
                 verbose: int = 0,
+                prover_verbose: int = 0,
                 ):
         
         '''Initialize the environment'''
         super().__init__()
 
-        self.engine = 'prolog'
-        # self.engine = 'python'
+        # self.engine = 'prolog'
+        self.engine = 'python'
 
         self.verbose = verbose
+        self.prover_verbose = prover_verbose
         self.device = device
 
         self.corruption_mode = corruption_mode
@@ -98,7 +100,7 @@ class LogicEnv_gym(gym.Env):
         self.eval_dataset = 'validation' # by default, evaluate on the validation set. It can be changed to 'test' or 'train'
         self.eval_idx = 0 # Index to go through all the eval queries
         self.eval_len = len(self.valid_queries) # Number of eval queries (to reset the index)
-        self.valid_negatives = valid_negatives
+        self.n_eval_episodes = n_eval_episodes
         # generate a random sequence of indices to go through the eval queries (in case we dont want to evaluate on the whole dataset)
         self.eval_seq = list(range(self.eval_len))
         # random.Random(0).shuffle(self.eval_seq) # to get the same sequence every time
@@ -120,12 +122,14 @@ class LogicEnv_gym(gym.Env):
                 low=float('-inf'),
                 high=float('inf'),
                 shape=torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
+                # shape = torch.Size([1])+ torch.Size([self.padding_atoms])+ torch.Size([self.max_arity+1]),
                 dtype=np.int64,
             ),
             'atom_index': gym.spaces.Box(
                 low=float('-inf'),
                 high=float('inf'),
                 shape=torch.Size([self.padding_atoms]),
+                # shape = torch.Size([1])+ torch.Size([self.padding_atoms]),
                 dtype=np.int64,
             ),
             'derived_atom_indices': gym.spaces.Box(
@@ -139,11 +143,12 @@ class LogicEnv_gym(gym.Env):
                 high=float('inf'),
                 shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
                 dtype=np.int64,
-            ),
-            
+            ),            
         }
         self.observation_space = gym.spaces.Dict(obs_spaces)
-        self.action_space = gym.spaces.Discrete(100)
+        # self.action_space = gym.spaces.Discrete(100)
+        self.action_space = gym.spaces.Discrete(self.padding_atoms)
+
 
     def update_action_space(self, derived_states: List[List[Term]]):
         '''Update the action space based on the possible next states 
@@ -206,7 +211,7 @@ class LogicEnv_gym(gym.Env):
             elif self.eval_dataset == 'train':
                 eval_dataset = self.train_queries
 
-            if self.eval_idx == self.valid_negatives: # reset the index
+            if self.eval_idx == self.n_eval_episodes: # reset the index
                 self.eval_idx = 0
 
             state, label = eval_dataset[self.eval_seq[self.eval_idx]], 1
@@ -343,8 +348,9 @@ class LogicEnv_gym(gym.Env):
         self.update_action_space(derived_states_next)
 
         self.current_depth += 1
-        self.exceeded_max_depth = (self.current_depth >= self.max_depth)
-        done_next = done_next | self.exceeded_max_depth
+        
+        exceeded_max_depth = (self.current_depth >= self.max_depth)
+        done_next = done_next | exceeded_max_depth
         
         # Track episode info for SB3
         info = {}
@@ -382,7 +388,7 @@ class LogicEnv_gym(gym.Env):
             )
 
         self.tensordict = tensordict
-        self.tensordict["action"] = torch.tensor(action, device=self.device)
+        # self.tensordict["action"] = torch.tensor(action, device=self.device)
 
         sub_index = self.tensordict['sub_index'].numpy()
         atom_index = self.tensordict['atom_index'].numpy()
@@ -395,9 +401,9 @@ class LogicEnv_gym(gym.Env):
 
         reward = self.tensordict['reward'].numpy()
         done = self.tensordict['done'].numpy()
-        truncated = bool(self.exceeded_max_depth)
+        truncated = bool(exceeded_max_depth)
         if self.verbose:
-            print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=self.tensordict['action'],truncated=truncated)
+            print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=action,truncated=truncated)
             # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
         return obs, reward, done, truncated, info
 
@@ -415,13 +421,13 @@ class LogicEnv_gym(gym.Env):
                     state = [Term(predicate='False', args=[])]
 
         if self.engine == 'prolog':
-            possible_states_next = get_next_unification_prolog(state, verbose=0)
+            possible_states_next = get_next_unification_prolog(state, verbose=self.prover_verbose)
         elif self.engine == 'python':
             possible_states_next = get_next_unification_python(state,
                                                         # pass the self.facts - the self.current_query
                                                         facts=[fact for fact in self.facts if fact != self.current_query] if self.current_label == 1 else self.facts,
                                                         rules=self.index_manager.rules,
-                                                        verbose=0
+                                                        verbose=self.prover_verbose
                                                         )
 
         if self.end_proof_action:

@@ -23,22 +23,11 @@ def eval(  data: list[Term],
     rewards_list, episode_len_list, log_probs = [], [], []
     next_query, trajectory_reward, episode_len, cum_log_prob = 0, 0, 0, 0
 
-    # Check if we're working with a vectorized environment
-    is_vec_env = hasattr(env, 'envs') and hasattr(env, 'num_envs')
-    
-    # If this is a vectorized environment but we're calling on a specific sub-env, use that sub-env's reset_from_query
-    if is_vec_env and hasattr(env, 'reset_from_query'):
-        obs, _ = env.reset_from_query(data[next_query], labels[next_query], consult_janus=consult_janus)
-    else:
-        # Standard case - single environment or properly initialized vectorized env
-        obs, _ = env.reset_from_query(data[next_query], labels[next_query], consult_janus=consult_janus)
-    
-    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'], env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
-    
+    obs, _ = env.reset_from_query(data[next_query],labels[next_query],consult_janus=consult_janus)
+    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     while next_query < len(data):
-        print(f'\rCorruption {next_query}/{len(data)}', end='', flush=True)
-        
-        # Get action from model
+        if next_query % 10 == 0: print(f'\rCorruption {next_query}/{len(data)}', end='', flush=True)
+        # action, _states = model.predict(obs, deterministic=deterministic)
         obs_tensor = obs_as_tensor(obs, model.device)
         action, values, log_prob = model.policy(obs_tensor, deterministic=deterministic)
         print(f'action:{action}, values:{values}, log_prob:{log_prob}, prob:{np.exp(log_prob.detach().cpu().numpy().item())}') if verbose >=1 else None
@@ -47,11 +36,7 @@ def eval(  data: list[Term],
         
         # Take step in environment
         obs, rewards, dones, truncated, info = env.step(action[0])
-        
-        # Handle tensordict access based on environment type
-        if hasattr(env, 'tensordict'):
-            print_state_transition(env.tensordict['state'], env.tensordict['derived_states'], env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'], truncated=truncated) if verbose >=1 else None
-        
+        print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done'], action=env.tensordict['action'],truncated=truncated) if verbose >=1 else None
         trajectory_reward, episode_len = trajectory_reward + rewards, episode_len + 1
 
         if dones:
@@ -68,8 +53,7 @@ def eval(  data: list[Term],
                 obs, _ = env.reset_from_query(data[next_query], labels[next_query], consult_janus=consult_janus)
                 print('\nquery', next_query, 'with label', labels[next_query]) if verbose >=1 else None
                 trajectory_reward, episode_len, cum_log_prob = 0, 0, 0
-                if hasattr(env, 'tensordict'):
-                    print_state_transition(env.tensordict['state'], env.tensordict['derived_states'], env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
+                print_state_transition(env.tensordict['state'], env.tensordict['derived_states'],env.tensordict['reward'], env.tensordict['done']) if verbose >=1 else None
     
     if return_dict:
         return {
@@ -109,21 +93,22 @@ def eval_corruptions(
     # Process queries in batches if using vectorized environment
     for i in range(0, len(data), num_envs):
         batch_queries = data[i:i+num_envs]
-        print(f'\rQueries {i+1}-{min(i+num_envs, len(data))}/{len(data)}', end='', flush=True)
+        print(f'\nBatch {i+1}-{min(i+num_envs, len(data))}/{len(data)}')
+        # print(f'\rQueries {i+1}-{min(i+num_envs, len(data))}/{len(data)}', end='', flush=True)
         
         # Process each query in the batch
         batch_results = []
         for j, query in enumerate(batch_queries):
-            if corruption_mode == 'static':
-                corruptions_query = corruptions[query][:n_corruptions]
-            elif corruption_mode == 'dynamic':
-                corruptions_query = env.get_negatives(query, all_negatives=True)[:n_corruptions]
-                
-            data_query = [query] + corruptions_query
-            labels_query = [1] + [0 for _ in range(len(corruptions_query))]
-            
             # If using single env, evaluate directly
             if not is_vec_env:
+                if corruption_mode == 'static':
+                    corruptions_query = corruptions[query][:n_corruptions]
+                elif corruption_mode == 'dynamic':
+                    corruptions_query = env.get_negatives(query, all_negatives=True)[:n_corruptions]
+                    
+                data_query = [query] + corruptions_query
+                labels_query = [1] + [0 for _ in range(len(corruptions_query))]
+                
                 rewards, episode_len, log_probs = eval(data_query, labels_query, env, model, 
                                                      deterministic, verbose, return_dict=False, 
                                                      consult_janus=consult_janus)
@@ -134,6 +119,15 @@ def eval_corruptions(
                 # For vectorized environments, we need to select the appropriate environment
                 # We extract the specific environment from the VecEnv
                 sub_env = env.envs[env_idx]
+                
+                if corruption_mode == 'static':
+                    corruptions_query = corruptions[query][:n_corruptions]
+                elif corruption_mode == 'dynamic':
+                    corruptions_query = sub_env.get_negatives(query, all_negatives=True)[:n_corruptions]
+                    
+                data_query = [query] + corruptions_query
+                labels_query = [1] + [0 for _ in range(len(corruptions_query))]
+
                 rewards, episode_len, log_probs = eval(data_query, labels_query, sub_env, model, 
                                                      deterministic, verbose, return_dict=False, 
                                                      consult_janus=consult_janus)

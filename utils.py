@@ -10,7 +10,7 @@ import ast
 from collections import defaultdict
 
 def print_eval_info(set: str,metrics: Dict[str, float]):
-    print(f'\n{set} set metrics:')
+    print(f'\n\n{set} set metrics:')
     print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()], sep='\n')
 
 class Term:

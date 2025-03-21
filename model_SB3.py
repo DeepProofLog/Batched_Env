@@ -56,6 +56,11 @@ class PPO_custom(PPO):
                 actions, values, log_probs = self.policy(obs_tensor)
             actions = actions.cpu().numpy()
 
+            # Make sure actions are the right shape for the environment
+            if isinstance(self.action_space, spaces.Discrete):
+                # For Discrete, reshape to (n_envs,)
+                actions = actions.reshape(-1)
+
             clipped_actions = actions
             if isinstance(self.action_space, spaces.Box):
                 if self.policy.squash_output:
@@ -71,8 +76,13 @@ class PPO_custom(PPO):
                 return False
 
             n_steps += 1
+            
+            # Reshape actions before storing them in the buffer
             if isinstance(self.action_space, spaces.Discrete):
-                actions = actions.reshape(-1, 1)
+                # For buffer storage, reshape to (n_envs, 1)
+                actions_for_buffer = actions.reshape(-1, 1)
+            else:
+                actions_for_buffer = actions
 
             for idx, done in enumerate(dones):
                 if done and infos[idx].get("TimeLimit.truncated", False):
@@ -81,7 +91,7 @@ class PPO_custom(PPO):
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
 
-            rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
+            rollout_buffer.add(self._last_obs, actions_for_buffer, rewards, self._last_episode_starts, values, log_probs)
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
@@ -163,15 +173,28 @@ class PolicyNetwork(nn.Module):
         #     nn.Linear(hidden_dim, embed_dim)
         # )
 
-    def forward(self, obs_embeddings, action_embeddings, action_atom_indices) -> TensorDict:
+    def forward(self, obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) -> TensorDict:
         # Transform and calculate logits
         obs_features = self.observation_transform(obs_embeddings)
         logits = torch.matmul(obs_features, action_embeddings.transpose(-2, -1)).squeeze(-2)
-        # Mask logits and compute probabilities
-        logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
-        # probs = F.softmax(logits, dim=-1)
-        probs = logits
-        return probs
+        
+        # Apply action mask - make invalid actions have -inf logits
+        if valid_actions_mask is not None:
+            # Ensure valid_actions_mask is bool
+            if valid_actions_mask.dtype != torch.bool:
+                valid_actions_mask = valid_actions_mask.bool()
+            
+            # Apply mask (set invalid actions to -inf)
+            invalid_mask = ~valid_actions_mask
+            logits = torch.masked_fill(logits, invalid_mask, float('-inf'))
+        else:
+            # Fallback to original method when mask is not available
+            logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
+            
+        # For testing only - can be removed in production
+        # probs = torch.where(logits != float('-inf'), torch.rand_like(logits), logits)
+        
+        return logits
 
 
 class ValueNetwork(nn.Module):
@@ -237,8 +260,8 @@ class CustomNetwork(nn.Module):
         - latent value representation
         """
         # Assuming `features` is observation sub_indices passed here for embedding
-        obs_embeddings, action_embeddings, action_atom_indices = features
-        probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices)  
+        obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask = features
+        probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask)  
         value = self.value_network(obs_embeddings) 
         return probs, value
     
@@ -247,15 +270,15 @@ class CustomNetwork(nn.Module):
         Forward method for the actor network.
         Accepts features (which can include sub_indices for embedding) and outputs the latent policy representation.
         """
-        obs_embeddings, action_embeddings, action_atom_indices = features
-        return self.policy_network(obs_embeddings, action_embeddings, action_atom_indices)
+        obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask = features
+        return self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask)
     
     def forward_critic(self, features: torch.Tensor) -> torch.Tensor:
         """
         Forward method for the critic network.
         Accepts features (which can include sub_indices for embedding) and outputs the latent value representation.
         """
-        obs_embeddings, _, _ = features
+        obs_embeddings, _, _, _ = features
         return self.value_network(obs_embeddings)
 
 
@@ -285,18 +308,14 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
         obs_sub_indices = observations["sub_index"]
         action_sub_indices = observations["derived_sub_indices"]
         action_atom_indices = observations["derived_atom_indices"]
-
-        # print('obs_sub_indices:',obs_sub_indices.shape, list(obs_sub_indices[:3,0,:].numpy()))
-        # print('action_sub_indices:',action_sub_indices.shape, list(action_sub_indices[0,:3,0,:].numpy()))
-        # print('action_atom_indices:',action_atom_indices.shape, list(action_atom_indices[0,:3,:3].numpy()),'\n')
-
+        valid_actions_mask = observations.get("valid_actions_mask", None)
 
         obs_sub_indices = self.format_indices(obs_sub_indices)
 
         obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.long())
         action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices.long())
         
-        return obs_embeddings, action_embeddings, action_atom_indices
+        return obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask
 
 
 

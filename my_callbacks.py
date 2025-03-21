@@ -10,63 +10,65 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is
 from stable_baselines3.common.callbacks import BaseCallback, EventCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 
+from stable_baselines3.common.callbacks import EvalCallback
+
 # from train import eval_test
 from model_eval import eval
 from utils import Term
 
 
-def evaluate_custom(queries: List[Term],
-                    labels: List[bool],
-                    env: Union[gym.Env, VecEnv],
-                    model: "type_aliases.PolicyPredictor",
-                    deterministic: bool = True,):
-    """
-    Custom evaluation function that works with both single and vectorized environments.
+# def evaluate_custom(queries: List[Term],
+#                     labels: List[bool],
+#                     env: Union[gym.Env, VecEnv],
+#                     model: "type_aliases.PolicyPredictor",
+#                     deterministic: bool = True,):
+#     """
+#     Custom evaluation function that works with both single and vectorized environments.
     
-    Args:
-        queries: List of query terms to evaluate
-        labels: List of labels for the queries
-        env: Environment to use for evaluation, can be either single or vectorized
-        model: The model to evaluate
-        deterministic: Whether to use deterministic actions
+#     Args:
+#         queries: List of query terms to evaluate
+#         labels: List of labels for the queries
+#         env: Environment to use for evaluation, can be either single or vectorized
+#         model: The model to evaluate
+#         deterministic: Whether to use deterministic actions
         
-    Returns:
-        Tuple of (rewards, episode_lengths)
-    """
-    # Check if we're using a vectorized environment
-    is_vec_env = hasattr(env, 'num_envs')
+#     Returns:
+#         Tuple of (rewards, episode_lengths)
+#     """
+#     # Check if we're using a vectorized environment
+#     is_vec_env = hasattr(env, 'num_envs')
     
-    if is_vec_env:
-        # For vectorized environment, we'll distribute queries across available environments
-        num_envs = env.num_envs
-        rewards_all, episode_len_all = [], []
+#     if is_vec_env:
+#         # For vectorized environment, we'll distribute queries across available environments
+#         num_envs = env.num_envs
+#         rewards_all, episode_len_all = [], []
         
-        # Process queries in batches based on number of environments
-        for i in range(0, len(queries), num_envs):
-            batch_queries = queries[i:i+num_envs]
-            batch_labels = labels[i:i+num_envs]
+#         # Process queries in batches based on number of environments
+#         for i in range(0, len(queries), num_envs):
+#             batch_queries = queries[i:i+num_envs]
+#             batch_labels = labels[i:i+num_envs]
             
-            # Distribute queries across environments
-            batch_results = []
-            for j, (query, label) in enumerate(zip(batch_queries, batch_labels)):
-                env_idx = j % num_envs
-                sub_env = env.envs[env_idx]
-                rewards, episode_len, _ = eval([query], [label], sub_env, model, 
-                                            deterministic=deterministic, 
-                                            return_dict=False)
-                batch_results.append((rewards, episode_len))
+#             # Distribute queries across environments
+#             batch_results = []
+#             for j, (query, label) in enumerate(zip(batch_queries, batch_labels)):
+#                 env_idx = j % num_envs
+#                 sub_env = env.envs[env_idx]
+#                 rewards, episode_len, _ = eval([query], [label], sub_env, model, 
+#                                             deterministic=deterministic, 
+#                                             return_dict=False)
+#                 batch_results.append((rewards, episode_len))
             
-            # Collect results from all environments
-            for rewards, episode_len in batch_results:
-                rewards_all.extend(rewards)
-                episode_len_all.extend(episode_len)
-    else:
-        # For single environment, use the standard eval function
-        rewards_all, episode_len_all, _ = eval(queries, labels, env, model, 
-                                             deterministic=deterministic,
-                                             return_dict=False)
+#             # Collect results from all environments
+#             for rewards, episode_len in batch_results:
+#                 rewards_all.extend(rewards)
+#                 episode_len_all.extend(episode_len)
+#     else:
+#         # For single environment, use the standard eval function
+#         rewards_all, episode_len_all, _ = eval(queries, labels, env, model, 
+#                                              deterministic=deterministic,
+#                                              return_dict=False)
     
-    return rewards_all, episode_len_all
+#     return rewards_all, episode_len_all
 
 class EvalCallback(EventCallback):
     """
@@ -115,7 +117,6 @@ class EvalCallback(EventCallback):
 
         self.name = name
         self.best_epoch = None
-        self.best_value = None
 
         self.callback_on_new_best = callback_on_new_best
         if self.callback_on_new_best is not None:
@@ -193,38 +194,17 @@ class EvalCallback(EventCallback):
 
             # Reset success rate buffer
             self._is_success_buffer = []
-            
-            # Check if we're using a vectorized environment for evaluation
-            is_vec_env = isinstance(self.eval_env, VecEnv)
-            
-            # For custom evaluation with our environment
-            if hasattr(self.eval_env, 'envs') and hasattr(self.eval_env.envs[0], 'reset_from_query'):
-                # Handle custom evaluation with our specific environment
-                # We'll set the environment to evaluation mode
-                for env in self.eval_env.envs:
-                    env.eval_dataset = 'validation'
-                    env.eval_idx = 0
-                
-                # Use our custom evaluation function
-                episode_rewards, episode_lengths = evaluate_custom(
-                    queries=self.eval_env.envs[0].valid_queries[:self.n_eval_episodes],
-                    labels=[1] * min(self.n_eval_episodes, len(self.eval_env.envs[0].valid_queries)),
-                    env=self.eval_env,
-                    model=self.model,
-                    deterministic=self.deterministic,
-                )
-            else:
-                # Use standard SB3 evaluation
-                episode_rewards, episode_lengths = evaluate_policy(
-                    self.model,
-                    self.eval_env,
-                    n_eval_episodes=self.n_eval_episodes,
-                    render=self.render,
-                    deterministic=self.deterministic,
-                    return_episode_rewards=True,
-                    warn=self.warn,
-                    callback=self._log_success_callback,
-                )
+
+            episode_rewards, episode_lengths = evaluate_policy(
+                self.model,
+                self.eval_env,
+                n_eval_episodes=self.n_eval_episodes,
+                render=self.render,
+                deterministic=self.deterministic,
+                return_episode_rewards=True,
+                warn=self.warn,
+                callback=self._log_success_callback,
+            )
 
             if self.log_path is not None:
                 assert isinstance(episode_rewards, list)
@@ -239,6 +219,14 @@ class EvalCallback(EventCallback):
                     self.evaluations_successes.append(self._is_success_buffer)
                     kwargs = dict(successes=self.evaluations_successes)
 
+                # np.savez(
+                #     self.log_path,
+                #     timesteps=self.evaluations_timesteps,
+                #     results=self.evaluations_results,
+                #     ep_lengths=self.evaluations_length,
+                #     **kwargs,
+                # )
+
             mean_reward, std_reward = np.mean(episode_rewards), np.std(episode_rewards)
             mean_ep_length, std_ep_length = np.mean(episode_lengths), np.std(episode_lengths)
             self.last_mean_reward = float(mean_reward)
@@ -246,7 +234,6 @@ class EvalCallback(EventCallback):
             if self.verbose >= 1:
                 print(f"Eval num_timesteps={self.num_timesteps}, " f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}")
                 print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
-                
             # Add to current Logger
             self.logger.record("eval/mean_reward", float(mean_reward))
             self.logger.record("eval/mean_ep_length", mean_ep_length)
@@ -259,6 +246,10 @@ class EvalCallback(EventCallback):
 
             # Dump log so the evaluation results are printed with the correct timestep
             self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+            # self.logger.dump(self.num_timesteps)
+            self.logger.name_to_value = {k: v for k, v in self.logger.name_to_value.items() if 
+                                         "eval" not in k and "total_timesteps" not in k}
+
 
             if mean_reward > self.best_mean_reward:
                 self.best_mean_reward = float(mean_reward)
@@ -270,8 +261,7 @@ class EvalCallback(EventCallback):
                     self.write_info()
 
                 self.best_epoch = self.num_timesteps
-                self.best_value = self.best_mean_reward
-                    
+                
                 # Trigger callback on new best model, if needed
                 if self.callback_on_new_best is not None:
                     continue_training = self.callback_on_new_best.on_step()
@@ -279,12 +269,131 @@ class EvalCallback(EventCallback):
             if self.log_path:
                 self._log_values({"eval/mean_reward": mean_reward, "eval/std_reward": std_reward, "eval/mean_ep_length": mean_ep_length, 
                               "eval/std_ep_length": std_ep_length, "eval/num_timesteps": self.num_timesteps})
+                
 
             # Trigger callback after every evaluation, if needed
             if self.callback is not None:
                 continue_training = continue_training and self._on_event()
 
         return continue_training
+
+    # def _on_step(self) -> bool:
+    #     continue_training = True
+
+    #     if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+    #         # Sync training and eval env if there is VecNormalize
+    #         if self.model.get_vec_normalize_env() is not None:
+    #             try:
+    #                 sync_envs_normalization(self.training_env, self.eval_env)
+    #             except AttributeError as e:
+    #                 raise AssertionError(
+    #                     "Training and eval env are not wrapped the same way, "
+    #                     "see https://stable-baselines3.readthedocs.io/en/master/guide/callbacks.html#evalcallback "
+    #                     "and warning above."
+    #                 ) from e
+
+    #         # Reset success rate buffer
+    #         self._is_success_buffer = []
+            
+    #         # Check if we're using a vectorized environment for evaluation
+    #         is_vec_env = isinstance(self.eval_env, VecEnv)
+            
+    #         # For custom evaluation with our environment
+    #         if hasattr(self.eval_env, 'envs') and hasattr(self.eval_env.envs[0], 'reset_from_query'):
+    #             # Handle custom evaluation with our specific environment
+    #             # We'll set the environment to evaluation mode
+    #             for env in self.eval_env.envs:
+    #                 env.eval_dataset = 'validation'
+    #                 env.eval_idx = 0
+                
+    #             # Use our custom evaluation function
+    #             episode_rewards, episode_lengths = evaluate_custom(
+    #                 queries=self.eval_env.envs[0].valid_queries[:self.n_eval_episodes],
+    #                 labels=[1] * min(self.n_eval_episodes, len(self.eval_env.envs[0].valid_queries)),
+    #                 env=self.eval_env,
+    #                 model=self.model,
+    #                 deterministic=self.deterministic,
+    #             )
+    #         else:
+    #             # Use standard SB3 evaluation
+    #             episode_rewards, episode_lengths = evaluate_policy(
+    #                 self.model,
+    #                 self.eval_env,
+    #                 n_eval_episodes=self.n_eval_episodes,
+    #                 render=self.render,
+    #                 deterministic=self.deterministic,
+    #                 return_episode_rewards=True,
+    #                 warn=self.warn,
+    #                 callback=self._log_success_callback,
+    #             )
+
+    #         if self.log_path is not None:
+    #             assert isinstance(episode_rewards, list)
+    #             assert isinstance(episode_lengths, list)
+    #             self.evaluations_timesteps.append(self.num_timesteps)
+    #             self.evaluations_results.append(episode_rewards)
+    #             self.evaluations_length.append(episode_lengths)
+
+    #             kwargs = {}
+    #             # Save success log if present
+    #             if len(self._is_success_buffer) > 0:
+    #                 self.evaluations_successes.append(self._is_success_buffer)
+    #                 kwargs = dict(successes=self.evaluations_successes)
+
+    #             # np.savez(
+    #             #     self.log_path,
+    #             #     timesteps=self.evaluations_timesteps,
+    #             #     results=self.evaluations_results,
+    #             #     ep_lengths=self.evaluations_length,
+    #             #     **kwargs,
+    #             # )
+
+    #         mean_reward, std_reward = np.mean(episode_rewards), np.std(episode_rewards)
+    #         mean_ep_length, std_ep_length = np.mean(episode_lengths), np.std(episode_lengths)
+    #         self.last_mean_reward = float(mean_reward)
+
+    #         if self.verbose >= 1:
+    #             print(f"Eval num_timesteps={self.num_timesteps}, " f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}")
+    #             print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
+                
+    #         # Add to current Logger
+    #         self.logger.record("eval/mean_reward", float(mean_reward))
+    #         self.logger.record("eval/mean_ep_length", mean_ep_length)
+
+    #         if len(self._is_success_buffer) > 0:
+    #             success_rate = np.mean(self._is_success_buffer)
+    #             if self.verbose >= 1:
+    #                 print(f"Success rate: {100 * success_rate:.2f}%")
+    #             self.logger.record("eval/success_rate", success_rate)
+
+    #         # Dump log so the evaluation results are printed with the correct timestep
+    #         self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+
+    #         if mean_reward > self.best_mean_reward:
+    #             self.best_mean_reward = float(mean_reward)
+    #             if self.verbose >= 1:
+    #                 print("New best mean reward!")
+
+    #             if self.model_path:
+    #                 self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
+    #                 self.write_info()
+
+    #             self.best_epoch = self.num_timesteps
+    #             self.best_value = self.best_mean_reward
+                    
+    #             # Trigger callback on new best model, if needed
+    #             if self.callback_on_new_best is not None:
+    #                 continue_training = self.callback_on_new_best.on_step()
+
+    #         if self.log_path:
+    #             self._log_values({"eval/mean_reward": mean_reward, "eval/std_reward": std_reward, "eval/mean_ep_length": mean_ep_length, 
+    #                           "eval/std_ep_length": std_ep_length, "eval/num_timesteps": self.num_timesteps})
+
+    #         # Trigger callback after every evaluation, if needed
+    #         if self.callback is not None:
+    #             continue_training = continue_training and self._on_event()
+
+    #     return continue_training
 
     def update_child_locals(self, locals_: Dict[str, Any]) -> None:
         """
@@ -323,7 +432,7 @@ class EvalCallback(EventCallback):
             assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}: {model_files}"
             # load the model
             self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=False)
-            print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_value:.3f}.')
+            print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_mean_reward:.3f}.')
         else:
             print(f'No best model found for {self.name}.')
     
