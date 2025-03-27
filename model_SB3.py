@@ -49,62 +49,90 @@ class PPO_custom(PPO):
 
         while n_steps < n_rollout_steps:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
 
             with th.no_grad():
+                # Convert observations to tensor and pass to policy
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 actions, values, log_probs = self.policy(obs_tensor)
             actions = actions.cpu().numpy()
 
-            # Make sure actions are the right shape for the environment
-            if isinstance(self.action_space, spaces.Discrete):
-                # For Discrete, reshape to (n_envs,)
-                actions = actions.reshape(-1)
-
-            clipped_actions = actions
-            if isinstance(self.action_space, spaces.Box):
-                if self.policy.squash_output:
-                    clipped_actions = self.policy.unscale_action(actions)
-                else:
-                    clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
-
-            new_obs, rewards, dones, infos = env.step(clipped_actions)
+            # Execute actions in environment
+            new_obs, rewards, dones, infos = env.step(actions)
+            # print('n_steps', n_steps)
+            # print('observations', [(k,v.shape) for k,v in self._last_obs.items()])
+            # print('values', values)
+            # print('actions', actions)
+            # print('log_probs', log_probs)
+            # print('rewards', rewards)
+            # print('-'*100)
+            # print('sum, length of rewards', sum(rewards), len(rewards))
+            # print('dones', dones)
+            # print('infos', infos)
+            # print('length of infos',len(infos))
+            # for info in infos:
+            #     for k,v in info.items():
+            #         print('info4: ',k,v) if k != 'terminal_observation' else None
             self.num_timesteps += env.num_envs
-            self._update_info_buffer(infos, dones)
 
+            # Give access to local variables
+            callback.update_locals(locals())
             if not callback.on_step():
                 return False
-
-            n_steps += 1
             
-            # Reshape actions before storing them in the buffer
-            if isinstance(self.action_space, spaces.Discrete):
-                # For buffer storage, reshape to (n_envs, 1)
-                actions_for_buffer = actions.reshape(-1, 1)
-            else:
-                actions_for_buffer = actions
+            self._update_info_buffer(infos, dones)
+            n_steps += 1
 
+            # print('len, avg, ep_info_buffer rewards', len(self.ep_info_buffer), np.mean([ep_info["r"] for ep_info in self.ep_info_buffer]),[ep_info["r"] for ep_info in self.ep_info_buffer])
+            # print('len, avg, ep_info_buffer lengths', len(self.ep_info_buffer), np.mean([ep_info["l"] for ep_info in self.ep_info_buffer]),[ep_info["l"] for ep_info in self.ep_info_buffer])
+           
+            if isinstance(self.action_space, spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+
+            # Handle timeout by bootstrapping with value function
+            # see GitHub issue #633
             for idx, done in enumerate(dones):
-                if done and infos[idx].get("TimeLimit.truncated", False):
+                if (
+                    done
+                    and infos[idx].get("terminal_observation") is not None
+                    and infos[idx].get("TimeLimit.truncated", False)
+                ):
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
-                        terminal_value = self.policy.predict_values(terminal_obs)[0]
+                        terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
+                    print('Rewards modified in rollout buffer because of terminal state!!!!!!!')
                     rewards[idx] += self.gamma * terminal_value
 
-            rollout_buffer.add(self._last_obs, actions_for_buffer, rewards, self._last_episode_starts, values, log_probs)
-            self._last_obs = new_obs
+            rollout_buffer.add(
+                self._last_obs,  # type: ignore[arg-type]
+                actions,
+                rewards,
+                self._last_episode_starts,  # type: ignore[arg-type]
+                values,
+                log_probs,
+            )
+            self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones
 
         with th.no_grad():
+            # Compute value for the last timestep
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
+        
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
-        # Record rollout metrics here, before on_rollout_end
+        # Record rollout metrics for logging
+        # print('len, avg, ep_info_buffer rewards', len(self.ep_info_buffer), np.mean([ep_info["r"] for ep_info in self.ep_info_buffer]),[ep_info["r"] for ep_info in self.ep_info_buffer])
+        # print('_len, avg, ep_info_buffer lengths', len(self.ep_info_buffer), np.mean([ep_info["l"] for ep_info in self.ep_info_buffer]),[ep_info["l"] for ep_info in self.ep_info_buffer])
         if self.ep_info_buffer and len(self.ep_info_buffer) > 0:
             self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
             self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
 
-        callback.on_rollout_end()  # Now SB3ModelCheckpoint can see "rollout/ep_rew_mean"
+        callback.update_locals(locals())
+
+        callback.on_rollout_end()
+
         return True
 
     def learn(
@@ -125,15 +153,23 @@ class PPO_custom(PPO):
         iteration = 0
 
         while self.num_timesteps < total_timesteps:
+            start = time.time()
+            print('Collecting rollouts')
             continue_training = self.collect_rollouts(
                 self.env, callback, self.rollout_buffer, self.n_steps
             )
+            print('Time to collect_rollouts', round(time.time()-start,2))
             if not continue_training:
                 break
 
             iteration += 1
             self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+            
+            # Train the model
+            print('Training model')
+            start = time.time()
             super().train()
+            print('Time to train', round(time.time()-start,2))
 
             if not callback.on_step():
                 break
@@ -154,46 +190,34 @@ class PolicyNetwork(nn.Module):
 
         self.observation_transform = nn.Linear(embed_dim, embed_dim)
 
-        # self.observation_transform = nn.Sequential(
-        #     nn.Linear(embed_dim, embed_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(embed_dim, embed_dim))
-
-        # hidden_dim = int(embed_dim * 1.5)
-        # dropout_prob = 0.1
-        # self.observation_transform = nn.Sequential(
-        #     nn.Linear(embed_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.LayerNorm(hidden_dim),
-        #     nn.Dropout(dropout_prob),
-        #     nn.Linear(hidden_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.LayerNorm(hidden_dim),
-        #     nn.Dropout(dropout_prob),
-        #     nn.Linear(hidden_dim, embed_dim)
-        # )
-
     def forward(self, obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) -> TensorDict:
-        # Transform and calculate logits
-        obs_features = self.observation_transform(obs_embeddings)
-        logits = torch.matmul(obs_features, action_embeddings.transpose(-2, -1)).squeeze(-2)
+        """
+        Calculate logits for actions given observation embeddings and action embeddings.
         
-        # Apply action mask - make invalid actions have -inf logits
+        Args:
+            obs_embeddings: Embedded observation (batch_size=n_envs,n_states=1,embedding_dim)
+            action_embeddings: Embedded possible actions (batch_size=n_envs,pad_states,embedding_dim)
+            action_atom_indices: Indices of atoms in actions (batch_size=n_envs,pad_states,pad_atoms)
+            valid_actions_mask: Boolean mask indicating which actions are valid (batch_size=n_envs,pad_states)
+            
+        Returns:
+            Logits for actions, with -inf for invalid actions. (batch_size=n_envs,pad_states)
+        """
+        # Transform observation features
+        obs_features = self.observation_transform(obs_embeddings)
+        # Calculate similarity between observation and action embeddings
+        logits = torch.matmul(obs_features, action_embeddings.transpose(-2, -1)).squeeze(-2) # (batch_size=n_envs,pad_states)
+        # Apply action mask to set invalid actions to -inf
         if valid_actions_mask is not None:
             # Ensure valid_actions_mask is bool
             if valid_actions_mask.dtype != torch.bool:
                 valid_actions_mask = valid_actions_mask.bool()
-            
             # Apply mask (set invalid actions to -inf)
             invalid_mask = ~valid_actions_mask
             logits = torch.masked_fill(logits, invalid_mask, float('-inf'))
         else:
-            # Fallback to original method when mask is not available
+            # Fallback to checking action_atom_indices when mask not available
             logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
-            
-        # For testing only - can be removed in production
-        # probs = torch.where(logits != float('-inf'), torch.rand_like(logits), logits)
-        
         return logits
 
 
@@ -261,8 +285,8 @@ class CustomNetwork(nn.Module):
         """
         # Assuming `features` is observation sub_indices passed here for embedding
         obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask = features
-        probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask)  
-        value = self.value_network(obs_embeddings) 
+        probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) # (batch_size=n_envs,pad_states)
+        value = self.value_network(obs_embeddings) # (batch_size=n_envs,n_states=1)
         return probs, value
     
     def forward_actor(self, features: torch.Tensor) -> torch.Tensor:
@@ -293,7 +317,14 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
 
     
     def format_indices(self, indices):
-        """Ensures indices are in the correct shape for matrix operations."""
+        """Ensures indices are in the correct shape for matmul operations
+        Args:
+            indices: torch.Tensor of shape (batch_size=n_envs,1,1,pad_atoms,3)
+            2nd dim is to match the shape of derived_sub_indices
+            3rd dim is to match the shape of derived_atom_indices
+        Returns:
+            torch.Tensor of shape (batch_size=n_envs,1,1,pad_atoms,3)
+        """
         if indices.dim() == 0:
             indices = indices.unsqueeze(0)
         if indices.dim() == 1:
@@ -303,18 +334,21 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
         return indices
 
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Extract features from observations including valid action mask."""
         
         # Obtain embeddings for observations and actions
-        obs_sub_indices = observations["sub_index"]
-        action_sub_indices = observations["derived_sub_indices"]
-        action_atom_indices = observations["derived_atom_indices"]
-        valid_actions_mask = observations.get("valid_actions_mask", None)
-
-        obs_sub_indices = self.format_indices(obs_sub_indices)
-
-        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.long())
-        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices.long())
+        obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
+        action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
+        action_atom_indices = observations["derived_atom_indices"] # (batch_size=n_envs,pad_states,pad_atoms) 
+        # Always get the valid_actions_mask if available
+        valid_actions_mask = observations.get("valid_actions_mask", None) # shape (batch_size=n_envs,pad_states)
         
+        # obs_sub_indices = self.format_indices(obs_sub_indices) # (batch_size=n_envs,1,1,pad_atoms,3) #3rd dim is for matmul with predicate embeddings
+        
+        # Generate embeddings
+        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.long()) # (batch_size=n_envs,n_states=1,embedding_dim)
+        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices.long()) # (batch_size=n_envs,pad_states,embedding_dim)
+
         return obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask
 
 
@@ -360,7 +394,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             embed_dim=self.features_extractor_kwargs['features_dim']
         )
 
-    def forward(self, obs: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor, deterministic: bool = False, verbose: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
 
@@ -373,25 +407,28 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             latent_pi, latent_vf = self.mlp_extractor(features)
         else:
             pi_features, vf_features = features
-            latent_pi = self.mlp_extractor.forward_actor(pi_features)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+            latent_pi = self.mlp_extractor.forward_actor(pi_features) # (batch_size=n_envs,n_states=1,embedding_dim)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features) # (batch_size=n_envs,n_states=1)
 
-        values = latent_vf
+        # Get value for the state
+        values = latent_vf # (batch_size=n_envs,n_states=1)
 
-        probs = latent_pi
-        distribution = self.action_dist.proba_distribution(action_logits=probs)
-        # distribution = self._get_action_dist_from_latent(latent_pi)
-        actions = distribution.get_actions(deterministic=deterministic) # new sampled probs
+        # Get action probabilities and create distribution
+        action_logits = latent_pi # (batch_size=n_envs,pad_states)
+        distribution = self.action_dist.proba_distribution(action_logits=action_logits)
+        
+        # Sample a single action from the distribution
+        actions = distribution.get_actions(deterministic=deterministic)
+        # Get log probability of the chosen action
         log_prob = distribution.log_prob(actions)
-        actions = actions.reshape((-1, *self.action_space.shape))  
+        print('*'*100) if verbose else None
+        print('values', values.shape) if verbose else None
+        print('actions_logits', action_logits.shape) if verbose else None
+        print('distribution params', distribution.distribution.probs.shape) if verbose else None
+        print('action chosen', actions.shape, actions) if verbose else None
+        print('log_prob of action chosen', log_prob.shape, log_prob) if verbose else None
+        print('*'*100) if verbose else None
 
-        # probs_norm = softmax(probs, dim=-1)
-        # print('\nprobs', probs.shape, probs)
-        # print('probs normalized', probs_norm.shape, probs_norm)
-        # print('logprobs from probs normalized', torch.log(probs_norm))
-        # print('logprobs from dist', distribution.log_prob( torch.tensor([i for i in range(0,probs.shape[-1])]) ))
-        # print('action (sampled from distr)', actions.shape, actions)
-        # print('log_prob of that action', log_prob.shape, log_prob)
         return actions, values, log_prob
 
 
@@ -414,13 +451,15 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             latent_pi = self.mlp_extractor.forward_actor(pi_features)
             latent_vf = self.mlp_extractor.forward_critic(vf_features)
 
-        # distribution = self._get_action_dist_from_latent(latent_pi)
-        probs = latent_pi
-        distribution = self.action_dist.proba_distribution(action_logits=probs)
+        # Create action distribution using logits
+        action_logits = latent_pi
+        distribution = self.action_dist.proba_distribution(action_logits=action_logits)
+        
+        # Get log probability of the given actions
         log_prob = distribution.log_prob(actions)
-        # values = self.value_net(latent_vf)
         values = latent_vf
         entropy = distribution.entropy()
+        
         return values, log_prob, entropy
 
     def predict_values(self, obs: PyTorchObs) -> torch.Tensor:
@@ -430,9 +469,6 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         :param obs: Observation
         :return: the estimated values.
         """
-        # features = super().extract_features(obs, self.vf_features_extractor)
-        # latent_vf = self.mlp_extractor.forward_critic(features)
-        # return self.value_net(latent_vf)
         features = self.extract_features(obs)
         latent_vf = self.mlp_extractor.forward_critic(features)
         values = latent_vf
@@ -447,7 +483,6 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         """
         features = super().extract_features(obs, self.pi_features_extractor)
         latent_pi = self.mlp_extractor.forward_actor(features)
-        probs = latent_pi
-        # return self._get_action_dist_from_latent(latent_pi)
-        return self.action_dist.proba_distribution(action_logits=probs)
+        action_logits = latent_pi
+        return self.action_dist.proba_distribution(action_logits=action_logits)
     

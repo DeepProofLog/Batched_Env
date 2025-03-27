@@ -273,7 +273,7 @@ def get_corruptions_dict(file_path: str, non_provable_corruptions: bool = False)
     return dict_
 
 # Import MNIST-related code
-from data.mnist_addition.MNIST import addition, multiplication
+# from data.mnist_addition.MNIST import addition, multiplication
 
 class DataHandlerMnist:
     """Handles MNIST data with corruption support in a simplified structure"""
@@ -493,6 +493,9 @@ class DataHandlerKGE:
             self.train_queries = [q for q in self.train_queries if q.predicate in rules_head_predicates]
             self.valid_queries = [q for q in self.valid_queries if q.predicate in rules_head_predicates]
             self.test_queries = [q for q in self.test_queries if q.predicate in rules_head_predicates]
+            # test = self.test_queries.copy()
+            # self.test_queries = [q for q in self.valid_queries if q.predicate in rules_head_predicates]
+            # self.valid_queries = [q for q in test if q.predicate in rules_head_predicates]
 
         # Load Janus facts
         self.janus_facts = []

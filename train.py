@@ -6,7 +6,7 @@ from typing import Dict
 
 from environments.env_logic_gym import LogicEnv_gym, IndexManager
 from utils import get_device, print_eval_info
-from my_callbacks import SB3ModelCheckpoint, EvalCallback, EpochTimingCallback
+from my_callbacks import SB3ModelCheckpoint, CustomEvalCallback, EpochTimingCallback
 from dataset import DataHandler
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from embeddings import get_embedder
@@ -22,6 +22,7 @@ from stable_baselines3.common.callbacks import (
 )
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.monitor import Monitor
 from wandb.integration.sb3 import WandbCallback
 import wandb
 from pykeen.triples import TriplesFactory
@@ -39,6 +40,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     np.random.seed(args.seed_run_i)
 
     device = get_device(args.device)
+    print(f"Device: {device}")
+    print(f"CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
 
     data_handler = DataHandler(
         dataset_name=args.dataset_name,
@@ -51,8 +54,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         non_provable_corruptions=args.non_provable_corruptions,
         non_provable_queries=args.non_provable_queries,)
     data_handler= data_handler.info
-    args.valid_negatives = len(data_handler.valid_queries) if args.valid_negatives == -1 else min(args.valid_negatives, len(data_handler.valid_queries))
-    args.test_negatives = len(data_handler.test_queries) if args.test_negatives == -1 else min(args.test_negatives, len(data_handler.test_queries))
+
     args.n_eval_episodes = len(data_handler.valid_queries) if args.n_eval_episodes == -1 else min(args.n_eval_episodes, len(data_handler.valid_queries))
 
     index_manager = IndexManager(data_handler.constants,
@@ -66,7 +68,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                 rules=data_handler.rules,
                                 rule_depend_var=args.rule_depend_var,
                                 max_arity=data_handler.max_arity,
-                                device=device,
+                                device='cpu',
                                 padding_atoms=args.padding_atoms)
     
     if args.corruption_mode == 'dynamic':
@@ -94,42 +96,53 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" else args.atom_embedding_size*args.padding_atoms
     embedder.embed_dim = args.state_embedding_size
 
-
-    args.n_envs = getattr(args, 'n_envs', 100)
-    args.n_eval_envs = getattr(args, 'n_eval_envs', 10)  # Default to 10 eval environments
-   
     # Define environment creation function
-    def make_env(eval_mode=False, seed=0, n_eval_episodes=None):
+    def make_env(mode='train', seed=0, queries=None, labels=None, n_eval_episodes=None):
         def _init():
-            env = LogicEnv_gym(max_depth=args.max_depth,
-                        device=device, 
+            env = LogicEnv_gym(
                         index_manager=index_manager,
                         data_handler=data_handler,
-                        seed=seed,
+                        queries=queries,
+                        labels=labels,
+                        mode=mode,
+                        n_episodes=n_eval_episodes,
                         corruption_mode=args.corruption_mode,
                         corruption_scheme=args.corruption_scheme,
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
-                        limit_space=args.limit_space,
+                        seed=seed,
                         dynamic_consult=args.dynamic_consult,
+                        max_depth=args.max_depth,
+                        limit_space=args.limit_space,
                         end_proof_action=args.end_proof_action,
                         padding_atoms=args.padding_atoms,
                         padding_states=args.padding_states,
-                        eval=eval_mode,
-                        n_eval_episodes=n_eval_episodes if eval_mode else None)
+                        device='cpu', 
+                        )
+            env = Monitor(env)
             return env
         return _init
 
     # Create vectorized environments for training
     env_seeds = np.random.randint(0, 2**10, size=args.n_envs)
-    env = DummyVecEnv([make_env(eval_mode=False, seed=int(env_seeds[i])) for i in range(args.n_envs)])
+    env = DummyVecEnv([make_env(
+                                mode='train', 
+                                seed=int(env_seeds[i]), 
+                                queries=data_handler.train_queries, 
+                                labels=[1]*len(data_handler.train_queries)
+                                ) 
+                                for i in range(args.n_envs)])
     # env = SubprocVecEnv([make_env(eval_mode=False, seed=int(env_seeds[i])) for i in range(args.n_envs)])
-    # env = make_vec_env(make_env, n_envs=args.n_envs, env_kwargs={'eval_mode':False, 'seed':args.seed_run_i})  
-    # env = make_env(eval_mode=False, seed=args.seed_run_i)
 
     # Create multiple environments for evaluation
     eval_env_seeds = np.random.randint(0, 2**10, size=args.n_eval_envs)
-    eval_env = DummyVecEnv([make_env(eval_mode=True, seed=int(eval_env_seeds[i]), 
-                                    n_eval_episodes=args.n_eval_episodes) for i in range(args.n_eval_envs)])
+    eval_env = DummyVecEnv([make_env(
+                                    mode='eval', 
+                                    seed=int(eval_env_seeds[i]), 
+                                    queries=data_handler.valid_queries,
+                                    labels=[1]*len(data_handler.valid_queries),
+                                    n_eval_episodes=args.n_eval_episodes
+                                    ) 
+                                    for i in range(args.n_eval_envs)])
     # eval_env = SubprocVecEnv([make_env(eval_mode=True, seed=int(eval_env_seeds[i]), 
     #                                 n_eval_episodes=args.n_eval_episodes) for i in range(args.n_eval_envs)])
 
@@ -139,7 +152,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         model = PPO(CustomActorCriticPolicy, 
                     env,
                     learning_rate=args.lr,
-                    n_steps=args.n_steps // args.n_envs,  # Adjust steps per environment
+                    n_steps=args.n_steps,  # Adjust steps per environment
                     batch_size=args.batch_size,
                     n_epochs=args.n_epochs,
                     verbose=1, 
@@ -175,17 +188,17 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         callbacks = [timing_callback]
 
         # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
-        reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
+        # reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
 
-        eval_callback = EvalCallback(eval_env=eval_env, 
-                                    model_path=model_path if args.save_model else None,
+        eval_callback = CustomEvalCallback(eval_env=eval_env, 
+                                    best_model_save_path=model_path if args.save_model else None,
                                     log_path=log_filename if use_logger else None,
                                     eval_freq=max(int(args.eval_freq//args.n_envs),1),
                                     n_eval_episodes=args.n_eval_episodes,
                                     deterministic=True,
                                     render=False,
                                     name=model_name,
-                                    callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
+                                    # callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
                                     # callback_after_eval=no_improvement_callback,
                                     )
 
@@ -231,35 +244,43 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     # TEST   
 
     print('\nTest set eval...')
-    metrics_test = eval_corruptions(data_handler.test_queries,
-                                        eval_env, model, verbose=0,
-                                        corruption_mode=args.corruption_mode,
-                                        corruptions=data_handler.test_corruptions,
-                                        n_corruptions=args.test_negatives,
-                                        n_eval_envs=args.n_eval_envs)  
+    metrics_test = eval_corruptions(model,
+                                    eval_env,
+                                    data_handler.test_queries,
+                                    corruption_mode=args.corruption_mode,
+                                    corruptions=data_handler.test_corruptions if args.corruption_mode == 'static' else None,
+                                    n_corruptions=args.test_negatives,
+                                    consult_janus=False,
+                                    )
     print_eval_info('Test', metrics_test)
 
-    if 'kinship' not in args.dataset_name:
+    if 'kinship' not in args.dataset_name or 'countries' not in args.dataset_name:
         print('Val set eval...')
-        metrics_valid = eval_corruptions(data_handler.valid_queries,
-                                            eval_env, model, verbose=0,
-                                            corruption_mode=args.corruption_mode,
-                                            corruptions=data_handler.valid_corruptions,
-                                            n_corruptions=args.valid_negatives,
-                                            n_eval_envs=args.n_eval_envs)  
+        metrics_valid = eval_corruptions(model,
+                                        eval_env,
+                                        data_handler.valid_queries,
+                                        corruption_mode=args.corruption_mode,
+                                        corruptions=data_handler.valid_corruptions if args.corruption_mode == 'static' else None,
+                                        n_corruptions=args.valid_negatives,
+                                        consult_janus=False,
+                                        )
         print_eval_info('Validation', metrics_valid)
 
         print('Train set eval...')
-        metrics_train = eval_corruptions(data_handler.train_queries,
-                                            eval_env, model, verbose=0,
-                                            corruption_mode=args.corruption_mode,
-                                            corruptions=data_handler.train_corruptions,
-                                            n_corruptions=args.train_neg_pos_ratio,
-                                            n_eval_envs=args.n_eval_envs)    
+        metrics_train = eval_corruptions(model,
+                                        eval_env,
+                                        data_handler.train_queries,
+                                        corruption_mode=args.corruption_mode,
+                                        corruptions=data_handler.train_corruptions if args.corruption_mode == 'static' else None,
+                                        n_corruptions=args.train_neg_pos_ratio,
+                                        consult_janus=True,
+                                        )
         print_eval_info('Train', metrics_train)
     else:
         metrics_train = {k: 0 for k in metrics_test.keys()}
         metrics_valid = {k: 0 for k in metrics_test.keys()}
+    # metrics_train = {k: 0 for k in metrics_test.keys()}
+    # metrics_valid = {k: 0 for k in metrics_test.keys()}
 
 
 

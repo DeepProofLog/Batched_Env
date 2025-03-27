@@ -23,24 +23,26 @@ from environments.index_manager import IndexManager
 class LogicEnv_gym(gym.Env):
     batch_locked = False  # Allow dynamic batch sizes
     
-    def __init__(self, 
-                max_depth: int = 10,
-                seed: Optional[int] = None,
-                device: torch.device = torch.device("cpu"),
+    def __init__(self,
                 index_manager: Optional[IndexManager] = None,
                 data_handler: Optional[DataHandler] = None,
+                queries: Optional[List[Term]] = None,
+                labels: Optional[List[int]] = None,
+                mode: str = 'train',
+                n_episodes: int = None,
                 corruption_mode: Optional[str] = None,
                 corruption_scheme: Optional[List[str]] = None,
                 train_neg_pos_ratio: int = 1,
-                limit_space: bool = True,
+                seed: Optional[int] = None,
                 dynamic_consult: bool = True,
-                eval=False,
-                n_eval_episodes=None,
+                max_depth: int = 10,
+                limit_space: bool = True,
                 end_proof_action: bool = False,
                 padding_atoms: int = 10,
                 padding_states: int = 20,
                 verbose: int = 0,
                 prover_verbose: int = 0,
+                device: torch.device = torch.device("cpu"),
                 ):
         
         '''Initialize the environment'''
@@ -53,8 +55,6 @@ class LogicEnv_gym(gym.Env):
         self.prover_verbose = prover_verbose
         self.device = device
 
-        self.corruption_mode = corruption_mode
-
         self.max_arity = data_handler.max_arity # Maximum arity of the predicates
         self.padding_atoms = padding_atoms  # Maximum number of atoms in a state
         self.padding_states = padding_states # Maximum number of possible next states
@@ -66,22 +66,17 @@ class LogicEnv_gym(gym.Env):
         self._make_spec()
 
         self.dataset_name = data_handler.dataset_name
-        self.facts=data_handler.facts
+        self.facts = data_handler.facts
+
+        self.corruption_mode = corruption_mode
 
         if 'static' in self.corruption_mode or 'dynamic' in self.corruption_mode:
             self.counter = 0  # Determine whether to sample from positive or negative queries in KGE settings
-
+            
         if self.corruption_mode == "dynamic":
             self.sampler = data_handler.sampler
             self.triples_factory = data_handler.triples_factory
             self.corruption_scheme = corruption_scheme
-
-        self.train_neg_pos_ratio = train_neg_pos_ratio
-        self.train_queries = data_handler.train_queries
-        self.neg_train_queries = data_handler.neg_train_queries
-
-        self.valid_queries = data_handler.valid_queries
-        self.test_queries = data_handler.test_queries
         
         self.janus_file = data_handler.janus_path
         self.janus_facts = data_handler.janus_facts
@@ -96,18 +91,26 @@ class LogicEnv_gym(gym.Env):
         self.current_label = None
         self.last_query = None  # Track last query for dynamic consulting
 
-        self.eval = eval
-        self.eval_dataset = 'validation' # by default, evaluate on the validation set. It can be changed to 'test' or 'train'
-        self.eval_idx = 0 # Index to go through all the eval queries
-        self.eval_len = len(self.valid_queries) # Number of eval queries (to reset the index)
-        self.n_eval_episodes = n_eval_episodes
-        # generate a random sequence of indices to go through the eval queries (in case we dont want to evaluate on the whole dataset)
-        self.eval_seq = list(range(self.eval_len))
-        # random.Random(0).shuffle(self.eval_seq) # to get the same sequence every time
+        assert mode in ['train', 'eval', 'eval_corr'], f"Invalid mode: {mode}"
+        self.mode = mode
+        self.queries = queries
+        self.labels = labels
+        self.n_episodes = n_episodes
+        self.eval_idx = 0
+        self.mask_eval = []
+        self.consult_janus_eval = False
 
+        if self.mode == 'train':
+            self.train_neg_pos_ratio = train_neg_pos_ratio
+            if self.corruption_mode == "static":
+                self.neg_queries = data_handler.neg_train_queries
+                self.neg_labels = [0]*len(self.neg_queries)
+                self.pos_queries = self.queries
+                self.pos_labels = self.labels
+                
 
     def _set_seed(self, seed:int):
-        '''Set the seed for the environment'''
+        '''Set the seed for the environment. If no seed is provided, generate a random one'''
         self.seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
         rng = torch.manual_seed(seed)
         self.rng = rng
@@ -121,15 +124,15 @@ class LogicEnv_gym(gym.Env):
             'sub_index': gym.spaces.Box(
                 low=float('-inf'),
                 high=float('inf'),
-                shape=torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
-                # shape = torch.Size([1])+ torch.Size([self.padding_atoms])+ torch.Size([self.max_arity+1]),
+                # shape=torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
+                shape = torch.Size([1])+ torch.Size([self.padding_atoms])+ torch.Size([self.max_arity+1]),
                 dtype=np.int64,
             ),
             'atom_index': gym.spaces.Box(
                 low=float('-inf'),
                 high=float('inf'),
-                shape=torch.Size([self.padding_atoms]),
-                # shape = torch.Size([1])+ torch.Size([self.padding_atoms]),
+                # shape=torch.Size([self.padding_atoms]),
+                shape = torch.Size([1])+ torch.Size([self.padding_atoms]),
                 dtype=np.int64,
             ),
             'derived_atom_indices': gym.spaces.Box(
@@ -143,17 +146,25 @@ class LogicEnv_gym(gym.Env):
                 high=float('inf'),
                 shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
                 dtype=np.int64,
+            ),
+            'valid_actions_mask': gym.spaces.Box(
+                low=0,
+                high=1,
+                shape=torch.Size([self.padding_states]),
+                dtype=np.bool_,
             ),            
         }
         self.observation_space = gym.spaces.Dict(obs_spaces)
-        # self.action_space = gym.spaces.Discrete(100)
-        self.action_space = gym.spaces.Discrete(self.padding_atoms)
+        # Use a fixed action space with the size of padding_states (maximum possible actions)
+        self.action_space = gym.spaces.Discrete(self.padding_states)
 
 
     def update_action_space(self, derived_states: List[List[Term]]):
         '''Update the action space based on the possible next states 
         To be called every time the possible next states are updated'''
-        self.action_space = gym.spaces.Discrete(len(derived_states))
+        # No longer updating action space size - it's fixed to padding_states
+        # Just tracking the number of valid actions for masking
+        self.num_valid_actions = len(derived_states)
 
 
     def new_consult_janus(self, query: Term):
@@ -200,27 +211,39 @@ class LogicEnv_gym(gym.Env):
 
     def reset(self, seed: Optional[int]= None, options=None):
         '''Reset the environment and get a new query based on the environment configuration'''
-        if self.eval: 
-            '''Only use this during training with the callback EvalCallback and the env initialised with eval=True. 
-            We just test in this case positive queries. Can be adapted to test negative queries as well by using the counter
-            and passing neg_{train/val/test}_queries. For final eval, we use reset from query'''
-            if self.eval_dataset == 'validation':
-                eval_dataset = self.valid_queries
-            elif self.eval_dataset == 'test':
-                eval_dataset = self.test_queries
-            elif self.eval_dataset == 'train':
-                eval_dataset = self.train_queries
 
-            if self.eval_idx == self.n_eval_episodes: # reset the index
+        if self.mode == 'eval':
+            ''' two options:
+                i) pass a set of queries and labels that will be evaluted automatically (n_episodes).
+                ii) use reset_from_query to evaluate a single query'''
+            assert self.eval_idx <= self.n_episodes, f"Eval index: {self.eval_idx}, n_episodes: {self.n_episodes}. "\
+                    f"Adjust the number of episodes to evaluate in the callback."
+
+            if self.eval_idx == self.n_episodes:
                 self.eval_idx = 0
+                state = self.queries[self.eval_idx]
+                label = self.labels[self.eval_idx]
+            else:
+                state = self.queries[self.eval_idx]
+                label = self.labels[self.eval_idx]
+                self.eval_idx += 1
 
-            state, label = eval_dataset[self.eval_seq[self.eval_idx]], 1
+        elif self.mode == 'eval_parallel':
+            '''When the number of episodes is reached, we set the eval mask to false
+            so that the other envs can finish the eval. After n_episodes, reset with a False state'''
+            if self.eval_idx < self.n_episodes:  # if we evaluated all the episodes, set a default state and mask to false
+                state = self.queries[self.eval_idx]
+                label = self.labels[self.eval_idx]
+                self.mask_eval.append(True)
+            else:
+                state = Term(predicate='False', args=[])
+                label = 0
+                self.mask_eval.append(False)
             self.eval_idx += 1
 
-        else:
-            
+        else:  # Training mode
             if self.corruption_mode == "dynamic":
-                state, _ = self.get_random_queries(self.train_queries, n=1)
+                state, _ = self.get_random_queries(self.queries, n=1)
                 label = 1
                 if self.counter % (int(self.train_neg_pos_ratio) + 1) != 0:
                     state = self.get_negatives(state)
@@ -233,26 +256,27 @@ class LogicEnv_gym(gym.Env):
                         self.negation_toggle = 1 - self.negation_toggle  # Flip for next time get head or tail
                     
                     assert len(state) == 1, f"Length of negatives: {len(state)}"
-                    state = state[0] # In train there shuold be only one negative
+                    state = state[0] # In train there should be only one negative
                     label = 0
                 self.counter += 1
 
-            elif 'static' in self.corruption_mode:
+            elif self.corruption_mode == "static":
                 if self.counter % (int(self.train_neg_pos_ratio) + 1) == 0:
-                    state, _ = self.get_random_queries(self.train_queries, n=1) 
+                    state, _ = self.get_random_queries(self.pos_queries, n=1) 
                     label = 1
                 else:
-                    state, _ = self.get_random_queries(self.neg_train_queries, n=1) 
+                    state, _ = self.get_random_queries(self.neg_queries, n=1) 
                     label = 0
                 self.counter += 1
 
-            else:  # Default case
-                state, _ = self.get_random_queries(self.train_queries, n=1)
+            else: # Default case
+                state, _ = self.get_random_queries(self.queries, n=1)
                 label = 1
                 
-            if label == 1 and not self.dynamic_consult:
+        if self.engine == 'prolog' and (self.mode == 'train' or self.consult_janus_eval == True) and label == 1:
+            if not self.dynamic_consult:
                 self.new_consult_janus(state)
-            elif label == 1 and self.dynamic_consult and state in self.facts:
+            elif self.dynamic_consult and state in self.facts:
                 janus.query_once(f"retract({str(state)}).")
 
         self.current_query = state
@@ -264,7 +288,7 @@ class LogicEnv_gym(gym.Env):
     def reset_from_query(self, query, label, consult_janus=False):
         ''' Reset the environment from a given query and label. Consult janus is needed when 
         doing eval of train queries that are in the facts'''
-        if consult_janus and label == 1 and self.engine == 'prolog':
+        if self.engine == 'prolog' and consult_janus and label == 1:
             if not self.dynamic_consult:
                 self.new_consult_janus(query)
             elif self.dynamic_consult and query in self.facts: 
@@ -288,11 +312,24 @@ class LogicEnv_gym(gym.Env):
         # if self.limit_space: RODRIGO: CAN THIS BE REMOVED?
         #     derived_states, derived_atom_indices, derived_sub_indices = self.limit_action_space(derived_states, derived_atom_indices, derived_sub_indices)
         self.update_action_space(derived_states)
+        
+        # Create action mask - True for valid actions, False for padding
+        valid_actions_mask = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
+        valid_actions_mask[:len(derived_states)] = True
+
+        # print('-'*100)
+        # print('reset...')
+        # print('atom_index', atom_index.unsqueeze(0).shape)
+        # print('sub_index', sub_index.unsqueeze(0).shape)
+        # print('derived_atom_indices', derived_atom_indices.shape)
+        # print('derived_sub_indices', derived_sub_indices.shape)
+        # print('valid_actions_mask', valid_actions_mask.shape)
+        # print('-'*100)  
 
         self.tensordict = TensorDict(
             {
-                "atom_index": atom_index.unsqueeze(0),
-                "sub_index": sub_index.unsqueeze(0),
+                "atom_index": atom_index.unsqueeze(0), # to match the shape of derived_atom_indices
+                "sub_index": sub_index.unsqueeze(0), # to match the shape of derived_sub_indices
                 "state": NonTensorData(data=query),
                 "label": torch.tensor(label, device=self.device),
                 "done": torch.tensor(0, dtype=torch.bool, device=self.device),
@@ -300,19 +337,22 @@ class LogicEnv_gym(gym.Env):
                 "derived_states": NonTensorData(data=derived_states),
                 "derived_atom_indices": derived_atom_indices,
                 "derived_sub_indices": derived_sub_indices,
+                "valid_actions_mask": valid_actions_mask,
             },
         )
-        sub_index = self.tensordict['sub_index'].numpy()
-        atom_index = self.tensordict['atom_index'].numpy()
-        derived_atom_indices = self.tensordict['derived_atom_indices'].numpy()
-        derived_sub_indices = self.tensordict['derived_sub_indices'].numpy()
+        sub_index = self.tensordict['sub_index'].cpu().numpy()
+        atom_index = self.tensordict['atom_index'].cpu().numpy()
+        derived_atom_indices = self.tensordict['derived_atom_indices'].cpu().numpy()
+        derived_sub_indices = self.tensordict['derived_sub_indices'].cpu().numpy()
+        valid_actions_mask = self.tensordict['valid_actions_mask'].cpu().numpy()
         obs = {'sub_index':sub_index, 
                'atom_index':atom_index, 
                'derived_atom_indices':derived_atom_indices, 
-               'derived_sub_indices':derived_sub_indices}
+               'derived_sub_indices':derived_sub_indices,
+               'valid_actions_mask':valid_actions_mask}
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
-            # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
+            # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].cpu().numpy()),'\n')
         return obs, {}
 
     def step(self, action):
@@ -323,10 +363,13 @@ class LogicEnv_gym(gym.Env):
         derived_atom_indices = self.tensordict["derived_atom_indices"]
         derived_states = self.tensordict["derived_states"]
         derived_sub_indices = self.tensordict["derived_sub_indices"]
+        valid_actions_mask = self.tensordict["valid_actions_mask"]
 
-        if action >= len(derived_states):
+        # Check if the action is valid using the mask
+        if action >= self.padding_states or not valid_actions_mask[action]:
             raise ValueError(
-                f"Invalid action ({action}). Max action: {len(derived_states)}, derived_states: {derived_states}")
+                f"Invalid action ({action}). Valid actions are indicated by the mask. {valid_actions_mask}. Derived states: {derived_states}. Derived atom indices: {derived_atom_indices}.")
+                
         next_state = derived_states[action]
         next_atom_index = derived_atom_indices[action]
         next_sub_index = derived_sub_indices[action]
@@ -346,6 +389,10 @@ class LogicEnv_gym(gym.Env):
         if all(len(elem)==0 for elem in derived_states_next):
             derived_states_next, derived_atom_indices_next, derived_sub_indices_next = self.end_in_false(derived_atom_indices.size(), derived_sub_indices.size())
         self.update_action_space(derived_states_next)
+        
+        # Create next action mask
+        valid_actions_mask_next = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
+        valid_actions_mask_next[:len(derived_states_next)] = True
 
         self.current_depth += 1
         
@@ -357,13 +404,13 @@ class LogicEnv_gym(gym.Env):
         
         # Handle episode completion
         if done_next:
-            # Add episode info for Stable Baselines
-            reward_value = float(reward_next.item())
-            episode_length = int(self.current_depth)
-            info["episode"] = {
-                "r": reward_value,
-                "l": episode_length
-            }
+            # # Add episode info for Stable Baselines
+            # reward_value = float(reward_next.item())
+            # episode_length = int(self.current_depth)
+            # info["episode"] = {
+            #     "r": reward_value,
+            #     "l": episode_length
+            # }
             
             # Restore facts in knowledge base if this was a positive query
             if self.current_label == 1 and self.current_query in self.facts:
@@ -373,10 +420,18 @@ class LogicEnv_gym(gym.Env):
             # Clear current query reference and label
             self.current_query, self.current_label = None, None
 
+        # print('-'*100)
+        # print('atom_index', next_atom_index.unsqueeze(0).shape)
+        # print('sub_index', next_sub_index.unsqueeze(0).shape)
+        # print('derived_atom_indices', derived_atom_indices_next.shape)
+        # print('derived_sub_indices', derived_sub_indices_next.shape)
+        # print('valid_actions_mask', valid_actions_mask_next.shape)
+        # print('-'*100)
+
         tensordict = TensorDict(
             {
-                "atom_index": next_atom_index.unsqueeze(0),
-                "sub_index": next_sub_index.unsqueeze(0),
+                "atom_index": next_atom_index.unsqueeze(0), # to match the shape of derived_atom_indices
+                "sub_index": next_sub_index.unsqueeze(0), # to match the shape of derived_sub_indices
                 "state": NonTensorData(data=next_state),
                 "label": self.tensordict['label'],
                 "done": done_next,
@@ -384,27 +439,31 @@ class LogicEnv_gym(gym.Env):
                 "derived_states": NonTensorData(data=derived_states_next),
                 "derived_atom_indices": derived_atom_indices_next,
                 "derived_sub_indices": derived_sub_indices_next,
+                "valid_actions_mask": valid_actions_mask_next,
             },
             )
 
         self.tensordict = tensordict
         # self.tensordict["action"] = torch.tensor(action, device=self.device)
 
-        sub_index = self.tensordict['sub_index'].numpy()
-        atom_index = self.tensordict['atom_index'].numpy()
-        derived_atom_indices = self.tensordict['derived_atom_indices'].numpy()
-        derived_sub_indices = self.tensordict['derived_sub_indices'].numpy()
+        sub_index = self.tensordict['sub_index'].cpu().numpy()
+        atom_index = self.tensordict['atom_index'].cpu().numpy()
+        derived_atom_indices = self.tensordict['derived_atom_indices'].cpu().numpy()
+        derived_sub_indices = self.tensordict['derived_sub_indices'].cpu().numpy()
+        valid_actions_mask = self.tensordict['valid_actions_mask'].cpu().numpy()
         obs = {'sub_index':sub_index, 
                'atom_index':atom_index, 
                'derived_atom_indices':derived_atom_indices, 
-               'derived_sub_indices':derived_sub_indices}
+               'derived_sub_indices':derived_sub_indices,
+               'valid_actions_mask':valid_actions_mask}
 
-        reward = self.tensordict['reward'].numpy()
-        done = self.tensordict['done'].numpy()
+        reward = self.tensordict['reward'].cpu().numpy()
+        done = self.tensordict['done'].cpu().numpy()
         truncated = bool(exceeded_max_depth)
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=action,truncated=truncated)
-            # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].numpy()),'\n')
+            # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].cpu().numpy()),'\n')
+        # print('info',info)
         return obs, reward, done, truncated, info
 
 

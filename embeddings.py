@@ -821,7 +821,7 @@ class ConstantEmbeddings(nn.Module):
         self.device = device
         self.to(device)
 
-        torch.nn.init.xavier_uniform_(self.embedder.weight)
+        # torch.nn.init.xavier_uniform_(self.embedder.weight)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         embeddings = self.embedder(indices)
@@ -845,7 +845,7 @@ class PredicateEmbeddings(nn.Module):
         self.device = device
         self.to(device)
 
-        torch.nn.init.xavier_uniform_(self.embedder.weight)
+        # torch.nn.init.xavier_uniform_(self.embedder.weight)
 
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
@@ -985,14 +985,29 @@ class EmbedderLearnable(nn.Module):
         )   
 
     # Keep existing methods unchanged
-    def get_embeddings_batch(self, sub_indices: torch.Tensor) -> torch.Tensor:
+    def get_embeddings_batch(self, sub_indices: torch.Tensor, verbose: bool = False) -> torch.Tensor:
+        """Get embeddings for a batch of sub-indices.
+        Args:
+            sub_indices: torch.Tensor of shape (batch_size=n_envs,n_states,n_atoms,3)
+            2nd dim is to match the shape of derived_sub_indices
+        Returns:
+            torch.Tensor of shape (batch_size=n_envs,n_states,embedding_dim)
+        """
+        print('\nGetting embeddings batch...') if verbose else None
+        print('sub_indices', sub_indices.shape) if verbose else None
         predicate_indices = sub_indices[..., 0].unsqueeze(-1)
         constant_indices = sub_indices[..., 1:]
+        print('predicate_indices', predicate_indices.shape) if verbose else None
+        print('constant_indices', constant_indices.shape) if verbose else None
         constant_embeddings = self.constant_embedder(constant_indices)
+        print('constant_embeddings', constant_embeddings.shape) if verbose else None
         predicate_embeddings = self.predicate_embedder(predicate_indices)
+        print('predicate_embeddings', predicate_embeddings.shape) if verbose else None
         
         atom_embeddings = self.atom_embedder(predicate_embeddings, constant_embeddings)
+        print('atom_embeddings', atom_embeddings.shape) if verbose else None
         state_embeddings = self.state_embedder(atom_embeddings)
+        print('state_embeddings', state_embeddings.shape, '\n') if verbose else None
         
         return state_embeddings
 

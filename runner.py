@@ -1,5 +1,4 @@
-from pydantic.v1.validators import validate_json
-
+import torch
 from train import main
 import argparse
 import ast
@@ -37,17 +36,18 @@ if __name__ == "__main__":
     # Dataset settings 
     # for countries_s3, we use non provable corruptions and provable queries, run_signature='countries_s3-transe-sum-50-5-20-dynamic-False-True-1-True-False-False-True-False-20-True'
     DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
-    SEED = [[0,1,2]] # [[0,1,2,3,4]]
+    SEED = [[0]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe']
     STATE_EMBEDDER = ['sum'] 
-    PADDING_ATOMS = [40]
+    PADDING_ATOMS = [20]
     PADDING_STATES = [40]
     ATOM_EMBEDDING_SIZE = [50]
-    CORRUPTION_MODE =  ['static'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
+    '''Attention: if we use static corruptions, include non provable corruptions
+    In pararell eval, we evaluate based on a fixed number of corruptions'''
+    CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
     NON_PROVABLE_QUERIES = [False]
-    NON_PROVABLE_CORRUPTIONS = [False]
-    TRAIN_NEG_POS_RATIO = [1] # in validation and test, we use all corruptions
+    NON_PROVABLE_CORRUPTIONS = [True]
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
     load_model = False #['best_eval', 'last_epoch', False]
@@ -65,25 +65,28 @@ if __name__ == "__main__":
     janus_file = "train.pl"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [30000]
+    TIMESTEPS_TRAIN = [40000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
-    n_eval_episodes = 100
-    valid_negatives = 100
-    test_negatives = -1
+    TRAIN_NEG_POS_RATIO = [1] # corruptions in train
+    valid_negatives = None # corruptions in validation
+    test_negatives = None # corruptions in test
+    n_eval_episodes = 100 
+    # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
+    # The total number of steps in each rollout is n_steps*n_envs.
+    n_envs = 128 
     eval_freq = 5000
-    n_steps = 2048 # number of steps to collect in each rollout
-    n_envs = 2 # number of environments to run in parallel. Total number of rollouts is n_envs*n_steps
-    n_eval_envs = 2
+    n_steps = 128 #2048
+    n_eval_envs = 1
     n_epochs = 10 # number of epochs to train the model with the collected rollout
-    batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer)
+    batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
     lr = 3e-4
 
 
     # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 
     # this is ignored and the number of variables is determined by the number of variables in the rules
     variable_no = 500
-    device = "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # If take inputs from the command line, overwrite the default values
     """Parse command line arguments"""
@@ -228,6 +231,7 @@ if __name__ == "__main__":
         args.test_negatives = test_negatives
         args.eval_freq = eval_freq
         args.n_envs = n_envs
+        args.n_eval_envs = n_eval_envs
         args.n_steps = n_steps
         args.n_epochs = n_epochs
         args.batch_size = batch_size
