@@ -219,15 +219,17 @@ def eval_corruptions(
         batch_size = batch_end - batch_start
         batch_queries = data[batch_start:batch_end]
 
-        # print('batch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size)
+        # print('\n\nbatch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size)
+        # print('batch queries:',batch_queries)
         
-        if verbose >= 1:
-            print(f"\nProcessing batch {batch_start//num_envs + 1}/{(len(data) + num_envs - 1)//num_envs}")
-        else:
-            print(f"\rProcessing {batch_end}/{len(data)}", end='', flush=True)
+        # if verbose >= 1:
+        #     print(f"\nProcessing batch {batch_start//num_envs + 1}/{(len(data) + num_envs - 1)//num_envs}")
+        # else:
+        #     print(f"\rProcessing {batch_end}/{len(data)}", end='', flush=True)
         
         # For each query in the batch, reset its env with the query and the corruptions
         corruptions_list = [] # to make sure that all environments have the same corruptions
+        
         for env_idx, query in enumerate(batch_queries):
             # Select the appropriate environment
             query_env = env.envs[env_idx].env if is_vec_env else env
@@ -259,7 +261,7 @@ def eval_corruptions(
             env.envs[env_idx].env.labels = eval_labels
             env.envs[env_idx].env.eval_idx = 0
             env.envs[env_idx].env.n_episodes = len(eval_data)
-            env.envs[env_idx].env.mask_eval = []
+            # env.envs[env_idx].env.mask_eval = []
             env.envs[env_idx].env.consult_janus_eval = consult_janus
 
         assert all(corruptions_list[c] == corruptions_list[0] for c in range(len(corruptions_list))), "All environments must have the same number of corruptions"
@@ -274,15 +276,32 @@ def eval_corruptions(
         lengths = np.array(lengths)
         log_probs = np.array(log_probs)
         # print('\n\nrewards:',rewards.shape, rewards, '\nlengths:',lengths.shape, lengths, '\nlog_probs:',log_probs.shape, log_probs)
-        mask_eval = np.zeros((num_envs,(1+n_corruptions)), dtype=bool) # initialise it to boolean array of shape (num_envs,1+n_corruptions)
-        for env_idx in range(num_envs):
-            # print('mask',env_idx, len(env.envs[env_idx].env.mask_eval), env.envs[env_idx].env.mask_eval)
-            # I need to filter because some envs have more than 1+n_corruptions. 
-            mask_eval[env_idx] = env.envs[env_idx].env.mask_eval[:1+n_corruptions]
-        # print('mask_eval:',mask_eval.shape, mask_eval)
-        rewards = rewards[mask_eval].reshape(rewards.shape)
-        lengths = lengths[mask_eval].reshape(lengths.shape)
-        log_probs = log_probs[mask_eval].reshape(log_probs.shape)
+        # mask_eval = np.zeros((num_envs,(1+n_corruptions)), dtype=bool) # initialise it to boolean array of shape (num_envs,1+n_corruptions)
+        # for env_idx in range(num_envs):
+        #     # print('mask',env_idx, len(env.envs[env_idx].env.mask_eval), env.envs[env_idx].env.mask_eval)
+        #     # I need to filter because some envs have more than 1+n_corruptions. 
+        #     mask_eval[env_idx] = env.envs[env_idx].env.mask_eval[:1+n_corruptions]
+        # # print('mask_eval:',mask_eval.shape, mask_eval)
+        # rewards = rewards[mask_eval].reshape(rewards.shape)
+        # lengths = lengths[mask_eval].reshape(lengths.shape)
+        # log_probs = log_probs[mask_eval].reshape(log_probs.shape)
+
+        filter_mask = None
+        if len(batch_queries) < num_envs:
+            filter_mask = len(batch_queries)
+        rewards = rewards[:filter_mask,:1+n_corruptions]
+        lengths = lengths[:filter_mask,:1+n_corruptions]
+        log_probs = log_probs[:filter_mask,:1+n_corruptions]
+
+
+        # print(rewards.shape, log_probs.shape)
+        # print(rewards)
+        # print(lengths)
+        # print(log_probs)
+
+        # where the rewards are 0, substract 100 to the problogs
+        log_probs[rewards == 0] -= 100
+
         rewards_list_pos.extend(rewards[:,0])
         episode_len_list_pos.extend(lengths[:,0])
         log_probs_list_pos.extend(log_probs[:,0])
@@ -293,16 +312,22 @@ def eval_corruptions(
         log_probs_list_neg.extend(log_probs[:,1:])
 
         # Batch calculation of ranks and MRR
+        # print('log probs:', log_probs)
         if rewards.shape[1] > 1:  # If we have corruptions
             # Calculate ranks for each environment in the batch
             # Sort log_probs in descending order and get indices
-            sorted_indices = np.argsort(log_probs, axis=1)[:, ::-1]
+            sorted_indices = np.argsort(-log_probs, axis=-1)
+            # print('sorted indices:',sorted_indices)
             # Find position of positive examples (index 0) for each environment
-            ranks = np.where(sorted_indices == 0)[1] + 1
+            ranks = np.argmax(sorted_indices == 0, axis=-1) + 1
+            # print('ranks:',ranks)
             # Calculate MRR for each environment
             batch_mrr = 1.0 / ranks
+            # print('batch mrr:',batch_mrr)
             mrr_list.extend(batch_mrr.tolist())
-
+    
+    # print('mrr_list:',mrr_list)
+    # print('avg mrr:',np.mean(mrr_list))
     # Prepare scores and labels for AUC-PR calculation
     log_probs_list_pos = np.array(log_probs_list_pos)
     # reshape and squeeze log_probs_list_neg
@@ -319,6 +344,25 @@ def eval_corruptions(
     log_probs_pos = np.array(log_probs_list_pos)
     log_probs_neg = np.array(log_probs_list_neg).reshape(-1,1).squeeze()
     mrr_array = np.array(mrr_list)
+
+
+
+    # # plot the positive and negative logit distributions as points
+    # import matplotlib.pyplot as plt
+
+    # # Create indices for x-axis positioning
+    # x_pos = np.arange(len(log_probs_pos))
+    # x_neg = np.arange(len(log_probs_neg))
+    
+    # # Plot points instead of histograms
+    # plt.scatter(x_pos, log_probs_pos, alpha=0.8, label='positive', color='blue')
+    # plt.scatter(x_neg, log_probs_neg, alpha=0.5, label='negative', color='red')
+    
+    # plt.legend(loc='upper right')
+    # plt.xlabel('Sample index')
+    # plt.ylabel('Log probability')
+    # plt.show()
+
 
 
     # Return comprehensive evaluation metrics

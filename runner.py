@@ -30,7 +30,8 @@ if __name__ == "__main__":
     RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
     DYNAMIC_CONSULT = [True] # [True, False]
     FALSE_RULES = [False] 
-    END_PROOF_ACTION = [False]
+    END_PROOF_ACTION = [True]
+    SKIP_UNARY_ACTIONS = [False]
     # reward_type = 1
 
     # Dataset settings 
@@ -65,7 +66,7 @@ if __name__ == "__main__":
     janus_file = "train.pl"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [40000]
+    TIMESTEPS_TRAIN = [100001]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
@@ -75,12 +76,21 @@ if __name__ == "__main__":
     # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 128 
-    eval_freq = 5000
     n_steps = 128 #2048
     n_eval_envs = 1
+    eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
     batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
     lr = 3e-4
+    # if 'countries_s3' in DATASET_NAME:
+    #     # use simple linear layers
+    #     n_envs = 128 
+    #     n_steps = 128 #2048
+    #     n_eval_envs = 1
+    #     eval_freq = n_steps*n_envs
+    #     n_epochs = 10 # number of epochs to train the model with the collected rollout
+    #     batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
+    #     lr = 3e-4
 
 
     # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 

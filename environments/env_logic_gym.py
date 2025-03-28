@@ -147,12 +147,12 @@ class LogicEnv_gym(gym.Env):
                 shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
                 dtype=np.int64,
             ),
-            'valid_actions_mask': gym.spaces.Box(
-                low=0,
-                high=1,
-                shape=torch.Size([self.padding_states]),
-                dtype=np.bool_,
-            ),            
+            # 'valid_actions_mask': gym.spaces.Box(
+            #     low=0,
+            #     high=1,
+            #     shape=torch.Size([self.padding_states]),
+            #     dtype=np.bool_,
+            # ),            
         }
         self.observation_space = gym.spaces.Dict(obs_spaces)
         # Use a fixed action space with the size of padding_states (maximum possible actions)
@@ -213,7 +213,7 @@ class LogicEnv_gym(gym.Env):
         '''Reset the environment and get a new query based on the environment configuration'''
 
         if self.mode == 'eval':
-            ''' two options:
+            ''' two options (this is option i):
                 i) pass a set of queries and labels that will be evaluted automatically (n_episodes).
                 ii) use reset_from_query to evaluate a single query'''
             assert self.eval_idx <= self.n_episodes, f"Eval index: {self.eval_idx}, n_episodes: {self.n_episodes}. "\
@@ -314,8 +314,8 @@ class LogicEnv_gym(gym.Env):
         self.update_action_space(derived_states)
         
         # Create action mask - True for valid actions, False for padding
-        valid_actions_mask = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
-        valid_actions_mask[:len(derived_states)] = True
+        # valid_actions_mask = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
+        # valid_actions_mask[:len(derived_states)] = True
 
         # print('-'*100)
         # print('reset...')
@@ -337,20 +337,21 @@ class LogicEnv_gym(gym.Env):
                 "derived_states": NonTensorData(data=derived_states),
                 "derived_atom_indices": derived_atom_indices,
                 "derived_sub_indices": derived_sub_indices,
-                "valid_actions_mask": valid_actions_mask,
+                # "valid_actions_mask": valid_actions_mask,
             },
         )
         sub_index = self.tensordict['sub_index'].cpu().numpy()
         atom_index = self.tensordict['atom_index'].cpu().numpy()
         derived_atom_indices = self.tensordict['derived_atom_indices'].cpu().numpy()
         derived_sub_indices = self.tensordict['derived_sub_indices'].cpu().numpy()
-        valid_actions_mask = self.tensordict['valid_actions_mask'].cpu().numpy()
+        # valid_actions_mask = self.tensordict['valid_actions_mask'].cpu().numpy()
         obs = {'sub_index':sub_index, 
                'atom_index':atom_index, 
                'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices,
-               'valid_actions_mask':valid_actions_mask}
-        if self.verbose:
+            #    'valid_actions_mask':valid_actions_mask
+            }
+        if self.verbose and self.mode != 'train':
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
             # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].cpu().numpy()),'\n')
         return obs, {}
@@ -363,12 +364,13 @@ class LogicEnv_gym(gym.Env):
         derived_atom_indices = self.tensordict["derived_atom_indices"]
         derived_states = self.tensordict["derived_states"]
         derived_sub_indices = self.tensordict["derived_sub_indices"]
-        valid_actions_mask = self.tensordict["valid_actions_mask"]
+        # valid_actions_mask = self.tensordict["valid_actions_mask"]
 
         # Check if the action is valid using the mask
-        if action >= self.padding_states or not valid_actions_mask[action]:
+        if action >= self.padding_states: # or not valid_actions_mask[action]:
             raise ValueError(
-                f"Invalid action ({action}). Valid actions are indicated by the mask. {valid_actions_mask}. Derived states: {derived_states}. Derived atom indices: {derived_atom_indices}.")
+                # f"Invalid action ({action}). Valid actions are indicated by the mask. {valid_actions_mask}. Derived states: {derived_states}. Derived atom indices: {derived_atom_indices}.")
+                f"Invalid action ({action}). Derived states: {derived_states}. Derived atom indices: {derived_atom_indices}.")
                 
         next_state = derived_states[action]
         next_atom_index = derived_atom_indices[action]
@@ -391,8 +393,8 @@ class LogicEnv_gym(gym.Env):
         self.update_action_space(derived_states_next)
         
         # Create next action mask
-        valid_actions_mask_next = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
-        valid_actions_mask_next[:len(derived_states_next)] = True
+        # valid_actions_mask_next = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
+        # valid_actions_mask_next[:len(derived_states_next)] = True
 
         self.current_depth += 1
         
@@ -439,7 +441,7 @@ class LogicEnv_gym(gym.Env):
                 "derived_states": NonTensorData(data=derived_states_next),
                 "derived_atom_indices": derived_atom_indices_next,
                 "derived_sub_indices": derived_sub_indices_next,
-                "valid_actions_mask": valid_actions_mask_next,
+                # "valid_actions_mask": valid_actions_mask_next,
             },
             )
 
@@ -450,17 +452,18 @@ class LogicEnv_gym(gym.Env):
         atom_index = self.tensordict['atom_index'].cpu().numpy()
         derived_atom_indices = self.tensordict['derived_atom_indices'].cpu().numpy()
         derived_sub_indices = self.tensordict['derived_sub_indices'].cpu().numpy()
-        valid_actions_mask = self.tensordict['valid_actions_mask'].cpu().numpy()
+        # valid_actions_mask = self.tensordict['valid_actions_mask'].cpu().numpy()
         obs = {'sub_index':sub_index, 
                'atom_index':atom_index, 
                'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices,
-               'valid_actions_mask':valid_actions_mask}
+            #    'valid_actions_mask':valid_actions_mask
+               }
 
         reward = self.tensordict['reward'].cpu().numpy()
         done = self.tensordict['done'].cpu().numpy()
         truncated = bool(exceeded_max_depth)
-        if self.verbose:
+        if self.verbose and self.mode != 'train':
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=action,truncated=truncated)
             # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].cpu().numpy()),'\n')
         # print('info',info)

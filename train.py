@@ -131,7 +131,13 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                 labels=[1]*len(data_handler.train_queries)
                                 ) 
                                 for i in range(args.n_envs)])
-    # env = SubprocVecEnv([make_env(eval_mode=False, seed=int(env_seeds[i])) for i in range(args.n_envs)])
+    # env = SubprocVecEnv([make_env(
+    #                             mode='train', 
+    #                             seed=int(env_seeds[i]), 
+    #                             queries=data_handler.train_queries, 
+    #                             labels=[1]*len(data_handler.train_queries)
+    #                             ) 
+    #                             for i in range(args.n_envs)])
 
     # Create multiple environments for evaluation
     eval_env_seeds = np.random.randint(0, 2**10, size=args.n_eval_envs)
@@ -143,8 +149,14 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     n_eval_episodes=args.n_eval_episodes
                                     ) 
                                     for i in range(args.n_eval_envs)])
-    # eval_env = SubprocVecEnv([make_env(eval_mode=True, seed=int(eval_env_seeds[i]), 
-    #                                 n_eval_episodes=args.n_eval_episodes) for i in range(args.n_eval_envs)])
+    # eval_env = SubprocVecEnv([make_env(
+    #                                 mode='eval', 
+    #                                 seed=int(eval_env_seeds[i]), 
+    #                                 queries=data_handler.valid_queries,
+    #                                 labels=[1]*len(data_handler.valid_queries),
+    #                                 n_eval_episodes=args.n_eval_episodes
+    #                                 ) 
+    #                                 for i in range(args.n_eval_envs)])
 
     # INIT MODEL
     if args.model_name == "PPO":
@@ -188,7 +200,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         callbacks = [timing_callback]
 
         # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
-        # reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
+        reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
 
         eval_callback = CustomEvalCallback(eval_env=eval_env, 
                                     best_model_save_path=model_path if args.save_model else None,
@@ -198,7 +210,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     deterministic=True,
                                     render=False,
                                     name=model_name,
-                                    # callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
+                                    callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
                                     # callback_after_eval=no_improvement_callback,
                                     )
 
@@ -254,33 +266,33 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     )
     print_eval_info('Test', metrics_test)
 
-    if 'kinship' not in args.dataset_name or 'countries' not in args.dataset_name:
-        print('Val set eval...')
-        metrics_valid = eval_corruptions(model,
-                                        eval_env,
-                                        data_handler.valid_queries,
-                                        corruption_mode=args.corruption_mode,
-                                        corruptions=data_handler.valid_corruptions if args.corruption_mode == 'static' else None,
-                                        n_corruptions=args.valid_negatives,
-                                        consult_janus=False,
-                                        )
-        print_eval_info('Validation', metrics_valid)
+    # if 'kinship' not in args.dataset_name or 'countries' not in args.dataset_name:
+    #     print('Val set eval...')
+    #     metrics_valid = eval_corruptions(model,
+    #                                     eval_env,
+    #                                     data_handler.valid_queries,
+    #                                     corruption_mode=args.corruption_mode,
+    #                                     corruptions=data_handler.valid_corruptions if args.corruption_mode == 'static' else None,
+    #                                     n_corruptions=args.valid_negatives,
+    #                                     consult_janus=False,
+    #                                     )
+    #     print_eval_info('Validation', metrics_valid)
 
-        print('Train set eval...')
-        metrics_train = eval_corruptions(model,
-                                        eval_env,
-                                        data_handler.train_queries,
-                                        corruption_mode=args.corruption_mode,
-                                        corruptions=data_handler.train_corruptions if args.corruption_mode == 'static' else None,
-                                        n_corruptions=args.train_neg_pos_ratio,
-                                        consult_janus=True,
-                                        )
-        print_eval_info('Train', metrics_train)
-    else:
-        metrics_train = {k: 0 for k in metrics_test.keys()}
-        metrics_valid = {k: 0 for k in metrics_test.keys()}
-    # metrics_train = {k: 0 for k in metrics_test.keys()}
-    # metrics_valid = {k: 0 for k in metrics_test.keys()}
+    #     print('Train set eval...')
+    #     metrics_train = eval_corruptions(model,
+    #                                     eval_env,
+    #                                     data_handler.train_queries,
+    #                                     corruption_mode=args.corruption_mode,
+    #                                     corruptions=data_handler.train_corruptions if args.corruption_mode == 'static' else None,
+    #                                     n_corruptions=args.train_neg_pos_ratio,
+    #                                     consult_janus=True,
+    #                                     )
+    #     print_eval_info('Train', metrics_train)
+    # else:
+    #     metrics_train = {k: 0 for k in metrics_test.keys()}
+    #     metrics_valid = {k: 0 for k in metrics_test.keys()}
+    metrics_train = {k: 0 for k in metrics_test.keys()}
+    metrics_valid = {k: 0 for k in metrics_test.keys()}
 
 
 

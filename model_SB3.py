@@ -65,7 +65,11 @@ class PPO_custom(PPO):
             # print('values', values)
             # print('actions', actions)
             # print('log_probs', log_probs)
-            # print('rewards', rewards)
+            # print('dones', dones)
+            # print only rewards where done is True
+            # print('rewards done', [r for r,d in zip(rewards,dones) if d])
+            # if any(dones):
+            #     print('ratio of positive done rewards', sum([r for r,d in zip(rewards,dones) if d]) / len([r for r,d in zip(rewards,dones) if d]))
             # print('-'*100)
             # print('sum, length of rewards', sum(rewards), len(rewards))
             # print('dones', dones)
@@ -190,7 +194,22 @@ class PolicyNetwork(nn.Module):
 
         self.observation_transform = nn.Linear(embed_dim, embed_dim)
 
-    def forward(self, obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) -> TensorDict:
+        # hidden_dim = int(embed_dim * 1.5)
+        # dropout_prob = 0.1
+        # self.observation_transform = nn.Sequential(
+        #     nn.Linear(embed_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.LayerNorm(hidden_dim),
+        #     nn.Dropout(dropout_prob),
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.LayerNorm(hidden_dim),
+        #     nn.Dropout(dropout_prob),
+        #     nn.Linear(hidden_dim, embed_dim)
+        # )
+
+    def forward(self, obs_embeddings, action_embeddings, action_atom_indices) -> TensorDict:
+    # def forward(self, obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) -> TensorDict:
         """
         Calculate logits for actions given observation embeddings and action embeddings.
         
@@ -208,16 +227,17 @@ class PolicyNetwork(nn.Module):
         # Calculate similarity between observation and action embeddings
         logits = torch.matmul(obs_features, action_embeddings.transpose(-2, -1)).squeeze(-2) # (batch_size=n_envs,pad_states)
         # Apply action mask to set invalid actions to -inf
-        if valid_actions_mask is not None:
-            # Ensure valid_actions_mask is bool
-            if valid_actions_mask.dtype != torch.bool:
-                valid_actions_mask = valid_actions_mask.bool()
-            # Apply mask (set invalid actions to -inf)
-            invalid_mask = ~valid_actions_mask
-            logits = torch.masked_fill(logits, invalid_mask, float('-inf'))
-        else:
-            # Fallback to checking action_atom_indices when mask not available
-            logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
+        # if valid_actions_mask is not None:
+        #     # Ensure valid_actions_mask is bool
+        #     if valid_actions_mask.dtype != torch.bool:
+        #         valid_actions_mask = valid_actions_mask.bool()
+        #     # Apply mask (set invalid actions to -inf)
+        #     invalid_mask = ~valid_actions_mask
+        #     logits = torch.masked_fill(logits, invalid_mask, float('-inf'))
+        # else:
+        #     # Fallback to checking action_atom_indices when mask not available
+        #     logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
+        logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
         return logits
 
 
@@ -284,8 +304,10 @@ class CustomNetwork(nn.Module):
         - latent value representation
         """
         # Assuming `features` is observation sub_indices passed here for embedding
-        obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask = features
-        probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) # (batch_size=n_envs,pad_states)
+        obs_embeddings, action_embeddings, action_atom_indices = features
+        # obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask = features
+        probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices) # (batch_size=n_envs,pad_states)
+        # probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) # (batch_size=n_envs,pad_states)
         value = self.value_network(obs_embeddings) # (batch_size=n_envs,n_states=1)
         return probs, value
     
@@ -294,15 +316,19 @@ class CustomNetwork(nn.Module):
         Forward method for the actor network.
         Accepts features (which can include sub_indices for embedding) and outputs the latent policy representation.
         """
-        obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask = features
-        return self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask)
-    
+        obs_embeddings, action_embeddings, action_atom_indices, = features
+        return self.policy_network(obs_embeddings, action_embeddings, action_atom_indices)
+        # obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask = features
+        # return self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask)
+
+
     def forward_critic(self, features: torch.Tensor) -> torch.Tensor:
         """
         Forward method for the critic network.
         Accepts features (which can include sub_indices for embedding) and outputs the latent value representation.
         """
-        obs_embeddings, _, _, _ = features
+        obs_embeddings, _, _ = features
+        # obs_embeddings, _, _, _ = features
         return self.value_network(obs_embeddings)
 
 
@@ -340,8 +366,8 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
         obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
         action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
         action_atom_indices = observations["derived_atom_indices"] # (batch_size=n_envs,pad_states,pad_atoms) 
-        # Always get the valid_actions_mask if available
-        valid_actions_mask = observations.get("valid_actions_mask", None) # shape (batch_size=n_envs,pad_states)
+        # # Always get the valid_actions_mask if available
+        # valid_actions_mask = observations.get("valid_actions_mask", None) # shape (batch_size=n_envs,pad_states)
         
         # obs_sub_indices = self.format_indices(obs_sub_indices) # (batch_size=n_envs,1,1,pad_atoms,3) #3rd dim is for matmul with predicate embeddings
         
@@ -349,7 +375,7 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
         obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.long()) # (batch_size=n_envs,n_states=1,embedding_dim)
         action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices.long()) # (batch_size=n_envs,pad_states,embedding_dim)
 
-        return obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask
+        return obs_embeddings, action_embeddings, action_atom_indices #, valid_actions_mask
 
 
 
@@ -415,6 +441,13 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
 
         # Get action probabilities and create distribution
         action_logits = latent_pi # (batch_size=n_envs,pad_states)
+        # num actions is given by action_logits where it is not -inf
+        num_actions = torch.sum(action_logits != float('-inf'), dim=-1)
+        # print('num_actions', num_actions) 
+        # show the non -inf logits
+        # print('logits', action_logits[action_logits != float('-inf')])
+        # print the ratio of actions that are more than one
+        # print('ratio of actions more than one', sum(num_actions > 1) / len(num_actions))
         distribution = self.action_dist.proba_distribution(action_logits=action_logits)
         
         # Sample a single action from the distribution
@@ -428,7 +461,8 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         print('action chosen', actions.shape, actions) if verbose else None
         print('log_prob of action chosen', log_prob.shape, log_prob) if verbose else None
         print('*'*100) if verbose else None
-
+        # print('log_prob', log_prob)
+        # print('num_actions', actions)
         return actions, values, log_prob
 
 
