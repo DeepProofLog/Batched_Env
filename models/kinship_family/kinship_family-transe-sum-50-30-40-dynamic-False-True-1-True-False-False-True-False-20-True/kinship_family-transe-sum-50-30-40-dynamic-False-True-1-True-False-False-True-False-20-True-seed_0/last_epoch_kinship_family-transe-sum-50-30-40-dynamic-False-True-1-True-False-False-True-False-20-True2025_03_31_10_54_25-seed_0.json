@@ -1,0 +1,8 @@
+{
+    "best_value": 0.36,
+    "epoch": 24576,
+    "metric": "rollout/ep_rew_mean",
+    "maximize": true,
+    "timesteps": 24576,
+    "finished_train": false
+}

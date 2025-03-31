@@ -29,7 +29,6 @@ class LogicEnv_gym(gym.Env):
                 queries: Optional[List[Term]] = None,
                 labels: Optional[List[int]] = None,
                 mode: str = 'train',
-                n_episodes: int = None,
                 corruption_mode: Optional[str] = None,
                 corruption_scheme: Optional[List[str]] = None,
                 train_neg_pos_ratio: int = 1,
@@ -95,7 +94,7 @@ class LogicEnv_gym(gym.Env):
         self.mode = mode
         self.queries = queries
         self.labels = labels
-        self.n_episodes = n_episodes
+        self.n_episodes = len(queries)
         self.eval_idx = 0
         self.mask_eval = []
         self.consult_janus_eval = False

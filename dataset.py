@@ -415,6 +415,8 @@ class DataHandlerKGE:
                  train_file: str = None,
                  valid_file: str = None,
                  test_file: str = None,
+                 n_eval_queries: int = None,
+                 n_test_queries: int = None,
                  corruption_mode: Optional[str] = None,
                  non_provable_corruptions: bool = False,
                  non_provable_queries: bool = False):
@@ -467,12 +469,7 @@ class DataHandlerKGE:
             self.test_queries = get_queries(test_path, non_provable_queries)
             self.train_corruptions = self.valid_corruptions = self.test_corruptions = self.neg_train_queries = None
 
-            # Special handling for kinship dataset
-            if 'kinship' in dataset_name:
-                print('Reducing test queries to 50 randomly selected queries')
-                np.random.seed(42)
-                self.test_queries = np.random.choice(self.test_queries, 50, replace=False).tolist()
-                
+               
             # Filter queries with predicates not in the rules
             rules_head_predicates = set(rule.head.predicate for rule in self.rules)
             
@@ -496,6 +493,11 @@ class DataHandlerKGE:
             # test = self.test_queries.copy()
             # self.test_queries = [q for q in self.valid_queries if q.predicate in rules_head_predicates]
             # self.valid_queries = [q for q in test if q.predicate in rules_head_predicates]
+
+            # np.random.seed(42)
+            # self.test_queries = np.random.choice(self.test_queries, 50, replace=False).tolist()
+            self.valid_queries = self.valid_queries[:n_eval_queries]
+            self.test_queries = self.test_queries[:n_test_queries]
 
         # Load Janus facts
         self.janus_facts = []
@@ -545,6 +547,8 @@ class DataHandler:
                  train_file: str = None, 
                  valid_file: str = None, 
                  test_file: str = None, 
+                 n_eval_queries: int = None,
+                 n_test_queries: int = None,
                  corruption_mode: Optional[str] = None, 
                  name: str = None,
                  non_provable_corruptions: bool = False,
@@ -579,6 +583,8 @@ class DataHandler:
                 train_file=train_file,
                 valid_file=valid_file,
                 test_file=test_file,
+                n_eval_queries=n_eval_queries,
+                n_test_queries=n_test_queries,
                 corruption_mode=corruption_mode,
                 non_provable_corruptions=non_provable_corruptions,
                 non_provable_queries=non_provable_queries

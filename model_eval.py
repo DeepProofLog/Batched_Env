@@ -9,6 +9,7 @@ from stable_baselines3.common import type_aliases
 from stable_baselines3.common.on_policy_algorithm import obs_as_tensor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped
 from utils import Term
+import time
 
 
 
@@ -92,7 +93,7 @@ def evaluate_policy(
     episode_starts = np.ones((env.num_envs,), dtype=bool)
     while (episode_counts < episode_count_targets).any():
         # print()
-        # print('episode_counts:',episode_counts, '/', episode_count_targets)
+        print('episode_counts:',episode_counts, '/', episode_count_targets)
         # for idx in range(n_envs):
         #     print('mask of env',idx, 'is', len(env.envs[idx].env.mask_eval), env.envs[idx].env.mask_eval)
         # actions, states = model.predict(
@@ -208,18 +209,22 @@ def eval_corruptions(
     # Determine if we're using a vectorized environment
     is_vec_env = isinstance(env, VecEnv)
     num_envs = env.num_envs if is_vec_env else 1
+
+    if len(data)%num_envs != 0:
+        print(f'Warning, for time efficiency reasons, it is convinient to choose the eval_envs as \
+              a factor of the test queries, test_queries={len(data)}, num_envs={num_envs}')
     
     if verbose >= 1:
         print(f"Evaluating {len(data)} queries with {n_corruptions} corruptions each")
         print(f"Using {'vectorized' if is_vec_env else 'single'} environment with {num_envs} envs")
     
     # Process queries in batches for efficient parallel processing
-    for batch_start in range(0, len(data), num_envs):
+    for b,batch_start in enumerate(range(0, len(data), num_envs)):
         batch_end = min(batch_start + num_envs, len(data))
         batch_size = batch_end - batch_start
         batch_queries = data[batch_start:batch_end]
 
-        # print('\n\nbatch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size)
+        print('\n\nbatch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size)
         # print('batch queries:',batch_queries)
         
         # if verbose >= 1:
@@ -267,9 +272,11 @@ def eval_corruptions(
         assert all(corruptions_list[c] == corruptions_list[0] for c in range(len(corruptions_list))), "All environments must have the same number of corruptions"
         n_corruptions = corruptions_list[0]
         # evaluate the model for n_eval_episodes=n_envs*(1+n_corruptions)
+        time_batch = time.time()
         rewards, lengths, log_probs = evaluate_policy(model, env, 
                                                 n_eval_episodes=num_envs*(1+n_corruptions), 
                                                 deterministic=deterministic)
+        print('batch',b,'took',time.time()-time_batch)
         # convert rewards, lengths, log_probs, mask_eval to np
         rewards = np.array(rewards)
         # print('\n\nrewards:',rewards.shape, rewards)

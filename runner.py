@@ -36,12 +36,12 @@ if __name__ == "__main__":
 
     # Dataset settings 
     # for countries_s3, we use non provable corruptions and provable queries, run_signature='countries_s3-transe-sum-50-5-20-dynamic-False-True-1-True-False-False-True-False-20-True'
-    DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
+    DATASET_NAME =  ["kinship_family"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
     SEED = [[0]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe']
     STATE_EMBEDDER = ['sum'] 
-    PADDING_ATOMS = [20]
+    PADDING_ATOMS = [30]
     PADDING_STATES = [40]
     ATOM_EMBEDDING_SIZE = [50]
     '''Attention: if we use static corruptions, include non provable corruptions
@@ -66,17 +66,18 @@ if __name__ == "__main__":
     janus_file = "train.pl"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [100001]
+    TIMESTEPS_TRAIN = [1000001]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
     valid_negatives = None # corruptions in validation
-    test_negatives = None # corruptions in test
-    n_eval_episodes = 100 
+    test_negatives = 10 # corruptions in test
+    n_eval_queries = 100 
+    n_test_queries = None
     # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 128 
-    n_steps = 128 #2048
+    n_steps = 64 #2048
     n_eval_envs = 1
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
@@ -236,7 +237,8 @@ if __name__ == "__main__":
         args.load_model = load_model
         args.save_model = save_model
         args.models_path = models_path+args.dataset_name
-        args.n_eval_episodes = n_eval_episodes
+        args.n_eval_queries = n_eval_queries
+        args.n_test_queries = n_test_queries if args.dataset_name != 'kinship_family' else 64
         args.valid_negatives = valid_negatives
         args.test_negatives = test_negatives
         args.eval_freq = eval_freq

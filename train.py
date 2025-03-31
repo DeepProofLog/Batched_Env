@@ -43,6 +43,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     print(f"Device: {device}")
     print(f"CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
 
+
     data_handler = DataHandler(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
@@ -50,12 +51,15 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         train_file= args.train_file,
         valid_file=args.valid_file,
         test_file= args.test_file,
+        n_eval_queries = args.n_eval_queries,
+        n_test_queries = args.n_test_queries,
         corruption_mode=args.corruption_mode,
         non_provable_corruptions=args.non_provable_corruptions,
         non_provable_queries=args.non_provable_queries,)
     data_handler= data_handler.info
 
-    args.n_eval_episodes = len(data_handler.valid_queries) if args.n_eval_episodes == -1 else min(args.n_eval_episodes, len(data_handler.valid_queries))
+    args.n_eval_queries = len(data_handler.valid_queries) if args.n_eval_queries == None else min(args.n_eval_queries, len(data_handler.valid_queries))
+    args.n_test_queries = len(data_handler.test_queries) if args.n_test_queries == None else min(args.n_test_queries, len(data_handler.valid_queries))
 
     index_manager = IndexManager(data_handler.constants,
                                 data_handler.predicates,
@@ -97,7 +101,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     embedder.embed_dim = args.state_embedding_size
 
     # Define environment creation function
-    def make_env(mode='train', seed=0, queries=None, labels=None, n_eval_episodes=None):
+    def make_env(mode='train', seed=0, queries=None, labels=None):
         def _init():
             env = LogicEnv_gym(
                         index_manager=index_manager,
@@ -105,7 +109,6 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         queries=queries,
                         labels=labels,
                         mode=mode,
-                        n_episodes=n_eval_episodes,
                         corruption_mode=args.corruption_mode,
                         corruption_scheme=args.corruption_scheme,
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
@@ -146,7 +149,6 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     seed=int(eval_env_seeds[i]), 
                                     queries=data_handler.valid_queries,
                                     labels=[1]*len(data_handler.valid_queries),
-                                    n_eval_episodes=args.n_eval_episodes
                                     ) 
                                     for i in range(args.n_eval_envs)])
     # eval_env = SubprocVecEnv([make_env(
@@ -154,7 +156,6 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     #                                 seed=int(eval_env_seeds[i]), 
     #                                 queries=data_handler.valid_queries,
     #                                 labels=[1]*len(data_handler.valid_queries),
-    #                                 n_eval_episodes=args.n_eval_episodes
     #                                 ) 
     #                                 for i in range(args.n_eval_envs)])
 
@@ -169,7 +170,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                     n_epochs=args.n_epochs,
                     verbose=1, 
                     device=device,
-                    ent_coef=0.1,
+                    ent_coef=.1,
+                    clip_range=.2,
                     policy_kwargs={'features_extractor_class':CustomCombinedExtractor,
                                     'features_extractor_kwargs':{'features_dim':embedder.embed_dim,
                                                                     'embedder': embedder}})
@@ -206,7 +208,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     best_model_save_path=model_path if args.save_model else None,
                                     log_path=log_filename if use_logger else None,
                                     eval_freq=max(int(args.eval_freq//args.n_envs),1),
-                                    n_eval_episodes=args.n_eval_episodes,
+                                    n_eval_episodes=args.n_eval_queries,
                                     deterministic=True,
                                     render=False,
                                     name=model_name,

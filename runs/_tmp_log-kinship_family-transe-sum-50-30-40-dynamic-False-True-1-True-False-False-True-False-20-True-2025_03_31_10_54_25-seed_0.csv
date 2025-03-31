@@ -1,0 +1,8 @@
+eval/mean_reward:0.39;eval/std_reward:0.487749935930288;eval/mean_ep_length:13.0;eval/std_ep_length:8.756711711595855;eval/num_timesteps:8192
+rollout/ep_rew_mean:0.34;rollout/ep_len_mean:13.88
+eval/mean_reward:0.38;eval/std_reward:0.48538644398046393;eval/mean_ep_length:13.18;eval/std_ep_length:8.713644472894218;eval/num_timesteps:16256
+rollout/ep_rew_mean:0.22;rollout/ep_len_mean:16.09
+eval/mean_reward:0.39;eval/std_reward:0.487749935930288;eval/mean_ep_length:13.1;eval/std_ep_length:8.687347120957007;eval/num_timesteps:24320
+rollout/ep_rew_mean:0.36;rollout/ep_len_mean:13.52
+eval/mean_reward:0.36;eval/std_reward:0.48;eval/mean_ep_length:13.54;eval/std_ep_length:8.61559051951751;eval/num_timesteps:32384
+rollout/ep_rew_mean:0.33;rollout/ep_len_mean:14.08
