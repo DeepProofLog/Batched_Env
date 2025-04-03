@@ -6,6 +6,7 @@ import torch as th
 import torch
 from torch import nn
 from torch.nn.functional import softmax
+import torch.nn.functional as F
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -48,6 +49,10 @@ class PPO_custom(PPO):
         callback.on_rollout_start()
 
         while n_steps < n_rollout_steps:
+            
+            if n_steps % (n_rollout_steps // 5) == 0:
+                print(f"Collecting rollouts: {n_steps}/{n_rollout_steps} steps")
+
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
@@ -55,7 +60,13 @@ class PPO_custom(PPO):
             with th.no_grad():
                 # Convert observations to tensor and pass to policy
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                # print('*'*50)
+                # print('\nobs_tensor')
+                # for key, value in obs_tensor.items():
+                #     print(key,value.shape,'\n',value)
                 actions, values, log_probs = self.policy(obs_tensor)
+                # print('actions', actions.shape, actions)
+                # print('\n','*'*50)
             actions = actions.cpu().numpy()
 
             # Execute actions in environment
@@ -188,88 +199,156 @@ class PPO_custom(PPO):
         callback.on_training_end()
         return self
 
+
 class PolicyNetwork(nn.Module):
-    def __init__(self, embed_dim=200):
+    def __init__(self, embed_dim=64, hidden_dim=128, num_layers=8, dropout_prob=0.2):
+        print('Embedding dim in policy', embed_dim)
         super().__init__()
-
-        self.observation_transform = nn.Linear(embed_dim, embed_dim)
-
-        # hidden_dim = int(embed_dim * 1.5)
-        # dropout_prob = 0.1
-        # self.observation_transform = nn.Sequential(
-        #     nn.Linear(embed_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.LayerNorm(hidden_dim),
-        #     nn.Dropout(dropout_prob),
-        #     nn.Linear(hidden_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.LayerNorm(hidden_dim),
-        #     nn.Dropout(dropout_prob),
-        #     nn.Linear(hidden_dim, embed_dim)
-        # )
-
-    def forward(self, obs_embeddings, action_embeddings, action_atom_indices) -> TensorDict:
-    # def forward(self, obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) -> TensorDict:
-        """
-        Calculate logits for actions given observation embeddings and action embeddings.
+        # Initial transformation from observation embedding to hidden representation
+        self.obs_transform = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout_prob)
+        )
         
-        Args:
-            obs_embeddings: Embedded observation (batch_size=n_envs,n_states=1,embedding_dim)
-            action_embeddings: Embedded possible actions (batch_size=n_envs,pad_states,embedding_dim)
-            action_atom_indices: Indices of atoms in actions (batch_size=n_envs,pad_states,pad_atoms)
-            valid_actions_mask: Boolean mask indicating which actions are valid (batch_size=n_envs,pad_states)
-            
-        Returns:
-            Logits for actions, with -inf for invalid actions. (batch_size=n_envs,pad_states)
-        """
-        # Transform observation features
-        obs_features = self.observation_transform(obs_embeddings)
-        # Calculate similarity between observation and action embeddings
-        logits = torch.matmul(obs_features, action_embeddings.transpose(-2, -1)).squeeze(-2) # (batch_size=n_envs,pad_states)
-        # Apply action mask to set invalid actions to -inf
-        # if valid_actions_mask is not None:
-        #     # Ensure valid_actions_mask is bool
-        #     if valid_actions_mask.dtype != torch.bool:
-        #         valid_actions_mask = valid_actions_mask.bool()
-        #     # Apply mask (set invalid actions to -inf)
-        #     invalid_mask = ~valid_actions_mask
-        #     logits = torch.masked_fill(logits, invalid_mask, float('-inf'))
-        # else:
-        #     # Fallback to checking action_atom_indices when mask not available
-        #     logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
+        # Residual blocks for deep feature extraction
+        self.res_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.LayerNorm(hidden_dim),
+                nn.Dropout(dropout_prob)
+            ) for _ in range(num_layers)
+        ])
+        
+        # Final transformation that projects the processed observation back to the embedding space
+        self.out_transform = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, embed_dim)
+        )
+    
+    def forward(self, obs_embeddings, action_embeddings, action_atom_indices):
+        # Process observation embeddings through initial transformation
+        x = self.obs_transform(obs_embeddings)
+        # Pass through a series of residual blocks to deepen the representation
+        for block in self.res_blocks:
+            residual = x
+            x = block(x)
+            x = x + residual  # Residual connection for improved gradient flow
+        # Project back to the original embedding space
+        x = self.out_transform(x)
+        # Compute similarity (dot product) between observation and action embeddings
+        logits = torch.matmul(x, action_embeddings.transpose(-2, -1)).squeeze(-2)
+        # logits = F.cosine_similarity(x, action_embeddings, dim=-1) # Compare along the embedding dimension
+        # Mask out invalid actions: where the sum over action_atom_indices is 0, set logits to -inf
         logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
         return logits
 
-
 class ValueNetwork(nn.Module):
-    def __init__(self, embed_dim=200):
+    def __init__(self, embed_dim=64, hidden_dim=128, num_layers=8, dropout_prob=0.2):
+        print('Embedding dim in value', embed_dim)
         super().__init__()
-
-        self.network = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
+        # Initial transformation from observation embedding to hidden dimension
+        self.input_layer = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(embed_dim, 1))
-
-        # hidden_dim = int(embed_dim * 1.5)
-        # dropout_prob = 0.1
-        # self.network = nn.Sequential(
-        #     nn.Linear(embed_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.LayerNorm(hidden_dim),
-        #     nn.Dropout(dropout_prob),
-        #     nn.Linear(hidden_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.LayerNorm(hidden_dim),
-        #     nn.Dropout(dropout_prob),
-        #     nn.Linear(hidden_dim, hidden_dim // 2),
-        #     nn.ReLU(),
-        #     nn.Linear(hidden_dim // 2, 1)
-        # )
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout_prob)
+        )
         
-    def forward(self, obs_embeddings) -> TensorDict:
-        value = self.network(obs_embeddings)
-        value = value.squeeze(-1)
-        return value
+        # Residual blocks for deep feature extraction
+        self.res_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.LayerNorm(hidden_dim),
+                nn.Dropout(dropout_prob)
+            ) for _ in range(num_layers)
+        ])
+        
+        # Final output layers to produce a single scalar value estimate
+        self.output_layer = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+    
+    def forward(self, obs_embeddings):
+        # Process observation embeddings through the input layer
+        x = self.input_layer(obs_embeddings)
+        # Pass through residual blocks
+        for block in self.res_blocks:
+            residual = x
+            x = block(x)
+            x = x + residual
+        # Get final value prediction
+        value = self.output_layer(x)
+        return value.squeeze(-1)
+
+# class PolicyNetwork(nn.Module):
+#     def __init__(self, embed_dim=200):
+#         super().__init__()
+
+#         # self.observation_transform = nn.Linear(embed_dim, embed_dim)
+#         self.observation_transform = nn.Sequential(
+#             nn.Linear(embed_dim, embed_dim),
+#             nn.ReLU(),
+#             nn.Linear(embed_dim, embed_dim),
+#             nn.ReLU(),
+#             nn.Linear(embed_dim, embed_dim),
+#             nn.ReLU(),
+#             nn.Linear(embed_dim, embed_dim),
+#         )
+
+#     def forward(self, obs_embeddings, action_embeddings, action_atom_indices) -> TensorDict:
+#     # def forward(self, obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) -> TensorDict:
+#         """
+#         Calculate logits for actions given observation embeddings and action embeddings.
+        
+#         Args:
+#             obs_embeddings: Embedded observation (batch_size=n_envs,n_states=1,embedding_dim)
+#             action_embeddings: Embedded possible actions (batch_size=n_envs,pad_states,embedding_dim)
+#             action_atom_indices: Indices of atoms in actions (batch_size=n_envs,pad_states,pad_atoms)
+#             valid_actions_mask: Boolean mask indicating which actions are valid (batch_size=n_envs,pad_states)
+            
+#         Returns:
+#             Logits for actions, with -inf for invalid actions. (batch_size=n_envs,pad_states)
+#         """
+#         # Transform observation features
+#         obs_features = self.observation_transform(obs_embeddings)
+#         # Calculate similarity between observation and action embeddings
+#         logits = torch.matmul(obs_features, action_embeddings.transpose(-2, -1)).squeeze(-2) # (batch_size=n_envs,pad_states)
+#         logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
+#         return logits
+
+
+# class ValueNetwork(nn.Module):
+#     def __init__(self, embed_dim=200):
+#         super().__init__()
+
+#         # self.network = nn.Sequential(
+#         #     nn.Linear(embed_dim, embed_dim),
+#         #     nn.ReLU(),
+#         #     nn.Linear(embed_dim, 1))
+
+#         self.network = nn.Sequential(
+#             nn.Linear(embed_dim, embed_dim),
+#             nn.ReLU(),
+#             nn.LayerNorm(embed_dim),    # Normalize activations to stabilize learning
+#             nn.Dropout(0.1),            # Add a bit of dropout to prevent overfitting
+#             nn.Linear(embed_dim, embed_dim),  # Maintain the dimensionality for deeper representation
+#             nn.ReLU(),
+#             nn.LayerNorm(embed_dim),
+#             nn.Dropout(0.1),
+#             nn.Linear(embed_dim, 1)      # Final output remains a single value
+#         )
+
+#     def forward(self, obs_embeddings) -> TensorDict:
+#         value = self.network(obs_embeddings)
+#         value = value.squeeze(-1)
+#         return value
 
 
 class CustomNetwork(nn.Module):

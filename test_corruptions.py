@@ -1,4 +1,4 @@
-from environments.env_logic_gym import IndexManager
+from index_manager import IndexManager
 from dataset import DataHandler, BasicNegativeSamplerDomain
 from utils import get_device
 import numpy as np

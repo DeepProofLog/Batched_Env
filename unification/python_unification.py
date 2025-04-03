@@ -131,6 +131,13 @@ def get_next_unification_python(state: List[Term], facts: List[Term], rules: Lis
     Returns:
         List of possible next states, where each state is a list of Terms
     """
+
+    # Handle terminal states
+    if any(term.predicate == 'False' for term in state):
+        print('\n\nState:', state) if verbose else None
+        return [[Term('False', [])]]
+    if any(term.predicate == 'True' for term in state):
+        state = [term for term in state if term.predicate != 'True']
     if not state:
         return [[Term('True', [])]]
     
@@ -158,22 +165,14 @@ def get_next_unification_python(state: List[Term], facts: List[Term], rules: Lis
                 new_args.append(arg)
         new_state.append(Term(term.predicate, new_args))
     state = new_state
-
-    # Handle terminal states
-    if any(term.predicate == 'False' for term in state):
-        print('\n\nState:', state) if verbose else None
-        return [[Term('False', [])]]
-    if all(term.predicate == 'True' for term in state):
-        print('\n\nState:', state) if verbose else None
-        return [[Term('True', [])]]
     
-    # # if there are atoms with only variables, put them at the end of the state
+    # if there are atoms with only variables, put them at the end of the state
     state.sort(key=lambda term: 1 if all(is_variable(arg) for arg in term.args) else 0)
     
     # Get the first query and remaining state
     query, *remaining_state = state
     next_states = []
-    
+
     # Try unifying with facts
     print('\n\n**********\nQuery:', query, 'Remaining state:', remaining_state,'\n') if verbose else None
     print('unification with facts') if verbose else None
@@ -200,7 +199,7 @@ def get_next_unification_python(state: List[Term], facts: List[Term], rules: Lis
             atom = next_state[j]
             if not any(is_variable(arg) for arg in atom.args) and atom in facts:
                 next_states[i][j] = Term('True', [])
-        # if one next state is True, return True
+        # if the next state i is True, return True (we found a True next state)
         if all(term.predicate == 'True' for term in next_state):
             return [[Term('True', [])]]
 
@@ -212,7 +211,7 @@ def get_next_unification_python(state: List[Term], facts: List[Term], rules: Lis
         # Apply substitutions to remaining state
         new_remaining = [apply_substitution(term, subs) for term in remaining_state]
         # Combine rule body with remaining state
-        new_state = body + new_remaining
+        new_state = body + new_remaining 
         print('New state:', rules[i], new_state) if verbose else None
         next_states.append(new_state)
     

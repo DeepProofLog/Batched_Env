@@ -26,12 +26,14 @@ if __name__ == "__main__":
             self.file.flush()
             self.stdout.flush()
 
-    LIMIT_SPACE = [True] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
     DYNAMIC_CONSULT = [True] # [True, False]
     FALSE_RULES = [False] 
+    MEMORY_PRUNING = [True] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     END_PROOF_ACTION = [True]
-    SKIP_UNARY_ACTIONS = [False]
+    SKIP_UNARY_ACTIONS = [True]
+    TRUNCATE_ATOMS = [True] # if more atoms in a state than pad_atoms, truncate the state to false
+    TRUNCATE_STATES = [True] # if more states in next states than pad_states, truncate the state to false
     # reward_type = 1
 
     # Dataset settings 
@@ -39,11 +41,11 @@ if __name__ == "__main__":
     DATASET_NAME =  ["kinship_family"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
     SEED = [[0]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
-    ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe']
-    STATE_EMBEDDER = ['sum'] 
-    PADDING_ATOMS = [30]
-    PADDING_STATES = [40]
-    ATOM_EMBEDDING_SIZE = [50]
+    ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
+    STATE_EMBEDDER = ['mean'] #'mean'
+    PADDING_ATOMS = [5]
+    PADDING_STATES = [10]
+    ATOM_EMBEDDING_SIZE = [64]
     '''Attention: if we use static corruptions, include non provable corruptions
     In pararell eval, we evaluate based on a fixed number of corruptions'''
     CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
@@ -66,19 +68,20 @@ if __name__ == "__main__":
     janus_file = "train.pl"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [1000001]
+    TIMESTEPS_TRAIN = [2000001]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
     valid_negatives = None # corruptions in validation
-    test_negatives = 10 # corruptions in test
-    n_eval_queries = 100 
+    test_negatives = 100 # corruptions in test
+    n_eval_queries = 200 
     n_test_queries = None
     # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 128 
-    n_steps = 64 #2048
-    n_eval_envs = 1
+    n_envs = 128
+    n_steps = 128 #2048
+    n_eval_envs = 512
+    n_callback_envs = 1
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
     batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
@@ -111,11 +114,14 @@ if __name__ == "__main__":
     parser.add_argument("--non_provable_corruptions", default = None, help="non_provable_corruptions")
     parser.add_argument("--train_neg_pos_ratio", default = None, help="train_neg_pos_ratio")
 
-    parser.add_argument("--limit_space", default = None, help="limit_space")
+    parser.add_argument("--memory_pruning", default = None, help="memory_pruning")
     parser.add_argument("--rule_depend_var", default = None, help="rule_depend_var")
     parser.add_argument("--dynamic_consult", default = None, help="dynamic_consult")
     parser.add_argument("--false_rules", default = None, help="false_rules")
     parser.add_argument("--end_proof_action", default = None, help="end_proof_action")
+    parser.add_argument("--skip_unary_actions", default = None, help="skip_unary_actions")
+    parser.add_argument("--truncate_atoms", default = None, help="truncate_atoms")
+    parser.add_argument("--truncate_states", default = None, help="truncate_states")
 
     parser.add_argument("--padding_atoms", default = None, help="padding_atoms")
     parser.add_argument("--padding_states", default = None, help="padding_states")
@@ -133,11 +139,14 @@ if __name__ == "__main__":
     if args.non_provable_corruptions: NON_PROVABLE_CORRUPTIONS = [ast.literal_eval(args.non_provable_corruptions)]
     if args.train_neg_pos_ratio: TRAIN_NEG_POS_RATIO = [int(args.train_neg_pos_ratio)]
 
-    if args.limit_space: LIMIT_SPACE = [ast.literal_eval(args.limit_space)]
+    if args.memory_pruning: MEMORY_PRUNING = [ast.literal_eval(args.memory_pruning)]
     if args.rule_depend_var: RULE_DEPEND_VAR = [ast.literal_eval(args.rule_depend_var)]
     if args.dynamic_consult: DYNAMIC_CONSULT = [ast.literal_eval(args.dynamic_consult)]
     if args.false_rules: FALSE_RULES = [ast.literal_eval(args.false_rules)]
     if args.end_proof_action: END_PROOF_ACTION = [ast.literal_eval(args.end_proof_action)]
+    if args.skip_unary_actions: SKIP_UNARY_ACTIONS = [ast.literal_eval(args.skip_unary_actions)]
+    if args.truncate_atoms: TRUNCATE_ATOMS = [ast.literal_eval(args.truncate_atoms)]
+    if args.truncate_states: TRUNCATE_STATES = [ast.literal_eval(args.truncate_states)]
 
     if args.padding_atoms: PADDING_ATOMS = [int(args.padding_atoms)]
     if args.padding_states: PADDING_STATES = [int(args.padding_states)]
@@ -156,13 +165,16 @@ if __name__ == "__main__":
         'max_depth': MAX_DEPTH,
         'timesteps_train': TIMESTEPS_TRAIN,
         'restore_best_val_model': RESTORE_BEST_VAL_MODEL,
-        'limit_space': LIMIT_SPACE,
+        'memory_pruning': MEMORY_PRUNING,
         'rule_depend_var': RULE_DEPEND_VAR,
         'dynamic_consult': DYNAMIC_CONSULT,
         'corruption_mode': CORRUPTION_MODE,
         'train_neg_pos_ratio': TRAIN_NEG_POS_RATIO,
         'false_rules': FALSE_RULES,
         'end_proof_action': END_PROOF_ACTION,
+        'skip_unary_actions': SKIP_UNARY_ACTIONS,
+        'truncate_atoms': TRUNCATE_ATOMS,
+        'truncate_states': TRUNCATE_STATES,
         'padding_atoms': PADDING_ATOMS,
         'padding_states': PADDING_STATES,
         'non_provable_queries': NON_PROVABLE_QUERIES,
@@ -186,7 +198,6 @@ if __name__ == "__main__":
         if args.atom_embedder == "rotate":
             constant_embedding_size = 2*args.atom_embedding_size
 
-        args.end_proof_action = False
         
         args.corruption_scheme = ['head','tail']
         if 'countries' in args.dataset_name or 'ablation in dataset_name' in args.dataset_name:
@@ -238,12 +249,13 @@ if __name__ == "__main__":
         args.save_model = save_model
         args.models_path = models_path+args.dataset_name
         args.n_eval_queries = n_eval_queries
-        args.n_test_queries = n_test_queries if args.dataset_name != 'kinship_family' else 64
+        args.n_test_queries = n_test_queries
         args.valid_negatives = valid_negatives
         args.test_negatives = test_negatives
         args.eval_freq = eval_freq
         args.n_envs = n_envs
         args.n_eval_envs = n_eval_envs
+        args.n_callback_envs = n_callback_envs
         args.n_steps = n_steps
         args.n_epochs = n_epochs
         args.batch_size = batch_size
@@ -251,8 +263,8 @@ if __name__ == "__main__":
 
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,args.padding_atoms,args.padding_states,
                     args.corruption_mode, args.non_provable_queries, args.non_provable_corruptions,args.train_neg_pos_ratio, 
-                    args.dynamic_consult, args.false_rules, args.end_proof_action, args.limit_space, args.rule_depend_var,
-                    args.max_depth,args.restore_best_val_model)
+                    args.dynamic_consult, args.false_rules, args.end_proof_action, args.skip_unary_actions, args.truncate_atoms,
+                    args.truncate_states, args.memory_pruning, args.rule_depend_var, args.max_depth,args.restore_best_val_model)
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         # # Redirect stdout to the Tee class

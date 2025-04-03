@@ -8,7 +8,153 @@ from typing import Tuple, Optional
 import math
 
 from dataset import DataHandler
-from environments.env_logic_gym import IndexManager
+from index_manager import IndexManager
+
+
+class Attention_State(nn.Module):
+    """
+    Computes state embeddings using multi-head self-attention over atom embeddings.
+    Assumes atoms within a state form a set/sequence to attend over.
+    """
+    def __init__(self, 
+                 embed_dim: int, 
+                 num_heads: int, 
+                 dropout_rate: float = 0.0, 
+                 regularization: float = 0.0, 
+                 device="cpu"):
+        """
+        Args:
+            embed_dim: The embedding dimension of atoms and the final state.
+            num_heads: Number of attention heads. Must divide embed_dim.
+            dropout_rate: Dropout probability for attention and final output.
+            regularization: Coefficient for L2 regularization loss on the output.
+            device: Device for computation.
+        """
+        super(Attention_State, self).__init__()
+        
+        if embed_dim % num_heads != 0:
+            raise ValueError(f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})")
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.dropout_rate = dropout_rate
+        self.regularization = regularization
+        self.device = device
+
+        # Multi-Head Self-Attention Layer
+        # batch_first=True expects input shape [Batch, Seq, Feat]
+        self.attention = nn.MultiheadAttention(embed_dim=embed_dim, 
+                                               num_heads=num_heads, 
+                                               dropout=dropout_rate, 
+                                               batch_first=True) 
+                                               
+        # Optional: Layer Normalization for stability
+        self.layer_norm1 = nn.LayerNorm(embed_dim)
+        # Optional: A small FeedForward network after attention pooling
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 2), # Expand
+            nn.ReLU(),
+            nn.Dropout(dropout_rate), # Apply dropout within FFN
+            nn.Linear(embed_dim * 2, embed_dim)  # Contract
+        )
+        self.layer_norm2 = nn.LayerNorm(embed_dim)
+
+        if dropout_rate > 0:
+            self.output_dropout = nn.Dropout(p=dropout_rate)
+            
+        self.to(device)
+
+    def add_loss(self, loss_value):
+        # Placeholder for your custom regularization loss mechanism
+        # In a standard setup, this might be handled by the optimizer directly
+        # For now, we'll just store it if needed, or you can integrate later.
+        if not hasattr(self, '_custom_losses'):
+            self._custom_losses = []
+        self._custom_losses.append(loss_value)
+        # print(f"Debug: Added loss {loss_value.item()}") # Optional debug
+
+
+    def forward(self, atom_embeddings: torch.Tensor, padding_mask: torch.Tensor = None) -> torch.Tensor:
+        """
+        Args:
+            atom_embeddings: Tensor of shape [B, n_states, n_atoms, embed_dim].
+                             Represents the embeddings of atoms within each state.
+            padding_mask: Optional tensor of shape [B, n_states, n_atoms] where True indicates
+                          a padded atom that should be ignored by attention. 
+                          (Requires adjustment below if used).
+
+        Returns:
+            output: Tensor of shape [B, n_states, embed_dim] representing state embeddings.
+        """
+        B, n_states, n_atoms, embed_dim = atom_embeddings.shape
+        
+        # Reshape for MultiheadAttention: Combine B and n_states into the batch dim
+        # Input shape: [B * n_states, n_atoms, embed_dim]
+        flat_atoms = atom_embeddings.reshape(B * n_states, n_atoms, embed_dim)
+
+        # --- Handle Padding Mask (if provided) ---
+        # MultiheadAttention expects key_padding_mask of shape [Batch, Seq_len]
+        # where True indicates positions to be *ignored*.
+        key_padding_mask = None
+        if padding_mask is not None:
+            if padding_mask.shape != (B, n_states, n_atoms):
+                 raise ValueError("padding_mask shape must be [B, n_states, n_atoms]")
+            key_padding_mask = padding_mask.reshape(B * n_states, n_atoms)
+            # Ensure mask is boolean; True means ignore.
+            # If your mask means something else (e.g., 0 for padding), invert it:
+            # key_padding_mask = ~key_padding_mask 
+
+        # Apply LayerNorm before attention
+        normed_atoms = self.layer_norm1(flat_atoms)
+
+        # Apply self-attention: query, key, value are all the atom embeddings
+        # attn_output shape: [B * n_states, n_atoms, embed_dim]
+        # attn_weights shape: [B * n_states, n_atoms, n_atoms] (average over heads)
+        attn_output, _ = self.attention(query=normed_atoms, 
+                                        key=normed_atoms, 
+                                        value=normed_atoms,
+                                        key_padding_mask=key_padding_mask,
+                                        need_weights=False) # Don't need weights unless debugging
+
+        # Add residual connection (skip connection)
+        res_atoms = flat_atoms + attn_output # Or normed_atoms + attn_output
+
+        # --- Pooling Strategy ---
+        # Average pooling across the atoms dimension (n_atoms)
+        # Apply mask *before* pooling if available to ignore padding tokens in mean calculation
+        if key_padding_mask is not None:
+             # Expand mask for broadcasting: [B*n_states, n_atoms, 1]
+             mask_expanded = (~key_padding_mask).unsqueeze(-1).float() 
+             # Element-wise multiply features by mask (zeros out padded positions)
+             masked_res_atoms = res_atoms * mask_expanded 
+             # Summing masked features and dividing by the count of non-padded items
+             pooled_state = masked_res_atoms.sum(dim=1) / mask_expanded.sum(dim=1).clamp(min=1e-8)
+        else:
+             # Simple mean pooling if no mask provided
+             pooled_state = res_atoms.mean(dim=1) # Shape: [B * n_states, embed_dim]
+        
+        # Apply LayerNorm and FeedForward network
+        normed_pooled = self.layer_norm2(pooled_state)
+        ffn_output = self.ffn(normed_pooled)
+        
+        # Add second residual connection
+        final_pooled_state = pooled_state + ffn_output # Or normed_pooled + ffn_output
+
+        # Reshape back to original batch/state structure
+        # Shape: [B, n_states, embed_dim]
+        state_emb = final_pooled_state.reshape(B, n_states, embed_dim)
+
+        # Apply final dropout
+        if self.dropout_rate > 0:
+            state_emb = self.output_dropout(state_emb)
+
+        # Apply regularization loss (using the custom method)
+        if self.regularization > 0:
+            # Calculate L2 norm across the embedding dimension for each state
+            reg_loss = self.regularization * torch.linalg.vector_norm(state_emb, ord=2, dim=-1).mean() 
+            self.add_loss(reg_loss)
+            
+        return state_emb
 
 def read_embeddings(file_c:str, file_p:str, constant_str2idx:dict, predicate_str2idx:dict)-> Tuple[dict, dict]:
     '''Read embeddings from a file'''
@@ -408,6 +554,107 @@ class Transformer(nn.Module):
         # Integrate with your overall loss handling
         pass
 
+class MultiHeadAttention(nn.Module):
+    """Multi-head attention for computing atom embeddings with scaled dot-product attention.
+    
+    Expected input shapes:
+      - predicate_emb: [B, n_states, n_atoms, 1, embed_dim]
+      - constant_embs: [B, n_states, n_atoms, 2, embed_dim]
+      
+    Returns:
+      - output: [B, n_states, n_atoms, embed_dim]
+    """
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int = 4,
+        dropout_rate: float = 0.0,
+        device: str = "cpu"
+    ):
+        super(MultiHeadAttention, self).__init__()
+        if embed_dim % num_heads != 0:
+            raise ValueError("embed_dim must be divisible by num_heads")
+        
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.device = device
+        
+        # Linear projections for query, key and value
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        
+        # Final projection after concatenating heads
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        
+        self.dropout = nn.Dropout(dropout_rate)
+        
+    def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            predicate_emb: Tensor of shape [B, n_states, n_atoms, 1, embed_dim]
+            constant_embs: Tensor of shape [B, n_states, n_atoms, 2, embed_dim]
+        Returns:
+            output: Tensor of shape [B, n_states, n_atoms, embed_dim]
+        """
+        # Move tensors to the specified device
+        predicate_emb = predicate_emb.to(self.device)
+        constant_embs = constant_embs.to(self.device)
+        
+        # Apply dropout
+        predicate_emb = self.dropout(predicate_emb)
+        constant_embs = self.dropout(constant_embs)
+        
+        # Remove the singleton dimension from predicate_emb:
+        # Now shape: [B, n_states, n_atoms, embed_dim]
+        predicate_emb = predicate_emb.squeeze(3)
+        
+        # Linear projections
+        # For predicate: [B, n_states, n_atoms, embed_dim]
+        # For constants: [B, n_states, n_atoms, 2, embed_dim]
+        Q = self.q_proj(predicate_emb)  # [B, n_states, n_atoms, embed_dim]
+        K = self.k_proj(constant_embs)    # [B, n_states, n_atoms, 2, embed_dim]
+        V = self.v_proj(constant_embs)    # [B, n_states, n_atoms, 2, embed_dim]
+        
+        # Reshape for multi-head attention:
+        # Q: reshape to [B, n_states, n_atoms, num_heads, head_dim] then add a singleton constant dim
+        Q = Q.view(*Q.shape[:-1], self.num_heads, self.head_dim).unsqueeze(3)  # [B, n_states, n_atoms, 1, num_heads, head_dim]
+        
+        # K and V: reshape to [B, n_states, n_atoms, 2, num_heads, head_dim]
+        K = K.view(*K.shape[:-1], self.num_heads, self.head_dim)
+        V = V.view(*V.shape[:-1], self.num_heads, self.head_dim)
+        
+        # Transpose to bring num_heads before the constant dimension:
+        # Q becomes [B, n_states, n_atoms, num_heads, 1, head_dim]
+        Q = Q.transpose(3, 4)
+        # K and V become [B, n_states, n_atoms, num_heads, 2, head_dim]
+        K = K.transpose(3, 4)
+        V = V.transpose(3, 4)
+        
+        # Scaled dot-product attention:
+        # Compute scores: Q @ K^T along last two dimensions.
+        # K.transpose(-2, -1) changes K to [B, n_states, n_atoms, num_heads, head_dim, 2]
+        # Resulting scores shape: [B, n_states, n_atoms, num_heads, 1, 2]
+        scores = torch.matmul(Q, K.transpose(-2, -1))
+        scores = scores.squeeze(-2)  # Now [B, n_states, n_atoms, num_heads, 2]
+        scores = scores / math.sqrt(self.head_dim)
+        
+        # Compute attention weights with softmax over the constant dimension (last dim)
+        attn_weights = F.softmax(scores, dim=-1)  # [B, n_states, n_atoms, num_heads, 2]
+        
+        # Expand weights for weighted sum: [B, n_states, n_atoms, num_heads, 2, 1]
+        attn_weights = attn_weights.unsqueeze(-1)
+        # Weighted sum of V: multiply and sum over constant dimension -> [B, n_states, n_atoms, num_heads, head_dim]
+        weighted_sum = (attn_weights * V).sum(dim=-2)
+        
+        # Concatenate heads: reshape from [B, n_states, n_atoms, num_heads, head_dim] to [B, n_states, n_atoms, embed_dim]
+        concat = weighted_sum.view(*weighted_sum.shape[:-2], self.embed_dim)
+        
+        # Final linear projection
+        output = self.out_proj(concat)
+        
+        return output
 
 class Attention(nn.Module):
     """Attention-based layer for computing atom embeddings using dot-product attention.
@@ -726,6 +973,36 @@ class Sum_state(nn.Module):
         if self.regularization > 0:
             self.add_loss(self.regularization * atom_embeddings.norm(p=2))
         return atom_embeddings.sum(dim=-2)
+
+class Mean_state(nn.Module):
+    def __init__(self, dropout_rate: float=0.0, regularization: float=0.0, device="cpu"): 
+        super(Mean_state, self).__init__()
+        self.dropout_rate = dropout_rate
+        self.regularization = regularization
+        if dropout_rate > 0:
+            self.dropout = nn.Dropout(p=dropout_rate)
+        self.device = device
+        self.to(device)
+
+    def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
+        if self.dropout_rate > 0:
+            atom_embeddings = self.dropout(atom_embeddings)
+        if self.regularization > 0:
+            self.add_loss(self.regularization * atom_embeddings.norm(p=2))
+        return atom_embeddings.mean(dim=-2)
+
+    # def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
+
+    #     # 1. Sum atom embeddings along the atom dimension (-2) to get state embeddings
+    #     # Shape changes from [1, n, 5, 64] -> [1, n, 64]
+    #     state_embeddings_summed = atom_embeddings.sum(dim=-2)
+
+    #     # 2. Normalize the resulting summed state embeddings
+    #     # Normalization is done along the embedding dimension (-1)
+    #     # Shape remains [1, n, 64]
+    #     normalized_state_embeddings = F.normalize(state_embeddings_summed, p=2, dim=-1)
+
+    #     return normalized_state_embeddings
     
 class Sum_atom(nn.Module):
     """For atom or state embeddings, simply sum the embeddings of the constants&predicates or atoms."""
@@ -883,7 +1160,8 @@ def Emb_Atom_Factory(name: str='transe',
     elif name.casefold() == 'rnn':
         return RNN(embed_dim=embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
     elif name.casefold() == 'attention':
-        return Attention(embed_dim=embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
+        # return Attention(embed_dim=embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
+        return MultiHeadAttention(embed_dim=embedding_dim, dropout_rate=dropout_rate, device=device)
     else:
         raise ValueError(f"Unknown KGE model: {name}")
 
@@ -899,6 +1177,8 @@ def Emb_State_Factory(name: str='transe',
         return Concat_States(padding_atoms, dropout_rate=dropout_rate, regularization=regularization, device=device)
     elif name.casefold() == 'sum':
         return Sum_state(dropout_rate=dropout_rate, regularization=regularization, device=device)
+    elif name.casefold() == 'mean':
+        return Mean_state(dropout_rate=dropout_rate, regularization=regularization, device=device)
     elif name.casefold() == 'rnn':
         return RNN_state(embed_dim=embedding_dim, dropout_rate=dropout_rate, regularization=regularization, device=device)
     elif name.casefold() == 'transformer':

@@ -4,7 +4,8 @@ import random
 import torch
 from typing import Dict
 
-from environments.env_logic_gym import LogicEnv_gym, IndexManager
+from env import LogicEnv_gym
+from index_manager import IndexManager
 from utils import get_device, print_eval_info
 from my_callbacks import SB3ModelCheckpoint, CustomEvalCallback, EpochTimingCallback
 from dataset import DataHandler
@@ -115,8 +116,11 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         seed=seed,
                         dynamic_consult=args.dynamic_consult,
                         max_depth=args.max_depth,
-                        limit_space=args.limit_space,
+                        memory_pruning=args.memory_pruning,
                         end_proof_action=args.end_proof_action,
+                        skip_unary_actions=args.skip_unary_actions,
+                        truncate_atoms=args.truncate_atoms,
+                        truncate_states=args.truncate_states,
                         padding_atoms=args.padding_atoms,
                         padding_states=args.padding_states,
                         device='cpu', 
@@ -158,6 +162,22 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     #                                 labels=[1]*len(data_handler.valid_queries),
     #                                 ) 
     #                                 for i in range(args.n_eval_envs)])
+
+    callback_env_seeds = np.random.randint(0, 2**10, size=args.n_callback_envs)
+    callback_env = DummyVecEnv([make_env(
+                                    mode='eval', 
+                                    seed=int(callback_env_seeds[i]), 
+                                    queries=data_handler.valid_queries,
+                                    labels=[1]*len(data_handler.valid_queries),
+                                    ) 
+                                    for i in range(args.n_callback_envs)])
+    # callback_env = SubprocVecEnv([make_env(
+    #                                 mode='eval',
+    #                                 seed=int(callback_env_seeds[i]),
+    #                                 queries=data_handler.valid_queries,
+    #                                 labels=[1]*len(data_handler.valid_queries),
+    #                                 )
+    #                                 for i in range(args.n_callback_envs)])
 
     # INIT MODEL
     if args.model_name == "PPO":
@@ -204,7 +224,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
 
-        eval_callback = CustomEvalCallback(eval_env=eval_env, 
+        eval_callback = CustomEvalCallback(eval_env=callback_env, 
                                     best_model_save_path=model_path if args.save_model else None,
                                     log_path=log_filename if use_logger else None,
                                     eval_freq=max(int(args.eval_freq//args.n_envs),1),

@@ -92,8 +92,10 @@ def evaluate_policy(
     # states = None
     episode_starts = np.ones((env.num_envs,), dtype=bool)
     while (episode_counts < episode_count_targets).any():
-        # print()
-        print('episode_counts:',episode_counts, '/', episode_count_targets)
+        # print('episode_counts:',episode_counts, '/', episode_count_targets)
+        # print the episode counts every 10 % of the total number of episodes
+        if np.sum(episode_counts) % (n_eval_episodes//10) == 0:
+            print(f'\rProcessing {np.sum(episode_counts)}/{n_eval_episodes}', end='', flush=True)
         # for idx in range(n_envs):
         #     print('mask of env',idx, 'is', len(env.envs[idx].env.mask_eval), env.envs[idx].env.mask_eval)
         # actions, states = model.predict(
@@ -209,8 +211,7 @@ def eval_corruptions(
     # Determine if we're using a vectorized environment
     is_vec_env = isinstance(env, VecEnv)
     num_envs = env.num_envs if is_vec_env else 1
-
-    if len(data)%num_envs != 0:
+    if len(data) % num_envs != 0:
         print(f'Warning, for time efficiency reasons, it is convinient to choose the eval_envs as \
               a factor of the test queries, test_queries={len(data)}, num_envs={num_envs}')
     
@@ -224,7 +225,7 @@ def eval_corruptions(
         batch_size = batch_end - batch_start
         batch_queries = data[batch_start:batch_end]
 
-        print('\n\nbatch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size)
+        print('\n\nbatch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size,'. Batch',b+1,'of',len(data)//num_envs)
         # print('batch queries:',batch_queries)
         
         # if verbose >= 1:
@@ -313,7 +314,6 @@ def eval_corruptions(
         episode_len_list_pos.extend(lengths[:,0])
         log_probs_list_pos.extend(log_probs[:,0])
 
-        #
         rewards_list_neg.extend(rewards[:,1:])
         episode_len_list_neg.extend(lengths[:,1:])
         log_probs_list_neg.extend(log_probs[:,1:])
@@ -330,8 +330,11 @@ def eval_corruptions(
             # print('ranks:',ranks)
             # Calculate MRR for each environment
             batch_mrr = 1.0 / ranks
-            # print('batch mrr:',batch_mrr)
             mrr_list.extend(batch_mrr.tolist())
+            print('batch mrr:',np.round(np.mean(batch_mrr),3),'rolling avg mrr:',np.round(np.mean(mrr_list),3))
+        print('rolling avg rwds pos:',np.round(np.mean(rewards_list_pos),3), 'rolling avg rwds neg:',np.round(np.mean(rewards_list_neg),3))
+        print('rolling avg episode len pos:',np.round(np.mean(episode_len_list_pos),3), 'rolling avg episode len neg:',np.round(np.mean(episode_len_list_neg),3))
+        print('rolling avg log probs pos:',np.round(np.mean(log_probs_list_pos),3), 'rolling avg log probs neg:',np.round(np.mean(log_probs_list_neg),3))
     
     # print('mrr_list:',mrr_list)
     # print('avg mrr:',np.mean(mrr_list))

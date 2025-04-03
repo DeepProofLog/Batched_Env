@@ -104,8 +104,8 @@ class CustomEvalCallback(EvalCallback):
 
     def _on_step(self) -> bool:
         continue_training = True
-
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            print('---------------evaluation started---------------')
             # Sync training and eval env if there is VecNormalize
             if self.model.get_vec_normalize_env() is not None:
                 try:
@@ -188,6 +188,8 @@ class CustomEvalCallback(EvalCallback):
             # Trigger callback after every evaluation, if needed
             if self.callback is not None:
                 continue_training = continue_training and self._on_event()
+
+            print('---------------evaluation finished---------------')
 
         return continue_training
 

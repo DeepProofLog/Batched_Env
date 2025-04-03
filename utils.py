@@ -151,14 +151,13 @@ def extract_var(state: str)-> list:
 
 def print_state_transition(state, derived_states, reward, done, action=None, truncated=None):
     if action is not None:
-        print(state, '( action', action.item(),')')
+        print('State', state, '( action', action.item(),')')
         # print(*state_, '-> action', action_.item(),'/', len(derived_states_)-1)
         print('Reward',reward.item())
         print('Done',done.item())
         print('Truncated',truncated) if truncated is not None else None
         print('     Derived states:',*derived_states,'\n')
     else:
-        print('\n\nReset-----------------------------')
         print(state)
         print('Reward',reward.item())
         print('Done',done.item())
