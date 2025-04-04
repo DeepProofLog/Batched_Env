@@ -52,6 +52,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         train_file= args.train_file,
         valid_file=args.valid_file,
         test_file= args.test_file,
+        rules_file= args.rules_file,
+        facts_file= args.facts_file,
         n_eval_queries = args.n_eval_queries,
         n_test_queries = args.n_test_queries,
         corruption_mode=args.corruption_mode,
@@ -124,6 +126,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         padding_atoms=args.padding_atoms,
                         padding_states=args.padding_states,
                         device='cpu', 
+                        engine=args.engine,
                         )
             env = Monitor(env)
             return env
@@ -190,8 +193,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                     n_epochs=args.n_epochs,
                     verbose=1, 
                     device=device,
-                    ent_coef=.1,
-                    clip_range=.2,
+                    ent_coef=args.ent_coef,
+                    clip_range=args.clip_range,
                     policy_kwargs={'features_extractor_class':CustomCombinedExtractor,
                                     'features_extractor_kwargs':{'features_dim':embedder.embed_dim,
                                                                     'embedder': embedder}})

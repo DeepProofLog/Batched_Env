@@ -138,16 +138,11 @@ def get_rules_from_file(file_path: str) -> Tuple[List[Term], List[Rule]]:
         with open(file_path, "r") as f:
             lines = f.readlines()
             for line in lines:
-                if not line or line.startswith("%"):  # Skip empty lines and comments
+                if not line or line.startswith("%") or line.startswith(":-"):
                     continue
-                    
-                # If there's no ":-", it's a fact
-                if ":-" not in line:
+                if ":-" not in line: # If there's no ":-", it's a fact
                     head = line.strip()
                     queries.append(get_atom_from_string(head))
-                # Skip directives
-                elif line.startswith(":-"):
-                    continue
                 # Otherwise it's a rule
                 else:
                     head, body = line.strip().split(":-")
@@ -192,7 +187,52 @@ def get_rules_from_file(file_path: str) -> Tuple[List[Term], List[Rule]]:
 #                     neg_queries.append(get_atom_from_string(q))
 #     return pos_queries, neg_queries
 
-def get_queries(path: str, non_provable_queries: bool = False) -> List[Term]:
+def get_rules_from_rules_file(file_path: str) -> List[Rule]:
+    """
+    Parse a file to extract rules.
+    
+    Args:
+        file_path: Path to the file containing rules
+        
+    Returns:
+        List of Rule objects
+    """
+    rules = []
+    try:
+        with open(file_path, "r") as f:
+            lines = f.readlines()
+            for line in lines:
+                if not line or line.startswith("%"):
+                    continue
+                else:
+                    line = line.split(':')
+                    # third element is the rule itself. Split by ->
+                    rule = line[2].split('->')
+                    # second element is the head of the rule
+                    rule_head = rule[1]
+                    # remove the \n from the head and the space
+                    rule_head = rule_head.strip()
+                    # first element is the body of the rule
+                    rule_body = rule[0]
+                    # split the body by ,
+                    rule_body = rule_body.split(', ')
+                    for i in range(len(rule_body)):
+                        if rule_body[i][-1] == " ":
+                            rule_body[i] = rule_body[i][:-1]
+                    # rule_body = re.findall(r'\w+\(.*?\)', rule_body)
+                    rule_body = [get_atom_from_string(b) for b in rule_body]
+                    head_atom = get_atom_from_string(rule_head)
+                    # put all the arguments in capital letters so that they are recognised as variables
+                    for i in range(len(rule_body)):
+                        rule_body[i].args = [arg.upper() for arg in rule_body[i].args]
+                    for i in range(len(head_atom.args)):
+                        head_atom.args[i] = head_atom.args[i].upper()
+                    rules.append(Rule(head_atom, rule_body))
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File {file_path} not found")
+    return rules
+
+def get_queries(path: str, non_provable_queries: bool = True) -> List[Term]:
     """
     Get queries and labels (whether they are provable) from {set}_label.txt file.
     
@@ -207,13 +247,18 @@ def get_queries(path: str, non_provable_queries: bool = False) -> List[Term]:
     with open(path, "r") as f:
         lines = f.readlines()
         for line in lines:
+            # print(line)
             if non_provable_queries:
                 query = line.strip()
+                # print('query',query)
+                # print('q',get_atom_from_string(query).args[1])
                 queries.append(get_atom_from_string(query))
             else:
                 query, label = line.strip().split("\t")
                 if label == "True" or non_provable_queries:
                     queries.append(get_atom_from_string(query))
+    # print('\nqueries', queries[:50])
+    # print(sdhvb)
     return queries
 
 def get_corruptions(queries: List[Term], file_path: str) -> Dict[Term, List[Term]]:
@@ -410,16 +455,18 @@ class DataHandlerKGE:
     For train, we will load facts from the original train file, and train queries in the same way as valid, test.
     '''
     def __init__(self, dataset_name: str,
-                 base_path: str,
-                 janus_file: str,
-                 train_file: str = None,
-                 valid_file: str = None,
-                 test_file: str = None,
-                 n_eval_queries: int = None,
-                 n_test_queries: int = None,
-                 corruption_mode: Optional[str] = None,
-                 non_provable_corruptions: bool = False,
-                 non_provable_queries: bool = False):
+                base_path: str,
+                janus_file: str = None,
+                train_file: str = None,
+                valid_file: str = None,
+                test_file: str = None,
+                rules_file: str = None,
+                facts_file: str = None,
+                n_eval_queries: int = None,
+                n_test_queries: int = None,
+                corruption_mode: Optional[str] = None,
+                non_provable_corruptions: bool = False,
+                non_provable_queries: bool = False):
         """
         Initialize KGE data handler.
         
@@ -437,19 +484,25 @@ class DataHandlerKGE:
         self.dataset_name = dataset_name
         
         base_path = join(base_path, dataset_name)
-        janus_path = join(base_path, janus_file)
+        janus_path = join(base_path, janus_file) if janus_file else None
         self.janus_path = janus_path
-        
-        try:
-            janus.consult(janus_path)
-        except Exception as e:
-            raise RuntimeError(f"Failed to consult Janus file: {e}")
+        if janus_file:
+            try:
+                janus.consult(janus_path)
+            except Exception as e:
+                raise RuntimeError(f"Failed to consult Janus file: {e}")
 
         train_path = join(base_path, train_file) 
         valid_path = join(base_path, valid_file) if valid_file else None
         test_path = join(base_path, test_file)
+        rules_file = join(base_path, rules_file) if rules_file else None
+        facts_file = join(base_path, facts_file) if facts_file else None
 
-        self.facts, self.rules = get_rules_from_file(janus_path)
+        if janus_file:
+            self.facts, self.rules = get_rules_from_file(janus_path,)
+        else:
+            self.facts = get_queries(facts_file)
+            self.rules = get_rules_from_rules_file(rules_file)
 
         if corruption_mode and 'static' in corruption_mode:
             self.train_corruptions = get_corruptions_dict(train_path, non_provable_corruptions)
@@ -500,14 +553,17 @@ class DataHandlerKGE:
             self.test_queries = self.test_queries[:n_test_queries]
 
         # Load Janus facts
-        self.janus_facts = []
-        with open(janus_path, "r") as f:
-            self.janus_facts = f.readlines()
+        if janus_file:
+            self.janus_facts = []
+            with open(janus_path, "r") as f:
+                self.janus_facts = f.readlines()
+        else:
+            self.janus_facts = None
 
         # Extract predicates, constants, variables
         self.predicates, self.predicates_arity, self.constants, self.variables = get_predicates_and_arguments(
             self.rules, self.facts)
-        self.max_arity = get_max_arity(janus_path)
+        self.max_arity = get_max_arity(janus_path) if janus_file else 2
         self.constant_no = len(self.constants)
         self.predicate_no = len(self.predicates)
         self.variable_no = len(self.variables)
@@ -534,6 +590,17 @@ class DataHandlerKGE:
                 except FileNotFoundError:
                     print(f"Warning: Domain file {domain_file} not found")
 
+        # print(f"\n\nlast train queries: {len(self.train_queries)}, {self.train_queries[:50]}")
+        # print(f"\n\nvalid queries: {len(self.valid_queries)}, {self.valid_queries}")
+        # print(f"\n\ntest queries: {len(self.test_queries)}, {self.test_queries}")
+        # print(f"\n\nfacts: {len(self.facts)}, {self.facts}")
+        # print(f"\n\nrules: {len(self.rules)}, {self.rules}")
+        # print(f"\n\nconstants: {len(self.constants)}, {self.constants}")
+        # print(f"\n\npredicates: {len(self.predicates)}, {self.predicates}")
+        # print(f"variables: {len(self.variables)}, {self.variables}")
+        # print(f"max arity: {self.max_arity}")
+        # print(sòdjn)
+
 
 class DataHandler:
     """
@@ -547,6 +614,8 @@ class DataHandler:
                  train_file: str = None, 
                  valid_file: str = None, 
                  test_file: str = None, 
+                 rules_file: str = None,
+                 facts_file: str = None,
                  n_eval_queries: int = None,
                  n_test_queries: int = None,
                  corruption_mode: Optional[str] = None, 
@@ -583,6 +652,8 @@ class DataHandler:
                 train_file=train_file,
                 valid_file=valid_file,
                 test_file=test_file,
+                rules_file=rules_file,
+                facts_file=facts_file,
                 n_eval_queries=n_eval_queries,
                 n_test_queries=n_test_queries,
                 corruption_mode=corruption_mode,

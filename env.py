@@ -2,9 +2,9 @@ from typing import List, Optional, Tuple, Dict, Union
 import random
 from math import prod
 from utils import Term, is_variable, extract_var, print_state_transition, get_rule_from_string
-from unification.python_unification import get_next_unification_python
+from python_unification import get_next_unification_python
 # from unification.prolog_unification import get_next_unification_prolog
-from unification.prolog_unification_v2 import get_next_unification_prolog
+# from unification.prolog_unification_v2 import get_next_unification_prolog
 
 import torch
 from tensordict import TensorDict, TensorDictBase, NonTensorData
@@ -45,13 +45,14 @@ class LogicEnv_gym(gym.Env):
                 verbose: int = 0,
                 prover_verbose: int = 0,
                 device: torch.device = torch.device("cpu"),
+                engine: str = 'python',
                 ):
         
         '''Initialize the environment'''
         super().__init__()
 
         # self.engine = 'prolog'
-        self.engine = 'python'
+        self.engine = engine
 
         self.verbose = verbose
         self.prover_verbose = prover_verbose
@@ -288,10 +289,6 @@ class LogicEnv_gym(gym.Env):
         self.current_query = state
         self.current_label = label
 
-        # use [niece(1439, 202)] as current query
-        # state = Term(predicate='niece', args=['1439', '202'])
-        # label = 1
-
         return self._reset([state], label)
 
 
@@ -312,11 +309,12 @@ class LogicEnv_gym(gym.Env):
 
     def _reset(self, query, label):
         '''Reset the environment to the initial state'''    
+        print('Initial query:', query, label) if self.verbose else None
         self.current_depth = torch.tensor(0, device=self.device)
         self.index_manager.reset_atom()
 
         self.memory = set()
-        self.memory.add(",".join(str(q) for q in query))
+        self.memory.add(",".join(str(q) for q in query if q.predicate not in ['False', 'True', 'End']))
         
         atom_index, sub_index = self.index_manager.get_atom_sub_index(query)
 
@@ -352,7 +350,7 @@ class LogicEnv_gym(gym.Env):
             #    'valid_actions_mask':valid_actions_mask
             }
         if self.verbose:
-            print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'])
+            print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'],label=label)
             # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].cpu().numpy()),'\n')
         return obs, {}
 
@@ -489,7 +487,7 @@ class LogicEnv_gym(gym.Env):
 
                 # MEMORY
                 if self.memory_pruning:
-                    self.memory.add(",".join(str(s) for s in state)) 
+                    self.memory.add(",".join(str(s) for s in state if s.predicate not in ['False', 'True', 'End']))
                     visited_mask = [",".join(str(s) for s in state) in self.memory for state in derived_states]
                     if any(visited_mask):
                     #     print('\n+++++++++') if self.verbose else None
@@ -522,7 +520,8 @@ class LogicEnv_gym(gym.Env):
 
         # MEMORY MODULE
         if self.memory_pruning:
-            self.memory.add(",".join(str(s) for s in state)) 
+            # Please do this only if the state is not false or true or end
+            self.memory.add(",".join(str(s) for s in state if s.predicate not in ['False', 'True', 'End']))
             visited_mask = [",".join(str(s) for s in state) in self.memory for state in derived_states]
 
             if any(visited_mask):
@@ -535,12 +534,6 @@ class LogicEnv_gym(gym.Env):
 
             derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
             # print(f"Filtered possible states: {derived_states}") if self.verbose and any(visited_mask) else None
-
-        # END ACTION MODULE
-        if self.end_proof_action:
-            if any(atom.predicate not in ('True', 'False') for next_state in derived_states for atom in next_state):
-                derived_states.append([Term(predicate='End', args=[])])
-            # print(f"Possible next states with end action: {derived_states}") if self.verbose else None
 
         # TRUNCATE MAX ATOMS
         if self.truncate_atoms:
@@ -558,12 +551,17 @@ class LogicEnv_gym(gym.Env):
         if self.truncate_states:
             if len(derived_states) > self.padding_states:
                 # print('*********\n') if self.verbose else None
-                print(f"Truncating {len(derived_states)} possible states to \
-                        {self.padding_states}:{derived_states}") if self.verbose else None
+                print(f"Truncating {len(derived_states)} possible states to {self.padding_states}:{derived_states}") if self.verbose else None
                 # print('\n*******') if self.verbose else None
                 truncated_flag = True
                 # Truncate next states (although it doesnt matter, episode will be done)
-                derived_states = derived_states[:self.padding_states]            
+                derived_states = derived_states[:self.padding_states]     
+
+        # END ACTION MODULE
+        if self.end_proof_action:
+            if any(atom.predicate not in ('True', 'False') for next_state in derived_states for atom in next_state):
+                derived_states.append([Term(predicate='End', args=[])])
+            # print(f"Possible next states with end action: {derived_states}") if self.verbose else None       
 
         if len(derived_states) == 0:
             derived_states = [[Term(predicate='False', args=[])]]

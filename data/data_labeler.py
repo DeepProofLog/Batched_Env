@@ -226,12 +226,12 @@ if __name__ == "__main__":
         full_rules, full_facts, predicates_rules = get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+ args.dataset+".pl", args.catch_errors, args.use_tabling)
         #janus.consult(root_dir+"countries.pl")
 
-    print("processing train.txt")
-    get_labeled_data(root_dir+args.dataset,root_dir+"train.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="train")
-    print("processing valid.txt")
-    get_labeled_data(root_dir+args.dataset,root_dir+"valid.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="valid")
-    print("processing test.txt")
-    get_labeled_data(root_dir+args.dataset,root_dir+"test.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="test")
+    # print("processing train.txt")
+    # get_labeled_data(root_dir+args.dataset,root_dir+"train.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="train")
+    # print("processing valid.txt")
+    # get_labeled_data(root_dir+args.dataset,root_dir+"valid.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="valid")
+    # print("processing test.txt")
+    # get_labeled_data(root_dir+args.dataset,root_dir+"test.txt", args.catch_errors, args.use_modified_rules, full_rules, predicates_rules,mode="test")
 
     # max_depth = 10
     # print("processing train_label_corruptions.json")
@@ -240,3 +240,8 @@ if __name__ == "__main__":
     # get_depth_proof(root_dir+"valid_label_corruptions.json", root_dir + "rules_with_depth.txt", full_facts, max_depth)
     # print("processing test_label_corruptions.json")
     # get_depth_proof(root_dir+"test_label_corruptions.json", root_dir + "rules_with_depth.txt", full_facts, max_depth)
+
+    # get depth 4 proofs for the dataset kinship family
+    max_depth = 4
+    print("processing train_label_corruptions.json")
+    get_one_depth_proof(root_dir + "train_label_corruptions.json", root_dir + "rules_with_depth.txt", full_facts, max_depth)

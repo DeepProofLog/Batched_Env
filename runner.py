@@ -30,26 +30,30 @@ if __name__ == "__main__":
     DYNAMIC_CONSULT = [True] # [True, False]
     FALSE_RULES = [False] 
     MEMORY_PRUNING = [True] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
-    END_PROOF_ACTION = [True]
+    END_PROOF_ACTION = [False]
     SKIP_UNARY_ACTIONS = [True]
     TRUNCATE_ATOMS = [True] # if more atoms in a state than pad_atoms, truncate the state to false
     TRUNCATE_STATES = [True] # if more states in next states than pad_states, truncate the state to false
+    ENT_COEF = [0.1]
+    CLIP_RANGE = [0.2]
+    ENGINE = ['python']
     # reward_type = 1
 
     # Dataset settings 
     # for countries_s3, we use non provable corruptions and provable queries, run_signature='countries_s3-transe-sum-50-5-20-dynamic-False-True-1-True-False-False-True-False-20-True'
     DATASET_NAME =  ["kinship_family"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
+    DEPTH_FILTERED = [2] # [None, 1, 2, 3]
     SEED = [[0]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
     STATE_EMBEDDER = ['mean'] #'mean'
-    PADDING_ATOMS = [5]
+    PADDING_ATOMS = [3]
     PADDING_STATES = [10]
     ATOM_EMBEDDING_SIZE = [64]
     '''Attention: if we use static corruptions, include non provable corruptions
     In pararell eval, we evaluate based on a fixed number of corruptions'''
     CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
-    NON_PROVABLE_QUERIES = [False]
+    NON_PROVABLE_QUERIES = [True]
     NON_PROVABLE_CORRUPTIONS = [True]
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
@@ -66,21 +70,23 @@ if __name__ == "__main__":
     data_path = "./data/"
     models_path = "models/"
     janus_file = "train.pl"
+    rules_file = "rules.txt"
+    facts_file = "train.txt"
 
     # Training parameters
     TIMESTEPS_TRAIN = [2000001]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
-    TRAIN_NEG_POS_RATIO = [1] # corruptions in train
+    TRAIN_NEG_POS_RATIO = [0] # corruptions in train
     valid_negatives = None # corruptions in validation
-    test_negatives = 100 # corruptions in test
+    test_negatives = 0 # corruptions in test
     n_eval_queries = 200 
     n_test_queries = None
     # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 128
     n_steps = 128 #2048
-    n_eval_envs = 512
+    n_eval_envs = 1
     n_callback_envs = 1
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
@@ -173,6 +179,10 @@ if __name__ == "__main__":
         'false_rules': FALSE_RULES,
         'end_proof_action': END_PROOF_ACTION,
         'skip_unary_actions': SKIP_UNARY_ACTIONS,
+        'ent_coef': ENT_COEF,
+        'clip_range': CLIP_RANGE,
+        'engine': ENGINE,
+        'depth_filtered': DEPTH_FILTERED,
         'truncate_atoms': TRUNCATE_ATOMS,
         'truncate_states': TRUNCATE_STATES,
         'padding_atoms': PADDING_ATOMS,
@@ -205,6 +215,10 @@ if __name__ == "__main__":
         
         if args.false_rules:
             args.janus_file = "train_false_rules.pl"
+        elif args.engine == 'python':
+            args.janus_file = None
+        else:
+            args.janus_file = janus_file
 
         if not args.non_provable_corruptions and args.corruption_mode == "dynamic":
             print("\n\nSKIPPING EXPERIMENT: non_provable_corruptions with dynamic corruptions is not supported\n\n")
@@ -228,12 +242,18 @@ if __name__ == "__main__":
             train_file = "train.txt"
             valid_file = "valid.txt"
             test_file = "test.txt"
+        
+        if args.depth_filtered is not None:
+            train_file = train_file.replace('.txt', f'_depth_{args.depth_filtered}.txt')
+            valid_file = valid_file.replace('.txt', f'_depth_{args.depth_filtered}.txt')
+            test_file = test_file.replace('.txt', f'_depth_{args.depth_filtered}.txt')
 
         args.data_path = data_path
-        args.janus_file = janus_file
         args.train_file = train_file
         args.valid_file = valid_file
         args.test_file = test_file
+        args.rules_file = rules_file
+        args.facts_file = facts_file
         
 
         args.atom_embedding_size = args.atom_embedding_size #if args.atom_embedder != "concat" else it is (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
@@ -264,7 +284,8 @@ if __name__ == "__main__":
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,args.padding_atoms,args.padding_states,
                     args.corruption_mode, args.non_provable_queries, args.non_provable_corruptions,args.train_neg_pos_ratio, 
                     args.dynamic_consult, args.false_rules, args.end_proof_action, args.skip_unary_actions, args.truncate_atoms,
-                    args.truncate_states, args.memory_pruning, args.rule_depend_var, args.max_depth,args.restore_best_val_model)
+                    args.truncate_states, args.memory_pruning, args.rule_depend_var, args.max_depth,args.restore_best_val_model,args.ent_coef,args.clip_range,args.depth_filtered,
+                    args.engine)
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         # # Redirect stdout to the Tee class
