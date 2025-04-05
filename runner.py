@@ -74,10 +74,10 @@ if __name__ == "__main__":
     facts_file = "train.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [2000001]
+    TIMESTEPS_TRAIN = [10000001]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
-    TRAIN_NEG_POS_RATIO = [0] # corruptions in train
+    TRAIN_NEG_POS_RATIO = [1] # corruptions in train
     valid_negatives = None # corruptions in validation
     test_negatives = 0 # corruptions in test
     n_eval_queries = 200 
@@ -285,7 +285,7 @@ if __name__ == "__main__":
                     args.corruption_mode, args.non_provable_queries, args.non_provable_corruptions,args.train_neg_pos_ratio, 
                     args.dynamic_consult, args.false_rules, args.end_proof_action, args.skip_unary_actions, args.truncate_atoms,
                     args.truncate_states, args.memory_pruning, args.rule_depend_var, args.max_depth,args.restore_best_val_model,args.ent_coef,args.clip_range,args.depth_filtered,
-                    args.engine)
+                    args.engine, args.train_neg_pos_ratio)
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         # # Redirect stdout to the Tee class

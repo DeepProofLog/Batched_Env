@@ -1,6 +1,0 @@
-{
-    "best_metric_value": -Infinity,
-    "current_timestep": 128,
-    "metric": "best_mean_reward",
-    "num_timesteps": 16384
-}
