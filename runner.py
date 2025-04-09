@@ -30,7 +30,7 @@ if __name__ == "__main__":
     DYNAMIC_CONSULT = [True] # [True, False]
     FALSE_RULES = [False] 
     MEMORY_PRUNING = [True] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
-    END_PROOF_ACTION = [False]
+    END_PROOF_ACTION = [True]
     SKIP_UNARY_ACTIONS = [True]
     TRUNCATE_ATOMS = [True] # if more atoms in a state than pad_atoms, truncate the state to false
     TRUNCATE_STATES = [True] # if more states in next states than pad_states, truncate the state to false
@@ -128,6 +128,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_unary_actions", default = None, help="skip_unary_actions")
     parser.add_argument("--truncate_atoms", default = None, help="truncate_atoms")
     parser.add_argument("--truncate_states", default = None, help="truncate_states")
+    parser.add_argument("--depth_filtered", default = None, help="depth_filtered")
 
     parser.add_argument("--padding_atoms", default = None, help="padding_atoms")
     parser.add_argument("--padding_states", default = None, help="padding_states")
@@ -153,6 +154,7 @@ if __name__ == "__main__":
     if args.skip_unary_actions: SKIP_UNARY_ACTIONS = [ast.literal_eval(args.skip_unary_actions)]
     if args.truncate_atoms: TRUNCATE_ATOMS = [ast.literal_eval(args.truncate_atoms)]
     if args.truncate_states: TRUNCATE_STATES = [ast.literal_eval(args.truncate_states)]
+    if args.depth_filtered: DEPTH_FILTERED = [int(args.depth_filtered)]
 
     if args.padding_atoms: PADDING_ATOMS = [int(args.padding_atoms)]
     if args.padding_states: PADDING_STATES = [int(args.padding_states)]
