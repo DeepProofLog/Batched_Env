@@ -53,7 +53,7 @@ if __name__ == "__main__":
     '''Attention: if we use static corruptions, include non provable corruptions
     In pararell eval, we evaluate based on a fixed number of corruptions'''
     CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
-    NON_PROVABLE_QUERIES = [True]
+    NON_PROVABLE_QUERIES = [True] # set True when using depth-filtered datasets
     NON_PROVABLE_CORRUPTIONS = [True]
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
@@ -74,19 +74,19 @@ if __name__ == "__main__":
     facts_file = "train.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [10000001]
+    TIMESTEPS_TRAIN = [4000000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
     valid_negatives = None # corruptions in validation
-    test_negatives = 0 # corruptions in test
+    test_negatives = 100 # corruptions in test
     n_eval_queries = 200 
     n_test_queries = None
     # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 128
     n_steps = 128 #2048
-    n_eval_envs = 1
+    n_eval_envs = 128
     n_callback_envs = 1
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
