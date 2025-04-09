@@ -12,19 +12,19 @@ import sys
 
 if __name__ == "__main__":
 
-    class Tee:
-        def __init__(self, file_path):
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            self.file = open(file_path, "w")
-            self.stdout = sys.stdout
+    # class Tee:
+    #     def __init__(self, file_path):
+    #         os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    #         self.file = open(file_path, "w")
+    #         self.stdout = sys.stdout
 
-        def write(self, message):
-            self.file.write(message)
-            self.stdout.write(message)
+    #     def write(self, message):
+    #         self.file.write(message)
+    #         self.stdout.write(message)
 
-        def flush(self):
-            self.file.flush()
-            self.stdout.flush()
+    #     def flush(self):
+    #         self.file.flush()
+    #         self.stdout.flush()
 
     RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
     DYNAMIC_CONSULT = [True] # [True, False]
