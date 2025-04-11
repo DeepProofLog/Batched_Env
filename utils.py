@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Union, List, Any, Tuple, Iterable, Optional
+from typing import Dict, Union, List, Any, Tuple, Iterable, Optional, Set
 import torch
 from tensordict import TensorDict, TensorDictBase
 # from torchrl.envs.utils import step_mdp
@@ -14,25 +14,57 @@ def print_eval_info(set: str,metrics: Dict[str, float]):
     print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()], sep='\n')
 
 class Term:
-    def __init__(self, predicate: str, args: List[str]):
-        self.predicate = predicate  # Predicate name
-        self.args = args  # List of arguments (constants or variables)
-
+    """Represents a logical term like predicate(arg1, arg2)."""
+    def __init__(self, predicate: str, args: List[Any]):
+        self.predicate = predicate
+        self.args = args
     def __str__(self):
-        return f"{self.predicate}({', '.join(self.args)})"
-
+        # Handle special predicates with no args cleanly
+        if not self.args and self.predicate in ['True', 'False', 'End']:
+             return f"{self.predicate}"
+        return f"{self.predicate}({','.join(map(str, self.args))})"
     def __repr__(self):
-        return f"{self.predicate}({', '.join(self.args)})"
-    
+        return str(self)
     def __eq__(self, other):
-        # Check if the other object is a Term and compare predicate and args
-        if isinstance(other, Term):
-            return self.predicate == other.predicate and self.args == other.args
-        return False
-
+        return isinstance(other, Term) and self.predicate == other.predicate and self.args == other.args
     def __hash__(self):
-        # Allow usage in sets or as dictionary keys
-        return hash((self.predicate, tuple(self.args)))
+        try:
+            hashable_args = tuple(self.args)
+        except TypeError:
+            hashable_args = tuple(map(str, self.args))
+        return hash((self.predicate, hashable_args))
+
+# class Rule:
+#     def __init__(self, head: Term, body: List[Term]):
+#         self.head = head
+#         self.body = body
+#     def __str__(self): return f"{self.head} :- {', '.join(str(term) for term in self.body)}"
+#     def __repr__(self): return self.__str__()
+
+class Rule:
+    """Represents a logical rule Head :- Body."""
+    def __init__(self, head: Term, body: List[Term]):
+        self.head = head
+        self.body = body
+    def __str__(self):
+        if not self.body:
+            return f"{self.head}." # Represent facts/rules with empty body
+        body_str = ', '.join(map(str, self.body))
+        return f"{self.head} :- {body_str}"
+    def __repr__(self):
+        return str(self)
+    def get_all_terms(self) -> List[Term]:
+        """Returns head + body terms."""
+        return [self.head] + self.body
+    def get_variables(self) -> Set[str]:
+        """Extracts all variables (uppercase strings) from the rule."""
+        variables = set()
+        terms = self.get_all_terms()
+        for term in terms:
+            for arg in term.args:
+                if is_variable(arg):
+                    variables.add(arg)
+        return variables
 
 def get_max_arity(file_path:str)-> int:
     '''Get the maximum arity of the predicates in the file'''
@@ -47,20 +79,6 @@ def get_max_arity(file_path:str)-> int:
                 if arity > max_arity:
                     max_arity = arity
     return max_arity
-
-
-class Rule:
-    def __init__(self, head: Term, body: List[Term]):
-        self.head = head
-        self.body = body
-
-    def __str__(self):
-        body_str = ", ".join(str(term) for term in self.body)
-        return f"{self.head} :- {body_str}"    
-
-    def __repr__(self):
-        body_str = ", ".join(str(term) for term in self.body)
-        return f"{self.head} :- {body_str}"    
     
 
 def get_atom_from_string(atom_str: str) -> Term:

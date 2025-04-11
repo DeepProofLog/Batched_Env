@@ -257,8 +257,6 @@ def get_queries(path: str, non_provable_queries: bool = True) -> List[Term]:
                 query, label = line.strip().split("\t")
                 if label == "True" or non_provable_queries:
                     queries.append(get_atom_from_string(query))
-    # print('\nqueries', queries[:50])
-    # print(sdhvb)
     return queries
 
 def get_corruptions(queries: List[Term], file_path: str) -> Dict[Term, List[Term]]:

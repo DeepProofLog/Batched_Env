@@ -4,7 +4,7 @@ import torch.nn as nn
 
 import numpy as np
 import pickle
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 import math
 
 from dataset import DataHandler
@@ -223,65 +223,73 @@ def transE_embedding(predicate_embeddings: torch.Tensor, constant_embeddings: to
 
         
 class EmbedderNonLearnable:
+    """
+    Embedder using pre-trained, non-learnable embeddings.
+    Handles batch processing where the input tensor's leading dimensions
+    represent the batch structure (e.g., [bs] or [bs, n_states]).
+    """
     def __init__(self, constant_idx2emb: torch.Tensor, predicate_idx2emb: torch.Tensor, device="cpu"):
         """
         Initialize the embedding function.
+        Args:
+            constant_idx2emb: Tensor of pre-trained constant/variable embeddings.
+            predicate_idx2emb: Tensor of pre-trained predicate embeddings.
+            device: Torch device.
         """
         self.embed_dim = constant_idx2emb.size(1)
         self.constant_idx2emb = constant_idx2emb.to(device)
         self.predicate_idx2emb = predicate_idx2emb.to(device)
-        # Set padding embedding (index 0) to zeros
-        self.constant_idx2emb[0] = 0
-        self.predicate_idx2emb[0] = 0
-        
+        # Ensure padding embedding (index 0) is zeros
+        if self.constant_idx2emb.shape[0] > 0:
+             self.constant_idx2emb[0] = 0
+        if self.predicate_idx2emb.shape[0] > 0:
+             self.predicate_idx2emb[0] = 0
+        self.device = device # Store device
+
     def get_embeddings_batch(self, sub_indices: torch.Tensor) -> torch.Tensor:
         """
-        Get embeddings for a batch of indices using vectorized operations.
-        
+        Get state embeddings for a batch of sub-indices using vectorized lookup and TransE.
+
         Args:
-            indices: Tensor containing indices
-            
+            sub_indices: Tensor containing sub-indices (P, S, O) for atoms.
+                         Expected shape: (bs, ..., n_atoms, 3)
+                         Examples:
+                           - Current state: (bs, n_atoms, 3)
+                           - Derived states (actions): (bs, n_states, n_atoms, 3)
+
         Returns:
-            Tensor of embeddings with shape [..., embedding_dim]
+            Tensor of state embeddings.
+            Expected shape: (bs, ..., embed_dim)
+            Examples:
+              - Current state output: (bs, embed_dim)
+              - Derived states output: (bs, n_states, embed_dim)
         """
-        # Not consider cache atom embedding for now
-        # unique_indices = atom_indices.unique()
-        # indices_in_dict = torch.tensor([idx in self.atom_idx2emb for idx in unique_indices])
-        # precomputed_embeddings = torch.stack(
-        #     [self.atom_idx2emb[idx.item()] for idx in unique_indices[indices_in_dict]]
-        # )
-        # computed_embeddings = torch.stack(
-        #     [compute_embedding(idx.item()) for idx in unique_indices[~indices_in_dict]]
-        # )
+        # Ensure indices are long type
+        sub_indices = sub_indices.long()
 
-        # IF I GET "index out of range in self" ERROR, IT IS BECAUSE THE INDICES ARE OUT OF RANGE. ONCE I IMPLEMENT THE LOCAL INDICES, THIS WILL BE SOLVED
-        # Look up the embeddings of predicates and args.
-        # pred_arg_embeddings = F.embedding(sub_indices, self.embedding_table, padding_idx=0)
-        predicate_indices = sub_indices[..., 0].unsqueeze(-1)
-        constant_indices = sub_indices[..., 1:]
-        predicate_embeddings = F.embedding(predicate_indices, self.predicate_idx2emb, padding_idx=0)
-        constant_embeddings = F.embedding(constant_indices, self.constant_idx2emb, padding_idx=0)
-        atom_embeddings = transE_embedding(predicate_embeddings, constant_embeddings)
+        # Look up embeddings
+        predicate_indices = sub_indices[..., 0].unsqueeze(-1) # Add feature dim: (bs, ..., n_atoms, 1)
+        constant_indices = sub_indices[..., 1:]             # (bs, ..., n_atoms, 2)
 
-        # # Sum pred & args embeddings to get atom embeddings.
-        # pred_arg_embeddings = torch.cat([predicate_embeddings, constant_embeddings], dim=-2)
-        # atom_embeddings = pred_arg_embeddings.sum(dim=-2)
-        # Sum atom embeddings to get state embeddings.
-        state_embeddings = atom_embeddings.sum(dim=-2)
+        predicate_embeddings = F.embedding(predicate_indices, self.predicate_idx2emb, padding_idx=0) # (bs, ..., n_atoms, 1, embed_dim)
+        constant_embeddings = F.embedding(constant_indices, self.constant_idx2emb, padding_idx=0)   # (bs, ..., n_atoms, 2, embed_dim)
+
+        # Calculate atom embeddings using TransE (or other chosen method)
+        # transE_embedding expects pred shape (..., embed_dim) and const shape (..., 2, embed_dim)
+        atom_embeddings = transE_embedding(predicate_embeddings, constant_embeddings) # (bs, ..., n_atoms, embed_dim)
+
+        # Aggregate atom embeddings to get state embeddings (sum over n_atoms dimension)
+        # The dimension to sum over is the second to last (-2)
+        state_embeddings = atom_embeddings.sum(dim=-2) # (bs, ..., embed_dim)
 
         return state_embeddings
-    
+
     def to(self, device):
-        """Move embedding table to specified device."""
+        """Move embedding tables to specified device."""
         self.device = device
         self.constant_idx2emb = self.constant_idx2emb.to(device)
         self.predicate_idx2emb = self.predicate_idx2emb.to(device)
         return self
-        
-    # @property
-    # def weight(self):
-    #     """Return the embedding table weights."""
-    #     return self.embedding_table
 
 
 
@@ -1187,112 +1195,203 @@ def Emb_State_Factory(name: str='transe',
         raise ValueError(f"Unknown KGE model: {name}")
 
 class EmbedderLearnable(nn.Module):
-    def __init__(self, 
-                 n_constants: int = 0, 
-                 n_predicates: int = 0, 
-                 n_vars: int = 0, 
+    """
+    Learnable embedder combining constant/predicate embeddings,
+    atom composition, and state aggregation. Handles batch processing.
+    """
+    def __init__(self,
+                 n_constants: int = 0,
+                 n_predicates: int = 0,
+                 n_vars: int = 0,
                  max_arity: int = 2,
                  padding_atoms: int = 10,
-                 atom_embedder: str = 'transe', 
+                 atom_embedder: str = 'transe',
                  state_embedder: str = 'sum',
-                 constant_embedding_size: int = 64, 
+                 constant_embedding_size: int = 64,
                  predicate_embedding_size: int = 64,
-                 atom_embedding_size: int = 64, 
+                 atom_embedding_size: int = 64, # Often same as const/pred for simple models
+                 state_embedding_size: int = 64, # Final output dimension
                  kge_regularization: float = 0.0,
-                 kge_dropout_rate: float = 0.0, 
+                 kge_dropout_rate: float = 0.0,
                  device: str = "cpu",
                  n_image_constants: int = 0,
-                 image_dict: Optional[dict[str, torch.Tensor]] = None,
-                 n_body_constants: Optional[int] = None):
-        
-        super(EmbedderLearnable, self).__init__()
+                 image_dict: Optional[Dict[str, torch.Tensor]] = None, # Use Dict for clarity
+                 n_body_constants: Optional[int] = None): # Keep n_body_constants if used elsewhere
 
-        # Process image data correctly
-        image_data = []
-        if image_dict:
-            # Flatten dictionary values while preserving order
-            for k in sorted(image_dict.keys()):
-                pair = image_dict[k]
-                image_data.extend([pair[0][0], pair[0][1], pair[1][0], pair[1][1]])
-                
-            image_data = torch.stack(image_data)
-            print(f"Final image data shape: {image_data.shape}")  # Should be [N, 28, 28]
-            
-            # Add channel dimension
-            image_data = image_data.unsqueeze(1)  # Shape becomes [N, 1, 28, 28]
-        
-        # Handle image constants
+        super(EmbedderLearnable, self).__init__()
+        self.device = device
+        self.embed_dim = state_embedding_size # Store the final output dimension
+
+        # --- Constant Embedder ---
+        image_data_tensor = None
+        if image_dict and n_image_constants > 0:
+            # Process image data (assuming previous logic is correct)
+            image_data_list = []
+            for k in sorted(image_dict.keys()): # Ensure consistent order
+                 pair = image_dict[k]
+                 # Assuming pair structure needs careful handling based on dataset
+                 # This part needs verification based on how image_dict is structured
+                 # Example: image_data_list.extend([img_tensor1, img_tensor2, ...])
+                 image_data_list.extend([pair[0][0], pair[0][1], pair[1][0], pair[1][1]]) # Example based on provided code
+
+            if image_data_list:
+                 image_data_tensor = torch.stack(image_data_list).unsqueeze(1) # [N, 1, H, W]
+                 image_data_tensor = image_data_tensor.to(device)
+            else:
+                 n_image_constants = 0 # No images found, revert
+
         self.n_image_constants = n_image_constants
         num_regular_constants = n_constants + n_vars - n_image_constants
-        
-        # Initialize embedder
-        self.constant_embedder = HybridConstantEmbedder(
-            num_regular_constants=num_regular_constants,
-            num_image_constants=n_image_constants,
-            image_data=image_data,
-            embedding_dim=constant_embedding_size,
-            device=device
-        ) if n_image_constants > 0 else ConstantEmbeddings(
-            num_constants=n_constants + n_vars,
-            embedding_dim=constant_embedding_size,
-            regularization=kge_regularization,
-            device=device
-        )
-        
+
+        if self.n_image_constants > 0 and image_data_tensor is not None:
+             self.constant_embedder = HybridConstantEmbedder(
+                 num_regular_constants=num_regular_constants,
+                 num_image_constants=self.n_image_constants,
+                 image_data=image_data_tensor,
+                 embedding_dim=constant_embedding_size,
+                 device=device
+             )
+        else:
+             # Note: num_constants includes padding (0), constants (1..N), variables (N+1..)
+             total_const_var_count = n_constants + n_vars + 1 # +1 for padding idx 0
+             self.constant_embedder = ConstantEmbeddings(
+                 num_constants=total_const_var_count, # Pass total count
+                 embedding_dim=constant_embedding_size,
+                 regularization=kge_regularization,
+                 device=device
+             )
+
+        # --- Predicate Embedder ---
+        # num_predicates includes padding (0), preds (1..M), True (M+1), False (M+2), End (M+3) if used
+        total_predicate_count = n_predicates + 3 + 1 # +1 for padding_idx 0
         self.predicate_embedder = PredicateEmbeddings(
-            num_predicates=n_predicates,
+            num_predicates=total_predicate_count, # Pass total count
             embedding_dim=predicate_embedding_size,
             regularization=kge_regularization,
             device=device
         )
 
+        # --- Atom Composition ---
         self.atom_embedder = Emb_Atom_Factory(
-            name=atom_embedder, #if n_image_constants == 0 else 'concat',
-            embedding_dim=atom_embedding_size,
+            name=atom_embedder,
+            embedding_dim=atom_embedding_size, # Input dim often constant/pred size, output is atom_embedding_size
             max_arity=max_arity,
             regularization=kge_regularization,
             dropout_rate=kge_dropout_rate,
             device=device
         )
 
+        # --- State Aggregation ---
         self.state_embedder = Emb_State_Factory(
             name=state_embedder,
-            embedding_dim=atom_embedding_size,
+            embedding_dim=state_embedding_size, # Input is atom_embedding_size, output is state_embedding_size
             padding_atoms=padding_atoms,
             regularization=kge_regularization,
             dropout_rate=kge_dropout_rate,
             device=device
-        )   
+        )
 
-    # Keep existing methods unchanged
+        self.to(device)
+
+
     def get_embeddings_batch(self, sub_indices: torch.Tensor, verbose: bool = False) -> torch.Tensor:
-        """Get embeddings for a batch of sub-indices.
-        Args:
-            sub_indices: torch.Tensor of shape (batch_size=n_envs,n_states,n_atoms,3)
-            2nd dim is to match the shape of derived_sub_indices
-        Returns:
-            torch.Tensor of shape (batch_size=n_envs,n_states,embedding_dim)
         """
-        print('\nGetting embeddings batch...') if verbose else None
-        print('sub_indices', sub_indices.shape) if verbose else None
-        predicate_indices = sub_indices[..., 0].unsqueeze(-1)
-        constant_indices = sub_indices[..., 1:]
-        print('predicate_indices', predicate_indices.shape) if verbose else None
-        print('constant_indices', constant_indices.shape) if verbose else None
-        constant_embeddings = self.constant_embedder(constant_indices)
-        print('constant_embeddings', constant_embeddings.shape) if verbose else None
-        predicate_embeddings = self.predicate_embedder(predicate_indices)
-        print('predicate_embeddings', predicate_embeddings.shape) if verbose else None
-        
-        atom_embeddings = self.atom_embedder(predicate_embeddings, constant_embeddings)
-        print('atom_embeddings', atom_embeddings.shape) if verbose else None
-        state_embeddings = self.state_embedder(atom_embeddings)
-        print('state_embeddings', state_embeddings.shape, '\n') if verbose else None
-        
+        Get state embeddings for a batch of sub-indices using learnable components.
+
+        Args:
+            sub_indices: Tensor containing sub-indices (P, S, O) for atoms.
+                         Expected shape: (bs, ..., n_atoms, 3)
+                         Examples:
+                           - Current state: (bs, n_atoms, 3)
+                           - Derived states (actions): (bs, n_states, n_atoms, 3)
+           verbose: If True, print intermediate shapes.
+
+        Returns:
+            Tensor of state embeddings.
+            Expected shape: (bs, ..., embed_dim) where embed_dim is state_embedding_size
+            Examples:
+              - Current state output: (bs, embed_dim)
+              - Derived states output: (bs, n_states, embed_dim)
+        """
+        if verbose: print('\n--- Learnable Embedder ---')
+        if verbose: print(f'Input sub_indices: {sub_indices.shape}') # e.g., (bs, n_atoms, 3) or (bs, n_states, n_atoms, 3)
+
+        # Ensure indices are long type
+        sub_indices = sub_indices.long()
+
+        # 1. Get Constant/Variable Embeddings
+        constant_indices = sub_indices[..., 1:] # (bs, ..., n_atoms, 2)
+        if verbose: print(f'Constant indices: {constant_indices.shape}')
+        constant_embeddings = self.constant_embedder(constant_indices) # (bs, ..., n_atoms, 2, const_embed_dim)
+        if verbose: print(f'Constant embeddings: {constant_embeddings.shape}')
+
+        # 2. Get Predicate Embeddings
+        predicate_indices = sub_indices[..., 0].unsqueeze(-1) # (bs, ..., n_atoms, 1)
+        if verbose: print(f'Predicate indices: {predicate_indices.shape}')
+        predicate_embeddings = self.predicate_embedder(predicate_indices) # (bs, ..., n_atoms, 1, pred_embed_dim)
+        if verbose: print(f'Predicate embeddings: {predicate_embeddings.shape}')
+
+        # 3. Compute Atom Embeddings
+        # Atom embedder combines predicate and constant embeddings
+        atom_embeddings = self.atom_embedder(predicate_embeddings, constant_embeddings) # (bs, ..., n_atoms, atom_embed_dim)
+        if verbose: print(f'Atom embeddings: {atom_embeddings.shape}')
+
+        # 4. Compute State Embeddings
+        # State embedder aggregates atom embeddings
+        # Create padding mask based on predicate index (0 means padding atom)
+        # Shape: (bs, ..., n_atoms)
+        padding_atom_mask = (sub_indices[..., 0] == 0) # PADDING_VALUE is 0
+
+        # Pass mask to state embedder if it accepts it (like Attention_State)
+        if isinstance(self.state_embedder, Attention_State):
+             state_embeddings = self.state_embedder(atom_embeddings, padding_mask=padding_atom_mask)
+        else:
+             # For Sum, Mean, RNN, Transformer state embedders, mask is implicitly handled
+             # or needs manual application if averaging/summing over non-padded items.
+             # Sum/Mean might need adjustment to only sum/average non-padded atoms if not handled internally.
+             # Example for manual masking with sum/mean:
+             # if isinstance(self.state_embedder, (Sum_state, Mean_state)):
+             #    mask_expanded = (~padding_atom_mask).unsqueeze(-1).float() # (bs, ..., n_atoms, 1)
+             #    masked_atoms = atom_embeddings * mask_expanded
+             #    if isinstance(self.state_embedder, Sum_state):
+             #        state_embeddings = masked_atoms.sum(dim=-2) # Sum over n_atoms
+             #    else: # Mean_state
+             #        non_pad_count = mask_expanded.sum(dim=-2).clamp(min=1e-8)
+             #        state_embeddings = masked_atoms.sum(dim=-2) / non_pad_count
+             # else: # Assume RNN/Transformer handle sequence length or use all
+             state_embeddings = self.state_embedder(atom_embeddings)
+
+        # Final state embedding shape: (bs, ..., state_embed_dim)
+        if verbose: print(f'State embeddings: {state_embeddings.shape}')
+        if verbose: print('--- End Embedder ---')
+
+        # Squeeze the n_states dimension if the input was just (bs, n_atoms, 3)
+        # This ensures output is (bs, embed_dim) for current state obs
+        # And (bs, n_states, embed_dim) for derived state obs
+        if sub_indices.dim() == 3: # Input was (bs, n_atoms, 3)
+             if state_embeddings.dim() == 3 and state_embeddings.shape[1] == 1:
+                 # Example: Input (bs, 10, 3), Output might be (bs, 1, 64) -> squeeze to (bs, 64)
+                 state_embeddings = state_embeddings.squeeze(1)
+             elif state_embeddings.dim() != 2: # Should be (bs, embed_dim)
+                 print(f"Warning: Unexpected state embedding shape {state_embeddings.shape} for input {sub_indices.shape}")
+        # If input was (bs, n_states, n_atoms, 3), output should be (bs, n_states, embed_dim), no squeeze needed.
+
         return state_embeddings
 
     def forward(self, sub_indices: torch.Tensor) -> torch.Tensor:
+        """Directly call get_embeddings_batch."""
         return self.get_embeddings_batch(sub_indices)
+
+    def to(self, device):
+        """Move all components to the specified device."""
+        super().to(device)
+        self.device = device
+        # Ensure sub-modules are moved (redundant if super().to() works, but safe)
+        self.constant_embedder.to(device)
+        self.predicate_embedder.to(device)
+        self.atom_embedder.to(device)
+        self.state_embedder.to(device)
+        return self
     
 
 

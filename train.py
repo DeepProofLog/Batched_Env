@@ -4,14 +4,19 @@ import random
 import torch
 from typing import Dict
 
-from env import LogicEnv_gym
-from index_manager import IndexManager
+# from env import LogicEnv_gym
+# from index_manager import IndexManager
+# from dataset import DataHandler
+# from index_manager_v2 import IndexManager
+# from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
+from env_v4 import LogicEnv_gym_batch as LogicEnv_gym, IndexManager 
+from dataset_v2 import DataHandler
+from model_SB3_v2 import CustomActorCriticPolicy, CustomCombinedExtractor
+from neg_sampling import get_sampler
+
 from utils import get_device, print_eval_info
 from my_callbacks import SB3ModelCheckpoint, CustomEvalCallback, EpochTimingCallback
-from dataset import DataHandler
-from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from embeddings import get_embedder
-from neg_sampling import get_sampler
 from model_eval import eval_corruptions
 
 from stable_baselines3 import PPO
@@ -22,6 +27,8 @@ from stable_baselines3.common.callbacks import (
     StopTrainingOnNoModelImprovement,
 )
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from custom_vec_env import BatchedDummyVecEnv # Assuming you saved it as custom_vec_env.py
+
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
 from wandb.integration.sb3 import WandbCallback
@@ -48,7 +55,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     data_handler = DataHandler(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
-        janus_file=args.janus_file,
+        # janus_file=args.janus_file,
         train_file= args.train_file,
         valid_file=args.valid_file,
         test_file= args.test_file,
@@ -57,9 +64,11 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         n_eval_queries = args.n_eval_queries,
         n_test_queries = args.n_test_queries,
         corruption_mode=args.corruption_mode,
-        non_provable_corruptions=args.non_provable_corruptions,
-        non_provable_queries=args.non_provable_queries,)
-    data_handler= data_handler.info
+        # non_provable_corruptions=args.non_provable_corruptions,
+        # non_provable_queries=args.non_provable_queries,
+        )
+
+    # data_handler= data_handler.info
 
     args.n_eval_queries = len(data_handler.valid_queries) if args.n_eval_queries == None else min(args.n_eval_queries, len(data_handler.valid_queries))
     args.n_test_queries = len(data_handler.test_queries) if args.n_test_queries == None else min(args.n_test_queries, len(data_handler.valid_queries))
@@ -67,13 +76,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     index_manager = IndexManager(data_handler.constants,
                                 data_handler.predicates,
                                 data_handler.variables if args.rule_depend_var else set(),
-                                data_handler.constant_no,
-                                data_handler.predicate_no,
-                                args.variable_no,
-                                constants_images=data_handler.constants_images if args.dataset_name == 'mnist_addition' else set(),
-                                constant_images_no=data_handler.constant_images_no if args.dataset_name == 'mnist_addition' else 0,
                                 rules=data_handler.rules,
-                                rule_depend_var=args.rule_depend_var,
+                                # rule_depend_var=args.rule_depend_var,
                                 max_arity=data_handler.max_arity,
                                 device='cpu',
                                 padding_atoms=args.padding_atoms)
@@ -107,40 +111,48 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     def make_env(mode='train', seed=0, queries=None, labels=None):
         def _init():
             env = LogicEnv_gym(
+                        batch_size= 2,
                         index_manager=index_manager,
                         data_handler=data_handler,
-                        queries=queries,
-                        labels=labels,
+                        # queries=queries,
+                        # labels=labels,
                         mode=mode,
                         corruption_mode=args.corruption_mode,
-                        corruption_scheme=args.corruption_scheme,
+                        # corruption_scheme=args.corruption_scheme,
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
                         seed=seed,
-                        dynamic_consult=args.dynamic_consult,
+                        # dynamic_consult=args.dynamic_consult,
                         max_depth=args.max_depth,
-                        memory_pruning=args.memory_pruning,
+                        # memory_pruning=args.memory_pruning,
                         end_proof_action=args.end_proof_action,
                         skip_unary_actions=args.skip_unary_actions,
                         truncate_atoms=args.truncate_atoms,
-                        truncate_states=args.truncate_states,
-                        padding_atoms=args.padding_atoms,
+                        # truncate_states=args.truncate_states,
+                        # padding_atoms=args.padding_atoms,
                         padding_states=args.padding_states,
                         device='cpu', 
-                        engine=args.engine,
+                        # engine=args.engine,
                         )
-            env = Monitor(env)
+            # env = Monitor(env)
             return env
         return _init
 
     # Create vectorized environments for training
     env_seeds = np.random.randint(0, 2**10, size=args.n_envs)
-    env = DummyVecEnv([make_env(
-                                mode='train', 
-                                seed=int(env_seeds[i]), 
-                                queries=data_handler.train_queries, 
-                                labels=[1]*len(data_handler.train_queries)
-                                ) 
-                                for i in range(args.n_envs)])
+    env = BatchedDummyVecEnv([make_env(
+                                    mode='train', 
+                                    seed=int(env_seeds[i]), 
+                                    queries=data_handler.train_queries, 
+                                    labels=[1]*len(data_handler.train_queries)
+                                    ) 
+                                    for i in range(args.n_envs)])
+    # env = DummyVecEnv([make_env(
+    #                             mode='train', 
+    #                             seed=int(env_seeds[i]), 
+    #                             queries=data_handler.train_queries, 
+    #                             labels=[1]*len(data_handler.train_queries)
+    #                             ) 
+    #                             for i in range(args.n_envs)])
     # env = SubprocVecEnv([make_env(
     #                             mode='train', 
     #                             seed=int(env_seeds[i]), 
@@ -184,7 +196,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     # INIT MODEL
     if args.model_name == "PPO":
-        from model_SB3 import PPO_custom as PPO
+        # from model_SB3 import PPO_custom as PPO
+        from stable_baselines3 import PPO
         model = PPO(CustomActorCriticPolicy, 
                     env,
                     learning_rate=args.lr,

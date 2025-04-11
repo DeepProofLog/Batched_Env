@@ -29,9 +29,9 @@ if __name__ == "__main__":
     RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
     DYNAMIC_CONSULT = [True] # [True, False]
     FALSE_RULES = [False] 
-    MEMORY_PRUNING = [True] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
+    MEMORY_PRUNING = [False] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     END_PROOF_ACTION = [False]
-    SKIP_UNARY_ACTIONS = [True]
+    SKIP_UNARY_ACTIONS = [False]
     TRUNCATE_ATOMS = [True] # if more atoms in a state than pad_atoms, truncate the state to false
     TRUNCATE_STATES = [True] # if more states in next states than pad_states, truncate the state to false
     ENT_COEF = [0.1]
@@ -52,7 +52,7 @@ if __name__ == "__main__":
     ATOM_EMBEDDING_SIZE = [64]
     '''Attention: if we use static corruptions, include non provable corruptions
     In pararell eval, we evaluate based on a fixed number of corruptions'''
-    CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
+    CORRUPTION_MODE =  [None] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
     NON_PROVABLE_QUERIES = [True]
     NON_PROVABLE_CORRUPTIONS = [True]
 
@@ -77,14 +77,14 @@ if __name__ == "__main__":
     TIMESTEPS_TRAIN = [10000001]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
-    TRAIN_NEG_POS_RATIO = [1] # corruptions in train
+    TRAIN_NEG_POS_RATIO = [0] # corruptions in train
     valid_negatives = None # corruptions in validation
     test_negatives = 0 # corruptions in test
     n_eval_queries = 200 
     n_test_queries = None
     # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 128
+    n_envs = 1
     n_steps = 128 #2048
     n_eval_envs = 1
     n_callback_envs = 1
@@ -239,6 +239,10 @@ if __name__ == "__main__":
             valid_file = "valid_label.txt"
             test_file = "test_label.txt"
         elif args.corruption_mode == "dynamic" and args.non_provable_queries:
+            train_file = "train.txt"
+            valid_file = "valid.txt"
+            test_file = "test.txt"
+        else:   
             train_file = "train.txt"
             valid_file = "valid.txt"
             test_file = "test.txt"
