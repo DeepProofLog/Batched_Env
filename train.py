@@ -27,6 +27,7 @@ from stable_baselines3.common.callbacks import (
     StopTrainingOnNoModelImprovement,
 )
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from custom_vec_env import BatchedDummyVecEnv
 from custom_vec_env import BatchedDummyVecEnv # Assuming you saved it as custom_vec_env.py
 
 from stable_baselines3.common.env_util import make_vec_env

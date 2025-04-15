@@ -9,9 +9,9 @@ class IndexManager: pass # Dummy
 
 class SimplifiedFactResult(NamedTuple):
     """Holds the results of fact unification structured per k-slot."""
-    valid_mask: torch.Tensor     # Shape: (bs, k) - True if a valid unification exists for this slot
-    fact_indices: torch.Tensor   # Shape: (bs, k) - Index of the fact for this slot (or PAD) # Renamed from source_indices
-    substitutions: torch.Tensor  # Shape: (bs, k, 2, 2) - Substitutions [var, val] for this slot (or PAD)
+    valid_mask: torch.Tensor      # Shape: (bs, k) - True if a valid unification exists for this slot
+    fact_indices: torch.Tensor    # Shape: (bs, k) - Index of the fact for this slot (or PAD)
+    substitutions: torch.Tensor   # Shape: (bs, k, 2, 2) - Substitutions [var, val] for S/O terms (or PAD)
 
 
 # --- Helper Function ---
@@ -145,17 +145,17 @@ def check_term_unification(
 
 
 def get_first_k_fact_unifications_generalized(
-    queries_idx: torch.Tensor,             # Shape: (bs, 3)
-    facts: torch.Tensor,                   # Shape: (n_facts, 3)
+    queries_idx: torch.Tensor,            # Shape: (bs, 3)
+    facts: torch.Tensor,                  # Shape: (n_facts, 3)
     vars_idx: Union[torch.Tensor, List[int], Set[int], IndexManager], # Variable indices or IndexManager
-    k: int,                                # Max number of unifications to return
+    k: int,                               # Max number of unifications to return
     device: Optional[torch.device] = None,
     padding_value: int = PADDING_VALUE,
-# ) -> TopKUnificationResult: # Change return type hint
-) -> SimplifiedFactResult: # Use original type hint
+) -> SimplifiedFactResult:
     """
     Finds the first K unifying, non-conflicting facts for given queries (P, S, O)
     and returns the results structured in (bs, k) tensors. Uses generalized term unification internally.
+    Includes fix for broadcasting error in top-k index finding. Removes internal prints.
 
     Args:
         queries_idx: Tensor of queries, shape (bs, 3).
@@ -166,21 +166,25 @@ def get_first_k_fact_unifications_generalized(
         padding_value: Value used for padding.
 
     Returns:
-        SimplifiedFactResult containing valid_mask (bs, k), fact_indices (bs, k), # Updated field name in docstring
+        SimplifiedFactResult containing valid_mask (bs, k), fact_indices (bs, k),
         and substitutions (bs, k, 2, 2) corresponding to S/O terms.
     """
     if k <= 0: raise ValueError("k must be a positive integer")
     if queries_idx.dim() != 2 or queries_idx.shape[1] != 3:
         raise ValueError(f"queries_idx must have shape (bs, 3), but got {queries_idx.shape}")
+    if facts.dim() != 2 or facts.shape[1] != 3:
+        raise ValueError(f"facts must have shape (n_facts, 3), but got {facts.shape}")
+
 
     effective_device = device if device else queries_idx.device
     queries_idx = queries_idx.to(effective_device)
     facts = facts.to(effective_device)
+    # Assume _get_var_set_and_tensor is defined elsewhere and works correctly
     vars_idx_set, vars_idx_tensor = _get_var_set_and_tensor(vars_idx, effective_device)
 
     bs = queries_idx.shape[0]
     n_facts = facts.shape[0]
-    actual_k = min(k, n_facts) if n_facts > 0 else 0
+    actual_k = min(k, n_facts) if n_facts > 0 else 0 # Cannot retrieve more facts than available
 
     # --- Initialize Output Tensors (Final Size k) ---
     substitutions_out = torch.full((bs, k, 2, 2), padding_value, dtype=torch.long, device=effective_device) # m=2 for S/O
@@ -188,89 +192,80 @@ def get_first_k_fact_unifications_generalized(
     valid_mask_out = torch.zeros((bs, k), dtype=torch.bool, device=effective_device)
 
     # --- Handle Edge Cases ---
-    if bs == 0 or n_facts == 0 or k == 0:
-        # return TopKUnificationResult(valid_mask_out, fact_indices_out, substitutions_out) # Change return type
-        return SimplifiedFactResult(valid_mask_out, fact_indices_out, substitutions_out) # Use original type
+    if bs == 0 or k == 0: # If n_facts is 0, actual_k will be 0 and handled later
+        return SimplifiedFactResult(valid_mask_out, fact_indices_out, substitutions_out)
 
     # --- Prepare Terms for Broadcasting ---
     is_query_valid = ~torch.all(queries_idx == padding_value, dim=-1) # Shape: (bs,)
-    # Extract Predicate, Subject, Object terms
     q_p, q_s, q_o = queries_idx[:, 0], queries_idx[:, 1], queries_idx[:, 2] # (bs,)
+
+    # Handle case where there are no facts
+    if n_facts == 0:
+         return SimplifiedFactResult(valid_mask_out, fact_indices_out, substitutions_out)
+
     f_p, f_s, f_o = facts[:, 0], facts[:, 1], facts[:, 2]                   # (n_facts,)
 
     # --- 1. Check Predicate Match ---
-    # pred_match_mask shape: (bs, n_facts) via broadcasting
-    pred_match_mask = (q_p.unsqueeze(1) == f_p.unsqueeze(0))
+    pred_match_mask = (q_p.unsqueeze(1) == f_p.unsqueeze(0)) # (bs, n_facts)
 
     # --- 2. Prepare S/O terms for check_term_unification ---
-    # Stack S/O terms: query_so (bs, 2), facts_so (n_facts, 2)
-    query_so = torch.stack([q_s, q_o], dim=-1)
-    facts_so = torch.stack([f_s, f_o], dim=-1)
+    query_so = torch.stack([q_s, q_o], dim=-1) # (bs, 2)
+    facts_so = torch.stack([f_s, f_o], dim=-1) # (n_facts, 2)
 
-    # Broadcast to shape (bs, n_facts, m) where m=2
-    # t1 shape: (bs, 1, 2) -> (bs, n_facts, 2)
-    # t2 shape: (1, n_facts, 2) -> (bs, n_facts, 2)
-    t1 = query_so.unsqueeze(1).expand(-1, n_facts, -1)
-    t2 = facts_so.unsqueeze(0).expand(bs, -1, -1)
+    t1 = query_so.unsqueeze(1).expand(-1, n_facts, -1) # (bs, n_facts, 2)
+    t2 = facts_so.unsqueeze(0).expand(bs, -1, -1)      # (bs, n_facts, 2)
 
     # --- 3. Check S/O Term Unification ---
-    # term_result contains unification_mask (bs, n_facts) and all_substitutions (bs, n_facts, 2, 2)
+    # Assume check_term_unification is defined elsewhere and works correctly
     term_result = check_term_unification(
         t1=t1,
         t2=t2,
         vars_idx_tensor=vars_idx_tensor,
         padding_value=padding_value
-    )
+    ) # .unification_mask (bs, n_facts), .all_substitutions (bs, n_facts, 2, 2)
 
     # --- 4. Combine Predicate match with S/O term unification mask ---
-    # Also consider if the original query was valid padding
     final_unifies_mask = pred_match_mask & term_result.unification_mask & is_query_valid.unsqueeze(1) # (bs, n_facts)
 
     # --- 5. Early Exit if No Matches or actual_k=0 ---
     if actual_k == 0 or not torch.any(final_unifies_mask):
-         # return TopKUnificationResult(valid_mask_out, fact_indices_out, substitutions_out) # Change return type
-         return SimplifiedFactResult(valid_mask_out, fact_indices_out, substitutions_out) # Use original type
+        return SimplifiedFactResult(valid_mask_out, fact_indices_out, substitutions_out)
 
     # --- 6. Perform Top-K Selection on final_unifies_mask ---
+    # --- 6.0. Create a mask for valid unifications ---
     cum_true = torch.cumsum(final_unifies_mask.long(), dim=1) # (bs, n_facts)
     num_valid_per_batch = cum_true[:, -1] # (bs,)
 
-    # Calculate (bs, k) mask indicating which k-slots are valid
     k_indices_range = torch.arange(actual_k, device=effective_device) # (actual_k,)
-    final_valid_mask_slice = num_valid_per_batch.unsqueeze(1) > k_indices_range.unsqueeze(0) # (bs, k)
+    final_valid_mask_slice = num_valid_per_batch.unsqueeze(1) > k_indices_range.unsqueeze(0) # (bs, actual_k)
 
-    # Find the fact indices (0..n_facts-1) for each valid (b, k) slot
-    target_k_vals = torch.arange(1, actual_k + 1, device=effective_device).view(1, -1) # (1, actual_k)
-    match_k_val = (cum_true >= target_k_vals.unsqueeze(-1)) # (bs, actual_k, n_facts)
+    # --- 6.1. Find the first k indices where unification is valid ---
+    target_k_vals = torch.arange(1, actual_k + 1, device=effective_device).unsqueeze(0) # (1, actual_k)
+    match_k_val = (cum_true.unsqueeze(1) >= target_k_vals.unsqueeze(-1)) # Shape: (bs, actual_k, n_facts)
+
     final_fact_indices_slice = torch.argmax(match_k_val.long(), dim=2) # (bs, actual_k)
-    # Apply padding to indices where the k-slot is not valid
     final_fact_indices_slice = torch.where(final_valid_mask_slice, final_fact_indices_slice, padding_value) # (bs, actual_k)
 
     # --- 7. Gather Substitutions for Top-K results ---
-    # Use final_fact_indices_slice to gather from term_result.all_substitutions
-    bs_coords, _ = torch.meshgrid(torch.arange(bs, device=effective_device),
-                                  torch.arange(actual_k, device=effective_device),
-                                  indexing='ij')
-    # Use 0 for padded indices during gather to avoid out-of-bounds, will mask later
-    safe_fact_indices = torch.where(final_valid_mask_slice, final_fact_indices_slice, 0)
-    # Gathered subs shape: (bs, actual_k, m, 2) -> (bs, actual_k, 2, 2)
-    gathered_subs_slice = term_result.all_substitutions[bs_coords, safe_fact_indices]
+    bs_coords, k_coords = torch.meshgrid(torch.arange(bs, device=effective_device),
+                                         torch.arange(actual_k, device=effective_device),
+                                         indexing='ij') # (bs, actual_k)
 
-    # Mask out the substitutions gathered for invalid (padded) k-slots
+    safe_fact_indices = torch.where(final_valid_mask_slice, final_fact_indices_slice, 0)
+    gathered_subs_slice = term_result.all_substitutions[bs_coords, safe_fact_indices] # (bs, actual_k, 2, 2)
+
     gathered_subs_slice = torch.where(
-        final_valid_mask_slice.unsqueeze(-1).unsqueeze(-1), # Expand mask to (bs, actual_k, 1, 1)
+        final_valid_mask_slice.unsqueeze(-1).unsqueeze(-1), # (bs, actual_k, 1, 1)
         gathered_subs_slice,
         torch.tensor(padding_value, device=effective_device, dtype=torch.long)
     )
 
-    # --- 8. Populate Final Output Tensors ---
+    # --- 8. Populate Final Output Tensors (up to size k) ---
     valid_mask_out[:, :actual_k] = final_valid_mask_slice
-    fact_indices_out[:, :actual_k] = final_fact_indices_slice # This variable name correctly holds the indices
-    substitutions_out[:, :actual_k] = gathered_subs_slice # Already (bs, k, 2, 2)
+    fact_indices_out[:, :actual_k] = final_fact_indices_slice
+    substitutions_out[:, :actual_k] = gathered_subs_slice
 
-    # Return using the original NamedTuple type
-    # return TopKUnificationResult(valid_mask_out, fact_indices_out, substitutions_out) # Change return type
-    return SimplifiedFactResult(valid_mask_out, fact_indices_out, substitutions_out) # Use original type
+    return SimplifiedFactResult(valid_mask_out, fact_indices_out, substitutions_out)
 # --- END MODIFIED Main Unification Function ---
 
 # --- Substitution Application Function (Unchanged Internally) ---
@@ -344,93 +339,126 @@ def apply_substitutions_to_states(
 # --- Helper formatting functions (based on user's example structure) ---
 def _format_atom(atom_tensor, pred_map, const_map, var_set, var_map, padding_value=PADDING_VALUE):
     """Formats a (3,) tensor atom into a string."""
-    # Ensure atom_tensor is on CPU for list conversion
     atom_tensor_cpu = atom_tensor.cpu()
     if torch.all(atom_tensor_cpu == padding_value):
-        return "[Padding]"
+        return "[Padding Atom]"
     p, s, o = atom_tensor_cpu.tolist()
-    p_str = pred_map.get(p, f"Pred({p})")
-    s_val = s
-    o_val = o
-    # Check if term is variable by looking up its *value* in the var_set
-    s_str = var_map.get(s_val) if s_val in var_set else const_map.get(s_val, f"Const({s_val})")
-    o_str = var_map.get(o_val) if o_val in var_set else const_map.get(o_val, f"Const({o_val})")
+    p_str = pred_map.get(p, f"P({p})") # Use P() prefix for unknown predicates
+
+    # Check if s is a known variable *index*
+    s_str = var_map.get(s) if s in var_set else const_map.get(s, f"C({s})") # Use C() prefix for unknown constants
+    # Check if o is a known variable *index*
+    o_str = var_map.get(o) if o in var_set else const_map.get(o, f"C({o})")
+
     # Handle padding within atom terms specifically
-    if s_val == padding_value: s_str = "PAD"
-    if o_val == padding_value: o_str = "PAD"
+    if s == padding_value: s_str = "PAD"
+    if o == padding_value: o_str = "PAD"
+    if p == padding_value: p_str = "PAD" # Should not happen in valid atoms, but good practice
+
     return f"{p_str}({s_str}, {o_str})"
 
 def _format_substitution(sub_pair_tensor, const_map, var_set, var_map, padding_value=PADDING_VALUE):
     """Formats a (2,) substitution tensor [var, val] into a string."""
-     # Ensure tensor is on CPU
     sub_pair_tensor_cpu = sub_pair_tensor.cpu()
     var_idx, val_idx = sub_pair_tensor_cpu.tolist()
+
+    # Check if the variable slot itself is padded (meaning no substitution here)
     if var_idx == padding_value:
-        # This indicates an empty substitution slot, not a substitution involving padding
         return None # Return None to signify no actual substitution string to print
-    var_str = var_map.get(var_idx, f"Var({var_idx})")
-    # Value can be a variable or a constant
-    val_str = var_map.get(val_idx) if val_idx in var_set else const_map.get(val_idx, f"Const({val_idx})")
-    if val_idx == padding_value: val_str = "PAD" # If the value itself is padding
+
+    var_str = var_map.get(var_idx) # Assume var_idx is always a valid variable if not padding
+    if not var_str: # Should not happen with valid inputs, but safety check
+        var_str = f"Var({var_idx})?"
+
+    # Value can be a variable or a constant or padding
+    if val_idx == padding_value:
+        val_str = "PAD"
+    elif val_idx in var_set:
+        val_str = var_map.get(val_idx, f"V({val_idx})?") # Should be found in var_map if in var_set
+    else:
+        val_str = const_map.get(val_idx, f"C({val_idx})") # Use C() prefix for unknown constants
+
     return f"{var_str} -> {val_str}"
 # --- END Helper formatting functions ---
 
 
-# --- Main execution block with string formatting ---
+# --- START MODIFIED Main execution block ---
 if __name__ == '__main__':
-    # --- Setup (similar to user's example) ---
+    # --- Setup with More Queries ---
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    K_FACTS = 3 # Max unifications from facts to display/consider
+    K_FACTS = 2 # Max unifications from facts to display/consider
+    BS = 4      # << Increased Batch size to 4
+    N_ATOMS = 3 # Number of atoms per state (1 query + 2 next)
+    N_FACTS = 6 # << Increased Number of facts in the knowledge base
 
+    print(f"Settings: K_FACTS={K_FACTS}, Batch Size={BS}, Atoms/State={N_ATOMS}, Num Facts={N_FACTS}")
     print(f"Using PADDING_VALUE: {PADDING_VALUE}")
-    print(f"Using UNBOUND_VAR: {UNBOUND_VAR}")
 
-    # --- Mappings & Variables ---
-    predicate_map = {1: "relatedTo", 2: "typeOf", 3: "hasProperty", 4: "parent", 5: "ancestor"}
-    constant_map = {10: "ObjA", 11: "ObjB", 12: "ObjC", 13: "ObjD", 14: "ObjE", 15: "ObjF",
-                    20: "PropX", 21: "PropY", 22: "PropZ", 30: "Person1", 31: "Person2", 32: "Person3",
-                    50: "Val50", 60: "Val60", 70: "Val70"} # Added constants from previous examples
-    vars_idx_list = [-1, -2] # Only query vars needed for this example V1 = -1, V2 = -2
+    # --- Updated Mappings & Variables ---
+    predicate_map = {1: "parent", 2: "knows", 3:"likes"} # Added likes
+    constant_map = {10: "Alice", 11: "Bob", 12: "Charlie", 13: "David", 14:"Eve", 15:"Frank"} # Added Frank
+    vars_idx_list = [-1, -2] # V1 = -1, V2 = -2
     vars_set, vars_tensor = _get_var_set_and_tensor(vars_idx_list, device)
-    # Create reverse map for variables for better printing
-    variable_map = {idx: f"V{abs(idx)}" for idx in vars_idx_list} # Simple map V1, V2 etc.
+    variable_map = {idx: f"V{abs(idx)}" for idx in vars_idx_list} # V1, V2
 
-    # --- State Data (using setup from previous Python example) ---
-    bs = 3
-    n_padding_atoms = 4
-    n_facts = 7
-    states_idx = torch.full((bs, 1, n_padding_atoms, 3), PADDING_VALUE, device=device, dtype=torch.long)
-    facts_tensor = torch.randint(10, 30, (n_facts, 3), device=device, dtype=torch.long)
-    facts_tensor[:,0] = torch.randint(1, 4, (n_facts,)) # Predicates 1, 2, or 3
+    # --- State Data (BS=4, N_ATOMS=3) ---
+    # Shape: (bs, 1, n_atoms, 3)
+    states_idx = torch.full((BS, 1, N_ATOMS, 3), PADDING_VALUE, device=device, dtype=torch.long)
 
-    # B0: Query(1, V1, 15='ObjF'), Next(3='hasProp', V1, 50='Val50'), Next(4='parent', 60='Val60', 70='Val70')
-    states_idx[0, 0, 0, :] = torch.tensor([1, -1, 15], device=device) # relatedTo(V1, ObjF)
-    states_idx[0, 0, 1, :] = torch.tensor([3, -1, 50], device=device) # hasProp(V1, Val50)
-    states_idx[0, 0, 2, :] = torch.tensor([4, 60, 70], device=device) # parent(Val60, Val70)
-    facts_tensor[1, :] = torch.tensor([1, 10, 15], device=device) # relatedTo(ObjA, ObjF) -> Unifies B0 {V1 -> ObjA}
-    facts_tensor[3, :] = torch.tensor([1, 12, 15], device=device) # relatedTo(ObjC, ObjF) -> Unifies B0 {V1 -> ObjC}
-    facts_tensor[5, :] = torch.tensor([1, 14, 15], device=device) # relatedTo(ObjE, ObjF) -> Unifies B0 {V1 -> ObjE} (if K_FACTS>=3)
+    # State 0: Query: parent(V1, Bob), Next1: knows(V1, Charlie), Next2: likes(Alice, V1)
+    states_idx[0, 0, 0, :] = torch.tensor([1, -1, 11], device=device) # parent(V1, Bob)
+    states_idx[0, 0, 1, :] = torch.tensor([2, -1, 12], device=device) # knows(V1, Charlie)
+    states_idx[0, 0, 2, :] = torch.tensor([3, 10, -1], device=device) # likes(Alice, V1)
 
-    # B1: Query(2='typeOf', V1, V1), Next(3='hasProp', V2, V1)
-    states_idx[1, 0, 0, :] = torch.tensor([2, -1, -1], device=device) # typeOf(V1, V1)
-    states_idx[1, 0, 1, :] = torch.tensor([3, -2, -1], device=device) # hasProp(V2, V1)
-    facts_tensor[2, :] = torch.tensor([2, 20, 20], device=device) # typeOf(PropX, PropX) -> Unifies B1 {V1 -> PropX}
-    facts_tensor[4, :] = torch.tensor([2, 21, 22], device=device) # typeOf(PropY, PropZ) -> Conflict with B1 query V1==V1
-    facts_tensor[6, :] = torch.tensor([2, 22, 22], device=device) # typeOf(PropZ, PropZ) -> Unifies B1 {V1 -> PropZ} (if K_FACTS>=2, after conflict filtered)
+    # State 1: Query: knows(V1, V1), Next1: parent(David, V1), Next2: [PAD]
+    states_idx[1, 0, 0, :] = torch.tensor([2, -1, -1], device=device) # knows(V1, V1)
+    states_idx[1, 0, 1, :] = torch.tensor([1, 13, -1], device=device) # parent(David, V1)
+    # states_idx[1, 0, 2, :] remains PADDING
 
-    # B2: Query(1='relatedTo', 10='ObjA', 11='ObjB'), Next(3='hasProp', 10='ObjA', V1)
-    states_idx[2, 0, 0, :] = torch.tensor([1, 10, 11], device=device) # relatedTo(ObjA, ObjB)
-    states_idx[2, 0, 1, :] = torch.tensor([3, 10, -1], device=device) # hasProp(ObjA, V1)
-    facts_tensor[0, :] = torch.tensor([1, 10, 11], device=device) # relatedTo(ObjA, ObjB) -> Unifies B2 {} (no subs)
+    # State 2: Query: likes(V1, V2), Next1: knows(V2, V1), Next2: parent(V1, Frank)
+    states_idx[2, 0, 0, :] = torch.tensor([3, -1, -2], device=device) # likes(V1, V2)
+    states_idx[2, 0, 1, :] = torch.tensor([2, -2, -1], device=device) # knows(V2, V1)
+    states_idx[2, 0, 2, :] = torch.tensor([1, -1, 15], device=device) # parent(V1, Frank)
 
-    print(f"State shape: {states_idx.shape}")
-    print(f"Facts shape: {facts_tensor.shape}")
-    print("Variable Map:", variable_map)
-    print("Facts Tensor:\n", facts_tensor.cpu().numpy()) # Show facts for reference
+    # State 3: Query: parent(Eve, Frank) -> No variables, Next1: likes(Eve, Bob), Next2: [PAD]
+    states_idx[3, 0, 0, :] = torch.tensor([1, 14, 15], device=device) # parent(Eve, Frank)
+    states_idx[3, 0, 1, :] = torch.tensor([3, 14, 11], device=device) # likes(Eve, Bob)
+    # states_idx[3, 0, 2, :] remains PADDING
+
+
+    # --- Facts Data (N_FACTS=6) ---
+    # Shape: (n_facts, 3)
+    facts_tensor = torch.full((N_FACTS, 3), PADDING_VALUE, device=device, dtype=torch.long)
+    # Fact 0: parent(Alice, Bob) -> Unifies S0 {V1->Alice}
+    facts_tensor[0, :] = torch.tensor([1, 10, 11], device=device)
+    # Fact 1: knows(Charlie, Charlie) -> Unifies S1 {V1->Charlie}
+    facts_tensor[1, :] = torch.tensor([2, 12, 12], device=device)
+    # Fact 2: parent(David, Bob) -> Unifies S0 {V1->David}
+    facts_tensor[2, :] = torch.tensor([1, 13, 11], device=device)
+    # Fact 3: knows(Alice, Bob) -> Conflict for S1 query (V1==V1 requires S==O)
+    facts_tensor[3, :] = torch.tensor([2, 10, 11], device=device)
+    # Fact 4: likes(Alice, Bob) -> Unifies S2 {V1->Alice, V2->Bob}
+    facts_tensor[4, :] = torch.tensor([3, 10, 11], device=device)
+    # Fact 5: parent(Eve, Frank) -> Unifies S3 {} (no vars)
+    facts_tensor[5, :] = torch.tensor([1, 14, 15], device=device)
+    # Note: We could add more facts like `likes(David, Charlie)` etc.
+
+
+    print("\n--- Initial Data ---")
+    print(f"Variable Map: {variable_map}")
+    print(f"Facts Tensor (Indices 0 to {N_FACTS-1}):\n", facts_tensor.cpu().numpy())
+    # Print states more readably
+    print("Initial States:")
+    for b in range(BS):
+         print(f" State {b}:")
+         for i in range(N_ATOMS):
+             atom_tensor = states_idx[b,0,i,:]
+             atom_str = _format_atom(atom_tensor, predicate_map, constant_map, vars_set, variable_map)
+             # Also print raw indices for the state atoms
+             print(f"  Atom {i}: {atom_str}  (Indices: {atom_tensor.cpu().numpy().tolist()})")
     print("-" * 30)
-
 
     # --- Step 1: Extract First Atoms (Queries) ---
     first_atoms_queries = states_idx[:, 0, 0, :].clone() # Shape: (bs, 3)
@@ -439,90 +467,96 @@ if __name__ == '__main__':
     unification_result = get_first_k_fact_unifications_generalized(
         queries_idx=first_atoms_queries,
         facts=facts_tensor,
-        vars_idx=vars_tensor,
-        k=K_FACTS, # Use K_FACTS here
+        vars_idx=vars_tensor, # Pass the tensor containing var indices
+        k=K_FACTS,
         device=device,
         padding_value=PADDING_VALUE
     )
 
-    # --- Step 3: Apply Substitutions to Remaining Atoms in Original State ---
+    # --- Step 3: Apply Substitutions to Remaining Atoms ---
     next_states_idx = apply_substitutions_to_states(
-        states_idx=states_idx,
+        states_idx=states_idx, # Pass the original full state
         unification_result=unification_result,
         padding_value=PADDING_VALUE
-    ) # Shape (bs, K_FACTS, n_padding_atoms - 1, 3)
+    ) # Shape (bs, K_FACTS, n_atoms - 1, 3)
 
 
-    # --- Step 4: Interpret and Print Results ---
-    print("\n" + "=" * 20 + " INTERPRETED FACT RESULTS " + "=" * 20)
-    bs = states_idx.shape[0]
-    n_atoms_state = states_idx.shape[2]
+    # --- Step 4: Interpret and Print Results with Indices ---
+    print("\n" + "=" * 20 + " INTERPRETED RESULTS " + "=" * 20)
 
-    for b in range(bs):
+    for b in range(BS): # Iterate through Batch items
         query_atom = states_idx[b, 0, 0, :]
         query_str = _format_atom(query_atom, predicate_map, constant_map, vars_set, variable_map)
-        print(f"\n--- State {b}: Original First Query = {query_str} ---")
+        print(f"\n--- Processing Batch Item b={b} ---")
+        # Print original query with raw indices
+        print(f"  Original Query: {query_str}  (Indices: {query_atom.cpu().numpy().tolist()})")
 
-        # Print original remaining queries
-        print(f"  Original Remaining Queries:")
-        has_rem_query = False
-        for atom_idx in range(1, n_atoms_state):
-            rem_atom = states_idx[b, 0, atom_idx, :]
-            if torch.any(rem_atom.cpu() != PADDING_VALUE):
-                 print(f"     {_format_atom(rem_atom, predicate_map, constant_map, vars_set, variable_map)}")
-                 has_rem_query = True
-        if not has_rem_query: print("     [None]")
+        print(f"  Looking for Top {K_FACTS} Fact Unifications:")
 
-        is_query_padding = torch.all(query_atom.cpu() == PADDING_VALUE)
-        if is_query_padding:
-            print("  Original query is padding. Skipping results.")
-            continue
+        found_any_unification_for_b = False
+        # Iterate through the K slots provided by the unification result
+        for k_idx in range(K_FACTS):
+            # Check if this k-slot is valid for this batch item
+            if b < unification_result.valid_mask.shape[0] and k_idx < unification_result.valid_mask.shape[1] \
+               and unification_result.valid_mask[b, k_idx]:
 
-        # --- Print Fact Results for this batch item ---
-        print(f"\n  Fact Unification Results (Top {K_FACTS}):")
-        found_fact_unification = False
-        # Ensure we don't go out of bounds if bs=0 or k=0 in results
-        if b < unification_result.valid_mask.shape[0]:
-            # Iterate up to K_FACTS or the actual k dimension of the result, whichever is smaller
-            for k_idx in range(min(K_FACTS, unification_result.valid_mask.shape[1])):
-                if unification_result.valid_mask[b, k_idx]:
-                    found_fact_unification = True
-                    fact_index = unification_result.fact_indices[b, k_idx].item()
-                    # Substitutions for this specific (b, k) slot
-                    subs_tensor_bk = unification_result.substitutions[b, k_idx] # Shape (2, 2)
+                found_any_unification_for_b = True
+                fact_index = unification_result.fact_indices[b, k_idx].item()
+                subs_tensor_bk = unification_result.substitutions[b, k_idx] # Shape (2, 2)
 
-                    print(f"  - Fact Slot {k_idx}:")
-                    if fact_index != PADDING_VALUE and 0 <= fact_index < len(facts_tensor):
-                        fact_atom = facts_tensor[fact_index]
-                        fact_str = _format_atom(fact_atom, predicate_map, constant_map, set(), variable_map) # Facts have no vars
-                        print(f"    Unified with Fact {fact_index}: {fact_str}")
-                    else:
-                        # Should only happen if k > n_facts and we hit padding
-                        print(f"    Unified with Fact Index: {fact_index} [Invalid or Padding]")
+                print(f"\n  -> Result Slot k={k_idx}:") # Identify the K-slot
 
-                    print(f"    Substitutions:")
-                    subs_found_in_slot = False
-                    for i in range(subs_tensor_bk.shape[0]): # Iterate through the 2 potential substitution pairs
-                        sub_pair = subs_tensor_bk[i] # Shape (2,)
-                        sub_str = _format_substitution(sub_pair, constant_map, vars_set, variable_map)
-                        if sub_str is not None: # Only print if it's a valid substitution
-                            print(f"       {sub_str}")
-                            subs_found_in_slot = True
-                    if not subs_found_in_slot: print("       [None]")
+                # Print the Fact it unified with, including raw indices
+                if fact_index != PADDING_VALUE and 0 <= fact_index < len(facts_tensor):
+                    fact_atom = facts_tensor[fact_index]
+                    fact_str = _format_atom(fact_atom, predicate_map, constant_map, set(), {})
+                    print(f"     Unified with Fact Index fact_idx={fact_index}: {fact_str}  (Indices: {fact_atom.cpu().numpy().tolist()})")
+                else:
+                     print(f"     Unified with Fact Index: {fact_index} [INVALID or PADDING - Check Logic]")
 
-                    # Print the resulting next state from facts for this (b, k) branch
-                    print(f"    Next State Queries:")
-                    has_next_query = False
-                    # Check bounds for next_states_idx
-                    if b < next_states_idx.shape[0] and k_idx < next_states_idx.shape[1]:
-                         # Iterate through atoms in the next state (n_padding_atoms - 1)
-                        for atom_idx in range(next_states_idx.shape[2]):
-                            next_atom = next_states_idx[b, k_idx, atom_idx, :]
-                            if torch.any(next_atom.cpu() != PADDING_VALUE):
-                                print(f"       {_format_atom(next_atom, predicate_map, constant_map, vars_set, variable_map)}")
-                                has_next_query = True
-                    if not has_next_query: print("       [Proven or Empty State]") # If all remaining atoms were padded
+                # Print Substitutions for this (b, k) pair, including raw indices
+                print(f"     Substitutions Generated (Raw: {subs_tensor_bk.cpu().numpy().tolist()}):")
+                subs_found_in_slot = False
+                for i in range(subs_tensor_bk.shape[0]): # Iterate through the 2 potential substitution pairs [Var, Val]
+                    sub_pair = subs_tensor_bk[i]
+                    sub_str = _format_substitution(sub_pair, constant_map, vars_set, variable_map)
+                    if sub_str is not None:
+                        print(f"       {sub_str}")
+                        subs_found_in_slot = True
+                if not subs_found_in_slot:
+                    print("       [None]")
 
-        if not found_fact_unification:
-            print("  [None found]")
+                # Print the Resulting Next State for this (b, k) branch, including raw indices
+                print(f"     Resulting Next State Queries:")
+                has_next_query = False
+                # Check bounds for next_states_idx before accessing
+                if b < next_states_idx.shape[0] and k_idx < next_states_idx.shape[1]:
+                    # Iterate through remaining atoms in the next state (N_ATOMS - 1)
+                    for atom_idx in range(next_states_idx.shape[2]): # next_states_idx.shape[2] == N_ATOMS - 1
+                        next_atom = next_states_idx[b, k_idx, atom_idx, :]
+                        # Check if the atom is not just padding
+                        if torch.any(next_atom.cpu() != PADDING_VALUE):
+                             next_atom_str = _format_atom(next_atom, predicate_map, constant_map, vars_set, variable_map)
+                             # Print next state atom with raw indices
+                             print(f"       Atom {atom_idx+1}: {next_atom_str}  (Indices: {next_atom.cpu().numpy().tolist()})")
+                             has_next_query = True
+                if not has_next_query:
+                     print("       [State Proven or No Remaining Queries]")
+
+            # Optional: Print a message if a k-slot is invalid/padded
+            # else:
+            #    # Check bounds before printing this message too
+            #    if b < unification_result.valid_mask.shape[0] and k_idx < unification_result.valid_mask.shape[1]:
+            #         print(f"\n  -> Result Slot k={k_idx}: [No valid unification found for this slot]")
+
+
+        if not found_any_unification_for_b:
+            # Check if the original query was padding to differentiate reasons for no unification
+            if torch.all(query_atom.cpu() == PADDING_VALUE):
+                 print("  -> Original query was padding. No unification attempted.")
+            else:
+                 print("  -> No matching facts found or all potential matches resulted in conflict.")
+
+
     print("\n" + "=" * 50)
+# --- END MODIFIED Main execution block ---
