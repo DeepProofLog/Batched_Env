@@ -41,10 +41,10 @@ if __name__ == "__main__":
 
     # Dataset settings 
     # for countries_s3, we use non provable corruptions and provable queries, run_signature='countries_s3-transe-sum-50-5-20-dynamic-False-True-1-True-False-False-True-False-20-True'
-    DATASET_NAME =  ["kinship_family"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
-    TRAIN_DEPTH = [None] # [None, 1, 2, 3]
-    VALID_DEPTH = [None] # [None, 1, 2, 3]
-    TEST_DEPTH = [None] # [None, 1, 2, 3]
+    DATASET_NAME =  ["wn18rr"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
+    TRAIN_DEPTH = ['>0'] # [None, 1, 2, 3]
+    VALID_DEPTH = ['>0'] # [None, 1, 2, 3]
+    TEST_DEPTH = ['>0'] # [None, 1, 2, 3]
     SEED = [[0]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
@@ -59,7 +59,7 @@ if __name__ == "__main__":
     NON_PROVABLE_CORRUPTIONS = [True]
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
-    load_model = True #['best_eval', 'last_epoch', False]
+    load_model = False #['best_eval', 'last_epoch', False]
     save_model = True #['best_eval', 'last_epoch', False]
 
     # Loggin settings 

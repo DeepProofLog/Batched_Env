@@ -487,7 +487,9 @@ class LogicEnv_gym(gym.Env):
 
                 # MEMORY
                 if self.memory_pruning:
-                    self.memory.add(",".join(str(s) for s in state if s.predicate not in ['False', 'True', 'End']))
+                    self.memory.add(",".join(str(s) for s in current_state if s.predicate not in ['False', 'True', 'End']))
+                    # print(f"Added to memory: {",".join(str(s) for s in state if s.predicate not in ['False', 'True', 'End'])}") if self.verbose else None
+                    print(f"Memory: {self.memory}") if self.verbose else None
                     visited_mask = [",".join(str(s) for s in state) in self.memory for state in derived_states]
                     if any(visited_mask):
                     #     print('\n+++++++++') if self.verbose else None
@@ -522,6 +524,7 @@ class LogicEnv_gym(gym.Env):
         if self.memory_pruning:
             # Please do this only if the state is not false or true or end
             self.memory.add(",".join(str(s) for s in state if s.predicate not in ['False', 'True', 'End']))
+            print(f"Memory2: {self.memory}") if self.verbose else None
             visited_mask = [",".join(str(s) for s in state) in self.memory for state in derived_states]
 
             if any(visited_mask):
@@ -554,8 +557,9 @@ class LogicEnv_gym(gym.Env):
                 # print('*********\n') if self.verbose else None
                 print(f"Truncating {len(derived_states)} possible states to {max_num_states}:{derived_states}") if self.verbose else None
                 # print('\n*******') if self.verbose else None
-                truncated_flag = True
-                # Truncate next states (although it doesnt matter, episode will be done)
+                # truncated_flag = True
+                # order the states by length
+                derived_states = sorted(derived_states, key=lambda x: len(x))
                 derived_states = derived_states[:max_num_states]     
 
         # END ACTION MODULE
