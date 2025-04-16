@@ -137,8 +137,7 @@ if __name__ == "__main__":
     parser.add_argument("--padding_atoms", default = None, help="padding_atoms")
     parser.add_argument("--padding_states", default = None, help="padding_states")
     parser.add_argument("--atom_embedding_size", default = None, help="atom_embedding_size")
-    parser.add_argument("--test_file", default = None, help="test_file")
-
+    parser.add_argument("--test_depth", default = None, help="test_depth")
 
     args = parser.parse_args()
 
@@ -164,7 +163,7 @@ if __name__ == "__main__":
     if args.padding_atoms: PADDING_ATOMS = [int(args.padding_atoms)]
     if args.padding_states: PADDING_STATES = [int(args.padding_states)]
     if args.atom_embedding_size: ATOM_EMBEDDING_SIZE = [int(args.atom_embedding_size)]
-    if args.test_file: test_file = args.test_file
+    if args.test_depth: TEST_DEPTH = [str(args.test_depth)]
 
 
     print('Running experiments for the following parameters:','DATASET_NAME:',DATASET_NAME,'MODEL_NAME:',MODEL_NAME,'SEED:',SEED)
