@@ -241,7 +241,7 @@ def eval_corruptions(
                                                     env, 
                                                     n_eval_episodes=num_envs*(1+n_corruptions), 
                                                     deterministic=deterministic,
-                                                    verbose=0,)
+                                                    verbose=verbose,)
         print('\nbatch',b,'took',time.time()-time_batch) if verbose >= 1 else None
         # convert rewards, lengths, log_probs, mask_eval to np
         rewards = np.array(rewards)

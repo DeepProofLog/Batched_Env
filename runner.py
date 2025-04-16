@@ -59,7 +59,7 @@ if __name__ == "__main__":
     NON_PROVABLE_CORRUPTIONS = [True]
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
-    load_model = False #['best_eval', 'last_epoch', False]
+    load_model = True #['best_eval', 'last_epoch', False]
     save_model = True #['best_eval', 'last_epoch', False]
 
     # Loggin settings 
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 128
     n_steps = 128 # 2048
-    n_eval_envs = 1
+    n_eval_envs = 128
     n_callback_envs = 1
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout

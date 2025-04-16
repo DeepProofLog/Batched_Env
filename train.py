@@ -291,6 +291,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     corruptions=data_handler.test_corruptions if args.corruption_mode == 'static' else None,
                                     n_corruptions=args.test_negatives,
                                     consult_janus=False,
+                                    verbose=1,
                                     )
     print_eval_info('Test', metrics_test)
 
