@@ -20,6 +20,7 @@ def evaluate_policy(
     n_eval_episodes: int = 10,
     deterministic: bool = True,
     warn: bool = True,
+    verbose: int = 0,
 ) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
     """
     Runs policy for ``n_eval_episodes`` episodes and returns average reward.
@@ -77,10 +78,6 @@ def evaluate_policy(
     episode_rewards = np.zeros((n_envs, n_eval_episodes//n_envs))
     episode_lengths = np.zeros((n_envs, n_eval_episodes//n_envs))
     episode_log_probs = np.zeros((n_envs, n_eval_episodes//n_envs)) 
-    # print('n eval episodes:',n_eval_episodes)
-    # print('episode_rewards:',episode_rewards.shape, episode_rewards)
-    # print('episode_lengths:',episode_lengths.shape, episode_lengths)
-    # print('episode_log_probs:',episode_log_probs.shape, episode_log_probs)
     episode_counts = np.zeros(n_envs, dtype="int")
     # Divides episodes among different sub environments in the vector as evenly as possible
     episode_count_targets = np.array([(n_eval_episodes + i) // n_envs for i in range(n_envs)], dtype="int")
@@ -92,33 +89,18 @@ def evaluate_policy(
     # states = None
     episode_starts = np.ones((env.num_envs,), dtype=bool)
     while (episode_counts < episode_count_targets).any():
-        # print('episode_counts:',episode_counts, '/', episode_count_targets)
-        # print the episode counts every 10 % of the total number of episodes
-        if np.sum(episode_counts) % (n_eval_episodes//10) == 0:
+        if verbose > 0 and np.sum(episode_counts) % (n_eval_episodes//10) == 0:
             print(f'\rProcessing {np.sum(episode_counts)}/{n_eval_episodes}', end='', flush=True)
-        # for idx in range(n_envs):
-        #     print('mask of env',idx, 'is', len(env.envs[idx].env.mask_eval), env.envs[idx].env.mask_eval)
-        # actions, states = model.predict(
-        #     observations,  # type: ignore[arg-type]
-        #     state=states,
-        #     episode_start=episode_starts,
-        #     deterministic=deterministic,
-        # )
         obs_tensor = obs_as_tensor(observations, model.device)
+        # actions, states = model.predict(observations,state=states,episode_start=episode_starts,deterministic=deterministic)
         actions, values, log_probs = model.policy(obs_tensor, deterministic=deterministic)
         log_probs = log_probs.detach().cpu().numpy()
 
         new_observations, rewards, dones, infos = env.step(actions)
-        # print('new_observations:',[(k,v.shape) for k,v in new_observations.items()])
         current_rewards += rewards
         current_lengths += 1
         current_log_probs += log_probs
-        # increase episode_counts by 1 where dones is True
-        # print('actions:',actions)
-        # print('rewards:',rewards, 'current_rewards:',current_rewards)
-        # print('log_probs:',log_probs, 'current_log_probs:',current_log_probs)
-        # print('current_lengths:',current_lengths)
-        # print('dones:',dones)
+
         # reset current_rewards, current_lengths, current_log_probs where dones is True
         if dones.any():
             # Only update for environments where dones is True and episode_counts < episode_count_targets
@@ -134,12 +116,7 @@ def evaluate_policy(
         current_lengths[dones] = 0
         current_log_probs[dones] = 0
         episode_counts[dones] += 1
-        # print('current_rewards updated:',current_rewards, 'current_lengths updated:',current_lengths, 'current_log_probs updated:',current_log_probs)
-        # print('episode_counts updated:',episode_counts)
-        # for idx in range(n_envs):
-        #     print('updated mask of env',idx, 'is', len(env.envs[idx].env.mask_eval), env.envs[idx].env.mask_eval)
-        # if not all are done, update observations
-        # if not np.all(dones):
+
         observations = new_observations
         
         # for i in range(n_envs):
@@ -184,10 +161,11 @@ def eval_corruptions(
     data: List[Any],
     corruption_mode: str = 'static',
     corruptions: Optional[Dict[Any, List[Any]]] = None,
-    n_corruptions: int = -1,
+    n_corruptions: int = None,
     deterministic: bool = True,
     verbose: int = 0,
     consult_janus: bool = False,
+    plot: bool = False,
 ) -> Dict[str, Any]:
     """
     Evaluates model performance by comparing original queries against their corrupted versions.
@@ -204,16 +182,13 @@ def eval_corruptions(
     :param consult_janus: Whether to consult Janus for query processing
     :return: Dictionary with evaluation metrics
     """
-    mrr_list = []
+    mrr_list, hits1_list, hits3_list, hits10_list = [], [], [], []
     rewards_list_pos, episode_len_list_pos, log_probs_list_pos = [], [], []
     rewards_list_neg, episode_len_list_neg, log_probs_list_neg = [], [], []
     
     # Determine if we're using a vectorized environment
     is_vec_env = isinstance(env, VecEnv)
     num_envs = env.num_envs if is_vec_env else 1
-    if len(data) % num_envs != 0:
-        print(f'Warning, for time efficiency reasons, it is convinient to choose the eval_envs as \
-              a factor of the test queries, test_queries={len(data)}, num_envs={num_envs}')
     
     if verbose >= 1:
         print(f"Evaluating {len(data)} queries with {n_corruptions} corruptions each")
@@ -224,18 +199,12 @@ def eval_corruptions(
         batch_end = min(batch_start + num_envs, len(data))
         batch_size = batch_end - batch_start
         batch_queries = data[batch_start:batch_end]
+        assert len(batch_queries) == num_envs, f"Batch size {len(batch_queries)} does not match number of environments {num_envs}"
 
-        print('\n\nbatch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size,'. Batch',b+1,'of',len(data)//num_envs)
-        # print('batch queries:',batch_queries)
-        
-        # if verbose >= 1:
-        #     print(f"\nProcessing batch {batch_start//num_envs + 1}/{(len(data) + num_envs - 1)//num_envs}")
-        # else:
-        #     print(f"\rProcessing {batch_end}/{len(data)}", end='', flush=True)
+        print('\n\nbatch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size,'. Batch',b+1,'of',len(data)//num_envs) if verbose >= 1 else None
         
         # For each query in the batch, reset its env with the query and the corruptions
         corruptions_list = [] # to make sure that all environments have the same corruptions
-        
         for env_idx, query in enumerate(batch_queries):
             # Select the appropriate environment
             query_env = env.envs[env_idx].env if is_vec_env else env
@@ -256,43 +225,28 @@ def eval_corruptions(
             # Create evaluation data for this query and its corruptions
             eval_data = [query] + query_corruptions
             eval_labels = [1] + [0] * len(query_corruptions)
-            # print('\n\n','-'*100)
-            # print('env_idx:',env_idx)
-            # print('eval_data:',eval_data)
-            # print('eval_labels:',eval_labels)
-            # print('-'*100,'\n')
             # Assign queries and labels to each environment and reset (if monitored, need to add extra env.)
             env.envs[env_idx].env.mode = 'eval_parallel'
             env.envs[env_idx].env.queries = eval_data
             env.envs[env_idx].env.labels = eval_labels
             env.envs[env_idx].env.eval_idx = 0
             env.envs[env_idx].env.n_episodes = len(eval_data)
-            # env.envs[env_idx].env.mask_eval = []
             env.envs[env_idx].env.consult_janus_eval = consult_janus
 
         assert all(corruptions_list[c] == corruptions_list[0] for c in range(len(corruptions_list))), "All environments must have the same number of corruptions"
         n_corruptions = corruptions_list[0]
         # evaluate the model for n_eval_episodes=n_envs*(1+n_corruptions)
         time_batch = time.time()
-        rewards, lengths, log_probs = evaluate_policy(model, env, 
-                                                n_eval_episodes=num_envs*(1+n_corruptions), 
-                                                deterministic=deterministic)
-        print('batch',b,'took',time.time()-time_batch)
+        rewards, lengths, log_probs = evaluate_policy(model, 
+                                                    env, 
+                                                    n_eval_episodes=num_envs*(1+n_corruptions), 
+                                                    deterministic=deterministic,
+                                                    verbose=0,)
+        print('\nbatch',b,'took',time.time()-time_batch) if verbose >= 1 else None
         # convert rewards, lengths, log_probs, mask_eval to np
         rewards = np.array(rewards)
-        # print('\n\nrewards:',rewards.shape, rewards)
         lengths = np.array(lengths)
         log_probs = np.array(log_probs)
-        # print('\n\nrewards:',rewards.shape, rewards, '\nlengths:',lengths.shape, lengths, '\nlog_probs:',log_probs.shape, log_probs)
-        # mask_eval = np.zeros((num_envs,(1+n_corruptions)), dtype=bool) # initialise it to boolean array of shape (num_envs,1+n_corruptions)
-        # for env_idx in range(num_envs):
-        #     # print('mask',env_idx, len(env.envs[env_idx].env.mask_eval), env.envs[env_idx].env.mask_eval)
-        #     # I need to filter because some envs have more than 1+n_corruptions. 
-        #     mask_eval[env_idx] = env.envs[env_idx].env.mask_eval[:1+n_corruptions]
-        # # print('mask_eval:',mask_eval.shape, mask_eval)
-        # rewards = rewards[mask_eval].reshape(rewards.shape)
-        # lengths = lengths[mask_eval].reshape(lengths.shape)
-        # log_probs = log_probs[mask_eval].reshape(log_probs.shape)
 
         filter_mask = None
         if len(batch_queries) < num_envs:
@@ -300,12 +254,6 @@ def eval_corruptions(
         rewards = rewards[:filter_mask,:1+n_corruptions]
         lengths = lengths[:filter_mask,:1+n_corruptions]
         log_probs = log_probs[:filter_mask,:1+n_corruptions]
-
-
-        # print(rewards.shape, log_probs.shape)
-        # print(rewards)
-        # print(lengths)
-        # print(log_probs)
 
         # where the rewards are 0, substract 100 to the problogs
         log_probs[rewards == 0] -= 100
@@ -319,25 +267,31 @@ def eval_corruptions(
         log_probs_list_neg.extend(log_probs[:,1:])
 
         # Batch calculation of ranks and MRR
-        # print('log probs:', log_probs)
         if rewards.shape[1] > 1:  # If we have corruptions
-            # Calculate ranks for each environment in the batch
             # Sort log_probs in descending order and get indices
             sorted_indices = np.argsort(-log_probs, axis=-1)
-            # print('sorted indices:',sorted_indices)
             # Find position of positive examples (index 0) for each environment
             ranks = np.argmax(sorted_indices == 0, axis=-1) + 1
-            # print('ranks:',ranks)
             # Calculate MRR for each environment
             batch_mrr = 1.0 / ranks
             mrr_list.extend(batch_mrr.tolist())
-            print('batch mrr:',np.round(np.mean(batch_mrr),3),'rolling avg mrr:',np.round(np.mean(mrr_list),3))
-        print('rolling avg rwds pos:',np.round(np.mean(rewards_list_pos),3), 'rolling avg rwds neg:',np.round(np.mean(rewards_list_neg),3))
-        print('rolling avg episode len pos:',np.round(np.mean(episode_len_list_pos),3), 'rolling avg episode len neg:',np.round(np.mean(episode_len_list_neg),3))
-        print('rolling avg log probs pos:',np.round(np.mean(log_probs_list_pos),3), 'rolling avg log probs neg:',np.round(np.mean(log_probs_list_neg),3))
+            # Calculate Hits@k for the batch
+            batch_hits1 = (ranks == 1).astype(int)
+            batch_hits3 = (ranks <= 3).astype(int)
+            batch_hits10 = (ranks <= 10).astype(int)
+            hits1_list.extend(batch_hits1.tolist())
+            hits3_list.extend(batch_hits3.tolist())
+            hits10_list.extend(batch_hits10.tolist())
+            if verbose >= 1:
+                print('batch mrr:',np.round(np.mean(batch_mrr),3),'rolling avg mrr:',np.round(np.mean(mrr_list),3)) 
+                print('batch hits1:',np.round(np.mean(batch_hits1),3),'rolling avg hits1:',np.round(np.mean(hits1_list),3))
+                print('batch hits3:',np.round(np.mean(batch_hits3),3),'rolling avg hits3:',np.round(np.mean(hits3_list),3))
+                print('batch hits10:',np.round(np.mean(batch_hits10),3),'rolling avg hits10:',np.round(np.mean(hits10_list),3))
+        if verbose >= 1:
+            print('rolling avg rwds pos:',np.round(np.mean(rewards_list_pos),3), 'rolling avg rwds neg:',np.round(np.mean(rewards_list_neg),3))
+            print('rolling avg episode len pos:',np.round(np.mean(episode_len_list_pos),3), 'rolling avg episode len neg:',np.round(np.mean(episode_len_list_neg),3))
+            print('rolling avg log probs pos:',np.round(np.mean(log_probs_list_pos),3), 'rolling avg log probs neg:',np.round(np.mean(log_probs_list_neg),3))
     
-    # print('mrr_list:',mrr_list)
-    # print('avg mrr:',np.mean(mrr_list))
     # Prepare scores and labels for AUC-PR calculation
     log_probs_list_pos = np.array(log_probs_list_pos)
     # reshape and squeeze log_probs_list_neg
@@ -354,26 +308,26 @@ def eval_corruptions(
     log_probs_pos = np.array(log_probs_list_pos)
     log_probs_neg = np.array(log_probs_list_neg).reshape(-1,1).squeeze()
     mrr_array = np.array(mrr_list)
+    hits1_array = np.array(hits1_list)
+    hits3_array = np.array(hits3_list)
+    hits10_array = np.array(hits10_list)
 
+    if plot:
+        # plot the positive and negative logit distributions as points
+        import matplotlib.pyplot as plt
 
-
-    # # plot the positive and negative logit distributions as points
-    # import matplotlib.pyplot as plt
-
-    # # Create indices for x-axis positioning
-    # x_pos = np.arange(len(log_probs_pos))
-    # x_neg = np.arange(len(log_probs_neg))
-    
-    # # Plot points instead of histograms
-    # plt.scatter(x_pos, log_probs_pos, alpha=0.8, label='positive', color='blue')
-    # plt.scatter(x_neg, log_probs_neg, alpha=0.5, label='negative', color='red')
-    
-    # plt.legend(loc='upper right')
-    # plt.xlabel('Sample index')
-    # plt.ylabel('Log probability')
-    # plt.show()
-
-
+        # Create indices for x-axis positioning
+        x_pos = np.arange(len(log_probs_pos))
+        x_neg = np.arange(len(log_probs_neg))
+        
+        # Plot points instead of histograms
+        plt.scatter(x_pos, log_probs_pos, alpha=0.8, label='positive', color='blue')
+        plt.scatter(x_neg, log_probs_neg, alpha=0.5, label='negative', color='red')
+        
+        plt.legend(loc='upper right')
+        plt.xlabel('Sample index')
+        plt.ylabel('Log probability')
+        plt.show()
 
     # Return comprehensive evaluation metrics
     return {
@@ -404,7 +358,13 @@ def eval_corruptions(
         'log_probs_mean': float(np.mean(np.concatenate([log_probs_pos, log_probs_neg]))),
         'log_probs_std': float(np.std(np.concatenate([log_probs_pos, log_probs_neg]))),
         
-        'auc_pr': float(auc_pr)
+        'auc_pr': float(auc_pr),
+        'hits1_mean': float(np.mean(hits1_array)),
+        'hits1_std': float(np.std(hits1_array)),
+        'hits3_mean': float(np.mean(hits3_array)),
+        'hits3_std': float(np.std(hits3_array)),
+        'hits10_mean': float(np.mean(hits10_array)),
+        'hits10_std': float(np.std(hits10_array)),
     }
 
 

@@ -41,9 +41,11 @@ if __name__ == "__main__":
 
     # Dataset settings 
     # for countries_s3, we use non provable corruptions and provable queries, run_signature='countries_s3-transe-sum-50-5-20-dynamic-False-True-1-True-False-False-True-False-20-True'
-    DATASET_NAME =  ["kinship_family"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
-    DEPTH_FILTERED = [2] # [None, 1, 2, 3]
-    SEED = [[0]] # [[0,1,2,3,4]]
+    DATASET_NAME =  ["countries_s3"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
+    TRAIN_DEPTH = [None] # [None, 1, 2, 3]
+    VALID_DEPTH = [None] # [None, 1, 2, 3]
+    TEST_DEPTH = ['3'] # [None, 1, 2, 3]
+    SEED = [[0,1,2]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
     STATE_EMBEDDER = ['mean'] #'mean'
@@ -57,7 +59,7 @@ if __name__ == "__main__":
     NON_PROVABLE_CORRUPTIONS = [True]
 
     RESTORE_BEST_VAL_MODEL = [True] #[True,False]
-    load_model = False #['best_eval', 'last_epoch', False]
+    load_model = True #['best_eval', 'last_epoch', False]
     save_model = True #['best_eval', 'last_epoch', False]
 
     # Loggin settings 
@@ -72,20 +74,23 @@ if __name__ == "__main__":
     janus_file = "train.pl"
     rules_file = "rules.txt"
     facts_file = "train.txt"
+    train_file = "train.txt"
+    valid_file = "valid.txt"    
+    test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [10000001]
+    TIMESTEPS_TRAIN = [150000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
-    valid_negatives = None # corruptions in validation
-    test_negatives = 0 # corruptions in test
+    valid_negatives = None # corruptions in validation set (test)
+    test_negatives = None # corruptions in test set (test)
     n_eval_queries = 200 
     n_test_queries = None
     # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 128
-    n_steps = 128 #2048
+    n_steps = 128 # 2048
     n_eval_envs = 1
     n_callback_envs = 1
     eval_freq = n_steps*n_envs
@@ -182,7 +187,9 @@ if __name__ == "__main__":
         'ent_coef': ENT_COEF,
         'clip_range': CLIP_RANGE,
         'engine': ENGINE,
-        'depth_filtered': DEPTH_FILTERED,
+        'train_depth': TRAIN_DEPTH,
+        'valid_depth': VALID_DEPTH,
+        'test_depth': TEST_DEPTH,
         'truncate_atoms': TRUNCATE_ATOMS,
         'truncate_states': TRUNCATE_STATES,
         'padding_atoms': PADDING_ATOMS,
@@ -238,15 +245,13 @@ if __name__ == "__main__":
             train_file = "train_label.txt"
             valid_file = "valid_label.txt"
             test_file = "test_label.txt"
-        elif args.corruption_mode == "dynamic" and args.non_provable_queries:
-            train_file = "train.txt"
-            valid_file = "valid.txt"
-            test_file = "test.txt"
-        
-        if args.depth_filtered is not None:
-            train_file = train_file.replace('.txt', f'_depth_{args.depth_filtered}.txt')
-            valid_file = valid_file.replace('.txt', f'_depth_{args.depth_filtered}.txt')
-            test_file = test_file.replace('.txt', f'_depth_{args.depth_filtered}.txt')
+
+        if args.train_depth is not None:
+            train_file = train_file.replace('.txt', f'_depths.txt')
+        if args.valid_depth is not None:
+            valid_file = valid_file.replace('.txt', f'_depths.txt')
+        if args.test_depth is not None:
+            test_file = test_file.replace('.txt', f'_depths.txt')
 
         args.data_path = data_path
         args.train_file = train_file
@@ -284,7 +289,7 @@ if __name__ == "__main__":
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,args.padding_atoms,args.padding_states,
                     args.corruption_mode, args.non_provable_queries, args.non_provable_corruptions,args.train_neg_pos_ratio, 
                     args.dynamic_consult, args.false_rules, args.end_proof_action, args.skip_unary_actions, args.truncate_atoms,
-                    args.truncate_states, args.memory_pruning, args.rule_depend_var, args.max_depth,args.restore_best_val_model,args.ent_coef,args.clip_range,args.depth_filtered,
+                    args.truncate_states, args.memory_pruning, args.rule_depend_var, args.max_depth,args.restore_best_val_model,args.ent_coef,args.clip_range,
                     args.engine, args.train_neg_pos_ratio)
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)

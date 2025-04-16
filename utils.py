@@ -464,7 +464,7 @@ class FileLogger:
 
         # Check that all the kays in avg_results have the same length
         len_keys = [len(v) for v in avg_results.values()]
-        assert all([l == len_keys[0] for l in len_keys]), 'Not all the keys in avg_results have the same length!'                  
+        assert all([l == len_keys[0] for l in len_keys]), f'Not all the keys in avg_results have the same length! {[(k, len(v)) for k, v in avg_results.items()]}'                  
         assert len(seeds_found) == len(seeds), f'Number of seeds {seeds_found} found in the experiments is different from the number of seeds {seeds}!'
         
         # Calculate average and standard deviation for each metric

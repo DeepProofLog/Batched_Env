@@ -1,3 +1,15 @@
+:- dynamic son/2.
+:- dynamic brother/2.
+:- dynamic mother/2.
+:- dynamic niece/2.
+:- dynamic daughter/2.
+:- dynamic sister/2.
+:- dynamic nephew/2.
+:- dynamic aunt/2.
+:- dynamic father/2.
+:- dynamic uncle/2.
+:- dynamic husband/2.
+:- dynamic wife/2.
 :- discontiguous son/2.
 :- discontiguous brother/2.
 :- discontiguous mother/2.
@@ -10,18 +22,6 @@
 :- discontiguous uncle/2.
 :- discontiguous husband/2.
 :- discontiguous wife/2.
-:- table son/2.
-:- table brother/2.
-:- table mother/2.
-:- table niece/2.
-:- table daughter/2.
-:- table sister/2.
-:- table nephew/2.
-:- table aunt/2.
-:- table father/2.
-:- table uncle/2.
-:- table husband/2.
-:- table wife/2.
 aunt(1369,1287).
 aunt(1682,512).
 aunt(1283,1271).

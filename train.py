@@ -58,8 +58,11 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         n_test_queries = args.n_test_queries,
         corruption_mode=args.corruption_mode,
         non_provable_corruptions=args.non_provable_corruptions,
-        non_provable_queries=args.non_provable_queries,)
-    data_handler= data_handler.info
+        non_provable_queries=args.non_provable_queries,
+        train_depth=args.train_depth,
+        valid_depth=args.valid_depth,
+        test_depth=args.test_depth,)
+    # data_handler= data_handler.info
 
     args.n_eval_queries = len(data_handler.valid_queries) if args.n_eval_queries == None else min(args.n_eval_queries, len(data_handler.valid_queries))
     args.n_test_queries = len(data_handler.test_queries) if args.n_test_queries == None else min(args.n_test_queries, len(data_handler.valid_queries))

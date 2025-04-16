@@ -158,35 +158,6 @@ def get_rules_from_file(file_path: str) -> Tuple[List[Term], List[Rule]]:
     return queries, rules
 
 
-# def get_queries_labels(path:str)-> Tuple[List[Term],List[bool]]:
-#     '''Get queries and labels (whether they are provable) from {set}_queries.txt file'''
-#     queries = []
-#     labels = []
-#     with open(path, "r") as f:
-#         lines = f.readlines()
-#         for line in lines:
-#             query, label = line.strip().split("\t")
-#             queries.append(get_atom_from_string(query))
-#             labels.append(1 if label == "True" else (0 if label == "False" else '?'))
-#     return queries, labels
-
-
-
-
-# def get_queries(path:str)-> Tuple[List[Term],List[Term]]:
-#     '''Get queries from a file, and the corresponding negative queries (togehter with their labels indicating if they are provable)
-#     from {set}_label_corruptions.txt file'''
-#     pos_queries = []
-#     neg_queries = []
-#     with open(path, "r") as f:
-#         dicts = json.load(f)
-#         for key, value in dicts.items():
-#             pos_queries.append(get_atom_from_string(key))
-#             for q, l in value:
-#                 if l:
-#                     neg_queries.append(get_atom_from_string(q))
-#     return pos_queries, neg_queries
-
 def get_rules_from_rules_file(file_path: str) -> List[Rule]:
     """
     Parse a file to extract rules.
@@ -261,33 +232,29 @@ def get_queries(path: str, non_provable_queries: bool = True) -> List[Term]:
     # print(sdhvb)
     return queries
 
-def get_corruptions(queries: List[Term], file_path: str) -> Dict[Term, List[Term]]:
-    """
-    Get corruptions from the json file.
-    
+def get_filtered_queries(path: str, depth: str) -> List[Term]:
+    """Get queries from a file, filtering by depth: query depth
+    If the depth of a query is -1, it is not provable
     Args:
-        queries: List of valid queries
-        file_path: Path to the JSON file containing corruptions
-        
-    Returns:
-        Dictionary with the query as key and a list of corruptions that are true as value
+        depth: depth of the query. Can be 'number' or '<number'. In the last
+          case, take all the queries with depth < int. If None, take all the queries
     """
-    dict_ = defaultdict(list)
-    try:
-        with open(file_path, "r") as f:
-            corruptions_dict = json.load(f)
-            for query, corruptions in corruptions_dict.items():
-                query = get_atom_from_string(query[:-1])
-                assert query in queries, f"Query {query} not in queries"
-                for corruption, is_provable in corruptions:
-                    if is_provable:
-                        corruption = get_atom_from_string(corruption[:-1])
-                        dict_[query].append(corruption)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"File {file_path} not found")
-    except json.JSONDecodeError:
-        raise ValueError(f"Invalid JSON format in {file_path}")
-    return dict_
+
+
+    queries = []
+    with open(path, "r") as f:
+        lines = f.readlines()
+        for line in lines:
+            query = line.strip().split(" ")[0]
+            query_depth = line.strip().split(" ")[1]
+            query_depth = int(query_depth) if query_depth != "-1" else -1
+            if depth == None or (depth.startswith('<') and query_depth < int(depth[1:]) and query_depth>=0)\
+                or (depth.startswith('>') and query_depth > int(depth[1:]))  or (depth == str(query_depth)):
+                queries.append(get_atom_from_string(query))
+    print(f"Number of queries with depth {depth}: {len(queries)}/ {len(lines)}")
+    return queries
+
+
 
 def get_corruptions_dict(file_path: str, non_provable_corruptions: bool = False) -> Dict[Term, List[Term]]:
     """
@@ -317,135 +284,8 @@ def get_corruptions_dict(file_path: str, non_provable_corruptions: bool = False)
         raise ValueError(f"Invalid JSON format in {file_path}")
     return dict_
 
-# Import MNIST-related code
-# from data.mnist_addition.MNIST import addition, multiplication
 
-class DataHandlerMnist:
-    """Handles MNIST data with corruption support in a simplified structure"""
-    
-    def __init__(self, dataset_name: str, base_path: str, janus_file: str, name: str = None):
-        """
-        Initialize MNIST data handler.
-        
-        Args:
-            dataset_name: Name of the dataset
-            base_path: Base path to the dataset directory
-            janus_file: Name of the Janus prolog file
-            name: Optional alternative name for the dataset
-        """
-        self.dataset_name = name
-        self.corruption_mode = None
-        self.n_digits = 2
-
-        # Basic setup
-        self.base_path = join(base_path, dataset_name)
-        self.janus_path = join(self.base_path, janus_file)
-        self.max_arity = 5
-
-        # Load data
-        self._load_janus_data()
-        self._load_datasets()
-        self._process_datasets()
-        self._setup_constants()
-        
-    def _load_janus_data(self):
-        """Load Janus facts and rules"""
-        janus.consult(self.janus_path)
-        with open(self.janus_path, "r") as f:
-            self.janus_facts = f.readlines()
-        self.facts, self.rules = get_rules_from_file(self.janus_path)
-
-    def _load_datasets(self):
-        """Load all datasets at once"""
-        self.datasets = {
-            'train': addition(n=self.n_digits, dataset="train", seed=42),
-            'valid': addition(n=self.n_digits, dataset="val", seed=42),
-            'test': addition(n=self.n_digits, dataset="test", seed=42)
-        }
-
-    def _process_datasets(self):
-        """Process all datasets similarly"""
-        queries = {}
-        self.images = defaultdict(list)
-        self.image_strings = {}
-        d = 0  # Image counter
-        
-        for set_name in ['train', 'valid', 'test']:
-            # Store raw data
-            labels, digits, l1, l2 = [], [], [], []
-            for i in range(10):  # 10 samples per set
-                dl1, dl2, label, dgts = self.datasets[set_name][i]
-                labels.append(label)
-                digits.append(dgts)
-                l1.append(dl1)
-                l2.append(dl2)
-            
-            # Create image strings
-            img_strings = []
-            for dgts in digits:
-                group = []
-                for digit in dgts:
-                    group.extend([f"im_{d+i}" for i in range(len(digit))])
-                    d += len(digit)
-                img_strings.append(group)
-            
-            # Create queries
-            queries[set_name] = [
-                Term("addition", [*imgs, str(label)])
-                for imgs, label in zip(img_strings, labels)
-            ]
-            # Store queries
-            setattr(self, f'{set_name}_queries', queries[set_name])
-            # Store processed data
-            setattr(self, f'{set_name}_labels', labels)
-
-            self.image_strings[set_name] = img_strings
-            
-            # Store images
-            im_dict = defaultdict(list)
-            for dgts, dl1, dl2 in zip(digits, l1, l2):
-                im_dict[str(dgts)] = (dl1, dl2)
-            self.images.update(im_dict)
-
-    def _setup_constants(self):
-        """Setup constants and predicates"""
-        # Collect all image IDs
-        all_images = []
-        for set_name in ['train', 'valid', 'test']:
-            all_images.extend([img for group in self.image_strings[set_name] for img in group])
-        
-        # Collect all labels
-        all_labels = []
-        for set_name in ['train', 'valid', 'test']:
-            all_labels.extend(map(str, getattr(self, f'{set_name}_labels')))
-        
-        # Set constants
-        self.constants = set(all_images + all_labels)
-        self.constants_images = set(all_images)
-        
-        # Predicate setup
-        self.predicates = {"addition", "digit"}
-        self.predicates_arity = {"addition": 3, "digit": 2}
-        self.variables = set(['RULE0_Z','RULE0_Y', 'RULE0_X', 'RULE0_Y2', 'RULE0_X2'])
-        self.constant_no = len(self.constants)
-        self.constant_images_no = len(self.constants_images)
-        self.predicate_no = len(self.predicates)
-        self.variable_no = len(self.variables)
-
-    def _print_debug_info(self):
-        """Print debugging information about loaded data"""
-        print(f"\nTrain queries: {len(self.train_queries)}, {self.train_queries}")
-        print(f"\nValid queries: {len(self.valid_queries)}, {self.valid_queries}")
-        print(f"\nTest queries: {len(self.test_queries)}, {self.test_queries}")
-        print(f"\nImages: {len(self.images)}, {[(i, c[0].shape, c[1].shape) for i, c in self.images.items()]}")
-        print(f"\nConstant images: {self.constant_images_no}, {self.constants_images}")
-        print(f"\nConstants: {self.constant_no}, {self.constants}")
-        print(f"\nPredicates: {self.predicate_no}, {self.predicates}")
-        print(f"\nVariables: {self.variable_no}, {self.variables}")
-        print(f"\nMax arity: {self.max_arity}")
-
-
-class DataHandlerKGE:
+class DataHandler:
     '''
     Handles knowledge graph embedding datasets with corruption support.
     
@@ -466,7 +306,10 @@ class DataHandlerKGE:
                 n_test_queries: int = None,
                 corruption_mode: Optional[str] = None,
                 non_provable_corruptions: bool = False,
-                non_provable_queries: bool = False):
+                non_provable_queries: bool = False,
+                train_depth: str = None,
+                valid_depth: str = None,
+                test_depth: str = None):
         """
         Initialize KGE data handler.
         
@@ -517,10 +360,19 @@ class DataHandlerKGE:
             self.test_queries = list(self.test_corruptions.keys())
 
         elif corruption_mode and 'dynamic' in corruption_mode:
-            self.train_queries = get_queries(train_path, non_provable_queries)
-            self.valid_queries = get_queries(valid_path, non_provable_queries)
-            self.test_queries = get_queries(test_path, non_provable_queries)
             self.train_corruptions = self.valid_corruptions = self.test_corruptions = self.neg_train_queries = None
+            if not train_depth:
+                self.train_queries = get_queries(train_path, non_provable_queries)
+            else:
+                self.train_queries = get_filtered_queries(train_path, train_depth)
+            if not valid_depth:
+                self.valid_queries = get_queries(valid_path, non_provable_queries)
+            else:
+                self.valid_queries = get_filtered_queries(valid_path, valid_depth)
+            if not test_depth:
+                self.test_queries = get_queries(test_path, non_provable_queries)
+            else:
+                self.test_queries = get_filtered_queries(test_path, test_depth)
 
                
             # Filter queries with predicates not in the rules
@@ -602,63 +454,279 @@ class DataHandlerKGE:
         # print(sòdjn)
 
 
-class DataHandler:
-    """
-    Factory class that creates appropriate data handler based on dataset name.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# def get_queries_labels(path:str)-> Tuple[List[Term],List[bool]]:
+#     '''Get queries and labels (whether they are provable) from {set}_queries.txt file'''
+#     queries = []
+#     labels = []
+#     with open(path, "r") as f:
+#         lines = f.readlines()
+#         for line in lines:
+#             query, label = line.strip().split("\t")
+#             queries.append(get_atom_from_string(query))
+#             labels.append(1 if label == "True" else (0 if label == "False" else '?'))
+#     return queries, labels
+
+
+
+
+# def get_queries(path:str)-> Tuple[List[Term],List[Term]]:
+#     '''Get queries from a file, and the corresponding negative queries (togehter with their labels indicating if they are provable)
+#     from {set}_label_corruptions.txt file'''
+#     pos_queries = []
+#     neg_queries = []
+#     with open(path, "r") as f:
+#         dicts = json.load(f)
+#         for key, value in dicts.items():
+#             pos_queries.append(get_atom_from_string(key))
+#             for q, l in value:
+#                 if l:
+#                     neg_queries.append(get_atom_from_string(q))
+#     return pos_queries, neg_queries
+
+
+
+
+# def get_corruptions(queries: List[Term], file_path: str) -> Dict[Term, List[Term]]:
+#     """
+#     Get corruptions from the json file.
     
-    Creates DataHandlerMnist for mnist_addition dataset, and DataHandlerKGE otherwise.
-    """
-    def __init__(self, dataset_name: str, 
-                 base_path: str, 
-                 janus_file: str, 
-                 train_file: str = None, 
-                 valid_file: str = None, 
-                 test_file: str = None, 
-                 rules_file: str = None,
-                 facts_file: str = None,
-                 n_eval_queries: int = None,
-                 n_test_queries: int = None,
-                 corruption_mode: Optional[str] = None, 
-                 name: str = None,
-                 non_provable_corruptions: bool = False,
-                 non_provable_queries: bool = False):
-        """
-        Initialize data handler.
+#     Args:
+#         queries: List of valid queries
+#         file_path: Path to the JSON file containing corruptions
         
-        Args:
-            dataset_name: Name of the dataset
-            base_path: Base path to the dataset directory
-            janus_file: Name of the Janus prolog file
-            train_file: Name of the training file
-            valid_file: Name of the validation file
-            test_file: Name of the test file
-            corruption_mode: Mode for handling corruptions
-            name: Optional alternative name for the dataset
-            non_provable_corruptions: Whether to include non-provable corruptions
-            non_provable_queries: Whether to include non-provable queries
-        """
-        if dataset_name == "mnist_addition":
-            self.info = DataHandlerMnist(
-                dataset_name=dataset_name,
-                base_path=base_path,
-                janus_file=janus_file,
-                name=name
-            )
-        else:
-            self.info = DataHandlerKGE(
-                dataset_name=dataset_name,
-                base_path=base_path,
-                janus_file=janus_file,
-                train_file=train_file,
-                valid_file=valid_file,
-                test_file=test_file,
-                rules_file=rules_file,
-                facts_file=facts_file,
-                n_eval_queries=n_eval_queries,
-                n_test_queries=n_test_queries,
-                corruption_mode=corruption_mode,
-                non_provable_corruptions=non_provable_corruptions,
-                non_provable_queries=non_provable_queries
-            )
+#     Returns:
+#         Dictionary with the query as key and a list of corruptions that are true as value
+#     """
+#     dict_ = defaultdict(list)
+#     try:
+#         with open(file_path, "r") as f:
+#             corruptions_dict = json.load(f)
+#             for query, corruptions in corruptions_dict.items():
+#                 query = get_atom_from_string(query[:-1])
+#                 assert query in queries, f"Query {query} not in queries"
+#                 for corruption, is_provable in corruptions:
+#                     if is_provable:
+#                         corruption = get_atom_from_string(corruption[:-1])
+#                         dict_[query].append(corruption)
+#     except FileNotFoundError:
+#         raise FileNotFoundError(f"File {file_path} not found")
+#     except json.JSONDecodeError:
+#         raise ValueError(f"Invalid JSON format in {file_path}")
+#     return dict_
+
+ 
+
+# # Import MNIST-related code
+# # from data.mnist_addition.MNIST import addition, multiplication
+
+# class DataHandlerMnist:
+#     """Handles MNIST data with corruption support in a simplified structure"""
+    
+#     def __init__(self, dataset_name: str, base_path: str, janus_file: str, name: str = None):
+#         """
+#         Initialize MNIST data handler.
+        
+#         Args:
+#             dataset_name: Name of the dataset
+#             base_path: Base path to the dataset directory
+#             janus_file: Name of the Janus prolog file
+#             name: Optional alternative name for the dataset
+#         """
+#         self.dataset_name = name
+#         self.corruption_mode = None
+#         self.n_digits = 2
+
+#         # Basic setup
+#         self.base_path = join(base_path, dataset_name)
+#         self.janus_path = join(self.base_path, janus_file)
+#         self.max_arity = 5
+
+#         # Load data
+#         self._load_janus_data()
+#         self._load_datasets()
+#         self._process_datasets()
+#         self._setup_constants()
+        
+#     def _load_janus_data(self):
+#         """Load Janus facts and rules"""
+#         janus.consult(self.janus_path)
+#         with open(self.janus_path, "r") as f:
+#             self.janus_facts = f.readlines()
+#         self.facts, self.rules = get_rules_from_file(self.janus_path)
+
+#     def _load_datasets(self):
+#         """Load all datasets at once"""
+#         self.datasets = {
+#             'train': addition(n=self.n_digits, dataset="train", seed=42),
+#             'valid': addition(n=self.n_digits, dataset="val", seed=42),
+#             'test': addition(n=self.n_digits, dataset="test", seed=42)
+#         }
+
+#     def _process_datasets(self):
+#         """Process all datasets similarly"""
+#         queries = {}
+#         self.images = defaultdict(list)
+#         self.image_strings = {}
+#         d = 0  # Image counter
+        
+#         for set_name in ['train', 'valid', 'test']:
+#             # Store raw data
+#             labels, digits, l1, l2 = [], [], [], []
+#             for i in range(10):  # 10 samples per set
+#                 dl1, dl2, label, dgts = self.datasets[set_name][i]
+#                 labels.append(label)
+#                 digits.append(dgts)
+#                 l1.append(dl1)
+#                 l2.append(dl2)
+            
+#             # Create image strings
+#             img_strings = []
+#             for dgts in digits:
+#                 group = []
+#                 for digit in dgts:
+#                     group.extend([f"im_{d+i}" for i in range(len(digit))])
+#                     d += len(digit)
+#                 img_strings.append(group)
+            
+#             # Create queries
+#             queries[set_name] = [
+#                 Term("addition", [*imgs, str(label)])
+#                 for imgs, label in zip(img_strings, labels)
+#             ]
+#             # Store queries
+#             setattr(self, f'{set_name}_queries', queries[set_name])
+#             # Store processed data
+#             setattr(self, f'{set_name}_labels', labels)
+
+#             self.image_strings[set_name] = img_strings
+            
+#             # Store images
+#             im_dict = defaultdict(list)
+#             for dgts, dl1, dl2 in zip(digits, l1, l2):
+#                 im_dict[str(dgts)] = (dl1, dl2)
+#             self.images.update(im_dict)
+
+#     def _setup_constants(self):
+#         """Setup constants and predicates"""
+#         # Collect all image IDs
+#         all_images = []
+#         for set_name in ['train', 'valid', 'test']:
+#             all_images.extend([img for group in self.image_strings[set_name] for img in group])
+        
+#         # Collect all labels
+#         all_labels = []
+#         for set_name in ['train', 'valid', 'test']:
+#             all_labels.extend(map(str, getattr(self, f'{set_name}_labels')))
+        
+#         # Set constants
+#         self.constants = set(all_images + all_labels)
+#         self.constants_images = set(all_images)
+        
+#         # Predicate setup
+#         self.predicates = {"addition", "digit"}
+#         self.predicates_arity = {"addition": 3, "digit": 2}
+#         self.variables = set(['RULE0_Z','RULE0_Y', 'RULE0_X', 'RULE0_Y2', 'RULE0_X2'])
+#         self.constant_no = len(self.constants)
+#         self.constant_images_no = len(self.constants_images)
+#         self.predicate_no = len(self.predicates)
+#         self.variable_no = len(self.variables)
+
+#     def _print_debug_info(self):
+#         """Print debugging information about loaded data"""
+#         print(f"\nTrain queries: {len(self.train_queries)}, {self.train_queries}")
+#         print(f"\nValid queries: {len(self.valid_queries)}, {self.valid_queries}")
+#         print(f"\nTest queries: {len(self.test_queries)}, {self.test_queries}")
+#         print(f"\nImages: {len(self.images)}, {[(i, c[0].shape, c[1].shape) for i, c in self.images.items()]}")
+#         print(f"\nConstant images: {self.constant_images_no}, {self.constants_images}")
+#         print(f"\nConstants: {self.constant_no}, {self.constants}")
+#         print(f"\nPredicates: {self.predicate_no}, {self.predicates}")
+#         print(f"\nVariables: {self.variable_no}, {self.variables}")
+#         print(f"\nMax arity: {self.max_arity}")
+
+
+
+
+
+
+
+
+# class DataHandler:
+#     """
+#     Factory class that creates appropriate data handler based on dataset name.
+    
+#     Creates DataHandlerMnist for mnist_addition dataset, and DataHandlerKGE otherwise.
+#     """
+#     def __init__(self, dataset_name: str, 
+#                  base_path: str, 
+#                  janus_file: str, 
+#                  train_file: str = None, 
+#                  valid_file: str = None, 
+#                  test_file: str = None, 
+#                  rules_file: str = None,
+#                  facts_file: str = None,
+#                  n_eval_queries: int = None,
+#                  n_test_queries: int = None,
+#                  corruption_mode: Optional[str] = None, 
+#                  name: str = None,
+#                  non_provable_corruptions: bool = False,
+#                  non_provable_queries: bool = False):
+#         """
+#         Initialize data handler.
+        
+#         Args:
+#             dataset_name: Name of the dataset
+#             base_path: Base path to the dataset directory
+#             janus_file: Name of the Janus prolog file
+#             train_file: Name of the training file
+#             valid_file: Name of the validation file
+#             test_file: Name of the test file
+#             corruption_mode: Mode for handling corruptions
+#             name: Optional alternative name for the dataset
+#             non_provable_corruptions: Whether to include non-provable corruptions
+#             non_provable_queries: Whether to include non-provable queries
+#         """
+#         if dataset_name == "mnist_addition":
+#             self.info = DataHandlerMnist(
+#                 dataset_name=dataset_name,
+#                 base_path=base_path,
+#                 janus_file=janus_file,
+#                 name=name
+#             )
+#         else:
+#             self.info = DataHandlerKGE(
+#                 dataset_name=dataset_name,
+#                 base_path=base_path,
+#                 janus_file=janus_file,
+#                 train_file=train_file,
+#                 valid_file=valid_file,
+#                 test_file=test_file,
+#                 rules_file=rules_file,
+#                 facts_file=facts_file,
+#                 n_eval_queries=n_eval_queries,
+#                 n_test_queries=n_test_queries,
+#                 corruption_mode=corruption_mode,
+#                 non_provable_corruptions=non_provable_corruptions,
+#                 non_provable_queries=non_provable_queries
+#             )
 
 
