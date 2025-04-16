@@ -549,13 +549,14 @@ class LogicEnv_gym(gym.Env):
 
         # TRUNCATE MAX STATES
         if self.truncate_states:
-            if len(derived_states) > self.padding_states:
+            max_num_states = self.padding_states if not self.end_proof_action else self.padding_states + -1
+            if len(derived_states) > max_num_states:
                 # print('*********\n') if self.verbose else None
-                print(f"Truncating {len(derived_states)} possible states to {self.padding_states}:{derived_states}") if self.verbose else None
+                print(f"Truncating {len(derived_states)} possible states to {max_num_states}:{derived_states}") if self.verbose else None
                 # print('\n*******') if self.verbose else None
                 truncated_flag = True
                 # Truncate next states (although it doesnt matter, episode will be done)
-                derived_states = derived_states[:self.padding_states]     
+                derived_states = derived_states[:max_num_states]     
 
         # END ACTION MODULE
         if self.end_proof_action:
