@@ -1,8 +1,7 @@
-
 import re
 from collections import deque
 from typing import List, Tuple
-from utils import extract_var, Term
+from utils_v1 import extract_var, Term
 import janus_swi as janus
 
 def get_res_dict(res: List[dict]) -> dict:

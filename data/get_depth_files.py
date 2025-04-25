@@ -3,7 +3,7 @@
 import os
 import re
 from get_pl import get_prolog_rules
-dataset = 'countries_s3'
+dataset = 'kinship_family'
 root = os.getcwd()
 root_dir = f"{root}/data/{dataset}/"
 rules_file = f"{root_dir}rules.txt"
@@ -35,6 +35,14 @@ for set in ["train", "valid", "test"]:
                 for query, d in queries.items():
                     if d == depth:
                         f.write(f"{query}\n")
+
+    # For the non proved queries, write them to a file named {set}_nonproved.txt
+
+    non_proved_file = f"{root_dir}/depths/{set}_nonproved.txt"
+    with open(non_proved_file, "w") as f:
+        for query, d in queries.items():
+            if d == -1:
+                f.write(f"{query}\n")
 
     # 3. Read the rules and get the predicates
     predicates, rules = get_prolog_rules(rules_file)

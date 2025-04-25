@@ -41,11 +41,11 @@ if __name__ == "__main__":
 
     # Dataset settings 
     # for countries_s3, we use non provable corruptions and provable queries, run_signature='countries_s3-transe-sum-50-5-20-dynamic-False-True-1-True-False-False-True-False-20-True'
-    DATASET_NAME =  ["wn18rr"] #["ablation_d1","ablation_d2","ablation_d3","countries_s2", "countries_s3", 'kinship_family']
-    TRAIN_DEPTH = ['>0'] # [None, 1, 2, 3]
-    VALID_DEPTH = ['>0'] # [None, 1, 2, 3]
-    TEST_DEPTH = ['>0'] # [None, 1, 2, 3]
-    SEED = [[0]] # [[0,1,2,3,4]]
+    DATASET_NAME =  ["kinship_family"] #["countries_s2", "countries_s3", 'kinship_family','wn18rr']
+    TRAIN_DEPTH = [None] # [None, 1, 2, 3]
+    VALID_DEPTH = [None] # [None, 1, 2, 3]
+    TEST_DEPTH = [None] # [None, 1, 2, 3]
+    SEED = [[0,1,2]] # [[0,1,2,3,4]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
     STATE_EMBEDDER = ['mean'] #'mean'
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [3000000]
+    TIMESTEPS_TRAIN = [15000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20] # [20,100]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
@@ -89,9 +89,9 @@ if __name__ == "__main__":
     n_test_queries = None
     # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 128
+    n_envs = 256
     n_steps = 128 # 2048
-    n_eval_envs = 128
+    n_eval_envs = 1
     n_callback_envs = 1
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout

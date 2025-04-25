@@ -49,7 +49,7 @@ class CustomEvalCallback(EvalCallback):
         n_eval_episodes: int = 5,
         eval_freq: int = 10000,
         log_path: Optional[str] = None,
-        best_model_save_path: Optional[str] = None,
+        model_path: Optional[str] = None,
         deterministic: bool = True,
         render: bool = False,
         verbose: int = 1,
@@ -64,7 +64,7 @@ class CustomEvalCallback(EvalCallback):
             n_eval_episodes=n_eval_episodes,
             eval_freq=eval_freq,
             log_path=log_path,
-            best_model_save_path=best_model_save_path,
+            best_model_save_path=model_path,
             deterministic=deterministic,
             render=render,
             verbose=verbose,
@@ -92,7 +92,7 @@ class CustomEvalCallback(EvalCallback):
             eval_env = DummyVecEnv([lambda: eval_env])  # type: ignore[list-item, return-value]
 
         self.eval_env = eval_env
-        self.best_model_save_path = best_model_save_path
+        self.model_path = model_path
         self.log_path = log_path
         self.evaluations_results: list[list[float]] = []
         self.evaluations_timesteps: list[int] = []
@@ -166,12 +166,12 @@ class CustomEvalCallback(EvalCallback):
             self.logger.name_to_value = {k: v for k, v in self.logger.name_to_value.items() if 
                                          "eval" not in k and "total_timesteps" not in k}
 
-
             if mean_reward > self.best_mean_reward:
                 if self.verbose >= 1:
                     print("New best mean reward!")
-                if self.best_model_save_path is not None:
-                    self.model.save(os.path.join(self.best_model_save_path, "best_eval_model"))
+                if self.model_path is not None:
+                    # self.model.save(os.path.join(self.model_path, "best_eval_model"))
+                    self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
                     self.write_info()
                 self.best_mean_reward = float(mean_reward)
                 self.best_epoch = self.num_timesteps
@@ -207,7 +207,7 @@ class CustomEvalCallback(EvalCallback):
             'metric': 'best_mean_reward',
             'num_timesteps': self.num_timesteps,
         }
-        info_path = os.path.join(self.best_model_save_path, 'eval_info.json')
+        info_path = os.path.join(self.model_path, 'info_best_eval_{self.name}.json')
         with open(info_path, 'w') as f:
             json.dump(info, f, indent=4)
 
@@ -215,11 +215,13 @@ class CustomEvalCallback(EvalCallback):
         """Restore the best model."""
         if self.best_epoch: # use best model from best_model
             # add to a list the models that contain self.name and are in the model_path
-            model_files = [f for f in os.listdir(self.best_model_save_path) if 'best_eval_model' in f]
-
-            assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}: {model_files}"
+            model_files = [f for f in os.listdir(self.model_path) if 'best_eval' in f and 'info' not in f and '.zip' in f]
+            if len(model_files) > 1:
+                # if there's more than one, choose the most recent
+                model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
+                print('Restoring last model modified:', model_files[0])
             # load the model
-            self.model.load(os.path.join(self.best_model_save_path, model_files[0]),print_system_info=False)
+            self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=False)
             print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_mean_reward:.3f}.')
         else:
             print(f'No best model found for {self.name}.')
@@ -380,7 +382,7 @@ class SB3ModelCheckpoint(BaseCallback):
             'timesteps': self.num_timesteps,
             'finished_train': self.num_timesteps >= self.total_steps,
         }
-        info_path = os.path.join(self.model_path,f'last_epoch_{self.name}.json')
+        info_path = os.path.join(self.model_path,f'info_last_epoch_{self.name}.json')
         with open(info_path, 'w') as f:
             json.dump(info, f, indent=4)
 
@@ -389,8 +391,12 @@ class SB3ModelCheckpoint(BaseCallback):
         if self.best_epoch: # use best model from best_model
             # add to a list the models that contain self.name and are in the model_path
             model_files = [f for f in os.listdir(self.model_path) if self.name in f and '.zip' in f and 'last_epoch_' in f]
+            # if there's more than one, choose the most recent
+            if len(model_files) > 1:
+                model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
+                print('Restoring last model modified:', model_files[0])
             # assert there is only one model with the name
-            assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}"
+            # assert len(model_files) == 1, f"Multiple models found with name {self.name} in {self.model_path}"
             # load the model
             self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=True)
             print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_value:.3f}.')

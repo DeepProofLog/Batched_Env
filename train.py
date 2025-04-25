@@ -80,6 +80,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                 max_arity=data_handler.max_arity,
                                 device='cpu',
                                 padding_atoms=args.padding_atoms)
+    index_manager.build_fact_index(data_handler.facts)
     
     if args.corruption_mode == 'dynamic':
         np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts],dtype=str)
@@ -207,7 +208,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     # TRAIN
     model_path = os.path.join(args.models_path,args.run_signature, args.run_signature + f'-seed_{args.seed_run_i}')
-    model_name = args.run_signature+date+'-seed_{}'.format(args.seed_run_i)
+    model_name = args.run_signature+'-'+date+'-seed_{}'.format(args.seed_run_i)
     if args.load_model:
         try:
             models = sorted(
@@ -231,7 +232,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
 
         eval_callback = CustomEvalCallback(eval_env=callback_env, 
-                                    best_model_save_path=model_path if args.save_model else None,
+                                    model_path=model_path if args.save_model else None,
                                     log_path=log_filename if use_logger else None,
                                     eval_freq=max(int(args.eval_freq//args.n_envs),1),
                                     n_eval_episodes=args.n_eval_queries,
@@ -274,7 +275,40 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
 
         callbacks = CallbackList(callbacks)
+
+        # --- Run the profiler ---
+        profile = True
+        if profile:
+            import cProfile
+            import pstats
+            import io
+            profiler = cProfile.Profile()
+            profiler.enable()
+
         model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
+
+        if profile:
+            profiler.disable()
+            # --- Analyze the results ---
+            print("\n\n--- Profiling results ---")
+            s = io.StringIO()
+            # Sort by cumulative time spent in function and its callees
+            stats = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+            stats.print_stats(30) # Print top 30 functions
+            print(s.getvalue())
+
+            # Optional: Sort by time spent within the function itself (excluding sub-calls)
+            print("\n\n--- Time spent in function itself (excluding sub-calls) ---")
+            s = io.StringIO()
+            stats = pstats.Stats(profiler, stream=s).sort_stats('tottime') # or 'time'
+            stats.print_stats(30)
+            print(s.getvalue())
+
+            # # --- Save the results to a file ---
+            # profile_output_file = "profile_results.prof"
+            # profiler.dump_stats(profile_output_file)
+            # print(f"\nProfiling results saved to {profile_output_file}")
+
         if args.restore_best_val_model:
             eval_callback.restore_best_ckpt()
 
@@ -291,7 +325,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     corruptions=data_handler.test_corruptions if args.corruption_mode == 'static' else None,
                                     n_corruptions=args.test_negatives,
                                     consult_janus=False,
-                                    verbose=1,
+                                    verbose=0,
                                     )
     print_eval_info('Test', metrics_test)
 

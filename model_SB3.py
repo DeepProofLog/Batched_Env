@@ -243,7 +243,11 @@ class PolicyNetwork(nn.Module):
         logits = torch.matmul(x, action_embeddings.transpose(-2, -1)).squeeze(-2)
         # logits = F.cosine_similarity(x, action_embeddings, dim=-1) # Compare along the embedding dimension
         # Mask out invalid actions: where the sum over action_atom_indices is 0, set logits to -inf
-        logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
+        # assert action_atom_indices.dim() == 2, f'action_atom_indices dim {action_atom_indices.dim()}'
+        if action_atom_indices.dim() == 2:
+            logits = torch.where(action_atom_indices == 0, float('-inf'), logits)
+        elif action_atom_indices.dim() == 3:
+            logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
         return logits
 
 class ValueNetwork(nn.Module):
@@ -442,9 +446,17 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
         """Extract features from observations including valid action mask."""
         
         # Obtain embeddings for observations and actions
-        obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
-        action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
-        action_atom_indices = observations["derived_atom_indices"] # (batch_size=n_envs,pad_states,pad_atoms) 
+
+        if observations.get("sub_index", None) is not None:
+            obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
+            action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
+            action_atom_indices = observations["derived_atom_indices"] # (batch_size=n_envs,pad_states,pad_atoms) 
+        else:
+            obs_sub_indices = observations["state_ids"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
+            action_sub_indices = observations["derived_state_ids"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
+            action_atom_indices = (action_sub_indices[:, :, 0, 0] != 0)
+        # print('action_atom_indices', action_atom_indices.shape, action_atom_indices) # (batch_size=n_envs,pad_states)
+        # print(spodgh)
         # # Always get the valid_actions_mask if available
         # valid_actions_mask = observations.get("valid_actions_mask", None) # shape (batch_size=n_envs,pad_states)
         

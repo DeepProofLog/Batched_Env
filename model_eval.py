@@ -199,7 +199,6 @@ def eval_corruptions(
         batch_end = min(batch_start + num_envs, len(data))
         batch_size = batch_end - batch_start
         batch_queries = data[batch_start:batch_end]
-        assert len(batch_queries) == num_envs, f"Batch size {len(batch_queries)} does not match number of environments {num_envs}"
 
         print('\n\nbatch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size,'. Batch',b+1,'of',len(data)//num_envs) if verbose >= 1 else None
         

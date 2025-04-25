@@ -2,7 +2,7 @@
 
 import itertools # Make sure to import if resetting counters
 from utils import Term, Rule
-from depth_python_prover_v2 import calculate_provability_ratios_by_depth # Adjust import path if needed
+from depth_python_prover import calculate_provability_ratios_by_depth # Adjust import path if needed
 
 # --- Test Case: Depth 5 Required ---
 
