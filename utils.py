@@ -42,6 +42,15 @@ class Rule:
     head: Term
     body: List[Term]
 
+    def __str__(self):
+        """String representation of the rule in the form 'head :- body'."""
+        body_str = ", ".join(str(term) for term in self.body)
+        return f"{self.head} :- {body_str}"
+    def __repr__(self):
+        """Representation is the same as the string form for readability."""
+        body_str = ", ".join(str(term) for term in self.body)
+        return f"{self.head} :- {body_str}"
+
 # class Term:
 #     def __init__(self, predicate: str, args: List[str]): # Keep input hint as List for flexibility
 #         self.predicate = predicate

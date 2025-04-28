@@ -90,7 +90,7 @@ class LogicEnv_gym(gym.Env):
         self.skip_unary_actions = skip_unary_actions # Skip unary actions in the action space
         self.truncate_atoms = truncate_atoms # Truncate atoms to a fixed size
         self.truncate_states = truncate_states
-        self.predicate_false_idx = index_manager.predicate_str2idx['False'] 
+        self.predicate_false_offset = index_manager.predicate_false_offset
 
         self.dynamic_consult = dynamic_consult
         self.current_query = None
@@ -134,19 +134,19 @@ class LogicEnv_gym(gym.Env):
                 shape = torch.Size([1])+ torch.Size([self.padding_atoms])+ torch.Size([self.max_arity+1]),
                 dtype=np.int64,
             ),
-            # 'atom_index': gym.spaces.Box(
-            #     low=float('-inf'),
-            #     high=float('inf'),
-            #     # shape=torch.Size([self.padding_atoms]),
-            #     shape = torch.Size([1])+ torch.Size([self.padding_atoms]),
-            #     dtype=np.int64,
-            # ),
-            # 'derived_atom_indices': gym.spaces.Box(
-            #     low=float('-inf'),
-            #     high=float('inf'),
-            #     shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms]),
-            #     dtype=np.int64,
-            # ),
+            'atom_index': gym.spaces.Box(
+                low=float('-inf'),
+                high=float('inf'),
+                # shape=torch.Size([self.padding_atoms]),
+                shape = torch.Size([1])+ torch.Size([self.padding_atoms]),
+                dtype=np.int64,
+            ),
+            'derived_atom_indices': gym.spaces.Box(
+                low=float('-inf'),
+                high=float('inf'),
+                shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms]),
+                dtype=np.int64,
+            ),
             'derived_sub_indices': gym.spaces.Box(
                 low=float('-inf'),
                 high=float('inf'),
@@ -216,7 +216,7 @@ class LogicEnv_gym(gym.Env):
 
 
     def reset(self, seed: Optional[int]= None, options=None):
-        print('\n\nReset-----------------------------') if self.verbose or self.prover_verbose else None
+        print('\n\nReset-----------------------------') if self.verbose else None
         '''Reset the environment and get a new query based on the environment configuration'''
 
         if self.mode == 'eval':
@@ -315,35 +315,40 @@ class LogicEnv_gym(gym.Env):
         self.memory = set()
         self.memory.add(",".join(str(q) for q in query if q.predicate not in ['False', 'True', 'End']))
         
-        sub_index = self.index_manager.get_atom_sub_index(query)
-        derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
+        atom_index, sub_index = self.index_manager.get_atom_sub_index(query)
+        derived_states, derived_atom_indices, derived_sub_indices, truncated_flag = self.get_next_states(query)
 
         if self.truncate_states and truncated_flag: # end in false
+            size_atom_index = torch.Size([self.padding_states]) + atom_index.size()
             size_sub_index = torch.Size([self.padding_states]) + sub_index.size()
-            derived_states, derived_sub_indices = self.end_in_false(size_sub_index)
+            derived_states, derived_atom_indices, derived_sub_indices = self.end_in_false(size_atom_index, size_sub_index)
 
         self.tensordict = TensorDict(
             {
+                "atom_index": atom_index.unsqueeze(0), # to match the shape of derived_atom_indices
                 "sub_index": sub_index.unsqueeze(0), # to match the shape of derived_sub_indices
                 "state": NonTensorData(data=query),
                 "label": torch.tensor(label, device=self.device),
                 "done": torch.tensor(0, dtype=torch.bool, device=self.device),
                 "reward": torch.tensor(0, dtype=torch.float32, device=self.device)*(-1),
                 "derived_states": NonTensorData(data=derived_states),
+                "derived_atom_indices": derived_atom_indices,
                 "derived_sub_indices": derived_sub_indices,
                 # "valid_actions_mask": valid_actions_mask,
             },
         )
         sub_index = self.tensordict['sub_index'].cpu().numpy()
+        atom_index = self.tensordict['atom_index'].cpu().numpy()
+        derived_atom_indices = self.tensordict['derived_atom_indices'].cpu().numpy()
         derived_sub_indices = self.tensordict['derived_sub_indices'].cpu().numpy()
-        obs = {'sub_index':sub_index,
+        obs = {'sub_index':sub_index, 
+               'atom_index':atom_index, 
+               'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices,
             #    'valid_actions_mask':valid_actions_mask
             }
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'],label=label)
-            print('Number of next states:', len(derived_states)) if self.verbose else None
-            print('N atoms in next states:', [len(state) for state in derived_states]) if self.verbose else None
             # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].cpu().numpy()),'\n')
         return obs, {}
 
@@ -352,6 +357,7 @@ class LogicEnv_gym(gym.Env):
         Given the current state, possible next states, an action, and return the next state.
         (It should be: given the current state, and an action, return the next state, but we need to modify it for our case)
         '''
+        derived_atom_indices = self.tensordict["derived_atom_indices"]
         derived_states = self.tensordict["derived_states"]
         derived_sub_indices = self.tensordict["derived_sub_indices"]
 
@@ -359,14 +365,15 @@ class LogicEnv_gym(gym.Env):
         if action >= self.padding_states or action > len(derived_states):
             raise ValueError(
                 # f"Invalid action ({action}). Valid actions are indicated by the mask. {valid_actions_mask}. Derived states: {derived_states}. Derived atom indices: {derived_atom_indices}.")
-                f"Invalid action ({action}). Derived states: {derived_states}.")
+                f"Invalid action ({action}). Derived states: {derived_states}. Derived atom indices: {derived_atom_indices}.")
 
         next_state = derived_states[action]
+        next_atom_index = derived_atom_indices[action]
         next_sub_index = derived_sub_indices[action]
 
         done_next, reward_next = self.get_done_reward(next_state,self.tensordict['label'].item())
 
-        derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
+        derived_states_next, derived_atom_indices_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
 
         self.current_depth += 1
         
@@ -396,20 +403,26 @@ class LogicEnv_gym(gym.Env):
 
         tensordict = TensorDict(
             {
+                "atom_index": next_atom_index.unsqueeze(0), # to match the shape of derived_atom_indices
                 "sub_index": next_sub_index.unsqueeze(0), # to match the shape of derived_sub_indices
                 "state": NonTensorData(data=next_state),
                 "label": self.tensordict['label'],
                 "done": done_next,
                 "reward": reward_next,
                 "derived_states": NonTensorData(data=derived_states_next),
+                "derived_atom_indices": derived_atom_indices_next,
                 "derived_sub_indices": derived_sub_indices_next,
             },
             )
 
         self.tensordict = tensordict
         sub_index = self.tensordict['sub_index'].cpu().numpy()
+        atom_index = self.tensordict['atom_index'].cpu().numpy()
+        derived_atom_indices = self.tensordict['derived_atom_indices'].cpu().numpy()
         derived_sub_indices = self.tensordict['derived_sub_indices'].cpu().numpy()
         obs = {'sub_index':sub_index, 
+               'atom_index':atom_index, 
+               'derived_atom_indices':derived_atom_indices, 
                'derived_sub_indices':derived_sub_indices,
                }
 
@@ -418,8 +431,6 @@ class LogicEnv_gym(gym.Env):
         truncated = bool(exceeded_max_depth) or bool(truncate_flag)
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=action,truncated=truncated)
-            print('Number of next states:', len(derived_states)) if self.verbose else None
-            print('N atoms in next states:', [len(state) for state in derived_states]) if self.verbose else None
             # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].cpu().numpy()),'\n')
         
         return obs, reward, done, truncated, info
@@ -479,9 +490,6 @@ class LogicEnv_gym(gym.Env):
                     self.memory.add(",".join(str(s) for s in current_state if s.predicate not in ['False', 'True', 'End']))
                     visited_mask = [",".join(str(s) for s in state) in self.memory for state in derived_states]
                     if any(visited_mask):
-                        print(f"Current state: {current_state}") if self.verbose else None
-                        print(f"Next states: {derived_states}") if self.verbose else None
-                        print(f"Memory: {self.memory}") if self.verbose else None
                         print(f"Visited mask: {visited_mask}") if self.verbose else None
                     derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
                     
@@ -493,7 +501,7 @@ class LogicEnv_gym(gym.Env):
                 
                 print('\n') if self.verbose else None
                 print(f"Updated Next State: {derived_states}") if self.verbose else None
-                print('*********\n') if self.verbose else None
+                print('*********') if self.verbose else None
 
                 if counter > 20:
                     print('Max iterations reached') if self.verbose else None
@@ -509,22 +517,20 @@ class LogicEnv_gym(gym.Env):
             visited_mask = [",".join(str(s) for s in state) in self.memory for state in derived_states]
 
             if any(visited_mask):
-                print('\n-----------') if self.verbose else None
-                print(f"Current state: {state}") if self.verbose else None
-                print(f"Next states: {derived_states}") if self.verbose else None
-                print(f"Memory: {self.memory}") if self.verbose else None
+                print('\n*********') if self.verbose else None
+                print(f"current state: {state}") if self.verbose else None
+                print(f"next states: {derived_states}") if self.verbose else None
                 print(f"Visited mask: {visited_mask}") if self.verbose else None
-                print('-----------\n') if self.verbose else None
+                print('*******\n') if self.verbose else None
 
             derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
             # print(f"Filtered possible states: {derived_states}") if self.verbose and any(visited_mask) else None
 
         # TRUNCATE MAX ATOMS
         if self.truncate_atoms:
-            # print(f"len of states is {[len(state) for state in derived_states]}")
             mask_exceeded_max_atoms = [len(state) >= self.padding_atoms for state in derived_states]
             if any(mask_exceeded_max_atoms):
-                print(f"State {state}. Next states: {derived_states}. Exceeded max atoms in next states: {[len(state) for state in derived_states]}") #if self.verbose else None
+                print(f"Exceeded max atoms: {[len(state) for state in derived_states]}") if self.verbose else None
             derived_states = [state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if not is_exceeded]
             # print(f" Exceeded max atoms: {[len(state) for state in derived_states]},{derived_states}") if self.verbose and any(mask_exceeded_max_atoms) else None
 
@@ -532,8 +538,7 @@ class LogicEnv_gym(gym.Env):
         if self.truncate_states:
             max_num_states = self.padding_states if not self.end_proof_action else self.padding_states + -1
             if len(derived_states) > max_num_states:
-                print(f"State {state}. Next states: {derived_states}. Exceeded max next states: {len(derived_states)}") if self.verbose else None
-                # print(f"Exceeded max next states: {len(derived_states)}")
+                print(f"State {state}.Truncating {len(derived_states)} possible states to {max_num_states}:{derived_states}") if self.verbose else None
                 derived_states = sorted(derived_states, key=lambda x: len(x))
                 derived_states = derived_states[:max_num_states]     
 
@@ -548,16 +553,26 @@ class LogicEnv_gym(gym.Env):
             truncated_flag = True
 
         # CREATE INDICES 
+        derived_atom_indices = []
         derived_sub_indices = []
+
         for s in derived_states:
-            sub_idx = self.index_manager.get_atom_sub_index(s)
+            atom_idx, sub_idx = self.index_manager.get_atom_sub_index(s)
+            derived_atom_indices.append(atom_idx)
             derived_sub_indices.append(sub_idx)
 
+        derived_atom_indices = torch.stack(derived_atom_indices)
         derived_sub_indices = torch.stack(derived_sub_indices)
+
+        # Do padding_states with 0s
+        if len(derived_atom_indices) > self.padding_states:
+            raise ValueError(f"Padding_states is too small. number of next states: {len(derived_atom_indices)}, padding_states: {self.padding_states}")
+        
+        derived_atom_indices = torch.cat([derived_atom_indices, torch.zeros(self.padding_states - len(derived_atom_indices), self.padding_atoms, device=self.device, dtype=torch.int64)])
         derived_sub_indices = torch.cat([derived_sub_indices, torch.zeros(self.padding_states - len(derived_sub_indices), self.padding_atoms, self.max_arity+1, device=self.device, dtype=torch.int64)])
         # if self.counter_q == 20:
         #     print (pzjsnbv)
-        return derived_states, derived_sub_indices, truncated_flag
+        return derived_states, derived_atom_indices, derived_sub_indices, truncated_flag
     
     def get_done_reward(self,state: List[Term], label: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get done and reward keys for all states in the batch. To be called in the step() method"""
@@ -597,16 +612,22 @@ class LogicEnv_gym(gym.Env):
             return sampled_queries, sampled_labels
 
 
-    def end_in_false(self, sub_indices_shape: torch.Size) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
+    def end_in_false(self, atom_indices_shape: torch.Size, sub_indices_shape: torch.Size) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
         " Return a state that ends in False"
         false_state = Term(predicate="False", args=())
 
         derived_states_next = [[false_state]]
+        derived_atom_indices_next = torch.zeros(atom_indices_shape, device=self.device, dtype=torch.int64)
         derived_sub_indices_next = torch.zeros(sub_indices_shape, device=self.device, dtype=torch.int64)
 
-        false_sub_id = torch.tensor([self.predicate_false_idx, 0, 0], device=self.device, dtype=torch.int64)
+        if false_state not in self.index_manager.atom_to_index:
+            self.index_manager.atom_to_index[false_state] = self.index_manager.next_atom_index
+            self.index_manager.next_atom_index += 1
+
+        false_sub_id = torch.tensor([self.index_manager.predicate_no + self.predicate_false_offset, 0, 0], device=self.device, dtype=torch.int64)
+        derived_atom_indices_next[0, 0] = self.index_manager.atom_to_index[false_state]
         derived_sub_indices_next[0, 0] = false_sub_id
-        return derived_states_next, derived_sub_indices_next
+        return derived_states_next, derived_atom_indices_next, derived_sub_indices_next
 
 
     def get_negatives(self, state, all_negatives=False):

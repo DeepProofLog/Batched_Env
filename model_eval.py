@@ -87,10 +87,16 @@ def evaluate_policy(
     current_log_probs = np.zeros(n_envs)
     observations = env.reset()
     # states = None
-    episode_starts = np.ones((env.num_envs,), dtype=bool)
+    # episode_starts = np.ones((env.num_envs,), dtype=bool)
     while (episode_counts < episode_count_targets).any():
-        if verbose > 0 and np.sum(episode_counts) % (n_eval_episodes//10) == 0:
-            print(f'\rProcessing {np.sum(episode_counts)}/{n_eval_episodes}', end='', flush=True)
+        if verbose > 0 and np.sum(episode_counts) % max(1, (n_eval_episodes // 10)) == 0:
+             total_completed = np.sum(episode_counts)
+             if n_envs == 1:
+                 print(f'\rEvaluating episode {episode_counts[0] + 1}/{episode_count_targets[0]}', end='', flush=True)
+             else:
+                 print(f'\rEvaluating - Total progress: {total_completed}/{n_eval_episodes} episodes across {n_envs} environments', end='', flush=True)
+        # if verbose > 0 and np.sum(episode_counts) % (n_eval_episodes//10) == 0:
+        #     print(f'\rProcessing {np.sum(episode_counts)}/{n_eval_episodes}', end='', flush=True)
         obs_tensor = obs_as_tensor(observations, model.device)
         # actions, states = model.predict(observations,state=states,episode_start=episode_starts,deterministic=deterministic)
         actions, values, log_probs = model.policy(obs_tensor, deterministic=deterministic)
@@ -189,9 +195,12 @@ def eval_corruptions(
     # Determine if we're using a vectorized environment
     is_vec_env = isinstance(env, VecEnv)
     num_envs = env.num_envs if is_vec_env else 1
+
+    if n_corruptions == -1: n_corruptions = None # if n_corruptions is -1, set it to None
     
     if verbose >= 1:
-        print(f"Evaluating {len(data)} queries with {n_corruptions} corruptions each")
+        print(f"Evaluating {len(data)}. N corruptions: {n_corruptions}")
+        if n_corruptions is not None or n_corruptions > 0:  print(f"    if n corr is < {n_corruptions} it will be set to all corr")
         print(f"Using {'vectorized' if is_vec_env else 'single'} environment with {num_envs} envs")
     
     # Process queries in batches for efficient parallel processing
@@ -241,7 +250,7 @@ def eval_corruptions(
                                                     n_eval_episodes=num_envs*(1+n_corruptions), 
                                                     deterministic=deterministic,
                                                     verbose=verbose,)
-        print('\nbatch',b,'took',time.time()-time_batch) if verbose >= 1 else None
+        print('\nbatch',b,'took',round(time.time()-time_batch,3)) if verbose >= 1 else None
         # convert rewards, lengths, log_probs, mask_eval to np
         rewards = np.array(rewards)
         lengths = np.array(lengths)

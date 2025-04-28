@@ -299,7 +299,7 @@ def get_queries(path: str, non_provable_queries: bool = True) -> List[Term]:
     # print(sdhvb)
     return queries
 
-def get_filtered_queries(path: str, depth: str) -> List[Term]:
+def get_filtered_queries(path: str, depth: str, name: str) -> List[Term]:
     """Get queries from a file, filtering by depth: query depth
     If the depth of a query is -1, it is not provable
     Args:
@@ -319,7 +319,7 @@ def get_filtered_queries(path: str, depth: str) -> List[Term]:
                 or (depth.startswith('<') and query_depth < int(depth[1:]) and query_depth>=0)\
                 or (depth.startswith('>') and query_depth > int(depth[1:]))  or (depth == str(query_depth)):
                 queries.append(get_atom_from_string(query))
-    print(f"Number of queries with depth {depth}: {len(queries)}/ {len(lines)}")
+    print(f"Number of queries with depth {depth} in {name}: {len(queries)}/ {len(lines)}")
     return queries
 
 
@@ -432,15 +432,15 @@ class DataHandler:
             if not train_depth:
                 self.train_queries = get_queries(train_path, non_provable_queries)
             else:
-                self.train_queries = get_filtered_queries(train_path, train_depth)
+                self.train_queries = get_filtered_queries(train_path, train_depth, "train")
             if not valid_depth:
                 self.valid_queries = get_queries(valid_path, non_provable_queries)
             else:
-                self.valid_queries = get_filtered_queries(valid_path, valid_depth)
+                self.valid_queries = get_filtered_queries(valid_path, valid_depth, "valid")
             if not test_depth:
                 self.test_queries = get_queries(test_path, non_provable_queries)
             else:
-                self.test_queries = get_filtered_queries(test_path, test_depth)
+                self.test_queries = get_filtered_queries(test_path, test_depth, "test")
 
                
             # Filter queries with predicates not in the rules

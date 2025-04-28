@@ -15,6 +15,9 @@ from neg_sampling import get_sampler
 from model_eval import eval_corruptions
 
 from stable_baselines3 import PPO
+# from stable_baselines3 import DQN
+from model_SB3 import PPO_custom as PPO
+
 from stable_baselines3.common.callbacks import (
     StopTrainingOnMaxEpisodes,
     StopTrainingOnRewardThreshold,
@@ -188,7 +191,6 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     # INIT MODEL
     if args.model_name == "PPO":
-        from model_SB3 import PPO_custom as PPO
         model = PPO(CustomActorCriticPolicy, 
                     env,
                     learning_rate=args.lr,
@@ -210,9 +212,17 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     model_path = os.path.join(args.models_path,args.run_signature, args.run_signature + f'-seed_{args.seed_run_i}')
     model_name = args.run_signature+'-'+date+'-seed_{}'.format(args.seed_run_i)
     if args.load_model:
+        # print(f"models{[m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m]}")
         try:
             models = sorted(
-                [m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m])
+                [m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m\
+                                                                             and '457216' in m\
+                                                                                ]) 
+                                                                                # 393216, 587776, 783616,, 457216, 1044736
+            if args.restore_best_val_model:
+                models = sorted([m for m in models if 'best_eval' in m])
+            else:
+                models = sorted([m for m in models if 'last_epoch' in m])
             if models:
                 print(f"Loading model from {os.path.join(model_path, models[-1])}")
                 model = PPO.load(os.path.join(model_path, models[-1]), env=eval_env, device=device)
@@ -277,7 +287,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         callbacks = CallbackList(callbacks)
 
         # --- Run the profiler ---
-        profile = True
+        profile = False
         if profile:
             import cProfile
             import pstats
@@ -318,6 +328,14 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     # TEST   
 
     print('\nTest set eval...')
+
+    profiling = False
+    if profiling:
+        import cProfile
+        import pstats
+        import io
+        profiler = cProfile.Profile()
+        profiler.enable()
     metrics_test = eval_corruptions(model,
                                     eval_env,
                                     data_handler.test_queries,
@@ -325,8 +343,25 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     corruptions=data_handler.test_corruptions if args.corruption_mode == 'static' else None,
                                     n_corruptions=args.test_negatives,
                                     consult_janus=False,
-                                    verbose=0,
+                                    verbose=1,
                                     )
+    if profiling:
+        profiler.disable()
+        # --- Analyze the results ---
+        print("\n\n--- Profiling results ---")
+        s = io.StringIO()
+        # Sort by cumulative time spent in function and its callees
+        stats = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+        stats.print_stats(30) # Print top 30 functions
+        print(s.getvalue())
+
+        # Optional: Sort by time spent within the function itself (excluding sub-calls)
+        print("\n\n--- Time spent in function itself (excluding sub-calls) ---")
+        s = io.StringIO()
+        stats = pstats.Stats(profiler, stream=s).sort_stats('tottime') # or 'time'
+        stats.print_stats(30)
+        print(s.getvalue())
+
     print_eval_info('Test', metrics_test)
 
     # if 'kinship' not in args.dataset_name or 'countries' not in args.dataset_name:

@@ -244,10 +244,18 @@ class PolicyNetwork(nn.Module):
         # logits = F.cosine_similarity(x, action_embeddings, dim=-1) # Compare along the embedding dimension
         # Mask out invalid actions: where the sum over action_atom_indices is 0, set logits to -inf
         # assert action_atom_indices.dim() == 2, f'action_atom_indices dim {action_atom_indices.dim()}'
-        if action_atom_indices.dim() == 2:
+        if action_atom_indices.dim() == 4: # we are using the derived_sub_indices
+            # print('action_atom_indices.shape', action_atom_indices.shape)
+            padding_condition = action_atom_indices.sum(dim=-1).sum(dim=-1) 
+            # print('action_atom_padding.shape', action_atom_padding.shape, action_atom_padding)  
+            # padding_condition = (action_atom_indices.sum(dim=-1)[:, :, 0] == 0)
+            # print('padding_condition.shape', padding_condition.shape, padding_condition)
+            logits = torch.where(padding_condition == 0, float('-inf'), logits)  
+        elif action_atom_indices.dim() == 2:
             logits = torch.where(action_atom_indices == 0, float('-inf'), logits)
         elif action_atom_indices.dim() == 3:
             logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
+        
         return logits
 
 class ValueNetwork(nn.Module):
@@ -447,10 +455,14 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
         
         # Obtain embeddings for observations and actions
 
-        if observations.get("sub_index", None) is not None:
+        if observations.get("derived_atom_indices", None) is not None:
             obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
             action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
             action_atom_indices = observations["derived_atom_indices"] # (batch_size=n_envs,pad_states,pad_atoms) 
+        elif observations.get("sub_index", None) is not None:
+            obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
+            action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
+            action_atom_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3)
         else:
             obs_sub_indices = observations["state_ids"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
             action_sub_indices = observations["derived_state_ids"] # (batch_size=n_envs,pad_states,pad_atoms,3) 

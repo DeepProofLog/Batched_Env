@@ -177,7 +177,7 @@ def get_next_unification_python(state: List[Term],
     if not intermediate_states:
         print('No unification with rules') if verbose else None
         return [[Term('False', ())]]
-
+    print() if verbose else None
     # --- Step 2: Apply Fact Unification to First Goal of Intermediate States ---
     next_states = []
     for state_from_rule in intermediate_states:
@@ -186,6 +186,7 @@ def get_next_unification_python(state: List[Term],
         rest_of_goals = state_from_rule[1:]
 
         fact_substitutions = unify_with_facts(first_goal, facts_indexed, facts_set, excluded_fact, verbose=verbose)
+        print(F"State from rule: {state_from_rule}, subs: {fact_substitutions}") if verbose else None
 
         for subs in fact_substitutions:
             if not rest_of_goals: # if there are no remaining goals, we can return True because we found a fact
@@ -205,6 +206,7 @@ def get_next_unification_python(state: List[Term],
 
                 # if all atoms in the new state are True, we can return True
                 if all(term.predicate == 'True' for term in new_state):
+                    print(f"True next state for sub {subs} in {state_from_rule}") if verbose else None
                     return [[Term('True', ())]]
                 
                 # if not all atoms in the new state are True, filter the True atoms
@@ -212,5 +214,5 @@ def get_next_unification_python(state: List[Term],
                 next_states.append(new_state)
 
 
-    print('Next states:', next_states) if verbose else None
+    print('\nNext states:', next_states) if verbose else None
     return next_states

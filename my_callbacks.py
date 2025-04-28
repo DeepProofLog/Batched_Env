@@ -3,7 +3,7 @@ import os
 import warnings
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
+import time
 import gymnasium as gym
 from stable_baselines3.common import type_aliases
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped, sync_envs_normalization
@@ -105,6 +105,7 @@ class CustomEvalCallback(EvalCallback):
     def _on_step(self) -> bool:
         continue_training = True
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            start = time.time()
             print('---------------evaluation started---------------')
             # Sync training and eval env if there is VecNormalize
             if self.model.get_vec_normalize_env() is not None:
@@ -189,7 +190,7 @@ class CustomEvalCallback(EvalCallback):
             if self.callback is not None:
                 continue_training = continue_training and self._on_event()
 
-            print('---------------evaluation finished---------------')
+            print(f'---------------evaluation finished---------------  took {time.time()-start:.2f} seconds')
 
         return continue_training
 
@@ -202,12 +203,12 @@ class CustomEvalCallback(EvalCallback):
     def write_info(self):
         """Save checkpoint metadata."""
         info = {
-            'best_metric_value': float(self.best_mean_reward),
-            'current_timestep': self.n_calls, # epoch
             'metric': 'best_mean_reward',
-            'num_timesteps': self.num_timesteps,
+            'best_metric_value': float(self.best_mean_reward),
+            'n_calls': self.n_calls,
+            'timesteps': self.num_timesteps,
         }
-        info_path = os.path.join(self.model_path, 'info_best_eval_{self.name}.json')
+        info_path = os.path.join(self.model_path, f'info_best_eval_{self.name}.json')
         with open(info_path, 'w') as f:
             json.dump(info, f, indent=4)
 
@@ -313,6 +314,7 @@ class SB3ModelCheckpoint(BaseCallback):
         self.best_value = -sys.float_info.max if maximize else sys.float_info.max
         self.best_epoch = None
         self.best_model_state_dict = None
+        # self.best_variance = 0
         self.total_steps = total_steps
 
     def _on_step(self) -> bool:
@@ -336,6 +338,7 @@ class SB3ModelCheckpoint(BaseCallback):
             print(f'Metric "{self.monitor}" not found. Available: {logs.keys()}')
             return
         current_value = logs[self.monitor]
+        current_variance = logs.get("train/explained_variance", None)
         improved = (self.maximize and current_value > self.best_value) or \
                    (not self.maximize and current_value < self.best_value)
 
@@ -344,19 +347,35 @@ class SB3ModelCheckpoint(BaseCallback):
             self.best_value = current_value
             self.best_epoch = self.num_timesteps
             self.best_model_state_dict = copy.deepcopy(self.model_.policy.state_dict())
+            # reset the best variance every time the best value is updated
+            # self.best_variance = logs.get("train/explained_variance", None)
             if self.verbose:
                 print(f'Improved {self.monitor} to {current_value:.4f}')
 
             # Save model
             if self.model_path:
-                self.model_.save(os.path.join(self.model_path, f"last_epoch_{self.name}.zip"))
-                self.write_info()
+                self.model_.save(os.path.join(self.model_path, f"best_train_{self.name}.zip"))
+                self.write_info('best_train')
+        
+        if self.model_path:
+            self.model_.save(os.path.join(self.model_path, f"last_train_{self.name}.zip"))
+            self.write_info('last_train')
+
+        # if current_variance is not None:
+        #     as_good = (self.maximize and current_value >= self.best_value and current_variance>self.best_variance) or \
+        #            (not self.maximize and current_value <= self.best_value and current_variance>self.best_variance)
+
+        #     if as_good:
+        #         self.best_variance = current_variance
+        #         if self.model_path:
+        #             self.model_.save(os.path.join(self.model_path, f"best_variance_{self.name}.zip"))
+        #             self.write_info('best_variance')
     
     def _on_training_end(self) -> bool:
         # Write the completion message to the info file
         if self.model_path:
             self.model_.save(os.path.join(self.model_path, f"last_epoch_{self.name}.zip"))
-            self.write_info()
+            self.write_info('last_epoch')
 
     def _log_headers(self, headers):
         """Logs headers to the file."""
@@ -370,19 +389,17 @@ class SB3ModelCheckpoint(BaseCallback):
         with open(self.log_path, "a") as f:
             f.write(";".join(f'{k}:{v}' for k, v in logs.items())+ "\n")
 
-    def write_info(self):
+    def write_info(self,name):
         """Save checkpoint metadata."""
         if not self.model_path:
             return
         info = {
-            'best_value': float(self.best_value),
-            'epoch': self.best_epoch,
             'metric': self.monitor,
-            'maximize': self.maximize,
+            'best_value': float(self.best_value),
             'timesteps': self.num_timesteps,
             'finished_train': self.num_timesteps >= self.total_steps,
         }
-        info_path = os.path.join(self.model_path,f'info_last_epoch_{self.name}.json')
+        info_path = os.path.join(self.model_path,f'info_{name}_{self.name}.json')
         with open(info_path, 'w') as f:
             json.dump(info, f, indent=4)
 

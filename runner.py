@@ -26,10 +26,10 @@ if __name__ == "__main__":
             self.file.flush()
             self.stdout.flush()
 
-    RULE_DEPEND_VAR = [False] # [True, False] # the way to define variable embedding, True: depend on rules, False: indexed based on appearance order
-    DYNAMIC_CONSULT = [True] # [True, False]
+    RULE_DEPEND_VAR = [False] # The way to define variable embedding, True: depend on rules, False: indexed based on appearance order
+    DYNAMIC_CONSULT = [True]
     FALSE_RULES = [False] 
-    MEMORY_PRUNING = [True] # True: filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
+    MEMORY_PRUNING = [True] # filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     END_PROOF_ACTION = [False]
     SKIP_UNARY_ACTIONS = [True]
     TRUNCATE_ATOMS = [True] # if more atoms in a state than pad_atoms, truncate the state to false
@@ -40,21 +40,19 @@ if __name__ == "__main__":
     # reward_type = 1
 
     # Dataset settings 
-    # for countries_s3, we use non provable corruptions and provable queries, run_signature='countries_s3-transe-sum-50-5-20-dynamic-False-True-1-True-False-False-True-False-20-True'
     DATASET_NAME =  ["kinship_family"] #["countries_s2", "countries_s3", 'kinship_family','wn18rr']
-    TRAIN_DEPTH = [None] # [None, 1, 2, 3]
-    VALID_DEPTH = [None] # [None, 1, 2, 3]
-    TEST_DEPTH = [None] # [None, 1, 2, 3]
-    SEED = [[0,1,2]] # [[0,1,2,3,4]]
+    TRAIN_DEPTH = [None]
+    VALID_DEPTH = [None]
+    TEST_DEPTH = [None]
+    SEED = [[0]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
-    STATE_EMBEDDER = ['mean'] #'mean'
+    STATE_EMBEDDER = ['mean']
     PADDING_ATOMS = [3]
-    PADDING_STATES = [10]
+    PADDING_STATES = [-1] # -1 sets the max padding size to the max number of atoms in the dataset
     ATOM_EMBEDDING_SIZE = [64]
-    '''Attention: if we use static corruptions, include non provable corruptions
-    In pararell eval, we evaluate based on a fixed number of corruptions'''
-    CORRUPTION_MODE =  ['dynamic'] # ["dynamic","static"] # TAKE INTO ACCOUNT THE DYNAMIC INCLUDES NON PROVABLE NEGATIVES
+
+    CORRUPTION_MODE =  ['dynamic']
     NON_PROVABLE_QUERIES = [True]
     NON_PROVABLE_CORRUPTIONS = [True]
 
@@ -79,34 +77,24 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [15000]
+    TIMESTEPS_TRAIN = [1000000]
     MODEL_NAME = ["PPO"]
-    MAX_DEPTH = [20] # [20,100]
+    MAX_DEPTH = [20]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
     valid_negatives = None # corruptions in validation set (test)
     test_negatives = 100 # corruptions in test set (test)
-    n_eval_queries = 200 
+    n_eval_queries = None 
     n_test_queries = None
-    # Rollout->train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
+    # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 256
-    n_steps = 128 # 2048
-    n_eval_envs = 1
+    n_steps = 256 # 2048
+    n_eval_envs = 256
     n_callback_envs = 1
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
-    batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
+    batch_size = 256 # Ensure batch size is a factor of n_steps (for the buffer).
     lr = 3e-4
-    # if 'countries_s3' in DATASET_NAME:
-    #     # use simple linear layers
-    #     n_envs = 128 
-    #     n_steps = 128 #2048
-    #     n_eval_envs = 1
-    #     eval_freq = n_steps*n_envs
-    #     n_epochs = 10 # number of epochs to train the model with the collected rollout
-    #     batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
-    #     lr = 3e-4
-
 
     # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 
     # this is ignored and the number of variables is determined by the number of variables in the rules
@@ -120,24 +108,8 @@ if __name__ == "__main__":
     parser.add_argument("--s", help="Seeds")
     parser.add_argument("--epochs", default = None, help="epochs")
 
-    parser.add_argument("--corr_mode", default = None, help="corruption mode")
-    parser.add_argument("--non_provable_queries", default = None, help="non_provable_queries")
-    parser.add_argument("--non_provable_corruptions", default = None, help="non_provable_corruptions")
-    parser.add_argument("--train_neg_pos_ratio", default = None, help="train_neg_pos_ratio")
-
-    parser.add_argument("--memory_pruning", default = None, help="memory_pruning")
-    parser.add_argument("--rule_depend_var", default = None, help="rule_depend_var")
-    parser.add_argument("--dynamic_consult", default = None, help="dynamic_consult")
-    parser.add_argument("--false_rules", default = None, help="false_rules")
-    parser.add_argument("--end_proof_action", default = None, help="end_proof_action")
-    parser.add_argument("--skip_unary_actions", default = None, help="skip_unary_actions")
-    parser.add_argument("--truncate_atoms", default = None, help="truncate_atoms")
-    parser.add_argument("--truncate_states", default = None, help="truncate_states")
-
-    parser.add_argument("--padding_atoms", default = None, help="padding_atoms")
-    parser.add_argument("--padding_states", default = None, help="padding_states")
-    parser.add_argument("--atom_embedding_size", default = None, help="atom_embedding_size")
     parser.add_argument("--test_depth", default = None, help="test_depth")
+    parser.add_argument("--test_negatives", default = None, help="test_negatives")
 
     args = parser.parse_args()
 
@@ -146,24 +118,8 @@ if __name__ == "__main__":
     if args.s: SEED = [ast.literal_eval(args.s)]
     if args.epochs: epochs = [int(args.epochs)]
 
-    if args.corr_mode: CORRUPTION_MODE = [args.corr_mode]
-    if args.non_provable_queries: NON_PROVABLE_QUERIES = [ast.literal_eval(args.non_provable_queries)]
-    if args.non_provable_corruptions: NON_PROVABLE_CORRUPTIONS = [ast.literal_eval(args.non_provable_corruptions)]
-    if args.train_neg_pos_ratio: TRAIN_NEG_POS_RATIO = [int(args.train_neg_pos_ratio)]
-
-    if args.memory_pruning: MEMORY_PRUNING = [ast.literal_eval(args.memory_pruning)]
-    if args.rule_depend_var: RULE_DEPEND_VAR = [ast.literal_eval(args.rule_depend_var)]
-    if args.dynamic_consult: DYNAMIC_CONSULT = [ast.literal_eval(args.dynamic_consult)]
-    if args.false_rules: FALSE_RULES = [ast.literal_eval(args.false_rules)]
-    if args.end_proof_action: END_PROOF_ACTION = [ast.literal_eval(args.end_proof_action)]
-    if args.skip_unary_actions: SKIP_UNARY_ACTIONS = [ast.literal_eval(args.skip_unary_actions)]
-    if args.truncate_atoms: TRUNCATE_ATOMS = [ast.literal_eval(args.truncate_atoms)]
-    if args.truncate_states: TRUNCATE_STATES = [ast.literal_eval(args.truncate_states)]
-
-    if args.padding_atoms: PADDING_ATOMS = [int(args.padding_atoms)]
-    if args.padding_states: PADDING_STATES = [int(args.padding_states)]
-    if args.atom_embedding_size: ATOM_EMBEDDING_SIZE = [int(args.atom_embedding_size)]
     if args.test_depth: TEST_DEPTH = [str(args.test_depth)]
+    if args.test_negatives: test_negatives = int(args.test_negatives)
 
 
     print('Running experiments for the following parameters:','DATASET_NAME:',DATASET_NAME,'MODEL_NAME:',MODEL_NAME,'SEED:',SEED)
@@ -211,6 +167,15 @@ if __name__ == "__main__":
     all_args = []
     for exp_idx, params in enumerate(param_combinations):
         args = argparse.Namespace(**dict(zip(param_names, params)))
+
+        if not save_model and args.restore_best_val_model:
+            print("\n\nERROR: restore_best_val_model is True and save_model is False. To restore the best val model you need to save it\n\n")
+            continue
+        
+        if args.padding_states == -1:
+            if args.dataset_name == "countries_s3": args.padding_states = 20
+            elif args.dataset_name == "kinship_family": args.padding_states = 130
+            elif args.dataset_name == "wn18rr": args.padding_states = 262 #1770
 
         constant_embedding_size = predicate_embedding_size = args.atom_embedding_size
         if args.atom_embedder == "complex":
