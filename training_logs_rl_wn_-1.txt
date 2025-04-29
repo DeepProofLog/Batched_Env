@@ -1,0 +1,4512 @@
+Running experiments for the following parameters: DATASET_NAME: ['wn18rr'] MODEL_NAME: ['PPO'] SEED: [[0]]
+Experiment number  0  out of  1  experiments.
+Seed 0  in  [0]
+
+Run vars: wn18rr-transe-mean-64-3-262-dynamic-True-True-1-True-False-False-True-True-True-True-False-20-True-0.1-0.2-python-1 
+ Namespace(dataset_name='wn18rr', model_name='PPO', learn_embeddings=True, atom_embedder='transe', state_embedder='mean', atom_embedding_size=64, seed=[0], max_depth=20, timesteps_train=10000000, restore_best_val_model=True, memory_pruning=True, rule_depend_var=False, dynamic_consult=True, corruption_mode='dynamic', train_neg_pos_ratio=1, false_rules=False, end_proof_action=False, skip_unary_actions=True, ent_coef=0.1, clip_range=0.2, engine='python', train_depth=None, valid_depth=None, test_depth=None, truncate_atoms=True, truncate_states=True, padding_atoms=3, padding_states=262, non_provable_queries=True, non_provable_corruptions=True, corruption_scheme=['head', 'tail'], janus_file=None, data_path='./data/', train_file='train.txt', valid_file='valid.txt', test_file='test.txt', rules_file='rules.txt', facts_file='train.txt', state_embedding_size=64, constant_embedding_size=64, predicate_embedding_size=64, variable_no=500, device='cuda', load_model=False, save_model=True, models_path='models/wn18rr', n_eval_queries=None, n_test_queries=None, valid_negatives=None, test_negatives=-1, eval_freq=65536, n_envs=256, n_eval_envs=256, n_callback_envs=1, n_steps=256, n_epochs=10, batch_size=256, lr=0.0003, run_signature='wn18rr-transe-mean-64-3-262-dynamic-True-True-1-True-False-False-True-True-True-True-False-20-True-0.1-0.2-python-1', seed_run_i=0) 
+
+wn18rr-transe-mean-64-3-262-dynamic-True-True-1-True-False-False-True-True-True-True-False-20-True-0.1-0.2-python-1
+Device: cuda
+CUDA available: True, Device count: 2
+Using cuda device
+Embedding dim in policy 64
+Embedding dim in value 64
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=65536, episode_reward=0.42 +/- 0.49
+Episode length: 1.16 +/- 1.16
+New best mean reward!
+---------------evaluation finished---------------  took 15.39 seconds
+Epoch 1 completed in 108.25 seconds.
+Improved rollout/ep_rew_mean to 0.2100
+Time to collect_rollouts 108.73
+Training model
+Time to train 126.4
+--------------------------------------
+| rollout/                |          |
+|    ep_len_mean          | 1.26     |
+|    ep_rew_mean          | 0.21     |
+| time/                   |          |
+|    fps                  | 278      |
+|    iterations           | 1        |
+|    total_timesteps      | 65536    |
+| train/                  |          |
+|    approx_kl            | 4.723768 |
+|    clip_fraction        | 0.214    |
+|    clip_range           | 0.2      |
+|    entropy_loss         | -0.0332  |
+|    explained_variance   | -27.3    |
+|    learning_rate        | 0.0003   |
+|    loss                 | 0.171    |
+|    n_updates            | 10       |
+|    policy_gradient_loss | 0.0742   |
+|    value_loss           | 0.487    |
+--------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=130816, episode_reward=0.42 +/- 0.49
+Episode length: 1.05 +/- 0.31
+---------------evaluation finished---------------  took 14.54 seconds
+Collecting rollouts: 255/256 steps
+Epoch 2 completed in 110.62 seconds.
+Improved rollout/ep_rew_mean to 0.2800
+Time to collect_rollouts 111.4
+Training model
+Time to train 133.49
+---------------------------------------
+| rollout/                |           |
+|    ep_len_mean          | 1.02      |
+|    ep_rew_mean          | 0.28      |
+| time/                   |           |
+|    fps                  | 272       |
+|    iterations           | 2         |
+|    total_timesteps      | 131072    |
+| train/                  |           |
+|    approx_kl            | 1.2635949 |
+|    clip_fraction        | 0.112     |
+|    clip_range           | 0.2       |
+|    entropy_loss         | -0.0331   |
+|    explained_variance   | 0.139     |
+|    learning_rate        | 0.0003    |
+|    loss                 | 0.0572    |
+|    n_updates            | 20        |
+|    policy_gradient_loss | 0.00766   |
+|    value_loss           | 0.105     |
+---------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=196096, episode_reward=0.42 +/- 0.49
+Episode length: 1.04 +/- 0.21
+New best mean reward!
+---------------evaluation finished---------------  took 14.08 seconds
+Collecting rollouts: 255/256 steps
+Epoch 3 completed in 112.58 seconds.
+Time to collect_rollouts 113.01
+Training model
+Time to train 129.96
+---------------------------------------
+| rollout/                |           |
+|    ep_len_mean          | 1.03      |
+|    ep_rew_mean          | 0.17      |
+| time/                   |           |
+|    fps                  | 271       |
+|    iterations           | 3         |
+|    total_timesteps      | 196608    |
+| train/                  |           |
+|    approx_kl            | 0.2600888 |
+|    clip_fraction        | 0.217     |
+|    clip_range           | 0.2       |
+|    entropy_loss         | -0.282    |
+|    explained_variance   | 0.288     |
+|    learning_rate        | 0.0003    |
+|    loss                 | 0.00795   |
+|    n_updates            | 30        |
+|    policy_gradient_loss | -0.000553 |
+|    value_loss           | 0.106     |
+---------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=261376, episode_reward=0.42 +/- 0.49
+Episode length: 1.35 +/- 2.14
+New best mean reward!
+---------------evaluation finished---------------  took 21.28 seconds
+Collecting rollouts: 255/256 steps
+Epoch 4 completed in 115.23 seconds.
+Time to collect_rollouts 115.65
+Training model
+Time to train 128.08
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.25         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 271          |
+|    iterations           | 4            |
+|    total_timesteps      | 262144       |
+| train/                  |              |
+|    approx_kl            | 0.0068813106 |
+|    clip_fraction        | 0.0168       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.453       |
+|    explained_variance   | 0.286        |
+|    learning_rate        | 0.0003       |
+|    loss                 | 0.00901      |
+|    n_updates            | 40           |
+|    policy_gradient_loss | -0.000884    |
+|    value_loss           | 0.1          |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=326656, episode_reward=0.42 +/- 0.49
+Episode length: 1.41 +/- 2.48
+---------------evaluation finished---------------  took 15.75 seconds
+Collecting rollouts: 255/256 steps
+Epoch 5 completed in 112.24 seconds.
+Time to collect_rollouts 112.64
+Training model
+Time to train 133.97
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.1         |
+|    ep_rew_mean          | 0.2         |
+| time/                   |             |
+|    fps                  | 270         |
+|    iterations           | 5           |
+|    total_timesteps      | 327680      |
+| train/                  |             |
+|    approx_kl            | 0.004994496 |
+|    clip_fraction        | 0.00943     |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.454      |
+|    explained_variance   | 0.295       |
+|    learning_rate        | 0.0003      |
+|    loss                 | 0.00651     |
+|    n_updates            | 50          |
+|    policy_gradient_loss | -0.00103    |
+|    value_loss           | 0.0994      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=391936, episode_reward=0.42 +/- 0.49
+Episode length: 1.39 +/- 2.36
+---------------evaluation finished---------------  took 18.76 seconds
+Collecting rollouts: 255/256 steps
+Epoch 6 completed in 111.16 seconds.
+Time to collect_rollouts 111.59
+Training model
+Time to train 120.14
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.31         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 272          |
+|    iterations           | 6            |
+|    total_timesteps      | 393216       |
+| train/                  |              |
+|    approx_kl            | 0.0016026888 |
+|    clip_fraction        | 0.00709      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.47        |
+|    explained_variance   | 0.288        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.00888     |
+|    n_updates            | 60           |
+|    policy_gradient_loss | -0.000966    |
+|    value_loss           | 0.0974       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=457216, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.34
+New best mean reward!
+---------------evaluation finished---------------  took 22.24 seconds
+Collecting rollouts: 255/256 steps
+Epoch 7 completed in 111.61 seconds.
+Time to collect_rollouts 112.0
+Training model
+Time to train 111.05
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.18         |
+|    ep_rew_mean          | 0.14         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 7            |
+|    total_timesteps      | 458752       |
+| train/                  |              |
+|    approx_kl            | 0.0017299387 |
+|    clip_fraction        | 0.00513      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.46        |
+|    explained_variance   | 0.309        |
+|    learning_rate        | 0.0003       |
+|    loss                 | 0.003        |
+|    n_updates            | 70           |
+|    policy_gradient_loss | -0.000982    |
+|    value_loss           | 0.096        |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=522496, episode_reward=0.42 +/- 0.49
+Episode length: 1.39 +/- 2.40
+---------------evaluation finished---------------  took 22.67 seconds
+Collecting rollouts: 255/256 steps
+Epoch 8 completed in 116.99 seconds.
+Time to collect_rollouts 117.41
+Training model
+Time to train 105.26
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.12        |
+|    ep_rew_mean          | 0.19        |
+| time/                   |             |
+|    fps                  | 277         |
+|    iterations           | 8           |
+|    total_timesteps      | 524288      |
+| train/                  |             |
+|    approx_kl            | 0.001717859 |
+|    clip_fraction        | 0.0053      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.464      |
+|    explained_variance   | 0.301       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.00888    |
+|    n_updates            | 80          |
+|    policy_gradient_loss | -0.00111    |
+|    value_loss           | 0.094       |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=587776, episode_reward=0.42 +/- 0.49
+Episode length: 1.36 +/- 2.28
+---------------evaluation finished---------------  took 20.30 seconds
+Collecting rollouts: 255/256 steps
+Epoch 9 completed in 108.86 seconds.
+Time to collect_rollouts 109.29
+Training model
+Time to train 127.0
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.12         |
+|    ep_rew_mean          | 0.21         |
+| time/                   |              |
+|    fps                  | 277          |
+|    iterations           | 9            |
+|    total_timesteps      | 589824       |
+| train/                  |              |
+|    approx_kl            | 0.0013168755 |
+|    clip_fraction        | 0.00455      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.475       |
+|    explained_variance   | 0.301        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0187      |
+|    n_updates            | 90           |
+|    policy_gradient_loss | -0.000753    |
+|    value_loss           | 0.0932       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=653056, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.33
+New best mean reward!
+---------------evaluation finished---------------  took 20.52 seconds
+Collecting rollouts: 255/256 steps
+Epoch 10 completed in 113.45 seconds.
+Time to collect_rollouts 113.88
+Training model
+Time to train 126.51
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.07         |
+|    ep_rew_mean          | 0.21         |
+| time/                   |              |
+|    fps                  | 276          |
+|    iterations           | 10           |
+|    total_timesteps      | 655360       |
+| train/                  |              |
+|    approx_kl            | 0.0015503849 |
+|    clip_fraction        | 0.00419      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.467       |
+|    explained_variance   | 0.309        |
+|    learning_rate        | 0.0003       |
+|    loss                 | 0.00815      |
+|    n_updates            | 100          |
+|    policy_gradient_loss | -0.000873    |
+|    value_loss           | 0.0924       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=718336, episode_reward=0.42 +/- 0.49
+Episode length: 1.39 +/- 2.34
+---------------evaluation finished---------------  took 18.09 seconds
+Collecting rollouts: 255/256 steps
+Epoch 11 completed in 108.17 seconds.
+Time to collect_rollouts 111.18
+Training model
+Time to train 132.66
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.14         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 276          |
+|    iterations           | 11           |
+|    total_timesteps      | 720896       |
+| train/                  |              |
+|    approx_kl            | 0.0014654044 |
+|    clip_fraction        | 0.005        |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.472       |
+|    explained_variance   | 0.314        |
+|    learning_rate        | 0.0003       |
+|    loss                 | 0.00607      |
+|    n_updates            | 110          |
+|    policy_gradient_loss | -0.00082     |
+|    value_loss           | 0.0904       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=783616, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.34
+---------------evaluation finished---------------  took 22.94 seconds
+Collecting rollouts: 255/256 steps
+Epoch 12 completed in 113.18 seconds.
+Time to collect_rollouts 113.58
+Training model
+Time to train 122.93
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.09         |
+|    ep_rew_mean          | 0.18         |
+| time/                   |              |
+|    fps                  | 276          |
+|    iterations           | 12           |
+|    total_timesteps      | 786432       |
+| train/                  |              |
+|    approx_kl            | 0.0012079482 |
+|    clip_fraction        | 0.00441      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.474       |
+|    explained_variance   | 0.335        |
+|    learning_rate        | 0.0003       |
+|    loss                 | 0.000881     |
+|    n_updates            | 120          |
+|    policy_gradient_loss | -0.00086     |
+|    value_loss           | 0.0884       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=848896, episode_reward=0.43 +/- 0.49
+Episode length: 1.35 +/- 2.15
+---------------evaluation finished---------------  took 23.86 seconds
+Collecting rollouts: 255/256 steps
+Epoch 13 completed in 117.15 seconds.
+Time to collect_rollouts 117.58
+Training model
+Time to train 120.64
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.31         |
+|    ep_rew_mean          | 0.21         |
+| time/                   |              |
+|    fps                  | 276          |
+|    iterations           | 13           |
+|    total_timesteps      | 851968       |
+| train/                  |              |
+|    approx_kl            | 0.0013723373 |
+|    clip_fraction        | 0.00386      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.47        |
+|    explained_variance   | 0.317        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.00628     |
+|    n_updates            | 130          |
+|    policy_gradient_loss | -0.000831    |
+|    value_loss           | 0.0909       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=914176, episode_reward=0.43 +/- 0.49
+Episode length: 1.38 +/- 2.34
+---------------evaluation finished---------------  took 16.27 seconds
+Collecting rollouts: 255/256 steps
+Epoch 14 completed in 112.12 seconds.
+Time to collect_rollouts 112.55
+Training model
+Time to train 131.57
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.03         |
+|    ep_rew_mean          | 0.18         |
+| time/                   |              |
+|    fps                  | 275          |
+|    iterations           | 14           |
+|    total_timesteps      | 917504       |
+| train/                  |              |
+|    approx_kl            | 0.0013325142 |
+|    clip_fraction        | 0.00494      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.474       |
+|    explained_variance   | 0.329        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.00164     |
+|    n_updates            | 140          |
+|    policy_gradient_loss | -0.000974    |
+|    value_loss           | 0.0872       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=979456, episode_reward=0.43 +/- 0.49
+Episode length: 1.39 +/- 2.41
+---------------evaluation finished---------------  took 20.52 seconds
+Collecting rollouts: 255/256 steps
+Epoch 15 completed in 113.10 seconds.
+Time to collect_rollouts 113.53
+Training model
+Time to train 136.42
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.14         |
+|    ep_rew_mean          | 0.24         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 15           |
+|    total_timesteps      | 983040       |
+| train/                  |              |
+|    approx_kl            | 0.0011613704 |
+|    clip_fraction        | 0.00452      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.48        |
+|    explained_variance   | 0.333        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.026       |
+|    n_updates            | 150          |
+|    policy_gradient_loss | -0.000766    |
+|    value_loss           | 0.0854       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1044736, episode_reward=0.42 +/- 0.49
+Episode length: 1.37 +/- 2.31
+---------------evaluation finished---------------  took 27.39 seconds
+Collecting rollouts: 255/256 steps
+Epoch 16 completed in 117.16 seconds.
+Time to collect_rollouts 120.76
+Training model
+Time to train 125.49
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.12         |
+|    ep_rew_mean          | 0.24         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 16           |
+|    total_timesteps      | 1048576      |
+| train/                  |              |
+|    approx_kl            | 0.0014464047 |
+|    clip_fraction        | 0.00495      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.47        |
+|    explained_variance   | 0.348        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0227      |
+|    n_updates            | 160          |
+|    policy_gradient_loss | -0.000922    |
+|    value_loss           | 0.0849       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1110016, episode_reward=0.42 +/- 0.49
+Episode length: 1.37 +/- 2.34
+---------------evaluation finished---------------  took 27.49 seconds
+Collecting rollouts: 255/256 steps
+Epoch 17 completed in 120.84 seconds.
+Time to collect_rollouts 121.24
+Training model
+Time to train 115.36
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.04         |
+|    ep_rew_mean          | 0.15         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 17           |
+|    total_timesteps      | 1114112      |
+| train/                  |              |
+|    approx_kl            | 0.0013339138 |
+|    clip_fraction        | 0.00466      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.478       |
+|    explained_variance   | 0.355        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0141      |
+|    n_updates            | 170          |
+|    policy_gradient_loss | -0.00101     |
+|    value_loss           | 0.0832       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1175296, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.33
+---------------evaluation finished---------------  took 22.19 seconds
+Collecting rollouts: 255/256 steps
+Epoch 18 completed in 114.80 seconds.
+Time to collect_rollouts 115.23
+Training model
+Time to train 118.68
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.34         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 18           |
+|    total_timesteps      | 1179648      |
+| train/                  |              |
+|    approx_kl            | 0.0012290983 |
+|    clip_fraction        | 0.00438      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.461       |
+|    explained_variance   | 0.361        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0236      |
+|    n_updates            | 180          |
+|    policy_gradient_loss | -0.00112     |
+|    value_loss           | 0.0832       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1240576, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.25
+---------------evaluation finished---------------  took 24.62 seconds
+Collecting rollouts: 255/256 steps
+Epoch 19 completed in 117.39 seconds.
+Time to collect_rollouts 117.81
+Training model
+Time to train 120.91
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.11         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 19           |
+|    total_timesteps      | 1245184      |
+| train/                  |              |
+|    approx_kl            | 0.0013578564 |
+|    clip_fraction        | 0.00385      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.47        |
+|    explained_variance   | 0.375        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.00703     |
+|    n_updates            | 190          |
+|    policy_gradient_loss | -0.00105     |
+|    value_loss           | 0.0808       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1305856, episode_reward=0.43 +/- 0.49
+Episode length: 1.41 +/- 2.52
+---------------evaluation finished---------------  took 22.84 seconds
+Collecting rollouts: 255/256 steps
+Epoch 20 completed in 115.18 seconds.
+Time to collect_rollouts 115.58
+Training model
+Time to train 123.18
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.08         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 20           |
+|    total_timesteps      | 1310720      |
+| train/                  |              |
+|    approx_kl            | 0.0011697062 |
+|    clip_fraction        | 0.00372      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.481       |
+|    explained_variance   | 0.381        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0202      |
+|    n_updates            | 200          |
+|    policy_gradient_loss | -0.000854    |
+|    value_loss           | 0.0777       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1371136, episode_reward=0.42 +/- 0.49
+Episode length: 1.35 +/- 2.19
+---------------evaluation finished---------------  took 25.02 seconds
+Collecting rollouts: 255/256 steps
+Epoch 21 completed in 120.75 seconds.
+Time to collect_rollouts 121.23
+Training model
+Time to train 123.55
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.15         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 21           |
+|    total_timesteps      | 1376256      |
+| train/                  |              |
+|    approx_kl            | 0.0010659648 |
+|    clip_fraction        | 0.00377      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.477       |
+|    explained_variance   | 0.406        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.00414     |
+|    n_updates            | 210          |
+|    policy_gradient_loss | -0.000908    |
+|    value_loss           | 0.0767       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1436416, episode_reward=0.43 +/- 0.49
+Episode length: 1.38 +/- 2.39
+---------------evaluation finished---------------  took 18.52 seconds
+Collecting rollouts: 255/256 steps
+Epoch 22 completed in 122.33 seconds.
+Time to collect_rollouts 122.76
+Training model
+Time to train 132.57
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.22         |
+|    ep_rew_mean          | 0.19         |
+| time/                   |              |
+|    fps                  | 273          |
+|    iterations           | 22           |
+|    total_timesteps      | 1441792      |
+| train/                  |              |
+|    approx_kl            | 0.0011637239 |
+|    clip_fraction        | 0.00407      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.476       |
+|    explained_variance   | 0.405        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0268      |
+|    n_updates            | 220          |
+|    policy_gradient_loss | -0.000943    |
+|    value_loss           | 0.0751       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1501696, episode_reward=0.42 +/- 0.49
+Episode length: 1.39 +/- 2.45
+---------------evaluation finished---------------  took 20.47 seconds
+Collecting rollouts: 255/256 steps
+Epoch 23 completed in 113.54 seconds.
+Time to collect_rollouts 113.96
+Training model
+Time to train 130.11
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.13         |
+|    ep_rew_mean          | 0.11         |
+| time/                   |              |
+|    fps                  | 273          |
+|    iterations           | 23           |
+|    total_timesteps      | 1507328      |
+| train/                  |              |
+|    approx_kl            | 0.0012934194 |
+|    clip_fraction        | 0.004        |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.48        |
+|    explained_variance   | 0.421        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0165      |
+|    n_updates            | 230          |
+|    policy_gradient_loss | -0.00108     |
+|    value_loss           | 0.0719       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1566976, episode_reward=0.42 +/- 0.49
+Episode length: 1.36 +/- 2.27
+---------------evaluation finished---------------  took 16.66 seconds
+Collecting rollouts: 255/256 steps
+Epoch 24 completed in 108.71 seconds.
+Time to collect_rollouts 109.13
+Training model
+Time to train 124.71
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.04         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 273          |
+|    iterations           | 24           |
+|    total_timesteps      | 1572864      |
+| train/                  |              |
+|    approx_kl            | 0.0011411017 |
+|    clip_fraction        | 0.00353      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.473       |
+|    explained_variance   | 0.429        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.029       |
+|    n_updates            | 240          |
+|    policy_gradient_loss | -0.00086     |
+|    value_loss           | 0.0716       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1632256, episode_reward=0.43 +/- 0.49
+Episode length: 1.34 +/- 2.13
+---------------evaluation finished---------------  took 17.19 seconds
+Collecting rollouts: 255/256 steps
+Epoch 25 completed in 113.27 seconds.
+Time to collect_rollouts 113.68
+Training model
+Time to train 128.52
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.28         |
+|    ep_rew_mean          | 0.14         |
+| time/                   |              |
+|    fps                  | 273          |
+|    iterations           | 25           |
+|    total_timesteps      | 1638400      |
+| train/                  |              |
+|    approx_kl            | 0.0011139459 |
+|    clip_fraction        | 0.00327      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.47        |
+|    explained_variance   | 0.432        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.00688     |
+|    n_updates            | 250          |
+|    policy_gradient_loss | -0.00117     |
+|    value_loss           | 0.0709       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1697536, episode_reward=0.42 +/- 0.49
+Episode length: 1.36 +/- 2.28
+---------------evaluation finished---------------  took 16.64 seconds
+Collecting rollouts: 255/256 steps
+Epoch 26 completed in 109.53 seconds.
+Time to collect_rollouts 109.94
+Training model
+Time to train 123.81
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.11         |
+|    ep_rew_mean          | 0.14         |
+| time/                   |              |
+|    fps                  | 273          |
+|    iterations           | 26           |
+|    total_timesteps      | 1703936      |
+| train/                  |              |
+|    approx_kl            | 0.0010050677 |
+|    clip_fraction        | 0.00288      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.473       |
+|    explained_variance   | 0.449        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.00337     |
+|    n_updates            | 260          |
+|    policy_gradient_loss | -0.000897    |
+|    value_loss           | 0.0674       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1762816, episode_reward=0.43 +/- 0.49
+Episode length: 1.35 +/- 2.24
+---------------evaluation finished---------------  took 16.54 seconds
+Collecting rollouts: 255/256 steps
+Epoch 27 completed in 112.39 seconds.
+Time to collect_rollouts 112.8
+Training model
+Time to train 120.5
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.02         |
+|    ep_rew_mean          | 0.15         |
+| time/                   |              |
+|    fps                  | 273          |
+|    iterations           | 27           |
+|    total_timesteps      | 1769472      |
+| train/                  |              |
+|    approx_kl            | 0.0010588225 |
+|    clip_fraction        | 0.00322      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.482       |
+|    explained_variance   | 0.458        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0192      |
+|    n_updates            | 270          |
+|    policy_gradient_loss | -0.000879    |
+|    value_loss           | 0.0661       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1828096, episode_reward=0.42 +/- 0.49
+Episode length: 1.37 +/- 2.35
+---------------evaluation finished---------------  took 15.08 seconds
+Collecting rollouts: 255/256 steps
+Epoch 28 completed in 108.08 seconds.
+Time to collect_rollouts 108.5
+Training model
+Time to train 125.2
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.15         |
+|    ep_rew_mean          | 0.17         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 28           |
+|    total_timesteps      | 1835008      |
+| train/                  |              |
+|    approx_kl            | 0.0010312146 |
+|    clip_fraction        | 0.00317      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.47        |
+|    explained_variance   | 0.483        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0288      |
+|    n_updates            | 280          |
+|    policy_gradient_loss | -0.00111     |
+|    value_loss           | 0.0638       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1893376, episode_reward=0.43 +/- 0.49
+Episode length: 1.36 +/- 2.32
+---------------evaluation finished---------------  took 17.13 seconds
+Collecting rollouts: 255/256 steps
+Epoch 29 completed in 109.61 seconds.
+Time to collect_rollouts 109.99
+Training model
+Time to train 123.28
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.21         |
+|    ep_rew_mean          | 0.11         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 29           |
+|    total_timesteps      | 1900544      |
+| train/                  |              |
+|    approx_kl            | 0.0011482078 |
+|    clip_fraction        | 0.00282      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.472       |
+|    explained_variance   | 0.486        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0175      |
+|    n_updates            | 290          |
+|    policy_gradient_loss | -0.00108     |
+|    value_loss           | 0.0612       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=1958656, episode_reward=0.42 +/- 0.49
+Episode length: 1.37 +/- 2.37
+---------------evaluation finished---------------  took 20.66 seconds
+Collecting rollouts: 255/256 steps
+Epoch 30 completed in 113.22 seconds.
+Time to collect_rollouts 113.64
+Training model
+Time to train 120.52
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.12         |
+|    ep_rew_mean          | 0.25         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 30           |
+|    total_timesteps      | 1966080      |
+| train/                  |              |
+|    approx_kl            | 0.0020871586 |
+|    clip_fraction        | 0.0204       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.48        |
+|    explained_variance   | 0.491        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0335      |
+|    n_updates            | 300          |
+|    policy_gradient_loss | -0.000287    |
+|    value_loss           | 0.0604       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2023936, episode_reward=0.42 +/- 0.49
+Episode length: 1.37 +/- 2.33
+---------------evaluation finished---------------  took 16.75 seconds
+Collecting rollouts: 255/256 steps
+Epoch 31 completed in 110.31 seconds.
+Time to collect_rollouts 110.73
+Training model
+Time to train 124.79
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.04         |
+|    ep_rew_mean          | 0.11         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 31           |
+|    total_timesteps      | 2031616      |
+| train/                  |              |
+|    approx_kl            | 0.0011808197 |
+|    clip_fraction        | 0.00356      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.462       |
+|    explained_variance   | 0.51         |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0297      |
+|    n_updates            | 310          |
+|    policy_gradient_loss | -0.000998    |
+|    value_loss           | 0.0595       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2089216, episode_reward=0.42 +/- 0.49
+Episode length: 1.35 +/- 2.31
+---------------evaluation finished---------------  took 14.43 seconds
+Collecting rollouts: 255/256 steps
+Epoch 32 completed in 108.09 seconds.
+Time to collect_rollouts 108.5
+Training model
+Time to train 128.49
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.2          |
+|    ep_rew_mean          | 0.15         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 32           |
+|    total_timesteps      | 2097152      |
+| train/                  |              |
+|    approx_kl            | 0.0014867093 |
+|    clip_fraction        | 0.00387      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.468       |
+|    explained_variance   | 0.515        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0272      |
+|    n_updates            | 320          |
+|    policy_gradient_loss | -0.00121     |
+|    value_loss           | 0.058        |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2154496, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.38
+---------------evaluation finished---------------  took 16.91 seconds
+Collecting rollouts: 255/256 steps
+Epoch 33 completed in 109.51 seconds.
+Time to collect_rollouts 109.93
+Training model
+Time to train 122.96
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.13         |
+|    ep_rew_mean          | 0.15         |
+| time/                   |              |
+|    fps                  | 274          |
+|    iterations           | 33           |
+|    total_timesteps      | 2162688      |
+| train/                  |              |
+|    approx_kl            | 0.0010086708 |
+|    clip_fraction        | 0.00282      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.477       |
+|    explained_variance   | 0.531        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0252      |
+|    n_updates            | 330          |
+|    policy_gradient_loss | -0.00119     |
+|    value_loss           | 0.0558       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2219776, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.38
+---------------evaluation finished---------------  took 20.31 seconds
+Collecting rollouts: 255/256 steps
+Epoch 34 completed in 112.72 seconds.
+Time to collect_rollouts 113.14
+Training model
+Time to train 117.69
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.06         |
+|    ep_rew_mean          | 0.19         |
+| time/                   |              |
+|    fps                  | 275          |
+|    iterations           | 34           |
+|    total_timesteps      | 2228224      |
+| train/                  |              |
+|    approx_kl            | 0.0010896015 |
+|    clip_fraction        | 0.00291      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.479       |
+|    explained_variance   | 0.552        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.039       |
+|    n_updates            | 340          |
+|    policy_gradient_loss | -0.00127     |
+|    value_loss           | 0.053        |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2285056, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.36
+---------------evaluation finished---------------  took 20.65 seconds
+Collecting rollouts: 255/256 steps
+Epoch 35 completed in 112.51 seconds.
+Time to collect_rollouts 112.93
+Training model
+Time to train 113.59
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.24         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 275          |
+|    iterations           | 35           |
+|    total_timesteps      | 2293760      |
+| train/                  |              |
+|    approx_kl            | 0.0011068343 |
+|    clip_fraction        | 0.0026       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.484       |
+|    explained_variance   | 0.549        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0183      |
+|    n_updates            | 350          |
+|    policy_gradient_loss | -0.000629    |
+|    value_loss           | 0.0512       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2350336, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.40
+---------------evaluation finished---------------  took 17.03 seconds
+Collecting rollouts: 255/256 steps
+Epoch 36 completed in 109.15 seconds.
+Time to collect_rollouts 109.56
+Training model
+Time to train 125.45
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.06        |
+|    ep_rew_mean          | 0.15        |
+| time/                   |             |
+|    fps                  | 275         |
+|    iterations           | 36          |
+|    total_timesteps      | 2359296     |
+| train/                  |             |
+|    approx_kl            | 0.000909958 |
+|    clip_fraction        | 0.00257     |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.485      |
+|    explained_variance   | 0.552       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0392     |
+|    n_updates            | 360         |
+|    policy_gradient_loss | -0.000845   |
+|    value_loss           | 0.0511      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2415616, episode_reward=0.42 +/- 0.49
+Episode length: 1.39 +/- 2.42
+---------------evaluation finished---------------  took 13.88 seconds
+Collecting rollouts: 255/256 steps
+Epoch 37 completed in 106.17 seconds.
+Time to collect_rollouts 106.59
+Training model
+Time to train 117.03
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.23         |
+|    ep_rew_mean          | 0.11         |
+| time/                   |              |
+|    fps                  | 276          |
+|    iterations           | 37           |
+|    total_timesteps      | 2424832      |
+| train/                  |              |
+|    approx_kl            | 0.0015452583 |
+|    clip_fraction        | 0.00528      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.488       |
+|    explained_variance   | 0.549        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0309      |
+|    n_updates            | 370          |
+|    policy_gradient_loss | -0.000707    |
+|    value_loss           | 0.0496       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2480896, episode_reward=0.42 +/- 0.49
+Episode length: 1.40 +/- 2.51
+---------------evaluation finished---------------  took 16.36 seconds
+Collecting rollouts: 255/256 steps
+Epoch 38 completed in 109.04 seconds.
+Time to collect_rollouts 109.42
+Training model
+Time to train 115.08
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.03         |
+|    ep_rew_mean          | 0.24         |
+| time/                   |              |
+|    fps                  | 276          |
+|    iterations           | 38           |
+|    total_timesteps      | 2490368      |
+| train/                  |              |
+|    approx_kl            | 0.0013440219 |
+|    clip_fraction        | 0.00319      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.47        |
+|    explained_variance   | 0.58         |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0347      |
+|    n_updates            | 380          |
+|    policy_gradient_loss | -0.00124     |
+|    value_loss           | 0.0494       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2546176, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.36
+---------------evaluation finished---------------  took 21.94 seconds
+Collecting rollouts: 255/256 steps
+Epoch 39 completed in 116.86 seconds.
+Time to collect_rollouts 117.25
+Training model
+Time to train 110.95
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.22         |
+|    ep_rew_mean          | 0.13         |
+| time/                   |              |
+|    fps                  | 276          |
+|    iterations           | 39           |
+|    total_timesteps      | 2555904      |
+| train/                  |              |
+|    approx_kl            | 0.0010497817 |
+|    clip_fraction        | 0.00308      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.474       |
+|    explained_variance   | 0.577        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0358      |
+|    n_updates            | 390          |
+|    policy_gradient_loss | -0.00117     |
+|    value_loss           | 0.0484       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2611456, episode_reward=0.43 +/- 0.49
+Episode length: 1.38 +/- 2.40
+---------------evaluation finished---------------  took 25.44 seconds
+Collecting rollouts: 255/256 steps
+Epoch 40 completed in 114.84 seconds.
+Time to collect_rollouts 115.24
+Training model
+Time to train 112.0
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.15         |
+|    ep_rew_mean          | 0.23         |
+| time/                   |              |
+|    fps                  | 276          |
+|    iterations           | 40           |
+|    total_timesteps      | 2621440      |
+| train/                  |              |
+|    approx_kl            | 0.0013278644 |
+|    clip_fraction        | 0.00348      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.468       |
+|    explained_variance   | 0.587        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0264      |
+|    n_updates            | 400          |
+|    policy_gradient_loss | -0.0014      |
+|    value_loss           | 0.0482       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2676736, episode_reward=0.43 +/- 0.49
+Episode length: 1.38 +/- 2.39
+---------------evaluation finished---------------  took 17.53 seconds
+Collecting rollouts: 255/256 steps
+Epoch 41 completed in 112.27 seconds.
+Time to collect_rollouts 112.66
+Training model
+Time to train 110.04
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.08         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 277          |
+|    iterations           | 41           |
+|    total_timesteps      | 2686976      |
+| train/                  |              |
+|    approx_kl            | 0.0012813952 |
+|    clip_fraction        | 0.00479      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.489       |
+|    explained_variance   | 0.607        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0362      |
+|    n_updates            | 410          |
+|    policy_gradient_loss | -0.000564    |
+|    value_loss           | 0.0441       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2742016, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.39
+---------------evaluation finished---------------  took 19.85 seconds
+Collecting rollouts: 255/256 steps
+Epoch 42 completed in 112.57 seconds.
+Time to collect_rollouts 112.99
+Training model
+Time to train 109.91
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.31         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 277          |
+|    iterations           | 42           |
+|    total_timesteps      | 2752512      |
+| train/                  |              |
+|    approx_kl            | 0.0030843748 |
+|    clip_fraction        | 0.0044       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.472       |
+|    explained_variance   | 0.607        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0467      |
+|    n_updates            | 420          |
+|    policy_gradient_loss | -0.00144     |
+|    value_loss           | 0.0449       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2807296, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.35
+---------------evaluation finished---------------  took 21.94 seconds
+Collecting rollouts: 255/256 steps
+Epoch 43 completed in 113.68 seconds.
+Time to collect_rollouts 114.1
+Training model
+Time to train 88.9
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.32         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 278          |
+|    iterations           | 43           |
+|    total_timesteps      | 2818048      |
+| train/                  |              |
+|    approx_kl            | 0.0010367986 |
+|    clip_fraction        | 0.00288      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.48        |
+|    explained_variance   | 0.605        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0448      |
+|    n_updates            | 430          |
+|    policy_gradient_loss | -0.000845    |
+|    value_loss           | 0.0439       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2872576, episode_reward=0.43 +/- 0.49
+Episode length: 1.36 +/- 2.33
+---------------evaluation finished---------------  took 22.47 seconds
+Collecting rollouts: 255/256 steps
+Epoch 44 completed in 114.77 seconds.
+Time to collect_rollouts 115.17
+Training model
+Time to train 106.85
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.25         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 44           |
+|    total_timesteps      | 2883584      |
+| train/                  |              |
+|    approx_kl            | 0.0011605921 |
+|    clip_fraction        | 0.00333      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.489       |
+|    explained_variance   | 0.624        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0311      |
+|    n_updates            | 440          |
+|    policy_gradient_loss | -0.000888    |
+|    value_loss           | 0.0418       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=2937856, episode_reward=0.43 +/- 0.49
+Episode length: 1.36 +/- 2.36
+---------------evaluation finished---------------  took 22.26 seconds
+Collecting rollouts: 255/256 steps
+Epoch 45 completed in 116.30 seconds.
+Time to collect_rollouts 116.71
+Training model
+Time to train 109.23
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.19         |
+|    ep_rew_mean          | 0.18         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 45           |
+|    total_timesteps      | 2949120      |
+| train/                  |              |
+|    approx_kl            | 0.0011367054 |
+|    clip_fraction        | 0.00286      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.473       |
+|    explained_variance   | 0.628        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0414      |
+|    n_updates            | 450          |
+|    policy_gradient_loss | -0.00112     |
+|    value_loss           | 0.0417       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3003136, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.43
+---------------evaluation finished---------------  took 23.36 seconds
+Collecting rollouts: 255/256 steps
+Epoch 46 completed in 119.46 seconds.
+Time to collect_rollouts 119.87
+Training model
+Time to train 112.86
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.11         |
+|    ep_rew_mean          | 0.17         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 46           |
+|    total_timesteps      | 3014656      |
+| train/                  |              |
+|    approx_kl            | 0.0011707309 |
+|    clip_fraction        | 0.00239      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.476       |
+|    explained_variance   | 0.637        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0265      |
+|    n_updates            | 460          |
+|    policy_gradient_loss | -0.000954    |
+|    value_loss           | 0.0417       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3068416, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.45
+---------------evaluation finished---------------  took 27.02 seconds
+Collecting rollouts: 255/256 steps
+Epoch 47 completed in 117.30 seconds.
+Time to collect_rollouts 117.71
+Training model
+Time to train 120.61
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.05         |
+|    ep_rew_mean          | 0.23         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 47           |
+|    total_timesteps      | 3080192      |
+| train/                  |              |
+|    approx_kl            | 0.0008588667 |
+|    clip_fraction        | 0.00164      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.483       |
+|    explained_variance   | 0.639        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0329      |
+|    n_updates            | 470          |
+|    policy_gradient_loss | -0.000826    |
+|    value_loss           | 0.0405       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3133696, episode_reward=0.42 +/- 0.49
+Episode length: 1.35 +/- 2.28
+---------------evaluation finished---------------  took 22.33 seconds
+Collecting rollouts: 255/256 steps
+Epoch 48 completed in 115.94 seconds.
+Time to collect_rollouts 116.34
+Training model
+Time to train 117.94
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.06         |
+|    ep_rew_mean          | 0.21         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 48           |
+|    total_timesteps      | 3145728      |
+| train/                  |              |
+|    approx_kl            | 0.0011349648 |
+|    clip_fraction        | 0.00217      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.481       |
+|    explained_variance   | 0.655        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0354      |
+|    n_updates            | 480          |
+|    policy_gradient_loss | -0.000906    |
+|    value_loss           | 0.0395       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3198976, episode_reward=0.42 +/- 0.49
+Episode length: 1.37 +/- 2.34
+---------------evaluation finished---------------  took 18.71 seconds
+Collecting rollouts: 255/256 steps
+Epoch 49 completed in 115.39 seconds.
+Time to collect_rollouts 115.79
+Training model
+Time to train 120.42
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.02        |
+|    ep_rew_mean          | 0.24        |
+| time/                   |             |
+|    fps                  | 279         |
+|    iterations           | 49          |
+|    total_timesteps      | 3211264     |
+| train/                  |             |
+|    approx_kl            | 0.001013911 |
+|    clip_fraction        | 0.0023      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.477      |
+|    explained_variance   | 0.658       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0381     |
+|    n_updates            | 490         |
+|    policy_gradient_loss | -0.00113    |
+|    value_loss           | 0.0393      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3264256, episode_reward=0.43 +/- 0.49
+Episode length: 1.32 +/- 2.08
+---------------evaluation finished---------------  took 22.99 seconds
+Collecting rollouts: 255/256 steps
+Epoch 50 completed in 113.45 seconds.
+Time to collect_rollouts 113.85
+Training model
+Time to train 119.99
+-------------------------------------------
+| rollout/                |               |
+|    ep_len_mean          | 1.14          |
+|    ep_rew_mean          | 0.23          |
+| time/                   |               |
+|    fps                  | 279           |
+|    iterations           | 50            |
+|    total_timesteps      | 3276800       |
+| train/                  |               |
+|    approx_kl            | 0.00091100717 |
+|    clip_fraction        | 0.00207       |
+|    clip_range           | 0.2           |
+|    entropy_loss         | -0.476        |
+|    explained_variance   | 0.66          |
+|    learning_rate        | 0.0003        |
+|    loss                 | -0.0278       |
+|    n_updates            | 500           |
+|    policy_gradient_loss | -0.00119      |
+|    value_loss           | 0.039         |
+-------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3329536, episode_reward=0.43 +/- 0.49
+Episode length: 1.31 +/- 2.01
+---------------evaluation finished---------------  took 26.42 seconds
+Collecting rollouts: 255/256 steps
+Epoch 51 completed in 123.55 seconds.
+Time to collect_rollouts 123.97
+Training model
+Time to train 115.04
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.05         |
+|    ep_rew_mean          | 0.19         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 51           |
+|    total_timesteps      | 3342336      |
+| train/                  |              |
+|    approx_kl            | 0.0011906045 |
+|    clip_fraction        | 0.00217      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.473       |
+|    explained_variance   | 0.656        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0448      |
+|    n_updates            | 510          |
+|    policy_gradient_loss | -0.00144     |
+|    value_loss           | 0.0391       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3394816, episode_reward=0.43 +/- 0.49
+Episode length: 1.35 +/- 2.24
+---------------evaluation finished---------------  took 22.17 seconds
+Collecting rollouts: 255/256 steps
+Epoch 52 completed in 115.49 seconds.
+Time to collect_rollouts 115.91
+Training model
+Time to train 107.16
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.19        |
+|    ep_rew_mean          | 0.21        |
+| time/                   |             |
+|    fps                  | 279         |
+|    iterations           | 52          |
+|    total_timesteps      | 3407872     |
+| train/                  |             |
+|    approx_kl            | 0.001140533 |
+|    clip_fraction        | 0.00235     |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.477      |
+|    explained_variance   | 0.669       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0314     |
+|    n_updates            | 520         |
+|    policy_gradient_loss | -0.00154    |
+|    value_loss           | 0.0375      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3460096, episode_reward=0.43 +/- 0.49
+Episode length: 1.38 +/- 2.40
+---------------evaluation finished---------------  took 17.84 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 53 completed in 110.98 seconds.
+Time to collect_rollouts 114.25
+Training model
+Time to train 117.13
+-------------------------------------------
+| rollout/                |               |
+|    ep_len_mean          | 1.25          |
+|    ep_rew_mean          | 0.13          |
+| time/                   |               |
+|    fps                  | 279           |
+|    iterations           | 53            |
+|    total_timesteps      | 3473408       |
+| train/                  |               |
+|    approx_kl            | 0.00088117656 |
+|    clip_fraction        | 0.00163       |
+|    clip_range           | 0.2           |
+|    entropy_loss         | -0.473        |
+|    explained_variance   | 0.675         |
+|    learning_rate        | 0.0003        |
+|    loss                 | -0.013        |
+|    n_updates            | 530           |
+|    policy_gradient_loss | -0.000999     |
+|    value_loss           | 0.0374        |
+-------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3525376, episode_reward=0.43 +/- 0.49
+Episode length: 1.36 +/- 2.22
+---------------evaluation finished---------------  took 22.30 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 54 completed in 113.45 seconds.
+Time to collect_rollouts 113.86
+Training model
+Time to train 121.28
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.06         |
+|    ep_rew_mean          | 0.12         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 54           |
+|    total_timesteps      | 3538944      |
+| train/                  |              |
+|    approx_kl            | 0.0009644486 |
+|    clip_fraction        | 0.00236      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.477       |
+|    explained_variance   | 0.678        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0305      |
+|    n_updates            | 540          |
+|    policy_gradient_loss | -0.00126     |
+|    value_loss           | 0.0368       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3590656, episode_reward=0.42 +/- 0.49
+Episode length: 1.39 +/- 2.40
+---------------evaluation finished---------------  took 32.68 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 55 completed in 126.40 seconds.
+Time to collect_rollouts 126.82
+Training model
+Time to train 106.6
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.06         |
+|    ep_rew_mean          | 0.25         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 55           |
+|    total_timesteps      | 3604480      |
+| train/                  |              |
+|    approx_kl            | 0.0010274856 |
+|    clip_fraction        | 0.00218      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.473       |
+|    explained_variance   | 0.69         |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0267      |
+|    n_updates            | 550          |
+|    policy_gradient_loss | -0.00142     |
+|    value_loss           | 0.0352       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3655936, episode_reward=0.42 +/- 0.49
+Episode length: 1.39 +/- 2.39
+---------------evaluation finished---------------  took 27.84 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 56 completed in 121.50 seconds.
+Time to collect_rollouts 121.92
+Training model
+Time to train 108.43
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.26         |
+|    ep_rew_mean          | 0.12         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 56           |
+|    total_timesteps      | 3670016      |
+| train/                  |              |
+|    approx_kl            | 0.0009361274 |
+|    clip_fraction        | 0.00207      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.479       |
+|    explained_variance   | 0.694        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0396      |
+|    n_updates            | 560          |
+|    policy_gradient_loss | -0.00124     |
+|    value_loss           | 0.0356       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3721216, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.35
+New best mean reward!
+---------------evaluation finished---------------  took 18.77 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 57 completed in 112.03 seconds.
+Time to collect_rollouts 112.44
+Training model
+Time to train 117.81
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.09         |
+|    ep_rew_mean          | 0.21         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 57           |
+|    total_timesteps      | 3735552      |
+| train/                  |              |
+|    approx_kl            | 0.0010212796 |
+|    clip_fraction        | 0.00281      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.477       |
+|    explained_variance   | 0.691        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0332      |
+|    n_updates            | 570          |
+|    policy_gradient_loss | -0.00166     |
+|    value_loss           | 0.0353       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3786496, episode_reward=0.43 +/- 0.49
+Episode length: 1.40 +/- 2.50
+---------------evaluation finished---------------  took 19.98 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 58 completed in 112.77 seconds.
+Time to collect_rollouts 113.19
+Training model
+Time to train 126.49
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.23         |
+|    ep_rew_mean          | 0.18         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 58           |
+|    total_timesteps      | 3801088      |
+| train/                  |              |
+|    approx_kl            | 0.0019258761 |
+|    clip_fraction        | 0.00631      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.484       |
+|    explained_variance   | 0.703        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0472      |
+|    n_updates            | 580          |
+|    policy_gradient_loss | -0.000955    |
+|    value_loss           | 0.034        |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3851776, episode_reward=0.43 +/- 0.49
+Episode length: 1.39 +/- 2.47
+---------------evaluation finished---------------  took 24.35 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 59 completed in 118.16 seconds.
+Time to collect_rollouts 118.58
+Training model
+Time to train 123.94
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.24        |
+|    ep_rew_mean          | 0.17        |
+| time/                   |             |
+|    fps                  | 279         |
+|    iterations           | 59          |
+|    total_timesteps      | 3866624     |
+| train/                  |             |
+|    approx_kl            | 0.001469898 |
+|    clip_fraction        | 0.00255     |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.47       |
+|    explained_variance   | 0.691       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0293     |
+|    n_updates            | 590         |
+|    policy_gradient_loss | -0.00174    |
+|    value_loss           | 0.0341      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3917056, episode_reward=0.43 +/- 0.49
+Episode length: 1.38 +/- 2.41
+---------------evaluation finished---------------  took 20.72 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 60 completed in 117.36 seconds.
+Time to collect_rollouts 117.79
+Training model
+Time to train 113.76
+-------------------------------------------
+| rollout/                |               |
+|    ep_len_mean          | 1.28          |
+|    ep_rew_mean          | 0.16          |
+| time/                   |               |
+|    fps                  | 279           |
+|    iterations           | 60            |
+|    total_timesteps      | 3932160       |
+| train/                  |               |
+|    approx_kl            | 0.00096131203 |
+|    clip_fraction        | 0.0017        |
+|    clip_range           | 0.2           |
+|    entropy_loss         | -0.476        |
+|    explained_variance   | 0.707         |
+|    learning_rate        | 0.0003        |
+|    loss                 | -0.00946      |
+|    n_updates            | 600           |
+|    policy_gradient_loss | -0.00164      |
+|    value_loss           | 0.0339        |
+-------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=3982336, episode_reward=0.43 +/- 0.49
+Episode length: 1.39 +/- 2.45
+---------------evaluation finished---------------  took 22.64 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 61 completed in 112.80 seconds.
+Time to collect_rollouts 113.22
+Training model
+Time to train 110.6
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.07         |
+|    ep_rew_mean          | 0.24         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 61           |
+|    total_timesteps      | 3997696      |
+| train/                  |              |
+|    approx_kl            | 0.0018130216 |
+|    clip_fraction        | 0.00676      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.483       |
+|    explained_variance   | 0.719        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0285      |
+|    n_updates            | 610          |
+|    policy_gradient_loss | -0.000756    |
+|    value_loss           | 0.032        |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4047616, episode_reward=0.42 +/- 0.49
+Episode length: 1.40 +/- 2.44
+---------------evaluation finished---------------  took 18.62 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 62 completed in 114.78 seconds.
+Time to collect_rollouts 115.18
+Training model
+Time to train 118.23
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.38         |
+|    ep_rew_mean          | 0.16         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 62           |
+|    total_timesteps      | 4063232      |
+| train/                  |              |
+|    approx_kl            | 0.0012775583 |
+|    clip_fraction        | 0.00258      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.469       |
+|    explained_variance   | 0.708        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0336      |
+|    n_updates            | 620          |
+|    policy_gradient_loss | -0.00177     |
+|    value_loss           | 0.0339       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4112896, episode_reward=0.43 +/- 0.49
+Episode length: 1.42 +/- 2.57
+---------------evaluation finished---------------  took 23.66 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 63 completed in 117.55 seconds.
+Time to collect_rollouts 117.94
+Training model
+Time to train 117.88
+-------------------------------------------
+| rollout/                |               |
+|    ep_len_mean          | 1.05          |
+|    ep_rew_mean          | 0.17          |
+| time/                   |               |
+|    fps                  | 279           |
+|    iterations           | 63            |
+|    total_timesteps      | 4128768       |
+| train/                  |               |
+|    approx_kl            | 0.00090632687 |
+|    clip_fraction        | 0.00182       |
+|    clip_range           | 0.2           |
+|    entropy_loss         | -0.465        |
+|    explained_variance   | 0.717         |
+|    learning_rate        | 0.0003        |
+|    loss                 | -0.0422       |
+|    n_updates            | 630           |
+|    policy_gradient_loss | -0.00139      |
+|    value_loss           | 0.0329        |
+-------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4178176, episode_reward=0.43 +/- 0.49
+Episode length: 1.41 +/- 2.57
+---------------evaluation finished---------------  took 25.34 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 64 completed in 119.71 seconds.
+Time to collect_rollouts 120.1
+Training model
+Time to train 113.38
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.2          |
+|    ep_rew_mean          | 0.16         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 64           |
+|    total_timesteps      | 4194304      |
+| train/                  |              |
+|    approx_kl            | 0.0011368606 |
+|    clip_fraction        | 0.00273      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.473       |
+|    explained_variance   | 0.724        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0328      |
+|    n_updates            | 640          |
+|    policy_gradient_loss | -0.00175     |
+|    value_loss           | 0.0326       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4243456, episode_reward=0.43 +/- 0.49
+Episode length: 1.36 +/- 2.31
+---------------evaluation finished---------------  took 21.79 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 65 completed in 118.11 seconds.
+Time to collect_rollouts 118.51
+Training model
+Time to train 114.67
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.27         |
+|    ep_rew_mean          | 0.19         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 65           |
+|    total_timesteps      | 4259840      |
+| train/                  |              |
+|    approx_kl            | 0.0008163493 |
+|    clip_fraction        | 0.00171      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.476       |
+|    explained_variance   | 0.713        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0361      |
+|    n_updates            | 650          |
+|    policy_gradient_loss | -0.0016      |
+|    value_loss           | 0.0329       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4308736, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.33
+---------------evaluation finished---------------  took 22.05 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 66 completed in 115.25 seconds.
+Time to collect_rollouts 115.67
+Training model
+Time to train 112.67
+-------------------------------------------
+| rollout/                |               |
+|    ep_len_mean          | 1.11          |
+|    ep_rew_mean          | 0.16          |
+| time/                   |               |
+|    fps                  | 279           |
+|    iterations           | 66            |
+|    total_timesteps      | 4325376       |
+| train/                  |               |
+|    approx_kl            | 0.00090542727 |
+|    clip_fraction        | 0.00208       |
+|    clip_range           | 0.2           |
+|    entropy_loss         | -0.467        |
+|    explained_variance   | 0.722         |
+|    learning_rate        | 0.0003        |
+|    loss                 | -0.0375       |
+|    n_updates            | 660           |
+|    policy_gradient_loss | -0.00171      |
+|    value_loss           | 0.0324        |
+-------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4374016, episode_reward=0.43 +/- 0.49
+Episode length: 1.41 +/- 2.52
+---------------evaluation finished---------------  took 24.46 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 67 completed in 118.40 seconds.
+Time to collect_rollouts 118.79
+Training model
+Time to train 112.39
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.2          |
+|    ep_rew_mean          | 0.18         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 67           |
+|    total_timesteps      | 4390912      |
+| train/                  |              |
+|    approx_kl            | 0.0009318538 |
+|    clip_fraction        | 0.00159      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.48        |
+|    explained_variance   | 0.735        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0436      |
+|    n_updates            | 670          |
+|    policy_gradient_loss | -0.00113     |
+|    value_loss           | 0.0311       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4439296, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.32
+---------------evaluation finished---------------  took 22.37 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 68 completed in 113.47 seconds.
+Time to collect_rollouts 113.89
+Training model
+Time to train 116.2
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.22         |
+|    ep_rew_mean          | 0.13         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 68           |
+|    total_timesteps      | 4456448      |
+| train/                  |              |
+|    approx_kl            | 0.0011152982 |
+|    clip_fraction        | 0.00161      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.467       |
+|    explained_variance   | 0.743        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0348      |
+|    n_updates            | 680          |
+|    policy_gradient_loss | -0.0014      |
+|    value_loss           | 0.0309       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4504576, episode_reward=0.43 +/- 0.49
+Episode length: 1.36 +/- 2.26
+---------------evaluation finished---------------  took 17.96 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 69 completed in 111.79 seconds.
+Time to collect_rollouts 112.21
+Training model
+Time to train 119.14
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.26        |
+|    ep_rew_mean          | 0.16        |
+| time/                   |             |
+|    fps                  | 279         |
+|    iterations           | 69          |
+|    total_timesteps      | 4521984     |
+| train/                  |             |
+|    approx_kl            | 0.001159665 |
+|    clip_fraction        | 0.00296     |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.471      |
+|    explained_variance   | 0.741       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0395     |
+|    n_updates            | 690         |
+|    policy_gradient_loss | -0.00182    |
+|    value_loss           | 0.03        |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4569856, episode_reward=0.43 +/- 0.49
+Episode length: 1.41 +/- 2.49
+---------------evaluation finished---------------  took 23.24 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 70 completed in 116.72 seconds.
+Time to collect_rollouts 117.14
+Training model
+Time to train 116.26
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.12         |
+|    ep_rew_mean          | 0.19         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 70           |
+|    total_timesteps      | 4587520      |
+| train/                  |              |
+|    approx_kl            | 0.0008746547 |
+|    clip_fraction        | 0.00277      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.473       |
+|    explained_variance   | 0.722        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0357      |
+|    n_updates            | 700          |
+|    policy_gradient_loss | -0.00183     |
+|    value_loss           | 0.0326       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4635136, episode_reward=0.43 +/- 0.49
+Episode length: 1.39 +/- 2.38
+---------------evaluation finished---------------  took 27.81 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 71 completed in 121.99 seconds.
+Time to collect_rollouts 122.41
+Training model
+Time to train 109.35
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.06         |
+|    ep_rew_mean          | 0.16         |
+| time/                   |              |
+|    fps                  | 279          |
+|    iterations           | 71           |
+|    total_timesteps      | 4653056      |
+| train/                  |              |
+|    approx_kl            | 0.0010988398 |
+|    clip_fraction        | 0.003        |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.486       |
+|    explained_variance   | 0.734        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0331      |
+|    n_updates            | 710          |
+|    policy_gradient_loss | -0.00196     |
+|    value_loss           | 0.0309       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4700416, episode_reward=0.43 +/- 0.49
+Episode length: 1.41 +/- 2.52
+---------------evaluation finished---------------  took 26.81 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 72 completed in 120.33 seconds.
+Time to collect_rollouts 120.75
+Training model
+Time to train 110.91
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.38         |
+|    ep_rew_mean          | 0.19         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 72           |
+|    total_timesteps      | 4718592      |
+| train/                  |              |
+|    approx_kl            | 0.0011077097 |
+|    clip_fraction        | 0.00303      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.482       |
+|    explained_variance   | 0.749        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.029       |
+|    n_updates            | 720          |
+|    policy_gradient_loss | -0.00124     |
+|    value_loss           | 0.0293       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4765696, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.30
+---------------evaluation finished---------------  took 21.06 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 73 completed in 117.60 seconds.
+Time to collect_rollouts 118.01
+Training model
+Time to train 113.26
+-------------------------------------------
+| rollout/                |               |
+|    ep_len_mean          | 1.32          |
+|    ep_rew_mean          | 0.23          |
+| time/                   |               |
+|    fps                  | 280           |
+|    iterations           | 73            |
+|    total_timesteps      | 4784128       |
+| train/                  |               |
+|    approx_kl            | 0.00090558163 |
+|    clip_fraction        | 0.00223       |
+|    clip_range           | 0.2           |
+|    entropy_loss         | -0.471        |
+|    explained_variance   | 0.745         |
+|    learning_rate        | 0.0003        |
+|    loss                 | -0.038        |
+|    n_updates            | 730           |
+|    policy_gradient_loss | -0.00172      |
+|    value_loss           | 0.0299        |
+-------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4830976, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.39
+---------------evaluation finished---------------  took 20.49 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 74 completed in 114.45 seconds.
+Time to collect_rollouts 114.87
+Training model
+Time to train 114.32
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.05         |
+|    ep_rew_mean          | 0.26         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 74           |
+|    total_timesteps      | 4849664      |
+| train/                  |              |
+|    approx_kl            | 0.0011926633 |
+|    clip_fraction        | 0.00292      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.467       |
+|    explained_variance   | 0.74         |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0299      |
+|    n_updates            | 740          |
+|    policy_gradient_loss | -0.00192     |
+|    value_loss           | 0.0313       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4896256, episode_reward=0.43 +/- 0.49
+Episode length: 1.41 +/- 2.55
+---------------evaluation finished---------------  took 27.67 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 75 completed in 122.04 seconds.
+Time to collect_rollouts 122.45
+Training model
+Time to train 109.92
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.19         |
+|    ep_rew_mean          | 0.23         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 75           |
+|    total_timesteps      | 4915200      |
+| train/                  |              |
+|    approx_kl            | 0.0010765514 |
+|    clip_fraction        | 0.00259      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.475       |
+|    explained_variance   | 0.749        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0356      |
+|    n_updates            | 750          |
+|    policy_gradient_loss | -0.00164     |
+|    value_loss           | 0.0301       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=4961536, episode_reward=0.42 +/- 0.49
+Episode length: 1.41 +/- 2.54
+---------------evaluation finished---------------  took 27.85 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 76 completed in 124.75 seconds.
+Time to collect_rollouts 125.17
+Training model
+Time to train 104.27
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.29         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 76           |
+|    total_timesteps      | 4980736      |
+| train/                  |              |
+|    approx_kl            | 0.0011989567 |
+|    clip_fraction        | 0.00377      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.468       |
+|    explained_variance   | 0.744        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0207      |
+|    n_updates            | 760          |
+|    policy_gradient_loss | -0.00188     |
+|    value_loss           | 0.0304       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5026816, episode_reward=0.42 +/- 0.49
+Episode length: 1.41 +/- 2.54
+---------------evaluation finished---------------  took 26.80 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 77 completed in 120.46 seconds.
+Time to collect_rollouts 120.88
+Training model
+Time to train 108.61
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.05         |
+|    ep_rew_mean          | 0.14         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 77           |
+|    total_timesteps      | 5046272      |
+| train/                  |              |
+|    approx_kl            | 0.0010571829 |
+|    clip_fraction        | 0.00255      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.478       |
+|    explained_variance   | 0.755        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0364      |
+|    n_updates            | 770          |
+|    policy_gradient_loss | -0.00151     |
+|    value_loss           | 0.0299       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5092096, episode_reward=0.43 +/- 0.49
+Episode length: 1.41 +/- 2.54
+---------------evaluation finished---------------  took 18.88 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 78 completed in 112.66 seconds.
+Time to collect_rollouts 113.07
+Training model
+Time to train 113.32
+-------------------------------------------
+| rollout/                |               |
+|    ep_len_mean          | 1.14          |
+|    ep_rew_mean          | 0.24          |
+| time/                   |               |
+|    fps                  | 280           |
+|    iterations           | 78            |
+|    total_timesteps      | 5111808       |
+| train/                  |               |
+|    approx_kl            | 0.00093988766 |
+|    clip_fraction        | 0.00244       |
+|    clip_range           | 0.2           |
+|    entropy_loss         | -0.483        |
+|    explained_variance   | 0.753         |
+|    learning_rate        | 0.0003        |
+|    loss                 | -0.0336       |
+|    n_updates            | 780           |
+|    policy_gradient_loss | -0.00163      |
+|    value_loss           | 0.029         |
+-------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5157376, episode_reward=0.43 +/- 0.49
+Episode length: 1.38 +/- 2.29
+---------------evaluation finished---------------  took 21.05 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 79 completed in 115.47 seconds.
+Time to collect_rollouts 115.89
+Training model
+Time to train 113.35
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.29         |
+|    ep_rew_mean          | 0.14         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 79           |
+|    total_timesteps      | 5177344      |
+| train/                  |              |
+|    approx_kl            | 0.0008767443 |
+|    clip_fraction        | 0.00195      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.476       |
+|    explained_variance   | 0.761        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.039       |
+|    n_updates            | 790          |
+|    policy_gradient_loss | -0.00133     |
+|    value_loss           | 0.028        |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5222656, episode_reward=0.42 +/- 0.49
+Episode length: 1.39 +/- 2.35
+---------------evaluation finished---------------  took 25.04 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 80 completed in 119.53 seconds.
+Time to collect_rollouts 119.96
+Training model
+Time to train 108.4
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.02         |
+|    ep_rew_mean          | 0.13         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 80           |
+|    total_timesteps      | 5242880      |
+| train/                  |              |
+|    approx_kl            | 0.0011504253 |
+|    clip_fraction        | 0.00277      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.466       |
+|    explained_variance   | 0.752        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0302      |
+|    n_updates            | 800          |
+|    policy_gradient_loss | -0.00192     |
+|    value_loss           | 0.0301       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5287936, episode_reward=0.43 +/- 0.49
+Episode length: 1.40 +/- 2.50
+---------------evaluation finished---------------  took 28.30 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 81 completed in 121.74 seconds.
+Time to collect_rollouts 122.16
+Training model
+Time to train 106.0
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.22         |
+|    ep_rew_mean          | 0.14         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 81           |
+|    total_timesteps      | 5308416      |
+| train/                  |              |
+|    approx_kl            | 0.0013628645 |
+|    clip_fraction        | 0.00423      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.474       |
+|    explained_variance   | 0.762        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0601      |
+|    n_updates            | 810          |
+|    policy_gradient_loss | -0.00182     |
+|    value_loss           | 0.0277       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5353216, episode_reward=0.43 +/- 0.49
+Episode length: 1.39 +/- 2.40
+---------------evaluation finished---------------  took 18.15 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 82 completed in 111.48 seconds.
+Time to collect_rollouts 111.9
+Training model
+Time to train 112.63
+----------------------------------------
+| rollout/                |            |
+|    ep_len_mean          | 1.47       |
+|    ep_rew_mean          | 0.23       |
+| time/                   |            |
+|    fps                  | 280        |
+|    iterations           | 82         |
+|    total_timesteps      | 5373952    |
+| train/                  |            |
+|    approx_kl            | 0.00286804 |
+|    clip_fraction        | 0.00854    |
+|    clip_range           | 0.2        |
+|    entropy_loss         | -0.478     |
+|    explained_variance   | 0.764      |
+|    learning_rate        | 0.0003     |
+|    loss                 | -0.0381    |
+|    n_updates            | 820        |
+|    policy_gradient_loss | -0.00201   |
+|    value_loss           | 0.0281     |
+----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5418496, episode_reward=0.43 +/- 0.49
+Episode length: 1.36 +/- 2.23
+---------------evaluation finished---------------  took 18.24 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 83 completed in 112.16 seconds.
+Time to collect_rollouts 112.58
+Training model
+Time to train 117.57
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.21         |
+|    ep_rew_mean          | 0.17         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 83           |
+|    total_timesteps      | 5439488      |
+| train/                  |              |
+|    approx_kl            | 0.0044338154 |
+|    clip_fraction        | 0.0274       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.48        |
+|    explained_variance   | 0.756        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0511      |
+|    n_updates            | 830          |
+|    policy_gradient_loss | -0.00173     |
+|    value_loss           | 0.0285       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5483776, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.30
+---------------evaluation finished---------------  took 27.06 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 84 completed in 121.60 seconds.
+Time to collect_rollouts 122.01
+Training model
+Time to train 112.08
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.03         |
+|    ep_rew_mean          | 0.24         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 84           |
+|    total_timesteps      | 5505024      |
+| train/                  |              |
+|    approx_kl            | 0.0051852157 |
+|    clip_fraction        | 0.0395       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.484       |
+|    explained_variance   | 0.754        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0404      |
+|    n_updates            | 840          |
+|    policy_gradient_loss | -0.00121     |
+|    value_loss           | 0.0291       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5549056, episode_reward=0.43 +/- 0.49
+Episode length: 1.37 +/- 2.34
+---------------evaluation finished---------------  took 27.09 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 85 completed in 122.25 seconds.
+Time to collect_rollouts 122.67
+Training model
+Time to train 108.91
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.07         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 85           |
+|    total_timesteps      | 5570560      |
+| train/                  |              |
+|    approx_kl            | 0.0041618897 |
+|    clip_fraction        | 0.0319       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.469       |
+|    explained_variance   | 0.765        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0317      |
+|    n_updates            | 850          |
+|    policy_gradient_loss | -0.00234     |
+|    value_loss           | 0.0293       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5614336, episode_reward=0.43 +/- 0.49
+Episode length: 1.26 +/- 1.76
+---------------evaluation finished---------------  took 23.20 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 86 completed in 117.53 seconds.
+Time to collect_rollouts 117.94
+Training model
+Time to train 112.54
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.07        |
+|    ep_rew_mean          | 0.23        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 86          |
+|    total_timesteps      | 5636096     |
+| train/                  |             |
+|    approx_kl            | 0.002955941 |
+|    clip_fraction        | 0.025       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.449      |
+|    explained_variance   | 0.757       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0385     |
+|    n_updates            | 860         |
+|    policy_gradient_loss | -0.00212    |
+|    value_loss           | 0.0302      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5679616, episode_reward=0.42 +/- 0.49
+Episode length: 1.37 +/- 2.33
+---------------evaluation finished---------------  took 24.83 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 87 completed in 121.16 seconds.
+Time to collect_rollouts 121.59
+Training model
+Time to train 116.45
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.06         |
+|    ep_rew_mean          | 0.23         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 87           |
+|    total_timesteps      | 5701632      |
+| train/                  |              |
+|    approx_kl            | 0.0031275763 |
+|    clip_fraction        | 0.0268       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.462       |
+|    explained_variance   | 0.761        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0228      |
+|    n_updates            | 870          |
+|    policy_gradient_loss | -0.00193     |
+|    value_loss           | 0.0297       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5744896, episode_reward=0.42 +/- 0.49
+Episode length: 1.25 +/- 1.73
+---------------evaluation finished---------------  took 20.51 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 88 completed in 118.04 seconds.
+Time to collect_rollouts 118.45
+Training model
+Time to train 112.02
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.09        |
+|    ep_rew_mean          | 0.17        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 88          |
+|    total_timesteps      | 5767168     |
+| train/                  |             |
+|    approx_kl            | 0.003109131 |
+|    clip_fraction        | 0.027       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.454      |
+|    explained_variance   | 0.764       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0262     |
+|    n_updates            | 880         |
+|    policy_gradient_loss | -0.00227    |
+|    value_loss           | 0.0297      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5810176, episode_reward=0.42 +/- 0.49
+Episode length: 1.37 +/- 2.31
+---------------evaluation finished---------------  took 27.58 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 89 completed in 122.35 seconds.
+Time to collect_rollouts 122.77
+Training model
+Time to train 113.43
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.15        |
+|    ep_rew_mean          | 0.22        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 89          |
+|    total_timesteps      | 5832704     |
+| train/                  |             |
+|    approx_kl            | 0.003371103 |
+|    clip_fraction        | 0.0261      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.459      |
+|    explained_variance   | 0.768       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.04       |
+|    n_updates            | 890         |
+|    policy_gradient_loss | -0.00202    |
+|    value_loss           | 0.0288      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5875456, episode_reward=0.42 +/- 0.49
+Episode length: 1.38 +/- 2.36
+---------------evaluation finished---------------  took 24.91 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 90 completed in 120.32 seconds.
+Time to collect_rollouts 120.73
+Training model
+Time to train 117.56
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.22         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 90           |
+|    total_timesteps      | 5898240      |
+| train/                  |              |
+|    approx_kl            | 0.0037029595 |
+|    clip_fraction        | 0.029        |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.463       |
+|    explained_variance   | 0.774        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0427      |
+|    n_updates            | 900          |
+|    policy_gradient_loss | -0.00187     |
+|    value_loss           | 0.0284       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=5940736, episode_reward=0.43 +/- 0.49
+Episode length: 1.31 +/- 2.03
+---------------evaluation finished---------------  took 18.14 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 91 completed in 113.99 seconds.
+Time to collect_rollouts 114.4
+Training model
+Time to train 119.4
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.24        |
+|    ep_rew_mean          | 0.17        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 91          |
+|    total_timesteps      | 5963776     |
+| train/                  |             |
+|    approx_kl            | 0.003419775 |
+|    clip_fraction        | 0.0258      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.453      |
+|    explained_variance   | 0.769       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0247     |
+|    n_updates            | 910         |
+|    policy_gradient_loss | -0.00214    |
+|    value_loss           | 0.0294      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6006016, episode_reward=0.42 +/- 0.49
+Episode length: 1.31 +/- 2.03
+---------------evaluation finished---------------  took 21.89 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 92 completed in 120.50 seconds.
+Time to collect_rollouts 120.92
+Training model
+Time to train 113.7
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.07         |
+|    ep_rew_mean          | 0.18         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 92           |
+|    total_timesteps      | 6029312      |
+| train/                  |              |
+|    approx_kl            | 0.0037169773 |
+|    clip_fraction        | 0.0284       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.455       |
+|    explained_variance   | 0.771        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0278      |
+|    n_updates            | 920          |
+|    policy_gradient_loss | -0.00225     |
+|    value_loss           | 0.0283       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6071296, episode_reward=0.42 +/- 0.49
+Episode length: 1.31 +/- 2.04
+---------------evaluation finished---------------  took 25.76 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 93 completed in 122.06 seconds.
+Time to collect_rollouts 122.47
+Training model
+Time to train 112.46
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.07         |
+|    ep_rew_mean          | 0.17         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 93           |
+|    total_timesteps      | 6094848      |
+| train/                  |              |
+|    approx_kl            | 0.0034345188 |
+|    clip_fraction        | 0.0311       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.453       |
+|    explained_variance   | 0.772        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0401      |
+|    n_updates            | 930          |
+|    policy_gradient_loss | -0.00181     |
+|    value_loss           | 0.0288       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6136576, episode_reward=0.42 +/- 0.49
+Episode length: 1.32 +/- 2.05
+---------------evaluation finished---------------  took 24.53 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 94 completed in 119.93 seconds.
+Time to collect_rollouts 120.35
+Training model
+Time to train 112.33
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.03         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 94           |
+|    total_timesteps      | 6160384      |
+| train/                  |              |
+|    approx_kl            | 0.0035604178 |
+|    clip_fraction        | 0.0274       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.456       |
+|    explained_variance   | 0.777        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.041       |
+|    n_updates            | 940          |
+|    policy_gradient_loss | -0.0022      |
+|    value_loss           | 0.0281       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6201856, episode_reward=0.43 +/- 0.49
+Episode length: 1.32 +/- 2.06
+---------------evaluation finished---------------  took 22.90 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 95 completed in 119.34 seconds.
+Time to collect_rollouts 119.76
+Training model
+Time to train 113.67
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.04         |
+|    ep_rew_mean          | 0.16         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 95           |
+|    total_timesteps      | 6225920      |
+| train/                  |              |
+|    approx_kl            | 0.0042198673 |
+|    clip_fraction        | 0.0333       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.456       |
+|    explained_variance   | 0.776        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0424      |
+|    n_updates            | 950          |
+|    policy_gradient_loss | -0.00176     |
+|    value_loss           | 0.0285       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6267136, episode_reward=0.42 +/- 0.49
+Episode length: 1.27 +/- 1.80
+---------------evaluation finished---------------  took 19.24 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 96 completed in 115.04 seconds.
+Time to collect_rollouts 115.46
+Training model
+Time to train 114.44
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.23         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 96           |
+|    total_timesteps      | 6291456      |
+| train/                  |              |
+|    approx_kl            | 0.0046596606 |
+|    clip_fraction        | 0.0323       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.445       |
+|    explained_variance   | 0.774        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0287      |
+|    n_updates            | 960          |
+|    policy_gradient_loss | -0.00272     |
+|    value_loss           | 0.0286       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6332416, episode_reward=0.42 +/- 0.49
+Episode length: 1.28 +/- 1.86
+---------------evaluation finished---------------  took 20.71 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 97 completed in 119.92 seconds.
+Time to collect_rollouts 120.34
+Training model
+Time to train 107.69
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.26         |
+|    ep_rew_mean          | 0.16         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 97           |
+|    total_timesteps      | 6356992      |
+| train/                  |              |
+|    approx_kl            | 0.0038441373 |
+|    clip_fraction        | 0.0304       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.459       |
+|    explained_variance   | 0.779        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0385      |
+|    n_updates            | 970          |
+|    policy_gradient_loss | -0.00255     |
+|    value_loss           | 0.0273       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6397696, episode_reward=0.42 +/- 0.49
+Episode length: 1.26 +/- 1.72
+---------------evaluation finished---------------  took 20.94 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 98 completed in 119.52 seconds.
+Time to collect_rollouts 119.93
+Training model
+Time to train 107.72
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.04        |
+|    ep_rew_mean          | 0.18        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 98          |
+|    total_timesteps      | 6422528     |
+| train/                  |             |
+|    approx_kl            | 0.003031415 |
+|    clip_fraction        | 0.0296      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.461      |
+|    explained_variance   | 0.782       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0347     |
+|    n_updates            | 980         |
+|    policy_gradient_loss | -0.00187    |
+|    value_loss           | 0.028       |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6462976, episode_reward=0.42 +/- 0.49
+Episode length: 1.17 +/- 1.21
+---------------evaluation finished---------------  took 26.79 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 99 completed in 123.08 seconds.
+Time to collect_rollouts 123.48
+Training model
+Time to train 107.69
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.17         |
+|    ep_rew_mean          | 0.21         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 99           |
+|    total_timesteps      | 6488064      |
+| train/                  |              |
+|    approx_kl            | 0.0036741174 |
+|    clip_fraction        | 0.0333       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.44        |
+|    explained_variance   | 0.783        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0325      |
+|    n_updates            | 990          |
+|    policy_gradient_loss | -0.0022      |
+|    value_loss           | 0.0282       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6528256, episode_reward=0.42 +/- 0.49
+Episode length: 1.31 +/- 2.05
+---------------evaluation finished---------------  took 26.35 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 100 completed in 121.87 seconds.
+Time to collect_rollouts 122.29
+Training model
+Time to train 107.75
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.11         |
+|    ep_rew_mean          | 0.27         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 100          |
+|    total_timesteps      | 6553600      |
+| train/                  |              |
+|    approx_kl            | 0.0037419237 |
+|    clip_fraction        | 0.0323       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.454       |
+|    explained_variance   | 0.778        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0394      |
+|    n_updates            | 1000         |
+|    policy_gradient_loss | -0.00187     |
+|    value_loss           | 0.0284       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6593536, episode_reward=0.42 +/- 0.49
+Episode length: 1.19 +/- 1.36
+---------------evaluation finished---------------  took 22.65 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 101 completed in 119.34 seconds.
+Time to collect_rollouts 119.76
+Training model
+Time to train 113.47
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.22        |
+|    ep_rew_mean          | 0.22        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 101         |
+|    total_timesteps      | 6619136     |
+| train/                  |             |
+|    approx_kl            | 0.004048921 |
+|    clip_fraction        | 0.0385      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.451      |
+|    explained_variance   | 0.792       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0453     |
+|    n_updates            | 1010        |
+|    policy_gradient_loss | -0.00201    |
+|    value_loss           | 0.0266      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6658816, episode_reward=0.42 +/- 0.49
+Episode length: 1.21 +/- 1.47
+---------------evaluation finished---------------  took 16.04 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 102 completed in 112.70 seconds.
+Time to collect_rollouts 113.12
+Training model
+Time to train 117.42
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.06        |
+|    ep_rew_mean          | 0.2         |
+| time/                   |             |
+|    fps                  | 281         |
+|    iterations           | 102         |
+|    total_timesteps      | 6684672     |
+| train/                  |             |
+|    approx_kl            | 0.004851697 |
+|    clip_fraction        | 0.031       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.441      |
+|    explained_variance   | 0.778       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0262     |
+|    n_updates            | 1020        |
+|    policy_gradient_loss | -0.00196    |
+|    value_loss           | 0.028       |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6724096, episode_reward=0.42 +/- 0.49
+Episode length: 1.27 +/- 1.88
+---------------evaluation finished---------------  took 20.64 seconds
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 103 completed in 117.22 seconds.
+Time to collect_rollouts 117.63
+Training model
+Time to train 115.93
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.16         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 281          |
+|    iterations           | 103          |
+|    total_timesteps      | 6750208      |
+| train/                  |              |
+|    approx_kl            | 0.0037723957 |
+|    clip_fraction        | 0.0309       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.455       |
+|    explained_variance   | 0.786        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0355      |
+|    n_updates            | 1030         |
+|    policy_gradient_loss | -0.00217     |
+|    value_loss           | 0.0276       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6789376, episode_reward=0.42 +/- 0.49
+Episode length: 1.23 +/- 1.57
+---------------evaluation finished---------------  took 24.45 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 104 completed in 121.45 seconds.
+Time to collect_rollouts 121.85
+Training model
+Time to train 110.23
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.08        |
+|    ep_rew_mean          | 0.17        |
+| time/                   |             |
+|    fps                  | 281         |
+|    iterations           | 104         |
+|    total_timesteps      | 6815744     |
+| train/                  |             |
+|    approx_kl            | 0.004210931 |
+|    clip_fraction        | 0.0343      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.442      |
+|    explained_variance   | 0.795       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.038      |
+|    n_updates            | 1040        |
+|    policy_gradient_loss | -0.00197    |
+|    value_loss           | 0.0261      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6854656, episode_reward=0.42 +/- 0.49
+Episode length: 1.28 +/- 1.87
+---------------evaluation finished---------------  took 25.56 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 105 completed in 125.49 seconds.
+Time to collect_rollouts 125.89
+Training model
+Time to train 112.15
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.09        |
+|    ep_rew_mean          | 0.22        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 105         |
+|    total_timesteps      | 6881280     |
+| train/                  |             |
+|    approx_kl            | 0.003898777 |
+|    clip_fraction        | 0.0291      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.447      |
+|    explained_variance   | 0.785       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0434     |
+|    n_updates            | 1050        |
+|    policy_gradient_loss | -0.00179    |
+|    value_loss           | 0.0272      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6919936, episode_reward=0.42 +/- 0.49
+Episode length: 1.29 +/- 1.87
+---------------evaluation finished---------------  took 17.08 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 106 completed in 113.11 seconds.
+Time to collect_rollouts 113.53
+Training model
+Time to train 119.07
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.18         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 106          |
+|    total_timesteps      | 6946816      |
+| train/                  |              |
+|    approx_kl            | 0.0042181537 |
+|    clip_fraction        | 0.0349       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.446       |
+|    explained_variance   | 0.794        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.026       |
+|    n_updates            | 1060         |
+|    policy_gradient_loss | -0.00174     |
+|    value_loss           | 0.0273       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=6985216, episode_reward=0.42 +/- 0.49
+Episode length: 1.18 +/- 1.24
+---------------evaluation finished---------------  took 19.53 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 107 completed in 116.48 seconds.
+Time to collect_rollouts 116.88
+Training model
+Time to train 117.95
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.3         |
+|    ep_rew_mean          | 0.14        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 107         |
+|    total_timesteps      | 7012352     |
+| train/                  |             |
+|    approx_kl            | 0.005491929 |
+|    clip_fraction        | 0.0379      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.448      |
+|    explained_variance   | 0.793       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0299     |
+|    n_updates            | 1070        |
+|    policy_gradient_loss | -0.00249    |
+|    value_loss           | 0.0264      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7050496, episode_reward=0.42 +/- 0.49
+Episode length: 1.23 +/- 1.60
+---------------evaluation finished---------------  took 25.00 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 108 completed in 121.92 seconds.
+Time to collect_rollouts 122.32
+Training model
+Time to train 110.79
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.07         |
+|    ep_rew_mean          | 0.21         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 108          |
+|    total_timesteps      | 7077888      |
+| train/                  |              |
+|    approx_kl            | 0.0042953454 |
+|    clip_fraction        | 0.0327       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.453       |
+|    explained_variance   | 0.791        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0408      |
+|    n_updates            | 1080         |
+|    policy_gradient_loss | -0.0024      |
+|    value_loss           | 0.0275       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7115776, episode_reward=0.42 +/- 0.49
+Episode length: 1.29 +/- 1.99
+---------------evaluation finished---------------  took 26.13 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 109 completed in 125.98 seconds.
+Time to collect_rollouts 126.4
+Training model
+Time to train 111.94
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.16        |
+|    ep_rew_mean          | 0.22        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 109         |
+|    total_timesteps      | 7143424     |
+| train/                  |             |
+|    approx_kl            | 0.003915441 |
+|    clip_fraction        | 0.0303      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.449      |
+|    explained_variance   | 0.793       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0436     |
+|    n_updates            | 1090        |
+|    policy_gradient_loss | -0.00213    |
+|    value_loss           | 0.0264      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7181056, episode_reward=0.42 +/- 0.49
+Episode length: 1.24 +/- 1.68
+---------------evaluation finished---------------  took 18.06 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 110 completed in 118.43 seconds.
+Time to collect_rollouts 118.86
+Training model
+Time to train 118.84
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.02        |
+|    ep_rew_mean          | 0.25        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 110         |
+|    total_timesteps      | 7208960     |
+| train/                  |             |
+|    approx_kl            | 0.004144046 |
+|    clip_fraction        | 0.0366      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.443      |
+|    explained_variance   | 0.8         |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0298     |
+|    n_updates            | 1100        |
+|    policy_gradient_loss | -0.00215    |
+|    value_loss           | 0.0259      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7246336, episode_reward=0.42 +/- 0.49
+Episode length: 1.17 +/- 1.23
+---------------evaluation finished---------------  took 18.69 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 111 completed in 113.57 seconds.
+Time to collect_rollouts 113.99
+Training model
+Time to train 116.37
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.1          |
+|    ep_rew_mean          | 0.16         |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 111          |
+|    total_timesteps      | 7274496      |
+| train/                  |              |
+|    approx_kl            | 0.0042967713 |
+|    clip_fraction        | 0.0365       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.449       |
+|    explained_variance   | 0.794        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0516      |
+|    n_updates            | 1110         |
+|    policy_gradient_loss | -0.00203     |
+|    value_loss           | 0.0264       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7311616, episode_reward=0.42 +/- 0.49
+Episode length: 1.16 +/- 1.19
+---------------evaluation finished---------------  took 23.54 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 112 completed in 123.76 seconds.
+Time to collect_rollouts 124.18
+Training model
+Time to train 109.35
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.14        |
+|    ep_rew_mean          | 0.22        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 112         |
+|    total_timesteps      | 7340032     |
+| train/                  |             |
+|    approx_kl            | 0.004873345 |
+|    clip_fraction        | 0.036       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.442      |
+|    explained_variance   | 0.804       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0156     |
+|    n_updates            | 1120        |
+|    policy_gradient_loss | -0.00183    |
+|    value_loss           | 0.0259      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7376896, episode_reward=0.42 +/- 0.49
+Episode length: 1.10 +/- 0.67
+---------------evaluation finished---------------  took 22.39 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 113 completed in 121.05 seconds.
+Time to collect_rollouts 121.46
+Training model
+Time to train 106.37
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.05         |
+|    ep_rew_mean          | 0.2          |
+| time/                   |              |
+|    fps                  | 280          |
+|    iterations           | 113          |
+|    total_timesteps      | 7405568      |
+| train/                  |              |
+|    approx_kl            | 0.0042997845 |
+|    clip_fraction        | 0.0338       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.441       |
+|    explained_variance   | 0.798        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.017       |
+|    n_updates            | 1130         |
+|    policy_gradient_loss | -0.00176     |
+|    value_loss           | 0.0267       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7442176, episode_reward=0.42 +/- 0.49
+Episode length: 1.19 +/- 1.33
+---------------evaluation finished---------------  took 24.44 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 114 completed in 124.86 seconds.
+Time to collect_rollouts 125.27
+Training model
+Time to train 105.27
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.14        |
+|    ep_rew_mean          | 0.21        |
+| time/                   |             |
+|    fps                  | 280         |
+|    iterations           | 114         |
+|    total_timesteps      | 7471104     |
+| train/                  |             |
+|    approx_kl            | 0.004002057 |
+|    clip_fraction        | 0.0325      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.454      |
+|    explained_variance   | 0.803       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.041      |
+|    n_updates            | 1140        |
+|    policy_gradient_loss | -0.00204    |
+|    value_loss           | 0.0254      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7507456, episode_reward=0.42 +/- 0.49
+Episode length: 1.18 +/- 1.24
+---------------evaluation finished---------------  took 22.30 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 115 completed in 115.99 seconds.
+Time to collect_rollouts 116.4
+Training model
+Time to train 103.55
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.2          |
+|    ep_rew_mean          | 0.19         |
+| time/                   |              |
+|    fps                  | 281          |
+|    iterations           | 115          |
+|    total_timesteps      | 7536640      |
+| train/                  |              |
+|    approx_kl            | 0.0050911205 |
+|    clip_fraction        | 0.0318       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.442       |
+|    explained_variance   | 0.801        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0326      |
+|    n_updates            | 1150         |
+|    policy_gradient_loss | -0.00239     |
+|    value_loss           | 0.0262       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7572736, episode_reward=0.42 +/- 0.49
+Episode length: 1.26 +/- 1.69
+---------------evaluation finished---------------  took 16.32 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 116 completed in 106.72 seconds.
+Time to collect_rollouts 107.11
+Training model
+Time to train 107.18
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.09        |
+|    ep_rew_mean          | 0.19        |
+| time/                   |             |
+|    fps                  | 281         |
+|    iterations           | 116         |
+|    total_timesteps      | 7602176     |
+| train/                  |             |
+|    approx_kl            | 0.003737885 |
+|    clip_fraction        | 0.0292      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.452      |
+|    explained_variance   | 0.805       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0438     |
+|    n_updates            | 1160        |
+|    policy_gradient_loss | -0.00171    |
+|    value_loss           | 0.0253      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7638016, episode_reward=0.42 +/- 0.49
+Episode length: 1.22 +/- 1.51
+---------------evaluation finished---------------  took 20.60 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 117 completed in 118.82 seconds.
+Time to collect_rollouts 119.23
+Training model
+Time to train 102.58
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.03        |
+|    ep_rew_mean          | 0.13        |
+| time/                   |             |
+|    fps                  | 281         |
+|    iterations           | 117         |
+|    total_timesteps      | 7667712     |
+| train/                  |             |
+|    approx_kl            | 0.004206664 |
+|    clip_fraction        | 0.03        |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.45       |
+|    explained_variance   | 0.81        |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.021      |
+|    n_updates            | 1170        |
+|    policy_gradient_loss | -0.00191    |
+|    value_loss           | 0.0249      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7703296, episode_reward=0.42 +/- 0.49
+Episode length: 1.29 +/- 1.89
+---------------evaluation finished---------------  took 21.07 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 118 completed in 115.94 seconds.
+Time to collect_rollouts 116.34
+Training model
+Time to train 103.19
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.17         |
+|    ep_rew_mean          | 0.22         |
+| time/                   |              |
+|    fps                  | 281          |
+|    iterations           | 118          |
+|    total_timesteps      | 7733248      |
+| train/                  |              |
+|    approx_kl            | 0.0045092553 |
+|    clip_fraction        | 0.0312       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.445       |
+|    explained_variance   | 0.807        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0333      |
+|    n_updates            | 1180         |
+|    policy_gradient_loss | -0.00202     |
+|    value_loss           | 0.0253       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7768576, episode_reward=0.42 +/- 0.49
+Episode length: 1.28 +/- 1.84
+---------------evaluation finished---------------  took 17.82 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 119 completed in 118.04 seconds.
+Time to collect_rollouts 118.48
+Training model
+Time to train 109.67
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.09        |
+|    ep_rew_mean          | 0.16        |
+| time/                   |             |
+|    fps                  | 281         |
+|    iterations           | 119         |
+|    total_timesteps      | 7798784     |
+| train/                  |             |
+|    approx_kl            | 0.004211447 |
+|    clip_fraction        | 0.0355      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.459      |
+|    explained_variance   | 0.8         |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0352     |
+|    n_updates            | 1190        |
+|    policy_gradient_loss | -0.00171    |
+|    value_loss           | 0.0257      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7833856, episode_reward=0.42 +/- 0.49
+Episode length: 1.27 +/- 1.77
+---------------evaluation finished---------------  took 17.63 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 120 completed in 112.44 seconds.
+Time to collect_rollouts 112.89
+Training model
+Time to train 99.0
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.15         |
+|    ep_rew_mean          | 0.16         |
+| time/                   |              |
+|    fps                  | 281          |
+|    iterations           | 120          |
+|    total_timesteps      | 7864320      |
+| train/                  |              |
+|    approx_kl            | 0.0056370185 |
+|    clip_fraction        | 0.0303       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.45        |
+|    explained_variance   | 0.802        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0412      |
+|    n_updates            | 1200         |
+|    policy_gradient_loss | -0.00191     |
+|    value_loss           | 0.0256       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7899136, episode_reward=0.42 +/- 0.49
+Episode length: 1.25 +/- 1.71
+---------------evaluation finished---------------  took 19.69 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 121 completed in 118.04 seconds.
+Time to collect_rollouts 118.46
+Training model
+Time to train 108.2
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.12        |
+|    ep_rew_mean          | 0.2         |
+| time/                   |             |
+|    fps                  | 281         |
+|    iterations           | 121         |
+|    total_timesteps      | 7929856     |
+| train/                  |             |
+|    approx_kl            | 0.004591888 |
+|    clip_fraction        | 0.0277      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.448      |
+|    explained_variance   | 0.81        |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0431     |
+|    n_updates            | 1210        |
+|    policy_gradient_loss | -0.0015     |
+|    value_loss           | 0.0247      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=7964416, episode_reward=0.42 +/- 0.49
+Episode length: 1.23 +/- 1.64
+---------------evaluation finished---------------  took 16.58 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 122 completed in 114.03 seconds.
+Time to collect_rollouts 114.44
+Training model
+Time to train 109.19
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.06         |
+|    ep_rew_mean          | 0.17         |
+| time/                   |              |
+|    fps                  | 281          |
+|    iterations           | 122          |
+|    total_timesteps      | 7995392      |
+| train/                  |              |
+|    approx_kl            | 0.0074767442 |
+|    clip_fraction        | 0.0313       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.458       |
+|    explained_variance   | 0.81         |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0247      |
+|    n_updates            | 1220         |
+|    policy_gradient_loss | -0.00137     |
+|    value_loss           | 0.0245       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=8029696, episode_reward=0.42 +/- 0.49
+Episode length: 1.23 +/- 1.57
+---------------evaluation finished---------------  took 23.78 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 123 completed in 118.78 seconds.
+Time to collect_rollouts 119.19
+Training model
+Time to train 104.82
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.05        |
+|    ep_rew_mean          | 0.19        |
+| time/                   |             |
+|    fps                  | 282         |
+|    iterations           | 123         |
+|    total_timesteps      | 8060928     |
+| train/                  |             |
+|    approx_kl            | 0.006650855 |
+|    clip_fraction        | 0.038       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.452      |
+|    explained_variance   | 0.805       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0425     |
+|    n_updates            | 1230        |
+|    policy_gradient_loss | -0.00256    |
+|    value_loss           | 0.025       |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=8094976, episode_reward=0.42 +/- 0.49
+Episode length: 1.30 +/- 1.81
+---------------evaluation finished---------------  took 17.60 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 124 completed in 114.36 seconds.
+Time to collect_rollouts 114.77
+Training model
+Time to train 102.64
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.21        |
+|    ep_rew_mean          | 0.2         |
+| time/                   |             |
+|    fps                  | 282         |
+|    iterations           | 124         |
+|    total_timesteps      | 8126464     |
+| train/                  |             |
+|    approx_kl            | 0.004581835 |
+|    clip_fraction        | 0.0248      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.451      |
+|    explained_variance   | 0.814       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0377     |
+|    n_updates            | 1240        |
+|    policy_gradient_loss | -0.00155    |
+|    value_loss           | 0.0238      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=8160256, episode_reward=0.42 +/- 0.49
+Episode length: 1.22 +/- 1.55
+---------------evaluation finished---------------  took 16.78 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 125 completed in 113.36 seconds.
+Time to collect_rollouts 113.78
+Training model
+Time to train 104.36
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.04         |
+|    ep_rew_mean          | 0.15         |
+| time/                   |              |
+|    fps                  | 282          |
+|    iterations           | 125          |
+|    total_timesteps      | 8192000      |
+| train/                  |              |
+|    approx_kl            | 0.0053833043 |
+|    clip_fraction        | 0.0325       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.455       |
+|    explained_variance   | 0.816        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.0486      |
+|    n_updates            | 1250         |
+|    policy_gradient_loss | -0.00159     |
+|    value_loss           | 0.0241       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=8225536, episode_reward=0.42 +/- 0.49
+Episode length: 1.19 +/- 1.28
+---------------evaluation finished---------------  took 16.52 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 126 completed in 113.72 seconds.
+/media/users/castellanoontiv/miniconda3/envs/rl_gpu/lib/python3.12/site-packages/stable_baselines3/common/save_util.py:284: UserWarning: Path 'models/wn18rr/wn18rr-transe-mean-64-3-262-dynamic-True-True-1-True-False-False-True-True-True-True-False-20-True-0.1-0.2-python-1/wn18rr-transe-mean-64-3-262-dynamic-True-True-1-True-False-False-True-True-True-True-False-20-True-0.1-0.2-python-1-seed_0' does not exist. Will create it.
+  warnings.warn(f"Path '{path.parent}' does not exist. Will create it.")
+Time to collect_rollouts 114.04
+Training model
+Time to train 92.94
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 1.16        |
+|    ep_rew_mean          | 0.17        |
+| time/                   |             |
+|    fps                  | 282         |
+|    iterations           | 126         |
+|    total_timesteps      | 8257536     |
+| train/                  |             |
+|    approx_kl            | 0.004026698 |
+|    clip_fraction        | 0.0348      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -0.458      |
+|    explained_variance   | 0.811       |
+|    learning_rate        | 0.0003      |
+|    loss                 | -0.0441     |
+|    n_updates            | 1260        |
+|    policy_gradient_loss | -0.00168    |
+|    value_loss           | 0.0242      |
+-----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=8290816, episode_reward=0.42 +/- 0.49
+Episode length: 1.25 +/- 1.74
+---------------evaluation finished---------------  took 16.23 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 127 completed in 112.92 seconds.
+Time to collect_rollouts 113.23
+Training model
+Time to train 106.09
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 1.21         |
+|    ep_rew_mean          | 0.23         |
+| time/                   |              |
+|    fps                  | 282          |
+|    iterations           | 127          |
+|    total_timesteps      | 8323072      |
+| train/                  |              |
+|    approx_kl            | 0.0055367434 |
+|    clip_fraction        | 0.0275       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -0.449       |
+|    explained_variance   | 0.815        |
+|    learning_rate        | 0.0003       |
+|    loss                 | -0.028       |
+|    n_updates            | 1270         |
+|    policy_gradient_loss | -0.00199     |
+|    value_loss           | 0.0239       |
+------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=8356096, episode_reward=0.42 +/- 0.49
+Episode length: 1.23 +/- 1.58
+---------------evaluation finished---------------  took 16.00 seconds
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+Epoch 128 completed in 109.98 seconds.
+Time to collect_rollouts 110.39
+Training model
+Time to train 105.94
+----------------------------------------
+| rollout/                |            |
+|    ep_len_mean          | 1.03       |
+|    ep_rew_mean          | 0.24       |
+| time/                   |            |
+|    fps                  | 282        |
+|    iterations           | 128        |
+|    total_timesteps      | 8388608    |
+| train/                  |            |
+|    approx_kl            | 0.00480672 |
+|    clip_fraction        | 0.0298     |
+|    clip_range           | 0.2        |
+|    entropy_loss         | -0.449     |
+|    explained_variance   | 0.814      |
+|    learning_rate        | 0.0003     |
+|    loss                 | -0.0298    |
+|    n_updates            | 1280       |
+|    policy_gradient_loss | -0.00185   |
+|    value_loss           | 0.0243     |
+----------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=8421376, episode_reward=0.42 +/- 0.49
+Episode length: 1.15 +/- 1.08
+---------------evaluation finished---------------  took 15.15 seconds
+Collecting rollouts: 153/256 steps

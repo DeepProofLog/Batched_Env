@@ -1,0 +1,2 @@
+eval/mean_reward:0.7520543051089675;eval/std_reward:0.43182013301377636;eval/mean_ep_length:1.079671311182565;eval/std_ep_length:0.44135671245195535;eval/num_timesteps:65536
+rollout/ep_rew_mean:0.39;rollout/ep_len_mean:1.66

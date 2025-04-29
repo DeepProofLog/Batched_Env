@@ -1,0 +1,29 @@
+Running experiments for the following parameters: DATASET_NAME: ['wn18rr'] MODEL_NAME: ['PPO'] SEED: [[0]]
+Experiment number  0  out of  1  experiments.
+Seed 0  in  [0]
+
+Run vars: wn18rr-transe-mean-64-2-262-False-False-True-True-False-20-0.1-0.2-python-1 
+ {'atom_embedder': 'transe', 'atom_embedding_size': 64, 'batch_size': 256, 'clip_range': 0.2, 'constant_embedding_size': 64, 'corruption_mode': 'dynamic', 'corruption_scheme': ['head', 'tail'], 'data_path': './data/', 'dataset_name': 'wn18rr', 'device': 'cuda', 'dynamic_consult': True, 'end_proof_action': False, 'engine': 'python', 'ent_coef': 0.1, 'eval_freq': 65536, 'facts_file': 'train.txt', 'false_rules': False, 'janus_file': None, 'learn_embeddings': True, 'load_model': False, 'lr': 0.0003, 'max_depth': 20, 'memory_pruning': True, 'model_name': 'PPO', 'models_path': 'models/wn18rr', 'n_callback_envs': 1, 'n_envs': 256, 'n_epochs': 10, 'n_eval_envs': 256, 'n_eval_queries': None, 'n_steps': 256, 'n_test_queries': None, 'non_provable_corruptions': True, 'non_provable_queries': True, 'padding_atoms': 2, 'padding_states': 262, 'predicate_embedding_size': 64, 'restore_best_val_model': True, 'rule_depend_var': False, 'rules_file': 'rules.txt', 'run_signature': 'wn18rr-transe-mean-64-2-262-False-False-True-True-False-20-0.1-0.2-python-1', 'save_model': True, 'seed': [0], 'seed_run_i': 0, 'skip_unary_actions': True, 'state_embedder': 'mean', 'state_embedding_size': 64, 'test_depth': None, 'test_file': 'test.txt', 'test_negatives': 100, 'timesteps_train': 2000000, 'train_depth': None, 'train_file': 'train.txt', 'train_neg_pos_ratio': 1, 'truncate_atoms': True, 'truncate_states': True, 'valid_depth': None, 'valid_file': 'valid.txt', 'valid_negatives': None, 'variable_no': 500} 
+
+wn18rr-transe-mean-64-2-262-False-False-True-True-False-20-0.1-0.2-python-1
+Device: cuda
+CUDA available: True, Device count: 2
+Using cuda device
+Embedding dim in policy 64
+Embedding dim in value 64
+Collecting rollouts
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+---------------evaluation started---------------
+Eval num_timesteps=65536, episode_reward=0.42 +/- 0.49
+Episode length: 1.16 +/- 1.17
+New best mean reward!
+---------------evaluation finished---------------  took 12.62 seconds
+Epoch 1 completed in 95.90 seconds.
+Improved rollout/ep_rew_mean to 0.1500
+Time to collect_rollouts 96.33
+Training model

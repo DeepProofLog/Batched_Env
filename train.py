@@ -14,7 +14,7 @@ from embeddings import get_embedder
 from neg_sampling import get_sampler
 from model_eval import eval_corruptions
 
-from stable_baselines3 import PPO
+# from stable_baselines3 import PPO
 # from stable_baselines3 import DQN
 from model_SB3 import PPO_custom as PPO
 
@@ -215,14 +215,11 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         # print(f"models{[m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m]}")
         try:
             models = sorted(
-                [m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m\
-                                                                             and '457216' in m\
-                                                                                ]) 
-                                                                                # 393216, 587776, 783616,, 457216, 1044736
+                [m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m])
             if args.restore_best_val_model:
                 models = sorted([m for m in models if 'best_eval' in m])
             else:
-                models = sorted([m for m in models if 'last_epoch' in m])
+                models = sorted([m for m in models if 'last_train' in m])
             if models:
                 print(f"Loading model from {os.path.join(model_path, models[-1])}")
                 model = PPO.load(os.path.join(model_path, models[-1]), env=eval_env, device=device)

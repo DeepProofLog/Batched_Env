@@ -40,7 +40,7 @@ if __name__ == "__main__":
     # reward_type = 1
 
     # Dataset settings 
-    DATASET_NAME =  ["kinship_family"] #["countries_s2", "countries_s3", 'kinship_family','wn18rr']
+    DATASET_NAME =  ["countries_s3"] #["countries_s2", "countries_s3", 'family','wn18rr']
     TRAIN_DEPTH = [None]
     VALID_DEPTH = [None]
     TEST_DEPTH = [None]
@@ -48,7 +48,7 @@ if __name__ == "__main__":
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
     STATE_EMBEDDER = ['mean']
-    PADDING_ATOMS = [3]
+    PADDING_ATOMS = [2]
     PADDING_STATES = [-1] # -1 sets the max padding size to the max number of atoms in the dataset
     ATOM_EMBEDDING_SIZE = [64]
 
@@ -56,9 +56,9 @@ if __name__ == "__main__":
     NON_PROVABLE_QUERIES = [True]
     NON_PROVABLE_CORRUPTIONS = [True]
 
-    RESTORE_BEST_VAL_MODEL = [True] #[True,False]
-    load_model = False #['best_eval', 'last_epoch', False]
-    save_model = True #['best_eval', 'last_epoch', False]
+    RESTORE_BEST_VAL_MODEL = [True]
+    load_model = False
+    save_model = True
 
     # Loggin settings 
     use_logger = True
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [1000000]
+    TIMESTEPS_TRAIN = [2000000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
@@ -108,6 +108,7 @@ if __name__ == "__main__":
     parser.add_argument("--s", help="Seeds")
     parser.add_argument("--epochs", default = None, help="epochs")
 
+    parser.add_argument("--eval", default = None, action='store_const', const=True)
     parser.add_argument("--test_depth", default = None, help="test_depth")
     parser.add_argument("--test_negatives", default = None, help="test_negatives")
 
@@ -118,11 +119,13 @@ if __name__ == "__main__":
     if args.s: SEED = [ast.literal_eval(args.s)]
     if args.epochs: epochs = [int(args.epochs)]
 
+    if args.eval: load_model = True; TIMESTEPS_TRAIN = [0]
     if args.test_depth: TEST_DEPTH = [str(args.test_depth)]
     if args.test_negatives: test_negatives = int(args.test_negatives)
 
 
-    print('Running experiments for the following parameters:','DATASET_NAME:',DATASET_NAME,'MODEL_NAME:',MODEL_NAME,'SEED:',SEED)
+    print('Running experiments for the following parameters:','DATASET_NAME:'\
+          ,DATASET_NAME,'MODEL_NAME:',MODEL_NAME,'SEED:',SEED)
     
     # Create a dictionary of all parameters
     param_dict = {
@@ -169,12 +172,13 @@ if __name__ == "__main__":
         args = argparse.Namespace(**dict(zip(param_names, params)))
 
         if not save_model and args.restore_best_val_model:
-            print("\n\nERROR: restore_best_val_model is True and save_model is False. To restore the best val model you need to save it\n\n")
+            print("\n\nERROR: restore_best_val_model is True and save_model is False.\
+                   To restore the best val model you need to save it\n\n")
             continue
         
         if args.padding_states == -1:
             if args.dataset_name == "countries_s3": args.padding_states = 20
-            elif args.dataset_name == "kinship_family": args.padding_states = 130
+            elif args.dataset_name == "family": args.padding_states = 130
             elif args.dataset_name == "wn18rr": args.padding_states = 262 #1770
 
         constant_embedding_size = predicate_embedding_size = args.atom_embedding_size
@@ -197,10 +201,12 @@ if __name__ == "__main__":
             args.janus_file = janus_file
 
         if not args.non_provable_corruptions and args.corruption_mode == "dynamic":
-            print("\n\nSKIPPING EXPERIMENT: non_provable_corruptions with dynamic corruptions is not supported\n\n")
+            print("\n\nSKIPPING EXPERIMENT: non_provable_corruptions with \
+                  dynamic corruptions is not supported\n\n")
             continue
         if args.non_provable_queries and args.corruption_mode == "static":
-            print("\n\nSKIPPING EXPERIMENT: non_provable_queries with static corruptions is not yet supported\n\n")
+            print("\n\nSKIPPING EXPERIMENT: non_provable_queries with static \
+                  corruptions is not yet supported\n\n")
             continue
 
         if args.dataset_name == "mnist_addition":
@@ -231,14 +237,16 @@ if __name__ == "__main__":
         
 
         args.atom_embedding_size = args.atom_embedding_size #if args.atom_embedder != "concat" else it is (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
-        args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" else args.atom_embedding_size*args.padding_atoms
+        args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" \
+            else args.atom_embedding_size*args.padding_atoms
         args.constant_embedding_size = constant_embedding_size
         args.predicate_embedding_size = predicate_embedding_size
         args.variable_no = variable_no
         args.device = device
         
         if args.restore_best_val_model and load_model=='last_epoch':
-            print("\n\nWARNING: restore_best_val_model is True and load_model is 'last_epoch', instead of best_eval. You may not get the same eval results\n\n")
+            print("\n\nWARNING: restore_best_val_model is True and load_model is 'last_epoch', \
+                  instead of best_eval. You may not get the same eval results\n\n")
         args.load_model = load_model
         args.save_model = save_model
         args.models_path = models_path+args.dataset_name
@@ -255,11 +263,11 @@ if __name__ == "__main__":
         args.batch_size = batch_size
         args.lr = lr
 
-        run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,args.padding_atoms,args.padding_states,
-                    args.corruption_mode, args.non_provable_queries, args.non_provable_corruptions,args.train_neg_pos_ratio, 
-                    args.dynamic_consult, args.false_rules, args.end_proof_action, args.skip_unary_actions, args.truncate_atoms,
-                    args.truncate_states, args.memory_pruning, args.rule_depend_var, args.max_depth,args.restore_best_val_model,args.ent_coef,args.clip_range,
-                    args.engine, args.train_neg_pos_ratio)
+        run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,
+                    args.padding_atoms,args.padding_states,args.false_rules,args.end_proof_action, 
+                    args.skip_unary_actions,args.memory_pruning,args.rule_depend_var,args.max_depth,
+                    args.ent_coef,args.clip_range,args.engine,args.train_neg_pos_ratio
+                    )
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         # # Redirect stdout to the Tee class
@@ -280,7 +288,9 @@ if __name__ == "__main__":
             date = str(datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
             args.seed_run_i = seed
             print("Seed", seed, " in ", args.seed)
-            print("\nRun vars:", args.run_signature, '\n',args,'\n')
+            # order the args to have a consistent order
+            dict_ordered = {k: args.__dict__[k] for k in sorted(args.__dict__.keys())}
+            print("\nRun vars:", args.run_signature, '\n',dict_ordered,'\n')
             if use_logger:
                 log_filename_tmp = os.path.join(logger_path,'_tmp_log-{}-{}-seed_{}.csv'.format(args.run_signature,date,seed))
                 # if logger.exists_run(args.run_signature,seed):
