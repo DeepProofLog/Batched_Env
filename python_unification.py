@@ -162,10 +162,9 @@ def get_next_unification_python(state: List[Term],
     remaining_state = state[1:]
     intermediate_states = []
 
-    print('\n\n**********') if verbose else None
+    print('\n\n++++++++++++++') if verbose else None
     print(f'Processing Query: {query}') if verbose else None
-    print(f'Remaining State: {remaining_state}') if verbose else None
-    print('**********\n') if verbose else None
+    print(f'Remaining State: {remaining_state}\n') if verbose else None
 
     # --- Step 1: Unification ONLY with Rules ---
     rule_results = unify_with_rules(query, rules, verbose=verbose)
@@ -215,4 +214,6 @@ def get_next_unification_python(state: List[Term],
 
 
     print('\nNext states:', next_states) if verbose else None
+    print('++++++++++++++\n') if verbose else None
+
     return next_states

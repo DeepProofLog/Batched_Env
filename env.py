@@ -103,7 +103,6 @@ class LogicEnv_gym(gym.Env):
         self.labels = labels
         self.n_episodes = len(queries)
         self.eval_idx = 0
-        self.mask_eval = []
         self.consult_janus_eval = False
 
         if self.mode == 'train':
@@ -218,34 +217,15 @@ class LogicEnv_gym(gym.Env):
     def reset(self, seed: Optional[int]= None, options=None):
         print('\n\nReset-----------------------------') if self.verbose or self.prover_verbose else None
         '''Reset the environment and get a new query based on the environment configuration'''
-
         if self.mode == 'eval':
-            ''' two options (this is option i):
-                i) pass a set of queries and labels that will be evaluted automatically (n_episodes).
-                ii) use reset_from_query to evaluate a single query'''
-            assert self.eval_idx <= self.n_episodes, f"Eval index: {self.eval_idx}, n_episodes: {self.n_episodes}. "\
-                    f"Adjust the number of episodes to evaluate in the callback."
-
-            if self.eval_idx == self.n_episodes:
-                self.eval_idx = 0
-                state = self.queries[self.eval_idx]
-                label = self.labels[self.eval_idx]
-            else:
-                state = self.queries[self.eval_idx]
-                label = self.labels[self.eval_idx]
-                self.eval_idx += 1
-
-        elif self.mode == 'eval_parallel':
             '''When the number of episodes is reached, we set the eval mask to false
             so that the other envs can finish the eval. After n_episodes, reset with a False state'''
-            if self.eval_idx < self.n_episodes:  # if we evaluated all the episodes, set a default state and mask to false
+            if self.eval_idx < self.n_episodes:
                 state = self.queries[self.eval_idx]
                 label = self.labels[self.eval_idx]
-                self.mask_eval.append(True)
             else:
                 state = Term(predicate='False', args=())
                 label = 0
-                self.mask_eval.append(False)
             self.eval_idx += 1
 
         else:  # Training mode
@@ -286,25 +266,15 @@ class LogicEnv_gym(gym.Env):
             elif self.dynamic_consult and state in self.facts:
                 janus.query_once(f"retract({str(state)}).")
 
+        # brother(144, 2032) start with this as test
+        # state = Term(predicate='brother', args=('144', '2032'))
+        # label = 1
+        # if state == Term(predicate='brother', args=('144', '2032')): print(kszhbdv)
         self.current_query = state
         self.current_label = label
+
         return self._reset([state], label)
 
-
-    def reset_from_query(self, query, label, consult_janus=False):
-        ''' Reset the environment from a given query and label. Consult janus is needed when 
-        doing eval of train queries that are in the facts'''
-        print('\n\nReset from query-----------------------------')
-        if self.engine == 'prolog' and consult_janus and label == 1:
-            if not self.dynamic_consult:
-                self.new_consult_janus(query)
-            elif self.dynamic_consult and query in self.facts: 
-                    janus.query_once(f"retract({str(query)}).") 
-
-        self.current_query = query
-        self.current_label = label
-
-        return self._reset([query], label)
 
     def _reset(self, query, label):
         '''Reset the environment to the initial state'''    
@@ -316,11 +286,14 @@ class LogicEnv_gym(gym.Env):
         self.memory.add(",".join(str(q) for q in query if q.predicate not in ['False', 'True', 'End']))
         
         sub_index = self.index_manager.get_atom_sub_index(query)
+        # print('input state0',query)
         derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
+        # print('ouput next states0:', derived_states)
 
         if self.truncate_states and truncated_flag: # end in false
             size_sub_index = torch.Size([self.padding_states]) + sub_index.size()
             derived_states, derived_sub_indices = self.end_in_false(size_sub_index)
+        # print('ouput next states0:', derived_states)
 
         self.tensordict = TensorDict(
             {
@@ -342,9 +315,11 @@ class LogicEnv_gym(gym.Env):
             }
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'],label=label)
-            print('Number of next states:', len(derived_states)) if self.verbose else None
-            print('N atoms in next states:', [len(state) for state in derived_states]) if self.verbose else None
+            # print('Number of next states:', len(derived_states)) if self.verbose else None
+            # print('N atoms in next states:', [len(state) for state in derived_states],) if self.verbose else None
+            # print(f"Next states: {derived_states}\n") if self.verbose else None
             # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].cpu().numpy()),'\n')
+        # print('ouput next states1 (reset) :', self.tensordict['derived_states']) if self.verbose else None
         return obs, {}
 
     def step(self, action):
@@ -354,20 +329,18 @@ class LogicEnv_gym(gym.Env):
         '''
         derived_states = self.tensordict["derived_states"]
         derived_sub_indices = self.tensordict["derived_sub_indices"]
-
+        # print('ouput next states2 (step):', derived_states) if self.verbose else None
         # Check if the action is valid using the mask
         if action >= self.padding_states or action > len(derived_states):
             raise ValueError(
                 # f"Invalid action ({action}). Valid actions are indicated by the mask. {valid_actions_mask}. Derived states: {derived_states}. Derived atom indices: {derived_atom_indices}.")
                 f"Invalid action ({action}). Derived states: {derived_states}.")
-
+        # print('action:', action) if self.verbose else None
         next_state = derived_states[action]
         next_sub_index = derived_sub_indices[action]
 
         done_next, reward_next = self.get_done_reward(next_state,self.tensordict['label'].item())
-
         derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
-
         self.current_depth += 1
         
         exceeded_max_depth = (self.current_depth >= self.max_depth)
@@ -415,13 +388,15 @@ class LogicEnv_gym(gym.Env):
 
         reward = self.tensordict['reward'].cpu().numpy()
         done = self.tensordict['done'].cpu().numpy()
+        # print('exceeded max depth:',exceeded_max_depth, 'truncate_flag:',truncate_flag) if self.verbose else None
         truncated = bool(exceeded_max_depth) or bool(truncate_flag)
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=action,truncated=truncated)
-            print('Number of next states:', len(derived_states)) if self.verbose else None
-            print('N atoms in next states:', [len(state) for state in derived_states]) if self.verbose else None
+            # print('Number of next states:', len(derived_states)) if self.verbose else None
+            # print('N atoms in next states:', [len(state) for state in derived_states]) if self.verbose else None
+            # print(f"Next states: {derived_states}\n") if self.verbose else None
             # print('idx derived sub:', list(self.tensordict['derived_sub_indices'][:3,0,:].cpu().numpy()),'\n')
-        
+        # print('ouput next states3 (step):', derived_states) if self.verbose else None
         return obs, reward, done, truncated, info
 
 
@@ -443,6 +418,8 @@ class LogicEnv_gym(gym.Env):
 
 
         assert self.engine == 'python', "Only python unification is supported"
+        
+        # print('input state:', state)
         derived_states = get_next_unification_python(state,
                                                         facts_set=self.facts,
                                                         facts_indexed=self.index_manager.fact_index,
@@ -450,6 +427,7 @@ class LogicEnv_gym(gym.Env):
                                                         excluded_fact = self.current_query if self.current_label == 1 else {},
                                                         verbose=self.prover_verbose
                                                         )
+        # print('ouput next states:', derived_states)
 
         if self.skip_unary_actions:
             current_state = state.copy() if isinstance(state, list) else [state]
@@ -473,6 +451,7 @@ class LogicEnv_gym(gym.Env):
                     excluded_fact = self.current_query if self.current_label == 1 else None,
                     verbose=self.prover_verbose
                 )
+                # print('Derived states:', derived_states)
 
                 # MEMORY
                 if self.memory_pruning:
@@ -483,7 +462,7 @@ class LogicEnv_gym(gym.Env):
                         print(f"Next states: {derived_states}") if self.verbose else None
                         print(f"Memory: {self.memory}") if self.verbose else None
                         print(f"Visited mask: {visited_mask}") if self.verbose else None
-                    derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
+                        derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
                     
                 # TRUNCATE MAX ATOMS
                 if self.truncate_atoms:
@@ -498,6 +477,7 @@ class LogicEnv_gym(gym.Env):
                 if counter > 20:
                     print('Max iterations reached') if self.verbose else None
                     derived_states = [[Term(predicate='False', args=())]]
+                    # print(f'Setting truncated flag to True. Counter: {counter}') if self.verbose else None
                     truncated_flag = True
                     break
 
@@ -515,18 +495,18 @@ class LogicEnv_gym(gym.Env):
                 print(f"Memory: {self.memory}") if self.verbose else None
                 print(f"Visited mask: {visited_mask}") if self.verbose else None
                 print('-----------\n') if self.verbose else None
-
-            derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
-            # print(f"Filtered possible states: {derived_states}") if self.verbose and any(visited_mask) else None
+            # if len([state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]) > 0 and self.verbose:
+            #     print(f"Removing visited states: {[state for state, is_visited in zip(derived_states, visited_mask) if is_visited]}")
+                derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
 
         # TRUNCATE MAX ATOMS
         if self.truncate_atoms:
-            # print(f"len of states is {[len(state) for state in derived_states]}")
             mask_exceeded_max_atoms = [len(state) >= self.padding_atoms for state in derived_states]
             if any(mask_exceeded_max_atoms):
                 print(f"State {state}. Next states: {derived_states}. Exceeded max atoms in next states: {[len(state) for state in derived_states]}") #if self.verbose else None
+            # if len([state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if is_exceeded]) > 0 and self.verbose:
+            #     print(f" Exceeded max atoms: {[len(state) for state in derived_states]}") if self.verbose else None
             derived_states = [state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if not is_exceeded]
-            # print(f" Exceeded max atoms: {[len(state) for state in derived_states]},{derived_states}") if self.verbose and any(mask_exceeded_max_atoms) else None
 
         # TRUNCATE MAX STATES
         if self.truncate_states:
@@ -544,8 +524,9 @@ class LogicEnv_gym(gym.Env):
             # print(f"Possible next states with end action: {derived_states}") if self.verbose else None       
 
         if len(derived_states) == 0:
+            # print(f'Setting truncated flag to True. Len of derived states is 0. {derived_states}') if self.verbose else None
             derived_states = [[Term(predicate='False', args=())]]
-            truncated_flag = True
+            # truncated_flag = True
 
         # CREATE INDICES 
         derived_sub_indices = []

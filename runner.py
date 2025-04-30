@@ -57,7 +57,7 @@ if __name__ == "__main__":
     NON_PROVABLE_CORRUPTIONS = [True]
 
     RESTORE_BEST_VAL_MODEL = [True]
-    load_model = False
+    load_model = True
     save_model = True
 
     # Loggin settings 
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [2000000]
+    TIMESTEPS_TRAIN = [250]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
@@ -87,13 +87,12 @@ if __name__ == "__main__":
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 256
-    n_steps = 256 # 2048
-    n_eval_envs = 256
-    n_callback_envs = 1
+    n_envs = 16
+    n_steps = 16 # 2048
+    n_eval_envs = 16
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
-    batch_size = 256 # Ensure batch size is a factor of n_steps (for the buffer).
+    batch_size = 16 # Ensure batch size is a factor of n_steps (for the buffer).
     lr = 3e-4
 
     # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 
@@ -257,7 +256,6 @@ if __name__ == "__main__":
         args.eval_freq = eval_freq
         args.n_envs = n_envs
         args.n_eval_envs = n_eval_envs
-        args.n_callback_envs = n_callback_envs
         args.n_steps = n_steps
         args.n_epochs = n_epochs
         args.batch_size = batch_size

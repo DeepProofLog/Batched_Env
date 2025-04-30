@@ -1,7 +1,5 @@
 import re
-from typing import Dict, Union, List, Any, Tuple, Iterable, Optional
-import torch
-from tensordict import TensorDict, TensorDictBase
+from typing import Dict, Union, List, Any, Tuple, Iterable
 # from torchrl.envs.utils import step_mdp
 import datetime
 import os
@@ -10,12 +8,14 @@ import ast
 from collections import defaultdict
 import dataclasses
 from dataclasses import dataclass, field
-import random
+import torch
+from tensordict import TensorDict, TensorDictBase
 
 
 def print_eval_info(set: str,metrics: Dict[str, float]):
     print(f'\n\n{set} set metrics:')
     print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()], sep='\n')
+
 
 @dataclass(frozen=True, order=True)
 class Term:
@@ -37,6 +37,7 @@ class Term:
         args_str = ', '.join(map(str, self.args))
         return f"{self.predicate}({args_str})"
 
+
 @dataclasses.dataclass
 class Rule:
     head: Term
@@ -50,76 +51,6 @@ class Rule:
         """Representation is the same as the string form for readability."""
         body_str = ", ".join(str(term) for term in self.body)
         return f"{self.head} :- {body_str}"
-
-# class Term:
-#     def __init__(self, predicate: str, args: List[str]): # Keep input hint as List for flexibility
-#         self.predicate = predicate
-#         self.args = tuple(args) # Store as tuple
-#         self._hash = hash((self.predicate, self.args)) # Hash the tuple directly
-
-#     def __str__(self):
-#         return f"{self.predicate}({', '.join(self.args)})"
-
-#     def __repr__(self):
-#         return f"{self.predicate}({', '.join(self.args)})"
-    
-#     def __eq__(self, other):
-#         if not isinstance(other, Term):
-#             return False
-#         # fast path: hash mismatch
-#         if self._hash != other._hash:
-#             return False
-#         return self.predicate == other.predicate and self.args == other.args
-
-#     def __hash__(self):
-#         return self._hash
-    
-#     # sort first by pred and then by args. Alternative: sort by number of vars in args
-#     def __lt__(self, other):
-#         if isinstance(other, Term):
-#             if self.predicate == other.predicate:
-#                 return self.args < other.args
-#             return self.predicate < other.predicate
-#         return NotImplemented
-#     def __le__(self, other):
-#         if isinstance(other, Term):
-#             if self.predicate == other.predicate:
-#                 return self.args <= other.args
-#             return self.predicate <= other.predicate
-#         return NotImplemented
-#     def __gt__(self, other):
-#         if isinstance(other, Term):
-#             if self.predicate == other.predicate:
-#                 return self.args > other.args
-#             return self.predicate > other.predicate
-#         return NotImplemented
-#     def __ge__(self, other):
-#         if isinstance(other, Term):
-#             if self.predicate == other.predicate:
-#                 return self.args >= other.args
-#             return self.predicate >= other.predicate
-#         return NotImplemented
-#     def __ne__(self, other):
-#         if not isinstance(other, Term):
-#             return NotImplemented # Or True, depending on desired behavior for non-Term types
-#         # Fast path: hash mismatch
-#         if self._hash != other._hash:
-#             return True
-#         # Slower path: Full comparison
-#         return self.predicate != other.predicate or self.args != other.args
-
-# class Rule:
-#     def __init__(self, head: Term, body: List[Term]):
-#         self.head = head
-#         self.body = body
-
-#     def __str__(self):
-#         body_str = ", ".join(str(term) for term in self.body)
-#         return f"{self.head} :- {body_str}"    
-
-#     def __repr__(self):
-#         body_str = ", ".join(str(term) for term in self.body)
-#         return f"{self.head} :- {body_str}"    
 
 
 def get_max_arity(file_path:str)-> int:
@@ -207,11 +138,6 @@ def simple_rollout(env, policy = None, batch_size: int=2, steps: int=10, tensord
     data = TensorDict.stack(data, dim=1)
     return data
 
-# def apply_substitution(term: Term, substitution: Dict[str, str]) -> Term:
-#     """Apply the substitution to a given term."""
-#     substituted_args = [substitution.get(arg, arg) for arg in term.args]
-#     return Term(term.predicate, substituted_args)
-
 def apply_substitution(term: Term, substitution: Dict[str, str]) -> Term:
     """Apply the substitution to a given term."""
     substituted_args_list = [substitution.get(arg, arg) for arg in term.args]
@@ -227,6 +153,20 @@ def extract_var(state: str)-> list:
     vars = re.findall(pattern, state)
     return list(dict.fromkeys(vars))
 
+def get_constants_predicates(rules: List[Rule]) -> Tuple[set, set]:
+    """Get the set of constants and predicates from a list of rules"""
+    predicates = set()
+    constants = set()
+    for rule in rules:
+        if not rule.head.predicate == "proof_first":
+            # get from head the predicate and the constants if they are not variables
+            predicates.add(str(rule.head.predicate))
+            constants.update([str(arg) for arg in rule.head.args if not is_variable(arg)])
+            # get from body the predicates and the constants if they are not variables
+            for atom in rule.body:
+                predicates.add(str(atom.predicate))
+                constants.update([str(arg) for arg in atom.args if not is_variable(arg)])
+    return constants, predicates
 
 def print_state_transition(state, derived_states, reward, done, action=None, truncated=None,label=None):
     if action is not None:
@@ -582,18 +522,3 @@ class FileLogger:
                 f.write(column_names)
             f.write('\n')
             f.write(combined_results)
-
-def get_constants_predicates(rules: List[Rule]) -> Tuple[set, set]:
-    """Get the set of constants and predicates from a list of rules"""
-    predicates = set()
-    constants = set()
-    for rule in rules:
-        if not rule.head.predicate == "proof_first":
-            # get from head the predicate and the constants if they are not variables
-            predicates.add(str(rule.head.predicate))
-            constants.update([str(arg) for arg in rule.head.args if not is_variable(arg)])
-            # get from body the predicates and the constants if they are not variables
-            for atom in rule.body:
-                predicates.add(str(atom.predicate))
-                constants.update([str(arg) for arg in atom.args if not is_variable(arg)])
-    return constants, predicates

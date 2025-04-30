@@ -47,9 +47,10 @@ class PPO_custom(PPO):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
-
+        print('Entering rollout loop')
         while n_steps < n_rollout_steps:
-            
+            # print('N steps:', n_steps)
+            # if n_steps == 2: print(shdbodi)
             if n_steps % (n_rollout_steps // 5) == 0:
                 print(f"Collecting rollouts: {n_steps}/{n_rollout_steps} steps")
 
@@ -70,7 +71,9 @@ class PPO_custom(PPO):
             actions = actions.cpu().numpy()
 
             # Execute actions in environment
+            # print('env 0 derived states before', env.envs[0].env.tensordict['derived_states'])
             new_obs, rewards, dones, infos = env.step(actions)
+            # print('env 0 derived states after', env.envs[0].env.tensordict['derived_states'])
             # print('n_steps', n_steps)
             # print('observations', [(k,v.shape) for k,v in self._last_obs.items()])
             # print('values', values)

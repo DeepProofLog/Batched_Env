@@ -293,7 +293,7 @@ class IndexManager():
             for j in range(max_j):
                 arg = atom.args[j]
 
-                if is_variable(arg):
+                if arg[0].isupper() or arg[0] == '_':
                     # --- Variable Argument ---
                     var_idx = variable_map.get(arg)
                     if var_idx is not None:
@@ -322,13 +322,8 @@ class IndexManager():
                             raise KeyError(f"Unknown variable '{arg}' encountered in rule-dependent mode. Should have been substituted or pre-indexed. Atom: {atom}, State: {processed_state}")
                 else:
                     # --- Constant Argument ---
-                    try:
-                        current_sub_row[j + 1] = constant_map[arg]
-                    except KeyError:
-                         raise KeyError(f"Constant '{arg}' not found in constant index map. Atom: {atom}, State: {processed_state}") from None
-
-            # Arguments beyond max_arity or if num_args < max_arity remain 0 (padding)
-
+                    current_sub_row[j + 1] = constant_map[arg]
+                    
         return sub_index
 
     # Keep build_fact_index if it's used elsewhere

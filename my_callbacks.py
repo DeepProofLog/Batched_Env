@@ -1,17 +1,15 @@
 import numpy as np
 import os
-import warnings
 import json
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Optional, Union
 import time
+import sys
+
 import gymnasium as gym
-from stable_baselines3.common import type_aliases
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped, sync_envs_normalization
-from stable_baselines3.common.callbacks import BaseCallback, EventCallback
+from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
-
 from stable_baselines3.common.callbacks import EvalCallback
-
 
 class CustomEvalCallback(EvalCallback):
     """
@@ -231,43 +229,6 @@ class CustomEvalCallback(EvalCallback):
 
 
 
-class LogToFileCallback(BaseCallback):
-    def __init__(self, log_file: str, verbose: int = 0):
-        super(LogToFileCallback, self).__init__(verbose)
-        self.log_file = log_file
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-        self.headers_written = False
-
-    def _log_headers(self, headers):
-        """Logs headers to the file."""
-        with open(self.log_file, "w") as f:
-            f.write(";".join(headers) + "\n")
-        self.headers_written = True
-        return headers
-
-    def _log_values(self, logs):
-        """Logs values based on the current headers."""
-        with open(self.log_file, "a") as f:
-            f.write(";".join(f'{k}:{v}' for k, v in logs.items())+ "\n")
-
-    def _on_rollout_end(self) -> None:
-        """Logs after each rollout, when meaningful metrics are available."""
-        logs = {key: value for key, value in self.logger.name_to_value.items()}
-        if logs:
-                self._log_values(logs)
-
-    def _on_step(self) -> bool:
-        """Required by BaseCallback. Returns True to allow training to continue."""
-        return True
-    
-
-from stable_baselines3.common.callbacks import BaseCallback
-import sys
-import json
-import os
-import copy
-
-
 class SB3ModelCheckpoint(BaseCallback):
     """Callback to save SB3 model weights when a monitored metric improves."""
 
@@ -409,8 +370,7 @@ class SB3ModelCheckpoint(BaseCallback):
         else:
             print(f'No best model found for {self.name}.')
 
-import time
-from stable_baselines3.common.callbacks import BaseCallback
+
 
 class EpochTimingCallback(BaseCallback):
     """
@@ -454,4 +414,37 @@ class EpochTimingCallback(BaseCallback):
         Dummy implementation of the required abstract method `_on_step`.
         This callback does not act on steps.
         """
+        return True
+    
+
+
+
+
+class LogToFileCallback(BaseCallback):
+    def __init__(self, log_file: str, verbose: int = 0):
+        super(LogToFileCallback, self).__init__(verbose)
+        self.log_file = log_file
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        self.headers_written = False
+
+    def _log_headers(self, headers):
+        """Logs headers to the file."""
+        with open(self.log_file, "w") as f:
+            f.write(";".join(headers) + "\n")
+        self.headers_written = True
+        return headers
+
+    def _log_values(self, logs):
+        """Logs values based on the current headers."""
+        with open(self.log_file, "a") as f:
+            f.write(";".join(f'{k}:{v}' for k, v in logs.items())+ "\n")
+
+    def _on_rollout_end(self) -> None:
+        """Logs after each rollout, when meaningful metrics are available."""
+        logs = {key: value for key, value in self.logger.name_to_value.items()}
+        if logs:
+                self._log_values(logs)
+
+    def _on_step(self) -> bool:
+        """Required by BaseCallback. Returns True to allow training to continue."""
         return True

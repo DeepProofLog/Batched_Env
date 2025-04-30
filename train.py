@@ -2,6 +2,8 @@ import numpy as np
 import os
 import random
 import torch
+import torch.profiler
+from torch.profiler import ProfilerActivity, schedule
 from typing import Dict
 
 from env import LogicEnv_gym
@@ -157,6 +159,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     #                             for i in range(args.n_envs)])
 
     # Create multiple environments for evaluation
+
     eval_env_seeds = np.random.randint(0, 2**10, size=args.n_eval_envs)
     eval_env = DummyVecEnv([make_env(
                                     mode='eval', 
@@ -173,21 +176,21 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     #                                 ) 
     #                                 for i in range(args.n_eval_envs)])
 
-    callback_env_seeds = np.random.randint(0, 2**10, size=args.n_callback_envs)
+    callback_env_seeds = np.random.randint(0, 2**10, size=1)
     callback_env = DummyVecEnv([make_env(
                                     mode='eval', 
                                     seed=int(callback_env_seeds[i]), 
                                     queries=data_handler.valid_queries,
                                     labels=[1]*len(data_handler.valid_queries),
                                     ) 
-                                    for i in range(args.n_callback_envs)])
+                                    for i in range(1)])
     # callback_env = SubprocVecEnv([make_env(
     #                                 mode='eval',
     #                                 seed=int(callback_env_seeds[i]),
     #                                 queries=data_handler.valid_queries,
     #                                 labels=[1]*len(data_handler.valid_queries),
     #                                 )
-    #                                 for i in range(args.n_callback_envs)])
+    #                                 for i in range(1)])
 
     # INIT MODEL
     if args.model_name == "PPO":
@@ -292,7 +295,35 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
             profiler = cProfile.Profile()
             profiler.enable()
 
-        model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
+        enable_torch_profiler = True
+        if enable_torch_profiler:
+            prof_activities = [ProfilerActivity.CPU]
+            if torch.cuda.is_available() and device.type == 'cuda':
+                prof_activities.append(ProfilerActivity.CUDA)
+
+            trace_dir = "./profiler_traces"
+            os.makedirs(trace_dir, exist_ok=True)
+            trace_file = f"{trace_dir}/full_training_trace.json"
+
+            with torch.profiler.profile(
+                activities=prof_activities,
+                # schedule=schedule(wait=1, warmup=2, active=3, repeat=2),
+                record_shapes=True,      # Optional: Enable for more detail if memory permits
+                # profile_memory=True,     # Optional: Enable for memory usage if memory permits
+                # with_stack=True          # Optional: Enable for stack traces if memory permits
+            ) as prof:
+                model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
+
+            # Export AFTER the 'with' block is finished
+            print(f"\n--- Exporting Full PyTorch Profiling Trace to {trace_file} ---")
+            try:
+                prof.export_chrome_trace(trace_file)
+                print(f"--- Trace exported to {trace_file}. Use chrome://tracing or Perfetto UI to view. ---")
+            except Exception as e:
+                print(f"--- Failed to export trace: {e} ---")
+
+        else:
+            model.learn(total_timesteps=args.timesteps_train, callback=callbacks)
 
         if profile:
             profiler.disable()
@@ -326,23 +357,47 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     print('\nTest set eval...')
 
-    profiling = False
-    if profiling:
+    eval_profiling = False
+    if eval_profiling:
         import cProfile
         import pstats
         import io
         profiler = cProfile.Profile()
         profiler.enable()
-    metrics_test = eval_corruptions(model,
-                                    eval_env,
-                                    data_handler.test_queries,
-                                    corruption_mode=args.corruption_mode,
-                                    corruptions=data_handler.test_corruptions if args.corruption_mode == 'static' else None,
-                                    n_corruptions=args.test_negatives,
-                                    consult_janus=False,
-                                    verbose=1,
-                                    )
-    if profiling:
+    
+    torch_eval_profiling = False
+    if torch_eval_profiling:
+        print("\n--- Starting PyTorch Profiler for Evaluation ---")
+        prof_activities = [ProfilerActivity.CPU]
+        if torch.cuda.is_available() and device.type == 'cuda':
+             prof_activities.append(ProfilerActivity.CUDA)
+        
+        with torch.profiler.profile(
+            activities=prof_activities, record_shapes=True, profile_memory=True, with_stack=True
+        ) as prof_eval:
+            metrics_test = eval_corruptions(model,
+                                            eval_env,
+                                            data_handler.test_queries,
+                                            corruption_mode=args.corruption_mode,
+                                            corruptions=data_handler.test_corruptions if args.corruption_mode == 'static' else None,
+                                            n_corruptions=args.test_negatives,
+                                            consult_janus=False,
+                                            verbose=1,
+                                            )
+        print("\n--- PyTorch Profiling Results (Evaluation) ---")
+        sort_key = "cuda_time_total" if ProfilerActivity.CUDA in prof_activities else "cpu_time_total"
+        print(prof_eval.key_averages().table(sort_by=sort_key, row_limit=30))
+        # Optional: Export eval trace
+        # prof_eval.export_chrome_trace(f"eval_trace_{args.run_signature}_seed{args.seed_run_i}.json")
+    else:
+        metrics_test = eval_corruptions(model,
+                                        eval_env,
+                                        data_handler.test_queries,
+                                        n_corruptions=args.test_negatives,
+                                        consult_janus=False,
+                                        verbose=1,
+                                        )
+    if eval_profiling:
         profiler.disable()
         # --- Analyze the results ---
         print("\n\n--- Profiling results ---")
