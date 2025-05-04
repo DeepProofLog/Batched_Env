@@ -991,4 +991,20 @@ neighborOf(jordan,palestine).
 neighborOf(chad,sudan).
 locatedInCR(X,Z) :- neighborOf(X,Y), locatedInCR(Y,Z).
 locatedInCR(_, _) :- false.
-proof_first([H | T], T) :- call(H).
+one_step_list([Goal|RestGoals], NewGoalsList) :-
+    findall(NewGoals,
+        (
+            clause(Goal, Body),
+            body_to_list(Body, BodyList),
+            append(BodyList, RestGoals, NewGoals)
+        ),
+        AllNewGoals),
+    (
+        AllNewGoals = [] ->
+            NewGoalsList = [false]
+        ;
+            NewGoalsList = AllNewGoals
+    ).
+body_to_list(true, []) :- !.
+body_to_list((A,B), [A|Rest]) :- !, body_to_list(B, Rest).
+body_to_list(A, [A]).

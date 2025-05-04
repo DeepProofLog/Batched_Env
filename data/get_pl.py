@@ -13,21 +13,32 @@ def get_prolog_rules(file_dir):
             rule = line.strip().split(":")[-1]
             body = rule.split("->")[0].strip()
             head = rule.split("->")[1].strip()
+
             # raise an error if the vars in the body or head are not letters (only the arguments)
-            vars_head = re.findall(r'\b([a-zA-Z]\w*)\b', head)
-            vars_body = re.findall(r'\b([a-zA-Z]\w*)\b', body)
-            if not all(var.isalpha() for var in vars_head):
-                raise ValueError(f"Error in rule: {rule}. Variables in head must be letters.")
-            if not all(var.isalpha() for var in vars_body):
-                raise ValueError(f"Error in rule: {rule}. Variables in body must be letters.")
+            vars_head = re.findall(r'\b([a-zA-Z_]\w*)\b', head)
+            vars_body = re.findall(r'\b([a-zA-Z_]\w*)\b', body)
+
+            # if len(vars_head) > 1 and not all(var.isalpha() for var in vars_head[1:]):
+            #      # Find the specific non-alpha argument for a clearer error
+            #      invalid_arg = next((var for var in vars_head[1:] if not var.isalpha()), None)
+            #      raise ValueError(f"Error in rule: {rule}. Argument '{invalid_arg}' in head '{head}' must be letters only.")
+
+            # if len(vars_body) > 1 and not all(var.isalpha() for var in vars_body[1:]):
+            #      invalid_arg = next((var for var in vars_body[1:] if not var.isalpha()), None)
+            #      raise ValueError(f"Error in rule: {rule}. Argument '{invalid_arg}' in body '{body}' must be letters only.")
+
+            # if not all(var.isalpha() for var in vars_head):
+            #     raise ValueError(f"Error in rule: {rule}. Variables in head must be letters.")
+            # if not all(var.isalpha() for var in vars_body):
+            #     raise ValueError(f"Error in rule: {rule}. Variables in body must be letters.")
             # if the vars are not in capital, make them capital
+
             body = re.sub(r'\b([a-z])\b', lambda x: x.group(1).upper(), body)
             head = re.sub(r'\b([a-z])\b', lambda x: x.group(1).upper(), head)
             # remove '_' from the predicates starting with '_' in the body and head
             head = re.sub(r'\b_([a-zA-Z]\w*)\b', lambda x: x.group(1), head)
             body = re.sub(r'\b_([a-zA-Z]\w*)\b', lambda x: x.group(1), body)
-            print(f"head: {head}")
-            print(f"body: {body}")
+            print(f"Rule: {head} :- {body}.")
             # for each predicate in the body, add it to the predicates list
             prolog_rule = f"{head} :- {body}.\n"
             rules.append(prolog_rule)
@@ -100,9 +111,33 @@ def get_pl(rule_file, fact_files, output_file, use_tabling=False):
 
 if __name__ == "__main__":
     
+    '''
+    Obtains a Prolog file from the rules and facts files.    
+    '''
 
     dataset = 'wn18rr'
     current_dir = os.getcwd()
     root_dir = f"{current_dir}/data/{dataset}/"
 
     get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+ dataset+".pl",)
+
+
+    # add this at the end of the file
+
+    '''one_step_list([Goal|RestGoals], NewGoalsList) :-
+        findall(NewGoals,
+            (
+                clause(Goal, Body),
+                body_to_list(Body, BodyList),
+                append(BodyList, RestGoals, NewGoals)
+            ),
+            AllNewGoals),
+        (
+            AllNewGoals = [] ->
+                NewGoalsList = [false]
+            ;
+                NewGoalsList = AllNewGoals
+        ).
+    body_to_list(true, []) :- !.
+    body_to_list((A,B), [A|Rest]) :- !, body_to_list(B, Rest).
+    body_to_list(A, [A]).'''

@@ -1,12 +1,22 @@
-""" Get test files for all possible depths, including the covered queries by the rules"""
+'''
+Get test files for all possible depths, including the covered queries by the rules
 
+1. Use the depth_prolog_prover to get the depth of the queries (set a max depth). 
+It generates data/dataset/{set}_depths.txt files for train/val/test.
+
+2. For every depth, write the queries to a file named test_d<depth>.txt
+ (inclues also the non proved queries and the queries covered by the rules).
+'''
 import os
 import re
 from get_pl import get_prolog_rules
-dataset = 'kinship_family'
+
+dataset = 'wn18rr'
+
 root = os.getcwd()
 root_dir = f"{root}/data/{dataset}/"
 rules_file = f"{root_dir}rules.txt"
+
 for set in ["train", "valid", "test"]:
     set_file = f"{root_dir}{set}_depths.txt"
 
@@ -48,15 +58,19 @@ for set in ["train", "valid", "test"]:
     predicates, rules = get_prolog_rules(rules_file)
 
     # get the queries whose predicates are in the rules
+    count = 0
     covered_queries = []
     for query, d in queries.items():
+        count += 1
         predicates_query = re.findall(r"\w+", query)
-        print(f"Query: {query}, Depth: {d}, Predicates: {predicates_query}")
+        predicates_query = query.split("(")[0]
+        print(f"Query: {query}, Depth: {d}, Predicates: {predicates_query}") if count < 30 else None
         # check if any of the predicates are in the rules
         for predicate in predicates_query:
             if predicate in predicates:
                 covered_queries.append(query)
                 break
+            
     # write the covered queries to a file named test_covered.txt
     covered_file = f"{root_dir}/depths/{set}_covered.txt"
     if not os.path.exists(os.path.dirname(covered_file)):

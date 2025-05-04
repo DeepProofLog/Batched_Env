@@ -1,10 +1,10 @@
 import numpy as np
 import os
 import random
+
 import torch
 import torch.profiler
 from torch.profiler import ProfilerActivity, schedule
-from typing import Dict
 
 from env import LogicEnv_gym
 from index_manager import IndexManager
@@ -19,7 +19,6 @@ from model_eval import eval_corruptions
 # from stable_baselines3 import PPO
 # from stable_baselines3 import DQN
 from model_SB3 import PPO_custom as PPO
-
 from stable_baselines3.common.callbacks import (
     StopTrainingOnMaxEpisodes,
     StopTrainingOnRewardThreshold,
@@ -49,6 +48,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     print(f"Device: {device}")
     print(f"CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
 
+    # ---- DATASET, INDEX MANAGER ----
 
     data_handler = DataHandler(
         dataset_name=args.dataset_name,
@@ -62,26 +62,19 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         n_eval_queries = args.n_eval_queries,
         n_test_queries = args.n_test_queries,
         corruption_mode=args.corruption_mode,
-        non_provable_corruptions=args.non_provable_corruptions,
-        non_provable_queries=args.non_provable_queries,
         train_depth=args.train_depth,
         valid_depth=args.valid_depth,
         test_depth=args.test_depth,)
-    # data_handler= data_handler.info
 
     args.n_eval_queries = len(data_handler.valid_queries) if args.n_eval_queries == None else min(args.n_eval_queries, len(data_handler.valid_queries))
     args.n_test_queries = len(data_handler.test_queries) if args.n_test_queries == None else min(args.n_test_queries, len(data_handler.valid_queries))
 
     index_manager = IndexManager(data_handler.constants,
                                 data_handler.predicates,
-                                data_handler.variables if args.rule_depend_var else set(),
-                                data_handler.constant_no,
-                                data_handler.predicate_no,
-                                args.variable_no,
+                                args.max_total_vars,
                                 constants_images=data_handler.constants_images if args.dataset_name == 'mnist_addition' else set(),
                                 constant_images_no=data_handler.constant_images_no if args.dataset_name == 'mnist_addition' else 0,
                                 rules=data_handler.rules,
-                                rule_depend_var=args.rule_depend_var,
                                 max_arity=data_handler.max_arity,
                                 device='cpu',
                                 padding_atoms=args.padding_atoms)
@@ -112,7 +105,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" else args.atom_embedding_size*args.padding_atoms
     embedder.embed_dim = args.state_embedding_size
 
-    # Define environment creation function
+
+    # --- ENVIRONMENT ---
+
     def make_env(mode='train', seed=0, queries=None, labels=None):
         def _init():
             env = LogicEnv_gym(
@@ -130,8 +125,6 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         memory_pruning=args.memory_pruning,
                         end_proof_action=args.end_proof_action,
                         skip_unary_actions=args.skip_unary_actions,
-                        truncate_atoms=args.truncate_atoms,
-                        truncate_states=args.truncate_states,
                         padding_atoms=args.padding_atoms,
                         padding_states=args.padding_states,
                         device='cpu', 
@@ -142,62 +135,65 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         return _init
 
     # Create vectorized environments for training
+    env_type = 'dummy'
     env_seeds = np.random.randint(0, 2**10, size=args.n_envs)
-    env = DummyVecEnv([make_env(
-                                mode='train', 
-                                seed=int(env_seeds[i]), 
-                                queries=data_handler.train_queries, 
-                                labels=[1]*len(data_handler.train_queries)
-                                ) 
-                                for i in range(args.n_envs)])
-    # env = SubprocVecEnv([make_env(
-    #                             mode='train', 
-    #                             seed=int(env_seeds[i]), 
-    #                             queries=data_handler.train_queries, 
-    #                             labels=[1]*len(data_handler.train_queries)
-    #                             ) 
-    #                             for i in range(args.n_envs)])
-
-    # Create multiple environments for evaluation
-
     eval_env_seeds = np.random.randint(0, 2**10, size=args.n_eval_envs)
-    eval_env = DummyVecEnv([make_env(
-                                    mode='eval', 
-                                    seed=int(eval_env_seeds[i]), 
-                                    queries=data_handler.valid_queries,
-                                    labels=[1]*len(data_handler.valid_queries),
-                                    ) 
-                                    for i in range(args.n_eval_envs)])
-    # eval_env = SubprocVecEnv([make_env(
-    #                                 mode='eval', 
-    #                                 seed=int(eval_env_seeds[i]), 
-    #                                 queries=data_handler.valid_queries,
-    #                                 labels=[1]*len(data_handler.valid_queries),
-    #                                 ) 
-    #                                 for i in range(args.n_eval_envs)])
-
     callback_env_seeds = np.random.randint(0, 2**10, size=1)
-    callback_env = DummyVecEnv([make_env(
-                                    mode='eval', 
-                                    seed=int(callback_env_seeds[i]), 
-                                    queries=data_handler.valid_queries,
-                                    labels=[1]*len(data_handler.valid_queries),
+    if env_type == 'dummy':
+        env = DummyVecEnv([make_env(
+                                    mode='train', 
+                                    seed=int(env_seeds[i]), 
+                                    queries=data_handler.train_queries, 
+                                    labels=[1]*len(data_handler.train_queries)
                                     ) 
-                                    for i in range(1)])
-    # callback_env = SubprocVecEnv([make_env(
-    #                                 mode='eval',
-    #                                 seed=int(callback_env_seeds[i]),
-    #                                 queries=data_handler.valid_queries,
-    #                                 labels=[1]*len(data_handler.valid_queries),
-    #                                 )
-    #                                 for i in range(1)])
+                                    for i in range(args.n_envs)])
+        
+        eval_env = DummyVecEnv([make_env(
+                                        mode='eval', 
+                                        seed=int(eval_env_seeds[i]), 
+                                        queries=data_handler.valid_queries,
+                                        labels=[1]*len(data_handler.valid_queries),
+                                        ) 
+                                        for i in range(args.n_eval_envs)])
+        
+        callback_env = DummyVecEnv([make_env(
+                                        mode='eval_with_restart', 
+                                        seed=int(callback_env_seeds[i]), 
+                                        queries=data_handler.valid_queries,
+                                        labels=[1]*len(data_handler.valid_queries),
+                                        ) 
+                                        for i in range(1)])
+    else:
+        env = SubprocVecEnv([make_env(
+                                    mode='train', 
+                                    seed=int(env_seeds[i]), 
+                                    queries=data_handler.train_queries, 
+                                    labels=[1]*len(data_handler.train_queries)
+                                    ) 
+                                    for i in range(args.n_envs)])
 
-    # INIT MODEL
+        eval_env = SubprocVecEnv([make_env(
+                                        mode='eval', 
+                                        seed=int(eval_env_seeds[i]), 
+                                        queries=data_handler.valid_queries,
+                                        labels=[1]*len(data_handler.valid_queries),
+                                        ) 
+                                        for i in range(args.n_eval_envs)])
+
+        callback_env = SubprocVecEnv([make_env(
+                                        mode='eval',
+                                        seed=int(callback_env_seeds[i]),
+                                        queries=data_handler.valid_queries,
+                                        labels=[1]*len(data_handler.valid_queries),
+                                        )
+                                        for i in range(1)])
+
+    # --- INIT MODEL ---
     if args.model_name == "PPO":
         model = PPO(CustomActorCriticPolicy, 
                     env,
                     learning_rate=args.lr,
-                    n_steps=args.n_steps,  # Adjust steps per environment
+                    n_steps=args.n_steps,
                     batch_size=args.batch_size,
                     n_epochs=args.n_epochs,
                     verbose=1, 
@@ -211,11 +207,10 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         raise ValueError("Model not supported")
     
 
-    # TRAIN
+    # --- TRAIN ---
     model_path = os.path.join(args.models_path,args.run_signature, args.run_signature + f'-seed_{args.seed_run_i}')
     model_name = args.run_signature+'-'+date+'-seed_{}'.format(args.seed_run_i)
     if args.load_model:
-        # print(f"models{[m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m]}")
         try:
             models = sorted(
                 [m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m])
@@ -238,14 +233,14 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
         callbacks = [timing_callback]
 
-        # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
+        no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
 
         eval_callback = CustomEvalCallback(eval_env=callback_env, 
                                     model_path=model_path if args.save_model else None,
                                     log_path=log_filename if use_logger else None,
                                     eval_freq=max(int(args.eval_freq//args.n_envs),1),
-                                    n_eval_episodes=args.n_eval_queries,
+                                    n_eval_episodes=args.n_eval_queries-1,
                                     deterministic=True,
                                     render=False,
                                     name=model_name,
@@ -268,7 +263,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                             group= args.run_signature,
                             name=model_name,
                             dir=WB_path,  
-                            sync_tensorboard=True,  # Sync SB3's TensorBoard logs to W&B
+                            sync_tensorboard=True,
                             config = dict(
                                 seed = args.seed_run_i,
                                 shuffle_buffer = 1024,
@@ -295,7 +290,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
             profiler = cProfile.Profile()
             profiler.enable()
 
-        enable_torch_profiler = True
+        enable_torch_profiler = False
         if enable_torch_profiler:
             prof_activities = [ProfilerActivity.CPU]
             if torch.cuda.is_available() and device.type == 'cuda':
@@ -353,7 +348,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         if use_WB:
             run.finish()   
 
-    # TEST   
+    # --- TEST ---   
 
     print('\nTest set eval...')
 
@@ -375,6 +370,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         with torch.profiler.profile(
             activities=prof_activities, record_shapes=True, profile_memory=True, with_stack=True
         ) as prof_eval:
+            
             metrics_test = eval_corruptions(model,
                                             eval_env,
                                             data_handler.test_queries,
@@ -384,6 +380,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                             consult_janus=False,
                                             verbose=1,
                                             )
+            
         print("\n--- PyTorch Profiling Results (Evaluation) ---")
         sort_key = "cuda_time_total" if ProfilerActivity.CUDA in prof_activities else "cpu_time_total"
         print(prof_eval.key_averages().table(sort_by=sort_key, row_limit=30))
@@ -416,34 +413,28 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     print_eval_info('Test', metrics_test)
 
-    # if 'kinship' not in args.dataset_name or 'countries' not in args.dataset_name:
-    #     print('Val set eval...')
-    #     metrics_valid = eval_corruptions(model,
-    #                                     eval_env,
-    #                                     data_handler.valid_queries,
-    #                                     corruption_mode=args.corruption_mode,
-    #                                     corruptions=data_handler.valid_corruptions if args.corruption_mode == 'static' else None,
-    #                                     n_corruptions=args.valid_negatives,
-    #                                     consult_janus=False,
-    #                                     )
-    #     print_eval_info('Validation', metrics_valid)
+    eval_only_test = False
+    if eval_only_test:
+        print('Val set eval...')
+        metrics_valid = eval_corruptions(model,
+                                        eval_env,
+                                        data_handler.valid_queries,
+                                        n_corruptions=args.valid_negatives,
+                                        consult_janus=False,
+                                        )
+        print_eval_info('Validation', metrics_valid)
 
-    #     print('Train set eval...')
-    #     metrics_train = eval_corruptions(model,
-    #                                     eval_env,
-    #                                     data_handler.train_queries,
-    #                                     corruption_mode=args.corruption_mode,
-    #                                     corruptions=data_handler.train_corruptions if args.corruption_mode == 'static' else None,
-    #                                     n_corruptions=args.train_neg_pos_ratio,
-    #                                     consult_janus=True,
-    #                                     )
-    #     print_eval_info('Train', metrics_train)
-    # else:
-    #     metrics_train = {k: 0 for k in metrics_test.keys()}
-    #     metrics_valid = {k: 0 for k in metrics_test.keys()}
-    metrics_train = {k: 0 for k in metrics_test.keys()}
-    metrics_valid = {k: 0 for k in metrics_test.keys()}
-
+        print('Train set eval...')
+        metrics_train = eval_corruptions(model,
+                                        eval_env,
+                                        data_handler.train_queries,
+                                        n_corruptions=args.train_neg_pos_ratio,
+                                        consult_janus=True,
+                                        )
+        print_eval_info('Train', metrics_train)
+    else:
+        metrics_train = {k: 0 for k in metrics_test.keys()}
+        metrics_valid = {k: 0 for k in metrics_test.keys()}
 
 
     return metrics_train, metrics_valid, metrics_test

@@ -26,38 +26,32 @@ if __name__ == "__main__":
             self.file.flush()
             self.stdout.flush()
 
-    RULE_DEPEND_VAR = [False] # The way to define variable embedding, True: depend on rules, False: indexed based on appearance order
     DYNAMIC_CONSULT = [True]
     FALSE_RULES = [False] 
     MEMORY_PRUNING = [True] # filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     END_PROOF_ACTION = [False]
     SKIP_UNARY_ACTIONS = [True]
-    TRUNCATE_ATOMS = [True] # if more atoms in a state than pad_atoms, truncate the state to false
-    TRUNCATE_STATES = [True] # if more states in next states than pad_states, truncate the state to false
-    ENT_COEF = [0.1]
+    ENT_COEF = [0.2]
     CLIP_RANGE = [0.2]
-    ENGINE = ['python']
+    ENGINE = ['prolog']
     # reward_type = 1
 
     # Dataset settings 
-    DATASET_NAME =  ["countries_s3"] #["countries_s2", "countries_s3", 'family','wn18rr']
-    TRAIN_DEPTH = [None]
+    DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
+    TRAIN_DEPTH = [None] # [{-1,3,2}]
     VALID_DEPTH = [None]
     TEST_DEPTH = [None]
     SEED = [[0]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
     STATE_EMBEDDER = ['mean']
-    PADDING_ATOMS = [2]
-    PADDING_STATES = [-1] # -1 sets the max padding size to the max number of atoms in the dataset
+    PADDING_ATOMS = [4]
+    PADDING_STATES = [150] # -1 sets the max padding size to a preset value (check below)
     ATOM_EMBEDDING_SIZE = [64]
-
     CORRUPTION_MODE =  ['dynamic']
-    NON_PROVABLE_QUERIES = [True]
-    NON_PROVABLE_CORRUPTIONS = [True]
 
     RESTORE_BEST_VAL_MODEL = [True]
-    load_model = True
+    load_model = False
     save_model = True
 
     # Loggin settings 
@@ -69,15 +63,14 @@ if __name__ == "__main__":
     # Paths    
     data_path = "./data/"
     models_path = "models/"
-    janus_file = "train.pl"
     rules_file = "rules.txt"
     facts_file = "train.txt"
     train_file = "train.txt"
-    valid_file = "valid.txt"    
+    valid_file = "valid.txt"
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [250]
+    TIMESTEPS_TRAIN = [4000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
@@ -87,17 +80,15 @@ if __name__ == "__main__":
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 16
-    n_steps = 16 # 2048
-    n_eval_envs = 16
+    n_envs = 64
+    n_steps = 64 # 2048
+    n_eval_envs = 64
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
-    batch_size = 16 # Ensure batch size is a factor of n_steps (for the buffer).
+    batch_size = 64 # Ensure batch size is a factor of n_steps (for the buffer).
     lr = 3e-4
 
-    # number of variables in the index manager to create embeddings for. if RULE_DEPEND_VAR is True, 
-    # this is ignored and the number of variables is determined by the number of variables in the rules
-    variable_no = 500
+    max_total_vars = 100
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # If take inputs from the command line, overwrite the default values
@@ -139,7 +130,6 @@ if __name__ == "__main__":
         'timesteps_train': TIMESTEPS_TRAIN,
         'restore_best_val_model': RESTORE_BEST_VAL_MODEL,
         'memory_pruning': MEMORY_PRUNING,
-        'rule_depend_var': RULE_DEPEND_VAR,
         'dynamic_consult': DYNAMIC_CONSULT,
         'corruption_mode': CORRUPTION_MODE,
         'train_neg_pos_ratio': TRAIN_NEG_POS_RATIO,
@@ -152,12 +142,8 @@ if __name__ == "__main__":
         'train_depth': TRAIN_DEPTH,
         'valid_depth': VALID_DEPTH,
         'test_depth': TEST_DEPTH,
-        'truncate_atoms': TRUNCATE_ATOMS,
-        'truncate_states': TRUNCATE_STATES,
         'padding_atoms': PADDING_ATOMS,
         'padding_states': PADDING_STATES,
-        'non_provable_queries': NON_PROVABLE_QUERIES,
-        'non_provable_corruptions': NON_PROVABLE_CORRUPTIONS
     }
 
     # Generate all combinations using product
@@ -197,16 +183,9 @@ if __name__ == "__main__":
         elif args.engine == 'python':
             args.janus_file = None
         else:
-            args.janus_file = janus_file
+            args.janus_file = f"{args.dataset_name}.pl"
+            print("Using prolog file:", args.janus_file)
 
-        if not args.non_provable_corruptions and args.corruption_mode == "dynamic":
-            print("\n\nSKIPPING EXPERIMENT: non_provable_corruptions with \
-                  dynamic corruptions is not supported\n\n")
-            continue
-        if args.non_provable_queries and args.corruption_mode == "static":
-            print("\n\nSKIPPING EXPERIMENT: non_provable_queries with static \
-                  corruptions is not yet supported\n\n")
-            continue
 
         if args.dataset_name == "mnist_addition":
             args.corruption_mode = None
@@ -215,10 +194,6 @@ if __name__ == "__main__":
             train_file = "train_label_corruptions.json"
             valid_file = "valid_label_corruptions.json"
             test_file  = "test_label_corruptions.json"
-        elif args.corruption_mode == "dynamic" and not args.non_provable_queries:
-            train_file = "train_label.txt"
-            valid_file = "valid_label.txt"
-            test_file = "test_label.txt"
 
         if args.train_depth is not None:
             train_file = train_file.replace('.txt', f'_depths.txt')
@@ -240,7 +215,7 @@ if __name__ == "__main__":
             else args.atom_embedding_size*args.padding_atoms
         args.constant_embedding_size = constant_embedding_size
         args.predicate_embedding_size = predicate_embedding_size
-        args.variable_no = variable_no
+        args.max_total_vars = max_total_vars
         args.device = device
         
         if args.restore_best_val_model and load_model=='last_epoch':
@@ -263,7 +238,7 @@ if __name__ == "__main__":
 
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,
                     args.padding_atoms,args.padding_states,args.false_rules,args.end_proof_action, 
-                    args.skip_unary_actions,args.memory_pruning,args.rule_depend_var,args.max_depth,
+                    args.skip_unary_actions,args.memory_pruning,args.max_depth,
                     args.ent_coef,args.clip_range,args.engine,args.train_neg_pos_ratio
                     )
         

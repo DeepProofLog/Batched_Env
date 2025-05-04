@@ -3,7 +3,7 @@ import re
 import random
 random.seed(20)
 
-janus.consult("kinship.pl")
+janus.consult("data/family/family.pl")
 
 state = "[aunt(5,76)]"
 # state = "[aunt(5,76),father(12,34)]"

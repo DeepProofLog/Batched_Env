@@ -1,12 +1,9 @@
+import time
 from typing import List, Union, Dict, Type, Optional, Callable, Tuple
 
-from tensordict import TensorDict
-import numpy as np  
 import torch as th
 import torch
 from torch import nn
-from torch.nn.functional import softmax
-import torch.nn.functional as F
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -22,7 +19,6 @@ from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.on_policy_algorithm import obs_as_tensor
 from stable_baselines3.common.utils import safe_mean
 
-import time
 
 
 # class that takes PPO but modifies the collect_rollouts method to return the actions and probs
@@ -47,10 +43,8 @@ class PPO_custom(PPO):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
-        print('Entering rollout loop')
+        # print('Entering rollout loop')
         while n_steps < n_rollout_steps:
-            # print('N steps:', n_steps)
-            # if n_steps == 2: print(shdbodi)
             if n_steps % (n_rollout_steps // 5) == 0:
                 print(f"Collecting rollouts: {n_steps}/{n_rollout_steps} steps")
 
@@ -61,37 +55,12 @@ class PPO_custom(PPO):
             with th.no_grad():
                 # Convert observations to tensor and pass to policy
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                # print('*'*50)
-                # print('\nobs_tensor')
-                # for key, value in obs_tensor.items():
-                #     print(key,value.shape,'\n',value)
                 actions, values, log_probs = self.policy(obs_tensor)
-                # print('actions', actions.shape, actions)
-                # print('\n','*'*50)
+
             actions = actions.cpu().numpy()
 
             # Execute actions in environment
-            # print('env 0 derived states before', env.envs[0].env.tensordict['derived_states'])
             new_obs, rewards, dones, infos = env.step(actions)
-            # print('env 0 derived states after', env.envs[0].env.tensordict['derived_states'])
-            # print('n_steps', n_steps)
-            # print('observations', [(k,v.shape) for k,v in self._last_obs.items()])
-            # print('values', values)
-            # print('actions', actions)
-            # print('log_probs', log_probs)
-            # print('dones', dones)
-            # print only rewards where done is True
-            # print('rewards done', [r for r,d in zip(rewards,dones) if d])
-            # if any(dones):
-            #     print('ratio of positive done rewards', sum([r for r,d in zip(rewards,dones) if d]) / len([r for r,d in zip(rewards,dones) if d]))
-            # print('-'*100)
-            # print('sum, length of rewards', sum(rewards), len(rewards))
-            # print('dones', dones)
-            # print('infos', infos)
-            # print('length of infos',len(infos))
-            # for info in infos:
-            #     for k,v in info.items():
-            #         print('info4: ',k,v) if k != 'terminal_observation' else None
             self.num_timesteps += env.num_envs
 
             # Give access to local variables
@@ -102,9 +71,6 @@ class PPO_custom(PPO):
             self._update_info_buffer(infos, dones)
             n_steps += 1
 
-            # print('len, avg, ep_info_buffer rewards', len(self.ep_info_buffer), np.mean([ep_info["r"] for ep_info in self.ep_info_buffer]),[ep_info["r"] for ep_info in self.ep_info_buffer])
-            # print('len, avg, ep_info_buffer lengths', len(self.ep_info_buffer), np.mean([ep_info["l"] for ep_info in self.ep_info_buffer]),[ep_info["l"] for ep_info in self.ep_info_buffer])
-           
             if isinstance(self.action_space, spaces.Discrete):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
@@ -119,19 +85,19 @@ class PPO_custom(PPO):
                 ):
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
-                        terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
+                        terminal_value = self.policy.predict_values(terminal_obs)[0]
                     print('Rewards modified in rollout buffer because of terminal state!!!!!!!')
                     rewards[idx] += self.gamma * terminal_value
 
             rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
+                self._last_obs,
                 actions,
                 rewards,
-                self._last_episode_starts,  # type: ignore[arg-type]
+                self._last_episode_starts,
                 values,
                 log_probs,
             )
-            self._last_obs = new_obs  # type: ignore[assignment]
+            self._last_obs = new_obs 
             self._last_episode_starts = dones
 
         with th.no_grad():
@@ -141,8 +107,6 @@ class PPO_custom(PPO):
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         # Record rollout metrics for logging
-        # print('len, avg, ep_info_buffer rewards', len(self.ep_info_buffer), np.mean([ep_info["r"] for ep_info in self.ep_info_buffer]),[ep_info["r"] for ep_info in self.ep_info_buffer])
-        # print('_len, avg, ep_info_buffer lengths', len(self.ep_info_buffer), np.mean([ep_info["l"] for ep_info in self.ep_info_buffer]),[ep_info["l"] for ep_info in self.ep_info_buffer])
         if self.ep_info_buffer and len(self.ep_info_buffer) > 0:
             self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
             self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
@@ -245,20 +209,9 @@ class PolicyNetwork(nn.Module):
         # Compute similarity (dot product) between observation and action embeddings
         logits = torch.matmul(x, action_embeddings.transpose(-2, -1)).squeeze(-2)
         # logits = F.cosine_similarity(x, action_embeddings, dim=-1) # Compare along the embedding dimension
-        # Mask out invalid actions: where the sum over action_atom_indices is 0, set logits to -inf
-        # assert action_atom_indices.dim() == 2, f'action_atom_indices dim {action_atom_indices.dim()}'
-        if action_atom_indices.dim() == 4: # we are using the derived_sub_indices
-            # print('action_atom_indices.shape', action_atom_indices.shape)
-            padding_condition = action_atom_indices.sum(dim=-1).sum(dim=-1) 
-            # print('action_atom_padding.shape', action_atom_padding.shape, action_atom_padding)  
-            # padding_condition = (action_atom_indices.sum(dim=-1)[:, :, 0] == 0)
-            # print('padding_condition.shape', padding_condition.shape, padding_condition)
-            logits = torch.where(padding_condition == 0, float('-inf'), logits)  
-        elif action_atom_indices.dim() == 2:
-            logits = torch.where(action_atom_indices == 0, float('-inf'), logits)
-        elif action_atom_indices.dim() == 3:
-            logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
-        
+        padding_condition = action_atom_indices.sum(dim=-1).sum(dim=-1) 
+        logits = torch.where(padding_condition == 0, float('-inf'), logits)  
+
         return logits
 
 class ValueNetwork(nn.Module):
@@ -302,68 +255,6 @@ class ValueNetwork(nn.Module):
         value = self.output_layer(x)
         return value.squeeze(-1)
 
-# class PolicyNetwork(nn.Module):
-#     def __init__(self, embed_dim=200):
-#         super().__init__()
-
-#         # self.observation_transform = nn.Linear(embed_dim, embed_dim)
-#         self.observation_transform = nn.Sequential(
-#             nn.Linear(embed_dim, embed_dim),
-#             nn.ReLU(),
-#             nn.Linear(embed_dim, embed_dim),
-#             nn.ReLU(),
-#             nn.Linear(embed_dim, embed_dim),
-#             nn.ReLU(),
-#             nn.Linear(embed_dim, embed_dim),
-#         )
-
-#     def forward(self, obs_embeddings, action_embeddings, action_atom_indices) -> TensorDict:
-#     # def forward(self, obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) -> TensorDict:
-#         """
-#         Calculate logits for actions given observation embeddings and action embeddings.
-        
-#         Args:
-#             obs_embeddings: Embedded observation (batch_size=n_envs,n_states=1,embedding_dim)
-#             action_embeddings: Embedded possible actions (batch_size=n_envs,pad_states,embedding_dim)
-#             action_atom_indices: Indices of atoms in actions (batch_size=n_envs,pad_states,pad_atoms)
-#             valid_actions_mask: Boolean mask indicating which actions are valid (batch_size=n_envs,pad_states)
-            
-#         Returns:
-#             Logits for actions, with -inf for invalid actions. (batch_size=n_envs,pad_states)
-#         """
-#         # Transform observation features
-#         obs_features = self.observation_transform(obs_embeddings)
-#         # Calculate similarity between observation and action embeddings
-#         logits = torch.matmul(obs_features, action_embeddings.transpose(-2, -1)).squeeze(-2) # (batch_size=n_envs,pad_states)
-#         logits = torch.where(action_atom_indices.sum(dim=-1) == 0, float('-inf'), logits)
-#         return logits
-
-
-# class ValueNetwork(nn.Module):
-#     def __init__(self, embed_dim=200):
-#         super().__init__()
-
-#         # self.network = nn.Sequential(
-#         #     nn.Linear(embed_dim, embed_dim),
-#         #     nn.ReLU(),
-#         #     nn.Linear(embed_dim, 1))
-
-#         self.network = nn.Sequential(
-#             nn.Linear(embed_dim, embed_dim),
-#             nn.ReLU(),
-#             nn.LayerNorm(embed_dim),    # Normalize activations to stabilize learning
-#             nn.Dropout(0.1),            # Add a bit of dropout to prevent overfitting
-#             nn.Linear(embed_dim, embed_dim),  # Maintain the dimensionality for deeper representation
-#             nn.ReLU(),
-#             nn.LayerNorm(embed_dim),
-#             nn.Dropout(0.1),
-#             nn.Linear(embed_dim, 1)      # Final output remains a single value
-#         )
-
-#     def forward(self, obs_embeddings) -> TensorDict:
-#         value = self.network(obs_embeddings)
-#         value = value.squeeze(-1)
-#         return value
 
 
 class CustomNetwork(nn.Module):
@@ -377,16 +268,14 @@ class CustomNetwork(nn.Module):
     """
     def __init__(
         self,
-        last_layer_dim_pi: int = 64,  # TO CHANGE
-        last_layer_dim_vf: int = 1,  # TO CHANGE
+        last_layer_dim_pi: int = 64,
+        last_layer_dim_vf: int = 1, 
         embed_dim: int = 200
     ):
         super(CustomNetwork, self).__init__()
-        # Save output dimensions, used to create the distributions
         self.latent_dim_pi = last_layer_dim_pi
         self.latent_dim_vf = last_layer_dim_vf
 
-        # TorchRL-style Policy and Value components
         self.policy_network = PolicyNetwork(embed_dim)
         self.value_network = ValueNetwork(embed_dim)
 
@@ -399,9 +288,7 @@ class CustomNetwork(nn.Module):
         """
         # Assuming `features` is observation sub_indices passed here for embedding
         obs_embeddings, action_embeddings, action_atom_indices = features
-        # obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask = features
         probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices) # (batch_size=n_envs,pad_states)
-        # probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask) # (batch_size=n_envs,pad_states)
         value = self.value_network(obs_embeddings) # (batch_size=n_envs,n_states=1)
         return probs, value
     
@@ -412,8 +299,6 @@ class CustomNetwork(nn.Module):
         """
         obs_embeddings, action_embeddings, action_atom_indices, = features
         return self.policy_network(obs_embeddings, action_embeddings, action_atom_indices)
-        # obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask = features
-        # return self.policy_network(obs_embeddings, action_embeddings, action_atom_indices, valid_actions_mask)
 
 
     def forward_critic(self, features: torch.Tensor) -> torch.Tensor:
@@ -422,7 +307,6 @@ class CustomNetwork(nn.Module):
         Accepts features (which can include sub_indices for embedding) and outputs the latent value representation.
         """
         obs_embeddings, _, _ = features
-        # obs_embeddings, _, _, _ = features
         return self.value_network(obs_embeddings)
 
 
@@ -455,29 +339,11 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
 
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Extract features from observations including valid action mask."""
-        
-        # Obtain embeddings for observations and actions
 
-        if observations.get("derived_atom_indices", None) is not None:
-            obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
-            action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
-            action_atom_indices = observations["derived_atom_indices"] # (batch_size=n_envs,pad_states,pad_atoms) 
-        elif observations.get("sub_index", None) is not None:
-            obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
-            action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
-            action_atom_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3)
-        else:
-            obs_sub_indices = observations["state_ids"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
-            action_sub_indices = observations["derived_state_ids"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
-            action_atom_indices = (action_sub_indices[:, :, 0, 0] != 0)
-        # print('action_atom_indices', action_atom_indices.shape, action_atom_indices) # (batch_size=n_envs,pad_states)
-        # print(spodgh)
-        # # Always get the valid_actions_mask if available
-        # valid_actions_mask = observations.get("valid_actions_mask", None) # shape (batch_size=n_envs,pad_states)
-        
-        # obs_sub_indices = self.format_indices(obs_sub_indices) # (batch_size=n_envs,1,1,pad_atoms,3) #3rd dim is for matmul with predicate embeddings
-        
-        # Generate embeddings
+        obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
+        action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
+        action_atom_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3)
+
         obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.long()) # (batch_size=n_envs,n_states=1,embedding_dim)
         action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices.long()) # (batch_size=n_envs,pad_states,embedding_dim)
 
@@ -547,28 +413,13 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
 
         # Get action probabilities and create distribution
         action_logits = latent_pi # (batch_size=n_envs,pad_states)
-        # num actions is given by action_logits where it is not -inf
-        num_actions = torch.sum(action_logits != float('-inf'), dim=-1)
-        # print('num_actions', num_actions) 
-        # show the non -inf logits
-        # print('logits', action_logits[action_logits != float('-inf')])
-        # print the ratio of actions that are more than one
-        # print('ratio of actions more than one', sum(num_actions > 1) / len(num_actions))
         distribution = self.action_dist.proba_distribution(action_logits=action_logits)
         
         # Sample a single action from the distribution
         actions = distribution.get_actions(deterministic=deterministic)
         # Get log probability of the chosen action
         log_prob = distribution.log_prob(actions)
-        print('*'*100) if verbose else None
-        print('values', values.shape) if verbose else None
-        print('actions_logits', action_logits.shape) if verbose else None
-        print('distribution params', distribution.distribution.probs.shape) if verbose else None
-        print('action chosen', actions.shape, actions) if verbose else None
-        print('log_prob of action chosen', log_prob.shape, log_prob) if verbose else None
-        print('*'*100) if verbose else None
-        # print('log_prob', log_prob)
-        # print('num_actions', actions)
+
         return actions, values, log_prob
 
 
@@ -624,5 +475,6 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         features = super().extract_features(obs, self.pi_features_extractor)
         latent_pi = self.mlp_extractor.forward_actor(features)
         action_logits = latent_pi
+        # print('number of eval actions', action_logits.shape, action_logits)
         return self.action_dist.proba_distribution(action_logits=action_logits)
     

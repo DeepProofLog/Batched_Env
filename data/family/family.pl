@@ -19915,3 +19915,20 @@ mother(A,B) :- brother(H,B), mother(A,H).
 niece(A,B) :- aunt(B,H), sister(A,H).
 father(A,B) :- father(A,H), sister(H,B).
 son(A,B) :- brother(A,H), father(B,H).
+one_step_list([Goal|RestGoals], NewGoalsList) :-
+    findall(NewGoals,
+        (
+            clause(Goal, Body),
+            body_to_list(Body, BodyList),
+            append(BodyList, RestGoals, NewGoals)
+        ),
+        AllNewGoals),
+    (
+        AllNewGoals = [] ->
+            NewGoalsList = [false]
+        ;
+            NewGoalsList = AllNewGoals
+    ).
+body_to_list(true, []) :- !.
+body_to_list((A,B), [A|Rest]) :- !, body_to_list(B, Rest).
+body_to_list(A, [A]).

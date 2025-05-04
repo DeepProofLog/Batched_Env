@@ -86887,3 +86887,20 @@ member_of_domain_region(X,Y) :- member_of_domain_region(X,Z), has_part(Z,Y).
 member_of_domain_region(X,Y) :- member_of_domain_region(X,Z), instance_hypernym(Z,Y).
 member_of_domain_region(X,Y) :- derivationally_related_form(X,Z), derivationally_related_form(Z,Y).
 member_of_domain_region(X,Y) :- member_of_domain_region(X,Z), derivationally_related_form(Z,Y).
+one_step_list([Goal|RestGoals], NewGoalsList) :-
+    findall(NewGoals,
+        (
+            clause(Goal, Body),
+            body_to_list(Body, BodyList),
+            append(BodyList, RestGoals, NewGoals)
+        ),
+        AllNewGoals),
+    (
+        AllNewGoals = [] ->
+            NewGoalsList = [false]
+        ;
+            NewGoalsList = AllNewGoals
+    ).
+body_to_list(true, []) :- !.
+body_to_list((A,B), [A|Rest]) :- !, body_to_list(B, Rest).
+body_to_list(A, [A]).

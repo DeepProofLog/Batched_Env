@@ -1,11 +1,10 @@
 import torch
 from dataset import DataHandler
-from pykeen.triples import TriplesFactory
 from typing import Dict, List
 from pykeen.sampling import BasicNegativeSampler
 from typing_extensions import TypeAlias 
-LongTensor: TypeAlias = torch.LongTensor  
 import math
+LongTensor: TypeAlias = torch.LongTensor  
 
 class BasicNegativeSamplerDomain(BasicNegativeSampler):
     def __init__(self,
