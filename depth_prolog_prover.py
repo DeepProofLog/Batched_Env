@@ -21,7 +21,7 @@ def check_provability_at_depth(prolog_goal: str, n: int) -> str:
 
     # depth_query = f"call_with_depth_limit(({prolog_goal}), {n}, DepthResult)."
     depth_query = (
-    f"call_with_time_limit({50}, "
+    f"call_with_time_limit({10}, "
     f"call_with_depth_limit(({prolog_goal}), {n}, DepthResult))"
     )
     label = 'not_provable' # Default assumption
@@ -240,15 +240,15 @@ def calculate_provability_ratios_by_depth(
 
 # --- Example Usage ---
 
-MAX_DEPTH_TO_ANALYZE = 7 # Keep it reasonable first, might be slow
+MAX_DEPTH_TO_ANALYZE = 5 # Keep it reasonable first, might be slow
 
 
 # 1. Load the rules and facts from the file
-# dataset = 'wn18rr'
-dataset = 'family'
+dataset = 'wn18rr'
+# dataset = 'family'
 # dataset = 'countries_s3'
 
-for set_file in ['test']: 
+for set_file in ['train']: 
     root_dir = './data/' + dataset + '/'
     queries_file = root_dir + set_file + '.txt'
     is_train_data = 'train' in set_file

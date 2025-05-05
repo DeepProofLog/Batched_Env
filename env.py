@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Set
 import random
 from tensordict import TensorDict, NonTensorData
 import torch
@@ -20,12 +20,12 @@ class LogicEnv_gym(gym.Env):
                 data_handler: Optional[DataHandler] = None,
                 queries: Optional[List[Term]] = None,
                 labels: Optional[List[int]] = None,
+                facts: Optional[Set[Term]] = None,
                 mode: str = 'train',
                 corruption_mode: Optional[str] = None,
                 corruption_scheme: Optional[List[str]] = None,
                 train_neg_pos_ratio: int = 1,
                 seed: Optional[int] = None,
-                dynamic_consult: bool = True,
                 max_depth: int = 10,
                 memory_pruning: bool = True,
                 end_proof_action: bool = False,
@@ -58,14 +58,14 @@ class LogicEnv_gym(gym.Env):
         self._make_spec()
 
         self.dataset_name = data_handler.dataset_name
-        self.facts = set(data_handler.facts)
+        self.facts = facts
 
         self.corruption_mode = corruption_mode
 
-        if 'dynamic' in self.corruption_mode:
+        if self.corruption_mode:
             self.counter = 0  # Determine whether to sample from positive or negative queries in KGE settings
             
-        if self.corruption_mode == "dynamic":
+        if self.corruption_mode:
             self.sampler = data_handler.sampler
             self.triples_factory = data_handler.triples_factory
             self.corruption_scheme = corruption_scheme
@@ -79,7 +79,6 @@ class LogicEnv_gym(gym.Env):
         self.skip_unary_actions = skip_unary_actions # Skip unary actions in the action space
         self.predicate_false_idx = index_manager.predicate_str2idx['False'] 
 
-        self.dynamic_consult = dynamic_consult
         self.current_query = None
         self.current_label = None
 
@@ -121,47 +120,6 @@ class LogicEnv_gym(gym.Env):
         self.observation_space = gym.spaces.Dict(obs_spaces)
         self.action_space = gym.spaces.Discrete(self.padding_states)
 
-    def new_consult_janus(self, query: Term):
-        '''Consult janus with new facts
-        1. load the original facts
-        2. save a file with the new facts
-        3. consult janus with the new file
-
-        fact_removed = janus.query(f"retract(({query_str})).")
-        janus.query(f"assertz({fact}).")  # Adds new facts directly to the knowledge base.
-        '''
-        # to compare the query, convert it to str by removing the spaces
-        query_str = str(query).replace(' ', '')
-
-        facts = [line for line in self.janus_facts if query_str not in line]
-        if self.dataset_name != "mnist_addition":
-            assert len(facts) == len(self.janus_facts) - 1, f"Length of facts: {len(facts)}, Length of janus_facts: {len(self.janus_facts)}"
-
-        # 2. save a _tmp file with the new facts
-        tmp_file = self.janus_file.replace('.pl', '_tmp.pl')
-        with open(tmp_file, "w") as f:
-            for line in facts:
-                f.write(line)
-
-        # 3. abolish all the facts and tables in janus        
-        for predicate, arity in self.predicates_arity.items():
-            janus.query_once(f"abolish({predicate}/{arity}).")
-        janus.query_once("abolish_all_tables.")
-        
-        # 4. consult janus with the new file
-        janus.consult(tmp_file)
-
-    def dynamic_consult_janus(self, query: Term):
-        '''Dynamically manage facts in Janus by retracting and re-asserting as needed'''
-        if self.current_query and not self.current_query == query:
-            janus.query_once(f"asserta({str(self.current_query)}).")
-
-        if query in self.facts:
-            self.current_query = query
-            janus.query_once(f"retract({str(self.current_query)}).")
-        else:
-            self.current_query = None
-
 
     def reset(self, seed: Optional[int]= None, options=None):
         print('\n\nReset-----------------------------') if self.verbose or self.prover_verbose else None
@@ -189,7 +147,7 @@ class LogicEnv_gym(gym.Env):
             self.eval_idx += 1
 
         elif self.mode == 'train':
-            if self.corruption_mode == "dynamic":
+            if self.corruption_mode:
                 state, _ = self.get_random_queries(self.queries, n=1)
                 label = 1
                 if self.counter % (int(self.train_neg_pos_ratio) + 1) != 0:
@@ -213,10 +171,9 @@ class LogicEnv_gym(gym.Env):
             raise ValueError(f"Invalid mode: {self.mode}. Choose from 'train', 'eval', or 'eval_with_restart'.")
                 
         if self.engine == 'prolog' and (self.mode == 'train' or self.consult_janus_eval == True) and label == 1:
-            if not self.dynamic_consult:
-                self.new_consult_janus(state)
-            elif self.dynamic_consult and state in self.facts:
-                janus.query_once(f"retract({str(state)}).")
+            if state in self.facts:
+                janus.query_once(f"retract({state.prolog_str()}).")
+                # janus.query_once(f"retract({state}).")
 
         self.current_query = state
         self.current_label = label
@@ -283,14 +240,10 @@ class LogicEnv_gym(gym.Env):
         done_next = done_next | exceeded_max_depth | truncate_flag
         
         info = {}
-        # Handle episode completion
         if done_next:
-            # Restore facts in knowledge base if this was a positive query
             if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
-                if self.dynamic_consult:
-                    # Re-add the current query to Janus knowledge base
-                    janus.query_once(f"asserta({str(self.current_query)}).")
-            # Clear current query reference and label
+                janus.query_once(f"asserta({self.current_query.prolog_str()}).")
+                # janus.query_once(f"asserta({self.current_query}).")
             self.current_query, self.current_label = None, None
 
         tensordict = TensorDict(

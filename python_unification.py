@@ -67,10 +67,11 @@ def unify_with_facts(query: Term,
 
     # For non-ground queries, use the index
     query_constant_args_with_pos = [(i, arg) for i, arg in enumerate(query.args) if not (arg[0].isupper() or arg[0] == '_')]
-    # Sort constant args by position to create a canonical lookup key
-    sorted_query_constant_args = tuple(sorted(query_constant_args_with_pos, key=lambda x: x[0]))
-    lookup_key = (query.predicate,) + sorted_query_constant_args
 
+    # # Sort constant args by position to create a canonical lookup key
+    # sorted_query_constant_args = tuple(sorted(query_constant_args_with_pos, key=lambda x: x[0]))
+    # lookup_key = (query.predicate,) + sorted_query_constant_args
+    lookup_key = (query.predicate,) + tuple(query_constant_args_with_pos)
     # Retrieve candidate facts using the lookup key (later we remove the excluded_fact)
     candidate_facts = facts_indexed.get(lookup_key, set())
 

@@ -312,7 +312,7 @@ def get_negatives(
     else:
         neg_batches = self.corrupt_batch(positive_batch)
     # Determine max negatives per query. If not all negatives, set to 2 (one head and one tail)
-    max_negs = max(batch.size(0) for batch in neg_batches) if all_negatives else 2
+    max_negs = max(batch.size(0) for batch in neg_batches)
 
     # Allocate output
     neg_subs = torch.full(
@@ -385,6 +385,7 @@ def get_sampler(data_handler: DataHandler,
                 index_manager: IndexManager,
                 triples_factory: TriplesFactory,
                 corruption_scheme: Optional[Collection[Target]] = None,
+                num_negs_per_pos: int = 2, # One for head and one for tail
                 )-> Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain]:
 
     if 'countries' in data_handler.dataset_name or 'ablation' in data_handler.dataset_name:
@@ -401,7 +402,7 @@ def get_sampler(data_handler: DataHandler,
             mapped_triples=triples_factory.mapped_triples, 
             num_entities=len(index_manager.constant_str2idx),
             num_relations=len(index_manager.predicate_str2idx),
-            num_negs_per_pos=2,
+            num_negs_per_pos=num_negs_per_pos,
             filtered=True,
             corruption_scheme=corruption_scheme,
             padding_idx=index_manager.padding_idx

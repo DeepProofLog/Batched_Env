@@ -5,6 +5,9 @@ import random
 import torch
 import torch.profiler
 from torch.profiler import ProfilerActivity, schedule
+import cProfile
+import pstats
+import io
 
 from env import LogicEnv_gym
 from index_manager import IndexManager
@@ -80,7 +83,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                 padding_atoms=args.padding_atoms)
     index_manager.build_fact_index(data_handler.facts)
     
-    if args.corruption_mode == 'dynamic':
+    if args.corruption_mode:
         np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts], dtype=str)
         triples_factory = TriplesFactory.from_labeled_triples(triples=np_facts,
                                                             entity_to_id=index_manager.constant_str2idx,
@@ -110,19 +113,19 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     # --- ENVIRONMENT ---
 
-    def make_env(mode='train', seed=0, queries=None, labels=None):
+    def make_env(mode='train', seed=0, queries=None, labels=None, facts=None):
         def _init():
             env = LogicEnv_gym(
                         index_manager=index_manager,
                         data_handler=data_handler,
                         queries=queries,
                         labels=labels,
+                        facts=facts_set,
                         mode=mode,
                         corruption_mode=args.corruption_mode,
                         corruption_scheme=args.corruption_scheme,
                         train_neg_pos_ratio=args.train_neg_pos_ratio,
                         seed=seed,
-                        dynamic_consult=args.dynamic_consult,
                         max_depth=args.max_depth,
                         memory_pruning=args.memory_pruning,
                         end_proof_action=args.end_proof_action,
@@ -141,12 +144,14 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     env_seeds = np.random.randint(0, 2**10, size=args.n_envs)
     eval_env_seeds = np.random.randint(0, 2**10, size=args.n_eval_envs)
     callback_env_seeds = np.random.randint(0, 2**10, size=1)
+    facts_set = set(data_handler.facts)
     if env_type == 'dummy':
         env = DummyVecEnv([make_env(
                                     mode='train', 
                                     seed=int(env_seeds[i]), 
                                     queries=data_handler.train_queries, 
-                                    labels=[1]*len(data_handler.train_queries)
+                                    labels=[1]*len(data_handler.train_queries),
+                                    facts=facts_set,
                                     ) 
                                     for i in range(args.n_envs)])
         
@@ -155,6 +160,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                         seed=int(eval_env_seeds[i]), 
                                         queries=data_handler.valid_queries,
                                         labels=[1]*len(data_handler.valid_queries),
+                                        facts=facts_set,
                                         ) 
                                         for i in range(args.n_eval_envs)])
         
@@ -163,6 +169,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                         seed=int(callback_env_seeds[i]), 
                                         queries=data_handler.valid_queries,
                                         labels=[1]*len(data_handler.valid_queries),
+                                        facts=facts_set,
                                         ) 
                                         for i in range(1)])
     else:
@@ -170,7 +177,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     mode='train', 
                                     seed=int(env_seeds[i]), 
                                     queries=data_handler.train_queries, 
-                                    labels=[1]*len(data_handler.train_queries)
+                                    labels=[1]*len(data_handler.train_queries),
+                                    facts=facts_set,
                                     ) 
                                     for i in range(args.n_envs)])
 
@@ -179,6 +187,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                         seed=int(eval_env_seeds[i]), 
                                         queries=data_handler.valid_queries,
                                         labels=[1]*len(data_handler.valid_queries),
+                                        facts=facts_set,
                                         ) 
                                         for i in range(args.n_eval_envs)])
 
@@ -187,6 +196,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                         seed=int(callback_env_seeds[i]),
                                         queries=data_handler.valid_queries,
                                         labels=[1]*len(data_handler.valid_queries),
+                                        facts=facts_set,
                                         )
                                         for i in range(1)])
 
@@ -207,7 +217,6 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                                                     'embedder': embedder}})
     else:
         raise ValueError("Model not supported")
-    
 
     # --- TRAIN ---
     model_path = os.path.join(args.models_path,args.run_signature, args.run_signature + f'-seed_{args.seed_run_i}')
@@ -286,9 +295,6 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         # --- Run the profiler ---
         profile = False
         if profile:
-            import cProfile
-            import pstats
-            import io
             profiler = cProfile.Profile()
             profiler.enable()
 
@@ -352,13 +358,19 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     # --- TEST ---   
 
+    if args.test_negatives == None:
+        sampler = data_handler.sampler
+    else:
+        sampler = get_sampler(data_handler=data_handler, 
+                                index_manager=index_manager, 
+                                triples_factory=triples_factory,
+                                corruption_scheme=args.corruption_scheme,
+                                num_negs_per_pos=args.test_negatives,)
+
     print('\nTest set eval...')
 
     eval_profiling = False
     if eval_profiling:
-        import cProfile
-        import pstats
-        import io
         profiler = cProfile.Profile()
         profiler.enable()
     
@@ -376,8 +388,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
             metrics_test = eval_corruptions(model,
                                             eval_env,
                                             data_handler.test_queries,
-                                            corruption_mode=args.corruption_mode,
-                                            corruptions=data_handler.test_corruptions if args.corruption_mode == 'static' else None,
+                                            sampler,
                                             n_corruptions=args.test_negatives,
                                             consult_janus=False,
                                             verbose=1,
@@ -392,7 +403,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         metrics_test = eval_corruptions(model,
                                         eval_env,
                                         data_handler.test_queries,
-                                        data_handler.sampler,
+                                        sampler,
                                         n_corruptions=args.test_negatives,
                                         consult_janus=False,
                                         verbose=1,
@@ -422,7 +433,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         metrics_valid = eval_corruptions(model,
                                         eval_env,
                                         data_handler.valid_queries,
-                                        data_handler.sampler,
+                                        sampler,
                                         n_corruptions=args.valid_negatives,
                                         consult_janus=False,
                                         )
@@ -432,7 +443,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         metrics_train = eval_corruptions(model,
                                         eval_env,
                                         data_handler.train_queries,
-                                        data_handler.sampler,
+                                        sampler,
                                         n_corruptions=args.train_neg_pos_ratio,
                                         consult_janus=True,
                                         )

@@ -26,7 +26,6 @@ if __name__ == "__main__":
             self.file.flush()
             self.stdout.flush()
 
-    DYNAMIC_CONSULT = [True]
     FALSE_RULES = [False] 
     MEMORY_PRUNING = [True] # filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     END_PROOF_ACTION = [False]
@@ -37,7 +36,7 @@ if __name__ == "__main__":
     # reward_type = 1
 
     # Dataset settings 
-    DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
+    DATASET_NAME =  ["wn18rr"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
     TRAIN_DEPTH = [None] # [{-1,3,2}]
     VALID_DEPTH = [None]
     TEST_DEPTH = [None]
@@ -81,7 +80,7 @@ if __name__ == "__main__":
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 256
-    n_steps = 256 # 2048
+    n_steps = 256
     n_eval_envs = 256
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
@@ -130,7 +129,6 @@ if __name__ == "__main__":
         'timesteps_train': TIMESTEPS_TRAIN,
         'restore_best_val_model': RESTORE_BEST_VAL_MODEL,
         'memory_pruning': MEMORY_PRUNING,
-        'dynamic_consult': DYNAMIC_CONSULT,
         'corruption_mode': CORRUPTION_MODE,
         'train_neg_pos_ratio': TRAIN_NEG_POS_RATIO,
         'false_rules': FALSE_RULES,

@@ -48,8 +48,11 @@ def evaluate_policy(
         if verbose >= 1:
             # Calculate total completed episodes from the counts array
             total_completed_episodes = np.sum(episode_counts)
+            completed_envs_count = np.sum(episode_counts >= episode_count_targets)
             # Use \r to return to the beginning of the line, end='' to prevent newline
-            progress_str = f"Evaluating episodes: {total_completed_episodes}/{total_episodes_to_run}"
+            progress_str = (f"Evaluating episodes: {total_completed_episodes}/{total_episodes_to_run} | "
+                            f"Envs done: {completed_envs_count}/{n_envs}")
+
             # Pad with spaces to clear previous longer messages and flush stdout
             print(f"\r{progress_str:<{progress_bar_width}}", end="")
             sys.stdout.flush() # Ensure it gets displayed immediately
@@ -132,16 +135,17 @@ def eval_corruptions(
 
     for b, batch_start in enumerate(range(0, len(data), num_envs)):
         batch_end = min(batch_start + num_envs, len(data))
-        batch_size = batch_end - batch_start
         batch_queries = data[batch_start:batch_end]
 
         print(f"\n--- Batch {b+1}/{total_batches} (Queries {batch_start+1}-{batch_end}) ---") if verbose >= 1 else None
 
+        print("Creating corruptions...") if verbose >= 1 else None
         neg_time = time.time()
         batch_corruptions = sampler.get_negatives_from_states([[query] for query in batch_queries],
                                                               model.device,
-                                                              all_negatives=True)
-        batch_corruptions = [corruption[:n_corruptions] for corruption in batch_corruptions]
+                                                              all_negatives=True if n_corruptions is None else False,
+                                                              )
+        assert all(len(corruption) == len(batch_corruptions[0]) for corruption in batch_corruptions), "All batch corruptions must have the same length"
         print(f"Batch corruptions took {time.time()-neg_time:.3f}s") if verbose >= 1 else None
 
         # For each query in the batch, reset its env with the query and the corruptions

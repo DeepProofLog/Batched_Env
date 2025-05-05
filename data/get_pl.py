@@ -14,9 +14,9 @@ def get_prolog_rules(file_dir):
             body = rule.split("->")[0].strip()
             head = rule.split("->")[1].strip()
 
-            # raise an error if the vars in the body or head are not letters (only the arguments)
-            vars_head = re.findall(r'\b([a-zA-Z_]\w*)\b', head)
-            vars_body = re.findall(r'\b([a-zA-Z_]\w*)\b', body)
+            # # raise an error if the vars in the body or head are not letters (only the arguments)
+            # vars_head = re.findall(r'\b([a-zA-Z_]\w*)\b', head)
+            # vars_body = re.findall(r'\b([a-zA-Z_]\w*)\b', body)
 
             # if len(vars_head) > 1 and not all(var.isalpha() for var in vars_head[1:]):
             #      # Find the specific non-alpha argument for a clearer error
@@ -66,6 +66,8 @@ def get_prolog_facts(file_dirs):
         matches = re.findall(r'(\b\w+)\(([^)]*)\)', f)
         # remove '_' from the predicates starting with '_' in the body and head
         f = re.sub(r'\b_([a-zA-Z]\w*)\b', lambda x: x.group(1), f)
+        # Given the format pred(arg1,arg2) in facts, add "" to the args: pred("arg1","arg2")
+        f = re.sub(r'(\w+)\(([^)]*)\)', lambda x: f'{x.group(1)}("{x.group(2).replace(",", '","')}")', f)
         facts_new.append(f)
         predicates_with_arity = [(predicate, len(args.split(','))) for predicate, args in matches]
         for predicate, arity in predicates_with_arity:
@@ -106,6 +108,27 @@ def get_pl(rule_file, fact_files, output_file, use_tabling=False):
             f.write(fact)
         for rule in rules:
             f.write(rule)
+
+        # add this at the end of the file
+        add_str = '''one_step_list([Goal|RestGoals], NewGoalsList) :-
+            findall(NewGoals,
+                (
+                    clause(Goal, Body),
+                    body_to_list(Body, BodyList),
+                    append(BodyList, RestGoals, NewGoals)
+                ),
+                AllNewGoals),
+            (
+                AllNewGoals = [] ->
+                    NewGoalsList = [false]
+                ;
+                    NewGoalsList = AllNewGoals
+            ).
+        body_to_list(true, []) :- !.
+        body_to_list((A,B), [A|Rest]) :- !, body_to_list(B, Rest).
+        body_to_list(A, [A]).'''
+        f.write(add_str)
+
     return None
 
 
@@ -115,29 +138,10 @@ if __name__ == "__main__":
     Obtains a Prolog file from the rules and facts files.    
     '''
 
-    dataset = 'wn18rr'
+    dataset = 'family'
     current_dir = os.getcwd()
     root_dir = f"{current_dir}/data/{dataset}/"
 
     get_pl(root_dir+"rules.txt", [root_dir+"facts.txt", root_dir+"train.txt"], root_dir+ dataset+".pl",)
 
 
-    # add this at the end of the file
-
-    '''one_step_list([Goal|RestGoals], NewGoalsList) :-
-        findall(NewGoals,
-            (
-                clause(Goal, Body),
-                body_to_list(Body, BodyList),
-                append(BodyList, RestGoals, NewGoals)
-            ),
-            AllNewGoals),
-        (
-            AllNewGoals = [] ->
-                NewGoalsList = [false]
-            ;
-                NewGoalsList = AllNewGoals
-        ).
-    body_to_list(true, []) :- !.
-    body_to_list((A,B), [A|Rest]) :- !, body_to_list(B, Rest).
-    body_to_list(A, [A]).'''

@@ -156,7 +156,6 @@ class RNN_state(nn.Module):
             self.dropout = nn.Dropout(p=dropout_rate)
         self.gru = nn.GRU(input_size=embed_dim, hidden_size=embed_dim, num_layers=1, batch_first=True)
         self.device = device
-        self.to(device)
 
     def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
         """
@@ -215,7 +214,6 @@ class RNN(nn.Module):
         
         # GRU expects inputs of shape (seq_len, batch, input_size)
         self.gru = nn.GRU(input_size=embed_dim, hidden_size=embed_dim, num_layers=1)
-        self.to(device)
     
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
         """
@@ -296,7 +294,6 @@ class Transformer_state(nn.Module):
         self.query = nn.Parameter(torch.randn(1, 1, embed_dim))
         # MultiheadAttention expects inputs as (seq_len, batch, embed_dim)
         self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
-        self.to(device)
 
     def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
         """
@@ -363,7 +360,6 @@ class Transformer(nn.Module):
         
         # nn.MultiheadAttention expects input of shape (seq_len, batch, embed_dim)
         self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
-        self.to(device)
     
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
         """
@@ -451,9 +447,9 @@ class MultiHeadAttention(nn.Module):
         Returns:
             output: Tensor of shape [B, n_states, n_atoms, embed_dim]
         """
-        # Move tensors to the specified device
-        predicate_emb = predicate_emb.to(self.device)
-        constant_embs = constant_embs.to(self.device)
+        # # Move tensors to the specified device
+        # predicate_emb = predicate_emb.to(self.device)
+        # constant_embs = constant_embs.to(self.device)
         
         # Apply dropout
         predicate_emb = self.dropout(predicate_emb)
@@ -560,7 +556,6 @@ class Attention_State(nn.Module):
         if dropout_rate > 0:
             self.output_dropout = nn.Dropout(p=dropout_rate)
             
-        self.to(device)
 
     def add_loss(self, loss_value):
         # Placeholder for your custom regularization loss mechanism
@@ -676,7 +671,6 @@ class Attention(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
         self.regularization = regularization
         self.device = device
-        self.to(device)
     
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
         """
@@ -727,7 +721,6 @@ class TransE(nn.Module):
         self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate > 0 else nn.Identity()
         self.regularization = regularization
         self.device = device
-        self.to(device)
 
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
         predicate_emb = predicate_emb.squeeze(-2)
@@ -759,7 +752,6 @@ class ComplEx(nn.Module):
         self.regularization_n3 = regularization_n3
         self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate > 0 else nn.Identity()
         self.device = device
-        self.to(device)
     
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
         predicate_emb = predicate_emb.squeeze(-2)
@@ -834,7 +826,6 @@ class RotatE(nn.Module):
         self.regularization = regularization
         self.regularization_n3 = regularization_n3
         self.device = device
-        self.to(device)
         if dropout_rate > 0:
             self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate > 0 else nn.Identity()
         
@@ -905,7 +896,6 @@ class Concat_Atoms(nn.Module):
         if regularization > 0:
             self.regularization = regularization
         self.device = device
-        self.to(device)
 
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
         predicate_emb = predicate_emb.squeeze(-2)  # Remove unnecessary dimension if present
@@ -945,7 +935,6 @@ class Concat_States(nn.Module):
         if regularization > 0:
             self.regularization = regularization
         self.device = device
-        self.to(device)
 
     def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
         if self.dropout_rate > 0:
@@ -966,7 +955,6 @@ class Sum_state(nn.Module):
         if dropout_rate > 0:
             self.dropout = nn.Dropout(p=dropout_rate)
         self.device = device
-        self.to(device)
 
     def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
         if self.dropout_rate > 0:
@@ -983,7 +971,6 @@ class Mean_state(nn.Module):
         if dropout_rate > 0:
             self.dropout = nn.Dropout(p=dropout_rate)
         self.device = device
-        self.to(device)
 
     def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
         if self.dropout_rate > 0:
@@ -1014,7 +1001,6 @@ class Sum_atom(nn.Module):
         if dropout_rate > 0:
             self.dropout = nn.Dropout(p=dropout_rate)
         self.device = device
-        self.to(device)
 
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
 
@@ -1055,7 +1041,7 @@ class HybridConstantEmbedder(nn.Module):
         )
         
         # Store pre-loaded image data with proper indexing
-        self.register_buffer('image_data', image_data.to(device))
+        self.register_buffer('image_data', image_data)
 
     def forward(self, indices):
         # Initialize output tensor
@@ -1097,7 +1083,6 @@ class ConstantEmbeddings(nn.Module):
         self.embedder = nn.Embedding(num_constants, embedding_dim, padding_idx=0)
         self.regularization = regularization
         self.device = device
-        self.to(device)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         embeddings = self.embedder(indices)
@@ -1113,7 +1098,6 @@ class PredicateEmbeddings(nn.Module):
         self.embedder = nn.Embedding(num_predicates, embedding_dim, padding_idx=0)
         self.regularization = regularization
         self.device = device
-        self.to(device)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         embeddings = self.embedder(indices)

@@ -171,7 +171,6 @@ class IndexManager():
 
         return sub_index
 
-
     def subindices_to_terms(
         self,
         idx: torch.Tensor
@@ -205,7 +204,6 @@ class IndexManager():
         # Build Term objects
         terms = [Term(predicate=p, args=(h, t))
                  for p, h, t in zip(preds, heads, tails)]
-
         # Assign back to batches
         flat_positions = mask.nonzero(as_tuple=False).squeeze(1).tolist()  # positions in [0, B*M)
         results: List[List[Term]] = [[] for _ in range(B)]

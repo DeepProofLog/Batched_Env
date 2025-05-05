@@ -8,33 +8,32 @@ from utils import is_variable, Term, Rule, get_atom_from_string, get_rule_from_s
 
 
 
+CLAUSE_FINDER = re.compile(r'\w+\((.*?)\)') # Only capture content inside parentheses
 
-def get_max_arity(file_path:str)-> int:
-    """
-    Determine the highest arity (number of arguments) among all predicates in a file.
-
-    Args:
-        file_path (str): Path to the file containing predicate definitions.
-
-    Returns:
-        int: Maximum arity found.
-    """
+def get_max_arity(file_path: str) -> int:
+    """Optimized version using line-by-line iteration and simplified parsing."""
     max_arity = 0
     try:
         with open(file_path, "r") as f:
-            lines = f.readlines()
-            for line in lines:
+            for line in f: # Iterate line by line
+                # --- Early exit/skip conditions ---
                 if line.startswith("one_step_list"):
-                    break
-                clauses = re.findall(r'\w+\(.*?\)', line)
-                for clause in clauses:
-                    try:
-                        predicate, args = clause.split("(", 1)
-                        arity = len(args.split(","))
-                        if arity > max_arity:
-                            max_arity = arity
-                    except ValueError:
-                        continue  # Skip malformed clauses
+                    break # Assuming we don't need to read past this
+                line = line.strip() # Strip whitespace once
+                if not line or line.startswith('%'): # Skip empty/comment lines
+                     continue
+
+                # --- Find potential arguments content ---
+                # Use finditer for potentially better memory usage than findall on long lines
+                for match in CLAUSE_FINDER.finditer(line):
+                    args_content = match.group(1)
+                    if not args_content: # Handles predicate() -> arity 0 or 1 based on convention
+                        arity = 0 # Or 1 if 'pred()' implies arity 1 even with no args listed
+                    else:
+                        # Count commas and add 1 for arity
+                        arity = args_content.count(',') + 1
+                    max_arity = max(max_arity, arity)
+
     except FileNotFoundError:
         raise FileNotFoundError(f"File {file_path} not found")
     return max_arity
@@ -218,53 +217,54 @@ def get_rules_from_rules_file(file_path: str) -> List[Rule]:
         raise
     return rules
 
+
+
 def get_queries(path: str) -> List[Term]:
-    """
-    Get queries from file.
-    
-    Args:
-        path: Path to the file containing queries and labels
-        
-    Returns:
-        List of Term objects representing queries
-    """
     queries = []
     with open(path, "r") as f:
-        lines = f.readlines()
-        for line in lines:
-            query = line.strip()
-            queries.append(get_atom_from_string(query))
+        for line in f: # Line-by-line
+            line = line.strip()
+            if line: # Avoid processing empty lines
+                # Use OPTIMIZED version
+                queries.append(get_atom_from_string(line))
     return queries
 
-def get_filtered_queries(path: str, 
-                         depth: Optional[Set], 
-                         name: str) -> List[Term]:
-    """
-    Filter queries by proof search depth, optionally excluding non-provable ones.
-
-    Args:
-        path (str): Filepath containing lines of "query depth".
-        depth (Optional[Set]): Depth criterion
-        name (str): Identifier for this query set (used in logging).
-
-    Returns:
-        List[Term]: Queries whose depths satisfy the filter.
-    """
+def get_filtered_queries(path: str,
+                                 depth: Optional[Set[int]], # Explicitly Set[int]
+                                 name: str) -> List[Term]:
     queries = []
-    with open(path, "r") as f:
-        lines = f.readlines()
-        for line in lines:
-            query = line.strip().split(" ")[0]
-            query_depth = line.strip().split(" ")[1]
-            query_depth = int(query_depth) if query_depth != "-1" else -1
-            # if depth == None or (depth=="-1" and query_depth == -1) \
-                # or (depth.startswith('<') and query_depth < int(depth[1:]) and query_depth>=0)\
-                # or (depth.startswith('>') and query_depth > int(depth[1:]))  or (depth == str(query_depth)):
-            if depth == None or query_depth in depth:
-                queries.append(get_atom_from_string(query))
-    print(f"Number of queries with depth {depth} in {name}: {len(queries)}/ {len(lines)}")
-    return queries
+    try:
+         with open(path, "r") as f:
+              lines_count = 0 # For logging percentage
+              for line in f: # Line-by-line
+                   lines_count += 1
+                   line = line.strip()
+                   if not line: continue
 
+                   parts = line.split(" ", 1) # Split only once, max 1 split needed
+                   if len(parts) == 2:
+                        query_str = parts[0]
+                        depth_str = parts[1]
+                        try:
+                             query_depth = int(depth_str) if depth_str != "-1" else -1
+                             # Check against the depth set
+                             if depth is None or query_depth in depth:
+                                  # Use OPTIMIZED version
+                                  queries.append(get_atom_from_string(query_str))
+                        except ValueError:
+                             print(f"Warning: Skipping line in {name} due to non-integer depth: {line}")
+                        except IndexError:
+                             print(f"Warning: Skipping line in {name} due to missing depth: {line}")
+
+                   else: # Handle lines without a depth specified? Or warn?
+                       print(f"Warning: Skipping malformed line in {name} (expected 'query depth'): {line}")
+
+    except FileNotFoundError:
+         raise FileNotFoundError(f"File {path} not found")
+
+    # Correct logging total lines count
+    print(f"Number of queries with depth {depth} in {name}: {len(queries)} / {lines_count}")
+    return queries
 
 
 
@@ -341,11 +341,8 @@ class DataHandler:
         rules_file = join(base_path, rules_file) if rules_file else None
         facts_file = join(base_path, facts_file) if facts_file else None
 
-        if janus_file:
-            self.facts, self.rules = get_rules_from_janus_file(janus_path)
-        else:
-            self.facts = get_queries(facts_file)
-            self.rules = get_rules_from_rules_file(rules_file)
+        self.facts = get_queries(facts_file)
+        self.rules = get_rules_from_rules_file(rules_file)
 
         self.train_corruptions = self.valid_corruptions = self.test_corruptions = self.neg_train_queries = None
         if not train_depth:
@@ -405,7 +402,7 @@ class DataHandler:
         # Setup domain mapping for countries dataset
         self.entity2domain = None
         self.domain2entity = None
-        if corruption_mode == "dynamic":
+        if corruption_mode:
             if 'countries' in self.dataset_name or 'ablation' in self.dataset_name:
                 # Load the domain file
                 domain_file = join(base_path, "domain2constants.txt")
