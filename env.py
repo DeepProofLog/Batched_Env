@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 import random
 from tensordict import TensorDict, NonTensorData
 import torch
@@ -33,7 +33,7 @@ class LogicEnv_gym(gym.Env):
                 padding_atoms: int = 10,
                 padding_states: int = 20,
                 verbose: int = 0,
-                prover_verbose: int = 1,
+                prover_verbose: int = 0,
                 device: torch.device = torch.device("cpu"),
                 engine: str = 'python',
                 ):
@@ -193,8 +193,7 @@ class LogicEnv_gym(gym.Env):
                 state, _ = self.get_random_queries(self.queries, n=1)
                 label = 1
                 if self.counter % (int(self.train_neg_pos_ratio) + 1) != 0:
-                    state = self.get_negatives(state)
-
+                    state = self.sampler.get_negatives_from_states(state,self.device)
                     # Alternate between head and tail
                     if not hasattr(self, 'negation_toggle'):
                         self.negation_toggle = 0  # Initialize if it doesn't exist
@@ -495,35 +494,3 @@ class LogicEnv_gym(gym.Env):
         derived_sub_indices_next[0, 0] = false_sub_id
         return derived_states_next, derived_sub_indices_next
 
-
-    def get_negatives(self, state, all_negatives=False):
-        """Generate negative examples by corrupting a positive example"""
-        query = [(state.args[0], state.predicate, state.args[1])] # convert query to (cte, pred, cte) format
-        positive_batch = self.triples_factory.map_triples(np.array(query))
-        
-        if all_negatives:
-            negative_batch = self.sampler.corrupt_batch_all(positive_batch)
-        else:
-            negative_batch = self.sampler.corrupt_batch(positive_batch)
-            # if there is a 0, replace it with another constant from the same batch
-            if any([n[0].item()==0 for batch in negative_batch for n in batch]):
-                for batch in negative_batch:
-                    for n in batch:
-                        if n[0].item() == 0:
-                            n[0] = torch.tensor(self.seed_gen.choice(list(n[0].item() for n in batch if n[0].item() != 0)), device=self.device)
-            if any([n[2].item()==0 for batch in negative_batch for n in batch]):
-                for batch in negative_batch:
-                    for n in batch:
-                        if n[2].item() == 0:
-                            n[2] = torch.tensor(self.seed_gen.choice(list(n[2].item() for n in batch if n[2].item() != 0)), device=self.device)
-            
-
-        negative_batch_str = []
-        for batch in negative_batch:
-            for n in batch:
-                assert self.index_manager.constant_idx2str[n[0].item()] != 0, f"Negative batch contains 0s, used for padding,{n}"
-                assert self.index_manager.constant_idx2str[n[2].item()] != 0, f"Negative batch contains 0s, used for padding,{n}"
-                negative_batch_str.append((self.index_manager.constant_idx2str[n[0].item()],self.index_manager.predicate_idx2str[n[1].item()],
-                                        self.index_manager.constant_idx2str[n[2].item()]))
-        state = [Term(predicate=n[1].strip(), args=(n[0].strip(), n[2].strip())) for n in negative_batch_str] # convert each negative back to Term format
-        return state

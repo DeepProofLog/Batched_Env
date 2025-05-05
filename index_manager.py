@@ -24,6 +24,7 @@ class IndexManager():
         self.constants = constants
         self.predicates = predicates
         self.special_preds = ['True', 'False', 'End']
+        self.padding_idx = 0
 
         self.max_total_vars = max_total_vars # Max *pre-assigned* variables
 
@@ -168,8 +169,51 @@ class IndexManager():
             if arg_indices: # Check if there are any arguments to assign
                 current_sub_row[1:max_j + 1] = torch.tensor(arg_indices, device=self.device, dtype=torch.int64)
 
-
         return sub_index
+
+
+    def subindices_to_terms(
+        self,
+        idx: torch.Tensor
+    ) -> List[List[Term]]:
+        """
+        Vectorized conversion of sub-indices back to Term-based states.
+
+        Args:
+            idx: Tensor of shape (B, M, padding_atoms, max_arity+1)
+        Returns:
+            List of B lists, each containing Terms for non-padding atoms.
+        """
+        B, M, P, A = idx.shape
+        # Extract the first atom slot (predicate + up to two args)
+        atoms = idx[..., 0, :].reshape(B * M, A)  # shape (B*M, A)
+
+        # Treat index 0 as padding: drop any atom where any field == 0
+        mask = (atoms != self.padding_idx).all(dim=1)  # shape (B*M,)
+
+        # Filter valid entries
+        valid = atoms[mask]  # shape (N, A)
+        rel_idxs = valid[:, 0].tolist()
+        head_idxs = valid[:, 1].tolist()
+        tail_idxs = valid[:, 2].tolist()
+
+        # Map indices to string labels
+        preds = [self.predicate_idx2str[r] for r in rel_idxs]
+        heads = [self.constant_idx2str[h] for h in head_idxs]
+        tails = [self.constant_idx2str[t] for t in tail_idxs]
+
+        # Build Term objects
+        terms = [Term(predicate=p, args=(h, t))
+                 for p, h, t in zip(preds, heads, tails)]
+
+        # Assign back to batches
+        flat_positions = mask.nonzero(as_tuple=False).squeeze(1).tolist()  # positions in [0, B*M)
+        results: List[List[Term]] = [[] for _ in range(B)]
+        for pos, term in zip(flat_positions, terms):
+            batch_idx = pos // M
+            results[batch_idx].append(term)
+        return results
+
 
     def build_fact_index(self, facts: List[Term]) -> Dict[Tuple, Set[Term]]:
         self.fact_index.clear()

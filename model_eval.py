@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Tuple, Union
 import time
+import sys
 
 import gymnasium as gym
 import numpy as np
@@ -10,11 +11,13 @@ from stable_baselines3.common import type_aliases
 from stable_baselines3.common.on_policy_algorithm import obs_as_tensor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
 
+
 def evaluate_policy(
     model: "type_aliases.PolicyPredictor",
     env: Union[gym.Env, VecEnv],
     n_eval_episodes: int = 10,
     deterministic: bool = True,
+    verbose: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Runs policy for ``n_eval_episodes`` episodes and returns arrays of rewards,
@@ -30,12 +33,27 @@ def evaluate_policy(
     episode_counts = np.zeros(n_envs, dtype="int")
     # Divides episodes among different sub environments in the vector as evenly as possible
     episode_count_targets = np.array([(n_eval_episodes + i) // n_envs for i in range(n_envs)], dtype="int")
+    total_episodes_to_run = np.sum(episode_count_targets)
+
 
     current_rewards = np.zeros(n_envs)
     current_lengths = np.zeros(n_envs, dtype="int")
     current_log_probs = np.zeros(n_envs)
     observations = env.reset()
+    total_completed_episodes = 0 # Track total completed episodes
+    progress_bar_width = 50 # Width of the progress message area
+    print(f"Evaluating {total_episodes_to_run} episodes.")
     while (episode_counts < episode_count_targets).any():
+
+        if verbose >= 1:
+            # Calculate total completed episodes from the counts array
+            total_completed_episodes = np.sum(episode_counts)
+            # Use \r to return to the beginning of the line, end='' to prevent newline
+            progress_str = f"Evaluating episodes: {total_completed_episodes}/{total_episodes_to_run}"
+            # Pad with spaces to clear previous longer messages and flush stdout
+            print(f"\r{progress_str:<{progress_bar_width}}", end="")
+            sys.stdout.flush() # Ensure it gets displayed immediately
+
         obs_tensor = obs_as_tensor(observations, model.device)
         actions, values, log_probs = model.policy(obs_tensor, deterministic=deterministic)
         log_probs = log_probs.detach().cpu().numpy()
@@ -62,6 +80,11 @@ def evaluate_policy(
 
         observations = new_observations
 
+    # --- Clear progress bar after loop ---
+    if verbose >= 1:
+        print("\r" + " " * progress_bar_width + "\r", end="") # Clear the line
+        sys.stdout.flush()
+
     return episode_rewards, episode_lengths, episode_log_probs
 
 
@@ -70,9 +93,10 @@ def eval_corruptions(
     model: "type_aliases.PolicyPredictor",
     env: Union[gym.Env, VecEnv],
     data: List[Any],
+    sampler: Any = None,
     n_corruptions: int = None,
     deterministic: bool = True,
-    verbose: int = 0,
+    verbose: int = 1,
     consult_janus: bool = False,
     plot: bool = False,
 ) -> Dict[str, Any]:
@@ -100,22 +124,31 @@ def eval_corruptions(
 
     if n_corruptions == -1: n_corruptions = None
     
-    if verbose >= 1:
-        print(f"Evaluating {len(data)}. Max N corruptions: {n_corruptions}")
-        print(f"Using {'vectorized' if is_vec_env else 'single'} environment with {num_envs} envs")
-    
-    for b,batch_start in enumerate(range(0, len(data), num_envs)):
+    print(f"Evaluating {len(data)} queries.")
+    print(f"Max N corruptions per query: {'All' if n_corruptions is None else n_corruptions}")
+    print(f"Using {'vectorized' if is_vec_env else 'single'} environment with {num_envs} envs")
+
+    total_batches = (len(data) + num_envs - 1) // num_envs # Calculate total number of batches
+
+    for b, batch_start in enumerate(range(0, len(data), num_envs)):
         batch_end = min(batch_start + num_envs, len(data))
         batch_size = batch_end - batch_start
         batch_queries = data[batch_start:batch_end]
 
-        print('\n\nbatch start:',batch_start, 'batch end:',batch_end, 'batch size:',batch_size,'. Batch',b,'of',len(data)//num_envs) if verbose >= 1 else None
-        
+        print(f"\n--- Batch {b+1}/{total_batches} (Queries {batch_start+1}-{batch_end}) ---") if verbose >= 1 else None
+
+        neg_time = time.time()
+        batch_corruptions = sampler.get_negatives_from_states([[query] for query in batch_queries],
+                                                              model.device,
+                                                              all_negatives=True)
+        batch_corruptions = [corruption[:n_corruptions] for corruption in batch_corruptions]
+        print(f"Batch corruptions took {time.time()-neg_time:.3f}s") if verbose >= 1 else None
+
         # For each query in the batch, reset its env with the query and the corruptions
         corruptions_list = []
         for env_idx, query in enumerate(batch_queries):
-            query_env = env.envs[env_idx].env if is_vec_env else env
-            query_corruptions = query_env.get_negatives(query, all_negatives=True)[:n_corruptions]
+
+            query_corruptions = batch_corruptions[env_idx]
             corruptions_list.append(len(query_corruptions))
 
             eval_data = [query] + query_corruptions
@@ -136,8 +169,9 @@ def eval_corruptions(
                                                     env, 
                                                     n_eval_episodes=num_envs*(1+n_corruptions), 
                                                     deterministic=deterministic,
-                                                    )
-        print('batch',b,'took',round(time.time()-time_batch,3)) if verbose >= 1 else None
+                                                    verbose=verbose)
+                                                    
+        print(f'Batch {b+1} evaluation took {time.time()-time_batch:.3f}s')
 
         filter_mask = None
         if len(batch_queries) < num_envs:

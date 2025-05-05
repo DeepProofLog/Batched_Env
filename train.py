@@ -81,14 +81,16 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     index_manager.build_fact_index(data_handler.facts)
     
     if args.corruption_mode == 'dynamic':
-        np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts],dtype=str)
+        np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts], dtype=str)
         triples_factory = TriplesFactory.from_labeled_triples(triples=np_facts,
                                                             entity_to_id=index_manager.constant_str2idx,
                                                             relation_to_id=index_manager.predicate_str2idx,
                                                             compact_id=False,
                                                             create_inverse_triples=False)
-        
-        data_handler.sampler = get_sampler(data_handler=data_handler, index_manager=index_manager, triples_factory=triples_factory,
+
+        data_handler.sampler = get_sampler(data_handler=data_handler, 
+                                           index_manager=index_manager, 
+                                           triples_factory=triples_factory,
                                            corruption_scheme=args.corruption_scheme)
         data_handler.triples_factory = triples_factory
 
@@ -229,9 +231,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         
     if not args.load_model and args.timesteps_train > 0:
 
-        timing_callback = EpochTimingCallback(verbose=1)
-
-        callbacks = [timing_callback]
+        # timing_callback = EpochTimingCallback(verbose=1)
+        # callbacks = [timing_callback]
+        callbacks = []
 
         no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
@@ -390,6 +392,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         metrics_test = eval_corruptions(model,
                                         eval_env,
                                         data_handler.test_queries,
+                                        data_handler.sampler,
                                         n_corruptions=args.test_negatives,
                                         consult_janus=False,
                                         verbose=1,
@@ -419,6 +422,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         metrics_valid = eval_corruptions(model,
                                         eval_env,
                                         data_handler.valid_queries,
+                                        data_handler.sampler,
                                         n_corruptions=args.valid_negatives,
                                         consult_janus=False,
                                         )
@@ -428,6 +432,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         metrics_train = eval_corruptions(model,
                                         eval_env,
                                         data_handler.train_queries,
+                                        data_handler.sampler,
                                         n_corruptions=args.train_neg_pos_ratio,
                                         consult_janus=True,
                                         )

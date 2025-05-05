@@ -2,3 +2,4 @@
 *.pyc
 models/*
 profiler_traces/
+__pycache__/
