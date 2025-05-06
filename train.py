@@ -17,6 +17,7 @@ from dataset import DataHandler
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from embeddings import get_embedder
 from neg_sampling import get_sampler
+from custom_dummy_env import CustomDummyVecEnv
 from model_eval import eval_corruptions
 
 # from stable_baselines3 import PPO
@@ -140,11 +141,22 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         return _init
 
     # Create vectorized environments for training
-    env_type = 'dummy'
-    env_seeds = np.random.randint(0, 2**10, size=args.n_envs)
-    eval_env_seeds = np.random.randint(0, 2**10, size=args.n_eval_envs)
-    callback_env_seeds = np.random.randint(0, 2**10, size=1)
     facts_set = set(data_handler.facts)
+    env_type = 'dummy'
+
+    # --- SEEDING ---
+    # Set the seed for reproducibility. Train, eval, and callback envs
+    # will have different seeds generators to ensure independence.
+    ss = np.random.SeedSequence(args.seed_run_i)
+    child_seeds = ss.spawn(3)
+    rng_env = np.random.Generator(np.random.PCG64(child_seeds[0]))
+    rng_eval = np.random.Generator(np.random.PCG64(child_seeds[1]))
+    rng_callback = np.random.Generator(np.random.PCG64(child_seeds[2]))
+
+    env_seeds = rng_env.integers(0, 2**10, size=args.n_envs)
+    eval_env_seeds = rng_eval.integers(0, 2**10, size=args.n_eval_envs)
+    callback_env_seeds = rng_callback.integers(0, 2**10, size=1)
+
     if env_type == 'dummy':
         env = DummyVecEnv([make_env(
                                     mode='train', 
@@ -155,7 +167,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                     ) 
                                     for i in range(args.n_envs)])
         
-        eval_env = DummyVecEnv([make_env(
+        eval_env = CustomDummyVecEnv([make_env(
                                         mode='eval', 
                                         seed=int(eval_env_seeds[i]), 
                                         queries=data_handler.valid_queries,

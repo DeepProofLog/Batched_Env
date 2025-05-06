@@ -368,8 +368,8 @@ def get_next_unification_python(state: List[Term],
 
     # --- Var renaming ---
     if unification_strategy == 'rules_and_facts':
-        next_states, next_var_index = rename_vars(next_states, next_var_index)
-        # next_states = rename_vars_local(next_states, next_var_index, verbose=verbose)
+        # next_states, next_var_index = rename_vars(next_states, next_var_index)
+        next_states = rename_vars_local(next_states, next_var_index, verbose=verbose)
 
     print('\nNext states:', next_states) if verbose else None
     print('++++++++++++++\n') if verbose else None
