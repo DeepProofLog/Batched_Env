@@ -37,7 +37,7 @@ def evaluate_policy(
     
     total = targets.sum()
     if verbose:
-        print(f"\nEvaluating {total} episodes on {n_envs} envs (targets={targets.tolist()})")
+        print(f"\nEvaluating {total} episodes on {n_envs} envs (avg target: {targets.mean()})")
     
     env._episode_target[:] = targets
     env._episode_count[:] = 0
@@ -148,18 +148,22 @@ def eval_corruptions(
         print(f"\n--- Batch {b+1}/{total_batches} (Queries {start+0}-{min(start+num_envs, len(data)-1)}) ---")
 
         # get corruptions
+        print(f"Getting corruptions")
+        start_time = time.time()
         corrs = sampler.get_negatives_from_states(
             [[q] for q in batch],
             model.device,
             all_negatives=(n_corruptions is None),
         )
+        print(f"Corruption time: {time.time() - start_time:.2f}s")
         if B == 1:
             corrs = [corrs]
         nc = len(corrs[0])
-        assert all(len(c) == nc for c in corrs), "Unequal corruption counts"
+        assert all(len(c) == nc for c in corrs), f"Unequal corruption counts for queries: {len(corrs[0])} != {[len(c) for c in corrs]}"
 
         print(f"Total episodes: {B} (envs) x {1+nc} (negatives) = {B*(1+nc)} (total)")
         # configure each sub‐env
+        start_time = time.time()
         targets = np.zeros(num_envs, dtype=int)
         for i, (q, negs) in enumerate(zip(batch, corrs)):
             seq = [q] + negs
@@ -180,6 +184,7 @@ def eval_corruptions(
             target_episodes=targets,
             verbose=verbose,
         )
+        print(f"Eval time: {time.time() - start_time:.2f}s")
 
         rewards   = rewards[:B]
         lengths   = lengths[:B]
@@ -219,6 +224,15 @@ def eval_corruptions(
             hits1_list.extend(hits1.tolist())
             hits3_list.extend(hits3.tolist())
             hits10_list.extend(hits10.tolist())
+
+        print('\nrolling rwds pos    :',np.round(np.mean(all_pos_rw),3)    , '\trolling rwds neg       :',np.round(np.mean(all_neg_rw),3))
+        print('rolling ep len pos  :',np.round(np.mean(all_pos_len),3), '\trolling episode len neg:',np.round(np.mean(all_neg_len),3))
+        print('rolling logprobs pos:',np.round(np.mean(all_pos_lp),3)  , '\trolling log probs neg  :',np.round(np.mean(all_neg_lp),3))
+        if nc > 0:
+            print('\nmrr   :',np.round(np.mean(mrr),3)   ,'\trolling mrr   :',np.round(np.mean(mrr_list),3)) 
+            print('hits1 :',np.round(np.mean(hits1),3) ,'\trolling hits1 :',np.round(np.mean(hits1_list),3))
+            print('hits3 :',np.round(np.mean(hits3),3) ,'\trolling hits3 :',np.round(np.mean(hits3_list),3))
+            print('hits10:',np.round(np.mean(hits10),3),'\trolling hits10:',np.round(np.mean(hits10_list),3))
 
     # to NumPy arrays
     pos_rw = np.array(all_pos_rw)
