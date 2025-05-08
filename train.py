@@ -84,6 +84,23 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                 padding_atoms=args.padding_atoms)
     index_manager.build_fact_index(data_handler.facts)
     
+    # --- Tensor Conversion ---
+    from python_unification_idx import facts_to_tensor_im, rules_to_tensor_im
+    from typing import List, Tuple, Dict, Optional, Set, FrozenSet
+
+    # Convert facts to tensor and set of indexed tuples
+    data_handler.facts_tensor = facts_to_tensor_im(data_handler.facts_terms, data_handler.index_manager)
+    data_handler.facts_as_set_indices: FrozenSet[Tuple[int, int, int]] = frozenset(
+        tuple(f.tolist()) for f in data_handler.facts_tensor)
+    
+    # Convert rules to tensor
+    max_rule_atoms = max(1 + len(r.body) for r in data_handler.rules_objects) if data_handler.rules_objects else 0
+    data_handler.rules_tensor, data_handler.rule_lengths_tensor = rules_to_tensor_im(
+        data_handler.rules_objects, max_rule_atoms, data_handler.index_manager
+    )
+    # --- End Tensor Conversion ---
+
+
     if args.corruption_mode:
         np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts], dtype=str)
         triples_factory = TriplesFactory.from_labeled_triples(triples=np_facts,

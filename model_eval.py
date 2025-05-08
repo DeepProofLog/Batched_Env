@@ -19,7 +19,11 @@ def evaluate_policy(
     deterministic: bool = True,
     target_episodes: np.ndarray = None,
     verbose: int = 0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Run policy for a specified number of episodes per env, returning
+    rewards, lengths, log_probs, and a validity mask of shape (targets_len, max_target).
+    """
     if not isinstance(env, VecEnv):
         print("Warning: wrapping single env in DummyVecEnv")
         env = DummyVecEnv([lambda: env])
@@ -32,18 +36,22 @@ def evaluate_policy(
     else:
         targets = np.array(target_episodes, dtype=int)
 
-    assert len(target_episodes) == n_envs, "target_episodes must be == n_envs"
-        
-    
-    total = targets.sum()
+    targets_len = len(targets)
+    if targets_len!= n_envs:
+        padded_targets = np.zeros(n_envs, dtype=int)
+        padded_targets[: len(targets)] = targets
+    else:
+        padded_targets = targets 
+
+    total = padded_targets.sum()
     if verbose:
-        print(f"\nEvaluating {total} episodes on {n_envs} envs (targets={targets.tolist()})")
+        print(f"\nEvaluating {total} episodes on {n_envs} envs (avg target: {padded_targets.mean():.2f})")
     
-    env._episode_target[:] = targets
+    env._episode_target[:] = padded_targets
     env._episode_count[:] = 0
     env.active_envs[:] = True
 
-    rewards = np.zeros((n_envs, targets.max()), dtype=float)
+    rewards = np.zeros((n_envs, padded_targets.max()), dtype=float)
     lengths = np.zeros_like(rewards, dtype=int)
     logps   = np.zeros_like(rewards, dtype=float)
     counts  = np.zeros(n_envs, dtype=int)
@@ -53,8 +61,8 @@ def evaluate_policy(
     current_len = np.zeros(n_envs, dtype=int)
     current_lp  = np.zeros(n_envs, dtype=float)
 
-    while (counts < targets).any():
-        active = counts < targets
+    while (counts < padded_targets).any():
+        active = counts < padded_targets
 
         # slice observations for active envs
         if isinstance(observations, dict):
@@ -105,8 +113,18 @@ def evaluate_policy(
     if verbose:
         print("\r" + " " * 80 + "\r", end="")
 
-    return rewards, lengths, logps
+    # Build mask of valid entries
+    mask = np.zeros_like(rewards, dtype=bool)
+    for i, t in enumerate(padded_targets):
+        mask[i, :t] = True
 
+    # Filter up to target_len to skip unused envs
+    if target_episodes is not None:
+        rewards = rewards[:targets_len]
+        lengths = lengths[:targets_len]
+        logps   = logps[:targets_len]
+        mask    = mask[:targets_len]
+    return rewards, lengths, logps, mask
 
 
 def eval_corruptions(
@@ -142,73 +160,66 @@ def eval_corruptions(
 
     total_batches = (len(data) + num_envs - 1) // num_envs # Calculate total number of batches
     # Batch through data
-    for b,start in enumerate(range(0, len(data), num_envs)):
+    for b, start in enumerate(range(0, len(data), num_envs)):
         batch = data[start : start + num_envs]
         B = len(batch)
         print(f"\n--- Batch {b+1}/{total_batches} (Queries {start+0}-{min(start+num_envs, len(data)-1)}) ---")
 
         # get corruptions
+        print(f"Getting corruptions")
+        start_time = time.time()
         corrs = sampler.get_negatives_from_states(
             [[q] for q in batch],
             model.device,
             all_negatives=(n_corruptions is None),
         )
+        print(f"Corruption time: {time.time() - start_time:.2f}s")
         if B == 1:
             corrs = [corrs]
-        nc = len(corrs[0])
-        assert all(len(c) == nc for c in corrs), "Unequal corruption counts"
 
-        print(f"Total episodes: {B} (envs) x {1+nc} (negatives) = {B*(1+nc)} (total)")
+        targets = np.array([1 + len(c) for c in corrs], dtype=int)
+
+        print(f"Total episodes: {B} (envs) x {1+np.mean(targets):.1f} (avg targets) = {np.sum(targets)}")
         # configure each sub‐env
-        targets = np.zeros(num_envs, dtype=int)
+        start_time = time.time()
         for i, (q, negs) in enumerate(zip(batch, corrs)):
             seq = [q] + negs
             e = env.envs[i].env
             e.mode = "eval"
-            e.queries, e.labels = seq, [1] + [0]*nc
+            e.queries, e.labels = seq, [1] + [0]*len(negs)
             e.n_episodes = len(seq)
             e.consult_janus_eval = consult_janus
             e.eval_idx = 0
-            targets[i] = len(seq)
         
         # run eval; gives shape (B, max_target)
-        rewards, lengths, log_probs = evaluate_policy(
+        rewards, lengths, log_probs, mask = evaluate_policy(
             model,
             env,
-            n_eval_episodes=sum(targets),
             deterministic=deterministic,
             target_episodes=targets,
             verbose=verbose,
         )
+        print(f"Eval time: {time.time() - start_time:.2f}s")
 
-        rewards   = rewards[:B]
-        lengths   = lengths[:B]
-        log_probs = log_probs[:B]
+        # Collect metrics using mask
+        # Positives: column 0
+        all_pos_rw.extend(rewards[:, 0][mask[:, 0]])
+        all_pos_len.extend(lengths[:, 0][mask[:, 0]])
+        all_pos_lp.extend(log_probs[:, 0][mask[:, 0]])
 
-        # where the rewards are 0, substract 100 to the lp (heuristic to differentiate between proof and non-proof)
-        log_probs[rewards == 0] -= 100
+        # Collect negatives across all valid slots
+        neg_rw = rewards[:, 1:][mask[:, 1:]]
+        neg_len = lengths[:, 1:][mask[:, 1:]]
+        neg_lp = log_probs[:, 1:][mask[:, 1:]]
+        all_neg_rw.extend(neg_rw)
+        all_neg_len.extend(neg_len)
+        all_neg_lp.extend(neg_lp)
 
-        # build mask: True for valid slots
-        targets = targets[:B]
-        mask = np.zeros_like(log_probs, dtype=bool)
-        for i, t in enumerate(targets):
-            mask[i, :t] = True
-
-        # collect pos (slot 0) and neg (slots 1..nc)
-        idx = np.arange(B)
-        all_pos_rw.extend(rewards[idx, 0])
-        all_pos_len.extend(lengths[idx, 0])
-        all_pos_lp.extend(log_probs[idx, 0])
-
-        neg_slice = (slice(None), slice(1, nc+1))
-        all_neg_rw.extend(rewards[neg_slice][mask[neg_slice]])
-        all_neg_len.extend(lengths[neg_slice][mask[neg_slice]])
-        all_neg_lp.extend(log_probs[neg_slice][mask[neg_slice]])
-
-        # rank‐based metrics
-        if nc > 0:
-            lp_batch = log_probs[:, : nc+1].copy()
-            lp_batch[~mask[:, : nc+1]] = -np.inf
+        # Rank-based metrics
+        if mask.shape[1] > 1:
+            lp_batch = log_probs.copy()
+            lp_batch[~mask] = -np.inf
+            # True positive is at column 0, so its rank is...
             ranks = np.argmax(np.argsort(-lp_batch, axis=1) == 0, axis=1) + 1
             mrr = 1.0 / ranks
             hits1 = (ranks == 1).astype(int)
@@ -220,24 +231,27 @@ def eval_corruptions(
             hits3_list.extend(hits3.tolist())
             hits10_list.extend(hits10.tolist())
 
+        print('\nrolling rwds pos    :',np.round(np.mean(all_pos_rw),3)    , '\trolling rwds neg       :',np.round(np.mean(all_neg_rw),3))
+        print('rolling ep len pos  :',np.round(np.mean(all_pos_len),3), '\trolling episode len neg:',np.round(np.mean(all_neg_len),3))
+        print('rolling logprobs pos:',np.round(np.mean(all_pos_lp),3)  , '\trolling log probs neg  :',np.round(np.mean(all_neg_lp),3))
+        if mask.shape[1] > 1:
+            print('\nmrr   :',np.round(np.mean(mrr),3)   ,'\trolling mrr   :',np.round(np.mean(mrr_list),3)) 
+            print('hits1 :',np.round(np.mean(hits1),3) ,'\trolling hits1 :',np.round(np.mean(hits1_list),3))
+            print('hits3 :',np.round(np.mean(hits3),3) ,'\trolling hits3 :',np.round(np.mean(hits3_list),3))
+            print('hits10:',np.round(np.mean(hits10),3),'\trolling hits10:',np.round(np.mean(hits10_list),3))
+
     # to NumPy arrays
     pos_rw = np.array(all_pos_rw)
     pos_len = np.array(all_pos_len)
-    pos_lp = np.array(all_pos_lp)
-    neg_rw = np.array(all_neg_rw)
+    pos_lp  = np.array(all_pos_lp)
+    neg_rw  = np.array(all_neg_rw)
     neg_len = np.array(all_neg_len)
-    neg_lp = np.array(all_neg_lp)
+    neg_lp  = np.array(all_neg_lp)
     mrr_arr = np.array(mrr_list)
     h1 = np.array(hits1_list)
     h3 = np.array(hits3_list)
     h10 = np.array(hits10_list)
 
-    print(f"\n\nPositive rewards: {len(pos_rw)}, {pos_rw}")
-    print(f"Negative rewards: {len(neg_rw)}, {neg_rw}")
-    print(f"Positive log_probs: {len(pos_lp)}, {pos_lp}")
-    print(f"Negative log_probs: {len(neg_lp)}, {neg_lp}")
-
-    # final summary
     return {
         'pos_queries': len(pos_rw),
         'neg_queries': len(neg_rw),
