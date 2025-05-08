@@ -100,6 +100,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval", default = None, action='store_const', const=True)
     parser.add_argument("--test_depth", default = None, help="test_depth")
     parser.add_argument("--test_negatives", default = None, help="test_negatives")
+    parser.add_argument("--n_test_queries", default = None, help="n_test_queries")
 
     args = parser.parse_args()
 
@@ -111,6 +112,7 @@ if __name__ == "__main__":
     if args.eval: load_model = True; TIMESTEPS_TRAIN = [0]
     if args.test_depth: TEST_DEPTH = [str(args.test_depth)]
     if args.test_negatives: test_negatives = int(args.test_negatives)
+    if args.n_test_queries: n_test_queries = int(args.n_test_queries)
 
 
     print('Running experiments for the following parameters:','DATASET_NAME:'\
