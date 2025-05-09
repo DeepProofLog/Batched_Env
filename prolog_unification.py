@@ -11,26 +11,18 @@ def get_next_unification_prolog(
                     verbose: int = 0,
                     ) -> Tuple[List[List[Term]], Optional[int]]:
 
+    print('\n\n++++++++++++++') if verbose else None
+    print(f'State: {state}') if verbose else None
+
     # --- Initial Checks and Setup ---
     if not state: return [[Term('True', ())]], next_var_index
     if any(term.predicate == 'False' for term in state): return [[Term('False', ())]], next_var_index
     state = [term for term in state if term.predicate != 'True']
     if not state: return [[Term('True', ())]], next_var_index
 
-    # state_str = [term.prolog_str() for term in state]
-    # state_str = str(state_str).replace(' ','').replace('\'', '')
     state_str = '[' + ','.join(term.prolog_str() for term in state) + ']'
 
-    # # replace 'Var' by '_Var' using re
-    # state_str =  re.sub(r'(?<!\w)(Var\w+)', r'_\1', str(state))
-    # state_str = str(state_str).replace(' ', '')
-
-    print('\n\n++++++++++++++') if verbose else None
-    print(f'Processing Query: {state_str}') if verbose else None
-
-
     prolog_query = f"one_step_list({state_str}, _NewGoalList), term_string(_NewGoalList, NewGoalList)"
-    print(f"Prolog Query: {prolog_query}") if verbose else None
     res = janus.query_once(prolog_query)
     result = res.get('NewGoalList', None)
     
@@ -40,7 +32,7 @@ def get_next_unification_prolog(
         return [[Term('False', ())]], next_var_index
 
     actions = re.findall(r'\[[^\[\]]*\]', result)
-    print('Actions:', actions) if verbose else None
+    # print('Actions:', actions) if verbose else None
     
     # --- Convert actions to Term objects ---
     next_states: List[List[Term]] = []
@@ -71,26 +63,18 @@ def get_next_unification_prolog(
 
         next_states.append(current_action_terms)
 
-    print('\nParsed Actions (List[List[Term]]):', next_states) if verbose else None
-
+    # print('\nParsed Actions (List[List[Term]]):', next_states) if verbose else None
 
 
     # --- Rename variables in the next states ---
 
     # next_states, next_var_index = rename_vars(next_states, next_var_index)
     next_states = rename_vars_local(next_states, next_var_index)
-    print('Number of next states:', len(next_states)) if len(next_states) > 130 and verbose else None
-    if verbose:
-        if len(next_states) > 130:
-            print('Next states:', next_states[:100], '...')
-        else:
-            print('Next states:', next_states)
+
+    print('\nNext states:', next_states) if verbose else None
     print('++++++++++++++\n') if verbose else None
 
-
-
     # --- Handle terminal states ---
-
     any_atom_false = any(atom.predicate == 'False' for state in next_states for atom in state)
     if any_atom_false:
         return [[Term('False', ())]], next_var_index

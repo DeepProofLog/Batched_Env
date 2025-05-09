@@ -95,12 +95,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Experiment Runner')
     parser.add_argument("--d", nargs='+', help="Datasets")
     parser.add_argument("--s", help="Seeds")
-    parser.add_argument("--epochs", default = None, help="epochs")
+    parser.add_argument("--timesteps", help="Timesteps to train")
 
     parser.add_argument("--eval", default = None, action='store_const', const=True)
     parser.add_argument("--test_depth", default = None, help="test_depth")
     parser.add_argument("--test_negatives", default = None, help="test_negatives")
     parser.add_argument("--n_test_queries", default = None, help="n_test_queries")
+    parser.add_argument("--n_envs", default = None, help="n_envs")
+    parser.add_argument("--n_eval_envs", default = None, help="n_eval_envs")
 
     args = parser.parse_args()
 
@@ -113,6 +115,9 @@ if __name__ == "__main__":
     if args.test_depth: TEST_DEPTH = [str(args.test_depth)]
     if args.test_negatives: test_negatives = int(args.test_negatives)
     if args.n_test_queries: n_test_queries = int(args.n_test_queries)
+    if args.n_envs: n_envs = int(args.n_envs)
+    if args.n_eval_envs: n_eval_envs = int(args.n_eval_envs)
+    if args.timesteps: TIMESTEPS_TRAIN = [int(args.timesteps)]
 
 
     print('Running experiments for the following parameters:','DATASET_NAME:'\
@@ -162,9 +167,12 @@ if __name__ == "__main__":
             continue
         
         if args.padding_states == -1:
-            if args.dataset_name == "countries_s3": args.padding_states = 20
+            if args.dataset_name == "countries_s3" or args.dataset_name == "countries_s1" or args.dataset_name == "countries_s1": 
+                args.padding_states = 20
             elif args.dataset_name == "family": args.padding_states = 130
-            elif args.dataset_name == "wn18rr": args.padding_states = 262 #1770
+            elif args.dataset_name == "wn18rr": args.padding_states = 262
+            elif args.dataset_name == "fb15k237": args.padding_states = 358
+            else: raise ValueError("Unknown dataset name")
 
         constant_embedding_size = predicate_embedding_size = args.atom_embedding_size
         if args.atom_embedder == "complex":

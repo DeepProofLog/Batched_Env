@@ -10,6 +10,7 @@ from dataset import DataHandler
 from index_manager import IndexManager
 from utils import Rule, Term, print_state_transition
 from python_unification import get_next_unification_python
+# from python_unification import get_next_unification_python_old as get_next_unification_python
 from prolog_unification import get_next_unification_prolog
 
 class LogicEnv_gym(gym.Env):
@@ -91,6 +92,11 @@ class LogicEnv_gym(gym.Env):
 
         if self.mode == 'train':
             self.train_neg_pos_ratio = train_neg_pos_ratio
+
+        self.measure_n_next_states = True
+        if self.measure_n_next_states:
+            self.n_next_states = []
+            self.current_n_next_states = -1
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment. If no seed is provided, generate a random one'''
@@ -175,6 +181,14 @@ class LogicEnv_gym(gym.Env):
                 janus.query_once(f"retract({state.prolog_str()}).")
                 # janus.query_once(f"retract({state}).")
 
+        if self.measure_n_next_states:
+            # if len(self.n_next_states) > 5:
+            #     print(stop)
+            if self.current_n_next_states != -1: 
+                self.n_next_states.append(self.current_n_next_states)
+            self.current_n_next_states = 0
+            print(f"Avg n_next_states, n_next_states: {np.mean(self.n_next_states)}, {self.n_next_states}")
+
         self.current_query = state
         self.current_label = label
         return self._reset([state], label)
@@ -190,7 +204,6 @@ class LogicEnv_gym(gym.Env):
         self.memory.add(",".join(str(q) for q in query if q.predicate not in ['False', 'True', 'End']))
         sub_index = self.index_manager.get_atom_sub_index(query)
         derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
-
         if truncated_flag: # end in false
             size_sub_index = torch.Size([self.padding_states]) + sub_index.size()
             derived_states, derived_sub_indices = self.end_in_false(size_sub_index)
@@ -302,6 +315,11 @@ class LogicEnv_gym(gym.Env):
                                                             )
         self.index_manager.next_var_index = next_var_idx
 
+        if self.measure_n_next_states:
+            self.current_n_next_states += len(derived_states)
+            print('     length of derived states:', len(derived_states))
+            print('current n_next_states:', self.current_n_next_states)
+
         if self.skip_unary_actions:
             current_state = state.copy() if isinstance(state, list) else [state]
             counter = 0
@@ -329,6 +347,11 @@ class LogicEnv_gym(gym.Env):
                         next_var_index=self.index_manager.next_var_index,
                     )
                 self.index_manager.next_var_index = next_var_idx
+
+                if self.measure_n_next_states:
+                    self.current_n_next_states += len(derived_states)
+                    print('     length of derived states:', len(derived_states))
+                    print('current n_next_states:', self.current_n_next_states)
 
                 # MEMORY
                 if self.memory_pruning:

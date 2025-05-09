@@ -299,6 +299,7 @@ def get_next_unification_python(state: List[Term],
     next_states = []
 
     # --- Step 1: Unification ONLY with Rules ---
+    print('\nUnification with rules') if verbose else None
     rule_results = unify_with_rules(query, rules, verbose=verbose)
     for i, (body, rule_subs) in enumerate(rule_results):
         new_remaining = [
@@ -316,6 +317,7 @@ def get_next_unification_python(state: List[Term],
     print() if verbose else None
     
     # --- Step 2: Apply Fact Unification to First Goal of Intermediate States ---
+    print('\nUnification with facts') if verbose else None
     for state_from_rule in rule_states:
 
         first_goal = state_from_rule[0]
@@ -331,7 +333,6 @@ def get_next_unification_python(state: List[Term],
                 return [[Term('True', ())]], next_var_index   
 
             else:
-                # print('Remaining goals:', rest_of_goals) if verbose else None
                 if subs.get('True') == 'True': # it is a fact
                     print(f"    Fact next state for sub {subs} in {state_from_rule}") if verbose else None
                     next_states.append(rest_of_goals)
@@ -369,8 +370,117 @@ def get_next_unification_python(state: List[Term],
     # --- Var renaming ---
     if unification_strategy == 'rules_and_facts':
         # next_states, next_var_index = rename_vars(next_states, next_var_index)
-        next_states = rename_vars_local(next_states, next_var_index, verbose=verbose)
+        next_states = rename_vars_local(next_states, next_var_index, verbose=0)
 
     print('\nNext states:', next_states) if verbose else None
     print('++++++++++++++\n') if verbose else None
+    return next_states, next_var_index
+
+
+def get_next_unification_python_old(state: List[Term], 
+                                facts_set: FrozenSet, 
+                                facts_indexed: Dict[Tuple, Set[Term]], 
+                                rules: List[Rule], 
+                                excluded_fact: Optional[Term] = None,
+                                next_var_index: Optional[int] = None,
+                                unification_strategy: str = 'only_rules', # 'only_rules' 'rules_and_facts'
+                                verbose: int = 0) -> Tuple[List[List[Term]], Optional[int]]:
+    """
+    Processes a state and returns all possible next states based on unification with facts and rules.
+    
+    Args:
+        state: List of Term objects representing the current state
+        facts: List of Term objects representing known facts
+        rules: List of Rule objects representing inference rules
+    
+    Returns:
+        List of possible next states, where each state is a list of Terms
+    """
+
+    print('\n\n++++++++++++++') if verbose else None
+    print('State:', state) if verbose else None
+ 
+    # Handle terminal states
+    if any(term.predicate == 'False' for term in state):
+        print('\n\nState:', state) if verbose else None
+        return [[Term('False', [])]], next_var_index
+    if any(term.predicate == 'True' for term in state):
+        state = [term for term in state if term.predicate != 'True']
+    if not state:
+        return [[Term('True', [])]], next_var_index
+    
+    
+    # # if there are atoms with only variables, put them at the end of the state
+    # state.sort(key=lambda term: 1 if all(is_variable(arg) for arg in term.args) else 0)
+
+    # order by number of variables
+    state.sort(key=lambda term: sum(is_variable(arg) for arg in term.args)) 
+    
+    # Get the first query and remaining state
+    query = state[0]
+    remaining_state = state[1:]
+    next_states = []
+
+    # Try unifying with facts
+    print('\nUnification with facts') if verbose else None
+    fact_substitutions = unify_with_facts(query, facts_indexed, facts_set, excluded_fact, verbose=0)
+    for subs in fact_substitutions:
+        print('Substitution:', subs) if verbose else None
+        if subs.get('True') == 'True':
+            # If it was a fact with no substitutions, continue with remaining state
+            new_state = remaining_state.copy()
+            if new_state:
+                next_states.append(new_state)
+            else:
+                print(f"    It is a fact and no other goals") if verbose else None
+                print('++++++++++++++\n') if verbose else None
+                return [[Term('True', [])]], next_var_index
+        else:
+            # Apply substitutions to remaining state
+            new_state = [
+                (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
+                    else Term(term.predicate, substituted_args))
+                for term in remaining_state
+            ]
+            next_states.append(new_state)
+
+    # For the next states, the ones that are (true) facts, we can substite them by True term
+    for i in range(len(next_states)):
+        next_state = next_states[i]
+        # substitute the facts by True
+        for j in range(len(next_state)):
+            atom = next_state[j]
+            if not any(is_variable(arg) for arg in atom.args) and atom in facts_set:
+                next_states[i][j] = Term('True', [])
+        # if the next state i is True, return True (we found a True next state)
+        if all(term.predicate == 'True' for term in next_state):
+            print(f"    Next state are facts: {next_state}") if verbose else None
+            print('++++++++++++++\n') if verbose else None
+            return [[Term('True', [])]], next_var_index
+
+    # Try unifying with rules
+    print('\nUnification with rules') if verbose else None
+    rule_results = unify_with_rules(query, rules, verbose=0)
+    for i, (body, subs) in enumerate(rule_results):
+        # Apply substitutions to remaining state
+        new_remaining = [
+            (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
+                else Term(term.predicate, substituted_args))
+            for term in remaining_state
+        ]
+        # Combine rule body with remaining state
+        new_state = body + new_remaining 
+        next_states.append(new_state)
+
+    next_states = rename_vars_local(next_states, next_var_index, verbose=0)
+
+    # print a canonical representation of the next states: order states by alphabetical order and atoms by alphabetical order (for predictates and args)
+    # next_states = [sorted(state, key=lambda term: (term.predicate, term.args)) for state in next_states]
+    print('\nNext states:', next_states) if verbose else None
+    print('++++++++++++++\n') if verbose else None
+
+    # If no unification was possible, return False
+    if not next_states:
+        return [[Term('False', [])]], next_var_index
+
     return next_states, next_var_index

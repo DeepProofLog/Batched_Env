@@ -156,7 +156,7 @@ def get_rules_from_rules_file(file_path: str) -> List[Rule]:
     #   \(.*?\)        : parentheses containing any characters (non-greedy)
     #   |              : OR
     #   [a-zA-Z0-9_]+  : the predicate name (for atoms without args/parentheses)
-    atom_pattern = re.compile(r'[a-zA-Z0-9_]+\(.*?\)|[a-zA-Z0-9_]+')
+    atom_pattern = re.compile(r'[\w/.-]+\([^)]*\)')
 
     try:
         with open(file_path, "r") as f:
@@ -184,7 +184,6 @@ def get_rules_from_rules_file(file_path: str) -> List[Rule]:
                     rule_body_strs = atom_pattern.findall(rule_body_str)
                     # Apply strip to clean up potential extra spaces captured by regex
                     rule_body_strs = [atom.strip() for atom in rule_body_strs if atom.strip()]
-                    # --- End of Correction ---
 
                     try:
                         # Convert string representations to initial Term objects
@@ -343,7 +342,6 @@ class DataHandler:
 
         self.facts = get_queries(facts_file)
         self.rules = get_rules_from_rules_file(rules_file)
-
         self.train_corruptions = self.valid_corruptions = self.test_corruptions = self.neg_train_queries = None
         if not train_depth:
             self.train_queries = get_queries(train_path)

@@ -138,7 +138,7 @@ if __name__ == "__main__":
     Obtains a Prolog file from the rules and facts files.    
     '''
 
-    dataset = 'family'
+    dataset = 'fb15k237'
     current_dir = os.getcwd()
     root_dir = f"{current_dir}/data/{dataset}/"
 
