@@ -93,7 +93,7 @@ class LogicEnv_gym(gym.Env):
         if self.mode == 'train':
             self.train_neg_pos_ratio = train_neg_pos_ratio
 
-        self.measure_n_next_states = True
+        self.measure_n_next_states = False
         if self.measure_n_next_states:
             self.n_next_states = []
             self.current_n_next_states = -1
