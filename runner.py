@@ -30,13 +30,13 @@ if __name__ == "__main__":
     MEMORY_PRUNING = [True] # filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
     END_PROOF_ACTION = [False]
     SKIP_UNARY_ACTIONS = [True]
-    ENT_COEF = [0.2]
+    ENT_COEF = [0.5]
     CLIP_RANGE = [0.2]
     ENGINE = ['python']
     # reward_type = 1
 
     # Dataset settings 
-    DATASET_NAME =  ["wn18rr"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
+    DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
     TRAIN_DEPTH = [None] # [{-1,3,2}]
     VALID_DEPTH = [None]
     TEST_DEPTH = [None]
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     STATE_EMBEDDER = ['mean']
     PADDING_ATOMS = [4]
     PADDING_STATES = [-1] # -1 sets the max padding size to a preset value (check below)
-    ATOM_EMBEDDING_SIZE = [64]
+    ATOM_EMBEDDING_SIZE = [64] # 256 for countries (atomatically selected below)
     CORRUPTION_MODE =  ['dynamic']
 
     RESTORE_BEST_VAL_MODEL = [True]
@@ -69,7 +69,7 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [10000000]
+    TIMESTEPS_TRAIN = [30000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
@@ -79,12 +79,12 @@ if __name__ == "__main__":
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 256
-    n_steps = 256
-    n_eval_envs = 256
+    n_envs = 128
+    n_steps = 128
+    n_eval_envs = 128
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
-    batch_size = 256 # Ensure batch size is a factor of n_steps (for the buffer).
+    batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
     lr = 3e-4
 
     max_total_vars = 100
@@ -166,8 +166,9 @@ if __name__ == "__main__":
             continue
         
         if args.padding_states == -1:
-            if args.dataset_name == "countries_s3" or args.dataset_name == "countries_s1" or args.dataset_name == "countries_s1": 
+            if args.dataset_name == "countries_s3" or args.dataset_name == "countries_s2" or args.dataset_name == "countries_s1": 
                 args.padding_states = 20
+                args.atom_embedding_size = 256
             elif args.dataset_name == "family": args.padding_states = 130
             elif args.dataset_name == "wn18rr": args.padding_states = 262
             elif args.dataset_name == "fb15k237": args.padding_states = 358
@@ -186,7 +187,10 @@ if __name__ == "__main__":
             args.corruption_scheme = ['tail']
         
         if args.false_rules:
-            args.janus_file = "train_false_rules.pl"
+            if args.engine == 'prolog':
+                args.janus_file = "countries_false_rules.pl"
+            else:
+                raise ValueError("False rules not implemented for python engine")
         elif args.engine == 'python':
             args.janus_file = None
         else:

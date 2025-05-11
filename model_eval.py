@@ -201,6 +201,9 @@ def eval_corruptions(
         )
         print(f"Eval time: {time.time() - start_time:.2f}s")
 
+        # where the rewards are 0, substract 100 to the lp (to differentiate between proof and non-proof)
+        log_probs[rewards == 0] -= 100
+
         # Collect metrics using mask
         # Positives: column 0
         all_pos_rw.extend(rewards[:, 0][mask[:, 0]])

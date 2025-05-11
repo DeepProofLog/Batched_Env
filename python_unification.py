@@ -423,7 +423,7 @@ def get_next_unification_python_old(state: List[Term],
 
     # Try unifying with facts
     print('\nUnification with facts') if verbose else None
-    fact_substitutions = unify_with_facts(query, facts_indexed, facts_set, excluded_fact, verbose=0)
+    fact_substitutions = unify_with_facts(query, facts_indexed, facts_set, excluded_fact, verbose=verbose)
     for subs in fact_substitutions:
         print('Substitution:', subs) if verbose else None
         if subs.get('True') == 'True':
@@ -460,7 +460,7 @@ def get_next_unification_python_old(state: List[Term],
 
     # Try unifying with rules
     print('\nUnification with rules') if verbose else None
-    rule_results = unify_with_rules(query, rules, verbose=0)
+    rule_results = unify_with_rules(query, rules, verbose=verbose)
     for i, (body, subs) in enumerate(rule_results):
         # Apply substitutions to remaining state
         new_remaining = [
@@ -474,10 +474,12 @@ def get_next_unification_python_old(state: List[Term],
 
     next_states = rename_vars_local(next_states, next_var_index, verbose=0)
 
-    # print a canonical representation of the next states: order states by alphabetical order and atoms by alphabetical order (for predictates and args)
-    # next_states = [sorted(state, key=lambda term: (term.predicate, term.args)) for state in next_states]
-    print('\nNext states:', next_states) if verbose else None
-    print('++++++++++++++\n') if verbose else None
+    if verbose:
+        ordered_next_states = [sorted(state, key=lambda term: (term.predicate, term.args)) for state in next_states]
+        ordered_next_states = sorted(ordered_next_states, 
+                                     key=lambda state: [(term.predicate, term.args) for term in state])
+        print('\nNext states:', ordered_next_states)
+        print('++++++++++++++\n')
 
     # If no unification was possible, return False
     if not next_states:

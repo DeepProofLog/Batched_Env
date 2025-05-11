@@ -69,10 +69,14 @@ def get_next_unification_prolog(
     # --- Rename variables in the next states ---
 
     # next_states, next_var_index = rename_vars(next_states, next_var_index)
-    next_states = rename_vars_local(next_states, next_var_index)
+    next_states = rename_vars_local(next_states, next_var_index, verbose=0)
 
-    print('\nNext states:', next_states) if verbose else None
-    print('++++++++++++++\n') if verbose else None
+    if verbose:
+        ordered_next_states = [sorted(state, key=lambda term: (term.predicate, term.args)) for state in next_states]
+        ordered_next_states = sorted(ordered_next_states, 
+                                     key=lambda state: [(term.predicate, term.args) for term in state])
+        print('\nNext states:', ordered_next_states)
+        print('++++++++++++++\n')
 
     # --- Handle terminal states ---
     any_atom_false = any(atom.predicate == 'False' for state in next_states for atom in state)
