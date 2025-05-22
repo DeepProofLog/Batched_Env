@@ -69,7 +69,7 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [30000]
+    TIMESTEPS_TRAIN = [3000000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train

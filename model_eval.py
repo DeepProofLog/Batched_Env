@@ -219,8 +219,14 @@ def eval_corruptions(
         if mask.shape[1] > 1:
             lp_batch = log_probs.copy()
             lp_batch[~mask] = -np.inf
-            # True positive is at column 0, so its rank is...
-            ranks = np.argmax(np.argsort(-lp_batch, axis=1, kind='stable') == 0, axis=1) + 1  
+            # True positive is at column 0
+            random_tie = True
+            if random_tie:
+                random_keys = np.random.rand(*lp_batch.shape)
+                sorted_indices_per_query = np.lexsort((-random_keys, -lp_batch), axis=1)
+                ranks = np.where(sorted_indices_per_query == 0)[1] + 1
+            else:
+                ranks = np.argmax(np.argsort(-lp_batch, axis=1, kind='stable') == 0, axis=1) + 1  
             mrr = 1.0 / ranks
             hits1 = (ranks == 1).astype(int)
             hits3 = (ranks <= 3).astype(int)
