@@ -362,21 +362,21 @@ class DataHandler:
         
         # Calculate exclusion statistics
         exclude_train = len([q for q in self.train_queries if q.predicate not in rules_head_predicates])
-        exclude_valid = len([q for q in self.valid_queries if q.predicate not in rules_head_predicates])    
-        exclude_test = len([q for q in self.test_queries if q.predicate not in rules_head_predicates])
+        # exclude_valid = len([q for q in self.valid_queries if q.predicate not in rules_head_predicates])    
+        # exclude_test = len([q for q in self.test_queries if q.predicate not in rules_head_predicates])
         
         # Log exclusion information
         if exclude_train > 0 and self.train_queries:
             print(f"Number of train queries excluded: {exclude_train}. Ratio excluded: {round(exclude_train/len(self.train_queries),3)}")
-        if exclude_valid > 0 and self.valid_queries:
-            print(f"Number of valid queries excluded: {exclude_valid}. Ratio excluded: {round(exclude_valid/len(self.valid_queries),3)}")
-        if exclude_test > 0 and self.test_queries:
-            print(f"Number of test queries excluded: {exclude_test}. Ratio excluded: {round(exclude_test/len(self.test_queries),3)}")
+        # if exclude_valid > 0 and self.valid_queries:
+        #     print(f"Number of valid queries excluded: {exclude_valid}. Ratio excluded: {round(exclude_valid/len(self.valid_queries),3)}")
+        # if exclude_test > 0 and self.test_queries:
+        #     print(f"Number of test queries excluded: {exclude_test}. Ratio excluded: {round(exclude_test/len(self.test_queries),3)}")
         
         # Filter the queries
         self.train_queries = [q for q in self.train_queries if q.predicate in rules_head_predicates]
-        self.valid_queries = [q for q in self.valid_queries if q.predicate in rules_head_predicates]
-        self.test_queries = [q for q in self.test_queries if q.predicate in rules_head_predicates]
+        # self.valid_queries = [q for q in self.valid_queries if q.predicate in rules_head_predicates]
+        # self.test_queries = [q for q in self.test_queries if q.predicate in rules_head_predicates]
 
         self.valid_queries = self.valid_queries[:n_eval_queries]
         self.test_queries = self.test_queries[:n_test_queries]
