@@ -13,9 +13,6 @@ class IndexManager():
                  constants: set,
                  predicates: set,
                  max_total_vars: int, # Max allowed *total* vars (pre-assigned)
-                 rules: List[Rule], # Rules might be needed for other logic, but not for var indexing here
-                 constants_images: set = (),
-                 constant_images_no: int = 0,
                  padding_atoms: int = 10,
                  max_arity: int = 2,
                  device: torch.device = torch.device("cpu")):
@@ -29,14 +26,10 @@ class IndexManager():
 
         self.max_total_vars = max_total_vars # Max *pre-assigned* variables
 
-        self.rules_objects = rules # Store original rule objects for verbose printing
         self.padding_atoms = padding_atoms
-        self.constants_images = constants_images
         self.max_arity = max_arity
         if self.max_arity != 2:
             print(f"Warning: IndexManager max_arity is {self.max_arity}, but code assumes 2 for 3-element term tensors.")
-
-        self.constant_images_no = constant_images_no
 
         # --- Initialize Mappings ---
         self.constant_str2idx: Dict[str, int] = {}
@@ -107,22 +100,11 @@ class IndexManager():
         '''Create global indices for constants and predicates (including specials).'''
         # --- Constants ---
         current_idx = 1
-        if self.constant_images_no > 0:
-            constants_wout_images = sorted([c for c in self.constants if c not in self.constants_images])
-            img_constants = sorted(list(self.constants_images))
-            for term in img_constants:
-                self.constant_str2idx[term] = current_idx
-                self.constant_idx2str[current_idx] = term
-                current_idx += 1
-            for term in constants_wout_images:
-                self.constant_str2idx[term] = current_idx
-                self.constant_idx2str[current_idx] = term
-                current_idx += 1
-        else:
-            for term in sorted(self.constants):
-                self.constant_str2idx[term] = current_idx
-                self.constant_idx2str[current_idx] = term
-                current_idx += 1
+
+        for term in sorted(self.constants):
+            self.constant_str2idx[term] = current_idx
+            self.constant_idx2str[current_idx] = term
+            current_idx += 1
 
         self.constant_no = current_idx - 1
 
@@ -303,6 +285,13 @@ def state_to_tensor_im(state_str: List[Term], index_manager: IndexManager, initi
     return torch.stack([term_to_tensor_im(t, index_manager, current_var_map) for t in state_str])
 
 def facts_to_tensor_im(facts_str: List[Term], index_manager: IndexManager) -> torch.Tensor:
+    """
+    Convert a list of facts (Term objects) to a tensor representation.
+    Each fact is converted to a tensor of shape (max_arity + 1), where the first element is the predicate index
+    and the subsequent elements are the indices of the arguments.
+    If a fact has fewer arguments than max_arity, it is padded with the padding index.
+    If no facts are provided, an empty tensor is returned.
+    """
     if not facts_str:
         return torch.empty((0, index_manager.max_arity + 1), dtype=torch.long, device=index_manager.device)
     for fact in facts_str:
@@ -311,6 +300,19 @@ def facts_to_tensor_im(facts_str: List[Term], index_manager: IndexManager) -> to
             if is_variable(arg): 
                 raise ValueError(f"Facts should be ground. Found variable {arg} in fact {fact}")
     return torch.stack([term_to_tensor_im(t, index_manager, {}) for t in facts_str]) 
+
+def queries_to_tensor_im(queries_str: List[List[Term]], index_manager: IndexManager) -> torch.Tensor:
+    """
+    Convert a list of queries (each query is a list of Term objects) to a tensor representation.
+    Each query is converted to a tensor of shape (max_arity + 1), where the first element is the predicate index
+    and the subsequent elements are the indices of the arguments.
+    If a query has fewer arguments than max_arity, it is padded with the padding index.
+    If no queries are provided, an empty tensor is returned.
+    """
+    if not queries_str:
+        return torch.empty((0, index_manager.max_arity + 1), dtype=torch.long, device=index_manager.device)
+    
+    return torch.stack([facts_to_tensor_im(query, index_manager) for query in queries_str])
 
 def rules_to_tensor_im(rules_str_list: List[Rule], max_rule_atoms: int, index_manager: IndexManager) -> Tuple[torch.Tensor, torch.Tensor]:
     if not rules_str_list:

@@ -7,7 +7,7 @@ import janus_swi as janus
 
 from dataset_idx import DataHandler 
 from index_manager_idx import IndexManager, state_to_tensor_im, facts_to_tensor_im, rules_to_tensor_im, \
-    debug_print_state_from_indices, debug_print_states_from_indices
+    debug_print_state_from_indices, debug_print_states_from_indices, queries_to_tensor_im
 from utils import Rule, Term 
 from python_unification_idx import get_next_unification_pt
 from prolog_unification import get_next_unification_prolog
@@ -56,17 +56,18 @@ def tensor_state_to_terms_list_im(state_tensor: torch.Tensor, index_manager: Ind
 
 class LogicEnv_gym(gym.Env):
     batch_locked = False
-    
+
     def __init__(self,
                 index_manager: IndexManager, 
                 data_handler: DataHandler,   
-                queries: Optional[List[Term]] = None, 
+                queries_term: Optional[List[Term]] = None, 
+                rules_term: Optional[List[Rule]] = None, 
+                queries: Optional[torch.Tensor] = None,
                 labels: Optional[List[int]] = None,
-                facts_tensor: Optional[torch.Tensor] = None,
-                facts_as_set_indices: Optional[FrozenSet[Tuple[int, int, int]]] = None,
-                rules_tensor: Optional[torch.Tensor] = None,
-                rule_lengths_tensor: Optional[torch.Tensor] = None,
-                original_rules_list: Optional[List[Rule]] = None, 
+                facts: Optional[torch.Tensor] = None,
+                facts_set: Optional[FrozenSet[Tuple[int, int, int]]] = None,
+                rules: Optional[torch.Tensor] = None,
+                rule_lengths: Optional[torch.Tensor] = None,
                 mode: str = 'train',
                 corruption_mode: Optional[str] = None,
                 train_neg_pos_ratio: int = 1,
@@ -99,72 +100,11 @@ class LogicEnv_gym(gym.Env):
         self.padding_atoms = padding_atoms  
         self.padding_states = padding_states 
         self.max_depth = max_depth 
-        
+
         self._set_seed(seed)
         self._make_spec() 
 
-        self.dataset_name = data_handler.dataset_name
-
-        # Use facts_tensor from DataHandler if provided, or from direct args
-        if hasattr(data_handler, 'facts_tensor') and data_handler.facts_tensor is not None:
-            self.facts_tensor = data_handler.facts_tensor.to(device)
-        elif facts_tensor is not None:
-            self.facts_tensor = facts_tensor.to(device)
-        else:
-            self.facts_tensor = torch.empty((0,self.max_arity+1), dtype=torch.long, device=device)
-
-        if hasattr(data_handler, 'facts_as_set_indices') and data_handler.facts_as_set_indices is not None:
-            self.facts_as_set_indices = data_handler.facts_as_set_indices
-        elif facts_as_set_indices is not None:
-            self.facts_as_set_indices = facts_as_set_indices
-        else:
-            self.facts_as_set_indices = frozenset()
-
-        # Use rules_tensor from DataHandler or direct args
-        if hasattr(data_handler, 'rules_tensor') and data_handler.rules_tensor is not None:
-            self.rules_tensor = data_handler.rules_tensor.to(device)
-        elif rules_tensor is not None:
-            self.rules_tensor = rules_tensor.to(device)
-        else:
-            self.rules_tensor = torch.empty((0,1,self.max_arity+1), dtype=torch.long, device=device)
-
-        if hasattr(data_handler, 'rule_lengths_tensor') and data_handler.rule_lengths_tensor is not None:
-            self.rule_lengths_tensor = data_handler.rule_lengths_tensor.to(device)
-        elif rule_lengths_tensor is not None:
-            self.rule_lengths_tensor = rule_lengths_tensor.to(device)
-        else:
-            self.rule_lengths_tensor = torch.empty((0,), dtype=torch.long, device=device)
-        
-        # Original rules list might be used by the unification engine for complex ops or debugging
-        self.original_rules_list = original_rules_list if original_rules_list is not None \
-                                   else (data_handler.rules_objects if hasattr(data_handler, 'rules_objects') else [])
-
-
-        self.include_intermediate_rule_states = include_intermediate_rule_states
-
-        self.corruption_mode = corruption_mode
-        self.sampler = None
-        if self.corruption_mode == "sampler": # Or other specific modes that use the sampler
-            if hasattr(data_handler, 'sampler') and data_handler.sampler is not None:
-                self.sampler = data_handler.sampler
-                # Assuming sampler has `get_negatives(positive_query_tensor, ...)`
-                if not hasattr(self.sampler, 'get_negatives'):
-                    raise AttributeError("DataHandler's sampler an attribute 'get_negatives' for tensor-based corruption.")
-            else:
-                print("Warning: Corruption mode is 'sampler' but no sampler found in DataHandler. Corruption will be disabled.")
-                self.corruption_mode = None # Disable if sampler not available
-        self.corruption_counter = 0
-
-
-        self.janus_file = data_handler.janus_path if hasattr(data_handler, 'janus_path') else None
-        self.janus_facts_str = getattr(data_handler, 'janus_facts_str', getattr(data_handler, 'jan_facts_str', None))
-
-
-        self.memory: Set[Tuple[Tuple[int,...],...]] = set()
-        self.memory_pruning = memory_pruning
-        self.end_proof_action = end_proof_action
-        self.skip_unary_actions = skip_unary_actions # Not directly used in this snippet, but kept
-
+        # INIT SPECIAL PREDICATES
         self.true_pred_idx = self.index_manager.true_pred_idx
         self.false_pred_idx = self.index_manager.false_pred_idx
         self.end_pred_idx = self.index_manager.predicate_str2idx.get('End', -1)
@@ -172,49 +112,50 @@ class LogicEnv_gym(gym.Env):
 
         self.true_tensor_atom = self.index_manager.true_tensor.to(device)
         self.false_tensor_atom = self.index_manager.false_tensor.to(device)
-        self.end_tensor_atom = torch.tensor([self.end_pred_idx, self.padding_idx, self.padding_idx] if self.max_arity >=2 else ([self.end_pred_idx, self.padding_idx] if self.max_arity ==1 else [self.end_pred_idx]), dtype=torch.long, device=self.device) if self.end_pred_idx != -1 \
-                               else torch.empty((0), dtype=torch.long, device=self.device)
+        self.end_tensor_atom = torch.tensor([self.end_pred_idx, self.padding_idx, self.padding_idx] if self.max_arity >=2 else \
+                                            ([self.end_pred_idx, self.padding_idx] if self.max_arity ==1 else \
+                                             [self.end_pred_idx]), dtype=torch.long, device=self.device) if self.end_pred_idx != -1 \
+                                                else torch.empty((0), dtype=torch.long, device=self.device)
 
 
-        self.current_query_tensor: Optional[torch.Tensor] = None
+        # INIT TENSORS
+        self.dataset_name = data_handler.dataset_name
+        self.facts = facts.to(device)
+        self.facts_set = facts_set
+        self.rules = rules.to(device)
+        self.rule_lengths = rule_lengths.to(device)
+        
+        self.rules_term = rules_term
+        self.queries_term = queries_term
+
+        self.include_intermediate_rule_states = include_intermediate_rule_states
+
+        # INIT ENVIRONMENT PROPERTIES
+        self.memory: Set[Tuple[Tuple[int,...],...]] = set()
+        self.memory_pruning = memory_pruning
+        self.end_proof_action = end_proof_action
+        self.skip_unary_actions = skip_unary_actions # Not directly used in this snippet, but kept
+
+        self.current_query: Optional[torch.Tensor] = None
         self.current_label: Optional[int] = None
 
         self.mode = mode
 
-        self.initial_queries_tensors: List[torch.Tensor] = []
-        if queries is not None:
-            temp_var_map_init = {}
-            for q_list_terms in queries:
-                self.index_manager.reset_next_var_index()
-                try:
-                    query_tensor = state_to_tensor_im(q_list_terms, self.index_manager, temp_var_map_init)
-                    self.initial_queries_tensors.append(query_tensor.to(self.device))
-                except KeyError as e:
-                    print(f"Warning: Failed to convert query {q_list_terms} to tensor due to missing index: {e}. Skipping this query.")
-                except Exception as e: # Catch broader exceptions during conversion
-                    print(f"Warning: An error occurred while converting query {q_list_terms} to tensor: {e}. Skipping this query.")
-
+        self.queries = queries.to(device)  
         self.labels = labels if labels is not None else []
-        if self.initial_queries_tensors and self.labels and len(self.initial_queries_tensors) != len(self.labels):
-            print(f"Warning: Number of successfully converted query tensors ({len(self.initial_queries_tensors)}) "
-                  f"does not match number of labels ({len(self.labels)}). Truncating labels or queries.")
-            min_len = min(len(self.initial_queries_tensors), len(self.labels))
-            self.initial_queries_tensors = self.initial_queries_tensors[:min_len]
-            self.labels = self.labels[:min_len]
-
-
-        self.n_episodes = len(self.initial_queries_tensors)
+        self.n_episodes = len(self.queries) 
         self.eval_idx = 0
-        self.consult_janus_eval = False
+    
 
-        if self.mode == 'train':
-            self.train_neg_pos_ratio = train_neg_pos_ratio
-            if not self.initial_queries_tensors: # For training, we must have some queries to sample from
-                raise ValueError("Training mode requires initial_queries_tensors to be populated.")
-        elif self.mode in ['eval', 'eval_with_restart'] and not self.initial_queries_tensors:
-             if queries:
-                 print("Warning: Evaluation mode started with queries, but all failed to convert or list was empty. Env will have no episodes.")
-
+        # CORRUPTION MODE
+        self.corruption_mode = corruption_mode
+        self.sampler = None
+        self.corruption_counter = 0
+        self.train_neg_pos_ratio = 0
+        
+        # JANUS INTERACTION
+        self.janus_file = data_handler.janus_path if hasattr(data_handler, 'janus_path') else None
+        self.janus_facts_str = getattr(data_handler, 'janus_facts_str', getattr(data_handler, 'jan_facts_str', None))
 
     def _set_seed(self, seed:int):
         self.seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
@@ -255,7 +196,7 @@ class LogicEnv_gym(gym.Env):
                 initial_query_tensor = self.false_tensor_atom.unsqueeze(0).to(self.device)
                 label = 0
             elif self.eval_idx < self.n_episodes:
-                initial_query_tensor = self.initial_queries_tensors[self.eval_idx]
+                initial_query_tensor = self.queries[self.eval_idx]
                 label = self.labels[self.eval_idx] if self.labels and self.eval_idx < len(self.labels) else 1
             else:
                 if self.verbose >=1: print("Eval mode: All queries evaluated.")
@@ -269,11 +210,11 @@ class LogicEnv_gym(gym.Env):
                 label = 0
             else:
                 if self.eval_idx >= self.n_episodes: self.eval_idx = 0
-                initial_query_tensor = self.initial_queries_tensors[self.eval_idx]
+                initial_query_tensor = self.queries[self.eval_idx]
                 label = self.labels[self.eval_idx] if self.labels and self.eval_idx < len(self.labels) else 1
                 self.eval_idx += 1
         elif self.mode == 'train':
-            if not self.initial_queries_tensors:
+            if not self.queries:
                  raise ValueError("Train mode: No query tensors available for sampling.")
 
             # Sample a positive query tensor first
@@ -337,21 +278,21 @@ class LogicEnv_gym(gym.Env):
                         if self.verbose >=1: print(f"Prolog: Failed to retract {first_atom_term.prolog_str()} - {e}")
 
         self.current_label = label
-        self.current_query_tensor = initial_query_tensor.to(self.device) # Ensure on device
+        self.current_query = initial_query_tensor.to(self.device) # Ensure on device
 
-        return self._finalize_reset(self.current_query_tensor, label)
+        return self._finalize_reset(self.current_query, label)
 
 
-    def _finalize_reset(self, current_state_tensor: torch.Tensor, label: int):
-        if self.verbose >=1: print(f"Initial Query (Label: {label}): {debug_print_state_from_indices(current_state_tensor, self.index_manager, oneline=True)}")
+    def _finalize_reset(self, current_state: torch.Tensor, label: int):
+        if self.verbose >=1: print(f"Initial Query (Label: {label}): {debug_print_state_from_indices(current_state, self.index_manager, oneline=True)}")
             
         self.current_depth = 0 
         self.memory.clear()
-        state_tuple_for_memory = tuple(tuple(atom.tolist()) for atom in current_state_tensor)
+        state_tuple_for_memory = tuple(tuple(atom.tolist()) for atom in current_state)
         self.memory.add(state_tuple_for_memory)
-        padded_current_state_tensor = self._pad_state_tensor(current_state_tensor)
-        derived_state_tensors, truncated_flag = self.get_next_states_internal(current_state_tensor)
-        obs_sub_index = padded_current_state_tensor.unsqueeze(0) 
+        padded_current_state = self._pad_state_tensor(current_state)
+        derived_state_tensors, truncated_flag = self.get_next_states_internal(current_state)
+        obs_sub_index = padded_current_state.unsqueeze(0) 
         obs_derived_sub_indices = self._pad_derived_states(derived_state_tensors) 
         obs_dict = {
             'sub_index': obs_sub_index.cpu().numpy(),
@@ -388,9 +329,9 @@ class LogicEnv_gym(gym.Env):
         
         info = {}
         if done_final:
-            if self.engine == 'prolog' and self.current_label == 1 and self.current_query_tensor is not None:
-                if self.current_query_tensor.numel() > 0 and self.current_query_tensor[0,0].item() != self.false_pred_idx :
-                    query_terms_to_assert = tensor_state_to_terms_list_im(self.current_query_tensor, self.index_manager)
+            if self.engine == 'prolog' and self.current_label == 1 and self.current_query is not None:
+                if self.current_query.numel() > 0 and self.current_query[0,0].item() != self.false_pred_idx :
+                    query_terms_to_assert = tensor_state_to_terms_list_im(self.current_query, self.index_manager)
                     if query_terms_to_assert:
                         first_atom_term = query_terms_to_assert[0]
                         special_pred_strings = [self.index_manager.special_preds_map_names.get(sp, "") for sp in self.index_manager.special_preds]
@@ -400,7 +341,7 @@ class LogicEnv_gym(gym.Env):
                                 if self.verbose >=2: print(f"Prolog: Asserted back {first_atom_term.prolog_str()}")
                             except Exception as e:
                                 if self.verbose >=1: print(f"Prolog: Failed to assert back {first_atom_term.prolog_str()} - {e}")
-            self.current_query_tensor = None
+            self.current_query = None
             self.current_label = None
 
         padded_next_state_tensor = self._pad_state_tensor(next_state_tensor)
@@ -446,42 +387,42 @@ class LogicEnv_gym(gym.Env):
             return torch.cat([stacked_derived, padding], dim=0)
         return stacked_derived
 
-    def get_next_states_internal(self, current_state_tensor: torch.Tensor) -> Tuple[List[torch.Tensor], bool]:
+    def get_next_states_internal(self, current_state: torch.Tensor) -> Tuple[List[torch.Tensor], bool]:
         truncated_flag = False 
         if self.end_proof_action:
             is_end_state = False
-            if current_state_tensor.shape[0] == 1 and current_state_tensor[0,0].item() == self.end_pred_idx:
+            if current_state.shape[0] == 1 and current_state[0,0].item() == self.end_pred_idx:
                 is_end_state = True
             if is_end_state:
                  return [self.false_tensor_atom.unsqueeze(0)], truncated_flag
             else: 
-                mask_not_end = current_state_tensor[:, 0] != self.end_pred_idx
-                current_state_tensor = current_state_tensor[mask_not_end]
-                if current_state_tensor.shape[0] == 0: 
+                mask_not_end = current_state[:, 0] != self.end_pred_idx
+                current_state = current_state[mask_not_end]
+                if current_state.shape[0] == 0: 
                     return [self.false_tensor_atom.unsqueeze(0)], truncated_flag
 
         derived_state_tensors: List[torch.Tensor] = []
         if self.engine == 'python_tensor':
-            excluded_fact_tensor: Optional[torch.Tensor] = None
-            if self.current_label == 1 and self.current_query_tensor is not None:
-                if self.current_query_tensor.shape[0] == 1:
-                     excluded_fact_tensor = self.current_query_tensor[0] 
+            excluded_fact: Optional[torch.Tensor] = None
+            if self.current_label == 1 and self.current_query is not None:
+                if self.current_query.shape[0] == 1:
+                     excluded_fact = self.current_query[0] 
                 elif self.verbose >=1:
-                     print("Warning: current_query_tensor has multiple atoms, cannot use as excluded_fact.")
+                     print("Warning: current_query has multiple atoms, cannot use as excluded_fact.")
             derived_state_tensors, _ = get_next_unification_pt(
-                current_state_idx=current_state_tensor,
-                facts_tensor=self.facts_tensor,
-                facts_as_set=self.facts_as_set_indices,
-                rules_tensor=self.rules_tensor,
-                rule_lengths_tensor=self.rule_lengths_tensor,
+                current_state_idx=current_state,
+                facts_tensor=self.facts,
+                facts_as_set=self.facts_set,
+                rules_tensor=self.rules,
+                rule_lengths_tensor=self.rule_lengths,
                 index_manager=self.index_manager,
-                original_rules_list=self.original_rules_list, 
-                excluded_fact_idx=excluded_fact_tensor,
+                original_rules_list=self.rules_term, 
+                excluded_fact_idx=excluded_fact,
                 include_intermediate_rule_states=self.include_intermediate_rule_states,
                 verbose=self.prover_verbose 
             )
         elif self.engine == 'prolog':
-            state_terms_list = tensor_state_to_terms_list_im(current_state_tensor, self.index_manager)
+            state_terms_list = tensor_state_to_terms_list_im(current_state, self.index_manager)
             if self.prover_verbose >=1: print(f"Prolog Engine - Input State (Terms): {state_terms_list}")
             self.index_manager.reset_next_var_index()
             derived_terms_list_of_list, _ = get_next_unification_prolog(
@@ -499,7 +440,7 @@ class LogicEnv_gym(gym.Env):
             raise ValueError(f"Unsupported engine: {self.engine}")
         
         if self.memory_pruning:
-            current_state_tuple_for_memory = tuple(tuple(atom.tolist()) for atom in current_state_tensor)
+            current_state_tuple_for_memory = tuple(tuple(atom.tolist()) for atom in current_state)
             self.memory.add(current_state_tuple_for_memory)
             filtered_derived_states = []
             for ds_tensor in derived_state_tensors:
@@ -562,13 +503,13 @@ class LogicEnv_gym(gym.Env):
                torch.tensor(reward_val, dtype=torch.float32, device=self.device)
 
     def get_random_queries_tensors(self, n: int = 1) -> Tuple[List[torch.Tensor], Optional[List[int]]]:
-        if not self.initial_queries_tensors:
+        if not self.queries:
             # Return a list containing a FALSE tensor if no queries are available
             false_query = self.false_tensor_atom.unsqueeze(0).to(self.device)
             if self.verbose >=1: print("Warning: get_random_queries_tensors called with no initial queries. Returning [[FALSE]].")
             return [false_query] * n, [0] * n # Label is 0 for FALSE
 
-        num_available_queries = len(self.initial_queries_tensors)
+        num_available_queries = len(self.queries) 
         sampled_indices: List[int]
         if n > num_available_queries:
             if self.verbose >=1: print(f"Warning: Requested {n} query tensors, but only {num_available_queries} available. Sampling with replacement.")
@@ -576,7 +517,7 @@ class LogicEnv_gym(gym.Env):
         else:
             sampled_indices = random.sample(range(num_available_queries), n)
 
-        sampled_queries_tensors = [self.initial_queries_tensors[i].to(self.device) for i in sampled_indices] # Ensure on device
+        sampled_queries_tensors = [self.queries[i].to(self.device) for i in sampled_indices]
         sampled_labels: Optional[List[int]] = None
         if self.labels: # Check if labels list is populated
              if len(self.labels) == self.n_episodes: # Ensure labels align with tensors
@@ -620,81 +561,75 @@ class LogicEnv_gym(gym.Env):
         if self.verbose: print("LogicEnv_gym closed.")
 
 if __name__ == '__main__':
+
     print("--- Starting LogicEnv_gym Tensor Test ---")
+    
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {DEVICE}")
 
-    constants_test = {"a", "b", "c", "john", "mary", "peter"}
-    predicates_test = {"p", "q", "parent", "grandparent"}
-    rules_obj_test = [
-        Rule(Term("grandparent", ("X", "Z")), [Term("parent", ("X", "Y")), Term("parent", ("Y", "Z"))]),
-        Rule(Term("q", ("A", "B")), [Term("p", ("A", "C"))]) # This rule won't be used if p(A,C) doesn't lead to B
-    ]
-    max_total_vars_test = 1000
     padding_atoms_env = 5
     padding_states_env = 10
-    
-    if rules_obj_test:
-        max_rule_atoms_test = max(1 + len(r.body) for r in rules_obj_test) if rules_obj_test else 1
-    else:
-        max_rule_atoms_test = 1 
 
-    index_manager_test = IndexManager(
-        constants=constants_test,
-        predicates=predicates_test,
-        max_total_vars=max_total_vars_test,
-        rules=rules_obj_test, 
-        padding_atoms=padding_atoms_env, 
-        max_arity=2, 
-        device=DEVICE
-    )
-    print("IndexManager Initialized.")
-    print(f"  True_idx: {index_manager_test.true_pred_idx}, False_idx: {index_manager_test.false_pred_idx}")
-    
+    # --- 1. Define Raw Data ---
+    constants_test = {"a", "b", "c", "john", "mary", "peter"}
+    predicates_test = {"p", "q", "parent", "grandparent"}
+    rules_terms_test = [
+        Rule(Term("grandparent", ("X", "Z")), [Term("parent", ("X", "Y")), Term("parent", ("Y", "Z"))]),
+        Rule(Term("q", ("A", "B")), [Term("p", ("A", "C"))])
+    ]
     facts_terms_test = [
         Term("parent", ("john", "mary")),
         Term("parent", ("mary", "peter")),
         Term("p", ("a", "b"))
     ]
-
-    class DummyDataHandler: 
-        def __init__(self, im, rules_obj, facts_obj, max_r_atoms, dev):
-            self.dataset_name = "test_dataset"
-            self.rules_objects = rules_obj
-            self.facts_terms = facts_obj # Store original facts
-            self.sampler = None 
-            self.triples_factory = None
-            self.corruption_scheme = None
-            self.janus_path = None
-            self.janus_facts_str = None # Corrected attribute name
-            self.facts_tensor = facts_to_tensor_im(self.facts_terms, index_manager_test).to(DEVICE)
-            self.facts_as_set_indices = frozenset(tuple(f.tolist()) for f in self.facts_tensor)
-            self.rules_tensor, self.rule_lengths_tensor = rules_to_tensor_im(
-                self.rules_objects, max_r_atoms, index_manager_test
-            )
-            self.rules_tensor = self.rules_tensor.to(DEVICE)
-            self.rule_lengths_tensor = self.rule_lengths_tensor.to(DEVICE)
-
-    data_handler_test = DummyDataHandler(index_manager_test, rules_obj_test, facts_terms_test, max_rule_atoms_test, DEVICE)
-    print("DataHandler (Mock) Initialized with Tensorized Facts/Rules.")
-
-    queries_for_env_test = [
-        [Term("grandparent", ("john", "peter"))], 
-        [Term("q", ("a", "b"))],             
-        [Term("parent", ("a", "b"))]            
+    queries_terms_test = [
+        [Term("grandparent", ("john", "peter"))],
+        [Term("q", ("a", "b"))],
+        [Term("parent", ("a", "b"))]
     ]
-    labels_for_env_test = [1, 0, 0] # q(a,What) is not provable with current facts/rules for q. parent(a,b) is not a fact.
+    labels_for_env_test = [1, 0, 0]
 
+    # --- 2. DataHandler holds the raw data structures. ---
+    class DummyDataHandler:
+        def __init__(self, rules_terms, facts_terms, queries_terms, labels):
+            self.dataset_name = "test_dataset"
+            self.rules_terms = rules_terms
+            self.facts_terms = facts_terms
+            self.test_queries_terms = queries_terms # Keep original queries for reference
+            self.test_labels = labels
+
+    data_handler_test = DummyDataHandler(rules_terms_test, facts_terms_test, queries_terms_test, labels_for_env_test)
+    print("DataHandler (Mock) Initialized: Holds all raw data.")
+
+    # --- 3. IndexManager ingests all raw data and creates all tensors. ---
+    index_manager_test = IndexManager(
+        constants=constants_test,
+        predicates=predicates_test,
+        max_total_vars=1000,
+        padding_atoms=5,
+        max_arity=2,
+        device=DEVICE
+    )
+    print("IndexManager Initialized: All data has been tensorized and stored as attributes.")
+
+    max_rule_atoms_test = max(1 + len(r.body) for r in rules_terms_test) if rules_terms_test else 1
+    index_manager_test.rules, index_manager_test.rules_lengths = rules_to_tensor_im(data_handler_test.rules_terms,max_rule_atoms=max_rule_atoms_test, index_manager=index_manager_test)
+    index_manager_test.facts = facts_to_tensor_im(data_handler_test.facts_terms,index_manager_test)
+    index_manager_test.facts_set = frozenset(tuple(f.tolist()) for f in index_manager_test.facts)
+    test_queries = queries_to_tensor_im(data_handler_test.test_queries_terms, index_manager_test)
+
+    # --- 4. Initialize the Environment with the comprehensive IndexManager. ---
     env_test = LogicEnv_gym(
         index_manager=index_manager_test,
-        data_handler=data_handler_test, 
-        queries=queries_for_env_test,
-        labels=labels_for_env_test,
-        facts_tensor=data_handler_test.facts_tensor,
-        facts_as_set_indices=data_handler_test.facts_as_set_indices,
-        rules_tensor=data_handler_test.rules_tensor,
-        rule_lengths_tensor=data_handler_test.rule_lengths_tensor,
-        original_rules_list=data_handler_test.rules_objects,
+        data_handler=data_handler_test,
+        queries_term=data_handler_test.test_queries_terms,
+        rules_term=data_handler_test.rules_terms,
+        queries=test_queries,
+        labels=data_handler_test.test_labels,
+        facts=index_manager_test.facts,
+        facts_set=index_manager_test.facts_set,
+        rules=index_manager_test.rules,
+        rule_lengths=index_manager_test.rules_lengths,
         mode='eval_with_restart', 
         padding_atoms=padding_atoms_env,
         padding_states=padding_states_env,
@@ -706,7 +641,7 @@ if __name__ == '__main__':
     )
     print("LogicEnv_gym Initialized for Test.")
 
-    num_test_episodes = len(queries_for_env_test)
+    num_test_episodes = len(queries_terms_test)
     for episode_num in range(num_test_episodes):
         print(f"\n--- TEST EPISODE {episode_num + 1} ---")
         obs, info = env_test.reset()
