@@ -63,6 +63,7 @@ def unify_with_facts(query: Term,
     if query_is_ground:
         if query in facts_set and query != excluded_fact:
             substitutions.append({'True': 'True'})
+        print('Ground query:', query, 'Substitutions:', substitutions) if verbose else None
         return substitutions
 
     # For non-ground queries, use the index
@@ -84,7 +85,7 @@ def unify_with_facts(query: Term,
             subs = unify_terms(fact, query, verbose=0)
             if subs is not None:
                 substitutions.append(subs)
-
+    print('Fact:', fact, 'Substitutions:', subs) if verbose else None
     return substitutions
 
 def unify_with_rules(query: Term, rules: List[Rule], verbose: int=0) -> List[Tuple[List[Term], Dict[str, str]]]:
@@ -312,6 +313,7 @@ def get_next_unification_python(state: List[Term],
 
     if not rule_states and unification_strategy == 'only_rules':
         print('No unification with rules') if verbose else None
+        print('++++++++++++++\n') if verbose else None
         return [[Term('False', ())]], next_var_index
 
     print() if verbose else None
@@ -323,18 +325,19 @@ def get_next_unification_python(state: List[Term],
         first_goal = state_from_rule[0]
         rest_of_goals = state_from_rule[1:]
 
-        fact_substitutions = unify_with_facts(first_goal, facts_indexed, facts_set, excluded_fact, verbose=verbose)
-        print(F"State from rule: {state_from_rule}, subs: {fact_substitutions}") if verbose else None
+        fact_substitutions = unify_with_facts(first_goal, facts_indexed, facts_set, excluded_fact, verbose=0)
+        print(F"State from rule: {state_from_rule}. \nSubs: {fact_substitutions}") if verbose else None
 
         for subs in fact_substitutions:
 
             if not rest_of_goals: # if there are no remaining goals, we can return True because we found a fact
                 print(f"    True next state and no other goals") if verbose else None
+                print('++++++++++++++\n') if verbose else None
                 return [[Term('True', ())]], next_var_index   
 
             else:
                 if subs.get('True') == 'True': # it is a fact
-                    print(f"    Fact next state for sub {subs} in {state_from_rule}") if verbose else None
+                    print(f"    Fact next state for sub {subs}") if verbose else None
                     next_states.append(rest_of_goals)
 
                 else: # Apply substitutions to remaining state
@@ -352,7 +355,8 @@ def get_next_unification_python(state: List[Term],
 
                     # if all atoms in the new state are True, we can return True
                     if all(term.predicate == 'True' for term in new_state):
-                        print(f"    True next state for sub {subs} in {state_from_rule}") if verbose else None
+                        print(f"    True next state for sub {subs}") if verbose else None
+                        print('++++++++++++++\n') if verbose else None
                         return [[Term('True', ())]], next_var_index
                     
                     # if not all atoms in the new state are True, filter the True atoms
@@ -365,6 +369,7 @@ def get_next_unification_python(state: List[Term],
 
     if not next_states:
         print('No unification with facts') if verbose else None
+        print('++++++++++++++\n') if verbose else None
         return [[Term('False', ())]], next_var_index
 
     # --- Var renaming ---
@@ -416,47 +421,53 @@ def get_next_unification_python_old(state: List[Term],
     # order by number of variables
     state.sort(key=lambda term: sum(is_variable(arg) for arg in term.args)) 
     
+    next_states = []
+
     # Get the first query and remaining state
     query = state[0]
     remaining_state = state[1:]
-    next_states = []
 
     # Try unifying with facts
     print('\nUnification with facts') if verbose else None
-    fact_substitutions = unify_with_facts(query, facts_indexed, facts_set, excluded_fact, verbose=verbose)
-    for subs in fact_substitutions:
-        print('Substitution:', subs) if verbose else None
-        if subs.get('True') == 'True':
-            # If it was a fact with no substitutions, continue with remaining state
-            new_state = remaining_state.copy()
-            if new_state:
-                next_states.append(new_state)
-            else:
-                print(f"    It is a fact and no other goals") if verbose else None
-                print('++++++++++++++\n') if verbose else None
-                return [[Term('True', [])]], next_var_index
-        else:
-            # Apply substitutions to remaining state
-            new_state = [
-                (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
-                    else Term(term.predicate, substituted_args))
-                for term in remaining_state
-            ]
-            next_states.append(new_state)
+    fact_substitutions = unify_with_facts(query, facts_indexed, facts_set, excluded_fact, verbose=0)
+    print(f"State: {state}. \nSubs: {fact_substitutions}") if verbose else None
 
-    # For the next states, the ones that are (true) facts, we can substite them by True term
-    for i in range(len(next_states)):
-        next_state = next_states[i]
-        # substitute the facts by True
-        for j in range(len(next_state)):
-            atom = next_state[j]
-            if not any(is_variable(arg) for arg in atom.args) and atom in facts_set:
-                next_states[i][j] = Term('True', [])
-        # if the next state i is True, return True (we found a True next state)
-        if all(term.predicate == 'True' for term in next_state):
-            print(f"    Next state are facts: {next_state}") if verbose else None
+    for subs in fact_substitutions:
+
+        if not remaining_state:
+            # If there are no remaining goals, we can return True because we found a fact
+            print(f"    True next state and no other goals") if verbose else None
             print('++++++++++++++\n') if verbose else None
             return [[Term('True', [])]], next_var_index
+        
+        else:
+            if subs.get('True') == 'True':
+                print(f"    Fact next state for sub {subs}") if verbose else None
+                next_states.append(remaining_state)
+
+            else: # Apply substitutions to remaining state
+                new_state = [
+                    (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
+                        else Term(term.predicate, substituted_args))
+                    for term in remaining_state
+                ]
+
+                # substitute the facts by True
+                for j in range(len(new_state)):
+                    atom = new_state[j]
+                    if atom in facts_set and atom != excluded_fact:
+                        new_state[j] = Term('True', ())
+
+                # if all atoms in the new state are True, we can return True
+                if all(term.predicate == 'True' for term in new_state):
+                    print(f"    True next state for sub {subs}") if verbose else None
+                    print('++++++++++++++\n') if verbose else None
+                    return [[Term('True', ())]], next_var_index
+                
+                # if not all atoms in the new state are True, filter the True atoms
+                new_state = [term for term in new_state if term.predicate != 'True']
+                print(f"    New state after filtering facts: {new_state}") if verbose else None
+                next_states.append(new_state)
 
     # Try unifying with rules
     print('\nUnification with rules') if verbose else None
@@ -468,7 +479,6 @@ def get_next_unification_python_old(state: List[Term],
                 else Term(term.predicate, substituted_args))
             for term in remaining_state
         ]
-        # Combine rule body with remaining state
         new_state = body + new_remaining 
         next_states.append(new_state)
 
