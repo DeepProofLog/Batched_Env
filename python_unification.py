@@ -1,376 +1,480 @@
-from typing import List, Dict, Set, Tuple, FrozenSet, Optional
+import torch
+from typing import List, Dict, Set, Tuple, FrozenSet, Optional, NamedTuple, Any
 from utils import Term, Rule
+from index_manager import IndexManager, facts_to_tensor_im, rules_to_tensor_im, state_to_tensor_im, \
+                        debug_print_atom, debug_print_state_from_indices, debug_print_states_from_indices
 
 
-def is_variable(arg: str) -> bool:
-    """Check if an argument is a variable."""
-    return arg[0].isupper() or arg[0] == '_'
-
-def unify_terms(term1: Term, term2: Term, verbose: int=0) -> Dict[str, str]:
+def format_substitutions_dict(subs: Dict[int, int], index_manager: IndexManager) -> Dict[str, str]:
     """
-    Attempts to unify two terms and returns a substitution dictionary if successful.
-    Returns None if unification is not possible.
-    We unify the first term with the second (term1 with term2)
-    
-    Args:
-        term1: First Term object to unify
-        term2: Second Term object to unify
-    
-    Returns:
-        Dictionary mapping variables to their substitutions, or None if unification fails
+    Converts a substitutions dictionary to a human-readable format.
+    Keys are variable names, values are the corresponding term values.
+    If 'ground_match' is True, it indicates a ground match.
     """
-    assert len(term1.args) == len(term2.args) == 2, 'only support binary predicates'
-    print('\nterm1:', term1, 'term2:', term2) if verbose else None
-    substitutions = {}
-    for arg1, arg2 in zip(term1.args, term2.args):
-        print('arg1:', arg1, 'arg2:', arg2) if verbose else None
+    if not subs: return {}
+    if subs.get('ground_match') is True:
+        return {"ground_match": "True"}
+    readable_subs = {}
+    for var_idx, val_idx in subs.items():
+        var_str = index_manager.get_str_for_term_idx(var_idx)
+        val_str = index_manager.get_str_for_term_idx(val_idx)
+        readable_subs[var_str] = val_str
+    return readable_subs
 
-        # If both are constants, they must be equal
-        if not (arg1[0].isupper() or arg1[0] == '_') and not (arg2[0].isupper() or arg2[0] == '_'):
-            print('both are constants') if verbose else None
-            if arg1 != arg2:
-                print('constants are different') if verbose else None
-                return None
-        elif arg2 in substitutions:
-            print('arg2 in substitutions') if verbose else None
-            if substitutions[arg2] != arg1:
-                print('different substitution') if verbose else None
-                return None
-        else:
-            substitutions[arg2] = arg1
-            print('substitutions:', substitutions) if verbose else None
-    return substitutions
+def is_variable_idx(idx: int, index_manager: IndexManager) -> bool:
+    return index_manager.is_var_idx(idx)
 
-def unify_with_facts(query: Term, 
-                    facts_indexed: Dict[Tuple, Set[Term]], 
-                    facts_set: FrozenSet[Term], 
-                    excluded_fact: Optional[Term] = None, # Added parameter
-                    verbose: int=0) -> List[Dict[str, str]]:
+def resolve_idx(idx: int, substitutions: Dict[int, int], index_manager: IndexManager) -> int: 
     """
-    Attempts to unify a query with a list of facts.
-    
-    Args:
-        query: Term object representing the query
-        facts: List of Term objects representing facts
-    
-    Returns:
-        List of successful substitution dictionaries
+    Resolves an index through substitutions, handling cycles.
+    Returns the resolved index or the original index if no resolution is possible.
     """
+    seen = {idx}
+    while is_variable_idx(idx, index_manager) and idx in substitutions:
+        idx_before = idx
+        idx = substitutions[idx]
+        if idx == idx_before: 
+            break
+        if idx in seen: 
+            return idx
+    return idx
 
-    substitutions = []
-    query_is_ground = not any(arg[0].isupper() or arg[0] == '_' for arg in query.args)
+def unify_terms_idx(
+    term1_idx: torch.Tensor,
+    term2_idx: torch.Tensor,
+    index_manager: IndexManager
+) -> Optional[Dict[int, int]]:
+    """
+    Attempts to unify two terms represented by tensors. `term1` is the target, `term2` is the source.
+    Variables in `term2` are substituted by values from `term1`.
+    Returns a substitution dictionary if successful, otherwise None.
+    """
+    if term1_idx[0].item() != term2_idx[0].item():
+        return None  # Predicates must match
 
-    if query_is_ground:
-        if query in facts_set and query != excluded_fact:
-            substitutions.append({'True': 'True'})
-        return substitutions
+    subs = {}
+    # Arguments start at index 1
+    for i in range(1, index_manager.max_arity + 1):
+        arg1 = term1_idx[i].item()
+        arg2 = term2_idx[i].item()
 
-    # For non-ground queries, use the index
-    query_constant_args_with_pos = [(i, arg) for i, arg in enumerate(query.args) if not (arg[0].isupper() or arg[0] == '_')]
+        # Resolve both arguments with the current substitution set
+        r_arg1 = resolve_idx(arg1, subs, index_manager)
+        r_arg2 = resolve_idx(arg2, subs, index_manager)
 
-    # # Sort constant args by position to create a canonical lookup key
-    # sorted_query_constant_args = tuple(sorted(query_constant_args_with_pos, key=lambda x: x[0]))
-    # lookup_key = (query.predicate,) + sorted_query_constant_args
-    lookup_key = (query.predicate,) + tuple(query_constant_args_with_pos)
-    # Retrieve candidate facts using the lookup key (later we remove the excluded_fact)
-    candidate_facts = facts_indexed.get(lookup_key, set())
-
-    # Iterate only over the candidate facts
-    for fact in candidate_facts:
-        if fact == excluded_fact:
+        # Skip if they already resolve to the same value or are both padding
+        if r_arg1 == r_arg2:
             continue
-        # Verify predicate and arity match before attempting unification
-        if fact.predicate == query.predicate:
-            subs = unify_terms(fact, query, verbose=0)
-            if subs is not None:
-                substitutions.append(subs)
 
-    return substitutions
+        is_r_arg1_var = is_variable_idx(r_arg1, index_manager)
+        is_r_arg2_var = is_variable_idx(r_arg2, index_manager)
 
-def unify_with_rules(query: Term, rules: List[Rule], verbose: int=0) -> List[Tuple[List[Term], Dict[str, str]]]:
+        if is_r_arg2_var:
+            subs[r_arg2] = r_arg1  # Unify: substitute variable from term2 with value from term1
+        elif is_r_arg1_var:
+            subs[r_arg1] = r_arg2  # Unify: substitute variable from term1 with value from term2
+        elif r_arg1 != r_arg2:
+            return None  # Mismatch between two different constants
+
+    return subs
+
+def apply_substitutions_to_term_idx(term_idx: torch.Tensor, substitutions: Dict[int, int], index_manager: IndexManager) -> torch.Tensor:
+    new_term_list = [term_idx[0].item()] 
+    for i in range(1, index_manager.max_arity + 1): 
+        arg = term_idx[i].item()
+        new_term_list.append(resolve_idx(arg, substitutions, index_manager)) 
+    return torch.tensor(new_term_list, dtype=torch.long, device=term_idx.device)
+
+def apply_substitutions_to_state_idx(state: torch.Tensor, substitutions: Dict[int, int], index_manager: IndexManager) -> torch.Tensor:
+    if state.numel() == 0 or not substitutions:
+        return state
+    new_atoms = [apply_substitutions_to_term_idx(state[i], substitutions, index_manager) for i in range(state.shape[0])] 
+    if not new_atoms:
+        return torch.empty((0, index_manager.max_arity + 1), dtype=torch.long, device=state.device)
+    return torch.stack(new_atoms)
+
+def standardize_apart_rule_idx(
+    rule_tensor_single: torch.Tensor,
+    rule_length: int,
+    index_manager: IndexManager
+) -> torch.Tensor:
+    """Renames variables in a rule to fresh, unique dynamic variables to prevent clashes."""
+    if rule_length == 0:
+        return rule_tensor_single
+
+    local_map: Dict[int, int] = {}
+    new_atoms = []
+    for i in range(rule_length):
+        atom = rule_tensor_single[i]
+        new_atom_elements = [atom[0].item()]
+        for k in range(1, index_manager.max_arity + 1):
+            original_idx = atom[k].item()
+            if is_variable_idx(original_idx, index_manager):
+                if original_idx not in local_map:
+                    local_map[original_idx] = index_manager.get_next_var()
+                new_atom_elements.append(local_map[original_idx])
+            else:
+                new_atom_elements.append(original_idx)
+        new_atoms.append(torch.tensor(new_atom_elements, dtype=torch.long, device=index_manager.device))
+
+    standardized_part = torch.stack(new_atoms)
+
+    # Re-attach padding if it existed
+    if rule_length < rule_tensor_single.shape[0]:
+        padding = rule_tensor_single[rule_length:]
+        return torch.cat([standardized_part, padding], dim=0)
+
+    return standardized_part
+
+def unify_with_facts(
+    query: torch.Tensor,
+    fact_indexed: Dict[Tuple, Set[Tuple[int, ...]]],  # Takes the built index
+    facts_set: FrozenSet[Tuple[int, int, int]],
+    excluded_fact: Optional[torch.Tensor],
+    index_manager: IndexManager,
+    verbose: int = 0
+) -> List[Dict[int, int]]:
     """
-    Attempts to unify a query with the heads of rules and returns their bodies with substitutions.
-    
-    Args:
-        query: Term object representing the query
-        rules: List of Rule objects to try unifying with
-    
-    Returns:
-        List of tuples containing (rule body terms, substitution dictionary)
+    Attempts to unify a query with facts using an index for efficiency.
     """
+    substitutions_found = []
+
+    # Check if the query is ground (contains no variables)
+    is_ground = not any(is_variable_idx(query[i].item(), index_manager) for i in range(1, index_manager.max_arity + 1))
+
+    # --- Case 1: The query is a ground atom ---
+    if is_ground:
+        query_tuple = tuple(query.tolist())
+        excluded_fact_tuple = tuple(excluded_fact.tolist()) if excluded_fact is not None else None
+        if query_tuple in facts_set and query_tuple != excluded_fact_tuple:
+            if verbose > 1:
+                print(f"DEBUG: Ground query {debug_print_atom(query, index_manager)} matched in fact set.")
+            substitutions_found.append({'ground_match': True})
+        return substitutions_found
+
+    # --- Case 2: The query is not ground (contains variables) ---
+    # Construct a lookup key from the query's predicate and constant arguments
+    query_constant_args_with_pos = []
+    for i in range(1, index_manager.max_arity + 1):
+        arg_idx = query[i].item()
+        if not is_variable_idx(arg_idx, index_manager) and arg_idx != index_manager.padding_idx:
+            # Store argument position (0 or 1) and its constant index
+            query_constant_args_with_pos.append((i - 1, arg_idx))
+
+    # The key is the predicate index plus the sorted constant arguments for canonical representation
+    lookup_key = (query[0].item(),) + tuple(sorted(query_constant_args_with_pos, key=lambda x: x[0]))
+
+    # Retrieve only the candidate facts that could possibly unify using the index
+    candidate_fact_tuples = fact_indexed.get(lookup_key, set())
+
+    if verbose > 1:
+        print(f"DEBUG: Lookup key {lookup_key} found {len(candidate_fact_tuples)} candidate facts.")
+        print(f"DEBUG: First 100 candidate facts: {[debug_print_atom(torch.tensor(fact_tuple, dtype=torch.long, device=query.device), index_manager) for fact_tuple in list(candidate_fact_tuples)[:100]]}")
+    excluded_fact_tuple = tuple(excluded_fact.tolist()) if excluded_fact is not None else None
+
+    # Iterate over the much smaller set of candidate facts
+    for fact_tuple in candidate_fact_tuples:
+        if fact_tuple == excluded_fact_tuple:
+            continue
+
+        fact_tensor = torch.tensor(fact_tuple, dtype=torch.long, device=query.device)
+
+        # Attempt to unify the fact with the query (fact provides values, query has variables)
+        subs = unify_terms_idx(fact_tensor, query, index_manager)
+
+        if subs is not None:
+            if verbose > 1:
+                print(f"    DEBUG (unify_with_facts): Query {debug_print_atom(query, index_manager)} unified with fact {debug_print_atom(fact_tensor, index_manager)} -> subs {format_substitutions_dict(subs, index_manager)}")
+            substitutions_found.append(subs)
+
+    return substitutions_found
+
+
+def unify_with_rules(
+    query: torch.Tensor,
+    rules: torch.Tensor,
+    rule_lengths: torch.Tensor,
+    index_manager: IndexManager,
+    rules_term: List[Rule],
+    verbose: int = 0
+) -> List[Tuple[torch.Tensor, Dict[int, int]]]:
+    """Unifies a query with all rule heads, returning instantiated bodies and substitutions."""
     results = []
-    for rule in rules:
-        if rule.head.predicate == query.predicate:
-            subs = unify_terms(query, rule.head)
-            if subs is not None:
-                new_body = [
-                    (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
-                     else Term(term.predicate, substituted_args))
-                    for term in rule.body
-                ]
-                print('Rule:', rule, '      Subs:', subs, '     New body:', new_body) if verbose else None
-                results.append((new_body, subs))
-    
+    for i in range(rules.shape[0]):
+        rule_len = rule_lengths[i].item()
+
+        # Standardize apart to get fresh variables for this rule application
+        standardized_rule = standardize_apart_rule_idx(rules[i], rule_len, index_manager)
+        rule_head_idx = standardized_rule[0]
+
+        # Unify query with the standardized rule head
+        subs = unify_terms_idx(query, rule_head_idx, index_manager)
+
+        if subs is not None:
+            body_template = standardized_rule[1:rule_len]
+            instantiated_body = apply_substitutions_to_state_idx(body_template, subs, index_manager)
+            
+            if verbose >= 1:
+                print(f"  Rule {i}: {str(rules_term[i])}")
+                print(f"    Query: {debug_print_atom(query, index_manager)}")
+                print(f"    Subs: {format_substitutions_dict(subs, index_manager)}")
+                print(f"    New Body: {debug_print_state_from_indices(instantiated_body, index_manager, True)}")
+
+            results.append((instantiated_body, subs))
     return results
 
-def rename_vars_local(next_states: List[List[Term]],
-                      global_next_var_index: int,
-                      verbose: int = 0,
-                      ) -> Tuple[List[List[Term]], int]:
+
+
+def get_next_unification_pt(
+    current_state: torch.Tensor,
+    fact_indexed: Dict[Tuple, Set[Tuple[int, ...]]],
+    facts_set: FrozenSet[Tuple[int, ...]],
+    rules: torch.Tensor,
+    rule_lengths: torch.Tensor,
+    index_manager: "IndexManager",
+    rules_term: List["Rule"],
+    excluded_fact: Optional[torch.Tensor] = None,
+    unification_strategy: str = 'rules_and_facts',
+    verbose: int = 0
+) -> List[torch.Tensor]:
     """
-    Renames variables within each state locally, avoiding collisions with
-    pre-existing 'Var_...' variables in that state. The global index counter
-    tracks the highest index used across all states.
-
-    Args:
-        next_states: A list of states, where each state is a list of Terms.
-        global_next_var_index: The starting index suggestion from the global scope.
-        verbose: Verbosity level.
-
-    Returns:
-        A tuple containing:
-        - The list of states with variables renamed locally and safely.
-        - The updated global_next_var_index after processing all states.
-    """
-    if global_next_var_index is None:
-        raise ValueError('global_next_var_index cannot be None')
-
-    renamed_states_outer = []
-
-    for idx, state in enumerate(next_states):
-        local_var_mapping: Dict[str, str] = {} # Mapping is local to this state
-        renamed_state_inner = [None] * len(state)
-
-        # --- Collision Avoidance Step ---
-        max_existing_k = -1
-        existing_vars_in_state = set()
-        for term in state:
-            for arg in term.args:
-                 if isinstance(arg, str) and arg.startswith('Var_'):
-                      existing_vars_in_state.add(arg)
-                      try:
-                           k = int(arg[4:])
-                           max_existing_k = max(max_existing_k, k)
-                      except ValueError:
-                           pass # Ignore malformed Var_ names
-
-        local_start_index = max(global_next_var_index, max_existing_k + 1)
-        current_state_var_index = local_start_index # Counter for new vars in this state
-
-        # --- Renaming Loop ---
-        for i, term in enumerate(state):
-            original_args = term.args
-            new_args_list = None
-            term_changed = False
-
-            for j, arg in enumerate(original_args):
-                renamed_arg = arg
-
-                # Only rename non-'Var_' variables
-                if arg and (arg[0].isupper() or arg[0] == '_') and not arg.startswith('Var_'):
-                    mapped_arg = local_var_mapping.get(arg)
-                    if mapped_arg is None:
-                        new_var_name = f"Var_{current_state_var_index}"
-                        local_var_mapping[arg] = new_var_name
-                        current_state_var_index += 1 # Increment index for next new var *in this state*
-                        renamed_arg = new_var_name
-                        term_changed = True
-                    else:
-                        renamed_arg = mapped_arg
-                        if renamed_arg != arg: # Should always be true if mapped
-                            term_changed = True
-                # Else: Keep constants and existing 'Var_' variables as they are
-
-                # --- Optimization: Build new args list only if necessary ---
-                if term_changed and new_args_list is None:
-                    new_args_list = list(original_args[:j])
-                if new_args_list is not None:
-                    new_args_list.append(renamed_arg)
-
-            if term_changed:
-                renamed_state_inner[i] = Term(term.predicate, tuple(new_args_list))
-            else:
-                renamed_state_inner[i] = term
-
-        renamed_states_outer.append(renamed_state_inner)
-
-    if renamed_states_outer != next_states:
-        print('\n\nRenamed states:', renamed_states_outer) if verbose else None
-        print('Original states:', next_states) if verbose else None
-    return renamed_states_outer
-
-
-def rename_vars(next_states: List[Term], 
-                next_var_index: int,
-                verbose: int = 0,
-                ) -> Tuple[List[Term], int]:
-    assert next_var_index is not None, 'next_var_index should not be None'
-
-    renamed_states = []
-    var_mapping: Dict[str, str] = {}
-    current_next_var_index = next_var_index
-
-    for state in next_states:
-        new_state_list = [None] * len(state)
-
-        for i, term in enumerate(state):
-            term_pred = term.predicate
-            original_args = term.args
-            new_args_list = None  # Lazily create the list only if an arg changes
-            term_changed = False # Flag to track if this specific term needs rebuilding
-
-            for j, arg in enumerate(original_args):
-
-                if arg and (arg[0].isupper() or arg[0] == '_') and not arg.startswith('Var_'):
-                    mapped_arg = var_mapping.get(arg)
-                    if mapped_arg is None:
-                        new_var_name = f"Var_{current_next_var_index}"
-                        var_mapping[arg] = new_var_name
-                        current_next_var_index += 1
-                        renamed_arg = new_var_name
-                        term_changed = True
-                    else:
-                        renamed_arg = mapped_arg
-                        if renamed_arg != arg:
-                            term_changed = True
-                        # If renamed_arg == arg, term_changed remains false *unless*
-                        # set true by a previous arg in this term.
-
-                    # --- Optimization: Streamlined lazy list handling ---
-                    # If the term needs changing (either now or earlier)
-                    if term_changed:
-                        if new_args_list is None:
-                            # Allocate and copy previous args only when needed
-                            new_args_list = list(original_args[:j])
-                        new_args_list.append(renamed_arg)
-
-                elif new_args_list is not None:
-                    new_args_list.append(arg)
-                # Else (arg is constant/renamed AND new_args_list is None):
-                    # Do nothing - we are still implicitly using original args
-
-            if term_changed:
-                new_state_list[i] = Term(term_pred, tuple(new_args_list))
-            else:
-                new_state_list[i] = term
-
-        renamed_states.append(new_state_list)
-
-    # Update the index that might be passed back or used later
-    next_var_index = current_next_var_index
-
-    if renamed_states != next_states:
-        print('\n\nRenamed states:', renamed_states) if verbose else None
-        print('Original states:', next_states) if verbose else None
-
-    return renamed_states, next_var_index
-
-
-
-def get_next_unification_python(state: List[Term], 
-                                facts_set: FrozenSet, 
-                                facts_indexed: Dict[Tuple, Set[Term]], 
-                                rules: List[Rule], 
-                                excluded_fact: Optional[Term] = None,
-                                next_var_index: Optional[int] = None,
-                                unification_strategy: str = 'only_rules', # 'only_rules' 'rules_and_facts'
-                                verbose: int = 0) -> Tuple[List[List[Term]], Optional[int]]:
-    """
-    Processes a state: Rule Unification -> Intermediate States -> Fact Unification on First Goal
-    -> Potential States -> Remove True Terms -> Return Next States
-    If any state simplifies to empty (proof found), returns [[True]] immediately.
+    Processes a state by first unifying its primary goal with rules,
+    and then unifying the first goal of each resulting state with facts.
+    This function is designed to match the logic of the original string-based implementation.
     """
 
-    # --- Initial Checks and Setup ---
-    if not state: return [[Term('True', ())]], next_var_index
-    if any(term.predicate == 'False' for term in state): return [[Term('False', ())]], next_var_index
-    state = [term for term in state if term.predicate != 'True']
-    if not state: return [[Term('True', ())]], next_var_index
+    if verbose: 
+        print(f"\n++++++++++++++++++ Processing Current State: {debug_print_state_from_indices(current_state, index_manager, True)} ++++++++++++++++++")
 
-    # --- Goal Selection ---
-    query = state[0]
-    remaining_state = state[1:]
-    rule_states = []
+    # --- 1. Initial State Checks ---
+    assert current_state.numel() > 0, "Current state should not be empty at this point."
+ 
+    if torch.any(current_state[:, 0] == index_manager.false_pred_idx):
+        print("Current state contains a FALSE predicate. Terminating path.") if verbose >= 1 else None
+        print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
+        return [index_manager.false_tensor.unsqueeze(0)] # Failure state
+    state = current_state[current_state[:, 0] != index_manager.true_pred_idx]
+    if state.shape[0] == 0 or torch.all(state == index_manager.padding_idx):
+        print("True state resolved to padding or empty.") if verbose >= 1 else None
+        print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
+        return [index_manager.true_tensor.unsqueeze(0)] # State resolves to TRUE
 
-    print('\n\n++++++++++++++') if verbose else None
-    print(f'Processing Query: {query}') if verbose else None
-    print(f'Remaining State: {remaining_state}\n') if verbose else None
+    # --- 2. Goal Selection ---
+    query_atom = state[0]
+    remaining_goals = state[1:]
+    if verbose >= 1:
+        print(f"--- Processing Query: {debug_print_atom(query_atom, index_manager)}, {query_atom} ++++++++++++++++++")
+        print(f"Remaining Goals: {debug_print_state_from_indices(remaining_goals, index_manager, True)}")
 
-    next_states = []
+    # --- 3. Step 1: Unify Query with Rule Heads ---
+    states_from_rules: List[torch.Tensor] = []
+    rule_unification_results = unify_with_rules(
+        query_atom, rules, rule_lengths, index_manager, rules_term, verbose
+    )
 
-    # --- Step 1: Unification ONLY with Rules ---
-    rule_results = unify_with_rules(query, rules, verbose=verbose)
-    for i, (body, rule_subs) in enumerate(rule_results):
-        new_remaining = [
-            (term if (substituted_args := tuple(rule_subs.get(arg, arg) for arg in term.args)) == term.args
-             else Term(term.predicate, substituted_args))
-            for term in remaining_state
-        ]
-        rule_derived_state = body + new_remaining
-        rule_states.append(rule_derived_state)
+    for body, subs in rule_unification_results:
+        # Apply substitutions from the rule unification to the rest of the goals
+        substituted_remaining_goals = apply_substitutions_to_state_idx(remaining_goals, subs, index_manager)
+        # The new state is the rule body followed by the updated remaining goals
+        new_state = torch.cat([body, substituted_remaining_goals], dim=0)
+        states_from_rules.append(new_state)
 
-    if not rule_states and unification_strategy == 'only_rules':
-        print('No unification with rules') if verbose else None
-        return [[Term('False', ())]], next_var_index
+    if not states_from_rules:
+        if verbose >= 1: 
+            print("No rule unifications found. Path terminates.")
+            print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+        return [index_manager.false_tensor.unsqueeze(0)]
 
-    print() if verbose else None
-    
-    # --- Step 2: Apply Fact Unification to First Goal of Intermediate States ---
-    for state_from_rule in rule_states:
+    # --- 4. Step 2: Unify First Goal of Intermediate States with Facts ---
+    final_resolvents: List[torch.Tensor] = []
+    if verbose >= 1: print("\n--- Fact Unification on Intermediate States ---")
 
-        first_goal = state_from_rule[0]
-        rest_of_goals = state_from_rule[1:]
+    for state_from_rules in states_from_rules:
+        assert state_from_rules.shape[0] > 0, "Intermediate state should not be empty at this point."
 
-        fact_substitutions = unify_with_facts(first_goal, facts_indexed, facts_set, excluded_fact, verbose=verbose)
-        print(F"State from rule: {state_from_rule}, subs: {fact_substitutions}") if verbose else None
+        first_goal = state_from_rules[0]
+        rest_of_goals = state_from_rules[1:]
+
+        fact_substitutions = unify_with_facts(
+            first_goal, fact_indexed, facts_set, excluded_fact, index_manager, verbose
+        )
 
         for subs in fact_substitutions:
+            # If there are no other goals to prove, we are done with this path.
+            if rest_of_goals.shape[0] == 0:
+                if verbose >= 1: 
+                    print("Fact unification succeeded and no goals remain. Proof found!")
+                    print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+                return [index_manager.true_tensor.unsqueeze(0)] # Aggressive success return
 
-            if not rest_of_goals: # if there are no remaining goals, we can return True because we found a fact
-                print(f"    True next state and no other goals") if verbose else None
-                return [[Term('True', ())]], next_var_index   
-
+            # Apply substitutions from the fact unification to the rest of the goals
+            if subs.get('ground_match'):
+                new_goals = rest_of_goals # No new substitutions to apply
             else:
-                # print('Remaining goals:', rest_of_goals) if verbose else None
-                if subs.get('True') == 'True': # it is a fact
-                    print(f"    Fact next state for sub {subs} in {state_from_rule}") if verbose else None
-                    next_states.append(rest_of_goals)
+                new_goals = apply_substitutions_to_state_idx(rest_of_goals, subs, index_manager)
 
-                else: # Apply substitutions to remaining state
-                    new_state = [
-                        (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
-                         else Term(term.predicate, substituted_args))
-                        for term in rest_of_goals
-                    ]
+            # Intermediate Fact Checking: Check if any of the new goals are now facts
+            simplified_goals = []
+            for atom in new_goals:
+                # A goal is a fact if it's ground and exists in the fact set
+                is_ground = not any(is_variable_idx(arg.item(), index_manager) for arg in atom[1:])
+                if is_ground and tuple(atom.tolist()) in facts_set:
+                    if verbose >= 1: print(f"    Goal {debug_print_atom(atom, index_manager)} resolved to a fact. Skipping.")
+                    # Don't add it to the list, effectively replacing it with TRUE
+                    continue
+                simplified_goals.append(atom)
 
-                    # substitute the facts by True
-                    for j in range(len(new_state)):
-                        atom = new_state[j]
-                        if atom in facts_set and atom != excluded_fact:
-                            new_state[j] = Term('True', ())
+            if not simplified_goals:
+                # All remaining goals were resolved to facts
+                if verbose >= 1: 
+                    print("All remaining goals resolved to facts. Proof found!")
+                    print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+                return [index_manager.true_tensor.unsqueeze(0)] # Aggressive success return
 
-                    # if all atoms in the new state are True, we can return True
-                    if all(term.predicate == 'True' for term in new_state):
-                        print(f"    True next state for sub {subs} in {state_from_rule}") if verbose else None
-                        return [[Term('True', ())]], next_var_index
-                    
-                    # if not all atoms in the new state are True, filter the True atoms
-                    new_state = [term for term in new_state if term.predicate != 'True']
-                    print(f"    New state after filtering facts: {new_state}") if verbose else None
-                    next_states.append(new_state)
+            final_resolvents.append(torch.stack(simplified_goals))
 
-    if rule_states and unification_strategy == 'rules_and_facts':
-        next_states.extend(rule_states)
+    # --- 5. Step 3: Combine States Based on Strategy ---
+    if unification_strategy == 'rules_and_facts' and len(states_from_rules) > 1:
+        # states_from_rules = rename_vars_local(states_from_rules, next_var_index, verbose=verbose)
+        final_resolvents.extend(states_from_rules)
 
-    if not next_states:
-        print('No unification with facts') if verbose else None
-        return [[Term('False', ())]], next_var_index
+    if not final_resolvents:
+        if verbose >= 1: 
+            print("No states could be resolved via facts. Path terminates.")
+            print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+        return [index_manager.false_tensor.unsqueeze(0)]
 
-    # --- Var renaming ---
-    if unification_strategy == 'rules_and_facts':
-        # next_states, next_var_index = rename_vars(next_states, next_var_index)
-        next_states = rename_vars_local(next_states, next_var_index, verbose=verbose)
+    # --- 6. Finalize and Deduplicate ---
+    unique_states, seen_states = [], set()
 
-    print('\nNext states:', next_states) if verbose else None
-    print('++++++++++++++\n') if verbose else None
-    return next_states, next_var_index
+    for state_tensor in final_resolvents:
+        # Convert tensor to a hashable tuple to use with the set
+        state_tuple = tuple(tuple(atom.tolist()) for atom in state_tensor)
+        if state_tuple not in seen_states:
+            unique_states.append(state_tensor)
+            seen_states.add(state_tuple)
+    
+    if verbose >= 1:
+        print()
+        print(f"\nFinal Next States: {debug_print_states_from_indices(unique_states, index_manager)}")
+        print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+
+    return unique_states
+
+
+
+
+
+if __name__ == '__main__':
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    all_constants_main = {"john", "mary", "peter", "chocolate", "wine", "a", "b", "c", "d"}
+    all_predicates_main = {"parent", "loves", "grandparent", "ancestor", "p", "q"} 
+    max_fixed_vars_main = 2 
+    rules_str_main = [
+        Rule(Term("grandparent", ("X", "Z")), 
+             [Term("parent", ("X", "Y")), Term("parent", ("Y", "Z"))]),
+        Rule(Term("ancestor", ("A", "B")), 
+             [Term("parent", ("A", "B"))]),
+        Rule(Term("ancestor", ("C", "E")),
+             [Term("parent", ("C", "D")), Term("ancestor", ("D", "E"))]),
+        Rule(Term("q", ("U", "W")), 
+             [Term("p", ("U", "V")), Term("parent", ("V", "W"))])
+    ]
+    im_main = IndexManager(constants=all_constants_main,
+                           predicates=all_predicates_main,
+                           max_total_vars=max_fixed_vars_main,
+                           rules=rules_str_main, 
+                           max_arity=2, 
+                           device=DEVICE)
+    facts_str_main = [
+        Term("parent", ("john", "mary")),
+        Term("parent", ("mary", "peter")),
+        Term("loves", ("john", "chocolate")),
+        Term("loves", ("mary", "wine")),
+        Term("p", ("a", "b")), 
+        Term("parent",("b","c")) 
+    ]
+    facts_main = facts_to_tensor_im(facts_str_main, im_main)
+    facts_set_main = frozenset(tuple(f.tolist()) for f in facts_main) 
+    max_atoms_main = 0
+    if rules_str_main:
+        max_atoms_main = max(1 + len(r.body) for r in rules_str_main) if rules_str_main else 1
+    rules_main, rule_lengths_tensor_main = rules_to_tensor_im(rules_str_main, max_atoms_main, im_main)
+    print("--- IndexManager Initialized ---")
+    print(f"True Idx: {im_main.true_pred_idx}, False Idx: {im_main.false_pred_idx}, Pad Idx: {im_main.padding_idx}")
+    print("\n--- Facts (Tensor Debug) ---")
+    print(debug_print_state_from_indices(facts_main, im_main))
+    print("\n--- Rules (Tensor Debug) ---")
+    for i in range(rules_main.shape[0]):
+        print(f"Rule {i} (len {rule_lengths_tensor_main[i].item()}): {debug_print_state_from_indices(rules_main[i,:rule_lengths_tensor_main[i].item()], im_main, oneline=True)}")
+
+    print("\n\n--- Test 1: Query grandparent(john, Who) ---")
+    initial_query_vars_gp = {} 
+    im_main.next_dynamic_var_idx_counter = im_main.dynamic_variable_start_index 
+    initial_state_str_gp = [Term("grandparent", ("john", "Who"))]
+    initial_state_tensor_gp = state_to_tensor_im(initial_state_str_gp, im_main, initial_query_vars_gp)
+    
+    current_proof_state = initial_state_tensor_gp
+    for step_num in range(1, 4): # Max 3 steps for this test
+        print(f"\n--- GP Step {step_num} ---")
+        if current_proof_state is None or current_proof_state.numel() == 0 or \
+           (current_proof_state.shape[0] == 1 and current_proof_state[0,0].item() == im_main.true_pred_idx) or \
+           (current_proof_state.shape[0] == 1 and current_proof_state[0,0].item() == im_main.false_pred_idx):
+            print(f"Proof terminated or reached single TRUE/FALSE before step {step_num}.")
+            break
+
+        next_possible_states, _ = get_next_unification_pt(
+            current_proof_state, 
+            facts_main,    
+            facts_set_main,    
+            rules_main,    
+            rule_lengths_tensor_main, 
+            im_main,
+            rules_term=rules_str_main, 
+            verbose=1,
+            include_intermediate_rule_states=False # Test with default
+        )
+        if not next_possible_states:
+            print("No next states derived.")
+            current_proof_state = None # End proof
+            break
+        
+        # In a real scenario, an agent would pick one. For testing, we take the first.
+        current_proof_state = next_possible_states[0] 
+        print(f"  Selected next state for GP Step {step_num+1} (if any): {debug_print_state_from_indices(current_proof_state, im_main, oneline=True)}")
+
+    if current_proof_state is not None and current_proof_state.shape[0] == 1 and current_proof_state[0,0].item() == im_main.true_pred_idx:
+        print("\nGRANDPARENT TEST SUCCEEDED TO PROVE TRUE!")
+    else:
+        print(f"\nGRANDPARENT TEST FINISHED. Final state: {debug_print_state_from_indices(current_proof_state, im_main, oneline=True) if current_proof_state is not None else 'None'}")
+
+    print("\n\n--- Test 2: Query q(a, What) ---")
+    initial_query_vars_q = {}
+    im_main.next_dynamic_var_idx_counter = im_main.dynamic_variable_start_index
+    initial_state_str_q = [Term("q", ("a", "What"))]
+    initial_state_tensor_q = state_to_tensor_im(initial_state_str_q, im_main, initial_query_vars_q)
+    current_proof_state_q = initial_state_tensor_q
+    for step_num_q in range(1, 4):
+        print(f"\n--- Q Step {step_num_q} ---")
+        if current_proof_state_q is None or current_proof_state_q.numel() == 0 or \
+           (current_proof_state_q.shape[0] == 1 and current_proof_state_q[0,0].item() == im_main.true_pred_idx) or \
+           (current_proof_state_q.shape[0] == 1 and current_proof_state_q[0,0].item() == im_main.false_pred_idx):
+            print(f"Proof terminated or reached single TRUE/FALSE before step {step_num_q}.")
+            break
+        next_possible_states_q, _ = get_next_unification_pt(
+            current_proof_state_q,
+            facts_main, facts_set_main,
+            rules_main, rule_lengths_tensor_main, im_main,
+            rules_term=rules_str_main, verbose=1
+        )
+        if not next_possible_states_q:
+            print("No next states derived for Q query.")
+            current_proof_state_q = None
+            break
+        current_proof_state_q = next_possible_states_q[0]
+        print(f"  Selected next state for Q Step {step_num_q+1} (if any): {debug_print_state_from_indices(current_proof_state_q, im_main, oneline=True)}")
+    
+    if current_proof_state_q is not None and current_proof_state_q.shape[0] == 1 and current_proof_state_q[0,0].item() == im_main.true_pred_idx:
+        print("\nQUERY Q TEST SUCCEEDED TO PROVE TRUE!")
+    else:
+        print(f"\nQUERY Q TEST FINISHED. Final state: {debug_print_state_from_indices(current_proof_state_q, im_main, oneline=True) if current_proof_state_q is not None else 'None'}")

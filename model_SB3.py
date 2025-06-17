@@ -196,7 +196,7 @@ class PolicyNetwork(nn.Module):
             nn.Linear(hidden_dim, embed_dim)
         )
     
-    def forward(self, obs_embeddings, action_embeddings, action_atom_indices):
+    def forward(self, obs_embeddings, action_embeddings, action_sub_indices):
         # Process observation embeddings through initial transformation
         x = self.obs_transform(obs_embeddings)
         # Pass through a series of residual blocks to deepen the representation
@@ -209,7 +209,7 @@ class PolicyNetwork(nn.Module):
         # Compute similarity (dot product) between observation and action embeddings
         logits = torch.matmul(x, action_embeddings.transpose(-2, -1)).squeeze(-2)
         # logits = F.cosine_similarity(x, action_embeddings, dim=-1) # Compare along the embedding dimension
-        padding_condition = action_atom_indices.sum(dim=-1).sum(dim=-1) 
+        padding_condition = action_sub_indices.sum(dim=-1).sum(dim=-1) 
         logits = torch.where(padding_condition == 0, float('-inf'), logits)  
 
         return logits
@@ -287,8 +287,8 @@ class CustomNetwork(nn.Module):
         - latent value representation
         """
         # Assuming `features` is observation sub_indices passed here for embedding
-        obs_embeddings, action_embeddings, action_atom_indices = features
-        probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices) # (batch_size=n_envs,pad_states)
+        obs_embeddings, action_embeddings, action_sub_indices = features
+        probs = self.policy_network(obs_embeddings, action_embeddings, action_sub_indices) # (batch_size=n_envs,pad_states)
         value = self.value_network(obs_embeddings) # (batch_size=n_envs,n_states=1)
         return probs, value
     
@@ -297,8 +297,8 @@ class CustomNetwork(nn.Module):
         Forward method for the actor network.
         Accepts features (which can include sub_indices for embedding) and outputs the latent policy representation.
         """
-        obs_embeddings, action_embeddings, action_atom_indices, = features
-        return self.policy_network(obs_embeddings, action_embeddings, action_atom_indices)
+        obs_embeddings, action_embeddings, action_sub_indices, = features
+        return self.policy_network(obs_embeddings, action_embeddings, action_sub_indices)
 
 
     def forward_critic(self, features: torch.Tensor) -> torch.Tensor:
@@ -325,7 +325,7 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
         Args:
             indices: torch.Tensor of shape (batch_size=n_envs,1,1,pad_atoms,3)
             2nd dim is to match the shape of derived_sub_indices
-            3rd dim is to match the shape of derived_atom_indices
+            3rd dim is to match the shape of derived_sub_indices
         Returns:
             torch.Tensor of shape (batch_size=n_envs,1,1,pad_atoms,3)
         """
@@ -340,14 +340,13 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Extract features from observations including valid action mask."""
 
-        obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
-        action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
-        action_atom_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3)
+        obs_sub_indices = observations["state"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
+        action_sub_indices = observations["derived_states"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
 
         obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.long()) # (batch_size=n_envs,n_states=1,embedding_dim)
         action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices.long()) # (batch_size=n_envs,pad_states,embedding_dim)
 
-        return obs_embeddings, action_embeddings, action_atom_indices #, valid_actions_mask
+        return obs_embeddings, action_embeddings, action_sub_indices #, valid_actions_mask
 
 
 

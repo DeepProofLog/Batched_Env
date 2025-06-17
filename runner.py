@@ -36,7 +36,7 @@ if __name__ == "__main__":
     # reward_type = 1
 
     # Dataset settings 
-    DATASET_NAME =  ["wn18rr"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
+    DATASET_NAME =  ["countries_s3"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
     TRAIN_DEPTH = [None] # [{-1,3,2}]
     VALID_DEPTH = [None]
     TEST_DEPTH = [None]
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     PADDING_ATOMS = [4]
     PADDING_STATES = [-1] # -1 sets the max padding size to a preset value (check below)
     ATOM_EMBEDDING_SIZE = [64]
-    CORRUPTION_MODE =  ['dynamic']
+    CORRUPTION_MODE =  [None]
 
     RESTORE_BEST_VAL_MODEL = [True]
     load_model = False
@@ -72,16 +72,16 @@ if __name__ == "__main__":
     TIMESTEPS_TRAIN = [10000000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
-    TRAIN_NEG_POS_RATIO = [1] # corruptions in train
+    TRAIN_NEG_POS_RATIO = [0] # corruptions in train
     valid_negatives = None # corruptions in validation set (test)
     test_negatives = None # corruptions in test set (test)
     n_eval_queries = None 
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 256
+    n_envs = 1
     n_steps = 256
-    n_eval_envs = 256
+    n_eval_envs = 1
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
     batch_size = 256 # Ensure batch size is a factor of n_steps (for the buffer).

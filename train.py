@@ -10,7 +10,9 @@ import pstats
 import io
 
 from env import LogicEnv_gym
-from index_manager import IndexManager
+from index_manager import IndexManager,state_to_tensor_im, facts_to_tensor_im, rules_to_tensor_im, \
+    debug_print_state_from_indices, debug_print_states_from_indices, queries_to_tensor_im, \
+    tensor_atom_to_term_im, tensor_state_to_terms_list_im
 from utils import get_device, print_eval_info
 from my_callbacks import SB3ModelCheckpoint, CustomEvalCallback, EpochTimingCallback
 from dataset import DataHandler
@@ -57,48 +59,40 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     data_handler = DataHandler(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
-        janus_file=args.janus_file,
+        rules_file= args.rules_file,
+        facts_file= args.facts_file,
         train_file= args.train_file,
         valid_file=args.valid_file,
         test_file= args.test_file,
-        rules_file= args.rules_file,
-        facts_file= args.facts_file,
         n_eval_queries = args.n_eval_queries,
         n_test_queries = args.n_test_queries,
-        corruption_mode=args.corruption_mode,
         train_depth=args.train_depth,
         valid_depth=args.valid_depth,
-        test_depth=args.test_depth,)
+        test_depth=args.test_depth,
+        corruption_mode=args.corruption_mode,
+        )
 
-    args.n_eval_queries = len(data_handler.valid_queries) if args.n_eval_queries == None else min(args.n_eval_queries, len(data_handler.valid_queries))
-    args.n_test_queries = len(data_handler.test_queries) if args.n_test_queries == None else min(args.n_test_queries, len(data_handler.valid_queries))
+    args.n_eval_queries = len(data_handler.valid_queries_terms) if args.n_eval_queries == None else min(args.n_eval_queries, len(data_handler.valid_queries_terms))
+    args.n_test_queries = len(data_handler.test_queries_terms) if args.n_test_queries == None else min(args.n_test_queries, len(data_handler.test_queries_terms))
 
     index_manager = IndexManager(data_handler.constants,
                                 data_handler.predicates,
                                 args.max_total_vars,
-                                constants_images=data_handler.constants_images if args.dataset_name == 'mnist_addition' else set(),
-                                constant_images_no=data_handler.constant_images_no if args.dataset_name == 'mnist_addition' else 0,
-                                rules=data_handler.rules,
+                                padding_atoms=args.padding_atoms,
                                 max_arity=data_handler.max_arity,
-                                device='cpu',
-                                padding_atoms=args.padding_atoms)
-    index_manager.build_fact_index(data_handler.facts)
-    
-    # --- Tensor Conversion ---
-    from python_unification_idx import facts_to_tensor_im, rules_to_tensor_im
-    from typing import List, Tuple, Dict, Optional, Set, FrozenSet
+                                device='cpu')
 
-    # Convert facts to tensor and set of indexed tuples
-    data_handler.facts_tensor = facts_to_tensor_im(data_handler.facts_terms, data_handler.index_manager)
-    data_handler.facts_as_set_indices: FrozenSet[Tuple[int, int, int]] = frozenset(
-        tuple(f.tolist()) for f in data_handler.facts_tensor)
-    
-    # Convert rules to tensor
-    max_rule_atoms = max(1 + len(r.body) for r in data_handler.rules_objects) if data_handler.rules_objects else 0
-    data_handler.rules_tensor, data_handler.rule_lengths_tensor = rules_to_tensor_im(
-        data_handler.rules_objects, max_rule_atoms, data_handler.index_manager
-    )
-    # --- End Tensor Conversion ---
+    max_rule_atoms_test = max(1 + len(r.body) for r in data_handler.rules_terms)
+    index_manager.rules, index_manager.rules_lengths = rules_to_tensor_im(data_handler.rules_terms,max_rule_atoms=max_rule_atoms_test, index_manager=index_manager)
+    facts = state_to_tensor_im(data_handler.facts_terms,index_manager)
+    index_manager.facts_set = frozenset(tuple(f.tolist()) for f in facts)
+    index_manager.train_queries = state_to_tensor_im(data_handler.train_queries_terms, index_manager)
+    index_manager.valid_queries = state_to_tensor_im(data_handler.valid_queries_terms, index_manager)
+    index_manager.test_queries = state_to_tensor_im(data_handler.test_queries_terms, index_manager)
+
+    # Build the facts index for fast lookup
+    index_manager.build_facts_index(facts)
+    print("IndexManager: Facts and Rules tensors created, facts index built.")
 
 
     if args.corruption_mode:
@@ -131,35 +125,39 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     # --- ENVIRONMENT ---
 
-    def make_env(mode='train', seed=0, queries=None, labels=None, facts=None):
+    def make_env(mode='train', seed=0, queries_term=None, queries=None, labels=None):
         def _init():
+
             env = LogicEnv_gym(
-                        index_manager=index_manager,
-                        data_handler=data_handler,
-                        queries=queries,
-                        labels=labels,
-                        facts=facts_set,
-                        mode=mode,
-                        corruption_mode=args.corruption_mode,
-                        corruption_scheme=args.corruption_scheme,
-                        train_neg_pos_ratio=args.train_neg_pos_ratio,
-                        seed=seed,
-                        max_depth=args.max_depth,
-                        memory_pruning=args.memory_pruning,
-                        end_proof_action=args.end_proof_action,
-                        skip_unary_actions=args.skip_unary_actions,
-                        padding_atoms=args.padding_atoms,
-                        padding_states=args.padding_states,
-                        device='cpu', 
-                        engine=args.engine,
-                        )
+                index_manager=index_manager,
+                data_handler=data_handler,
+                queries_term=queries_term,
+                rules_term=data_handler.rules_terms,
+                queries=queries,
+                labels=labels,
+                facts_set=index_manager.facts_set,
+                rules=index_manager.rules,
+                rule_lengths=index_manager.rules_lengths,
+                padding_atoms=args.padding_atoms,
+                padding_states=args.padding_states,
+                seed=42, # Consistent seed for reproducibility
+                mode=mode,
+                corruption_mode=args.corruption_mode,
+                train_neg_pos_ratio=args.train_neg_pos_ratio,
+                max_depth=5,
+                memory_pruning=args.memory_pruning,
+                end_proof_action=args.end_proof_action,
+                skip_unary_actions=args.skip_unary_actions,
+                device='cpu',
+                engine='python_tensor',
+                include_intermediate_rule_states=False # Using new parameter
+            )
             env = Monitor(env)
             return env
         return _init
+    
 
     # Create vectorized environments for training
-    facts_set = set(data_handler.facts)
-    env_type = 'dummy'
 
     # --- SEEDING ---
     # Set the seed for reproducibility. Train, eval, and callback envs
@@ -171,63 +169,37 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     rng_callback = np.random.Generator(np.random.PCG64(child_seeds[2]))
 
     env_seeds = rng_env.integers(0, 2**10, size=args.n_envs)
-    eval_env_seeds = rng_eval.integers(0, 2**10, size=args.n_eval_envs)
     callback_env_seeds = rng_callback.integers(0, 2**10, size=1)
+    eval_env_seeds = rng_eval.integers(0, 2**10, size=args.n_eval_envs)
 
+    env_type = 'dummy'
     if env_type == 'dummy':
         env = DummyVecEnv([make_env(
                                     mode='train', 
                                     seed=int(env_seeds[i]), 
-                                    queries=data_handler.train_queries, 
-                                    labels=[1]*len(data_handler.train_queries),
-                                    facts=facts_set,
+                                    queries_term=data_handler.train_queries_terms,
+                                    queries=index_manager.train_queries, 
+                                    labels=[1]*len(data_handler.train_queries_terms),
                                     ) 
                                     for i in range(args.n_envs)])
-        
-        eval_env = CustomDummyVecEnv([make_env(
-                                        mode='eval', 
-                                        seed=int(eval_env_seeds[i]), 
-                                        queries=data_handler.valid_queries,
-                                        labels=[1]*len(data_handler.valid_queries),
-                                        facts=facts_set,
-                                        ) 
-                                        for i in range(args.n_eval_envs)])
         
         callback_env = DummyVecEnv([make_env(
                                         mode='eval_with_restart', 
                                         seed=int(callback_env_seeds[i]), 
-                                        queries=data_handler.valid_queries,
-                                        labels=[1]*len(data_handler.valid_queries),
-                                        facts=facts_set,
+                                        queries_term=data_handler.valid_queries_terms,
+                                        queries=index_manager.valid_queries,
+                                        labels=[1]*len(data_handler.valid_queries_terms),
                                         ) 
                                         for i in range(1)])
-    else:
-        env = SubprocVecEnv([make_env(
-                                    mode='train', 
-                                    seed=int(env_seeds[i]), 
-                                    queries=data_handler.train_queries, 
-                                    labels=[1]*len(data_handler.train_queries),
-                                    facts=facts_set,
-                                    ) 
-                                    for i in range(args.n_envs)])
-
-        eval_env = SubprocVecEnv([make_env(
+        
+        eval_env = CustomDummyVecEnv([make_env(
                                         mode='eval', 
                                         seed=int(eval_env_seeds[i]), 
-                                        queries=data_handler.valid_queries,
-                                        labels=[1]*len(data_handler.valid_queries),
-                                        facts=facts_set,
-                                        ) 
-                                        for i in range(args.n_eval_envs)])
-
-        callback_env = SubprocVecEnv([make_env(
-                                        mode='eval',
-                                        seed=int(callback_env_seeds[i]),
-                                        queries=data_handler.valid_queries,
-                                        labels=[1]*len(data_handler.valid_queries),
-                                        facts=facts_set,
+                                        queries_term=data_handler.test_queries_terms,
+                                        queries=index_manager.test_queries,
+                                        labels=[1]*len(data_handler.test_queries_terms),
                                         )
-                                        for i in range(1)])
+                                        for i in range(args.n_eval_envs)])
 
     # --- INIT MODEL ---
     if args.model_name == "PPO":
