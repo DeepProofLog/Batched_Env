@@ -246,16 +246,25 @@ def get_next_unification_pt(
     if verbose: 
         print(f"\n++++++++++++++++++ Processing Current State: {debug_print_state_from_indices(current_state, index_manager, True)} ++++++++++++++++++")
 
-    # --- 1. Initial State Checks ---
-    assert current_state.numel() > 0, "Current state should not be empty at this point."
+    # --- 1. Initial State Checks (handles padded input) ---
+    non_padding_mask = current_state[:, 0] != index_manager.padding_idx
+    state = current_state[non_padding_mask]
  
-    if torch.any(current_state[:, 0] == index_manager.false_pred_idx):
+    if state.numel() == 0:
+        # This means the original state was empty or all padding. This is a success condition (empty goal list).
+        print("True state resolved to padding or empty.") if verbose >= 1 else None
+        print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
+        return [index_manager.true_tensor.unsqueeze(0)]
+
+    if torch.any(state[:, 0] == index_manager.false_pred_idx):
         print("Current state contains a FALSE predicate. Terminating path.") if verbose >= 1 else None
         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
         return [index_manager.false_tensor.unsqueeze(0)] # Failure state
-    state = current_state[current_state[:, 0] != index_manager.true_pred_idx]
-    if state.shape[0] == 0 or torch.all(state == index_manager.padding_idx):
-        print("True state resolved to padding or empty.") if verbose >= 1 else None
+    
+    # Filter out TRUE predicates as they are considered proven
+    state = state[state[:, 0] != index_manager.true_pred_idx]
+    if state.shape[0] == 0:
+        print("All goals resolved to TRUE.") if verbose >= 1 else None
         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
         return [index_manager.true_tensor.unsqueeze(0)] # State resolves to TRUE
 
