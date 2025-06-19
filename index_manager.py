@@ -110,7 +110,7 @@ class IndexManager():
         '''Check if the given index corresponds to a variable.'''
         return self.variable_start_index <= idx <= self.variable_end_index
     
-    def get_next_var(self) -> str:
+    def get_next_var(self) -> int:
         '''Get the next available variable idx and increment the index.'''
         if self.next_var_index > self.variable_end_index:
             raise ValueError(f"No more available variable indices: {self.next_var_index} exceeds max {self.variable_end_index}.")

@@ -96,7 +96,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
 
     if args.corruption_mode:
-        np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts], dtype=str)
+        np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts_terms], dtype=str)
         triples_factory = TriplesFactory.from_labeled_triples(triples=np_facts,
                                                             entity_to_id=index_manager.constant_str2idx,
                                                             relation_to_id=index_manager.predicate_str2idx,
@@ -143,8 +143,9 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                 seed=42, # Consistent seed for reproducibility
                 mode=mode,
                 corruption_mode=args.corruption_mode,
+                corruption_scheme=args.corruption_scheme,
                 train_neg_pos_ratio=args.train_neg_pos_ratio,
-                max_depth=5,
+                max_depth=args.max_depth,
                 memory_pruning=args.memory_pruning,
                 end_proof_action=args.end_proof_action,
                 skip_unary_actions=args.skip_unary_actions,
@@ -403,7 +404,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     else:
         metrics_test = eval_corruptions(model,
                                         eval_env,
-                                        data_handler.test_queries,
+                                        index_manager.test_queries,
                                         sampler,
                                         n_corruptions=args.test_negatives,
                                         consult_janus=False,
@@ -429,11 +430,11 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     print_eval_info('Test', metrics_test)
 
     eval_only_test = False
-    if eval_only_test:
+    if not eval_only_test:
         print('Val set eval...')
         metrics_valid = eval_corruptions(model,
                                         eval_env,
-                                        data_handler.valid_queries,
+                                        index_manager.valid_queries,
                                         sampler,
                                         n_corruptions=args.valid_negatives,
                                         consult_janus=False,
@@ -443,10 +444,10 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         print('Train set eval...')
         metrics_train = eval_corruptions(model,
                                         eval_env,
-                                        data_handler.train_queries,
+                                        index_manager.train_queries,
                                         sampler,
                                         n_corruptions=args.train_neg_pos_ratio,
-                                        consult_janus=True,
+                                        consult_janus=True if args.engine == 'janus' else False,
                                         )
         print_eval_info('Train', metrics_train)
     else:

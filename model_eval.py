@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from stable_baselines3.common import type_aliases
 from stable_baselines3.common.on_policy_algorithm import obs_as_tensor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
+import torch
 
 
 def evaluate_policy(
@@ -130,7 +131,7 @@ def evaluate_policy(
 def eval_corruptions(
     model: "type_aliases.PolicyPredictor",
     env: Union[gym.Env, VecEnv],
-    data: List[Any],
+    data: torch.Tensor,
     sampler: Any,
     n_corruptions: int = None,
     deterministic: bool = True,
@@ -168,22 +169,24 @@ def eval_corruptions(
         # get corruptions
         print(f"Getting corruptions")
         start_time = time.time()
-        corrs = sampler.get_negatives_from_states(
-            [[q] for q in batch],
-            model.device,
-            all_negatives=(n_corruptions is None),
-        )
+        data_for_negatives = batch.unsqueeze(-2) # (B=n_queries=1, padding_atoms, max_arity+1)
+        corrs = sampler.get_negatives(data_for_negatives,
+                                            padding_atoms=data_for_negatives.size(1),
+                                            max_arity=data_for_negatives.size(2)-1,
+                                            all_negatives=(n_corruptions is None),
+                                            device='cuda' if torch.cuda.is_available() else 'cpu')
+        # (B=n_queries, num_negs_per_pos, n_atoms or padding atoms, max_arity+1) --> (num_negs, max_arity+1)
+        assert corrs.ndim == 4, f"Expected 4D tensor, got {corrs.ndim}D"
+        corrs = corrs.squeeze(-2)  # Remove the batch dimension and the n_atoms dimension (it's just one query) 
         print(f"Corruption time: {time.time() - start_time:.2f}s")
-        if B == 1:
-            corrs = [corrs]
 
         targets = np.array([1 + len(c) for c in corrs], dtype=int)
 
-        print(f"Total episodes: {B} (envs) x {1+np.mean(targets):.1f} (avg targets) = {np.sum(targets)}")
+        print(f"Total episodes: {B} (envs) x {1+np.mean(targets):.1f} (avg targets) = {1+np.sum(targets)}")
         # configure each sub‐env
         start_time = time.time()
         for i, (q, negs) in enumerate(zip(batch, corrs)):
-            seq = [q] + negs
+            seq = torch.cat([q.unsqueeze(0), negs], dim=0)  # (1 + num_negs, padding_atoms, max_arity+1)
             e = env.envs[i].env
             e.mode = "eval"
             e.queries, e.labels = seq, [1] + [0]*len(negs)
@@ -200,6 +203,8 @@ def eval_corruptions(
             verbose=verbose,
         )
         print(f"Eval time: {time.time() - start_time:.2f}s")
+
+        log_probs[rewards == 0] -= 100
 
         # Collect metrics using mask
         # Positives: column 0
@@ -219,8 +224,9 @@ def eval_corruptions(
         if mask.shape[1] > 1:
             lp_batch = log_probs.copy()
             lp_batch[~mask] = -np.inf
-            # True positive is at column 0, so its rank is...
-            ranks = np.argmax(np.argsort(-lp_batch, axis=1) == 0, axis=1) + 1
+            random_keys = np.random.rand(*lp_batch.shape)
+            sorted_indices_per_query = np.lexsort((-random_keys, -lp_batch), axis=1)
+            ranks = np.where(sorted_indices_per_query == 0)[1] + 1
             mrr = 1.0 / ranks
             hits1 = (ranks == 1).astype(int)
             hits3 = (ranks <= 3).astype(int)

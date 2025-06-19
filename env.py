@@ -30,6 +30,7 @@ class LogicEnv_gym(gym.Env):
                 rule_lengths: Optional[torch.Tensor] = None,
                 mode: str = 'train',
                 corruption_mode: Optional[str] = None,
+                corruption_scheme: Optional[str] = None, # ['tail', 'head']
                 train_neg_pos_ratio: int = 1,
                 seed: Optional[int] = None,
                 max_depth: int = 10,
@@ -94,6 +95,7 @@ class LogicEnv_gym(gym.Env):
         self.memory_pruning = memory_pruning
         self.end_proof_action = end_proof_action
         self.skip_unary_actions = skip_unary_actions # Not directly used in this snippet, but kept
+        self.next_var_index = self.index_manager.variable_start_index
 
         self.current_query: Optional[torch.Tensor] = None
         self.current_label: Optional[int] = None
@@ -108,9 +110,11 @@ class LogicEnv_gym(gym.Env):
 
         # CORRUPTION MODE
         self.corruption_mode = corruption_mode
-        self.sampler = None
-        self.corruption_counter = 0
-        self.train_neg_pos_ratio = 0
+        self.corruption_scheme = corruption_scheme
+        self.sampler = data_handler.sampler
+        self.counter = 0
+        self.step_counter = 0
+        self.train_neg_pos_ratio = train_neg_pos_ratio
         
 
     def _set_seed(self, seed:int):
@@ -148,7 +152,7 @@ class LogicEnv_gym(gym.Env):
                 state = self.queries[self.eval_idx]
                 label = self.labels[self.eval_idx]
             else:
-                state = self.false_tensor_atom.unsqueeze(0).to(self.device)
+                state = self.false_tensor_atom.to(self.device)
                 label = 0
             self.eval_idx += 1
 
@@ -166,6 +170,25 @@ class LogicEnv_gym(gym.Env):
         elif self.mode == 'train':
             state, _ = self.get_random_queries(n=1)
             label = 1
+            if self.corruption_mode:
+                if self.counter % (int(self.train_neg_pos_ratio) + 1) != 0:
+                    state_for_negatives = state.unsqueeze(0).unsqueeze(0)  # (1, n_atoms, max_arity + 1)
+                    state = self.sampler.get_negatives(state_for_negatives,
+                                            padding_atoms=state_for_negatives.size(1),
+                                            max_arity=state_for_negatives.size(2)-1,
+                                            device=self.device)
+                    state = state.squeeze(0).squeeze(0)  # (n_atoms, max_arity + 1)
+                    # Alternate between head and tail
+                    if not hasattr(self, 'negation_toggle'):
+                        self.negation_toggle = 0  # Initialize if it doesn't exist
+                    if len(self.corruption_scheme) > 1:
+                        state = [state[self.negation_toggle]]  
+                        self.negation_toggle = 1 - self.negation_toggle  # Flip for next time get head or tail
+                    
+                    assert len(state) == 1, f"Length of negatives: {len(state)}"
+                    state = state[0] # In train there should be only one negative
+                    label = 0
+                self.counter += 1
 
         else:
             raise ValueError(f"Invalid mode: {self.mode}.")
@@ -178,9 +201,13 @@ class LogicEnv_gym(gym.Env):
     
 
     def _reset(self, state: torch.Tensor, label: int):
+        # self.step_counter += 1
+        # print(f"Counter: {self.step_counter}")
+        # if self.step_counter ==50:
+        #     print(stoppppp)
         # State (n_atoms, max_arity + 1)
         if self.verbose >=1: print(f"\nInitial Query (Label: {label}): {debug_print_state_from_indices(state, self.index_manager, oneline=True)}")
-            
+        self.next_var_index = self.index_manager.variable_start_index
         self.current_depth = torch.tensor(0, device=self.device)
 
         self.memory.clear()
@@ -205,7 +232,6 @@ class LogicEnv_gym(gym.Env):
         }
 
         if self.verbose >=1:
-            print(f"\nReset State: {debug_print_state_from_indices(state[0], self.index_manager, oneline=True)}")
             print(f"\nReset State: {debug_print_state_from_indices(state, self.index_manager, oneline=True)}")
             print(f"Derived States ({len(derived_states)}): {debug_print_states_from_indices(derived_states, self.index_manager)}")
         return obs_dict, {}
@@ -369,15 +395,17 @@ class LogicEnv_gym(gym.Env):
 
         if self.end_proof_action:
             if current_state.shape[0] == 1 and current_state[0,0].item() == self.end_pred_idx:
+                if self.verbose >= 1: print("Current state is end predicate, returning end tensor atom.")
                 return [self.end_tensor_atom.unsqueeze(0)], truncated_flag
             else:
                 mask_not_end = current_state[:, 0] != self.end_pred_idx
                 current_state = current_state[mask_not_end]
                 if current_state.shape[0] == 0:
+                    if self.verbose >= 1: print("Current state is empty after removing end predicate, returning [[FALSE]].")
                     return [self.false_tensor_atom.unsqueeze(0)], truncated_flag
 
         if self.engine == 'python_tensor':
-            derived_states = get_next_unification_pt(
+            derived_states, self.next_var_index = get_next_unification_pt(
                 current_state=current_state,
                 fact_indexed=self.index_manager.fact_index,
                 facts_set=self.facts_set,
@@ -386,7 +414,8 @@ class LogicEnv_gym(gym.Env):
                 index_manager=self.index_manager,
                 rules_term=self.rules_term, 
                 excluded_fact=self.current_query[0] if self.current_label == 1 else None,
-                verbose=self.prover_verbose 
+                verbose=self.prover_verbose,
+                next_var_index=self.next_var_index
             ) # List[torch.Tensor]
         else:
             raise ValueError(f"Unsupported engine: {self.engine}")
@@ -399,10 +428,10 @@ class LogicEnv_gym(gym.Env):
                    derived_states[0].numel() > 0 and
                    derived_states[0][0, 0].item() not in {self.true_pred_idx, self.false_pred_idx, self.end_pred_idx}):
 
-                if self.verbose >= 2: print(f"Skipping unary action. Current: {debug_print_state_from_indices(current_state, self.index_manager, True)}")
+                if self.verbose >= 1: print(f"Skipping unary action. Current: {debug_print_state_from_indices(current_state, self.index_manager, True)}")
                 current_state = derived_states[0] # The single state becomes the new current state for the next iteration.
 
-                derived_states = get_next_unification_pt(
+                derived_states, self.next_var_index = get_next_unification_pt(
                     current_state=current_state,
                     fact_indexed=self.index_manager.fact_index,
                     facts_set=self.facts_set,
@@ -411,7 +440,8 @@ class LogicEnv_gym(gym.Env):
                     index_manager=self.index_manager,
                     rules_term=self.rules_term, 
                     excluded_fact=self.current_query[0] if self.current_label == 1 else None,
-                    verbose=self.prover_verbose 
+                    verbose=self.prover_verbose,
+                    next_var_index=self.next_var_index
                 )
 
                 # TRUNCATE ATOMS MODULE
@@ -425,14 +455,16 @@ class LogicEnv_gym(gym.Env):
 
                 # MEMORY MODULE
                 if self.memory_pruning:
-                    self.memory.add(tuple(tuple(atom.tolist()) for atom in current_state))
+                    self.memory.add(tuple(tuple(atom.tolist()) for atom in current_state if 
+                                          atom[0].item() not in {self.end_pred_idx, self.false_pred_idx, self.true_pred_idx})) 
                     filtered_derived_states = []
                     for ds_tensor in derived_states:
                         ds_tuple = tuple(tuple(atom.tolist()) for atom in ds_tensor)
                         if ds_tuple not in self.memory:
                             filtered_derived_states.append(ds_tensor)
                         elif self.verbose >= 1:
-                            print(f"Memory Pruning: State {debug_print_state_from_indices(ds_tensor, self.index_manager, True)} already visited.")
+                            print(f"Memory Pruning in next derivation: State {debug_print_state_from_indices(ds_tensor, self.index_manager, True)}") #\
+                                #   {debug_print_state_from_indices(current_state, self.index_manager, oneline=True)} --> {debug_print_states_from_indices(derived_states, self.index_manager)}")
                     derived_states = filtered_derived_states
 
                 if len(derived_states) == 0:
@@ -448,14 +480,16 @@ class LogicEnv_gym(gym.Env):
 
         # MEMORY MODULE
         if self.memory_pruning:
-            self.memory.add(tuple(tuple(atom.tolist()) for atom in current_state))
+            self.memory.add(tuple(tuple(atom.tolist()) for atom in current_state if 
+                                    atom[0].item() not in {self.end_pred_idx, self.false_pred_idx, self.true_pred_idx})) 
             filtered_derived_states = []
             for ds_tensor in derived_states:
                 ds_tuple = tuple(tuple(atom.tolist()) for atom in ds_tensor)
                 if ds_tuple not in self.memory:
                     filtered_derived_states.append(ds_tensor)
                 elif self.verbose >=1:
-                    print(f"Memory Pruning: State {debug_print_state_from_indices(ds_tensor, self.index_manager, True)} already visited.")
+                    print(f"Memory Pruning in next derivation: State {debug_print_state_from_indices(ds_tensor, self.index_manager, True)}") #\
+                        #   {debug_print_state_from_indices(current_state, self.index_manager, oneline=True)} --> {debug_print_states_from_indices(derived_states, self.index_manager)}")
             derived_states = filtered_derived_states
 
         # TRUNCATE ATOMS MODULE
@@ -514,7 +548,7 @@ class LogicEnv_gym(gym.Env):
 
             # If the state only contains padding, it's not a successful proof.
             if not torch.any(non_padding_mask):
-                return torch.tensor(False, dtype=torch.bool, device=self.device), \
+                return torch.tensor(True, dtype=torch.bool, device=self.device), \
                     torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
             # Get predicates from non-padded atoms only

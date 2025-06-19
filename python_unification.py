@@ -96,11 +96,12 @@ def apply_substitutions_to_state_idx(state: torch.Tensor, substitutions: Dict[in
 def standardize_apart_rule_idx(
     rule_tensor_single: torch.Tensor,
     rule_length: int,
-    index_manager: IndexManager
-) -> torch.Tensor:
+    index_manager: IndexManager,
+    next_var_index: int
+) -> Tuple[torch.Tensor, int]:
     """Renames variables in a rule to fresh, unique dynamic variables to prevent clashes."""
     if rule_length == 0:
-        return rule_tensor_single
+        return rule_tensor_single, next_var_index
 
     local_map: Dict[int, int] = {}
     new_atoms = []
@@ -111,7 +112,10 @@ def standardize_apart_rule_idx(
             original_idx = atom[k].item()
             if is_variable_idx(original_idx, index_manager):
                 if original_idx not in local_map:
-                    local_map[original_idx] = index_manager.get_next_var()
+                    if next_var_index > index_manager.variable_end_index:
+                        raise ValueError(f"No more available variable indices: {next_var_index} exceeds max {index_manager.variable_end_index}.")
+                    local_map[original_idx] = next_var_index
+                    next_var_index += 1
                 new_atom_elements.append(local_map[original_idx])
             else:
                 new_atom_elements.append(original_idx)
@@ -122,9 +126,10 @@ def standardize_apart_rule_idx(
     # Re-attach padding if it existed
     if rule_length < rule_tensor_single.shape[0]:
         padding = rule_tensor_single[rule_length:]
-        return torch.cat([standardized_part, padding], dim=0)
+        return torch.cat([standardized_part, padding], dim=0), next_var_index
 
-    return standardized_part
+    return standardized_part, next_var_index
+
 
 def unify_with_facts(
     query: torch.Tensor,
@@ -147,8 +152,8 @@ def unify_with_facts(
         query_tuple = tuple(query.tolist())
         excluded_fact_tuple = tuple(excluded_fact.tolist()) if excluded_fact is not None else None
         if query_tuple in facts_set and query_tuple != excluded_fact_tuple:
-            if verbose > 1:
-                print(f"DEBUG: Ground query {debug_print_atom(query, index_manager)} matched in fact set.")
+            if verbose >= 1:
+                print(f"Ground query {debug_print_atom(query, index_manager)} matched in fact set.")
             substitutions_found.append({'ground_match': True})
         return substitutions_found
 
@@ -167,9 +172,10 @@ def unify_with_facts(
     # Retrieve only the candidate facts that could possibly unify using the index
     candidate_fact_tuples = fact_indexed.get(lookup_key, set())
 
-    if verbose > 1:
-        print(f"DEBUG: Lookup key {lookup_key} found {len(candidate_fact_tuples)} candidate facts.")
-        print(f"DEBUG: First 100 candidate facts: {[debug_print_atom(torch.tensor(fact_tuple, dtype=torch.long, device=query.device), index_manager) for fact_tuple in list(candidate_fact_tuples)[:100]]}")
+    if verbose >= 1:
+        # print(f"DEBUG: Lookup key {lookup_key} found {len(candidate_fact_tuples)} candidate facts.")
+        print(f"First 10 candidate facts: {[debug_print_atom(torch.tensor(fact_tuple, dtype=torch.long, device=query.device), index_manager)\
+                             for fact_tuple in list(candidate_fact_tuples)[:10]]}") if candidate_fact_tuples else None
     excluded_fact_tuple = tuple(excluded_fact.tolist()) if excluded_fact is not None else None
 
     # Iterate over the much smaller set of candidate facts
@@ -183,8 +189,8 @@ def unify_with_facts(
         subs = unify_terms_idx(fact_tensor, query, index_manager)
 
         if subs is not None:
-            if verbose > 1:
-                print(f"    DEBUG (unify_with_facts): Query {debug_print_atom(query, index_manager)} unified with fact {debug_print_atom(fact_tensor, index_manager)} -> subs {format_substitutions_dict(subs, index_manager)}")
+            if verbose >= 1:
+                print(f"    Query {debug_print_atom(query, index_manager)} unified with fact {debug_print_atom(fact_tensor, index_manager)} -> subs {format_substitutions_dict(subs, index_manager)}")
             substitutions_found.append(subs)
 
     return substitutions_found
@@ -196,34 +202,103 @@ def unify_with_rules(
     rule_lengths: torch.Tensor,
     index_manager: IndexManager,
     rules_term: List[Rule],
+    # next_var_index: int,
     verbose: int = 0
 ) -> List[Tuple[torch.Tensor, Dict[int, int]]]:
+# ) -> Tuple[List[Tuple[torch.Tensor, Dict[int, int]]], int]:
     """Unifies a query with all rule heads, returning instantiated bodies and substitutions."""
     results = []
+    # current_next_var_index = next_var_index
     for i in range(rules.shape[0]):
         rule_len = rule_lengths[i].item()
 
         # Standardize apart to get fresh variables for this rule application
-        standardized_rule = standardize_apart_rule_idx(rules[i], rule_len, index_manager)
-        rule_head_idx = standardized_rule[0]
+        rule = rules[i]
+        # rule, current_next_var_index = standardize_apart_rule_idx(
+        #     rule, rule_len, index_manager, current_next_var_index
+        # )
+        rule_head_idx = rule[0]
 
         # Unify query with the standardized rule head
         subs = unify_terms_idx(query, rule_head_idx, index_manager)
 
         if subs is not None:
-            body_template = standardized_rule[1:rule_len]
+            body_template = rule[1:rule_len]
             instantiated_body = apply_substitutions_to_state_idx(body_template, subs, index_manager)
             
             if verbose >= 1:
-                print(f"  Rule {i}: {str(rules_term[i])}")
-                print(f"    Query: {debug_print_atom(query, index_manager)}")
-                print(f"    Subs: {format_substitutions_dict(subs, index_manager)}")
-                print(f"    New Body: {debug_print_state_from_indices(instantiated_body, index_manager, True)}")
+                # print(f"  Rule {i}: {str(rules_term[i])}")
+                print(f"  Rule {i}: {debug_print_atom(rule_head_idx, index_manager)} --> {debug_print_state_from_indices(body_template, index_manager, True)}")
+                # print(f"    Query: {debug_print_atom(query, index_manager)}. Subs: {format_substitutions_dict(subs, index_manager)}")
+                print(f"    Subs: {format_substitutions_dict(subs, index_manager)}. New Body: {debug_print_state_from_indices(instantiated_body, index_manager, True)}")
 
             results.append((instantiated_body, subs))
-    return results
+    return results #, current_next_var_index
 
 
+# To be added to dd/python_unification.py
+
+def canonicalize_variables_in_state_idx(
+    state_tensor: torch.Tensor,
+    index_manager: "IndexManager",
+    next_var_index: int
+) -> Tuple[torch.Tensor, int]:
+    """
+    Renames all variables within a single state tensor to a compact,
+    sequential set of new variable indices starting from `next_var_index`.
+    """
+    if state_tensor.numel() == 0:
+        return state_tensor, next_var_index
+
+    local_map: Dict[int, int] = {}
+    new_state_atoms = []
+
+    # Work only on the non-padding part of the state
+    non_padding_mask = state_tensor[:, 0] != index_manager.padding_idx
+    unpadded_state = state_tensor[non_padding_mask]
+
+    if unpadded_state.numel() == 0:
+        return state_tensor, next_var_index
+
+    # 1. Collect all unique variable indices in the current state
+    vars_in_state = set()
+    for i in range(unpadded_state.shape[0]):
+        for k in range(1, index_manager.max_arity + 1):
+            arg_idx = unpadded_state[i, k].item()
+            if index_manager.is_var_idx(arg_idx):
+                vars_in_state.add(arg_idx)
+
+    if not vars_in_state:
+        return state_tensor, next_var_index
+
+    # 2. Create a deterministic mapping from old indices to new, compact ones
+    for old_var_idx in sorted(list(vars_in_state)):
+        if next_var_index > index_manager.variable_end_index:
+            raise ValueError(f"No more available variable indices: {next_var_index} exceeds max {index_manager.variable_end_index}.")
+        local_map[old_var_idx] = next_var_index
+        next_var_index += 1
+
+    # 3. Apply the mapping to create the new, canonicalized state
+    for i in range(unpadded_state.shape[0]):
+        atom = unpadded_state[i]
+        new_atom_elements = [atom[0].item()]
+        for k in range(1, index_manager.max_arity + 1):
+            original_idx = atom[k].item()
+            # Replace with the new canonical index if it's a mapped variable
+            new_idx = local_map.get(original_idx, original_idx)
+            new_atom_elements.append(new_idx)
+
+        new_state_atoms.append(torch.tensor(new_atom_elements, dtype=torch.long, device=index_manager.device))
+
+    new_unpadded_state = torch.stack(new_state_atoms)
+
+    # 4. Re-apply padding to restore the original tensor shape
+    padding_rows = state_tensor.shape[0] - new_unpadded_state.shape[0]
+    if padding_rows > 0:
+        padding = torch.full((padding_rows, index_manager.max_arity + 1), index_manager.padding_idx, dtype=torch.long, device=index_manager.device)
+        return torch.cat([new_unpadded_state, padding], dim=0), next_var_index
+
+    return new_unpadded_state, next_var_index
 
 def get_next_unification_pt(
     current_state: torch.Tensor,
@@ -233,10 +308,11 @@ def get_next_unification_pt(
     rule_lengths: torch.Tensor,
     index_manager: "IndexManager",
     rules_term: List["Rule"],
+    next_var_index: int,
     excluded_fact: Optional[torch.Tensor] = None,
-    unification_strategy: str = 'rules_and_facts',
+    unification_strategy: str = 'rules_then_facts', # 'rules_and_facts', 'rules_then_facts'
     verbose: int = 0
-) -> List[torch.Tensor]:
+) -> Tuple[List[torch.Tensor], int]:
     """
     Processes a state by first unifying its primary goal with rules,
     and then unifying the first goal of each resulting state with facts.
@@ -244,7 +320,7 @@ def get_next_unification_pt(
     """
 
     if verbose: 
-        print(f"\n++++++++++++++++++ Processing Current State: {debug_print_state_from_indices(current_state, index_manager, True)} ++++++++++++++++++")
+        print(f"\n+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
 
     # --- 1. Initial State Checks (handles padded input) ---
     non_padding_mask = current_state[:, 0] != index_manager.padding_idx
@@ -254,28 +330,29 @@ def get_next_unification_pt(
         # This means the original state was empty or all padding. This is a success condition (empty goal list).
         print("True state resolved to padding or empty.") if verbose >= 1 else None
         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
-        return [index_manager.true_tensor.unsqueeze(0)]
+        return [index_manager.false_tensor.unsqueeze(0)], next_var_index
 
     if torch.any(state[:, 0] == index_manager.false_pred_idx):
         print("Current state contains a FALSE predicate. Terminating path.") if verbose >= 1 else None
         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
-        return [index_manager.false_tensor.unsqueeze(0)] # Failure state
+        return [index_manager.false_tensor.unsqueeze(0)], next_var_index
     
     # Filter out TRUE predicates as they are considered proven
     state = state[state[:, 0] != index_manager.true_pred_idx]
     if state.shape[0] == 0:
         print("All goals resolved to TRUE.") if verbose >= 1 else None
         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
-        return [index_manager.true_tensor.unsqueeze(0)] # State resolves to TRUE
+        return [index_manager.true_tensor.unsqueeze(0)], next_var_index
 
     # --- 2. Goal Selection ---
     query_atom = state[0]
     remaining_goals = state[1:]
     if verbose >= 1:
-        print(f"--- Processing Query: {debug_print_atom(query_atom, index_manager)}, {query_atom} ++++++++++++++++++")
-        print(f"Remaining Goals: {debug_print_state_from_indices(remaining_goals, index_manager, True)}")
+        print(f"Query: {debug_print_atom(query_atom, index_manager)}")
+        print(f"Remaining Goals: {debug_print_state_from_indices(remaining_goals, index_manager, True)} ")
 
     # --- 3. Step 1: Unify Query with Rule Heads ---
+    if verbose >= 1: print("\n--- Rule unification ---")
     states_from_rules: List[torch.Tensor] = []
     rule_unification_results = unify_with_rules(
         query_atom, rules, rule_lengths, index_manager, rules_term, verbose
@@ -292,17 +369,16 @@ def get_next_unification_pt(
         if verbose >= 1: 
             print("No rule unifications found. Path terminates.")
             print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-        return [index_manager.false_tensor.unsqueeze(0)]
+        return [index_manager.false_tensor.unsqueeze(0)], next_var_index
 
     # --- 4. Step 2: Unify First Goal of Intermediate States with Facts ---
     final_resolvents: List[torch.Tensor] = []
-    if verbose >= 1: print("\n--- Fact Unification on Intermediate States ---")
+    if verbose >= 1: print("\n--- Fact Unification ---")
 
     for state_from_rules in states_from_rules:
         assert state_from_rules.shape[0] > 0, "Intermediate state should not be empty at this point."
 
-        first_goal = state_from_rules[0]
-        rest_of_goals = state_from_rules[1:]
+        first_goal, rest_of_goals = state_from_rules[0], state_from_rules[1:]
 
         fact_substitutions = unify_with_facts(
             first_goal, fact_indexed, facts_set, excluded_fact, index_manager, verbose
@@ -314,13 +390,11 @@ def get_next_unification_pt(
                 if verbose >= 1: 
                     print("Fact unification succeeded and no goals remain. Proof found!")
                     print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-                return [index_manager.true_tensor.unsqueeze(0)] # Aggressive success return
+                return [index_manager.true_tensor.unsqueeze(0)], next_var_index
 
             # Apply substitutions from the fact unification to the rest of the goals
-            if subs.get('ground_match'):
-                new_goals = rest_of_goals # No new substitutions to apply
-            else:
-                new_goals = apply_substitutions_to_state_idx(rest_of_goals, subs, index_manager)
+            new_goals = rest_of_goals if subs.get('ground_match') else apply_substitutions_to_state_idx(rest_of_goals, subs, index_manager)
+
 
             # Intermediate Fact Checking: Check if any of the new goals are now facts
             simplified_goals = []
@@ -338,8 +412,7 @@ def get_next_unification_pt(
                 if verbose >= 1: 
                     print("All remaining goals resolved to facts. Proof found!")
                     print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-                return [index_manager.true_tensor.unsqueeze(0)] # Aggressive success return
-
+                return [index_manager.true_tensor.unsqueeze(0)], next_var_index
             final_resolvents.append(torch.stack(simplified_goals))
 
     # --- 5. Step 3: Combine States Based on Strategy ---
@@ -351,7 +424,7 @@ def get_next_unification_pt(
         if verbose >= 1: 
             print("No states could be resolved via facts. Path terminates.")
             print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-        return [index_manager.false_tensor.unsqueeze(0)]
+        return [index_manager.false_tensor.unsqueeze(0)], next_var_index
 
     # --- 6. Finalize and Deduplicate ---
     unique_states, seen_states = [], set()
@@ -362,13 +435,23 @@ def get_next_unification_pt(
         if state_tuple not in seen_states:
             unique_states.append(state_tensor)
             seen_states.add(state_tuple)
-    
+
+    # If we are not using the 'rules_and_facts' strategy, canonicalize variables in the unique states
+    if unification_strategy != 'rules_and_facts':
+        final_states = []
+        for state in unique_states:
+            f_state, next_var_index = canonicalize_variables_in_state_idx(state, index_manager, next_var_index)
+            final_states.append(f_state)
+    else:
+        final_states = unique_states
+        
     if verbose >= 1:
         print()
-        print(f"\nFinal Next States: {debug_print_states_from_indices(unique_states, index_manager)}")
-        print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+        print(f"\nFinal Next States: {debug_print_states_from_indices(final_states, index_manager)}")
+        print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
 
-    return unique_states
+    return final_states, next_var_index
+
 
 
 
