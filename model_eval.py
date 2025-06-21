@@ -59,32 +59,45 @@ def evaluate_policy(
 
     observations = env.reset()
     current_rew = np.zeros(n_envs, dtype=float)
-    current_len = np.zeros(n_envs, dtype=int)
-    current_lp  = np.zeros(n_envs, dtype=float)
+    current_len = np.zeros_like(current_rew, dtype=int)
+    current_lp  = np.zeros_like(current_rew, dtype=float)
+    # Pre-allocate the actions array and the active observation dictionary
+    # to avoid creating them in every loop iteration.
+    action_shape = env.action_space.shape
+    action_dtype = env.action_space.dtype
+    full_actions = np.zeros((n_envs, *action_shape), dtype=action_dtype)
+    
+    # Pre-create the structure for active observations if it's a dict
+    obs_active_dict = {k: None for k in observations} if isinstance(observations, dict) else None
 
     while (counts < padded_targets).any():
         active = counts < padded_targets
 
-        # slice observations for active envs
         if isinstance(observations, dict):
-            obs_active = {k: v[active] for k, v in observations.items()}
+            # Update the pre-allocated dictionary instead of creating a new one
+            for k, v in observations.items():
+                obs_active_dict[k] = v[active]
+            obs_tensor = obs_as_tensor(obs_active_dict, model.device)
         else:
             obs_active = observations[active]
+            obs_tensor = obs_as_tensor(obs_active, model.device)
 
         # forward pass only for active
-        obs_tensor = obs_as_tensor(obs_active, model.device)
-        acts_tensor, _, lp_tensor = model.policy(obs_tensor, deterministic=deterministic)
+        with torch.no_grad():
+            acts_tensor, _, lp_tensor = model.policy(obs_tensor, deterministic=deterministic)
 
         # to NumPy
-        actions_active = acts_tensor.detach().cpu().numpy()    # shape: (n_active, *action_shape)
-        lp_active      = lp_tensor.detach().cpu().numpy()
+        actions_active = acts_tensor.cpu().numpy()
+        lp_active      = lp_tensor.cpu().numpy()
 
         # scatter log‐probs back
         current_lp[active] += lp_active
 
-        # create a full‐size array with the correct NumPy dtype
-        full_actions = np.zeros((n_envs, *actions_active.shape[1:]), dtype=actions_active.dtype)
+        # Use the pre-allocated array for actions
         full_actions[active] = actions_active
+        if not np.all(active):
+            # Reset actions for inactive environments to a default value (e.g., 0)
+            full_actions[~active] = 0
 
         # step all envs (inactive ones will be skipped internally)
         new_obs, rew, dones, infos = env.step(full_actions)
@@ -95,15 +108,25 @@ def evaluate_policy(
 
         # finalize any envs that just finished
         done_and_active = dones & active
-        for idx in np.nonzero(done_and_active)[0]:
-            slot = counts[idx]
-            rewards[idx, slot] = current_rew[idx]
-            lengths[idx, slot] = current_len[idx]
-            logps[idx, slot]   = current_lp[idx]
-            counts[idx]       += 1
-            current_rew[idx]   = 0
-            current_len[idx]   = 0
-            current_lp[idx]    = 0
+
+        # Check if any environments are done before proceeding
+        if np.any(done_and_active):
+            # Get the indices of all environments that are done
+            done_indices = np.where(done_and_active)[0]
+            
+            # Get the correct episode slot for each done environment
+            slots = counts[done_indices]
+            
+            # Use advanced indexing to update all relevant arrays at once
+            rewards[done_indices, slots] = current_rew[done_indices]
+            lengths[done_indices, slots] = current_len[done_indices]
+            logps[done_indices, slots]   = current_lp[done_indices]
+            
+            # Update counts and reset current episode trackers for the done environments
+            counts[done_indices]       += 1
+            current_rew[done_indices]   = 0
+            current_len[done_indices]   = 0
+            current_lp[done_indices]    = 0
 
         observations = new_obs
 
@@ -116,8 +139,9 @@ def evaluate_policy(
 
     # Build mask of valid entries
     mask = np.zeros_like(rewards, dtype=bool)
-    for i, t in enumerate(padded_targets):
-        mask[i, :t] = True
+    if targets_len > 0:
+        for i, t in enumerate(padded_targets[:targets_len]):
+            mask[i, :t] = True
 
     # Filter up to target_len to skip unused envs
     if target_episodes is not None:
@@ -125,6 +149,7 @@ def evaluate_policy(
         lengths = lengths[:targets_len]
         logps   = logps[:targets_len]
         mask    = mask[:targets_len]
+
     return rewards, lengths, logps, mask
 
 

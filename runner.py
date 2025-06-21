@@ -50,7 +50,7 @@ if __name__ == "__main__":
     CORRUPTION_MODE =  ['dynamic']
 
     RESTORE_BEST_VAL_MODEL = [True]
-    load_model = False
+    load_model = True
     save_model = True
 
     # Loggin settings 
@@ -69,19 +69,19 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [200000]
+    TIMESTEPS_TRAIN = [20000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
     valid_negatives = None # corruptions in validation set (test)
-    test_negatives = None # corruptions in test set (test)
+    test_negatives = 1000 # corruptions in test set (test)
     n_eval_queries = None 
-    n_test_queries = None
+    n_test_queries = 1
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 128
     n_steps = 128
-    n_eval_envs = 1
+    n_eval_envs = 100
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
     batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).

@@ -7,9 +7,7 @@ import janus_swi as janus
 from tensordict import TensorDict, NonTensorData
 
 from dataset import DataHandler 
-from index_manager import IndexManager, state_to_tensor_im, facts_to_tensor_im, rules_to_tensor_im, \
-    debug_print_state_from_indices, debug_print_states_from_indices, queries_to_tensor_im, \
-    tensor_atom_to_term_im, tensor_state_to_terms_list_im
+from index_manager import IndexManager
 from utils import Rule, Term 
 from python_unification import get_next_unification_pt
 # from prolog_unification import get_next_unification_prolog
@@ -95,7 +93,7 @@ class LogicEnv_gym(gym.Env):
         self.memory_pruning = memory_pruning
         self.end_proof_action = end_proof_action
         self.skip_unary_actions = skip_unary_actions # Not directly used in this snippet, but kept
-        self.next_var_index = self.index_manager.variable_start_index
+        self.next_var_index = self.index_manager.runtime_var_start_index
 
         self.current_query: Optional[torch.Tensor] = None
         self.current_label: Optional[int] = None
@@ -186,17 +184,16 @@ class LogicEnv_gym(gym.Env):
                         self.negation_toggle = 1 - self.negation_toggle  # Flip for next time get head or tail
                     
                     assert len(state) == 1, f"Length of negatives: {len(state)}"
-                    state = state[0] # In train there should be only one negative
+                    state = state[0].squeeze(0)  # (n_atoms, max_arity + 1)
                     label = 0
                 self.counter += 1
 
         else:
             raise ValueError(f"Invalid mode: {self.mode}.")
 
-        self.current_label = label
         state = state.unsqueeze(0).to(self.device) # (n_atoms, max_arity + 1)
+        self.current_label = label
         self.current_query = state
-
         return self._reset(state, label)
     
 
@@ -206,8 +203,8 @@ class LogicEnv_gym(gym.Env):
         # if self.step_counter ==50:
         #     print(stoppppp)
         # State (n_atoms, max_arity + 1)
-        if self.verbose >=1: print(f"\nInitial Query (Label: {label}): {debug_print_state_from_indices(state, self.index_manager, oneline=True)}")
-        self.next_var_index = self.index_manager.variable_start_index
+        if self.verbose >=1: print(f"\nInitial Query (Label: {label}): {self.index_manager.debug_print_state_from_indices(state, oneline=True)}")
+        self.next_var_index = self.index_manager.runtime_var_start_index
         self.current_depth = torch.tensor(0, device=self.device)
 
         self.memory.clear()
@@ -215,16 +212,8 @@ class LogicEnv_gym(gym.Env):
         self.memory.add(state_tuple_for_memory)
 
         derived_states, truncated_flag = self.get_next_states(state) # n_states[(n_atoms, max_arity + 1)]
-
-        #  I NEED THAT THE STATE IN OBS IS SHAPE OF DERIVED STATES, SO I MAKE THE SAME IN TD
+        self.derived_states = derived_states # I need to pass it to step() method later to chose the next state based on the action taken.
         padded_derived_states = self._pad_derived_states(derived_states) # (padding_states, padding_atoms, max_arity + 1)
-        self.tensordict = TensorDict({
-            'state': state.unsqueeze(0), # (1, n_atoms, max_arity + 1), padded to match the shape of derived_states
-            'derived_states': padded_derived_states,
-            'label': torch.tensor(label, dtype=torch.int64, device=self.device),
-            "done": torch.tensor(0, dtype=torch.bool, device=self.device),
-            "reward": torch.tensor(0, dtype=torch.float32, device=self.device),
-        })
         
         obs_dict = {
             'state': state.unsqueeze(0).cpu().numpy(), # (1, n_atoms, max_arity + 1), padded to match the shape of derived_states
@@ -232,8 +221,8 @@ class LogicEnv_gym(gym.Env):
         }
 
         if self.verbose >=1:
-            print(f"\nReset State: {debug_print_state_from_indices(state, self.index_manager, oneline=True)}")
-            print(f"Derived States ({len(derived_states)}): {debug_print_states_from_indices(derived_states, self.index_manager)}")
+            print(f"\nReset State: {self.index_manager.debug_print_state_from_indices(state, oneline=True)}")
+            print(f"Derived States ({len(derived_states)}): {self.index_manager.debug_print_states_from_indices(derived_states)}")
         return obs_dict, {}
 
     def step(self, action: int):
@@ -241,7 +230,7 @@ class LogicEnv_gym(gym.Env):
         Given the current state, possible next states, an action, and return the next state.
         (It should be: given the current state, and an action, return the next state, but we need to modify it for our case)
         '''
-        derived_states = self._unpad_derived_states(self.tensordict['derived_states']) # List[torch.Tensor] n_states[(n_atoms, max_arity + 1)]
+        derived_states = self.derived_states
 
         if action >= self.padding_states or action > len(derived_states):
             raise ValueError(
@@ -249,7 +238,7 @@ class LogicEnv_gym(gym.Env):
         
         state_next = derived_states[action] # (padding_atoms, max_arity + 1)
 
-        done_next, reward_next = self.get_done_reward(state_next, self.tensordict["label"].item())
+        done_next, reward_next = self.get_done_reward(state_next, self.current_label)
         derived_states_next, truncated_flag = self.get_next_states(state_next)
         
         if truncated_flag:
@@ -266,14 +255,8 @@ class LogicEnv_gym(gym.Env):
         if done_next:
             self.current_query, self.current_label = None, None
 
+        self.derived_states = derived_states_next
         padded_derived_states = self._pad_derived_states(derived_states_next) # (padding_states, padding_atoms, max_arity + 1)
-        self.tensordict = TensorDict({
-                'state': state_next.unsqueeze(0), # (1, n_atoms, max_arity + 1), padded to match the shape of derived_states
-                "derived_states": padded_derived_states,
-                "label": self.tensordict['label'],
-                "done": done_next,
-                "reward": reward_next,
-            })
 
         obs_dict = {
                     'state': state_next.unsqueeze(0).cpu().numpy(), # (1, n_atoms, max_arity + 1), padded to match the shape of derived_states
@@ -285,8 +268,8 @@ class LogicEnv_gym(gym.Env):
         truncated_val = bool(exceeded_max_depth or truncated_flag) 
 
         if self.verbose >=1:
-            print(f"\nStep {self.current_depth + 1}.\nState: {debug_print_state_from_indices(state_next, self.index_manager, oneline=True)}")
-            print(f"Derived States ({len(derived_states_next)}): {debug_print_states_from_indices(derived_states_next, self.index_manager)}")
+            print(f"\nStep {self.current_depth + 1}.\nState: {self.index_manager.debug_print_state_from_indices(state_next, oneline=True)}")
+            print(f"Derived States ({len(derived_states_next)}): {self.index_manager.debug_print_states_from_indices(derived_states_next)}")
             print(f"Step Output: Reward={reward_val}, Done={done_val}, Truncated={truncated_val}")
         return obs_dict, reward_val, done_val, truncated_val, info
 
@@ -428,7 +411,7 @@ class LogicEnv_gym(gym.Env):
                    derived_states[0].numel() > 0 and
                    derived_states[0][0, 0].item() not in {self.true_pred_idx, self.false_pred_idx, self.end_pred_idx}):
 
-                if self.verbose >= 1: print(f"Skipping unary action. Current: {debug_print_state_from_indices(current_state, self.index_manager, True)}")
+                if self.verbose >= 1: print(f"Skipping unary action. Current: {self.index_manager.debug_print_state_from_indices(current_state, True)}")
                 current_state = derived_states[0] # The single state becomes the new current state for the next iteration.
 
                 derived_states, self.next_var_index = get_next_unification_pt(
@@ -463,7 +446,7 @@ class LogicEnv_gym(gym.Env):
                         if ds_tuple not in self.memory:
                             filtered_derived_states.append(ds_tensor)
                         elif self.verbose >= 1:
-                            print(f"Memory Pruning in next derivation: State {debug_print_state_from_indices(ds_tensor, self.index_manager, True)}") #\
+                            print(f"Memory Pruning in next derivation: State {self.index_manager.debug_print_state_from_indices(ds_tensor, True)}") #\
                                 #   {debug_print_state_from_indices(current_state, self.index_manager, oneline=True)} --> {debug_print_states_from_indices(derived_states, self.index_manager)}")
                     derived_states = filtered_derived_states
 
@@ -488,7 +471,7 @@ class LogicEnv_gym(gym.Env):
                 if ds_tuple not in self.memory:
                     filtered_derived_states.append(ds_tensor)
                 elif self.verbose >=1:
-                    print(f"Memory Pruning in next derivation: State {debug_print_state_from_indices(ds_tensor, self.index_manager, True)}") #\
+                    print(f"Memory Pruning in next derivation: State {self.index_manager.debug_print_state_from_indices(ds_tensor, True)}") #\
                         #   {debug_print_state_from_indices(current_state, self.index_manager, oneline=True)} --> {debug_print_states_from_indices(derived_states, self.index_manager)}")
             derived_states = filtered_derived_states
 
@@ -499,7 +482,7 @@ class LogicEnv_gym(gym.Env):
             if ds_tensor.shape[0] <= self.padding_atoms: 
                 processed_derived_states.append(ds_tensor)
             elif self.verbose >=1:
-                print(f"Truncating state with {ds_tensor.shape[0]} atoms (max: {self.padding_atoms}): {debug_print_state_from_indices(ds_tensor, self.index_manager, True)}")
+                print(f"Truncating state with {ds_tensor.shape[0]} atoms (max: {self.padding_atoms}): {self.index_manager.debug_print_state_from_indices(ds_tensor, True)}")
         derived_states = processed_derived_states
 
         # TRUNCATE STATES MODULE
@@ -519,7 +502,7 @@ class LogicEnv_gym(gym.Env):
                 for ds in derived_states
             )
             if is_any_non_terminal and len(derived_states) < self.padding_states:
-                 derived_states.append(self.end_tensor_atom.unsqueeze(0))
+                    derived_states.append(self.end_tensor_atom.unsqueeze(0))
 
         if not derived_states:
             if self.verbose >=1: print("No valid next states after processing, returning [[FALSE]].")
@@ -549,7 +532,7 @@ class LogicEnv_gym(gym.Env):
             # If the state only contains padding, it's not a successful proof.
             if not torch.any(non_padding_mask):
                 return torch.tensor(True, dtype=torch.bool, device=self.device), \
-                    torch.tensor(0.0, dtype=torch.float32, device=self.device)
+                       torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
             # Get predicates from non-padded atoms only
             predicates = state_tensor[non_padding_mask, 0]
@@ -570,7 +553,7 @@ class LogicEnv_gym(gym.Env):
         reward_val = 1 if done and successful_proof and label == 1 else 0
 
         return torch.tensor(done, dtype=torch.bool, device=self.device), \
-            torch.tensor(reward_val, dtype=torch.float32, device=self.device)
+               torch.tensor(reward_val, dtype=torch.float32, device=self.device)
 
     def get_random_queries(self, n: int = 1) -> Tuple[List[torch.Tensor], List[int]]:
         num_available_queries = len(self.queries) 
@@ -595,17 +578,17 @@ class LogicEnv_gym(gym.Env):
 
 
     def get_random_queries_terms(self,
-                           queries_terms_list_of_list: List[List[Term]], 
-                           n: int = 1, 
-                           ) -> Tuple[List[List[Term]], Optional[List[int]]]:
+                                queries_terms_list_of_list: List[List[Term]], 
+                                n: int = 1, 
+                                ) -> Tuple[List[List[Term]], Optional[List[int]]]:
         if not queries_terms_list_of_list:
             raise ValueError("Query list is empty, cannot sample.")
         num_available_queries = len(queries_terms_list_of_list)
         if n > num_available_queries:
-             print(f"Warning: Requested {n} queries, but only {num_available_queries} available. Sampling with replacement or returning all.")
-             sampled_indices = [self.seed_gen.randint(0, num_available_queries - 1) for _ in range(n)]
+            print(f"Warning: Requested {n} queries, but only {num_available_queries} available. Sampling with replacement or returning all.")
+            sampled_indices = [self.seed_gen.randint(0, num_available_queries - 1) for _ in range(n)]
         else:
-             sampled_indices = self.seed_gen.sample(range(num_available_queries), n)
+            sampled_indices = self.seed_gen.sample(range(num_available_queries), n)
         sampled_queries_terms = [queries_terms_list_of_list[i] for i in sampled_indices]
         sampled_labels = None
         if self.labels and len(self.labels) == len(self.initial_queries_terms):
@@ -613,7 +596,7 @@ class LogicEnv_gym(gym.Env):
         elif n == 1 : 
             sampled_labels = [1]
         elif self.labels : 
-             print("Warning: Labels list size mismatch, cannot reliably provide labels for multiple random queries.")
+            print("Warning: Labels list size mismatch, cannot reliably provide labels for multiple random queries.")
         return sampled_queries_terms, sampled_labels
 
     def close(self):
@@ -672,10 +655,10 @@ if __name__ == '__main__':
     print("IndexManager Initialized: All data has been tensorized and stored as attributes.")
 
     max_rule_atoms_test = max(1 + len(r.body) for r in rules_terms_test) if rules_terms_test else 1
-    index_manager_test.rules, index_manager_test.rules_lengths = rules_to_tensor_im(data_handler_test.rules_terms,max_rule_atoms=max_rule_atoms_test, index_manager=index_manager_test)
-    index_manager_test.facts = facts_to_tensor_im(data_handler_test.facts_terms,index_manager_test)
+    index_manager_test.rules, index_manager_test.rules_lengths = index_manager_test.rules_to_tensor(data_handler_test.rules_terms, max_rule_atoms=max_rule_atoms_test)
+    index_manager_test.facts = index_manager_test.state_to_tensor(data_handler_test.facts_terms)
     index_manager_test.facts_set = frozenset(tuple(f.tolist()) for f in index_manager_test.facts)
-    test_queries = queries_to_tensor_im(data_handler_test.test_queries_terms, index_manager_test)
+    test_queries = index_manager_test.state_to_tensor(data_handler_test.test_queries_terms)
 
     # Build the facts index for fast lookup
     index_manager_test.build_facts_index(index_manager_test.facts)
@@ -689,7 +672,6 @@ if __name__ == '__main__':
         rules_term=data_handler_test.rules_terms,
         queries=test_queries,
         labels=data_handler_test.test_labels,
-        facts=index_manager_test.facts,
         facts_set=index_manager_test.facts_set,
         rules=index_manager_test.rules,
         rule_lengths=index_manager_test.rules_lengths,
@@ -715,7 +697,7 @@ if __name__ == '__main__':
         step_count = 0
         while not (terminated or truncated):
             action_to_take = 0 # Default to taking the first derived state for deterministic test
-            num_derived_states = len(env_test.tensordict['derived_states'])
+            num_derived_states = len(env_test._unpad_derived_states(env_test.tensordict['derived_states']))
 
             if num_derived_states == 0:
                 print("  No derived states, but not done. This is unexpected. Breaking.")
@@ -736,27 +718,26 @@ if __name__ == '__main__':
             # For other episodes, or if specific path logic isn't defined, take action 0
             # or a random valid action if you prefer.
             if action_to_take >= num_derived_states:
-                 print(f"  Test logic error: action_to_take {action_to_take} is out of bounds for {num_derived_states} derived states. Taking 0.")
-                 action_to_take = 0
+                print(f"  Test logic error: action_to_take {action_to_take} is out of bounds for {num_derived_states} derived states. Taking 0.")
+                action_to_take = 0
 
             print(f"  Taking Action: {action_to_take} (out of {num_derived_states} choices): "\
-                  f"{debug_print_state_from_indices(env_test.tensordict['derived_states'][action_to_take], env_test.index_manager, oneline=True)}")#\
+                  f"{env_test.index_manager.debug_print_state_from_indices(env_test.tensordict['derived_states'][action_to_take], oneline=True)}")
                     # f"tensor: {env_test.tensordict['derived_states'][action_to_take]}")
             # print(f"  Taking Action: {action_to_take} (out of {num_derived_states} choices):{env_test.tensordict['derived_states']}")
             obs, reward, terminated, truncated, info = env_test.step(action_to_take)
             total_reward += reward
             step_count += 1
             if step_count >= env_test.max_depth + 2 : 
-                 print("  Test safety break due to excessive steps.")
-                 break
+                print("  Test safety break due to excessive steps.")
+                break
         
         print(f"Episode {episode_num + 1} Finished. Total Reward: {total_reward}, Steps: {step_count}")
         expected_reward = 1 if labels_for_env_test[episode_num] == 1 else 0
         if terminated and total_reward == expected_reward:
             print(f"  SUCCESSFUL PROOF as expected (Reward: {total_reward})!")
         elif terminated and total_reward != expected_reward:
-             print(f"  UNEXPECTED PROOF OUTCOME (Reward: {total_reward}, Expected: {expected_reward}).")
+            print(f"  UNEXPECTED PROOF OUTCOME (Reward: {total_reward}, Expected: {expected_reward}).")
         elif truncated:
             print(f"  TRUNCATED (e.g. max depth). Expected reward: {expected_reward}")
     print("\n--- LogicEnv_gym Tensor Test Finished ---")
-

@@ -5,14 +5,16 @@ from utils import is_variable, Term, Rule
 
 class IndexManager():
     '''
-    Manages indices for constants, predicates, and fixed variables.
-    Variable indices are pre-assigned based on max_total_vars.
-    Includes a unified lookup map for faster term indexing.
+    Manages indices for constants, predicates, and variables.
+    - Rule template variables are automatically extracted and assigned fixed indices.
+    - Runtime variables for proofs are assigned dynamically.
+    - Includes a unified lookup map for fast term indexing.
     '''
     def __init__(self,
                  constants: set,
                  predicates: set,
-                 max_total_vars: int, # Max allowed *total* vars (pre-assigned)
+                 rules: List[Rule], # Changed: Pass the raw rules
+                 max_total_vars: int,
                  padding_atoms: int = 10,
                  max_arity: int = 2,
                  device: torch.device = torch.device("cpu")):
@@ -20,12 +22,15 @@ class IndexManager():
         self.device = device
         self.constants = constants
         self.predicates = predicates
+        
+        # New: Automatically extract template variables from the provided rules
+        self.rule_template_variables = self._extract_template_variables_from_rules(rules)
+        
         self.special_preds_map_names = {'True': "##TRUE##", 'False': "##FALSE##", 'End': "##END##"} 
         self.special_preds = ['True', 'False', 'End']
         self.padding_idx = 0
 
-        self.max_total_vars = max_total_vars # Max *pre-assigned* variables
-
+        self.max_total_vars = max_total_vars
         self.padding_atoms = padding_atoms
         self.max_arity = max_arity
         if self.max_arity != 2:
@@ -36,38 +41,54 @@ class IndexManager():
         self.constant_idx2str: Dict[int, str] = {}
         self.predicate_str2idx: Dict[str, int] = {}
         self.predicate_idx2str: Dict[int, str] = {}
-        self.variable_str2idx: Dict[str, int] = {}
-        self.variable_idx2str: Dict[int, str] = {}
-        # New unified map for constants and variables
+        self.template_variable_str2idx: Dict[str, int] = {}
+        self.template_variable_idx2str: Dict[int, str] = {}
+        self.runtime_variable_str2idx: Dict[str, int] = {}
+        self.runtime_variable_idx2str: Dict[int, str] = {}
         self.unified_term_map: Dict[str, int] = {}
 
-        # --- Global indices for Constants and Predicates ---
+        # --- Create Indices ---
         self.create_global_idx()
+        self._create_template_var_idx()
 
-        # --- Fixed Variable indices ---
-        # Variable indices start after the last constant index
-        self.variable_start_index = self.constant_no + 1
-        self.variable_end_index = self.variable_start_index + self.max_total_vars - 1
-        self.variable_no = self.max_total_vars # Total number of pre-assigned variables
+        self.runtime_var_start_index = self.constant_no + self.template_variable_no + 1
+        self.runtime_var_end_index = self.runtime_var_start_index + self.max_total_vars - 1
+        self.runtime_variable_no = self.max_total_vars
+        self.variable_no = self.constant_no + self.template_variable_no + self.runtime_variable_no
+        self.next_runtime_var_index = self.runtime_var_start_index
 
-        self.next_var_index = self.variable_start_index # Next available variable index
+        self._create_fixed_runtime_var_idx()
 
-        self._create_fixed_var_idx() # Create mappings for fixed variables
-
-        # --- Create Unified Term Map ---
-        # Combine constant and variable maps for faster lookup
+        # --- Create the Unified Term Map ---
         self.unified_term_map.update(self.constant_str2idx)
-        self.unified_term_map.update(self.variable_str2idx)
-
+        self.unified_term_map.update(self.template_variable_str2idx)
+        print(f"IndexManager initialized. Found {len(self.rule_template_variables)} template variables.")
+        
         self.true_pred_idx = self.predicate_str2idx['True']
         self.false_pred_idx = self.predicate_str2idx['False']
         
         self.true_tensor = torch.tensor([self.true_pred_idx, self.padding_idx, self.padding_idx], dtype=torch.long, device=self.device)
         self.false_tensor = torch.tensor([self.false_pred_idx, self.padding_idx, self.padding_idx], dtype=torch.long, device=self.device)
 
-        # Fact index setup
         self.fact_index: Dict[Tuple, Set[Tuple[int, ...]]] = {}
 
+    # New internal function to encapsulate the extraction logic
+    def _extract_template_variables_from_rules(self, rules: List[Rule]) -> Set[str]:
+        """Iterates through a list of Rule objects and extracts all unique variable names."""
+        template_variables = set()
+        for rule in rules:
+            # Extract from the rule's head
+            for arg in rule.head.args:
+                if is_variable(arg):
+                    template_variables.add(arg)
+            # Extract from the rule's body
+            for body_atom in rule.body:
+                for arg in body_atom.args:
+                    if is_variable(arg):
+                        template_variables.add(arg)
+        return template_variables
+
+    # ... (All other methods like build_facts_index, is_var_idx, term_to_tensor, etc., remain exactly the same as the previous answer) ...
 
     def build_facts_index(self, facts_tensor: torch.Tensor):
         """
@@ -77,96 +98,204 @@ class IndexManager():
         self.fact_index.clear()
         for i in range(facts_tensor.shape[0]):
             fact = facts_tensor[i]
-            # Find constant arguments (those that are not variables)
             constant_args_with_pos = []
-            # We check arguments from index 1 onwards
             for j in range(1, self.max_arity + 1):
                 arg_idx = fact[j].item()
                 if not self.is_var_idx(arg_idx) and arg_idx != self.padding_idx:
-                    constant_args_with_pos.append((j - 1, arg_idx)) # Store arg position (0, 1) and its index
-
-            # Generate all possible subsets of constant arguments to create keys
-            # A query can then find a match if its constants are a subset of a fact's constants
+                    constant_args_with_pos.append((j - 1, arg_idx))
             for k in range(len(constant_args_with_pos) + 1):
                 for subset_args_with_pos in itertools.combinations(constant_args_with_pos, k):
-                    # Sort by position to create a canonical key
                     sorted_subset = tuple(sorted(subset_args_with_pos, key=lambda x: x[0]))
                     key = (fact[0].item(),) + sorted_subset
-                    
-                    # Ensure the set for this key exists and add the fact tuple
                     if key not in self.fact_index:
                         self.fact_index[key] = set()
                     self.fact_index[key].add(tuple(fact.tolist()))
-        
-        # print(f"Fact index built with {len(self.fact_index)} keys.")
-        # print(f"First 10 keys: {list(self.fact_index.keys())[:10]}")
-        # print(f"First 10 values: {list(self.fact_index.values())[:10]}")
-
 
     def reset_next_var_index(self):
-        self.next_var_index = self.variable_start_index
+        # This now resets the *runtime* variable index
+        self.next_runtime_var_index = self.runtime_var_start_index
 
     def is_var_idx(self, idx: int) -> bool:
-        '''Check if the given index corresponds to a variable.'''
-        return self.variable_start_index <= idx <= self.variable_end_index
-    
+        '''Check if the given index corresponds to any variable (template or runtime).'''
+        return (self.constant_no < idx <= self.runtime_var_end_index)
+
     def get_next_var(self) -> int:
-        '''Get the next available variable idx and increment the index.'''
-        if self.next_var_index > self.variable_end_index:
-            raise ValueError(f"No more available variable indices: {self.next_var_index} exceeds max {self.variable_end_index}.")
-        idx = self.next_var_index
-        self.variable_idx2str[idx] = f"Var_{idx}"
-        self.variable_str2idx[f"Var_{idx}"] = idx
-        self.next_var_index += 1
+        '''Get the next available *runtime* variable idx.'''
+        if self.next_runtime_var_index > self.runtime_var_end_index:
+            raise ValueError(f"No more available runtime variable indices.")
+        idx = self.next_runtime_var_index
+        var_name = f"RuntimeVar_{idx}"
+        self.runtime_variable_idx2str[idx] = var_name
+        self.runtime_variable_str2idx[var_name] = idx
+        self.next_runtime_var_index += 1
         return idx
 
+    def create_global_idx(self):
+        '''Create global indices for constants and predicates.'''
+        # Constants
+        current_idx = 1
+        for term in sorted(self.constants):
+            self.constant_str2idx[term] = current_idx
+            self.constant_idx2str[current_idx] = term
+            current_idx += 1
+        self.constant_no = current_idx - 1
+        # Predicates
+        current_idx = 1
+        for term in sorted(self.predicates):
+            self.predicate_str2idx[term] = current_idx
+            self.predicate_idx2str[current_idx] = term
+            current_idx += 1
+        for term in self.special_preds:
+            self.predicate_str2idx[term] = current_idx
+            self.predicate_idx2str[current_idx] = term
+            current_idx += 1
+        self.predicate_no = current_idx - 1
+
+    def _create_template_var_idx(self):
+        '''Create fixed indices for variables found in rule templates.'''
+        current_idx = self.constant_no + 1
+        for var_name in sorted(list(self.rule_template_variables)):
+            self.template_variable_str2idx[var_name] = current_idx
+            self.template_variable_idx2str[current_idx] = var_name
+            current_idx += 1
+        self.template_variable_no = len(self.rule_template_variables)
+
+    def _create_fixed_runtime_var_idx(self):
+        '''Pre-allocate space for runtime variable indices.'''
+        for i in range(self.max_total_vars):
+            var_index = self.runtime_var_start_index + i
+            var_name = f"RuntimeVar_{var_index}"
+            self.runtime_variable_idx2str[var_index] = var_name
+            self.runtime_variable_str2idx[var_name] = var_name
+            
     def get_str_for_term_idx(self, idx: int) -> str:
-        '''Get the string representation for a given term index.'''
+        '''Get the string representation for a given index.'''
         if idx in self.constant_idx2str:
             return self.constant_idx2str[idx]
-        elif idx in self.variable_idx2str:
-            return self.variable_idx2str[idx]
+        elif idx in self.template_variable_idx2str:
+            return self.template_variable_idx2str[idx]
+        elif idx in self.runtime_variable_idx2str:
+            return self.runtime_variable_idx2str[idx]
         elif idx in self.predicate_idx2str:
             return self.predicate_idx2str[idx]
         else:
             raise KeyError(f"Index {idx} not found in any mapping.")
 
-    def create_global_idx(self):
-        '''Create global indices for constants and predicates (including specials).'''
-        # --- Constants ---
-        current_idx = 1
+    def term_to_tensor(self, term_str: Term) -> torch.Tensor:
+        """Converts a single Term object to a tensor using the pre-built unified map."""
+        pred_idx = self.predicate_str2idx[term_str.predicate]
+        arg_indices = []
+        term_args = term_str.args if isinstance(term_str.args, tuple) else tuple(term_str.args)
+        for arg_s in term_args:
+            arg_indices.append(self.unified_term_map[arg_s])
+        while len(arg_indices) < self.max_arity:
+            arg_indices.append(self.padding_idx)
+        if len(arg_indices) != self.max_arity: 
+            raise ValueError(f"Term {term_str} has incorrect arity after padding.")
+        return torch.tensor([pred_idx] + arg_indices, dtype=torch.long, device=self.device)
 
-        for term in sorted(self.constants):
-            self.constant_str2idx[term] = current_idx
-            self.constant_idx2str[current_idx] = term
-            current_idx += 1
+    def state_to_tensor(self, state_str: List[Term]) -> torch.Tensor:
+        """Converts a list of Term objects (like facts or queries) to a tensor."""
+        if not state_str:
+            return torch.empty((0, self.max_arity + 1), dtype=torch.long, device=self.device)
+        return torch.stack([self.term_to_tensor(t) for t in state_str])
 
-        self.constant_no = current_idx - 1
+    def rules_to_tensor(self, rules_str_list: List[Rule], max_rule_atoms: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Converts a list of Rule objects to a padded tensor."""
+        if not rules_str_list:
+            return torch.empty((0, max_rule_atoms, self.max_arity + 1), dtype=torch.long, device=self.device), \
+                   torch.empty((0,), dtype=torch.long, device=self.device)
+        rule_tensors_list = []
+        rule_lengths_list = []
+        for rule_obj in rules_str_list:
+            head_tensor = self.term_to_tensor(rule_obj.head)
+            body_tensors = [self.term_to_tensor(t) for t in rule_obj.body]
+            current_rule_atoms_list = [head_tensor] + body_tensors
+            num_atoms = len(current_rule_atoms_list)
+            rule_lengths_list.append(num_atoms)
+            stacked_atoms = torch.stack(current_rule_atoms_list)
+            if num_atoms < max_rule_atoms:
+                padding = torch.full((max_rule_atoms - num_atoms, self.max_arity + 1), self.padding_idx, dtype=torch.long, device=self.device)
+                padded_rule_atoms = torch.cat([stacked_atoms, padding], dim=0)
+            elif num_atoms > max_rule_atoms:
+                raise ValueError(f"Rule {rule_obj} has {num_atoms} atoms, exceeding max_rule_atoms {max_rule_atoms}")
+            else:
+                padded_rule_atoms = stacked_atoms
+            rule_tensors_list.append(padded_rule_atoms)
+        if not rule_tensors_list: 
+            return torch.empty((0, max_rule_atoms, self.max_arity + 1), dtype=torch.long, device=self.device), \
+                   torch.empty((0,), dtype=torch.long, device=self.device)
+        return torch.stack(rule_tensors_list), torch.tensor(rule_lengths_list, dtype=torch.long, device=self.device)
 
-        # --- Predicates (Regular + Special) ---
-        current_idx = 1
-        # Add regular predicates first
-        for term in sorted(self.predicates):
-            self.predicate_str2idx[term] = current_idx
-            self.predicate_idx2str[current_idx] = term
-            current_idx += 1
 
-        for term in self.special_preds:
-            self.predicate_str2idx[term] = current_idx
-            self.predicate_idx2str[current_idx] = term
-            current_idx += 1
 
-        self.predicate_no = current_idx - 1
 
-    def _create_fixed_var_idx(self):
-        '''Create fixed indices for variables based on max_total_vars.'''
-        # Create variable names "Var_i", "Var_i+1", ..., "Var_(no_constants + max_total_vars)"
-        # Assign indices starting from self.variable_start_index
-        for i in range(self.max_total_vars):
-            var_name = f"Var_{self.variable_start_index + i}"
-            var_index = self.variable_start_index + i
-            self.variable_str2idx[var_name] = var_index
-            self.variable_idx2str[var_index] = var_name
+    def debug_print_atom(self, atom_tensor: torch.Tensor) -> str: 
+        if not isinstance(atom_tensor, torch.Tensor): 
+            return f"<ERROR: Expected tensor, got {type(atom_tensor)}: {str(atom_tensor)}>"
+        if atom_tensor.numel() == 0: return "[]" 
+        if atom_tensor.dim() > 1:
+            if atom_tensor.shape[0] == 1 and atom_tensor.shape[1] == (self.max_arity + 1):
+                atom_tensor = atom_tensor.squeeze(0) 
+            else:
+                return f"<ERROR: Atom tensor has unexpected shape {atom_tensor.shape}>"
+        if atom_tensor.shape[0] != (self.max_arity + 1) :
+            return f"<ERROR: Atom tensor has wrong size {atom_tensor.shape[0]}, expected {self.max_arity + 1}>"
+        pred_idx_val = atom_tensor[0].item()
+        if pred_idx_val == self.padding_idx: 
+            is_fully_padded = torch.all(atom_tensor == self.padding_idx).item()
+            if is_fully_padded: return "<PAD_ATOM>"
+        if pred_idx_val == self.true_pred_idx: return "TRUE" 
+        if pred_idx_val == self.false_pred_idx: return "FALSE" 
+        if pred_idx_val == self.predicate_str2idx.get('End', -999): return "END" 
+        pred_str = self.predicate_idx2str[pred_idx_val]
+        args_str_list = [] 
+        for i in range(1, self.max_arity + 1): 
+            arg_idx_val = atom_tensor[i].item()
+            if arg_idx_val == self.padding_idx and not any(atom_tensor[j].item() != self.padding_idx for j in range(i + 1, self.max_arity + 1)):
+                break
+            args_str_list.append(self.get_str_for_term_idx(arg_idx_val))
+        return f"{pred_str}({', '.join(args_str_list)})"
+
+    def debug_print_state_from_indices(self, state_tensor: torch.Tensor, oneline: bool = False) -> str:
+        if not isinstance(state_tensor, torch.Tensor): 
+            return f"<ERROR: Expected tensor for state, got {type(state_tensor)}: {str(state_tensor)}>"
+        if state_tensor.numel() == 0:
+            return "[]"
+        if state_tensor.dim() == 1 and state_tensor.shape[0] == (self.max_arity + 1): 
+            state_tensor_for_iteration = state_tensor.unsqueeze(0)
+        elif state_tensor.dim() == 2 and state_tensor.shape[1] == (self.max_arity + 1):
+            state_tensor_for_iteration = state_tensor
+        else:
+            return f"<ERROR: State tensor has unexpected shape {state_tensor.shape}>"
+        atom_strs_list = []
+        for i in range(state_tensor_for_iteration.shape[0]):
+            atom_tensor = state_tensor_for_iteration[i]
+            if atom_tensor[0].item() == self.padding_idx and torch.all(atom_tensor == self.padding_idx).item():
+                continue
+            atom_strs_list.append(self.debug_print_atom(atom_tensor))
+        if not atom_strs_list: return "[]" 
+        if oneline:
+            return "[" + ", ".join(atom_strs_list) + "]"
+        return "\n".join(atom_strs_list)
+
+    def debug_print_states_from_indices(self, states_list_tensor: List[torch.Tensor]) -> str:
+        if not states_list_tensor:
+            return "[]"
+        return "[" + ", ".join([self.debug_print_state_from_indices(s, oneline=True) for s in states_list_tensor]) + "]"
+    
+
+
+
+
+
+
+
+
+
+
+    
+
 
 
     def get_atom_sub_index(self, state: List[Term]) -> torch.Tensor:
@@ -183,7 +312,7 @@ class IndexManager():
         # --- State Length Check ---
         state_len = len(state)
         if state_len > self.padding_atoms:
-             raise ValueError(f"Length of processed state ({state_len}) exceeds padding_atoms ({self.padding_atoms}).")
+            raise ValueError(f"Length of processed state ({state_len}) exceeds padding_atoms ({self.padding_atoms}).")
 
         # --- Initialize Tensor ---
         sub_index = torch.zeros(self.padding_atoms, self.max_arity + 1, device=self.device, dtype=torch.int64)
@@ -201,7 +330,7 @@ class IndexManager():
             try:
                 current_sub_row[0] = predicate_map[pred_str]
             except KeyError:
-                 raise KeyError(f"Predicate '{pred_str}' not found in predicate map.")
+                    raise KeyError(f"Predicate '{pred_str}' not found in predicate map.")
 
             # --- Argument Indices ---
             num_args = len(atom.args)
@@ -214,7 +343,7 @@ class IndexManager():
             try:
                 arg_indices = [unified_map[arg] for arg in arg_strings]
             except KeyError as e:
-                 raise KeyError(f"Argument '{e}' not found in constant or variable maps.") from e
+                raise KeyError(f"Argument '{e}' not found in constant or variable maps.") from e
 
             # Assign argument indices to the tensor row
             if arg_indices: # Check if there are any arguments to assign
@@ -223,7 +352,6 @@ class IndexManager():
         return sub_index
 
     def subindices_to_terms(self, idx: torch.Tensor) -> List[List[Term]]:
-
         """
         Vectorized conversion of sub-indices back to Term-based states.
 
@@ -262,46 +390,6 @@ class IndexManager():
         return results
 
 
-
-
-
-
-# --- Global Tensor Conversion Functions using IndexManager ---
-def term_to_tensor_im(term_str: Term, index_manager: IndexManager, var_map: Dict[str, int]) -> torch.Tensor:
-    pred_idx = index_manager.predicate_str2idx[term_str.predicate]
-    arg_indices = []
-    # Ensure args is a tuple
-    term_args = term_str.args if isinstance(term_str.args, tuple) else tuple(term_str.args)
-
-    for arg_s in term_args:
-        if is_variable(arg_s): 
-            if arg_s not in var_map:
-                var_map[arg_s] = index_manager.get_next_var()
-            arg_indices.append(var_map[arg_s])
-        else: 
-            arg_indices.append(index_manager.constant_str2idx[arg_s])
-    
-    while len(arg_indices) < index_manager.max_arity:
-        arg_indices.append(index_manager.padding_idx)
-    
-    if len(arg_indices) != index_manager.max_arity: 
-        raise ValueError(f"Term {term_str} (args: {arg_indices}) does not have effective arity {index_manager.max_arity} after padding. Current arity: {len(arg_indices)}")
-    return torch.tensor([pred_idx] + arg_indices, dtype=torch.long, device=index_manager.device)
-
-def state_to_tensor_im(state_str: List[Term], index_manager: IndexManager, initial_var_map: Optional[Dict[str, int]] = None) -> torch.Tensor:
-    if not state_str:
-        return torch.empty((0, index_manager.max_arity + 1), dtype=torch.long, device=index_manager.device)
-    
-    current_var_map = initial_var_map.copy() if initial_var_map is not None else {}
-    if initial_var_map is None: 
-        for term_obj in state_str:
-            term_args = term_obj.args if isinstance(term_obj.args, tuple) else tuple(term_obj.args)
-            for arg_s in term_args:
-                if is_variable(arg_s) and arg_s not in current_var_map:
-                    current_var_map[arg_s] = index_manager.get_next_var()
-    
-    return torch.stack([term_to_tensor_im(t, index_manager, current_var_map) for t in state_str])
-
 def facts_to_tensor_im(facts_str: List[Term], index_manager: IndexManager) -> torch.Tensor:
     """
     Convert a list of facts (Term objects) to a tensor representation.
@@ -332,106 +420,6 @@ def queries_to_tensor_im(queries_str: List[List[Term]], index_manager: IndexMana
         return torch.empty((0, index_manager.max_arity + 1), dtype=torch.long, device=index_manager.device)
     
     return torch.stack([facts_to_tensor_im(query, index_manager) for query in queries_str])
-
-def rules_to_tensor_im(rules_str_list: List[Rule], max_rule_atoms: int, index_manager: IndexManager) -> Tuple[torch.Tensor, torch.Tensor]:
-    if not rules_str_list:
-        return torch.empty((0, max_rule_atoms, index_manager.max_arity + 1), dtype=torch.long, device=index_manager.device), \
-               torch.empty((0,), dtype=torch.long, device=index_manager.device)
-
-    rule_tensors_list = []
-    rule_lengths_list = []
-
-    for rule_obj in rules_str_list:
-        rule_local_var_map: Dict[str, int] = {} 
-        head_tensor = term_to_tensor_im(rule_obj.head, index_manager, rule_local_var_map)
-        body_tensors = [term_to_tensor_im(t, index_manager, rule_local_var_map) for t in rule_obj.body]
-        
-        current_rule_atoms_list = [head_tensor] + body_tensors
-        num_atoms = len(current_rule_atoms_list)
-        rule_lengths_list.append(num_atoms)
-
-        # Ensure rule atoms are on the correct device before stacking
-        current_rule_atoms_list_device = [atom.to(index_manager.device) for atom in current_rule_atoms_list]
-        stacked_atoms = torch.stack(current_rule_atoms_list_device)
-
-        if num_atoms < max_rule_atoms:
-            padding = torch.full((max_rule_atoms - num_atoms, index_manager.max_arity + 1), index_manager.padding_idx, dtype=torch.long, device=index_manager.device)
-            padded_rule_atoms = torch.cat([stacked_atoms, padding], dim=0)
-        elif num_atoms > max_rule_atoms:
-            raise ValueError(f"Rule {rule_obj} has {num_atoms} atoms, exceeding max_rule_atoms {max_rule_atoms}")
-        else:
-            padded_rule_atoms = stacked_atoms
-        rule_tensors_list.append(padded_rule_atoms)
-    
-    if not rule_tensors_list: 
-         return torch.empty((0, max_rule_atoms, index_manager.max_arity + 1), dtype=torch.long, device=index_manager.device), \
-               torch.empty((0,), dtype=torch.long, device=index_manager.device)
-
-    return torch.stack(rule_tensors_list), torch.tensor(rule_lengths_list, dtype=torch.long, device=index_manager.device)
-
-
-
-
-
-
-
-def debug_print_atom(atom_tensor: torch.Tensor, index_manager: IndexManager) -> str: 
-    if not isinstance(atom_tensor, torch.Tensor): 
-        return f"<ERROR: Expected tensor, got {type(atom_tensor)}: {str(atom_tensor)}>"
-    if atom_tensor.numel() == 0: return "[]" 
-    if atom_tensor.dim() > 1:
-        if atom_tensor.shape[0] == 1 and atom_tensor.shape[1] == (index_manager.max_arity + 1):
-            atom_tensor = atom_tensor.squeeze(0) 
-        else:
-            return f"<ERROR: Atom tensor has unexpected shape {atom_tensor.shape}>"
-    if atom_tensor.shape[0] != (index_manager.max_arity + 1) :
-         return f"<ERROR: Atom tensor has wrong size {atom_tensor.shape[0]}, expected {index_manager.max_arity + 1}>"
-    pred_idx_val = atom_tensor[0].item()
-    if pred_idx_val == index_manager.padding_idx: 
-        is_fully_padded = torch.all(atom_tensor == index_manager.padding_idx).item()
-        if is_fully_padded: return "<PAD_ATOM>"
-    if pred_idx_val == index_manager.true_pred_idx: return "TRUE" 
-    if pred_idx_val == index_manager.false_pred_idx: return "FALSE" 
-    if pred_idx_val == index_manager.predicate_str2idx.get('End', -999): return "END" 
-    pred_str = index_manager.predicate_idx2str[pred_idx_val]
-    args_str_list = [] 
-    for i in range(1, index_manager.max_arity + 1): 
-        arg_idx_val = atom_tensor[i].item()
-        if arg_idx_val == index_manager.padding_idx and not any(atom_tensor[j].item() != index_manager.padding_idx for j in range(i + 1, index_manager.max_arity + 1)):
-            break
-        args_str_list.append(index_manager.get_str_for_term_idx(arg_idx_val))
-    return f"{pred_str}({', '.join(args_str_list)})"
-
-def debug_print_state_from_indices(state_tensor: torch.Tensor, index_manager: IndexManager, oneline: bool = False) -> str:
-    if not isinstance(state_tensor, torch.Tensor): 
-        return f"<ERROR: Expected tensor for state, got {type(state_tensor)}: {str(state_tensor)}>"
-    if state_tensor.numel() == 0:
-        return "[]"
-    if state_tensor.dim() == 1 and state_tensor.shape[0] == (index_manager.max_arity + 1): 
-        state_tensor_for_iteration = state_tensor.unsqueeze(0)
-    elif state_tensor.dim() == 2 and state_tensor.shape[1] == (index_manager.max_arity + 1):
-        state_tensor_for_iteration = state_tensor
-    else:
-        return f"<ERROR: State tensor has unexpected shape {state_tensor.shape}>"
-    atom_strs_list = []
-    for i in range(state_tensor_for_iteration.shape[0]):
-        atom_tensor = state_tensor_for_iteration[i]
-        if atom_tensor[0].item() == index_manager.padding_idx and torch.all(atom_tensor == index_manager.padding_idx).item():
-            continue
-        atom_strs_list.append(debug_print_atom(atom_tensor, index_manager))
-    if not atom_strs_list: return "[]" 
-    if oneline:
-        return "[" + ", ".join(atom_strs_list) + "]"
-    return "\n".join(atom_strs_list)
-
-def debug_print_states_from_indices(states_list_tensor: List[torch.Tensor], index_manager: IndexManager) -> str:
-    if not states_list_tensor:
-        return "[]"
-    return "[" + ", ".join([debug_print_state_from_indices(s, index_manager, oneline=True) for s in states_list_tensor]) + "]"
-
-
-
-
 
 
 def tensor_atom_to_term_im(atom_tensor: torch.Tensor, index_manager: IndexManager) -> Term:

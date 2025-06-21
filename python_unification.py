@@ -1,8 +1,8 @@
 import torch
 from typing import List, Dict, Set, Tuple, FrozenSet, Optional, NamedTuple, Any
 from utils import Term, Rule
-from index_manager import IndexManager, facts_to_tensor_im, rules_to_tensor_im, state_to_tensor_im, \
-                        debug_print_atom, debug_print_state_from_indices, debug_print_states_from_indices
+# UPDATED IMPORT
+from index_manager import IndexManager
 
 
 def format_substitutions_dict(subs: Dict[int, int], index_manager: IndexManager) -> Dict[str, str]:
@@ -153,7 +153,8 @@ def unify_with_facts(
         excluded_fact_tuple = tuple(excluded_fact.tolist()) if excluded_fact is not None else None
         if query_tuple in facts_set and query_tuple != excluded_fact_tuple:
             if verbose >= 1:
-                print(f"Ground query {debug_print_atom(query, index_manager)} matched in fact set.")
+                # UPDATED CALL
+                print(f"Ground query {index_manager.debug_print_atom(query)} matched in fact set.")
             substitutions_found.append({'ground_match': True})
         return substitutions_found
 
@@ -174,8 +175,8 @@ def unify_with_facts(
 
     if verbose >= 1:
         # print(f"DEBUG: Lookup key {lookup_key} found {len(candidate_fact_tuples)} candidate facts.")
-        print(f"First 10 candidate facts: {[debug_print_atom(torch.tensor(fact_tuple, dtype=torch.long, device=query.device), index_manager)\
-                             for fact_tuple in list(candidate_fact_tuples)[:10]]}") if candidate_fact_tuples else None
+        # UPDATED CALL
+        print(f"First 10 candidate facts: {[index_manager.debug_print_atom(torch.tensor(fact_tuple, dtype=torch.long, device=query.device)) for fact_tuple in list(candidate_fact_tuples)[:10]]}") if candidate_fact_tuples else None
     excluded_fact_tuple = tuple(excluded_fact.tolist()) if excluded_fact is not None else None
 
     # Iterate over the much smaller set of candidate facts
@@ -190,7 +191,8 @@ def unify_with_facts(
 
         if subs is not None:
             if verbose >= 1:
-                print(f"    Query {debug_print_atom(query, index_manager)} unified with fact {debug_print_atom(fact_tensor, index_manager)} -> subs {format_substitutions_dict(subs, index_manager)}")
+                # UPDATED CALL
+                print(f"      Query {index_manager.debug_print_atom(query)} unified with fact {index_manager.debug_print_atom(fact_tensor)} -> subs {format_substitutions_dict(subs, index_manager)}")
             substitutions_found.append(subs)
 
     return substitutions_found
@@ -227,10 +229,11 @@ def unify_with_rules(
             instantiated_body = apply_substitutions_to_state_idx(body_template, subs, index_manager)
             
             if verbose >= 1:
+                # UPDATED CALLS
                 # print(f"  Rule {i}: {str(rules_term[i])}")
-                print(f"  Rule {i}: {debug_print_atom(rule_head_idx, index_manager)} --> {debug_print_state_from_indices(body_template, index_manager, True)}")
-                # print(f"    Query: {debug_print_atom(query, index_manager)}. Subs: {format_substitutions_dict(subs, index_manager)}")
-                print(f"    Subs: {format_substitutions_dict(subs, index_manager)}. New Body: {debug_print_state_from_indices(instantiated_body, index_manager, True)}")
+                print(f"  Rule {i}: {index_manager.debug_print_atom(rule_head_idx)} --> {index_manager.debug_print_state_from_indices(body_template, True)}")
+                # print(f"      Query: {index_manager.debug_print_atom(query)}. Subs: {format_substitutions_dict(subs, index_manager)}")
+                print(f"      Subs: {format_substitutions_dict(subs, index_manager)}. New Body: {index_manager.debug_print_state_from_indices(instantiated_body, True)}")
 
             results.append((instantiated_body, subs))
     return results #, current_next_var_index
@@ -325,12 +328,12 @@ def get_next_unification_pt(
     # --- 1. Initial State Checks (handles padded input) ---
     non_padding_mask = current_state[:, 0] != index_manager.padding_idx
     state = current_state[non_padding_mask]
- 
+
     if state.numel() == 0:
         # This means the original state was empty or all padding. This is a success condition (empty goal list).
         print("True state resolved to padding or empty.") if verbose >= 1 else None
         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
-        return [index_manager.false_tensor.unsqueeze(0)], next_var_index
+        return [index_manager.true_tensor.unsqueeze(0)], next_var_index
 
     if torch.any(state[:, 0] == index_manager.false_pred_idx):
         print("Current state contains a FALSE predicate. Terminating path.") if verbose >= 1 else None
@@ -348,8 +351,9 @@ def get_next_unification_pt(
     query_atom = state[0]
     remaining_goals = state[1:]
     if verbose >= 1:
-        print(f"Query: {debug_print_atom(query_atom, index_manager)}")
-        print(f"Remaining Goals: {debug_print_state_from_indices(remaining_goals, index_manager, True)} ")
+        # UPDATED CALLS
+        print(f"Query: {index_manager.debug_print_atom(query_atom)}")
+        print(f"Remaining Goals: {index_manager.debug_print_state_from_indices(remaining_goals, True)} ")
 
     # --- 3. Step 1: Unify Query with Rule Heads ---
     if verbose >= 1: print("\n--- Rule unification ---")
@@ -402,7 +406,7 @@ def get_next_unification_pt(
                 # A goal is a fact if it's ground and exists in the fact set
                 is_ground = not any(is_variable_idx(arg.item(), index_manager) for arg in atom[1:])
                 if is_ground and tuple(atom.tolist()) in facts_set:
-                    if verbose >= 1: print(f"    Goal {debug_print_atom(atom, index_manager)} resolved to a fact. Skipping.")
+                    if verbose >= 1: print(f"      Goal {index_manager.debug_print_atom(atom)} resolved to a fact. Skipping.")
                     # Don't add it to the list, effectively replacing it with TRUE
                     continue
                 simplified_goals.append(atom)
@@ -447,7 +451,7 @@ def get_next_unification_pt(
         
     if verbose >= 1:
         print()
-        print(f"\nFinal Next States: {debug_print_states_from_indices(final_states, index_manager)}")
+        print(f"\nFinal Next States: {index_manager.debug_print_states_from_indices(final_states)}")
         print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
 
     return final_states, next_var_index
@@ -458,10 +462,10 @@ def get_next_unification_pt(
 
 
 if __name__ == '__main__':
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    DEVICE = torch.device("cpu") # "cuda" if torch.cuda.is_available() else "cpu"
     all_constants_main = {"john", "mary", "peter", "chocolate", "wine", "a", "b", "c", "d"}
     all_predicates_main = {"parent", "loves", "grandparent", "ancestor", "p", "q"} 
-    max_fixed_vars_main = 2 
+    max_fixed_vars_main = 100 
     rules_str_main = [
         Rule(Term("grandparent", ("X", "Z")), 
              [Term("parent", ("X", "Y")), Term("parent", ("Y", "Z"))]),
@@ -475,7 +479,6 @@ if __name__ == '__main__':
     im_main = IndexManager(constants=all_constants_main,
                            predicates=all_predicates_main,
                            max_total_vars=max_fixed_vars_main,
-                           rules=rules_str_main, 
                            max_arity=2, 
                            device=DEVICE)
     facts_str_main = [
@@ -486,27 +489,35 @@ if __name__ == '__main__':
         Term("p", ("a", "b")), 
         Term("parent",("b","c")) 
     ]
-    facts_main = facts_to_tensor_im(facts_str_main, im_main)
+    # UPDATED CALLS
+    facts_main = im_main.state_to_tensor(facts_str_main)
     facts_set_main = frozenset(tuple(f.tolist()) for f in facts_main) 
+    im_main.build_facts_index(facts_main) # Build the index
+
     max_atoms_main = 0
     if rules_str_main:
         max_atoms_main = max(1 + len(r.body) for r in rules_str_main) if rules_str_main else 1
-    rules_main, rule_lengths_tensor_main = rules_to_tensor_im(rules_str_main, max_atoms_main, im_main)
+    rules_main, rule_lengths_tensor_main = im_main.rules_to_tensor(rules_str_main, max_atoms_main)
+
     print("--- IndexManager Initialized ---")
     print(f"True Idx: {im_main.true_pred_idx}, False Idx: {im_main.false_pred_idx}, Pad Idx: {im_main.padding_idx}")
     print("\n--- Facts (Tensor Debug) ---")
-    print(debug_print_state_from_indices(facts_main, im_main))
+    # UPDATED CALL
+    print(im_main.debug_print_state_from_indices(facts_main))
     print("\n--- Rules (Tensor Debug) ---")
     for i in range(rules_main.shape[0]):
-        print(f"Rule {i} (len {rule_lengths_tensor_main[i].item()}): {debug_print_state_from_indices(rules_main[i,:rule_lengths_tensor_main[i].item()], im_main, oneline=True)}")
+        # UPDATED CALL
+        print(f"Rule {i} (len {rule_lengths_tensor_main[i].item()}): {im_main.debug_print_state_from_indices(rules_main[i,:rule_lengths_tensor_main[i].item()], oneline=True)}")
 
     print("\n\n--- Test 1: Query grandparent(john, Who) ---")
     initial_query_vars_gp = {} 
-    im_main.next_dynamic_var_idx_counter = im_main.dynamic_variable_start_index 
+    im_main.reset_next_var_index()
     initial_state_str_gp = [Term("grandparent", ("john", "Who"))]
-    initial_state_tensor_gp = state_to_tensor_im(initial_state_str_gp, im_main, initial_query_vars_gp)
+    # UPDATED CALL
+    initial_state_tensor_gp = im_main.state_to_tensor(initial_state_str_gp, initial_query_vars_gp)
     
     current_proof_state = initial_state_tensor_gp
+    next_var_idx = im_main.next_var_index
     for step_num in range(1, 4): # Max 3 steps for this test
         print(f"\n--- GP Step {step_num} ---")
         if current_proof_state is None or current_proof_state.numel() == 0 or \
@@ -515,16 +526,17 @@ if __name__ == '__main__':
             print(f"Proof terminated or reached single TRUE/FALSE before step {step_num}.")
             break
 
-        next_possible_states, _ = get_next_unification_pt(
+        next_possible_states, next_var_idx = get_next_unification_pt(
             current_proof_state, 
-            facts_main,    
-            facts_set_main,    
-            rules_main,    
+            im_main.fact_index,      
+            facts_set_main,      
+            rules_main,      
             rule_lengths_tensor_main, 
             im_main,
             rules_term=rules_str_main, 
+            next_var_index=next_var_idx,
             verbose=1,
-            include_intermediate_rule_states=False # Test with default
+            unification_strategy='rules_then_facts'
         )
         if not next_possible_states:
             print("No next states derived.")
@@ -533,19 +545,23 @@ if __name__ == '__main__':
         
         # In a real scenario, an agent would pick one. For testing, we take the first.
         current_proof_state = next_possible_states[0] 
-        print(f"  Selected next state for GP Step {step_num+1} (if any): {debug_print_state_from_indices(current_proof_state, im_main, oneline=True)}")
+        # UPDATED CALL
+        print(f"   Selected next state for GP Step {step_num+1} (if any): {im_main.debug_print_state_from_indices(current_proof_state, oneline=True)}")
 
     if current_proof_state is not None and current_proof_state.shape[0] == 1 and current_proof_state[0,0].item() == im_main.true_pred_idx:
         print("\nGRANDPARENT TEST SUCCEEDED TO PROVE TRUE!")
     else:
-        print(f"\nGRANDPARENT TEST FINISHED. Final state: {debug_print_state_from_indices(current_proof_state, im_main, oneline=True) if current_proof_state is not None else 'None'}")
+        # UPDATED CALL
+        print(f"\nGRANDPARENT TEST FINISHED. Final state: {im_main.debug_print_state_from_indices(current_proof_state, oneline=True) if current_proof_state is not None else 'None'}")
 
     print("\n\n--- Test 2: Query q(a, What) ---")
     initial_query_vars_q = {}
-    im_main.next_dynamic_var_idx_counter = im_main.dynamic_variable_start_index
+    im_main.reset_next_var_index()
     initial_state_str_q = [Term("q", ("a", "What"))]
-    initial_state_tensor_q = state_to_tensor_im(initial_state_str_q, im_main, initial_query_vars_q)
+    # UPDATED CALL
+    initial_state_tensor_q = im_main.state_to_tensor(initial_state_str_q, initial_query_vars_q)
     current_proof_state_q = initial_state_tensor_q
+    next_var_idx_q = im_main.next_var_index
     for step_num_q in range(1, 4):
         print(f"\n--- Q Step {step_num_q} ---")
         if current_proof_state_q is None or current_proof_state_q.numel() == 0 or \
@@ -553,20 +569,23 @@ if __name__ == '__main__':
            (current_proof_state_q.shape[0] == 1 and current_proof_state_q[0,0].item() == im_main.false_pred_idx):
             print(f"Proof terminated or reached single TRUE/FALSE before step {step_num_q}.")
             break
-        next_possible_states_q, _ = get_next_unification_pt(
+        next_possible_states_q, next_var_idx_q = get_next_unification_pt(
             current_proof_state_q,
-            facts_main, facts_set_main,
+            im_main.fact_index, facts_set_main,
             rules_main, rule_lengths_tensor_main, im_main,
-            rules_term=rules_str_main, verbose=1
+            rules_term=rules_str_main, verbose=1,
+            next_var_index=next_var_idx_q
         )
         if not next_possible_states_q:
             print("No next states derived for Q query.")
             current_proof_state_q = None
             break
         current_proof_state_q = next_possible_states_q[0]
-        print(f"  Selected next state for Q Step {step_num_q+1} (if any): {debug_print_state_from_indices(current_proof_state_q, im_main, oneline=True)}")
+        # UPDATED CALL
+        print(f"   Selected next state for Q Step {step_num_q+1} (if any): {im_main.debug_print_state_from_indices(current_proof_state_q, oneline=True)}")
     
     if current_proof_state_q is not None and current_proof_state_q.shape[0] == 1 and current_proof_state_q[0,0].item() == im_main.true_pred_idx:
         print("\nQUERY Q TEST SUCCEEDED TO PROVE TRUE!")
     else:
-        print(f"\nQUERY Q TEST FINISHED. Final state: {debug_print_state_from_indices(current_proof_state_q, im_main, oneline=True) if current_proof_state_q is not None else 'None'}")
+        # UPDATED CALL
+        print(f"\nQUERY Q TEST FINISHED. Final state: {im_main.debug_print_state_from_indices(current_proof_state_q,oneline=True) if current_proof_state_q is not None else 'None'}")

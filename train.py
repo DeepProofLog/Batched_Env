@@ -10,9 +10,7 @@ import pstats
 import io
 
 from env import LogicEnv_gym
-from index_manager import IndexManager,state_to_tensor_im, facts_to_tensor_im, rules_to_tensor_im, \
-    debug_print_state_from_indices, debug_print_states_from_indices, queries_to_tensor_im, \
-    tensor_atom_to_term_im, tensor_state_to_terms_list_im
+from index_manager import IndexManager
 from utils import get_device, print_eval_info
 from my_callbacks import SB3ModelCheckpoint, CustomEvalCallback, EpochTimingCallback
 from dataset import DataHandler
@@ -75,20 +73,27 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     args.n_eval_queries = len(data_handler.valid_queries_terms) if args.n_eval_queries == None else min(args.n_eval_queries, len(data_handler.valid_queries_terms))
     args.n_test_queries = len(data_handler.test_queries_terms) if args.n_test_queries == None else min(args.n_test_queries, len(data_handler.test_queries_terms))
 
-    index_manager = IndexManager(data_handler.constants,
-                                data_handler.predicates,
-                                args.max_total_vars,
-                                padding_atoms=args.padding_atoms,
-                                max_arity=data_handler.max_arity,
-                                device='cpu')
+    index_manager = IndexManager(
+        constants=data_handler.constants,
+        predicates=data_handler.predicates,
+        rules=data_handler.rules_terms, # Pass the raw rules directly
+        max_total_vars=args.max_total_vars,
+        padding_atoms=args.padding_atoms,
+        max_arity=data_handler.max_arity,
+        device='cpu'
+    )
 
+    # ---- TENSOR CONVERSION ----
+    # This part of the code remains the same, but the calls are now more efficient.
     max_rule_atoms_test = max(1 + len(r.body) for r in data_handler.rules_terms)
-    index_manager.rules, index_manager.rules_lengths = rules_to_tensor_im(data_handler.rules_terms,max_rule_atoms=max_rule_atoms_test, index_manager=index_manager)
-    facts = state_to_tensor_im(data_handler.facts_terms,index_manager)
+    
+    index_manager.rules, index_manager.rules_lengths = index_manager.rules_to_tensor(data_handler.rules_terms, max_rule_atoms=max_rule_atoms_test)
+    facts = index_manager.state_to_tensor(data_handler.facts_terms)
+    
     index_manager.facts_set = frozenset(tuple(f.tolist()) for f in facts)
-    index_manager.train_queries = state_to_tensor_im(data_handler.train_queries_terms, index_manager)
-    index_manager.valid_queries = state_to_tensor_im(data_handler.valid_queries_terms, index_manager)
-    index_manager.test_queries = state_to_tensor_im(data_handler.test_queries_terms, index_manager)
+    index_manager.train_queries = index_manager.state_to_tensor(data_handler.train_queries_terms)
+    index_manager.valid_queries = index_manager.state_to_tensor(data_handler.valid_queries_terms)
+    index_manager.test_queries = index_manager.state_to_tensor(data_handler.test_queries_terms)
 
     # Build the facts index for fast lookup
     index_manager.build_facts_index(facts)
@@ -371,7 +376,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     print('\nTest set eval...')
 
-    eval_profiling = False
+    eval_profiling = True
     if eval_profiling:
         profiler = cProfile.Profile()
         profiler.enable()
@@ -381,7 +386,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         print("\n--- Starting PyTorch Profiler for Evaluation ---")
         prof_activities = [ProfilerActivity.CPU]
         if torch.cuda.is_available() and device.type == 'cuda':
-             prof_activities.append(ProfilerActivity.CUDA)
+            prof_activities.append(ProfilerActivity.CUDA)
         
         with torch.profiler.profile(
             activities=prof_activities, record_shapes=True, profile_memory=True, with_stack=True
@@ -429,7 +434,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     print_eval_info('Test', metrics_test)
 
-    eval_only_test = False
+    eval_only_test = True
     if not eval_only_test:
         print('Val set eval...')
         metrics_valid = eval_corruptions(model,

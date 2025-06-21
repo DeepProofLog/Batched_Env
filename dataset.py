@@ -192,7 +192,6 @@ class DataHandler:
         train_path = join(self.base_path, train_file)
 
         self.rules_terms: List[Rule] = get_rules_from_rules_file(rules_path)
-        print(f"Loaded rules: {self.rules_terms}")
         self.facts_terms: List[Term] = get_queries(facts_path)
 
         # Load queries with optional depth filtering
