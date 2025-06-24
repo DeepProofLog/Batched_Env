@@ -333,19 +333,19 @@ def get_next_unification_pt(
         # This means the original state was empty or all padding. This is a success condition (empty goal list).
         print("True state resolved to padding or empty.") if verbose >= 1 else None
         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
-        return [index_manager.true_tensor.unsqueeze(0)], next_var_index
+        return [index_manager.true_tensor], next_var_index
 
     if torch.any(state[:, 0] == index_manager.false_pred_idx):
         print("Current state contains a FALSE predicate. Terminating path.") if verbose >= 1 else None
         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
-        return [index_manager.false_tensor.unsqueeze(0)], next_var_index
+        return [index_manager.false_tensor], next_var_index
     
     # Filter out TRUE predicates as they are considered proven
     state = state[state[:, 0] != index_manager.true_pred_idx]
     if state.shape[0] == 0:
         print("All goals resolved to TRUE.") if verbose >= 1 else None
         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++") if verbose >= 1 else None
-        return [index_manager.true_tensor.unsqueeze(0)], next_var_index
+        return [index_manager.true_tensor], next_var_index
 
     # --- 2. Goal Selection ---
     query_atom = state[0]
@@ -373,7 +373,7 @@ def get_next_unification_pt(
         if verbose >= 1: 
             print("No rule unifications found. Path terminates.")
             print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-        return [index_manager.false_tensor.unsqueeze(0)], next_var_index
+        return [index_manager.false_tensor], next_var_index
 
     # --- 4. Step 2: Unify First Goal of Intermediate States with Facts ---
     final_resolvents: List[torch.Tensor] = []
@@ -394,7 +394,7 @@ def get_next_unification_pt(
                 if verbose >= 1: 
                     print("Fact unification succeeded and no goals remain. Proof found!")
                     print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-                return [index_manager.true_tensor.unsqueeze(0)], next_var_index
+                return [index_manager.true_tensor], next_var_index
 
             # Apply substitutions from the fact unification to the rest of the goals
             new_goals = rest_of_goals if subs.get('ground_match') else apply_substitutions_to_state_idx(rest_of_goals, subs, index_manager)
@@ -416,7 +416,7 @@ def get_next_unification_pt(
                 if verbose >= 1: 
                     print("All remaining goals resolved to facts. Proof found!")
                     print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-                return [index_manager.true_tensor.unsqueeze(0)], next_var_index
+                return [index_manager.true_tensor], next_var_index
             final_resolvents.append(torch.stack(simplified_goals))
 
     # --- 5. Step 3: Combine States Based on Strategy ---
@@ -428,7 +428,7 @@ def get_next_unification_pt(
         if verbose >= 1: 
             print("No states could be resolved via facts. Path terminates.")
             print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-        return [index_manager.false_tensor.unsqueeze(0)], next_var_index
+        return [index_manager.false_tensor], next_var_index
 
     # --- 6. Finalize and Deduplicate ---
     unique_states, seen_states = [], set()

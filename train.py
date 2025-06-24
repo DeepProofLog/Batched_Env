@@ -88,15 +88,17 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     max_rule_atoms_test = max(1 + len(r.body) for r in data_handler.rules_terms)
     
     index_manager.rules, index_manager.rules_lengths = index_manager.rules_to_tensor(data_handler.rules_terms, max_rule_atoms=max_rule_atoms_test)
-    facts = index_manager.state_to_tensor(data_handler.facts_terms)
-    
-    index_manager.facts_set = frozenset(tuple(f.tolist()) for f in facts)
+    index_manager.facts = index_manager.state_to_tensor(data_handler.facts_terms)
+    # index_manager.facts.to(device)
+
+    index_manager.facts_set = frozenset(tuple(f.tolist()) for f in index_manager.facts)
     index_manager.train_queries = index_manager.state_to_tensor(data_handler.train_queries_terms)
     index_manager.valid_queries = index_manager.state_to_tensor(data_handler.valid_queries_terms)
     index_manager.test_queries = index_manager.state_to_tensor(data_handler.test_queries_terms)
 
     # Build the facts index for fast lookup
-    index_manager.build_facts_index(facts)
+    index_manager.build_facts_index(index_manager.facts)
+    index_manager.build_rule_index(index_manager.rules)
     print("IndexManager: Facts and Rules tensors created, facts index built.")
 
 
@@ -351,6 +353,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
             stats = pstats.Stats(profiler, stream=s).sort_stats('tottime') # or 'time'
             stats.print_stats(30)
             print(s.getvalue())
+            print(stop_profiling)
 
             # # --- Save the results to a file ---
             # profile_output_file = "profile_results.prof"

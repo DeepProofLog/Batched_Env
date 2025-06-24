@@ -6,9 +6,9 @@ import numpy as np
 import janus_swi as janus
 from tensordict import TensorDict, NonTensorData
 
-from dataset import DataHandler 
+from dataset import DataHandler
 from index_manager import IndexManager
-from utils import Rule, Term 
+from utils import Rule, Term
 from python_unification import get_next_unification_pt
 # from prolog_unification import get_next_unification_prolog
 
@@ -17,10 +17,10 @@ class LogicEnv_gym(gym.Env):
     batch_locked = False
 
     def __init__(self,
-                index_manager: IndexManager, 
-                data_handler: DataHandler,   
-                queries_term: Optional[List[Term]] = None, 
-                rules_term: Optional[List[Rule]] = None, 
+                index_manager: IndexManager,
+                data_handler: DataHandler,
+                queries_term: Optional[List[Term]] = None,
+                rules_term: Optional[List[Rule]] = None,
                 queries: Optional[torch.Tensor] = None,
                 labels: Optional[List[int]] = None,
                 facts_set: Optional[FrozenSet[Tuple[int, int, int]]] = None,
@@ -34,15 +34,15 @@ class LogicEnv_gym(gym.Env):
                 max_depth: int = 10,
                 memory_pruning: bool = True,
                 end_proof_action: bool = False,
-                skip_unary_actions: bool = False, 
+                skip_unary_actions: bool = False,
                 padding_atoms: int = 10,
                 padding_states: int = 20,
                 verbose: int = 0,
                 prover_verbose: int = 0,
                 device: torch.device = torch.device("cpu"),
-                engine: str = 'python_tensor', 
+                engine: str = 'python_tensor',
                 # New parameter for unification strategy in python_tensor engine
-                include_intermediate_rule_states: bool = False 
+                include_intermediate_rule_states: bool = False
                 ):
 
         super().__init__()
@@ -50,18 +50,18 @@ class LogicEnv_gym(gym.Env):
         self.engine = engine
         self.verbose = verbose
         self.prover_verbose = prover_verbose
-        self.device = device 
+        self.device = device
 
         self.index_manager = index_manager
-        self.index_manager.device = device 
+        self.index_manager.device = device
 
-        self.max_arity = self.index_manager.max_arity 
-        self.padding_atoms = padding_atoms  
-        self.padding_states = padding_states 
-        self.max_depth = max_depth 
+        self.max_arity = self.index_manager.max_arity
+        self.padding_atoms = padding_atoms
+        self.padding_states = padding_states
+        self.max_depth = max_depth
 
         self._set_seed(seed)
-        self._make_spec() 
+        self._make_spec()
 
         # INIT SPECIAL PREDICATES
         self.true_pred_idx = self.index_manager.true_pred_idx
@@ -82,7 +82,7 @@ class LogicEnv_gym(gym.Env):
         self.facts_set = facts_set
         self.rules = rules.to(device)
         self.rule_lengths = rule_lengths.to(device)
-        
+
         self.rules_term = rules_term
         self.queries_term = queries_term
 
@@ -100,11 +100,11 @@ class LogicEnv_gym(gym.Env):
 
         self.mode = mode
 
-        self.queries = queries.to(device)  
+        self.queries = queries.to(device)
         self.labels = labels if labels is not None else []
-        self.n_episodes = len(self.queries) 
+        self.n_episodes = len(self.queries)
         self.eval_idx = 0
-    
+
 
         # CORRUPTION MODE
         self.corruption_mode = corruption_mode
@@ -113,19 +113,19 @@ class LogicEnv_gym(gym.Env):
         self.counter = 0
         self.step_counter = 0
         self.train_neg_pos_ratio = train_neg_pos_ratio
-        
+
 
     def _set_seed(self, seed:int):
         self.seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
-        self.seed_gen = random.Random(self.seed) 
-        np.random.seed(self.seed) 
+        self.seed_gen = random.Random(self.seed)
+        np.random.seed(self.seed)
 
 
     def _make_spec(self):
         obs_spaces = {
             'state': gym.spaces.Box(
-                low=0, 
-                high=np.iinfo(np.int64).max, 
+                low=0,
+                high=np.iinfo(np.int64).max,
                 shape=(1, self.padding_atoms, self.max_arity + 1),
                 dtype=np.int64,
             ),
@@ -134,7 +134,7 @@ class LogicEnv_gym(gym.Env):
                 high=np.iinfo(np.int64).max,
                 shape=(self.padding_states, self.padding_atoms, self.max_arity + 1),
                 dtype=np.int64,
-            ),  
+            ),
         }
         self.observation_space = gym.spaces.Dict(obs_spaces)
         self.action_space = gym.spaces.Discrete(self.padding_states)
@@ -150,17 +150,17 @@ class LogicEnv_gym(gym.Env):
                 state = self.queries[self.eval_idx]
                 label = self.labels[self.eval_idx]
             else:
-                state = self.false_tensor_atom.to(self.device)
+                state = self.false_tensor_atom.squeeze(0).to(self.device)
                 label = 0
             self.eval_idx += 1
 
         elif self.mode == 'eval_with_restart':
             if self.eval_idx == self.n_episodes:
-                self.eval_idx = 0 
+                self.eval_idx = 0
 
             assert self.eval_idx < self.n_episodes, f"Eval index: {self.eval_idx}, n_episodes: {self.n_episodes}. "\
                     f"Adjust the number of episodes to evaluate in the callback."
-            
+
             state = self.queries[self.eval_idx]
             label = self.labels[self.eval_idx]
             self.eval_idx += 1
@@ -180,9 +180,9 @@ class LogicEnv_gym(gym.Env):
                     if not hasattr(self, 'negation_toggle'):
                         self.negation_toggle = 0  # Initialize if it doesn't exist
                     if len(self.corruption_scheme) > 1:
-                        state = [state[self.negation_toggle]]  
+                        state = [state[self.negation_toggle]]
                         self.negation_toggle = 1 - self.negation_toggle  # Flip for next time get head or tail
-                    
+
                     assert len(state) == 1, f"Length of negatives: {len(state)}"
                     state = state[0].squeeze(0)  # (n_atoms, max_arity + 1)
                     label = 0
@@ -195,26 +195,27 @@ class LogicEnv_gym(gym.Env):
         self.current_label = label
         self.current_query = state
         return self._reset(state, label)
-    
+
 
     def _reset(self, state: torch.Tensor, label: int):
         # self.step_counter += 1
         # print(f"Counter: {self.step_counter}")
-        # if self.step_counter ==50:
+        # if self.step_counter ==10:
         #     print(stoppppp)
+
         # State (n_atoms, max_arity + 1)
         if self.verbose >=1: print(f"\nInitial Query (Label: {label}): {self.index_manager.debug_print_state_from_indices(state, oneline=True)}")
         self.next_var_index = self.index_manager.runtime_var_start_index
         self.current_depth = torch.tensor(0, device=self.device)
 
         self.memory.clear()
-        state_tuple_for_memory = tuple(tuple(atom.tolist()) for atom in state) 
+        state_tuple_for_memory = tuple(tuple(atom.tolist()) for atom in state)
         self.memory.add(state_tuple_for_memory)
 
         derived_states, truncated_flag = self.get_next_states(state) # n_states[(n_atoms, max_arity + 1)]
         self.derived_states = derived_states # I need to pass it to step() method later to chose the next state based on the action taken.
         padded_derived_states = self._pad_derived_states(derived_states) # (padding_states, padding_atoms, max_arity + 1)
-        
+
         obs_dict = {
             'state': state.unsqueeze(0).cpu().numpy(), # (1, n_atoms, max_arity + 1), padded to match the shape of derived_states
             'derived_states': padded_derived_states.cpu().numpy(),
@@ -235,14 +236,14 @@ class LogicEnv_gym(gym.Env):
         if action >= self.padding_states or action > len(derived_states):
             raise ValueError(
                 f"Invalid action ({action}). Derived states: {derived_states}.")
-        
+
         state_next = derived_states[action] # (padding_atoms, max_arity + 1)
 
         done_next, reward_next = self.get_done_reward(state_next, self.current_label)
         derived_states_next, truncated_flag = self.get_next_states(state_next)
-        
+
         if truncated_flag:
-            derived_states_next = [self.false_tensor_atom.unsqueeze(0)]
+            derived_states_next = [self.false_tensor_atom]
 
 
         self.current_depth += 1
@@ -250,7 +251,7 @@ class LogicEnv_gym(gym.Env):
         if exceeded_max_depth and self.verbose >=1: print(f'Max depth {self.max_depth} reached.')
 
         done_next = done_next or exceeded_max_depth or truncated_flag
-        
+
         info = {}
         if done_next:
             self.current_query, self.current_label = None, None
@@ -265,7 +266,7 @@ class LogicEnv_gym(gym.Env):
 
         reward_val = reward_next.cpu().item()
         done_val = bool(done_next)
-        truncated_val = bool(exceeded_max_depth or truncated_flag) 
+        truncated_val = bool(exceeded_max_depth or truncated_flag)
 
         if self.verbose >=1:
             print(f"\nStep {self.current_depth + 1}.\nState: {self.index_manager.debug_print_state_from_indices(state_next, oneline=True)}")
@@ -281,22 +282,22 @@ class LogicEnv_gym(gym.Env):
             state_tensor (n_atoms, max_arity + 1): The state tensor to pad.
         Returns:
             torch.Tensor: (padding_atoms, max_arity + 1): Padded state tensor of shape."""
-        
+
         assert state_tensor.dim() == 2, f"State tensor must be 2D, got {state_tensor.dim()}D."
 
         n_atoms = state_tensor.shape[0]
-        if n_atoms == 0 : 
+        if n_atoms == 0 :
             return torch.full((self.padding_atoms, self.max_arity + 1), self.padding_idx, dtype=torch.long, device=self.device)
-        
+
         assert n_atoms <= self.padding_atoms, f"State tensor has {n_atoms} atoms, but padding_atoms is set to {self.padding_atoms}."
-        
+
         if n_atoms < self.padding_atoms:
             padding_needed = self.padding_atoms - n_atoms
             padding = torch.full((padding_needed, self.max_arity + 1), self.padding_idx, dtype=torch.long, device=self.device)
             return torch.cat([state_tensor, padding], dim=0)
-        
+
         return state_tensor
-    
+
     def _unpad_state(self, state_tensor: torch.Tensor) -> torch.Tensor:
         """
         Removes padding atoms from a state tensor.
@@ -306,7 +307,7 @@ class LogicEnv_gym(gym.Env):
             torch.Tensor: (n_atoms, max_arity + 1): Unpadded state tensor.
         """
         assert state_tensor.dim() == 2, f"State tensor must be 2D, got {state_tensor.dim()}D."
-        
+
         non_padding_mask = state_tensor[:, 0] != self.padding_idx
         return state_tensor[non_padding_mask]
 
@@ -326,13 +327,13 @@ class LogicEnv_gym(gym.Env):
         assert all(ds.shape[0] <= self.padding_atoms for ds in derived_states), \
             f"All derived states must have atoms <= {self.padding_atoms}, got {[ds.shape[0] for ds in derived_states]}."
 
-        if len(derived_states) == 0: 
+        if len(derived_states) == 0:
             return torch.full((self.padding_states, self.padding_atoms, self.max_arity + 1), self.padding_idx, dtype=torch.long, device=self.device)
 
         if any(ds.shape[0] != self.padding_atoms for ds in derived_states):
             # If any derived state has fewer atoms than padding_atoms, pad it
             derived_states = [self._pad_state(ds) for ds in derived_states]
-        
+
         # Stack the padded states into a single tensor
         derived_states = torch.stack(derived_states, dim=0)  # (num_derived, padding_atoms, max_arity + 1)
 
@@ -354,14 +355,14 @@ class LogicEnv_gym(gym.Env):
             List[torch.Tensor]: A list of unpadded derived state tensors (n_atoms, max_arity + 1).
         """
         assert derived_states_tensor.dim() == 3, f"Derived states tensor must be 3D, got {derived_states_tensor.dim()}D."
-        
+
         unpadded_states = []
         for state in derived_states_tensor:
             unpadded_state = self._unpad_state(state)
             if unpadded_state.numel() > 0:
-                unpadded_states.append(unpadded_state) 
+                unpadded_states.append(unpadded_state)
         if not unpadded_states:
-            unpadded_states.append(self.false_tensor_atom.unsqueeze(0))
+            unpadded_states.append(self.false_tensor_atom)
         return unpadded_states
 
     def get_next_states(self, current_state: torch.Tensor) -> Tuple[List[torch.Tensor], bool]:
@@ -385,17 +386,18 @@ class LogicEnv_gym(gym.Env):
                 current_state = current_state[mask_not_end]
                 if current_state.shape[0] == 0:
                     if self.verbose >= 1: print("Current state is empty after removing end predicate, returning [[FALSE]].")
-                    return [self.false_tensor_atom.unsqueeze(0)], truncated_flag
+                    return [self.false_tensor_atom], truncated_flag
 
         if self.engine == 'python_tensor':
             derived_states, self.next_var_index = get_next_unification_pt(
                 current_state=current_state,
                 fact_indexed=self.index_manager.fact_index,
                 facts_set=self.facts_set,
+                # facts_tensor=self.index_manager.facts,
                 rules=self.rules,
                 rule_lengths=self.rule_lengths,
                 index_manager=self.index_manager,
-                rules_term=self.rules_term, 
+                rules_term=self.rules_term,
                 excluded_fact=self.current_query[0] if self.current_label == 1 else None,
                 verbose=self.prover_verbose,
                 next_var_index=self.next_var_index
@@ -418,10 +420,11 @@ class LogicEnv_gym(gym.Env):
                     current_state=current_state,
                     fact_indexed=self.index_manager.fact_index,
                     facts_set=self.facts_set,
+                    # facts_tensor=self.index_manager.facts,
                     rules=self.rules,
                     rule_lengths=self.rule_lengths,
                     index_manager=self.index_manager,
-                    rules_term=self.rules_term, 
+                    rules_term=self.rules_term,
                     excluded_fact=self.current_query[0] if self.current_label == 1 else None,
                     verbose=self.prover_verbose,
                     next_var_index=self.next_var_index
@@ -438,8 +441,8 @@ class LogicEnv_gym(gym.Env):
 
                 # MEMORY MODULE
                 if self.memory_pruning:
-                    self.memory.add(tuple(tuple(atom.tolist()) for atom in current_state if 
-                                          atom[0].item() not in {self.end_pred_idx, self.false_pred_idx, self.true_pred_idx})) 
+                    self.memory.add(tuple(tuple(atom.tolist()) for atom in current_state if
+                                          atom[0].item() not in {self.end_pred_idx, self.false_pred_idx, self.true_pred_idx}))
                     filtered_derived_states = []
                     for ds_tensor in derived_states:
                         ds_tuple = tuple(tuple(atom.tolist()) for atom in ds_tensor)
@@ -452,19 +455,19 @@ class LogicEnv_gym(gym.Env):
 
                 if len(derived_states) == 0:
                     if self.verbose >= 1: print("No valid next states after processing, returning [[FALSE]].")
-                    return [self.false_tensor_atom.unsqueeze(0)], True
+                    return [self.false_tensor_atom], True
                 # Safety break
                 counter += 1
                 if counter > 20:
                     if self.verbose >= 1: print('Max iterations in skip_unary_actions reached.')
-                    derived_states = [self.false_tensor_atom.unsqueeze(0)]
+                    derived_states = [self.false_tensor_atom]
                     truncated_flag = True
                     break
 
         # MEMORY MODULE
         if self.memory_pruning:
-            self.memory.add(tuple(tuple(atom.tolist()) for atom in current_state if 
-                                    atom[0].item() not in {self.end_pred_idx, self.false_pred_idx, self.true_pred_idx})) 
+            self.memory.add(tuple(tuple(atom.tolist()) for atom in current_state if
+                                    atom[0].item() not in {self.end_pred_idx, self.false_pred_idx, self.true_pred_idx}))
             filtered_derived_states = []
             for ds_tensor in derived_states:
                 ds_tuple = tuple(tuple(atom.tolist()) for atom in ds_tensor)
@@ -479,7 +482,7 @@ class LogicEnv_gym(gym.Env):
         # Filter out states that exceed the maximum number of atoms allowed.
         processed_derived_states = []
         for ds_tensor in derived_states:
-            if ds_tensor.shape[0] <= self.padding_atoms: 
+            if ds_tensor.shape[0] <= self.padding_atoms:
                 processed_derived_states.append(ds_tensor)
             elif self.verbose >=1:
                 print(f"Truncating state with {ds_tensor.shape[0]} atoms (max: {self.padding_atoms}): {self.index_manager.debug_print_state_from_indices(ds_tensor, True)}")
@@ -488,13 +491,13 @@ class LogicEnv_gym(gym.Env):
         # TRUNCATE STATES MODULE
         max_num_actions = self.padding_states
         if self.end_proof_action and any(ds.numel() > 0 and ds[0,0].item() != self.true_pred_idx and ds[0,0].item() != self.false_pred_idx for ds in derived_states):
-            max_num_actions -=1 
+            max_num_actions -=1
 
         if len(derived_states) > max_num_actions:
             if self.verbose >=1: print(f"Truncating {len(derived_states)} derived states to {max_num_actions}.")
             derived_states.sort(key=lambda t: t.shape[0])
             derived_states = derived_states[:max_num_actions]
-        
+
         # END OF ACTION MODULE
         if self.end_proof_action:
             is_any_non_terminal = any(
@@ -506,22 +509,22 @@ class LogicEnv_gym(gym.Env):
 
         if not derived_states:
             if self.verbose >=1: print("No valid next states after processing, returning [[FALSE]].")
-            derived_states = [self.false_tensor_atom.unsqueeze(0)]
+            derived_states = [self.false_tensor_atom]
 
         return derived_states, truncated_flag
-    
+
     def get_done_reward(self, state_tensor: torch.Tensor, label: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Determines if the current state is terminal and computes the reward.
-        Args:            
+        Args:
             state_tensor (n_atoms, max_arity + 1): The current state tensor.
-            label (int): The label for the current query (1 for positive, 0 for negative).  
+            label (int): The label for the current query (1 for positive, 0 for negative).
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple containing: 
-                - done (torch.Tensor): A boolean tensor indicating if the state is terminal.    
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+                - done (torch.Tensor): A boolean tensor indicating if the state is terminal.
                 - reward (torch.Tensor): A float tensor representing the reward value.
         """
-        if state_tensor.numel() == 0: 
+        if state_tensor.numel() == 0:
             all_atoms_true = True
             any_atom_false = False
         else:
@@ -537,26 +540,26 @@ class LogicEnv_gym(gym.Env):
             # Get predicates from non-padded atoms only
             predicates = state_tensor[non_padding_mask, 0]
             # --- FIX ENDS HERE ---
-            
+
             all_atoms_true = torch.all(predicates == self.true_pred_idx).item()
             any_atom_false = torch.any(predicates == self.false_pred_idx).item()
-        
+
         # Check for end proof action
         is_end_terminal = False
         if self.end_proof_action and state_tensor.shape[0] == 1 and state_tensor[0,0].item() == self.end_pred_idx:
             is_end_terminal = True
-            all_atoms_true = False 
-            any_atom_false = False 
+            all_atoms_true = False
+            any_atom_false = False
 
         done = all_atoms_true or any_atom_false or is_end_terminal
-        successful_proof = all_atoms_true 
+        successful_proof = all_atoms_true
         reward_val = 1 if done and successful_proof and label == 1 else 0
 
         return torch.tensor(done, dtype=torch.bool, device=self.device), \
                torch.tensor(reward_val, dtype=torch.float32, device=self.device)
 
     def get_random_queries(self, n: int = 1) -> Tuple[List[torch.Tensor], List[int]]:
-        num_available_queries = len(self.queries) 
+        num_available_queries = len(self.queries)
 
         if n > num_available_queries:
             if self.verbose >=1: print(f"Warning: Requested {n} query tensors, but only {num_available_queries} available. Sampling with replacement.")
@@ -570,7 +573,7 @@ class LogicEnv_gym(gym.Env):
             sampled_labels = [self.labels[i] for i in sampled_indices]
         else: # No labels provided initially
             sampled_labels = None
-        
+
         if len(sampled_queries) == 1:
             return sampled_queries[0], sampled_labels[0] if sampled_labels else None
 
@@ -578,8 +581,8 @@ class LogicEnv_gym(gym.Env):
 
 
     def get_random_queries_terms(self,
-                                queries_terms_list_of_list: List[List[Term]], 
-                                n: int = 1, 
+                                queries_terms_list_of_list: List[List[Term]],
+                                n: int = 1,
                                 ) -> Tuple[List[List[Term]], Optional[List[int]]]:
         if not queries_terms_list_of_list:
             raise ValueError("Query list is empty, cannot sample.")
@@ -593,9 +596,9 @@ class LogicEnv_gym(gym.Env):
         sampled_labels = None
         if self.labels and len(self.labels) == len(self.initial_queries_terms):
             sampled_labels = [self.labels[i] for i in sampled_indices]
-        elif n == 1 : 
+        elif n == 1 :
             sampled_labels = [1]
-        elif self.labels : 
+        elif self.labels :
             print("Warning: Labels list size mismatch, cannot reliably provide labels for multiple random queries.")
         return sampled_queries_terms, sampled_labels
 
@@ -605,7 +608,7 @@ class LogicEnv_gym(gym.Env):
 if __name__ == '__main__':
 
     print("--- Starting LogicEnv_gym Tensor Test ---")
-    
+
     DEVICE = 'cpu' # torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {DEVICE}")
 
@@ -675,7 +678,7 @@ if __name__ == '__main__':
         facts_set=index_manager_test.facts_set,
         rules=index_manager_test.rules,
         rule_lengths=index_manager_test.rules_lengths,
-        mode='eval_with_restart', 
+        mode='eval_with_restart',
         padding_atoms=padding_atoms_env,
         padding_states=padding_states_env,
         seed=42, # Consistent seed for reproducibility
@@ -702,19 +705,19 @@ if __name__ == '__main__':
             if num_derived_states == 0:
                 print("  No derived states, but not done. This is unexpected. Breaking.")
                 break
-            
+
             # For the grandparent test, we want to deterministically follow the correct path
             # This is a bit of a hack for testing the logic, not how an agent would work.
             if episode_num == 0: # grandparent(john, Who)
                 if step_count == 0: # After grandparent -> parent, parent
                     # We expect one state: [parent(john, DynVar_X), parent(DynVar_X, Who')]
                     # There should only be one derived state from the rule.
-                    action_to_take = 0 
+                    action_to_take = 0
                 elif step_count == 1: # After parent(john,Y) -> parent(mary,Y)
                     # Current state should be [parent(mary, Who')]
                     # Derived state should be [TRUE]
                     action_to_take = 0
-            
+
             # For other episodes, or if specific path logic isn't defined, take action 0
             # or a random valid action if you prefer.
             if action_to_take >= num_derived_states:
@@ -728,10 +731,10 @@ if __name__ == '__main__':
             obs, reward, terminated, truncated, info = env_test.step(action_to_take)
             total_reward += reward
             step_count += 1
-            if step_count >= env_test.max_depth + 2 : 
+            if step_count >= env_test.max_depth + 2 :
                 print("  Test safety break due to excessive steps.")
                 break
-        
+
         print(f"Episode {episode_num + 1} Finished. Total Reward: {total_reward}, Steps: {step_count}")
         expected_reward = 1 if labels_for_env_test[episode_num] == 1 else 0
         if terminated and total_reward == expected_reward:

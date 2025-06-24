@@ -36,7 +36,7 @@ if __name__ == "__main__":
     # reward_type = 1
 
     # Dataset settings 
-    DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
+    DATASET_NAME =  ["wn18rr"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
     TRAIN_DEPTH = [None] # [{-1,3,2}]
     VALID_DEPTH = [None]
     TEST_DEPTH = [None]
@@ -69,17 +69,17 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [20000]
+    TIMESTEPS_TRAIN = [1]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
     valid_negatives = None # corruptions in validation set (test)
-    test_negatives = 1000 # corruptions in test set (test)
-    n_eval_queries = None 
-    n_test_queries = 1
+    test_negatives = 500 # corruptions in test set (test)
+    n_eval_queries = 500 
+    n_test_queries = 5
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 128
+    n_envs = 16
     n_steps = 128
     n_eval_envs = 100
     eval_freq = n_steps*n_envs
