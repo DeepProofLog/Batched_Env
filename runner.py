@@ -74,9 +74,9 @@ if __name__ == "__main__":
     MAX_DEPTH = [20]
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
     valid_negatives = None # corruptions in validation set (test)
-    test_negatives = 500 # corruptions in test set (test)
-    n_eval_queries = 500 
-    n_test_queries = 5
+    test_negatives = 10 # corruptions in test set (test)
+    n_eval_queries = 500
+    n_test_queries = 100
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 16

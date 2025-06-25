@@ -1,3 +1,6 @@
+# THIS IS A FULLY VECTORISED VERSION, THE PROBLEM IS THAT IN THE FACTS WE DO UNIFICATION WITH WAY TOO MANY FACTS
+# IN THE INDEXED FACTS VERSION THIS IS SOLVED
+
 import torch
 from typing import List, Dict, Set, Tuple, FrozenSet, Optional, NamedTuple, Any
 from utils import Term, Rule

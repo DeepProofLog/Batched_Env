@@ -391,14 +391,14 @@ class LogicEnv_gym(gym.Env):
         if self.engine == 'python_tensor':
             derived_states, self.next_var_index = get_next_unification_pt(
                 current_state=current_state,
-                fact_indexed=self.index_manager.fact_index,
-                facts_set=self.facts_set,
-                # facts_tensor=self.index_manager.facts,
+                # fact_indexed=self.index_manager.fact_index,
+                # facts_set=self.facts_set,
+                facts_tensor=self.index_manager.facts,
                 rules=self.rules,
                 rule_lengths=self.rule_lengths,
                 index_manager=self.index_manager,
-                rules_term=self.rules_term,
-                excluded_fact=self.current_query[0] if self.current_label == 1 else None,
+                # rules_term=self.rules_term,
+                # excluded_fact=self.current_query[0] if self.current_label == 1 else None,
                 verbose=self.prover_verbose,
                 next_var_index=self.next_var_index
             ) # List[torch.Tensor]
@@ -418,14 +418,14 @@ class LogicEnv_gym(gym.Env):
 
                 derived_states, self.next_var_index = get_next_unification_pt(
                     current_state=current_state,
-                    fact_indexed=self.index_manager.fact_index,
-                    facts_set=self.facts_set,
-                    # facts_tensor=self.index_manager.facts,
+                    # fact_indexed=self.index_manager.fact_index,
+                    # facts_set=self.facts_set,
+                    facts_tensor=self.index_manager.facts,
                     rules=self.rules,
                     rule_lengths=self.rule_lengths,
                     index_manager=self.index_manager,
-                    rules_term=self.rules_term,
-                    excluded_fact=self.current_query[0] if self.current_label == 1 else None,
+                    # rules_term=self.rules_term,
+                    # excluded_fact=self.current_query[0] if self.current_label == 1 else None,
                     verbose=self.prover_verbose,
                     next_var_index=self.next_var_index
                 )

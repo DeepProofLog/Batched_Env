@@ -379,7 +379,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     print('\nTest set eval...')
 
-    eval_profiling = True
+    eval_profiling = False
     if eval_profiling:
         profiler = cProfile.Profile()
         profiler.enable()
@@ -397,7 +397,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
             
             metrics_test = eval_corruptions(model,
                                             eval_env,
-                                            data_handler.test_queries,
+                                            index_manager.test_queries,
                                             sampler,
                                             n_corruptions=args.test_negatives,
                                             consult_janus=False,
