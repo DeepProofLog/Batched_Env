@@ -11,14 +11,16 @@ import io
 
 from env import LogicEnv_gym
 from index_manager import IndexManager
-from utils import get_device, print_eval_info
-from my_callbacks import SB3ModelCheckpoint, CustomEvalCallback, EpochTimingCallback
+from utils import get_device, print_eval_info, is_variable
+from my_callbacks import SB3ModelCheckpoint, CustomEvalCallback, EpochTimingCallback, CustomEvalCallbackMRR
 from dataset import DataHandler
 from model_SB3 import CustomActorCriticPolicy, CustomCombinedExtractor
 from embeddings import get_embedder
 from neg_sampling import get_sampler
 from custom_dummy_env import CustomDummyVecEnv
 from model_eval import eval_corruptions
+from kge_inference import KGEInference
+
 
 # from stable_baselines3 import PPO
 # from stable_baselines3 import DQN
@@ -51,6 +53,21 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
     device = get_device(args.device)
     print(f"Device: {device}")
     print(f"CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
+
+    # ---- KGE INFERENCE ENGINE ----
+    if args.use_kge_action:
+        print("\nInitializing KGE Inference Engine...", flush=True)
+        kge_inference_engine = KGEInference(
+            dataset_name=args.dataset_name,
+            base_path=args.data_path,
+            checkpoint_dir=args.kge_checkpoint_dir,
+            run_signature=args.kge_run_signature,
+            seed=args.seed_run_i,
+            scores_file_path=args.kge_scores_file
+        )
+        print("KGE Inference Engine Initialized.\n")
+    else:
+        kge_inference_engine = None
 
     # ---- DATASET, INDEX MANAGER ----
 
@@ -135,6 +152,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                         padding_states=args.padding_states,
                         device='cpu', 
                         engine=args.engine,
+                        use_kge_action=args.use_kge_action,
                         )
             env = Monitor(env)
             return env
@@ -176,7 +194,16 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                                         ) 
                                         for i in range(args.n_eval_envs)])
         
-        callback_env = DummyVecEnv([make_env(
+        # callback_env = DummyVecEnv([make_env(
+        #                                 mode='eval_with_restart', 
+        #                                 seed=int(callback_env_seeds[i]), 
+        #                                 queries=data_handler.valid_queries,
+        #                                 labels=[1]*len(data_handler.valid_queries),
+        #                                 facts=facts_set,
+        #                                 ) 
+        #                                 for i in range(1)])
+
+        callback_env = CustomDummyVecEnv([make_env(
                                         mode='eval_with_restart', 
                                         seed=int(callback_env_seeds[i]), 
                                         queries=data_handler.valid_queries,
@@ -226,7 +253,17 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
                     clip_range=args.clip_range,
                     policy_kwargs={'features_extractor_class':CustomCombinedExtractor,
                                     'features_extractor_kwargs':{'features_dim':embedder.embed_dim,
-                                                                    'embedder': embedder}})
+                                                                    'embedder': embedder},}
+                    )
+        if args.use_kge_action:
+            model.policy.kge_inference_engine = kge_inference_engine
+            model.policy.index_manager = index_manager
+            kge_indices = [
+                idx for pred, idx in index_manager.predicate_str2idx.items()
+                if pred.endswith('_kge')
+            ]
+            model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
+
     else:
         raise ValueError("Model not supported")
 
@@ -259,17 +296,32 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
         no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=10, verbose=1)
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
 
-        eval_callback = CustomEvalCallback(eval_env=callback_env, 
-                                    model_path=model_path if args.save_model else None,
-                                    log_path=log_filename if use_logger else None,
-                                    eval_freq=max(int(args.eval_freq//args.n_envs),1),
-                                    n_eval_episodes=args.n_eval_queries-1,
-                                    deterministic=True,
-                                    render=False,
-                                    name=model_name,
-                                    callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
-                                    # callback_after_eval=no_improvement_callback,
-                                    )
+        # eval_callback = CustomEvalCallback(eval_env=callback_env, 
+        #                             model_path=model_path if args.save_model else None,
+        #                             log_path=log_filename if use_logger else None,
+        #                             eval_freq=max(int(args.eval_freq//args.n_envs),1),
+        #                             n_eval_episodes=args.n_eval_queries-1,
+        #                             deterministic=True,
+        #                             render=False,
+        #                             name=model_name,
+        #                             callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
+        #                             # callback_after_eval=no_improvement_callback,
+        #                             )
+        
+        eval_callback = CustomEvalCallbackMRR(eval_env=callback_env,
+                                            sampler=data_handler.sampler,
+                                            eval_data=data_handler.valid_queries,
+                                            n_corruptions=100,
+                                            model_path=model_path if args.save_model else None,
+                                            log_path=log_filename if use_logger else None,
+                                            eval_freq=max(int(args.eval_freq//args.n_envs),1),
+                                            n_eval_episodes=args.n_eval_queries-1,
+                                            deterministic=True,
+                                            render=False,
+                                            name=model_name,
+                                            callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
+                                            verbose=1,
+                                            )
 
         callbacks.append(eval_callback)
     
@@ -356,6 +408,7 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
             stats = pstats.Stats(profiler, stream=s).sort_stats('tottime') # or 'time'
             stats.print_stats(30)
             print(s.getvalue())
+            raise RuntimeError("Profiling complete, stopping execution.")
 
             # # --- Save the results to a file ---
             # profile_output_file = "profile_results.prof"
@@ -439,8 +492,8 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
     print_eval_info('Test', metrics_test)
 
-    eval_only_test = False
-    if eval_only_test:
+    eval_only_test = True
+    if not eval_only_test:
         print('Val set eval...')
         metrics_valid = eval_corruptions(model,
                                         eval_env,
@@ -466,4 +519,3 @@ def main(args,log_filename,use_logger,use_WB,WB_path,date):
 
 
     return metrics_train, metrics_valid, metrics_test
-

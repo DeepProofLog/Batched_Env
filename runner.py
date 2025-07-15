@@ -27,16 +27,16 @@ if __name__ == "__main__":
             self.stdout.flush()
 
     FALSE_RULES = [False] 
-    MEMORY_PRUNING = [True] # filter prolog outputs to cut loop; False: stop at proven subgoal to cut loop
+    MEMORY_PRUNING = [True]
     END_PROOF_ACTION = [False]
     SKIP_UNARY_ACTIONS = [True]
     ENT_COEF = [0.5]
     CLIP_RANGE = [0.2]
     ENGINE = ['python']
     # reward_type = 1
-
+ 
     # Dataset settings 
-    DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
+    DATASET_NAME =  ["countries_s3"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
     TRAIN_DEPTH = [None] # [{-1,3,2}]
     VALID_DEPTH = [None]
     TEST_DEPTH = [None]
@@ -44,11 +44,19 @@ if __name__ == "__main__":
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
     STATE_EMBEDDER = ['mean']
-    PADDING_ATOMS = [4]
+    PADDING_ATOMS = [6]
     PADDING_STATES = [-1] # -1 sets the max padding size to a preset value (check below)
     ATOM_EMBEDDING_SIZE = [64] # 256 for countries (atomatically selected below)
     CORRUPTION_MODE =  ['dynamic']
 
+    USE_KGE_ACTION = [False] # New parameter to enable KGE action
+    KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
+    if DATASET_NAME[0] == "countries_s3":
+        KGE_RUN_SIGNATURE = ['countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt']
+    elif DATASET_NAME[0] == "family":
+        KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
+    KGE_SCORES_FILE = ['kge_scores_'+DATASET_NAME[0]+'.txt']
+ 
     RESTORE_BEST_VAL_MODEL = [True]
     load_model = False
     save_model = True
@@ -75,7 +83,7 @@ if __name__ == "__main__":
     TRAIN_NEG_POS_RATIO = [1] # corruptions in train
     valid_negatives = None # corruptions in validation set (test)
     test_negatives = None # corruptions in test set (test)
-    n_eval_queries = None 
+    n_eval_queries = None
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
@@ -148,6 +156,10 @@ if __name__ == "__main__":
         'test_depth': TEST_DEPTH,
         'padding_atoms': PADDING_ATOMS,
         'padding_states': PADDING_STATES,
+        'use_kge_action': USE_KGE_ACTION,
+        'kge_checkpoint_dir': KGE_CHECKPOINT_DIR,
+        'kge_run_signature': KGE_RUN_SIGNATURE,
+        'kge_scores_file': KGE_SCORES_FILE,
     }
 
     # Generate all combinations using product
@@ -250,7 +262,7 @@ if __name__ == "__main__":
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,
                     args.padding_atoms,args.padding_states,args.false_rules,args.end_proof_action, 
                     args.skip_unary_actions,args.memory_pruning,args.max_depth,
-                    args.ent_coef,args.clip_range,args.engine,args.train_neg_pos_ratio
+                    args.ent_coef,args.clip_range,args.engine,args.train_neg_pos_ratio, args.use_kge_action
                     )
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)

@@ -1,10 +1,12 @@
 import numpy as np
 import os
 import json
-from typing import Optional, Union
+from typing import Optional, Union, Any, List, Dict
 import time
 import sys
 
+from model_eval import evaluate_policy as evaluate_policy_mrr
+from model_eval import eval_corruptions as eval_corruptions_mrr
 import gymnasium as gym
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
 from stable_baselines3.common.callbacks import BaseCallback
@@ -17,7 +19,7 @@ class CustomEvalCallback(EvalCallback):
 
     .. warning::
 
-      When using multiple environments, each call to  ``env.step()``
+      When using multiple environments, each call to ``env.step()``
       will effectively correspond to ``n_envs`` steps.
       To account for that, you can use ``eval_freq = max(eval_freq // n_envs, 1)``
 
@@ -147,7 +149,7 @@ class CustomEvalCallback(EvalCallback):
             self.last_mean_reward = float(mean_reward)
 
             if self.verbose >= 1:
-                print(f"Eval num_timesteps={self.num_timesteps}, " f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}")
+                print(f"Eval num_timesteps={self.num_timesteps}, " f"episode_reward={mean_reward:.3f} +/- {std_reward:.3f}")
                 print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
 
             # Add to current Logger
@@ -447,4 +449,200 @@ class LogToFileCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         """Required by BaseCallback. Returns True to allow training to continue."""
+        return True
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+class CustomEvalCallbackMRR(CustomEvalCallback):
+    """
+    Callback for evaluating an agent, including MRR calculation.
+    Inherits from CustomEvalCallback and overrides the _on_step method
+    to incorporate MRR evaluation using a provided sampler and data.
+    """
+    def __init__(
+        self,
+        eval_env: Union[gym.Env, VecEnv],
+        sampler: Any,  # Sampler for generating negative samples
+        eval_data: List[Any],  # Data for MRR evaluation (positive queries)
+        n_corruptions: Optional[int] = None, # Number of negative corruptions per positive
+        callback_on_new_best: Optional[BaseCallback] = None,
+        callback_after_eval: Optional[BaseCallback] = None,
+        n_eval_episodes: int = 5,
+        eval_freq: int = 10000,
+        log_path: Optional[str] = None,
+        model_path: Optional[str] = None,
+        deterministic: bool = True,
+        render: bool = False,
+        verbose: int = 1,
+        warn: bool = True,
+        name='rl_model',
+        consult_janus: bool = False,
+    ):
+        self.verbose = verbose
+
+        super().__init__(
+            eval_env=eval_env,
+            callback_on_new_best=callback_on_new_best,
+            callback_after_eval=callback_after_eval,
+            n_eval_episodes=n_eval_episodes,
+            eval_freq=eval_freq,
+            log_path=log_path,
+            model_path=model_path,
+            deterministic=deterministic,
+            render=render,
+            verbose=verbose,
+            warn=warn,
+            name=name,
+        )
+        self.sampler = sampler
+        self.eval_data = eval_data
+        self.n_corruptions = n_corruptions
+        self.consult_janus = consult_janus
+        self.best_mean_mrr = -np.inf # Track best MRR for saving best model based on MRR
+
+    def _on_step(self) -> bool:
+        continue_training = True
+        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            start = time.time()
+            print('---------------evaluation started---------------')
+            # Sync training and eval env if there is VecNormalize
+            if self.model.get_vec_normalize_env() is not None:
+                try:
+                    sync_envs_normalization(self.training_env, self.eval_env)
+                except AttributeError as e:
+                    raise AssertionError(
+                        "Training and eval env are not wrapped the same way, "
+                        "see https://stable-baselines3.readthedocs.io/en/master/guide/callbacks.html#evalcallback "
+                        "and warning above."
+                    ) from e
+
+            # Perform MRR evaluation
+            mrr_eval_results = eval_corruptions_mrr(
+                self.model,
+                self.eval_env,
+                self.eval_data,
+                self.sampler,
+                n_corruptions=self.n_corruptions,
+                deterministic=self.deterministic,
+                verbose=1 if self.verbose>1 else 0,
+                consult_janus=self.consult_janus,
+            )
+
+            mean_mrr = mrr_eval_results.get('mrr_mean', 0.0)
+            mean_reward_pos = mrr_eval_results.get('rewards_pos_mean', 0.0)
+            mean_reward_neg = mrr_eval_results.get('rewards_neg_mean', 0.0)
+            hits1 = mrr_eval_results.get('hits1_mean', 0.0)
+            hits3 = mrr_eval_results.get('hits3_mean', 0.0)
+            hits10 = mrr_eval_results.get('hits10_mean', 0.0)
+            auc_pr = mrr_eval_results.get('auc_pr', 0.0)
+
+            if self.verbose >= 1:
+                print(f"Eval num_timesteps={self.num_timesteps}")
+                print(f"MRR: {mean_mrr:.4f}")
+                print(f"Rewards Positive: {mean_reward_pos:.4f}, Negative: {mean_reward_neg:.4f}")
+                print(f"Hits@1: {hits1:.4f}, Hits@3: {hits3:.4f}, Hits@10: {hits10:.4f}")
+                print(f"AUC-PR: {auc_pr:.4f}")
+
+            # Record MRR and other metrics to the logger
+            self.logger.record("eval/mrr_mean", float(mean_mrr))
+            self.logger.record("eval/rewards_pos_mean", float(mean_reward_pos))
+            self.logger.record("eval/rewards_neg_mean", float(mean_reward_neg))
+            self.logger.record("eval/hits1_mean", float(hits1))
+            self.logger.record("eval/hits3_mean", float(hits3))
+            self.logger.record("eval/hits10_mean", float(hits10))
+            self.logger.record("eval/auc_pr", float(auc_pr))
+            self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+
+
+            # Original reward-based evaluation (if still desired, though MRR is primary)
+            # You might want to remove or adjust this if MRR is the sole metric
+            # Or you could consider one of these as the primary metric for saving the best model
+            # For simplicity, let's keep the best model saving based on MRR for CustomEvalCallbackMRR
+            if mean_mrr > self.best_mean_mrr:
+                if self.verbose >= 1:
+                    print("New best mean MRR!")
+                if self.model_path is not None:
+                    # Save the model with a clear indicator for MRR
+                    self.model.save(os.path.join(self.model_path, f"best_eval_mrr_{self.name}.zip"))
+                    # Update info with MRR metrics
+                    self.write_mrr_info(mrr_eval_results)
+                self.best_mean_mrr = float(mean_mrr)
+                self.best_epoch = self.num_timesteps
+                
+                if self.callback_on_new_best is not None:
+                    continue_training = self.callback_on_new_best.on_step()
+
+            if self.log_path:
+                # Log all relevant metrics, including MRR ones
+                log_metrics = {
+                    "eval/mrr_mean": mean_mrr,
+                    "eval/rewards_pos_mean": mean_reward_pos,
+                    "eval/rewards_neg_mean": mean_reward_neg,
+                    "eval/hits1_mean": hits1,
+                    "eval/hits3_mean": hits3,
+                    "eval/hits10_mean": hits10,
+                    "eval/auc_pr": auc_pr,
+                    "eval/num_timesteps": self.num_timesteps,
+                }
+                self._log_values(log_metrics)
+                
+
+            if self.callback is not None:
+                continue_training = continue_training and self._on_event()
+
+            print(f'---------------evaluation finished---------------  took {time.time()-start:.2f} seconds')
+
+        return continue_training
+
+    def write_mrr_info(self, mrr_results: Dict[str, Any]):
+        """Save checkpoint metadata with MRR specific information."""
+        info = {
+            'metric': 'best_mean_mrr',
+            'best_metric_value': float(self.best_mean_mrr),
+            'n_calls': self.n_calls,
+            'timesteps': self.num_timesteps,
+            'mrr_results': {k: float(v) for k,v in mrr_results.items()} # Store all MRR results
+        }
+        info_path = os.path.join(self.model_path, f'info_best_eval_mrr_{self.name}.json')
+        with open(info_path, 'w') as f:
+            json.dump(info, f, indent=4)
+
+    def restore_best_ckpt(self):
+        """Restore the best model based on MRR."""
+        if self.best_epoch:
+            model_files = [f for f in os.listdir(self.model_path) if f'best_eval_mrr_{self.name}' in f and '.zip' in f]
+            if len(model_files) > 1:
+                model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
+                print('Restoring last model modified based on MRR:', model_files[0])
+            if model_files:
+                self.model.load(os.path.join(self.model_path, model_files[0]), print_system_info=False)
+                print(f'Restored best model from step {self.best_epoch}, with best_mean_mrr={self.best_mean_mrr:.3f}.')
+            else:
+                print(f'No best MRR model found for {self.name}.')
+        else:
+            print(f'No best MRR model found for {self.name}.')
+
+    def _on_training_end(self) -> bool:
+        # Override to save the info file for the MRR-based best model
+        if self.best_model_save_path:
+            # Need to re-evaluate or store the last MRR results to save them correctly at the end
+            # For simplicity, we just call write_mrr_info if a best MRR model was found during training.
+            # In a more robust implementation, you might want to perform a final MRR eval here.
+            if self.best_mean_mrr > -np.inf: # Only if at least one evaluation happened
+                 # This would ideally take the last computed mrr_eval_results
+                 # For now, we'll just use the best_mean_mrr stored.
+                 # To save full results, mrr_eval_results would need to be stored as a class member
+                 # or re-computed.
+                self.write_mrr_info({'mrr_mean': self.best_mean_mrr})
         return True

@@ -106,12 +106,9 @@ def evaluate_policy(
 
         observations = new_obs
 
-        if verbose:
-            done_total = counts.sum()
-            print(f"\rEpisodes done: {done_total}/{total}", end="", flush=True)
-
-    if verbose:
-        print("\r" + " " * 80 + "\r", end="")
+        if verbose: print(f"\rEpisodes done: {counts.sum()}/{total}", end="", flush=True)
+        
+    if verbose: print("\r" + " " * 80 + "\r", end="")
 
     # Build mask of valid entries
     mask = np.zeros_like(rewards, dtype=bool)
@@ -163,23 +160,23 @@ def eval_corruptions(
     for b, start in enumerate(range(0, len(data), num_envs)):
         batch = data[start : start + num_envs]
         B = len(batch)
-        print(f"\n--- Batch {b+1}/{total_batches} (Queries {start+0}-{min(start+num_envs, len(data)-1)}) ---")
+        if verbose: print(f"\n--- Batch {b+1}/{total_batches} (Queries {start+0}-{min(start+num_envs, len(data)-1)}) ---")
 
         # get corruptions
-        print(f"Getting corruptions")
+        if verbose: print(f"Getting corruptions")
         start_time = time.time()
         corrs = sampler.get_negatives_from_states(
             [[q] for q in batch],
             model.device,
             all_negatives=(n_corruptions is None),
         )
-        print(f"Corruption time: {time.time() - start_time:.2f}s")
+        if verbose: print(f"Corruption time: {time.time() - start_time:.2f}s")
         if B == 1:
             corrs = [corrs]
 
         targets = np.array([1 + len(c) for c in corrs], dtype=int)
 
-        print(f"Total episodes: {B} (envs) x {np.mean(targets):.1f} (avg targets) = {np.sum(targets)}")
+        if verbose: print(f"Total episodes: {B} (envs) x {np.mean(targets):.1f} (avg targets) = {np.sum(targets)}")
         # configure each sub‐env
         start_time = time.time()
         for i, (q, negs) in enumerate(zip(batch, corrs)):
@@ -199,7 +196,7 @@ def eval_corruptions(
             target_episodes=targets,
             verbose=verbose,
         )
-        print(f"Eval time: {time.time() - start_time:.2f}s")
+        if verbose: print(f"Eval time: {time.time() - start_time:.2f}s")
 
         # where the rewards are 0, substract 100 to the lp (to differentiate between proof and non-proof)
         log_probs[rewards == 0] -= 100
@@ -236,15 +233,15 @@ def eval_corruptions(
             hits1_list.extend(hits1.tolist())
             hits3_list.extend(hits3.tolist())
             hits10_list.extend(hits10.tolist())
-
-        print('\nrolling rwds pos    :',np.round(np.mean(all_pos_rw),3)    , '\trolling rwds neg       :',np.round(np.mean(all_neg_rw),3))
-        print('rolling ep len pos  :',np.round(np.mean(all_pos_len),3), '\trolling episode len neg:',np.round(np.mean(all_neg_len),3))
-        print('rolling logprobs pos:',np.round(np.mean(all_pos_lp),3)  , '\trolling log probs neg  :',np.round(np.mean(all_neg_lp),3))
-        if mask.shape[1] > 1:
-            print('\nmrr   :',np.round(np.mean(mrr),3)   ,'\trolling mrr   :',np.round(np.mean(mrr_list),3)) 
-            print('hits1 :',np.round(np.mean(hits1),3) ,'\trolling hits1 :',np.round(np.mean(hits1_list),3))
-            print('hits3 :',np.round(np.mean(hits3),3) ,'\trolling hits3 :',np.round(np.mean(hits3_list),3))
-            print('hits10:',np.round(np.mean(hits10),3),'\trolling hits10:',np.round(np.mean(hits10_list),3))
+        if verbose: 
+            print('\nrolling rwds pos    :',np.round(np.mean(all_pos_rw),3)    , '\trolling rwds neg       :',np.round(np.mean(all_neg_rw),3))
+            print('rolling ep len pos  :',np.round(np.mean(all_pos_len),3), '\trolling episode len neg:',np.round(np.mean(all_neg_len),3))
+            print('rolling logprobs pos:',np.round(np.mean(all_pos_lp),3)  , '\trolling log probs neg  :',np.round(np.mean(all_neg_lp),3))
+            if mask.shape[1] > 1:
+                print('\nmrr   :',np.round(np.mean(mrr),3)   ,'\trolling mrr   :',np.round(np.mean(mrr_list),3)) 
+                print('hits1 :',np.round(np.mean(hits1),3) ,'\trolling hits1 :',np.round(np.mean(hits1_list),3))
+                print('hits3 :',np.round(np.mean(hits3),3) ,'\trolling hits3 :',np.round(np.mean(hits3_list),3))
+                print('hits10:',np.round(np.mean(hits10),3),'\trolling hits10:',np.round(np.mean(hits10_list),3))
 
     # to NumPy arrays
     pos_rw = np.array(all_pos_rw)

@@ -1,3 +1,4 @@
+import math
 import time
 from typing import List, Union, Dict, Type, Optional, Callable, Tuple
 
@@ -364,7 +365,8 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         *args,
         **kwargs,
     ):
-                
+        self.kge_inference_engine = kwargs.pop("kge_inference_engine", None)
+        self.index_manager = kwargs.pop("index_manager", None)
         self.features_extractor_kwargs = kwargs.pop('features_extractor_kwargs', {})
 
         super(CustomActorCriticPolicy, self).__init__(
@@ -392,6 +394,41 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             embed_dim=self.features_extractor_kwargs['features_dim']
         )
 
+
+    def get_kge_log_probs(self, obs: PyTorchObs, actions: torch.Tensor, log_prob: torch.Tensor) -> None:
+        """
+        Computes the KGE log probabilities for the actions based on the latent policy output.
+        This is used to replace the log probabilities of KGE actions with their KGE scores.
+        """
+        # Squeeze actions if it has an extra dimension
+        actions_squeezed = actions.squeeze(1) if actions.ndim > 1 else actions
+        
+        # Get the predicate indices of the chosen actions
+        batch_indices = torch.arange(actions_squeezed.shape[0], device=actions_squeezed.device)
+        chosen_action_sub_indices = obs["derived_sub_indices"][batch_indices, actions_squeezed]
+        chosen_action_pred_indices = chosen_action_sub_indices[:, 0, 0]
+
+        # Find which of the chosen actions are KGE actions
+        kge_action_mask = torch.isin(chosen_action_pred_indices, self.kge_indices_tensor.to(chosen_action_pred_indices.device))
+        kge_batch_indices = kge_action_mask.nonzero(as_tuple=False).squeeze(-1)
+
+        # For those actions, get the KGE score and update the log_prob
+        if kge_batch_indices.numel() > 0:
+            for batch_idx in kge_batch_indices:
+                kge_action_sub_index = chosen_action_sub_indices[batch_idx, 0, :]
+                kge_action_str = self.index_manager.subindex_to_str(kge_action_sub_index)
+                kge_pred_str = self.index_manager.predicate_idx2str.get(kge_action_sub_index[0].item())
+
+                if kge_action_str and kge_pred_str:
+                    original_pred_str = kge_pred_str.removesuffix('_kge')
+                    original_atom_str = f"{original_pred_str}{kge_action_str[len(kge_pred_str):]}"
+                    
+                    score = self.kge_inference_engine.predict(original_atom_str)
+                    kge_log_prob = math.log(score + 1e-9)
+                    
+                    log_prob[batch_idx] = kge_log_prob
+        return log_prob
+
     def forward(self, obs: torch.Tensor, deterministic: bool = False, verbose: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
@@ -410,7 +447,6 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
 
         # Get value for the state
         values = latent_vf # (batch_size=n_envs,n_states=1)
-
         # Get action probabilities and create distribution
         action_logits = latent_pi # (batch_size=n_envs,pad_states)
         distribution = self.action_dist.proba_distribution(action_logits=action_logits)
@@ -419,6 +455,11 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         actions = distribution.get_actions(deterministic=deterministic)
         # Get log probability of the chosen action
         log_prob = distribution.log_prob(actions)
+
+        # If a KGE action was taken, overwrite its log_prob with the KGE score
+        if self.kge_inference_engine is not None:
+            log_prob = self.get_kge_log_probs(obs, actions, log_prob)
+ 
 
         return actions, values, log_prob
 
@@ -450,6 +491,10 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         log_prob = distribution.log_prob(actions)
         values = latent_vf
         entropy = distribution.entropy()
+
+        # If a KGE action was taken, overwrite its log_prob with the KGE score
+        if self.kge_inference_engine is not None:
+            log_prob = self.get_kge_log_probs(obs, actions, log_prob)
         
         return values, log_prob, entropy
 
@@ -477,4 +522,3 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         action_logits = latent_pi
         # print('number of eval actions', action_logits.shape, action_logits)
         return self.action_dist.proba_distribution(action_logits=action_logits)
-    

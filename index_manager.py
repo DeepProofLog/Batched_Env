@@ -23,7 +23,10 @@ class IndexManager():
         self.device = device
         self.constants = constants
         self.predicates = predicates
-        self.special_preds = ['True', 'False', 'End']
+        
+        # Dynamically create a KGE-specific version for each predicate
+        self.kge_preds = {f"{p}_kge" for p in self.predicates}
+        self.special_preds = ['True', 'False', 'End'] + sorted(list(self.kge_preds))
         self.padding_idx = 0
 
         self.max_total_vars = max_total_vars # Max *pre-assigned* variables
@@ -62,8 +65,6 @@ class IndexManager():
         self.unified_term_map.update(self.constant_str2idx)
         self.unified_term_map.update(self.variable_str2idx)
 
-
-        # Fact index setup
         self.fact_index: Dict[Tuple, Set[Term]] = {}
 
     def reset_next_var_index(self):
@@ -100,10 +101,12 @@ class IndexManager():
             self.predicate_idx2str[current_idx] = term
             current_idx += 1
 
+        # Add special predicates (True, False, End, and all _kge versions)
         for term in self.special_preds:
-            self.predicate_str2idx[term] = current_idx
-            self.predicate_idx2str[current_idx] = term
-            current_idx += 1
+            if term not in self.predicate_str2idx:
+                self.predicate_str2idx[term] = current_idx
+                self.predicate_idx2str[current_idx] = term
+                current_idx += 1
 
         self.predicate_no = current_idx - 1
 
@@ -140,7 +143,7 @@ class IndexManager():
         # --- Single Pass for Indexing ---
         # Local references to maps for efficiency
         predicate_map = self.predicate_str2idx
-        unified_map = self.unified_term_map # Use the new unified map
+        unified_map = self.unified_term_map
 
         for i, atom in enumerate(state):
             current_sub_row = sub_index[i]
@@ -211,6 +214,31 @@ class IndexManager():
             batch_idx = pos // M
             results[batch_idx].append(term)
         return results
+
+    def subindex_to_str(self, sub_index: torch.Tensor) -> str:
+        """Converts a single sub_index tensor to a string representation of a Term."""
+        pred_idx = sub_index[0].item()
+        if pred_idx == 0:
+            return "" 
+        
+        # This map needs to contain all possible terms, including variables
+        idx2term_map = {**self.constant_idx2str, **self.variable_idx2str}
+        
+        predicate = self.predicate_idx2str.get(pred_idx)
+        if not predicate:
+            return ""
+
+        arg_indices = sub_index[1:].tolist()
+        args = []
+        for arg_idx in arg_indices:
+            if arg_idx == 0:
+                break
+            arg_str = idx2term_map.get(arg_idx)
+            if arg_str:
+                args.append(arg_str)
+        
+        args_str = ','.join(args)
+        return f"{predicate}({args_str})"
 
 
     def build_fact_index(self, facts: List[Term]) -> Dict[Tuple, Set[Term]]:

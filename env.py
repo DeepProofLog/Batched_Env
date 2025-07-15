@@ -8,7 +8,7 @@ import janus_swi as janus
 
 from dataset import DataHandler
 from index_manager import IndexManager
-from utils import Rule, Term, print_state_transition
+from utils import Rule, Term, print_state_transition, is_variable
 from python_unification import get_next_unification_python
 # from python_unification import get_next_unification_python_old as get_next_unification_python
 from prolog_unification import get_next_unification_prolog
@@ -37,6 +37,7 @@ class LogicEnv_gym(gym.Env):
                 prover_verbose: int = 0,
                 device: torch.device = torch.device("cpu"),
                 engine: str = 'python',
+                use_kge_action: bool = False,
                 ):
 
         '''Initialize the environment'''
@@ -62,6 +63,7 @@ class LogicEnv_gym(gym.Env):
         self.facts = facts
 
         self.corruption_mode = corruption_mode
+        self.use_kge_action = use_kge_action
 
         if self.corruption_mode:
             self.counter = 0  # Determine whether to sample from positive or negative queries in KGE settings
@@ -92,11 +94,6 @@ class LogicEnv_gym(gym.Env):
 
         if self.mode == 'train':
             self.train_neg_pos_ratio = train_neg_pos_ratio
-
-        self.measure_n_next_states = False
-        if self.measure_n_next_states:
-            self.n_next_states = []
-            self.current_n_next_states = -1
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment. If no seed is provided, generate a random one'''
@@ -181,14 +178,6 @@ class LogicEnv_gym(gym.Env):
                 janus.query_once(f"retract({state.prolog_str()}).")
                 # janus.query_once(f"retract({state}).")
 
-        if self.measure_n_next_states:
-            # if len(self.n_next_states) > 5:
-            #     print(stop)
-            if self.current_n_next_states != -1: 
-                self.n_next_states.append(self.current_n_next_states)
-            self.current_n_next_states = 0
-            print(f"Avg n_next_states, n_next_states: {np.mean(self.n_next_states)}, {self.n_next_states}")
-
         self.current_query = state
         self.current_label = label
         return self._reset([state], label)
@@ -202,6 +191,7 @@ class LogicEnv_gym(gym.Env):
 
         self.memory = set()
         self.memory.add(",".join(str(q) for q in query if q.predicate not in ['False', 'True', 'End']))
+
         sub_index = self.index_manager.get_atom_sub_index(query)
         derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
         if truncated_flag: # end in false
@@ -214,16 +204,13 @@ class LogicEnv_gym(gym.Env):
                 "state": NonTensorData(data=query),
                 "label": torch.tensor(label, device=self.device),
                 "done": torch.tensor(0, dtype=torch.bool, device=self.device),
-                "reward": torch.tensor(0, dtype=torch.float32, device=self.device)*(-1),
+                "reward": torch.tensor(0, dtype=torch.float32, device=self.device),
                 "derived_states": NonTensorData(data=derived_states),
                 "derived_sub_indices": derived_sub_indices,
             },
         )
-        sub_index = self.tensordict['sub_index'].cpu().numpy()
-        derived_sub_indices = self.tensordict['derived_sub_indices'].cpu().numpy()
-        obs = {'sub_index':sub_index,
-               'derived_sub_indices':derived_sub_indices,
-            }
+        obs = {'sub_index': self.tensordict['sub_index'].cpu().numpy(),
+               'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy()}
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'],label=label)
         return obs, {}
@@ -243,10 +230,9 @@ class LogicEnv_gym(gym.Env):
         next_state = derived_states[action]
         next_sub_index = derived_sub_indices[action]
 
-        done_next, reward_next = self.get_done_reward(next_state,self.tensordict['label'].item())
+        done_next, reward_next = self.get_done_reward(next_state, self.tensordict['label'].item())
         derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
         self.current_depth += 1
-        
         exceeded_max_depth = (self.current_depth >= self.max_depth)
         if exceeded_max_depth: print('\nMax depth reached', self.current_depth.item()) if self.verbose else None
 
@@ -259,8 +245,7 @@ class LogicEnv_gym(gym.Env):
                 # janus.query_once(f"asserta({self.current_query}).")
             self.current_query, self.current_label = None, None
 
-        tensordict = TensorDict(
-            {
+        self.tensordict.update(TensorDict({
                 "sub_index": next_sub_index.unsqueeze(0), # to match the shape of derived_sub_indices
                 "state": NonTensorData(data=next_state),
                 "label": self.tensordict['label'],
@@ -268,16 +253,10 @@ class LogicEnv_gym(gym.Env):
                 "reward": reward_next,
                 "derived_states": NonTensorData(data=derived_states_next),
                 "derived_sub_indices": derived_sub_indices_next,
-            },
-            )
+        }))
 
-        self.tensordict = tensordict
-        sub_index = self.tensordict['sub_index'].cpu().numpy()
-        derived_sub_indices = self.tensordict['derived_sub_indices'].cpu().numpy()
-        obs = {'sub_index':sub_index, 
-               'derived_sub_indices':derived_sub_indices,
-               }
-
+        obs = {'sub_index': self.tensordict['sub_index'].cpu().numpy(),
+               'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy()}
         reward = self.tensordict['reward'].cpu().numpy()
         done = self.tensordict['done'].cpu().numpy()
         truncated = bool(exceeded_max_depth) or bool(truncate_flag)
@@ -299,6 +278,9 @@ class LogicEnv_gym(gym.Env):
                 if state[0].predicate == 'End':
                     state = [Term(predicate='False', args=())]
 
+        if self.use_kge_action and state and state[0].predicate.endswith('_kge'):
+            state = state[1:] if len(state) > 1 else [Term(predicate='True', args=())]
+            # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
         if self.engine == 'prolog':
             derived_states, next_var_idx = get_next_unification_prolog(state,
@@ -315,10 +297,12 @@ class LogicEnv_gym(gym.Env):
                                                             )
         self.index_manager.next_var_index = next_var_idx
 
-        if self.measure_n_next_states:
-            self.current_n_next_states += len(derived_states)
-            print('     length of derived states:', len(derived_states))
-            print('current n_next_states:', self.current_n_next_states)
+        # Add KGE action if enabled and current subgoal is ground
+        if self.use_kge_action and len(derived_states)>1 and derived_states[0][0].predicate not in ['True', 'False', 'End']:
+            if not any(is_variable(arg) for arg in derived_states[0][0].args):
+                kge_pred_name = f"{state[0].predicate}_kge"
+                kge_action_term = Term(predicate=kge_pred_name, args=state[0].args)
+                derived_states.append([kge_action_term])
 
         if self.skip_unary_actions:
             current_state = state.copy() if isinstance(state, list) else [state]
@@ -331,6 +315,10 @@ class LogicEnv_gym(gym.Env):
                 print('\n') if self.verbose else None
                 counter += 1
                 current_state = derived_states[0].copy()    
+
+                if self.use_kge_action and state and state[0].predicate.endswith('_kge'):
+                    state = state[1:] if len(state) > 1 else [Term(predicate='True', args=())]
+                    # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
                 if self.engine == 'prolog':
                     derived_states, next_var_idx = get_next_unification_prolog(state,
@@ -348,10 +336,12 @@ class LogicEnv_gym(gym.Env):
                     )
                 self.index_manager.next_var_index = next_var_idx
 
-                if self.measure_n_next_states:
-                    self.current_n_next_states += len(derived_states)
-                    print('     length of derived states:', len(derived_states))
-                    print('current n_next_states:', self.current_n_next_states)
+                # Add KGE action if enabled and current subgoal is ground
+                if self.use_kge_action and len(derived_states)>1 and derived_states[0][0].predicate not in ['True', 'False', 'End']:
+                    if not any(is_variable(arg) for arg in derived_states[0][0].args):
+                        kge_pred_name = f"{current_state[0].predicate}_kge"
+                        kge_action_term = Term(predicate=kge_pred_name, args=current_state[0].args)
+                        derived_states.append([kge_action_term])
 
                 # MEMORY
                 if self.memory_pruning:
@@ -412,35 +402,31 @@ class LogicEnv_gym(gym.Env):
             derived_states = [[Term(predicate='False', args=())]]
 
         # CREATE INDICES 
-        derived_sub_indices = []
-        for s in derived_states:
-            sub_idx = self.index_manager.get_atom_sub_index(s)
-            derived_sub_indices.append(sub_idx)
+        derived_sub_indices = torch.stack([self.index_manager.get_atom_sub_index(s) for s in derived_states])
+        
+        # Pad derived_sub_indices
+        num_derived = len(derived_states)
+        if num_derived < self.padding_states:
+            padding = torch.zeros(self.padding_states - num_derived, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=torch.int64)
+            derived_sub_indices = torch.cat([derived_sub_indices, padding])
 
-        derived_sub_indices = torch.stack(derived_sub_indices)
-        derived_sub_indices = torch.cat([derived_sub_indices, torch.zeros(self.padding_states - len(derived_sub_indices), self.padding_atoms, self.max_arity+1, device=self.device, dtype=torch.int64)])
         return derived_states, derived_sub_indices, truncated_flag
     
     def get_done_reward(self,state: List[Term], label: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get done and reward keys for all states in the batch. To be called in the step() method"""
         assert label is not None, f"Label is None"
 
-        any_atom_false = any([atom.predicate == 'False' for atom in state])
-        all_atoms_true = all([atom.predicate == 'True' for atom in state])
+        any_atom_false = any(atom.predicate == 'False' for atom in state)
+        all_atoms_true = all(atom.predicate == 'True' for atom in state)
 
         done = any_atom_false or all_atoms_true
         successful = all_atoms_true
 
-        if self.end_proof_action and any([atom.predicate == 'End' for atom in state]):
-            assert len(state) == 1, f"Length of state: {len(state)} should be 1 when the action is 'End'"
-            done = True
-            successful = False
+        if self.end_proof_action and any(atom.predicate == 'End' for atom in state):
+            done, successful = True, False
 
         done = torch.tensor(done, device=self.device)
-        successful = torch.tensor(successful, device=self.device)
-        label_tensor = torch.tensor(label, device=self.device)
-
-        reward = torch.tensor(1, device=self.device) if (done and successful and label_tensor == 1) else torch.tensor(0,device=self.device)
+        reward = torch.tensor(1.0, device=self.device) if (done and successful and label == 1) else torch.tensor(0.0, device=self.device)
         return done, reward
     
     def get_random_queries(self,
@@ -451,7 +437,7 @@ class LogicEnv_gym(gym.Env):
         assert n <= len(queries), f"Number of queries ({n}) is greater than the number of queries ({len(queries)})"
         sampled_indices = self.seed_gen.sample(range(len(queries)), n)
         sampled_queries = [queries[i] for i in sampled_indices]
-        sampled_labels = [labels[i] for i in sampled_indices] if labels else [None]
+        sampled_labels = [labels[i] for i in sampled_indices] if labels else [None] * n
 
         if n == 1:
             return sampled_queries[0], sampled_labels[0]
