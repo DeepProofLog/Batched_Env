@@ -1,6 +1,7 @@
-from typing import List, Tuple, Dict, Set
+from typing import List, Tuple, Dict, Set, Union
 import itertools
 import torch
+import numpy as np
 from utils import is_variable, Term, Rule
 
 class IndexManager():
@@ -56,7 +57,7 @@ class IndexManager():
         self.variable_end_index = self.variable_start_index + self.max_total_vars - 1
         self.variable_no = self.max_total_vars # Total number of pre-assigned variables
 
-        self.next_var_index = self.variable_start_index # Next available variable index
+        # self.next_var_index = self.variable_start_index # Next available variable index
 
         self._create_fixed_var_idx() # Create mappings for fixed variables
 
@@ -67,8 +68,8 @@ class IndexManager():
 
         self.fact_index: Dict[Tuple, Set[Term]] = {}
 
-    def reset_next_var_index(self):
-        self.next_var_index = self.variable_start_index
+    # def reset_next_var_index(self):
+    #     self.next_var_index = self.variable_start_index
 
     def create_global_idx(self):
         '''Create global indices for constants and predicates (including specials).'''
@@ -162,11 +163,15 @@ class IndexManager():
             # Extract relevant argument strings
             arg_strings = atom.args[:max_j]
 
+            # # if 'X' in arg_strings or 'Y' in arg_strings:
+            # print('\narg_strings:', arg_strings)
+            # print('Unified map:', unified_map)
+
             # Get indices for all relevant argument strings using the unified map
             try:
                 arg_indices = [unified_map[arg] for arg in arg_strings]
             except KeyError as e:
-                 raise KeyError(f"Argument '{e}' not found in constant or variable maps.") from e
+                 raise KeyError(f"Argument '{e}' not in constant or variable maps.") from e
 
             # Assign argument indices to the tensor row
             if arg_indices: # Check if there are any arguments to assign
@@ -215,10 +220,10 @@ class IndexManager():
             results[batch_idx].append(term)
         return results
 
-    def subindex_to_str(self, sub_index: torch.Tensor) -> str:
+    def subindex_to_str(self, sub_index: torch.Tensor, truncate=False) -> str:
         """Converts a single sub_index tensor to a string representation of a Term."""
         pred_idx = sub_index[0].item()
-        if pred_idx == 0:
+        if pred_idx == self.padding_idx:
             return "" 
         
         # This map needs to contain all possible terms, including variables
@@ -228,18 +233,45 @@ class IndexManager():
         if not predicate:
             return ""
 
+        if truncate: 
+            # if _kge is in the predicate, add it
+            if '_kge' in predicate:
+                predicate = predicate[:3]+'_kge'
+            else:
+                predicate = predicate[:3]
         arg_indices = sub_index[1:].tolist()
         args = []
         for arg_idx in arg_indices:
-            if arg_idx == 0:
+            if arg_idx == self.padding_idx:
                 break
             arg_str = idx2term_map.get(arg_idx)
             if arg_str:
-                args.append(arg_str)
+                if truncate:
+                    # Truncate each argument to the first 3 letters
+                    args.append(arg_str[:8])
+                else:
+                    args.append(arg_str)
         
         args_str = ','.join(args)
         return f"{predicate}({args_str})"
 
+    def state_subindex_to_str(self, state_subindex: Union[torch.Tensor, np.ndarray],truncate=False) -> str:
+        """Converts a state sub_index tensor (a list of atoms) to a single string."""
+        # Ensure the input is a torch tensor before processing
+        if isinstance(state_subindex, np.ndarray):
+            state_subindex = torch.from_numpy(state_subindex).to(self.device)
+        terms = []
+        # state_subindex has shape (padding_atoms, max_arity + 1)
+        for atom_subindex in state_subindex:
+            # An atom_subindex row is all zeros for padding
+            if torch.all(atom_subindex == self.padding_idx):
+                break
+            
+            term_str = self.subindex_to_str(atom_subindex,truncate=truncate)
+            if term_str:
+                terms.append(term_str)
+        
+        return ", ".join(terms)
 
     def build_fact_index(self, facts: List[Term]) -> Dict[Tuple, Set[Term]]:
         self.fact_index.clear()

@@ -226,6 +226,7 @@ class KGEInference:
         """
         # Check cache first
         if atom_string in self.atom_scores:
+            # print(f"Using cached score for atom: {atom_string}: {self.atom_scores[atom_string]:.4f}")
             return self.atom_scores[atom_string]
         
         # Fallback to model inference
@@ -379,7 +380,8 @@ def main():
                         default='countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt',
                         help="The signature of the training run to load.")
     parser.add_argument('--seed', type=int, default=0, help="Random seed.")
-    parser.add_argument('--scores_file', type=str, default=None, help="Path to a file with pre-computed atom scores.")
+    # parser.add_argument('--scores_file', type=str, default=None, help="Path to a file with pre-computed atom scores.")
+    parser.add_argument('--scores_file', type=str, default='./../../', help="Path to a file with pre-computed atom scores.")
     parser.add_argument('--num_negatives', type=int, default=None, help="Number of negative samples per positive. Default is all.")
     parser.add_argument('--batch_size', type=int, default=2048, help="Batch size for scoring.")
 

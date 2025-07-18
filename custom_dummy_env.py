@@ -11,6 +11,114 @@ from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvIndices,
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import dict_to_obs, obs_space_info
 
+from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.monitor import Monitor
+from env import LogicEnv_gym
+
+def create_environments(args, data_handler, index_manager):
+    """
+    Creates and seeds the training, evaluation, and callback environments.
+    """
+    facts_set = set(data_handler.facts)
+
+    def make_env(mode='train', seed=0, queries=None, labels=None, facts=None):
+        def _init():
+            env = LogicEnv_gym(
+                index_manager=index_manager,
+                data_handler=data_handler,
+                queries=queries,
+                labels=labels,
+                facts=facts,
+                mode=mode,
+                corruption_mode=args.corruption_mode,
+                corruption_scheme=args.corruption_scheme,
+                train_neg_ratio=args.train_neg_ratio,
+                seed=seed,
+                max_depth=args.max_depth,
+                memory_pruning=args.memory_pruning,
+                end_proof_action=args.end_proof_action,
+                skip_unary_actions=args.skip_unary_actions,
+                padding_atoms=args.padding_atoms,
+                padding_states=args.padding_states,
+                device='cpu',
+                engine=args.engine,
+                use_kge_action=args.use_kge_action,
+            )
+            env = Monitor(env)
+            return env
+        return _init
+
+    ss = np.random.SeedSequence(args.seed_run_i)
+    child_seeds = ss.spawn(3)
+    rng_env = np.random.Generator(np.random.PCG64(child_seeds[0]))
+    rng_eval = np.random.Generator(np.random.PCG64(child_seeds[1]))
+    rng_callback = np.random.Generator(np.random.PCG64(child_seeds[2]))
+
+    env_seeds = rng_env.integers(0, 2**10, size=args.n_envs)
+    eval_env_seeds = rng_eval.integers(0, 2**10, size=args.n_eval_envs)
+    callback_env_seeds = rng_callback.integers(0, 2**10, size=1)
+
+    env_fns = [make_env(
+        mode='train',
+        seed=int(env_seeds[i]),
+        queries=data_handler.train_queries,
+        labels=[1] * len(data_handler.train_queries),
+        facts=facts_set,
+    ) for i in range(args.n_envs)]
+
+    eval_env_fns = [make_env(
+        mode='eval',
+        seed=int(eval_env_seeds[i]),
+        queries=data_handler.valid_queries,
+        labels=[1] * len(data_handler.valid_queries),
+        facts=facts_set,
+    ) for i in range(args.n_eval_envs)]
+    
+    callback_env_fns = [make_env(
+        mode='eval_with_restart',
+        seed=int(callback_env_seeds[i]),
+        queries=data_handler.valid_queries,
+        labels=[1] * len(data_handler.valid_queries),
+        facts=facts_set,
+    ) for i in range(1)]
+
+
+    env = DummyVecEnv(env_fns)
+    eval_env = CustomDummyVecEnv(eval_env_fns)
+    callback_env = DummyVecEnv(callback_env_fns)
+    # callback_env = CustomDummyVecEnv(callback_env_fns)
+
+
+    return env, eval_env, callback_env
+
+
+    # env = SubprocVecEnv([make_env(
+    #                             mode='train', 
+    #                             seed=int(env_seeds[i]), 
+    #                             queries=data_handler.train_queries, 
+    #                             labels=[1]*len(data_handler.train_queries),
+    #                             facts=facts_set,
+    #                             ) 
+    #                             for i in range(args.n_envs)])
+
+    # eval_env = SubprocVecEnv([make_env(
+    #                                 mode='eval', 
+    #                                 seed=int(eval_env_seeds[i]), 
+    #                                 queries=data_handler.valid_queries,
+    #                                 labels=[1]*len(data_handler.valid_queries),
+    #                                 facts=facts_set,
+    #                                 ) 
+    #                                 for i in range(args.n_eval_envs)])
+
+    # callback_env = SubprocVecEnv([make_env(
+    #                                 mode='eval',
+    #                                 seed=int(callback_env_seeds[i]),
+    #                                 queries=data_handler.valid_queries,
+    #                                 labels=[1]*len(data_handler.valid_queries),
+    #                                 facts=facts_set,
+    #                                 )
+    #                                 for i in range(1)])
+
 
 class CustomDummyVecEnv(VecEnv):
     """
@@ -63,8 +171,9 @@ class CustomDummyVecEnv(VecEnv):
                     self.active_envs[idx] = False
                 # save final obs & reset
                 info["terminal_observation"] = obs
+                self.buf_infos[idx] = info
                 obs, reset_info = self.envs[idx].reset()
-                self.buf_infos[idx] = reset_info
+                # self.buf_infos[idx] = reset_info
             else:
                 self.buf_infos[idx] = info
 

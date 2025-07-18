@@ -25,7 +25,7 @@ class LogicEnv_gym(gym.Env):
                 mode: str = 'train',
                 corruption_mode: Optional[str] = None,
                 corruption_scheme: Optional[List[str]] = None,
-                train_neg_pos_ratio: int = 1,
+                train_neg_ratio: int = 1,
                 seed: Optional[int] = None,
                 max_depth: int = 10,
                 memory_pruning: bool = True,
@@ -91,9 +91,10 @@ class LogicEnv_gym(gym.Env):
         self.n_episodes = len(queries) if queries is not None else 0
         self.eval_idx = 0
         self.consult_janus_eval = False
+        self.next_var_index = self.index_manager.variable_start_index
 
         if self.mode == 'train':
-            self.train_neg_pos_ratio = train_neg_pos_ratio
+            self.train_neg_ratio = train_neg_ratio
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment. If no seed is provided, generate a random one'''
@@ -153,16 +154,21 @@ class LogicEnv_gym(gym.Env):
             if self.corruption_mode:
                 state, _ = self.get_random_queries(self.queries, n=1)
                 label = 1
-                if self.counter % (int(self.train_neg_pos_ratio) + 1) != 0:
-                    state = self.sampler.get_negatives_from_states(state,self.device)
-                    # Alternate between head and tail
-                    if not hasattr(self, 'negation_toggle'):
-                        self.negation_toggle = 0  # Initialize if it doesn't exist
-                    if len(self.corruption_scheme) > 1:
-                        state = [state[self.negation_toggle]]  
-                        self.negation_toggle = 1 - self.negation_toggle  # Flip for next time get head or tail
+                if self.counter % (int(self.train_neg_ratio) + 1) != 0:
+                    # Determine the number of negatives to request from the sampler
+                    num_to_generate = len(self.corruption_scheme) if len(self.corruption_scheme) > 1 else 1
                     
-                    assert len(state) == 1, f"Length of negatives: {len(state)}"
+                    negative_samples = self.sampler.get_negatives_from_states(state, self.device, num_negs=num_to_generate)
+                    if len(self.corruption_scheme) > 1:
+                        if not hasattr(self, 'negation_toggle'):
+                            self.negation_toggle = 0  # Initialize
+                        
+                        # Select head or tail corruption based on the toggle
+                        state = [negative_samples[self.negation_toggle]]
+                        self.negation_toggle = 1 - self.negation_toggle  # Flip for the next time
+                    else:
+                        state = negative_samples
+                    assert len(state) == 1, f"Length of negatives should be 1, but is {len(state)}"
                     state = state[0] # In train there should be only one negative
                     label = 0
                 self.counter += 1
@@ -187,7 +193,7 @@ class LogicEnv_gym(gym.Env):
         '''Reset the environment to the initial state'''    
         print('Initial query:', query, label) if self.verbose else None
         self.current_depth = torch.tensor(0, device=self.device)
-        self.index_manager.reset_next_var_index()
+        self.next_var_index = self.index_manager.variable_start_index
 
         self.memory = set()
         self.memory.add(",".join(str(q) for q in query if q.predicate not in ['False', 'True', 'End']))
@@ -230,16 +236,18 @@ class LogicEnv_gym(gym.Env):
         next_state = derived_states[action]
         next_sub_index = derived_sub_indices[action]
 
-        done_next, reward_next = self.get_done_reward(next_state, self.tensordict['label'].item())
+        done_next, reward_next, successful = self.get_done_reward(next_state, self.tensordict['label'].item())
         derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
         self.current_depth += 1
         exceeded_max_depth = (self.current_depth >= self.max_depth)
         if exceeded_max_depth: print('\nMax depth reached', self.current_depth.item()) if self.verbose else None
 
         done_next = done_next | exceeded_max_depth | truncate_flag
+        truncated = bool(exceeded_max_depth) or bool(truncate_flag)
         
         info = {}
         if done_next:
+            info["is_success"] = successful and not truncated
             if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
                 janus.query_once(f"asserta({self.current_query.prolog_str()}).")
                 # janus.query_once(f"asserta({self.current_query}).")
@@ -259,7 +267,6 @@ class LogicEnv_gym(gym.Env):
                'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy()}
         reward = self.tensordict['reward'].cpu().numpy()
         done = self.tensordict['done'].cpu().numpy()
-        truncated = bool(exceeded_max_depth) or bool(truncate_flag)
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=action,truncated=truncated)
         return obs, reward, done, truncated, info
@@ -278,31 +285,27 @@ class LogicEnv_gym(gym.Env):
                 if state[0].predicate == 'End':
                     state = [Term(predicate='False', args=())]
 
-        if self.use_kge_action and state and state[0].predicate.endswith('_kge'):
-            state = state[1:] if len(state) > 1 else [Term(predicate='True', args=())]
+        if self.use_kge_action and state:
+            filtered_state = [term for term in state if not term.predicate.endswith('_kge')]
+            if not filtered_state: state = [Term(predicate='True', args=())]
+            else: state = filtered_state
             # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
         if self.engine == 'prolog':
-            derived_states, next_var_idx = get_next_unification_prolog(state,
+            derived_states, self.next_var_idx = get_next_unification_prolog(state,
                                                          next_var_index=self.index_manager.next_var_index, 
                                                          verbose=self.prover_verbose)
         elif self.engine == 'python':
-            derived_states, next_var_idx = get_next_unification_python(state,
+            derived_states, self.next_var_index = get_next_unification_python(state,
                                                             facts_set=self.facts,
                                                             facts_indexed=self.index_manager.fact_index,
                                                             rules=self.index_manager.rules,
                                                             excluded_fact = self.current_query if self.current_label == 1 else {},
                                                             verbose=self.prover_verbose,
-                                                            next_var_index=self.index_manager.next_var_index,
+                                                            next_var_index=self.next_var_index,
                                                             )
-        self.index_manager.next_var_index = next_var_idx
+        # print(f"\nCurrent state after unification: {state} -> derived states: {derived_states}") if self.verbose else None
 
-        # Add KGE action if enabled and current subgoal is ground
-        if self.use_kge_action and len(derived_states)>1 and derived_states[0][0].predicate not in ['True', 'False', 'End']:
-            if not any(is_variable(arg) for arg in derived_states[0][0].args):
-                kge_pred_name = f"{state[0].predicate}_kge"
-                kge_action_term = Term(predicate=kge_pred_name, args=state[0].args)
-                derived_states.append([kge_action_term])
 
         if self.skip_unary_actions:
             current_state = state.copy() if isinstance(state, list) else [state]
@@ -311,37 +314,33 @@ class LogicEnv_gym(gym.Env):
                 derived_states[0] and
                 derived_states[0][0].predicate not in ['End', 'False', 'True']):
                 print('\n*********') if self.verbose else None
-                print(f"Skipping unary action:") if self.verbose else None
+                print(f"Skipping unary action: current state: {current_state} -> derived states: {derived_states}") if self.verbose else None
                 print('\n') if self.verbose else None
                 counter += 1
                 current_state = derived_states[0].copy()    
 
-                if self.use_kge_action and state and state[0].predicate.endswith('_kge'):
-                    state = state[1:] if len(state) > 1 else [Term(predicate='True', args=())]
+                if self.use_kge_action and current_state:
+                    filtered_state = [term for term in state if not term.predicate.endswith('_kge')]
+                    if not filtered_state: state = [Term(predicate='True', args=())]
+                    else: state = filtered_state
                     # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
                 if self.engine == 'prolog':
-                    derived_states, next_var_idx = get_next_unification_prolog(state,
-                                                next_var_index=self.index_manager.next_var_index, 
+                    derived_states, self.next_var_idx = get_next_unification_prolog(state,
+                                                next_var_index=self.next_var_index, 
                                                 verbose=self.prover_verbose)
                 elif self.engine == 'python':
-                    derived_states, next_var_idx = get_next_unification_python(
+                    derived_states, self.next_var_idx = get_next_unification_python(
                         current_state,
                         facts_set=self.facts,
                         facts_indexed=self.index_manager.fact_index,
                         rules=self.index_manager.rules,
                         excluded_fact = self.current_query if self.current_label == 1 else None,
                         verbose=self.prover_verbose,
-                        next_var_index=self.index_manager.next_var_index,
+                        next_var_index=self.next_var_index,
                     )
-                self.index_manager.next_var_index = next_var_idx
+                # print(f"\nCurrent state after unification: {current_state} -> derived states: {derived_states}") if self.verbose else None
 
-                # Add KGE action if enabled and current subgoal is ground
-                if self.use_kge_action and len(derived_states)>1 and derived_states[0][0].predicate not in ['True', 'False', 'End']:
-                    if not any(is_variable(arg) for arg in derived_states[0][0].args):
-                        kge_pred_name = f"{current_state[0].predicate}_kge"
-                        kge_action_term = Term(predicate=kge_pred_name, args=current_state[0].args)
-                        derived_states.append([kge_action_term])
 
                 # MEMORY
                 if self.memory_pruning:
@@ -349,7 +348,7 @@ class LogicEnv_gym(gym.Env):
                     visited_mask = [",".join(str(s) for s in state) in self.memory for state in derived_states]
                     if any(visited_mask):
                         print(f"Memory: {self.memory}") if self.verbose else None
-                        print(f"Visited mask: {visited_mask}") if self.verbose else None
+                        print(f"Visited mask: {visited_mask}. Current state: {current_state} -> Derived states: {derived_states}") if self.verbose else None
                         derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
                     
                 # TRUNCATE MAX ATOMS
@@ -358,7 +357,7 @@ class LogicEnv_gym(gym.Env):
                 derived_states = [state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if not is_exceeded]
                 
                 print('\n') if self.verbose else None
-                print(f"Updated Next State: {derived_states}") if self.verbose else None
+                print(f"Updated Next States: Current state: {current_state} -> Derived states: {derived_states}") if self.verbose else None
                 print('*********\n') if self.verbose else None
 
                 if counter > 20:
@@ -376,7 +375,7 @@ class LogicEnv_gym(gym.Env):
             if any(visited_mask):
                 print('\n-----------') if self.verbose else None
                 print(f"Memory: {self.memory}") if self.verbose else None
-                print(f"Visited mask: {visited_mask}") if self.verbose else None
+                print(f"Visited mask: {visited_mask}. Current state: {current_state} -> Derived states: {derived_states}") if self.verbose else None
                 print('-----------\n') if self.verbose else None
                 derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
 
@@ -385,6 +384,28 @@ class LogicEnv_gym(gym.Env):
         if any(mask_exceeded_max_atoms):
             print(f"Exceeded max atoms in next states: {[len(state) for state in derived_states]}") if self.verbose else None
         derived_states = [state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if not is_exceeded]
+
+        # KGE ACTION MODULE
+        # It uses the original `state` variable to ensure alignment.
+        if self.use_kge_action and state and state[0].predicate not in ['True', 'False', 'End']:
+            kge_pred_name = f"{state[0].predicate}_kge"
+            kge_action_term = Term(predicate=kge_pred_name, args=state[0].args)
+            
+            # Avoid adding a duplicate KGE action
+            is_present = any(kge_action_term in derived_state for derived_state in derived_states)
+            if not is_present:
+                derived_states.append([kge_action_term])
+            # # Check if the original state is a single, ground atom
+            # if not any(is_variable(arg) for arg in state[0].args):
+            #     kge_pred_name = f"{state[0].predicate}_kge"
+            #     kge_action_term = Term(predicate=kge_pred_name, args=state[0].args)
+                
+            #     # Avoid adding a duplicate KGE action
+            #     is_present = any(kge_action_term in derived_state for derived_state in derived_states)
+            #     if not is_present:
+            #         derived_states.append([kge_action_term])
+            # else:
+            #     raise ValueError(f"State {state} is not a ground atom, cannot add KGE action.")
 
         # TRUNCATE MAX STATES
         max_num_states = self.padding_states if not self.end_proof_action else self.padding_states + -1
@@ -412,8 +433,8 @@ class LogicEnv_gym(gym.Env):
 
         return derived_states, derived_sub_indices, truncated_flag
     
-    def get_done_reward(self,state: List[Term], label: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get done and reward keys for all states in the batch. To be called in the step() method"""
+    def get_done_reward(self,state: List[Term], label: int) -> Tuple[torch.Tensor, torch.Tensor, bool]:
+        """Get done, reward, and success flag for a state."""
         assert label is not None, f"Label is None"
 
         any_atom_false = any(atom.predicate == 'False' for atom in state)
@@ -427,7 +448,7 @@ class LogicEnv_gym(gym.Env):
 
         done = torch.tensor(done, device=self.device)
         reward = torch.tensor(1.0, device=self.device) if (done and successful and label == 1) else torch.tensor(0.0, device=self.device)
-        return done, reward
+        return done, reward, successful
     
     def get_random_queries(self,
                            queries: List[Rule], 
@@ -455,4 +476,3 @@ class LogicEnv_gym(gym.Env):
         false_sub_id = torch.tensor([self.predicate_false_idx, 0, 0], device=self.device, dtype=torch.int64)
         derived_sub_indices_next[0, 0] = false_sub_id
         return derived_states_next, derived_sub_indices_next
-

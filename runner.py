@@ -36,7 +36,7 @@ if __name__ == "__main__":
     # reward_type = 1
  
     # Dataset settings 
-    DATASET_NAME =  ["countries_s3"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
+    DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
     TRAIN_DEPTH = [None] # [{-1,3,2}]
     VALID_DEPTH = [None]
     TEST_DEPTH = [None]
@@ -49,13 +49,14 @@ if __name__ == "__main__":
     ATOM_EMBEDDING_SIZE = [64] # 256 for countries (atomatically selected below)
     CORRUPTION_MODE =  ['dynamic']
 
-    USE_KGE_ACTION = [False] # New parameter to enable KGE action
+    USE_KGE_ACTION = [True] # New parameter to enable KGE action
     KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
     if DATASET_NAME[0] == "countries_s3":
         KGE_RUN_SIGNATURE = ['countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt']
     elif DATASET_NAME[0] == "family":
         KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
-    KGE_SCORES_FILE = ['kge_scores_'+DATASET_NAME[0]+'.txt']
+    # KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
+    KGE_SCORES_FILE = [None]
  
     RESTORE_BEST_VAL_MODEL = [True]
     load_model = False
@@ -77,22 +78,23 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [3000000]
+    TIMESTEPS_TRAIN = [8000000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
-    TRAIN_NEG_POS_RATIO = [1] # corruptions in train
-    valid_negatives = None # corruptions in validation set (test)
-    test_negatives = None # corruptions in test set (test)
+    TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
+    EVAL_NEG_SAMPLES = [0]    # Number of negative samples per positive for validation. Use None for all.
+    TEST_NEG_SAMPLES = [None]   # Number of negative samples per positive for testing. Use None for all.
     n_eval_queries = None
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 128
-    n_steps = 128
-    n_eval_envs = 128
+    n_envs = 256
+    n_steps = 256
+    n_eval_envs = 256
+    # n_callback_eval_envs = 1 # Number of environments to use for evaluation in the callback # should be one in CustomEvalCallback
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
-    batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
+    batch_size = 256 # Ensure batch size is a factor of n_steps (for the buffer).
     lr = 3e-4
 
     max_total_vars = 100
@@ -107,10 +109,13 @@ if __name__ == "__main__":
     parser.add_argument("--engine", help="Engine to use")
     parser.add_argument("--eval", default = None, action='store_const', const=True)
     parser.add_argument("--test_depth", default = None, help="test_depth")
-    parser.add_argument("--test_negatives", default = None, help="test_negatives")
     parser.add_argument("--n_test_queries", default = None, help="n_test_queries")
     parser.add_argument("--n_envs", default = None, help="n_envs")
     parser.add_argument("--n_eval_envs", default = None, help="n_eval_envs")
+    parser.add_argument("--train_neg_ratio", default=None, type=int, help="Ratio of negative to positive queries for training")
+    parser.add_argument("--eval_neg_samples", default=None, help="Number of negatives for validation set ('None' for all)")
+    parser.add_argument("--test_neg_samples", default=None, help="Number of negatives for test set ('None' for all)")
+
 
     args = parser.parse_args()
 
@@ -120,11 +125,15 @@ if __name__ == "__main__":
     if args.engine: ENGINE = [args.engine]
     if args.eval: load_model = True; TIMESTEPS_TRAIN = [0]
     if args.test_depth: TEST_DEPTH = [str(args.test_depth)]
-    if args.test_negatives: test_negatives = int(args.test_negatives)
     if args.n_test_queries: n_test_queries = int(args.n_test_queries)
     if args.n_envs: n_envs = int(args.n_envs)
     if args.n_eval_envs: n_eval_envs = int(args.n_eval_envs)
     if args.timesteps: TIMESTEPS_TRAIN = [int(args.timesteps)]
+    if args.train_neg_ratio is not None: TRAIN_NEG_RATIO = [args.train_neg_ratio]
+    if args.eval_neg_samples is not None:
+        EVAL_NEG_SAMPLES = [None if args.eval_neg_samples.lower() in ['none', '-1'] else int(args.eval_neg_samples)]
+    if args.test_neg_samples is not None:
+        TEST_NEG_SAMPLES = [None if args.test_neg_samples.lower() in ['none', '-1'] else int(args.test_neg_samples)]
 
 
     print('Running experiments for the following parameters:','DATASET_NAME:'\
@@ -144,7 +153,9 @@ if __name__ == "__main__":
         'restore_best_val_model': RESTORE_BEST_VAL_MODEL,
         'memory_pruning': MEMORY_PRUNING,
         'corruption_mode': CORRUPTION_MODE,
-        'train_neg_pos_ratio': TRAIN_NEG_POS_RATIO,
+        'train_neg_ratio': TRAIN_NEG_RATIO,
+        'eval_neg_samples': EVAL_NEG_SAMPLES,
+        'test_neg_samples': TEST_NEG_SAMPLES,
         'false_rules': FALSE_RULES,
         'end_proof_action': END_PROOF_ACTION,
         'skip_unary_actions': SKIP_UNARY_ACTIONS,
@@ -178,7 +189,7 @@ if __name__ == "__main__":
             continue
         
         if args.padding_states == -1:
-            if args.dataset_name == "countries_s3" or args.dataset_name == "countries_s2" or args.dataset_name == "countries_s1": 
+            if args.dataset_name in ["countries_s3", "countries_s2", "countries_s1"]:
                 args.padding_states = 20
                 args.atom_embedding_size = 256
             elif args.dataset_name == "family": args.padding_states = 130
@@ -195,7 +206,7 @@ if __name__ == "__main__":
 
         
         args.corruption_scheme = ['head','tail']
-        if 'countries' in args.dataset_name or 'ablation in dataset_name' in args.dataset_name:
+        if 'countries' in args.dataset_name or 'ablation' in args.dataset_name:
             args.corruption_scheme = ['tail']
         
         if args.false_rules:
@@ -232,7 +243,6 @@ if __name__ == "__main__":
         args.rules_file = rules_file
         args.facts_file = facts_file
         
-
         args.atom_embedding_size = args.atom_embedding_size #if args.atom_embedder != "concat" else it is (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
         args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" \
             else args.atom_embedding_size*args.padding_atoms
@@ -249,8 +259,6 @@ if __name__ == "__main__":
         args.models_path = models_path+args.dataset_name
         args.n_eval_queries = n_eval_queries
         args.n_test_queries = n_test_queries
-        args.valid_negatives = valid_negatives
-        args.test_negatives = test_negatives
         args.eval_freq = eval_freq
         args.n_envs = n_envs
         args.n_eval_envs = n_eval_envs
@@ -262,7 +270,7 @@ if __name__ == "__main__":
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,
                     args.padding_atoms,args.padding_states,args.false_rules,args.end_proof_action, 
                     args.skip_unary_actions,args.memory_pruning,args.max_depth,
-                    args.ent_coef,args.clip_range,args.engine,args.train_neg_pos_ratio, args.use_kge_action
+                    args.ent_coef,args.clip_range,args.engine,args.train_neg_ratio, args.use_kge_action
                     )
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)

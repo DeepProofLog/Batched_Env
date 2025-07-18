@@ -5,6 +5,7 @@ from typing import Optional, Union, Any, List, Dict
 import time
 import sys
 
+import env
 from model_eval import evaluate_policy as evaluate_policy_mrr
 from model_eval import eval_corruptions as eval_corruptions_mrr
 import gymnasium as gym
@@ -191,7 +192,6 @@ class CustomEvalCallback(EvalCallback):
                 continue_training = continue_training and self._on_event()
 
             print(f'---------------evaluation finished---------------  took {time.time()-start:.2f} seconds')
-
         return continue_training
 
 
@@ -490,7 +490,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
         consult_janus: bool = False,
     ):
         self.verbose = verbose
-
+        assert eval_env.type_ == "custom_dummy", "Requires custom_dummy VecEnv"
         super().__init__(
             eval_env=eval_env,
             callback_on_new_best=callback_on_new_best,
@@ -535,7 +535,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                 self.sampler,
                 n_corruptions=self.n_corruptions,
                 deterministic=self.deterministic,
-                verbose=1 if self.verbose>1 else 0,
+                verbose=self.verbose,
                 consult_janus=self.consult_janus,
             )
 
@@ -547,12 +547,11 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             hits10 = mrr_eval_results.get('hits10_mean', 0.0)
             auc_pr = mrr_eval_results.get('auc_pr', 0.0)
 
-            if self.verbose >= 1:
-                print(f"Eval num_timesteps={self.num_timesteps}")
-                print(f"MRR: {mean_mrr:.4f}")
-                print(f"Rewards Positive: {mean_reward_pos:.4f}, Negative: {mean_reward_neg:.4f}")
-                print(f"Hits@1: {hits1:.4f}, Hits@3: {hits3:.4f}, Hits@10: {hits10:.4f}")
-                print(f"AUC-PR: {auc_pr:.4f}")
+            print(f"Eval num_timesteps={self.num_timesteps}")
+            print(f"MRR: {mean_mrr:.4f}")
+            print(f"Rewards Positive: {mean_reward_pos:.4f}, Negative: {mean_reward_neg:.4f}")
+            print(f"Hits@1: {hits1:.4f}, Hits@3: {hits3:.4f}, Hits@10: {hits10:.4f}")
+            print(f"AUC-PR: {auc_pr:.4f}")
 
             # Record MRR and other metrics to the logger
             self.logger.record("eval/mrr_mean", float(mean_mrr))
@@ -564,14 +563,12 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             self.logger.record("eval/auc_pr", float(auc_pr))
             self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
 
-
             # Original reward-based evaluation (if still desired, though MRR is primary)
             # You might want to remove or adjust this if MRR is the sole metric
             # Or you could consider one of these as the primary metric for saving the best model
             # For simplicity, let's keep the best model saving based on MRR for CustomEvalCallbackMRR
             if mean_mrr > self.best_mean_mrr:
-                if self.verbose >= 1:
-                    print("New best mean MRR!")
+                print("New best mean MRR!")
                 if self.model_path is not None:
                     # Save the model with a clear indicator for MRR
                     self.model.save(os.path.join(self.model_path, f"best_eval_mrr_{self.name}.zip"))
@@ -602,7 +599,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                 continue_training = continue_training and self._on_event()
 
             print(f'---------------evaluation finished---------------  took {time.time()-start:.2f} seconds')
-
+            # print(aaaaaa)
         return continue_training
 
     def write_mrr_info(self, mrr_results: Dict[str, Any]):
@@ -612,7 +609,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             'best_metric_value': float(self.best_mean_mrr),
             'n_calls': self.n_calls,
             'timesteps': self.num_timesteps,
-            'mrr_results': {k: float(v) for k,v in mrr_results.items()} # Store all MRR results
+            'mrr_results': {k: float(v) if isinstance(v, (np.floating, np.integer)) else v for k, v in mrr_results.items()}
         }
         info_path = os.path.join(self.model_path, f'info_best_eval_mrr_{self.name}.json')
         with open(info_path, 'w') as f:

@@ -19,7 +19,6 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
                  mapped_triples: torch.Tensor,
                  domain2idx: Dict[str, List[int]],
                  entity2domain: Dict[int, str],
-                 num_negs_per_pos: int = 1,  # Note: not used in enumeration
                  filtered: bool = True,
                  corruption_scheme: List[str] = ['tail']):
         """
@@ -27,7 +26,6 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
         """
         super().__init__(
             mapped_triples=mapped_triples,
-            num_negs_per_pos=num_negs_per_pos,
             filtered=filtered,
             corruption_scheme=corruption_scheme
         )
@@ -45,10 +43,10 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
                                                         device=mapped_triples.device)
 
 
-    def corrupt_batch(self, positive_batch: LongTensor) -> LongTensor:  # noqa: D102
+    def corrupt_batch(self, positive_batch: LongTensor, num_negs_per_pos: int) -> LongTensor:
         batch_shape = positive_batch.shape[:-1]
         # clone positive batch for corruption (.repeat_interleave creates a copy)
-        negative_batch = positive_batch.view(-1, 3).repeat_interleave(self.num_negs_per_pos, dim=0)
+        negative_batch = positive_batch.view(-1, 3).repeat_interleave(num_negs_per_pos, dim=0)
         # Bind the total number of negatives to sample in this batch
         total_num_negatives = negative_batch.shape[0]
 
@@ -70,7 +68,7 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
                   replacement_index = torch.randint(high=len(possible_entities), size=(1,), device=negative_batch.device).item()
                   replacement_entity = possible_entities[replacement_index].item()
                 negative_batch[i, index] = replacement_entity
-        return negative_batch.view(*batch_shape, self.num_negs_per_pos, 3)
+        return negative_batch.view(*batch_shape, num_negs_per_pos, 3)
     
     def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
         """
@@ -91,7 +89,10 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
                     neg_triple = triple.clone()
                     neg_triple[index] = candidate
                     triple_negatives.append(neg_triple)
-            negative_batches.append(torch.stack(triple_negatives, dim=0))
+            if triple_negatives:
+                negative_batches.append(torch.stack(triple_negatives, dim=0))
+            else:
+                negative_batches.append(torch.empty((0, 3), dtype=torch.long, device=positive_batch.device))
         return negative_batches
 
 
@@ -102,14 +103,13 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         mapped_triples: torch.Tensor,
         num_entities: int,
         num_relations: int,
-        num_negs_per_pos: int = 1,
         filtered: bool = True,
         corruption_scheme: Optional[Collection[Target]] = None,
         padding_idx: Optional[Collection[int]] = None,
     ):
         super().__init__(
             mapped_triples=mapped_triples,
-            num_negs_per_pos=num_negs_per_pos,
+            num_negs_per_pos=1,
             filtered=filtered,
             corruption_scheme=corruption_scheme,
             num_entities=num_entities,
@@ -191,7 +191,7 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         # --- End of optimized logic ---
 
 
-    def corrupt_batch(self, positive_batch: LongTensor) -> LongTensor:
+    def corrupt_batch(self, positive_batch: LongTensor, num_negs_per_pos: int) -> LongTensor:
         """
         Corrupts a batch of positive triples using the specified scheme,
         efficiently excluding the padding index (self.padding_idx, assumed 0)
@@ -201,7 +201,7 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
 
         # Clone positive batch for corruption (.repeat_interleave creates a copy)
         # Reshape to 2D: (batch_size * num_pos, 3)
-        negative_batch = positive_batch.view(-1, 3).repeat_interleave(self.num_negs_per_pos, dim=0)
+        negative_batch = positive_batch.view(-1, 3).repeat_interleave(num_negs_per_pos, dim=0)
 
         # Total number of negatives to generate for the whole batch
         total_num_negatives = negative_batch.shape[0]
@@ -209,7 +209,7 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         # Determine splits for corrupting different columns roughly equally
         num_corruption_indices = len(self._corruption_indices)
         if num_corruption_indices == 0: # Should not happen with validation in init
-             return negative_batch.view(*batch_shape, self.num_negs_per_pos, 3) # Return unchanged
+             return negative_batch.view(*batch_shape, num_negs_per_pos, 3) # Return unchanged
 
         split_idx = math.ceil(total_num_negatives / num_corruption_indices)
 
@@ -239,7 +239,7 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
             current_start = stop
 
         # Reshape back to (..., num_negs_per_pos, 3)
-        return negative_batch.view(*batch_shape, self.num_negs_per_pos, 3)
+        return negative_batch.view(*batch_shape, num_negs_per_pos, 3)
 
     def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
         device = positive_batch.device
@@ -278,13 +278,13 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
 
 
 def get_negatives(
-    self: Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain], # Added self
-    inputs,
+    self: Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain],
+    inputs: torch.Tensor,
     padding_atoms: int,
     max_arity: int,
     device: torch.device,
-    all_negatives: bool = False,
-) -> Union[torch.Tensor, List[List[Term]]]:
+    num_negs: Optional[int] = None,
+) -> torch.Tensor:
     """
     Wrapper to accept either sub-indices tensor or Term-based states.
 
@@ -296,7 +296,6 @@ def get_negatives(
     """
 
     sub_indices: torch.Tensor = inputs
-    device = sub_indices.device
     B = sub_indices.size(0)
     # Extract rel, head, tail from atom slot 0
     rels = sub_indices[:, 0, 0]    # (B,)
@@ -307,41 +306,48 @@ def get_negatives(
     positive_batch = torch.stack([heads, rels, tails], dim=1)
 
     # Generate negatives
-    if all_negatives:
+    if num_negs is None:
         neg_batches = self.corrupt_batch_all(positive_batch)
+        if not neg_batches or all(b.numel() == 0 for b in neg_batches):
+            max_negs = 0
+        else:
+            max_negs = max(batch.size(0) for batch in neg_batches)
     else:
-        neg_batches = self.corrupt_batch(positive_batch)
-    # Determine max negatives per query. If not all negatives, set to 2 (one head and one tail)
-    max_negs = max(batch.size(0) for batch in neg_batches)
+        neg_tensor = self.corrupt_batch(positive_batch, num_negs_per_pos=num_negs)
+        neg_batches = [neg_tensor[i] for i in range(B)]
+        max_negs = num_negs
 
     # Allocate output
     neg_subs = torch.full(
-        (B, max_negs, padding_atoms, max_arity+1),
+        (B, max_negs, padding_atoms, max_arity + 1),
         fill_value=self.index_manager.padding_idx,
         dtype=torch.long,
         device=device
     )
 
     # Fill
-    for i, batch in enumerate(neg_batches):
-        M = batch.size(0)
-        rel_i = batch[:, 1]
-        head_i = batch[:, 0]
-        tail_i = batch[:, 2]
-        neg_subs[i, :M, 0, 0] = rel_i
-        neg_subs[i, :M, 0, 1] = head_i
-        neg_subs[i, :M, 0, 2] = tail_i
+    if max_negs > 0:
+        for i, batch in enumerate(neg_batches):
+            M = batch.size(0)
+            if M == 0:
+                continue
+            rel_i = batch[:, 1]
+            head_i = batch[:, 0]
+            tail_i = batch[:, 2]
+            neg_subs[i, :M, 0, 0] = rel_i
+            neg_subs[i, :M, 0, 1] = head_i
+            neg_subs[i, :M, 0, 2] = tail_i
 
     return neg_subs
 
 
 def get_negatives_from_states(
-    self: Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain], # Added self
+    self: Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain],
     states: List[List[Term]],
     device: torch.device,
-    all_negatives: bool = False,
+    num_negs: Optional[int] = None,
     return_states: bool = True,
-) -> torch.Tensor:
+) -> Union[torch.Tensor, List[List[Term]]]:
     """
     Convert a list of Term-lists to sub-indices, generate negatives, and return sub-indices tensor.
 
@@ -354,38 +360,31 @@ def get_negatives_from_states(
     # if it is only one state (List[Term]), convert it to a list of states
     if isinstance(states, Term):
         states = [[states]]
-    elif isinstance(states, list) and isinstance(states[0], Term):
+    elif isinstance(states, list) and states and isinstance(states[0], Term):
         states = [states]
     # Build sub-indices for each state
     subs = [self.index_manager.get_atom_sub_index(state) for state in states]
     # Stack to (B, padding_atoms, max_arity+1)
     pos_subs = torch.stack(subs, dim=0).to(device)
     # Call tensor-based sampler
-    neg = self.get_negatives(pos_subs,
-                        padding_atoms=pos_subs.size(1),
-                        max_arity=pos_subs.size(2)-1,
-                        device=device,
-                        all_negatives=all_negatives)
+    neg_subs = self.get_negatives(pos_subs,
+                                padding_atoms=pos_subs.size(1),
+                                max_arity=pos_subs.size(2)-1,
+                                device=device,
+                                num_negs=num_negs)
     # Convert to Term-based states
-    B = neg.size(0)
+    B = neg_subs.size(0)
     if return_states:
-        neg = self.index_manager.subindices_to_terms(neg)
-        # print(f"Converted negatives to Term-based states {neg}")
-        if B == 1:
-            # If only one state, remove the first dimension
-            neg = neg[0]
+        neg_terms = self.index_manager.subindices_to_terms(neg_subs)
+        return neg_terms[0] if B == 1 else neg_terms
     else:
-        if B == 1:
-            # If only one state, remove the first dimension
-            neg = neg.squeeze(0)
-    return neg
+        return neg_subs.squeeze(0) if B == 1 else neg_subs
 
 
 def get_sampler(data_handler: DataHandler, 
                 index_manager: IndexManager,
                 triples_factory: TriplesFactory,
                 corruption_scheme: Optional[Collection[Target]] = None,
-                num_negs_per_pos: int = 2, # One for head and one for tail
                 )-> Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain]:
 
     if 'countries' in data_handler.dataset_name or 'ablation' in data_handler.dataset_name:
@@ -394,7 +393,6 @@ def get_sampler(data_handler: DataHandler,
         sampler = BasicNegativeSamplerDomain(mapped_triples=triples_factory.mapped_triples, 
                                             domain2idx=domain2idx,
                                             entity2domain=entity2domain,
-                                            num_negs_per_pos=1,
                                             filtered=True,
                                             corruption_scheme=corruption_scheme)
     else:
@@ -402,7 +400,6 @@ def get_sampler(data_handler: DataHandler,
             mapped_triples=triples_factory.mapped_triples, 
             num_entities=len(index_manager.constant_str2idx),
             num_relations=len(index_manager.predicate_str2idx),
-            num_negs_per_pos=num_negs_per_pos,
             filtered=True,
             corruption_scheme=corruption_scheme,
             padding_idx=index_manager.padding_idx

@@ -373,9 +373,10 @@ def get_next_unification_python(state: List[Term],
         return [[Term('False', ())]], next_var_index
 
     # --- Var renaming ---
-    if unification_strategy == 'rules_and_facts':
-        # next_states, next_var_index = rename_vars(next_states, next_var_index)
-        next_states = rename_vars_local(next_states, next_var_index, verbose=0)
+    # if unification_strategy == 'rules_and_facts':
+    #     # next_states, next_var_index = rename_vars(next_states, next_var_index)
+    #     next_states = rename_vars_local(next_states, next_var_index, verbose=0)
+    next_states = rename_vars_local(next_states, next_var_index, verbose=0)
 
     print('\nNext states:', next_states) if verbose else None
     print('++++++++++++++\n') if verbose else None

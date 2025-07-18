@@ -1,6 +1,5 @@
 import re
 from typing import Dict, Union, List, Any, Tuple, Iterable, Optional
-# from torchrl.envs.utils import step_mdp
 import datetime
 import os
 import numpy as np
@@ -8,9 +7,17 @@ import ast
 from collections import defaultdict
 import dataclasses
 from dataclasses import dataclass, field
-import torch
 from tensordict import TensorDict, TensorDictBase
 import functools
+
+import os
+import numpy as np
+import cProfile
+import pstats
+import io
+import torch
+import torch.profiler
+from torch.profiler import ProfilerActivity
 
 @dataclass(frozen=True, order=False, slots=True)
 class Term:
@@ -239,19 +246,15 @@ def print_state_transition(state, derived_states, reward, done, action=None, tru
     """
     if action is not None:
         print('\nState', state, '( action', action.item(), ')')
-        print('Reward', reward.item())
-        print('Done', done.item())
-        print('Truncated', truncated) if truncated is not None else None
-        # print('     Derived states:', *derived_states, '\n')
+        print('Reward', reward.item(), 'Done', done.item())
+        if truncated is not None or truncated!=False: print(f" Truncated {truncated}")
         print('     Derived states:', *derived_states[:100])
         if len(derived_states) > 100:
             print('     ... in total', len(derived_states),'\n')
     else:
         print('\nState', state, label) if label is not None else print(state)
-        print('Reward', reward.item())
-        print('Done', done.item())
-        print('Truncated', truncated) if truncated is not None else None
-        # print('     Derived states:', *derived_states, '\n')
+        print('Reward', reward.item(), 'Done', done.item())
+        if truncated is not None or truncated!=False: print(f" Truncated {truncated}")
         print('     Derived states:', *derived_states[:100])
         if len(derived_states) > 100:
             print('     ... in total', len(derived_states),'\n')
@@ -584,3 +587,62 @@ class FileLogger:
                 f.write(column_names)
             f.write('\n')
             f.write(combined_results)
+
+
+
+
+def profile_code(profiler_type, function_to_profile, *args, **kwargs):
+    """
+    Profiles a function using either cProfile or torch.profiler.
+    """
+    if profiler_type == "cProfile":
+        profiler = cProfile.Profile()
+        profiler.enable()
+        result = function_to_profile(*args, **kwargs)
+        profiler.disable()
+
+        s = io.StringIO()
+        stats = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+        stats.print_stats(30)
+        print("\n--- cProfile Cumulative Time ---")
+        print(s.getvalue())
+
+        s = io.StringIO()
+        stats = pstats.Stats(profiler, stream=s).sort_stats('tottime')
+        stats.print_stats(30)
+        print("\n--- cProfile Total Time ---")
+        print(s.getvalue())
+
+        return result
+
+    elif profiler_type == "torch":
+        prof_activities = [ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            prof_activities.append(ProfilerActivity.CUDA)
+        
+        trace_dir = "./profiler_traces"
+        os.makedirs(trace_dir, exist_ok=True)
+
+        with torch.profiler.profile(
+            activities=prof_activities,
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True
+        ) as prof:
+            result = function_to_profile(*args, **kwargs)
+        
+        sort_key = "cuda_time_total" if torch.cuda.is_available() else "cpu_time_total"
+        print(prof.key_averages().table(sort_by=sort_key, row_limit=30))
+        
+        trace_file = f"{trace_dir}/{function_to_profile.__name__}_trace.json"
+        try:
+            prof.export_chrome_trace(trace_file)
+            print(f"--- Trace exported to {trace_file}. ---")
+        except Exception as e:
+            print(f"--- Failed to export trace: {e} ---")
+
+        return result
+
+    else:
+        print("No valid profiler specified, running function without profiling.")
+        return function_to_profile(*args, **kwargs)

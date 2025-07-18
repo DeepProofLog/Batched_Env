@@ -4,7 +4,7 @@ from typing import List, Union, Dict, Type, Optional, Callable, Tuple
 
 import torch as th
 import torch
-from torch import nn
+from torch import log, nn
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -422,9 +422,9 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
                 if kge_action_str and kge_pred_str:
                     original_pred_str = kge_pred_str.removesuffix('_kge')
                     original_atom_str = f"{original_pred_str}{kge_action_str[len(kge_pred_str):]}"
-                    
                     score = self.kge_inference_engine.predict(original_atom_str)
                     kge_log_prob = math.log(score + 1e-9)
+                    # print(f"Computing KGE score for action: {original_atom_str}_kge, score: {score:.5f}, log_prob: {kge_log_prob:.3f}")
                     
                     log_prob[batch_idx] = kge_log_prob
         return log_prob
@@ -449,6 +449,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         values = latent_vf # (batch_size=n_envs,n_states=1)
         # Get action probabilities and create distribution
         action_logits = latent_pi # (batch_size=n_envs,pad_states)
+
         distribution = self.action_dist.proba_distribution(action_logits=action_logits)
         
         # Sample a single action from the distribution
@@ -459,8 +460,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         # If a KGE action was taken, overwrite its log_prob with the KGE score
         if self.kge_inference_engine is not None:
             log_prob = self.get_kge_log_probs(obs, actions, log_prob)
- 
-
+        # print(f"Actions: {actions.item()}, Logprobs: {log_prob.item():.3f}, Action logits: {action_logits[:,:5]}")
         return actions, values, log_prob
 
 

@@ -1080,7 +1080,7 @@ class ConstantEmbeddings(nn.Module):
     """Module to handle constant embeddings per domain."""
     def __init__(self, num_constants: int, embedding_dim: int, regularization=0.0, device="cpu"): 
         super(ConstantEmbeddings, self).__init__()
-        self.embedder = nn.Embedding(num_constants, embedding_dim, padding_idx=0)
+        self.embedder = nn.Embedding(num_constants+1, embedding_dim, padding_idx=0)
         self.regularization = regularization
         self.device = device
 
@@ -1095,7 +1095,7 @@ class PredicateEmbeddings(nn.Module):
     """Module to handle predicate embeddings."""
     def __init__(self, num_predicates: int, embedding_dim: int, regularization=0.0, device="cpu"):
         super(PredicateEmbeddings, self).__init__()
-        self.embedder = nn.Embedding(num_predicates, embedding_dim, padding_idx=0)
+        self.embedder = nn.Embedding(num_predicates+1, embedding_dim, padding_idx=0)
         self.regularization = regularization
         self.device = device
 
