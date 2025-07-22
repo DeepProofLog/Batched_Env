@@ -8,7 +8,7 @@ import janus_swi as janus
 
 from dataset import DataHandler
 from index_manager import IndexManager
-from utils import Rule, Term, print_state_transition, is_variable
+from utils import Rule, Term, print_state_transition
 from python_unification import get_next_unification_python
 # from python_unification import get_next_unification_python_old as get_next_unification_python
 from prolog_unification import get_next_unification_prolog
@@ -70,7 +70,6 @@ class LogicEnv_gym(gym.Env):
             
         if self.corruption_mode:
             self.sampler = data_handler.sampler
-            self.triples_factory = data_handler.triples_factory
             self.corruption_scheme = corruption_scheme
         
         self.janus_file = data_handler.janus_path
@@ -95,6 +94,7 @@ class LogicEnv_gym(gym.Env):
 
         if self.mode == 'train':
             self.train_neg_ratio = train_neg_ratio
+            assert self.sampler.num_negs_per_pos <3, f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment. If no seed is provided, generate a random one'''

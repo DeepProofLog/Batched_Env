@@ -5,10 +5,10 @@ from typing import Optional, Union, Any, List, Dict
 import time
 import sys
 
-import env
 from model_eval import evaluate_policy as evaluate_policy_mrr
 from model_eval import eval_corruptions as eval_corruptions_mrr
 import gymnasium as gym
+from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -131,7 +131,6 @@ class CustomEvalCallback(EvalCallback):
                 warn=self.warn,
                 callback=self._log_success_callback,
             )
-
             if self.log_path is not None:
                 assert isinstance(episode_rewards, list)
                 assert isinstance(episode_lengths, list)
@@ -170,22 +169,25 @@ class CustomEvalCallback(EvalCallback):
                                          "eval" not in k and "total_timesteps" not in k}
 
             if mean_reward > self.best_mean_reward:
-                if self.verbose >= 1:
-                    print("New best mean reward!")
-                if self.model_path is not None:
-                    self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
-                    self.write_info()
                 self.best_mean_reward = float(mean_reward)
                 self.best_epoch = self.num_timesteps
+                if self.model_path is not None:
+                    self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
+                    print(f"Saved new best eval model to {self.model_path}")
+                    self.write_info(description='best_eval') # Pass description for consistency
                 
                 # Trigger callback on new best model, if needed
                 if self.callback_on_new_best is not None:
                     continue_training = self.callback_on_new_best.on_step()
 
             if self.log_path:
-                self._log_values({"eval/mean_reward": mean_reward, "eval/std_reward": std_reward, "eval/mean_ep_length": mean_ep_length, 
-                            "eval/std_ep_length": std_ep_length, "eval/num_timesteps": self.num_timesteps})
-                
+                self._log_values({
+                    "eval/mean_reward": mean_reward, 
+                    "eval/std_reward": std_reward, 
+                    "eval/mean_ep_length": mean_ep_length, 
+                    "eval/std_ep_length": std_ep_length, 
+                    "eval/num_timesteps": self.num_timesteps
+                })
 
             # Trigger callback after every evaluation, if needed
             if self.callback is not None:
@@ -200,38 +202,52 @@ class CustomEvalCallback(EvalCallback):
         with open(self.log_path, "a") as f:
             f.write(";".join(f'{k}:{v}' for k, v in logs.items())+ "\n")
 
-    def write_info(self):
+    def write_info(self, description: str):
         """Save checkpoint metadata."""
         info = {
-            'metric': 'best_mean_reward',
-            'best_metric_value': float(self.best_mean_reward),
-            'n_calls': self.n_calls,
+            'metric': 'eval/mean_reward',
+            'best_value': float(self.best_mean_reward),
             'timesteps': self.num_timesteps,
+            'epoch': self.best_epoch,
         }
-        info_path = os.path.join(self.model_path, f'info_best_eval_{self.name}.json')
+        info_path = os.path.join(self.model_path, f'info_{description}_{self.name}.json')
         with open(info_path, 'w') as f:
             json.dump(info, f, indent=4)
 
-    def restore_best_ckpt(self):
-        """Restore the best model."""
-        if self.best_epoch: # use best model from best_model
-            model_files = [f for f in os.listdir(self.model_path) if 'best_eval' in f and 'info' not in f and '.zip' in f]
-            if len(model_files) > 1:
-                model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
-                print('Restoring last model modified:', model_files[0])
-            self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=False)
-            print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_mean_reward:.3f}.')
+    def restore_best_ckpt(self,env):
+        """
+        Restore the best model found during evaluation.
+        """
+        if self.model_path is None:
+            print("Warning: `model_path` is not set. Cannot restore model.")
+            return
+
+        model_files = [f for f in os.listdir(self.model_path) if '.zip' in f and 'best_eval_' in f]
+        if len(model_files) >= 1:
+            model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
+            self.model = PPO.load(
+                os.path.join(self.model_path, model_files[0]),
+                env=env,          # or whatever env you need
+                device=self.model.device,
+                print_system_info=False
+            )
+            # load the info file to get the best epoch and value
+            info_path = os.path.join(self.model_path, f'info_best_eval_{self.name}.json')
+            if os.path.exists(info_path):
+                with open(info_path, 'r') as f:
+                    info = json.load(f)
+                best_timestep = info.get('timesteps', None)
+                best_mean_reward = info.get('best_value', None)
+                print(f'Restored best val model from step {best_timestep}, with mean_reward={best_mean_reward:.3f}.')
+            else:
+                raise ValueError(f"Warning: Info file not found: {info_path}")
         else:
-            print(f'No best model found for {self.name}.')
-    
-    def _on_training_end(self) -> bool:
-        if self.best_model_save_path:
-            self.write_info()       
+            raise ValueError("No best model found to restore.")
+            return
+        return self.model
 
 
-
-
-class SB3ModelCheckpoint(BaseCallback):
+class SB3TrainCheckpoint(BaseCallback):
     """Callback to save SB3 model weights when a monitored metric improves."""
 
     def __init__(
@@ -240,7 +256,6 @@ class SB3ModelCheckpoint(BaseCallback):
         monitor: str = "rollout/ep_rew_mean",
         model_path: Optional[str] = None,
         log_path: Optional[str] = None,
-        save_best_only: bool = True,
         maximize: bool = True,
         verbose: bool = True,
         frequency: int = 1,
@@ -248,7 +263,7 @@ class SB3ModelCheckpoint(BaseCallback):
         name: str = None
     ):
         """
-        Initialize checkpoint callback.
+        Monitors a metric and saves the last training ckpt.
 
         Args:
             model: The RL model to monitor and save.
@@ -265,14 +280,13 @@ class SB3ModelCheckpoint(BaseCallback):
         self.monitor = monitor
         self.model_path = model_path
         self.log_path = log_path
-        self.save_best_only = save_best_only
         self.maximize = maximize
         self.frequency = frequency
         self.name = name
 
         self.best_value = -sys.float_info.max if maximize else sys.float_info.max
         self.best_epoch = None
-        # self.best_variance = 0
+        self.current_value = None
         self.total_steps = total_steps
 
     def _on_step(self) -> bool:
@@ -282,56 +296,34 @@ class SB3ModelCheckpoint(BaseCallback):
 
     def _on_rollout_end(self) -> None:
         """Check metric and save model at the end of each rollout."""
-        # Skip if not checking at this rollout frequency
-        # if self.n_calls % self.frequency != 0:
-        #     return
-
         logs = {key: value for key, value in self.logger.name_to_value.items()}
-        # print('logs train:', ', '.join([":".join((str(k), str(np.round(v, 3)))) for k, v in logs.items()]))
         if self.log_path and logs:
                 self._log_values(logs)
-
 
         if self.monitor not in logs:
             print(f'Metric "{self.monitor}" not found. Available: {logs.keys()}')
             return
-        current_value = logs[self.monitor]
-        # current_variance = logs.get("train/explained_variance", None)
-        improved = (self.maximize and current_value > self.best_value) or \
-                   (not self.maximize and current_value < self.best_value)
+
+        self.current_value = logs[self.monitor]
+        improved = (self.maximize and self.current_value > self.best_value) or \
+                   (not self.maximize and self.current_value < self.best_value)
 
         if improved:
             # Update best value
-            self.best_value = current_value
+            self.best_value = self.current_value
             self.best_epoch = self.num_timesteps
-            # reset the best variance every time the best value is updated
-            # self.best_variance = logs.get("train/explained_variance", None)
+
             if self.verbose:
-                print(f'Improved {self.monitor} to {current_value:.4f}')
+                print(f'Improved {self.monitor} to {self.current_value:.4f} in train')
 
-            # Save model
-            if self.model_path:
-                self.model_.save(os.path.join(self.model_path, f"best_train_{self.name}.zip"))
-                self.write_info('best_train')
-        
-        if self.model_path:
-            self.model_.save(os.path.join(self.model_path, f"last_train_{self.name}.zip"))
-            self.write_info('last_train')
-
-        # if current_variance is not None:
-        #     as_good = (self.maximize and current_value >= self.best_value and current_variance>self.best_variance) or \
-        #            (not self.maximize and current_value <= self.best_value and current_variance>self.best_variance)
-
-        #     if as_good:
-        #         self.best_variance = current_variance
-        #         if self.model_path:
-        #             self.model_.save(os.path.join(self.model_path, f"best_variance_{self.name}.zip"))
-        #             self.write_info('best_variance')
     
     def _on_training_end(self) -> bool:
         if self.model_path:
-            self.model_.save(os.path.join(self.model_path, f"last_epoch_{self.name}.zip"))
+            save_path = os.path.join(self.model_path, f"last_epoch_{self.name}.zip")
+            self.model_.save(save_path)
             self.write_info('last_epoch')
+            if self.verbose:
+                print(f"Saved final training model to {save_path}")
 
     def _log_headers(self, headers):
         """Logs headers to the file."""
@@ -345,32 +337,48 @@ class SB3ModelCheckpoint(BaseCallback):
         with open(self.log_path, "a") as f:
             f.write(";".join(f'{k}:{v}' for k, v in logs.items())+ "\n")
 
-    def write_info(self,name):
+    def write_info(self, description: str):
         """Save checkpoint metadata."""
         if not self.model_path:
             return
         info = {
             'metric': self.monitor,
-            'best_value': float(self.best_value),
+            f'last_{self.monitor}': float(self.current_value) if self.current_value is not None else None,
             'timesteps': self.num_timesteps,
             'finished_train': self.num_timesteps >= self.total_steps,
         }
-        info_path = os.path.join(self.model_path,f'info_{name}_{self.name}.json')
+        info_path = os.path.join(self.model_path,f'info_{description}_{self.name}.json')
         with open(info_path, 'w') as f:
             json.dump(info, f, indent=4)
 
-    def restore_best_ckpt(self):
-        """Restore the best model."""
-        if self.best_epoch: # use best model from best_model
-            model_files = [f for f in os.listdir(self.model_path) if self.name in f and '.zip' in f and 'last_epoch_' in f]
-            # if there's more than one, choose the most recent
-            if len(model_files) > 1:
-                model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
-                print('Restoring last model modified:', model_files[0])
-            self.model.load(os.path.join(self.model_path, model_files[0]),print_system_info=True)
-            print(f'Restored best model from step {self.best_epoch}, with best_mean_reward={self.best_value:.3f}.')
+    def restore_last_ckpt(self,env):
+        """Restore the last train model."""
+        if self.model_path is None:
+            print("Warning: `model_path` is not set. Cannot restore model.")
+            return
+        
+        model_files = [f for f in os.listdir(self.model_path) if '.zip' in f and 'last_epoch_' in f]
+        # if there's more than one, choose the most recent
+        if len(model_files) >= 1:
+            model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
+            self.model = PPO.load(
+                os.path.join(self.model_path, model_files[0]),
+                env=env,          # or whatever env you need
+                device=self.model.device,
+                print_system_info=False
+            )        # load the info file to get the best epoch and value
+            info_path = os.path.join(self.model_path, f'info_last_epoch_{self.name}.json')
+            if os.path.exists(info_path):
+                with open(info_path, 'r') as f:
+                    info = json.load(f)
+                last_timestep = info.get('timesteps', 0)
+                last_rwd = info.get('last_rollout/ep_rew_mean', 0.0)
+                print(f'Restored last train model from step {last_timestep}, with last_mean_reward={last_rwd:.3f}.')
+            else:
+                raise ValueError(f"Info file not found: {info_path}")
         else:
-            print(f'No best model found for {self.name}.')
+            raise ValueError("No last model found to restore.")
+        return self.model
 
 
 
@@ -454,28 +462,20 @@ class LogToFileCallback(BaseCallback):
 
 
 
-
-
-
-
-
-
-
-
-
-
 class CustomEvalCallbackMRR(CustomEvalCallback):
     """
-    Callback for evaluating an agent, including MRR calculation.
-    Inherits from CustomEvalCallback and overrides the _on_step method
-    to incorporate MRR evaluation using a provided sampler and data.
+    Callback for evaluating an agent. It uses the `eval_corruptions` function 
+    for comprehensive MRR metrics but is adapted to behave identically to 
+    `CustomEvalCallback` by mapping the results to the same internal variables.
+
+    This version saves the best model based on the mean reward of positive samples.
     """
     def __init__(
         self,
         eval_env: Union[gym.Env, VecEnv],
-        sampler: Any,  # Sampler for generating negative samples
-        eval_data: List[Any],  # Data for MRR evaluation (positive queries)
-        n_corruptions: Optional[int] = None, # Number of negative corruptions per positive
+        sampler: Any,
+        eval_data: List[Any],
+        n_corruptions: Optional[int] = None,
         callback_on_new_best: Optional[BaseCallback] = None,
         callback_after_eval: Optional[BaseCallback] = None,
         n_eval_episodes: int = 5,
@@ -505,13 +505,18 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             warn=warn,
             name=name,
         )
+        
+        # Specific attributes for MRR evaluation
+        assert hasattr(eval_env, 'type_') and eval_env.type_ == "custom_dummy", "Requires custom_dummy VecEnv"
         self.sampler = sampler
         self.eval_data = eval_data
         self.n_corruptions = n_corruptions
         self.consult_janus = consult_janus
-        self.best_mean_mrr = -np.inf # Track best MRR for saving best model based on MRR
 
     def _on_step(self) -> bool:
+        """
+        This method is called by the model after each call to `env.step()`.
+        """
         continue_training = True
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
             start = time.time()
@@ -527,7 +532,9 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                         "and warning above."
                     ) from e
 
-            # Perform MRR evaluation
+            # Reset success rate buffer
+            self.model.policy.set_training_mode(False)
+            self._is_success_buffer = []
             mrr_eval_results = eval_corruptions_mrr(
                 self.model,
                 self.eval_env,
@@ -538,108 +545,76 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                 verbose=self.verbose,
                 consult_janus=self.consult_janus,
             )
+            self.model.policy.set_training_mode(True)
 
-            mean_mrr = mrr_eval_results.get('mrr_mean', 0.0)
-            mean_reward_pos = mrr_eval_results.get('rewards_pos_mean', 0.0)
-            mean_reward_neg = mrr_eval_results.get('rewards_neg_mean', 0.0)
-            hits1 = mrr_eval_results.get('hits1_mean', 0.0)
-            hits3 = mrr_eval_results.get('hits3_mean', 0.0)
-            hits10 = mrr_eval_results.get('hits10_mean', 0.0)
-            auc_pr = mrr_eval_results.get('auc_pr', 0.0)
+            # --- ADAPTATION STEP ---
+            mean_mrr = mrr_eval_results.get('mrr_mean', None)
+            mean_reward_pos = mrr_eval_results.get('rewards_pos_mean', None)
+            std_reward_pos = mrr_eval_results.get('rewards_pos_std', None)
+            mean_reward_neg = mrr_eval_results.get('rewards_neg_mean', None)
+            std_reward_neg = mrr_eval_results.get('rewards_neg_std', None)
+            mean_ep_length = mrr_eval_results.get('episode_len_pos_mean', None)
+            std_ep_length = mrr_eval_results.get('episode_len_pos_std', None)
+            hits1 = mrr_eval_results.get('hits1_mean', None)
+            hits3 = mrr_eval_results.get('hits3_mean', None)
+            hits10 = mrr_eval_results.get('hits10_mean', None)
+            auc_pr = mrr_eval_results.get('auc_pr', None)
 
-            print(f"Eval num_timesteps={self.num_timesteps}")
+            print(f"\nEval num_timesteps={self.num_timesteps}. Rewards Positive: {mean_reward_pos:.4f}+/-{std_reward_pos:.4f}")
+            print(f"Ep len Positive: {mean_ep_length:.2f} +/- {std_ep_length:.2f}. Ep len Negative: {std_ep_length:.2f}+/- {std_ep_length:.2f}")
+            print(f"Rewards Negative: {mean_reward_neg:.4f}+/-{std_reward_neg:.4f}")
             print(f"MRR: {mean_mrr:.4f}")
-            print(f"Rewards Positive: {mean_reward_pos:.4f}, Negative: {mean_reward_neg:.4f}")
-            print(f"Hits@1: {hits1:.4f}, Hits@3: {hits3:.4f}, Hits@10: {hits10:.4f}")
-            print(f"AUC-PR: {auc_pr:.4f}")
+            # print(f"Hits@1: {hits1:.4f}, Hits@3: {hits3:.4f}, Hits@10: {hits10:.4f}, AUC-PR: {auc_pr:.4f}")
 
-            # Record MRR and other metrics to the logger
+            mean_reward = mrr_eval_results.get('rewards_pos_mean')
+            std_reward = mrr_eval_results.get('rewards_pos_std')
+            mean_ep_length = mrr_eval_results.get('episode_len_pos_mean')
+            std_ep_length = mrr_eval_results.get('episode_len_pos_std')
+            mean_mrr = mrr_eval_results.get('mrr_mean')
+
+            # Add to current Logger
+            self.logger.record("eval/mean_reward", float(mean_reward))
+            self.logger.record("eval/mean_ep_length", mean_ep_length)
             self.logger.record("eval/mrr_mean", float(mean_mrr))
-            self.logger.record("eval/rewards_pos_mean", float(mean_reward_pos))
-            self.logger.record("eval/rewards_neg_mean", float(mean_reward_neg))
-            self.logger.record("eval/hits1_mean", float(hits1))
-            self.logger.record("eval/hits3_mean", float(hits3))
-            self.logger.record("eval/hits10_mean", float(hits10))
-            self.logger.record("eval/auc_pr", float(auc_pr))
+
+            if len(self._is_success_buffer) > 0:
+                success_rate = np.mean(self._is_success_buffer)
+                if self.verbose >= 1:
+                    print(f"Success rate: {100 * success_rate:.2f}%")
+                self.logger.record("eval/success_rate", success_rate)
+
+            # Dump log so the evaluation results are printed with the correct timestep
             self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
 
-            # Original reward-based evaluation (if still desired, though MRR is primary)
-            # You might want to remove or adjust this if MRR is the sole metric
-            # Or you could consider one of these as the primary metric for saving the best model
-            # For simplicity, let's keep the best model saving based on MRR for CustomEvalCallbackMRR
-            if mean_mrr > self.best_mean_mrr:
-                print("New best mean MRR!")
-                if self.model_path is not None:
-                    # Save the model with a clear indicator for MRR
-                    self.model.save(os.path.join(self.model_path, f"best_eval_mrr_{self.name}.zip"))
-                    # Update info with MRR metrics
-                    self.write_mrr_info(mrr_eval_results)
-                self.best_mean_mrr = float(mean_mrr)
+            self.logger.name_to_value = {k: v for k, v in self.logger.name_to_value.items() if 
+                                         "eval" not in k and "total_timesteps" not in k}
+
+            if mean_reward > self.best_mean_reward:
+                print("New best mean reward in eval!")
+                self.best_mean_reward = float(mean_reward)
                 self.best_epoch = self.num_timesteps
+                if self.model_path is not None:
+                    self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
+                    self.write_info(description='best_eval')
                 
+                # Trigger callback on new best model, if needed
                 if self.callback_on_new_best is not None:
                     continue_training = self.callback_on_new_best.on_step()
 
             if self.log_path:
-                # Log all relevant metrics, including MRR ones
-                log_metrics = {
-                    "eval/mrr_mean": mean_mrr,
-                    "eval/rewards_pos_mean": mean_reward_pos,
-                    "eval/rewards_neg_mean": mean_reward_neg,
-                    "eval/hits1_mean": hits1,
-                    "eval/hits3_mean": hits3,
-                    "eval/hits10_mean": hits10,
-                    "eval/auc_pr": auc_pr,
+                self._log_values({
+                    "eval/mean_reward": mean_reward, 
+                    "eval/std_reward": std_reward, 
+                    "eval/mean_ep_length": mean_ep_length, 
+                    "eval/std_ep_length": std_ep_length, 
                     "eval/num_timesteps": self.num_timesteps,
-                }
-                self._log_values(log_metrics)
+                    "eval/mrr_mean": mean_mrr,
+                })
                 
 
+            # Trigger callback after every evaluation, if needed
             if self.callback is not None:
                 continue_training = continue_training and self._on_event()
 
-            print(f'---------------evaluation finished---------------  took {time.time()-start:.2f} seconds')
-            # print(aaaaaa)
+            print(f'\n---------------evaluation finished---------------  took {time.time()-start:.2f} seconds')
         return continue_training
-
-    def write_mrr_info(self, mrr_results: Dict[str, Any]):
-        """Save checkpoint metadata with MRR specific information."""
-        info = {
-            'metric': 'best_mean_mrr',
-            'best_metric_value': float(self.best_mean_mrr),
-            'n_calls': self.n_calls,
-            'timesteps': self.num_timesteps,
-            'mrr_results': {k: float(v) if isinstance(v, (np.floating, np.integer)) else v for k, v in mrr_results.items()}
-        }
-        info_path = os.path.join(self.model_path, f'info_best_eval_mrr_{self.name}.json')
-        with open(info_path, 'w') as f:
-            json.dump(info, f, indent=4)
-
-    def restore_best_ckpt(self):
-        """Restore the best model based on MRR."""
-        if self.best_epoch:
-            model_files = [f for f in os.listdir(self.model_path) if f'best_eval_mrr_{self.name}' in f and '.zip' in f]
-            if len(model_files) > 1:
-                model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
-                print('Restoring last model modified based on MRR:', model_files[0])
-            if model_files:
-                self.model.load(os.path.join(self.model_path, model_files[0]), print_system_info=False)
-                print(f'Restored best model from step {self.best_epoch}, with best_mean_mrr={self.best_mean_mrr:.3f}.')
-            else:
-                print(f'No best MRR model found for {self.name}.')
-        else:
-            print(f'No best MRR model found for {self.name}.')
-
-    def _on_training_end(self) -> bool:
-        # Override to save the info file for the MRR-based best model
-        if self.best_model_save_path:
-            # Need to re-evaluate or store the last MRR results to save them correctly at the end
-            # For simplicity, we just call write_mrr_info if a best MRR model was found during training.
-            # In a more robust implementation, you might want to perform a final MRR eval here.
-            if self.best_mean_mrr > -np.inf: # Only if at least one evaluation happened
-                 # This would ideally take the last computed mrr_eval_results
-                 # For now, we'll just use the best_mean_mrr stored.
-                 # To save full results, mrr_eval_results would need to be stored as a class member
-                 # or re-computed.
-                self.write_mrr_info({'mrr_mean': self.best_mean_mrr})
-        return True

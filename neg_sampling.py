@@ -10,6 +10,7 @@ from typing import Collection, Optional, Union,Literal, Dict, List
 import types
 from pykeen.constants import TARGET_TO_INDEX, LABEL_HEAD, LABEL_TAIL, LABEL_RELATION
 import logging
+import numpy as np
 
 Target = Literal["head", "relation", "tail"]
 LongTensor: TypeAlias = torch.LongTensor  
@@ -126,119 +127,62 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
 
         # Store the padding index to exclude
         self.padding_idx = padding_idx
-        if self.padding_idx != 0:
+        if self.padding_idx != {0}:
              # The efficient replacement function assumes padding_idx is 0
              # Needs modification if padding_idx can be != 0
              logging.warning(f"Current efficient implementation assumes padding_idx=0, but got {padding_idx}. Adapt _efficient_replacement if needed.")
 
 
-    @staticmethod
-    def _efficient_replacement(
-        batch: LongTensor,
-        index: int,
-        selection: slice,
-        size: int,
-        max_index: int,
-        pad_idx: int # Pass padding index explicitly
-    ) -> None:
+    def random_replacement_(self, batch: LongTensor, index: int, selection: slice, size: int, max_index: int) -> None:
         """
-        Efficiently replace batch[selection, index] with random ints from [0, max_index-1],
-        excluding the original value and the specified pad_idx.
+        Replace a column of a batch of indices by random indices.
 
-        Assumes pad_idx = 0 for optimal efficiency in current implementation.
+        :param batch: shape: `(*batch_dims, d)`
+            the batch of indices
+        :param index:
+            the index (of the last axis) which to replace
+        :param selection:
+            a selection of the batch, e.g., a slice or a mask
+        :param size:
+            the size of the selection
+        :param max_index:
+            the maximum index value at the chosen position
         """
-        if max_index <= 1:
-            # Cannot sample anything if max_index is 0 or 1
-            # logging.warning(f"Cannot replace index {index} with max_index={max_index}. Skipping.")
-            return
-
-        original_values = batch[selection, index]
-
-        # Determine the valid range size excluding the padding index
-        # Example: if max_index=10, pad_idx=0 -> valid are {1..9}, size = 9
-        # Example: if max_index=10, pad_idx=3 -> valid are {0,1,2, 4..9}, size = 9
-        # General size = max_index - 1 (if pad_idx is within [0, max_index-1])
-        # For simplicity and efficiency, we strongly assume pad_idx = 0 here.
-        if pad_idx != 0:
-             # Fallback to a potentially less efficient or more complex method
-             # Or adapt the logic below, which becomes harder.
-             raise NotImplementedError("Efficient replacement currently requires padding index to be 0.")
-
-        # --- Optimized logic for pad_idx = 0 ---
-        # We want to sample from {1, 2, ..., max_index - 1} excluding original_value
-
-        num_valid_candidates = max_index - 1 # Size of the set {1, ..., max_index - 1}
-        if num_valid_candidates <= 0: # Only index 0 exists (max_index=1)
-             return
-
-        # Sample indices from [0, num_valid_candidates - 1]
+        # At least make sure to not replace the triples by the original value
+        # To make sure we don't replace the {head, relation, tail} by the
+        # original value we shift all values greater or equal than the original value by one up
+        # for that reason we choose the random value from [0, num_{heads, relations, tails} -1]
         replacement = torch.randint(
-            high=num_valid_candidates,
+            high=max_index - 1,
             size=(size,),
             device=batch.device,
         )
-        # Shift indices to values [1, max_index - 1]
-        replacement = replacement + 1
-
-        # Avoid original value:
-        # Shift replacement up by 1 if it is >= original_value,
-        # but ONLY if original_value was within the sampling range [1, max_index - 1].
-        needs_shift = (replacement >= original_values) & (original_values > 0) # Check original > 0
-        replacement = replacement + needs_shift.long()
-
-        # Assign back to the selected slice
+        replacement += (replacement >= batch[selection, index]).long()
         batch[selection, index] = replacement
-        # --- End of optimized logic ---
-
 
     def corrupt_batch(self, positive_batch: LongTensor, num_negs_per_pos: int) -> LongTensor:
-        """
-        Corrupts a batch of positive triples using the specified scheme,
-        efficiently excluding the padding index (self.padding_idx, assumed 0)
-        and the original triple value.
-        """
         batch_shape = positive_batch.shape[:-1]
 
-        # Clone positive batch for corruption (.repeat_interleave creates a copy)
-        # Reshape to 2D: (batch_size * num_pos, 3)
+        # clone positive batch for corruption (.repeat_interleave creates a copy)
         negative_batch = positive_batch.view(-1, 3).repeat_interleave(num_negs_per_pos, dim=0)
 
-        # Total number of negatives to generate for the whole batch
+        # Bind the total number of negatives to sample in this batch
         total_num_negatives = negative_batch.shape[0]
 
-        # Determine splits for corrupting different columns roughly equally
-        num_corruption_indices = len(self._corruption_indices)
-        if num_corruption_indices == 0: # Should not happen with validation in init
-             return negative_batch.view(*batch_shape, num_negs_per_pos, 3) # Return unchanged
+        # Equally corrupt all sides
+        split_idx = int(math.ceil(total_num_negatives / len(self._corruption_indices)))
 
-        split_idx = math.ceil(total_num_negatives / num_corruption_indices)
-
-        # Apply corruption column by column
-        current_start = 0
-        for index in self._corruption_indices:
-            # Determine the slice of the batch to corrupt for this column
-            stop = min(current_start + split_idx, total_num_negatives)
-            if stop <= current_start: # No samples left for this index
-                 continue
-            selection = slice(current_start, stop)
-            size = stop - current_start
-
-            # Determine max index based on column (relation or entity)
-            current_max_index = self.num_relations if index == 1 else self.num_entities
-
-            # Call the modified, efficient replacement function
-            self._efficient_replacement(
+        # Do not detach, as no gradients should flow into the indices.
+        for index, start in zip(self._corruption_indices, range(0, total_num_negatives, split_idx)):
+            stop = min(start + split_idx, total_num_negatives)
+            self.random_replacement_(
                 batch=negative_batch,
                 index=index,
-                selection=selection,
-                size=size,
-                max_index=current_max_index,
-                pad_idx=self.padding_idx # Pass the padding index
+                selection=slice(start, stop),
+                size=stop - start,
+                max_index=self.num_relations if index == 1 else self.num_entities,
             )
-            # Update start for the next iteration
-            current_start = stop
 
-        # Reshape back to (..., num_negs_per_pos, 3)
         return negative_batch.view(*batch_shape, num_negs_per_pos, 3)
 
     def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
@@ -305,38 +249,95 @@ def get_negatives(
     # Build positive batch: (B, 3)
     positive_batch = torch.stack([heads, rels, tails], dim=1)
 
-    # Generate negatives
-    if num_negs is None:
-        neg_batches = self.corrupt_batch_all(positive_batch)
-        if not neg_batches or all(b.numel() == 0 for b in neg_batches):
-            max_negs = 0
-        else:
-            max_negs = max(batch.size(0) for batch in neg_batches)
-    else:
-        neg_tensor = self.corrupt_batch(positive_batch, num_negs_per_pos=num_negs)
-        neg_batches = [neg_tensor[i] for i in range(B)]
-        max_negs = num_negs
+    if num_negs is not None:
+        # --- FIXED LOGIC: Iterative Resampling ---
+        # List to store the collected negatives for each positive in the batch
+        collected_negatives = [[] for _ in range(B)]
+        # Tensor to keep track of which positives still need negatives
+        needs_negatives = torch.arange(B, device=device)
+        
+        # Keep generating negatives as long as there are positives that need them
+        while len(needs_negatives) > 0:
+            # Get the positive triples that still need more negatives
+            pos_batch_to_corrupt = positive_batch[needs_negatives]
+            
+            # Generate ONE negative for each of the remaining positives
+            # Shape: (num_still_needing, 1, 3)
+            new_negs = self.corrupt_batch(pos_batch_to_corrupt, num_negs_per_pos=1)
 
-    # Allocate output
+            # Filter the new negatives if a filterer is available
+            # The mask will be shape: (num_still_needing, 1)
+            if self.filterer:
+                new_negs = new_negs.to(self.filterer.mersenne.device)
+                mask = self.filterer(new_negs)
+            else:
+                # If no filterer, all generated negatives are considered valid
+                mask = torch.ones(new_negs.shape[:2], dtype=torch.bool, device=device)
+
+            # Add the valid negatives to our collection
+            still_needs_indices = []
+            for i, neg_idx in enumerate(needs_negatives):
+                # Check if the generated negative was valid
+                if mask[i, 0]:
+                    # Squeeze to remove the num_negs_per_pos=1 dimension
+                    collected_negatives[neg_idx].append(new_negs[i].squeeze(0))
+                
+                # If this positive still has fewer than num_negs, we need to try again
+                if len(collected_negatives[neg_idx]) < num_negs:
+                    still_needs_indices.append(neg_idx)
+            
+            # Update the list of positives that still need negatives for the next iteration
+            if still_needs_indices:
+                needs_negatives = torch.tensor(still_needs_indices, dtype=torch.long, device=device)
+            else:
+                needs_negatives = []
+        
+        # At this point, each list in collected_negatives has num_negs tensors
+        # Stack them into a single tensor for consistent processing.
+        neg_batches = [torch.stack(negs, dim=0) for negs in collected_negatives]
+    else:
+        # Case 2: Generate all possible negatives within the domain/entity space
+        neg_batches = self.corrupt_batch_all(positive_batch)
+
+        # Apply the filterer to each batch in the list
+        if self.filterer:
+            filtered_batches = []
+            for batch in neg_batches:
+                if batch.numel() == 0:
+                    filtered_batches.append(batch)
+                    continue
+                # The filterer expects a batch dimension, so we add and remove it
+                # for each list item, e.g., shape (num_candidates, 3) -> (1, num_candidates, 3)
+                batch = batch.to(self.filterer.mersenne.device)
+                mask = self.filterer(batch.unsqueeze(0)).squeeze(0)
+                filtered_batches.append(batch[mask])
+            neg_batches = filtered_batches
+
+    # --- Padding and Tensor Assembly ---
+    # Determine the maximum number of negatives found across the batch after filtering
+    if not neg_batches or all(b.numel() == 0 for b in neg_batches):
+        max_negs = 0
+    else:
+        max_negs = max(batch.size(0) for batch in neg_batches)
+
+    # Allocate the final output tensor, filled with padding
     neg_subs = torch.full(
         (B, max_negs, padding_atoms, max_arity + 1),
         fill_value=self.index_manager.padding_idx,
         dtype=torch.long,
-        device=device
+        device=device,
     )
 
-    # Fill
+    # Fill the tensor with the filtered negative samples
     if max_negs > 0:
         for i, batch in enumerate(neg_batches):
             M = batch.size(0)
             if M == 0:
                 continue
-            rel_i = batch[:, 1]
-            head_i = batch[:, 0]
-            tail_i = batch[:, 2]
-            neg_subs[i, :M, 0, 0] = rel_i
-            neg_subs[i, :M, 0, 1] = head_i
-            neg_subs[i, :M, 0, 2] = tail_i
+            # Deconstruct the (h, r, t) format back into your required sub-index format
+            neg_subs[i, :M, 0, 1] = batch[:, 0]  # Head
+            neg_subs[i, :M, 0, 0] = batch[:, 1]  # Relation
+            neg_subs[i, :M, 0, 2] = batch[:, 2]  # Tail
 
     return neg_subs
 
@@ -383,21 +384,31 @@ def get_negatives_from_states(
 
 def get_sampler(data_handler: DataHandler, 
                 index_manager: IndexManager,
-                triples_factory: TriplesFactory,
                 corruption_scheme: Optional[Collection[Target]] = None,
+                device: torch.device = torch.device("cpu"),
                 )-> Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain]:
+
+    np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts], dtype=str)
+    triples_factory = TriplesFactory.from_labeled_triples(triples=np_facts,
+                                                        entity_to_id=index_manager.constant_str2idx,
+                                                        relation_to_id=index_manager.predicate_str2idx,
+                                                        compact_id=False,
+                                                        create_inverse_triples=False)
+
+    mapped_triples_cpu = triples_factory.mapped_triples.cpu()
 
     if 'countries' in data_handler.dataset_name or 'ablation' in data_handler.dataset_name:
         domain2idx = {domain: [index_manager.constant_str2idx[e] for e in entities] for domain, entities in data_handler.domain2entity.items()}
         entity2domain: Dict[int, str] = {index_manager.constant_str2idx[e]: domain for domain, entities in data_handler.domain2entity.items() for e in entities}
-        sampler = BasicNegativeSamplerDomain(mapped_triples=triples_factory.mapped_triples, 
+        sampler = BasicNegativeSamplerDomain(
+                                            mapped_triples=mapped_triples_cpu, # Use CPU version for init
                                             domain2idx=domain2idx,
                                             entity2domain=entity2domain,
                                             filtered=True,
                                             corruption_scheme=corruption_scheme)
     else:
         sampler = BasicNegativeSamplerCustom(   
-            mapped_triples=triples_factory.mapped_triples, 
+            mapped_triples=mapped_triples_cpu, # Use CPU version for init
             num_entities=len(index_manager.constant_str2idx),
             num_relations=len(index_manager.predicate_str2idx),
             filtered=True,
@@ -405,6 +416,16 @@ def get_sampler(data_handler: DataHandler,
             padding_idx=index_manager.padding_idx
         )
 
+    # After successful initialization, move the sampler's tensors to the target device.
+    sampler.mapped_triples = triples_factory.mapped_triples.to(device)
+
+    if sampler.filterer is not None:
+        sampler.filterer = sampler.filterer.to(device)  # <-- add this
+
+    # The BasicNegativeSamplerDomain has additional tensors that need to be moved.
+    if isinstance(sampler, BasicNegativeSamplerDomain):
+        for domain in sampler.domain_entities:
+            sampler.domain_entities[domain] = sampler.domain_entities[domain].to(device)
     # add the get_negatives method and the get_negatives_from_states method to the sampler
     sampler.index_manager = index_manager
     sampler.get_negatives = types.MethodType(get_negatives, sampler)

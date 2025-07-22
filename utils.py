@@ -644,5 +644,5 @@ def profile_code(profiler_type, function_to_profile, *args, **kwargs):
         return result
 
     else:
-        print("No valid profiler specified, running function without profiling.")
+        # print("No valid profiler specified, running function without profiling.")
         return function_to_profile(*args, **kwargs)

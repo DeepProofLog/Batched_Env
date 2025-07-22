@@ -170,7 +170,6 @@ class PPO_custom(PPO):
 
 class PolicyNetwork(nn.Module):
     def __init__(self, embed_dim=64, hidden_dim=128, num_layers=8, dropout_prob=0.2):
-        print('Embedding dim in policy', embed_dim)
         super().__init__()
         # Initial transformation from observation embedding to hidden representation
         self.obs_transform = nn.Sequential(
@@ -217,7 +216,6 @@ class PolicyNetwork(nn.Module):
 
 class ValueNetwork(nn.Module):
     def __init__(self, embed_dim=64, hidden_dim=128, num_layers=8, dropout_prob=0.2):
-        print('Embedding dim in value', embed_dim)
         super().__init__()
         # Initial transformation from observation embedding to hidden dimension
         self.input_layer = nn.Sequential(

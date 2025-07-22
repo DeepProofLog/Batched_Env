@@ -252,6 +252,7 @@ def eval_corruptions(
         os.makedirs("plots", exist_ok=True)
         aggregated_plot_data = {"pos_success": [], "pos_fail": [], "neg_success": [], "neg_fail": []}
     total_batches = (len(data) + num_envs - 1) // num_envs # Calculate total number of batches
+
     # Batch through data
     for b, start in enumerate(range(0, len(data), num_envs)):
         batch = data[start : start + num_envs]
@@ -293,13 +294,24 @@ def eval_corruptions(
             env,
             deterministic=deterministic,
             target_episodes=targets,
-            verbose=0,
+            verbose=1,
             track_logprobs=track_logprobs,
         )
         if verbose: print(f"Eval time: {time.time() - start_time:.2f}s")
 
-        # Penalize log_probs only for episodes that did NOT find a proof.
-        log_probs[rewards == 0] -= 100
+        # Penalize log_probs for episodes that did NOT find a proof.
+        log_probs[~proof_successful] -= 100
+        
+        # # do the same for logprobs_histories
+        # if track_logprobs:
+        #     hist_idx = 0
+        #     for i in range(proof_successful.shape[0]):
+        #         for j in range(proof_successful.shape[1]):
+        #             if not mask[i, j]: continue
+        #             if not proof_successful[i, j]:
+        #                 if hist_idx < len(logprob_histories) and len(logprob_histories[hist_idx]) > 0:
+        #                     logprob_histories[hist_idx] -= 100
+        #             hist_idx += 1
 
         # Collect metrics using mask
         # Positives: column 0
@@ -336,10 +348,15 @@ def eval_corruptions(
             hits10_list.extend(hits10.tolist())
 
         if verbose:
-            # print(f"\nQueries in batch: ")
-            # for (q, negs) in zip(batch, corrs):
-            #     print(f"  {q} + {[n for n in negs]}")
+            print(f"\nQueries in batch: ")
+            for (q, negs) in zip(batch, corrs):
+                print(f"  {q} + {[n for n in negs]}")
+
+            # set numpy option to print full arrays
+            # np.set_printoptions(threshold=np.inf) # Set threshold to infinity to show all elements
+            # np.set_printoptions(linewidth=1000) # Adjust linewidth if your array has many columns to prevent wrapping
             # print(f"Logprobs: {np.round(log_probs, 3)}")
+            # print(f" Number of queries in batch with 0 logprob: {np.sum(log_probs == 0)}")
             # print(f"ranks: {ranks}") if mask.shape[1] > 1 else None
 
             print(f"\nrwds pos    : {np.round(np.mean(rwds_pos), 3)}   \trwds neg       : {np.round(np.mean(rwds_neg), 3)}")

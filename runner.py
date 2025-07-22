@@ -49,16 +49,18 @@ if __name__ == "__main__":
     ATOM_EMBEDDING_SIZE = [64] # 256 for countries (atomatically selected below)
     CORRUPTION_MODE =  ['dynamic']
 
-    USE_KGE_ACTION = [True] # New parameter to enable KGE action
+    USE_KGE_ACTION = [False] # New parameter to enable KGE action
     KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
     if DATASET_NAME[0] == "countries_s3":
         KGE_RUN_SIGNATURE = ['countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt']
     elif DATASET_NAME[0] == "family":
         KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
+    elif DATASET_NAME[0] == "wn18rr":
+        KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-complex-True-256-256-1-rules.txt']
     # KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
     KGE_SCORES_FILE = [None]
  
-    RESTORE_BEST_VAL_MODEL = [True]
+    RESTORE_BEST_VAL_MODEL = [True] # else restore the model from the last train epoch
     load_model = False
     save_model = True
 
@@ -82,7 +84,7 @@ if __name__ == "__main__":
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
-    EVAL_NEG_SAMPLES = [0]    # Number of negative samples per positive for validation. Use None for all.
+    EVAL_NEG_SAMPLES = [0]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
     TEST_NEG_SAMPLES = [None]   # Number of negative samples per positive for testing. Use None for all.
     n_eval_queries = None
     n_test_queries = None
@@ -256,7 +258,7 @@ if __name__ == "__main__":
                   instead of best_eval. You may not get the same eval results\n\n")
         args.load_model = load_model
         args.save_model = save_model
-        args.models_path = models_path+args.dataset_name
+        args.models_path = models_path
         args.n_eval_queries = n_eval_queries
         args.n_test_queries = n_test_queries
         args.eval_freq = eval_freq

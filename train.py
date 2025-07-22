@@ -2,13 +2,12 @@ import numpy as np
 import os
 import random
 import torch
-from pykeen.triples import TriplesFactory
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
 from index_manager import IndexManager
 from utils import get_device, print_eval_info, profile_code
-from callbacks import SB3ModelCheckpoint, CustomEvalCallbackMRR, CustomEvalCallback
+from callbacks import SB3TrainCheckpoint, CustomEvalCallbackMRR, CustomEvalCallback
 from custom_dummy_env import create_environments
 from dataset import DataHandler
 from model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
@@ -25,6 +24,11 @@ from stable_baselines3.common.callbacks import (
 
 def main(args, log_filename, use_logger, use_WB, WB_path, date):
 
+    if args.restore_best_val_model==False:
+        print("Warning: This setting is not reproducible when creating 2 models "\
+            "from scratch, but yes when loading pretrained models. You can use" \
+            "export CUBLAS_WORKSPACE_CONFIG=:16:8;export PYTHONHASHSEED=0; "\
+            "to make it reproducible.")
     print(args.run_signature)
 
     torch.manual_seed(args.seed_run_i)
@@ -69,6 +73,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         test_depth=args.test_depth,)
 
     args.n_eval_queries = len(data_handler.valid_queries) if args.n_eval_queries is None else min(args.n_eval_queries, len(data_handler.valid_queries))
+    assert args.n_eval_queries > 1, "Number of evaluation queries must be greater than 1. Otherwise there are problems in callback"
     args.n_test_queries = len(data_handler.test_queries) if args.n_test_queries is None else min(args.n_test_queries, len(data_handler.test_queries))
 
     index_manager = IndexManager(data_handler.constants,
@@ -82,24 +87,15 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                 padding_atoms=args.padding_atoms)
     index_manager.build_fact_index(data_handler.facts)
     
-    if args.corruption_mode:
-        np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts], dtype=str)
-        triples_factory = TriplesFactory.from_labeled_triples(triples=np_facts,
-                                                            entity_to_id=index_manager.constant_str2idx,
-                                                            relation_to_id=index_manager.predicate_str2idx,
-                                                            compact_id=False,
-                                                            create_inverse_triples=False)
+    data_handler.sampler = get_sampler(data_handler=data_handler, 
+                                        index_manager=index_manager, 
+                                        corruption_scheme=args.corruption_scheme,
+                                        device=device)
+    sampler = data_handler.sampler
 
-        data_handler.sampler = get_sampler(data_handler=data_handler, 
-                                           index_manager=index_manager, 
-                                           triples_factory=triples_factory,
-
-                                           corruption_scheme=args.corruption_scheme)
-        data_handler.triples_factory = triples_factory
-
-    embedder_getter = get_embedder(args, 
-                         data_handler, 
-                         index_manager, 
+    embedder_getter = get_embedder(args,
+                         data_handler,
+                         index_manager,
                          device,
                          )
     embedder = embedder_getter.embedder
@@ -136,65 +132,84 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
 
     # --- TRAIN ---
-    model_path = os.path.join(args.models_path, args.run_signature, f"{args.run_signature}-seed_{args.seed_run_i}")
-    model_name = f"{args.run_signature}-{date}-seed_{args.seed_run_i}"
-
+    model_path = os.path.join(args.models_path, args.run_signature, f"seed_{args.seed_run_i}")
     if args.load_model:
         try:
-            models = sorted(
-                [m for m in os.listdir(model_path) if 'zip' in m and str(args.load_model) in m and f'seed_{args.seed_run_i}' in m])
+            # Determine which model to load based on the restore flag
             if args.restore_best_val_model:
-                models = sorted([m for m in models if 'best_eval' in m])
+                load_keyword = "best_eval"
             else:
-                models = sorted([m for m in models if 'last_train' in m])
-            if models:
-                print(f"Loading model from {os.path.join(model_path, models[-1])}")
-                model = PPO.load(os.path.join(model_path, models[-1]), env=eval_env, device=device)
-            else:
-                raise FileNotFoundError(f"No suitable model found in {model_path}")
-        except (FileNotFoundError, ValueError) as e:
-            print(e)
-            args.load_model = False
-        
-    if not args.load_model and args.timesteps_train > 0:
+                load_keyword = "last_epoch"  # Use the new, clear filename
 
+            # Ensure the model directory exists before trying to list its contents
+            if not os.path.isdir(model_path):
+                raise FileNotFoundError(f"Model directory does not exist: {model_path}")
+
+            # Find all model files matching the keyword and seed
+            models = sorted([
+                m for m in os.listdir(model_path)
+                if load_keyword in m and m.endswith('.zip')
+            ])
+
+            if models:
+                # Load the most recent model (lexicographically, due to date in name)
+                model_to_load = models[-1]
+                load_path = os.path.join(model_path, model_to_load)
+                print(f"Loading model from {load_path}")
+                model = PPO.load(load_path, env=eval_env, device=device)
+            else:
+                raise FileNotFoundError(f"No suitable '{load_keyword}' model found in {model_path}")
+
+        except (FileNotFoundError, NotADirectoryError) as e:
+            # If training is scheduled, we can create a new model. Otherwise, it's an error.
+            if args.timesteps_train > 0:
+                print(f"Warning: Could not load pre-existing model ({e}). A new model will be trained from scratch.")
+                args.load_model = False
+            else:
+                # If in evaluation-only mode (no training), a model is required.
+                raise ValueError(f"Error: In evaluation-only mode but could not load model. Reason: {e}")
+
+    if args.timesteps_train > 0 and not args.load_model:
+        model_name = f"{date}"
         # timing_callback = EpochTimingCallback(verbose=1)
         callbacks = []
-        no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=2, verbose=1)
+        no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=7, verbose=1)
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
+        if hasattr(callback_env, 'type_') and callback_env.type_ == "custom_dummy":
+            eval_callback = CustomEvalCallbackMRR(eval_env=callback_env,
+                                                sampler=sampler,
+                                                eval_data=data_handler.valid_queries[:args.n_eval_queries],
+                                                n_corruptions=args.eval_neg_samples,
+                                                model_path=model_path if args.save_model else None,
+                                                log_path=log_filename if use_logger else None,
+                                                eval_freq=max(int(args.eval_freq//args.n_envs),1),
+                                                n_eval_episodes=args.n_eval_queries-1,
+                                                deterministic=True,
+                                                render=False,
+                                                name=model_name,
+                                                callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
+                                                callback_after_eval=no_improvement_callback,
+                                                verbose=0,
+                                                )
+        else:
+            eval_callback = CustomEvalCallback(eval_env=callback_env, 
+                                        model_path=model_path if args.save_model else None,
+                                        log_path=log_filename if use_logger else None,
+                                        eval_freq=max(int(args.eval_freq//args.n_envs),1),
+                                        n_eval_episodes=args.n_eval_queries-1,
+                                        deterministic=True,
+                                        render=False,
+                                        name=model_name,
+                                        callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
+                                        callback_after_eval=no_improvement_callback,
+                                        )
 
-        eval_callback = CustomEvalCallback(eval_env=callback_env, 
-                                    model_path=model_path if args.save_model else None,
-                                    log_path=log_filename if use_logger else None,
-                                    eval_freq=max(int(args.eval_freq//args.n_envs),1),
-                                    n_eval_episodes=args.n_eval_queries-1,
-                                    deterministic=True,
-                                    render=False,
-                                    name=model_name,
-                                    # callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
-                                    callback_after_eval=no_improvement_callback,
-                                    )
-        # eval_callback = CustomEvalCallbackMRR(eval_env=callback_env,
-        #                                     sampler=data_handler.sampler,
-        #                                     eval_data=data_handler.valid_queries[:args.n_eval_queries],
-        #                                     n_corruptions=args.eval_neg_samples,
-        #                                     model_path=model_path if args.save_model else None,
-        #                                     log_path=log_filename if use_logger else None,
-        #                                     eval_freq=max(int(args.eval_freq//args.n_envs),1),
-        #                                     n_eval_episodes=args.n_eval_queries-1,
-        #                                     deterministic=True,
-        #                                     render=False,
-        #                                     name=model_name,
-        #                                     callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
-        #                                     callback_after_eval=no_improvement_callback,
-        #                                     verbose=0,
-        #                                     )
-
-        callbacks.append(eval_callback)
-        callbacks.append(SB3ModelCheckpoint(
-            model, monitor="rollout/ep_rew_mean", frequency=5000,
+        training_callback = SB3TrainCheckpoint(
+            model, monitor="rollout/ep_rew_mean", frequency=5,
             model_path=model_path if args.save_model else None, name=model_name
-        ))
+        )
+        callbacks.append(eval_callback)
+        callbacks.append(training_callback)
 
         if use_WB:
             run = wandb.init(
@@ -212,23 +227,26 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
 
         profile_code(False, training_function, **training_args)
 
-        if args.restore_best_val_model: eval_callback.restore_best_ckpt()
+        if args.restore_best_val_model: 
+            model = eval_callback.restore_best_ckpt(env)
+        else:
+            model = training_callback.restore_last_ckpt(env)
 
         if use_WB: run.finish()
 
     # --- TEST ---
-
+    model.policy.set_training_mode(False)
     print('\nTest set evaluation...')
-    sampler = data_handler.sampler
-
     eval_function = eval_corruptions
+    if args.test_neg_samples is not None:
+        print(f"Warning: Not using full samples will give different negatives for different env size")
     eval_args = {
         'model': model,
         'env': eval_env,
         'data': data_handler.test_queries,
         'sampler': sampler,
         'n_corruptions': args.test_neg_samples,
-        'verbose': 1
+        'verbose': 1,
     }
     
     metrics_test = profile_code(False, eval_function, **eval_args)
