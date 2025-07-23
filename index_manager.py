@@ -255,42 +255,24 @@ class IndexManager():
         return results
 
     @torch._dynamo.disable
-    def subindex_to_str(self,
-                        sub_index: torch.Tensor,
-                        truncate: bool = False) -> str:
-        """
-        Turn a single `sub_index` tensor into a term string.
-
-        `sub_index` layout:
-            [ predicate_id, arg1_id, arg2_id, … , padding ]
-        """
-
-        # Convert the whole thing to ordinary Python objects in one go
-        indices    = sub_index.tolist()       # e.g. [14, 732, 11, 0, 0]
-        arg_indices = indices[1:]
-
-        pred_idx = sub_index[0]
-        is_pad  = pred_idx.eq(self.padding_idx)
-        if is_pad:
+    def subindex_to_str(self, sub_index: torch.Tensor, truncate: bool = False) -> str:
+        indices = sub_index.tolist()          # e.g. [14, 732, 11, 0, 0]
+        pred_idx = indices[0]                 # <-- use the Python int
+        if pred_idx == self.padding_idx:      # simpler pad check
             return ""
 
-        idx2term_map = {**self.constant_idx2str,
-                        **self.variable_idx2str}
-
         predicate = self.predicate_idx2str.get(pred_idx)
-        if not predicate:
+        if predicate is None:
             return ""
 
         if truncate:
-            predicate = (predicate[:3] + "_kge"
-                        if "_kge" in predicate else
-                        predicate[:3])
+            predicate = (predicate[:3] + "_kge") if "_kge" in predicate else predicate[:3]
 
         args = []
-        for arg_idx in arg_indices:
+        for arg_idx in indices[1:]:
             if arg_idx == self.padding_idx:
                 break
-            arg_str = idx2term_map.get(arg_idx)
+            arg_str = self.constant_idx2str.get(arg_idx) or self.variable_idx2str.get(arg_idx)
             if arg_str:
                 args.append(arg_str[:8] if truncate else arg_str)
 

@@ -109,7 +109,10 @@ def evaluate_policy(
             num_choices = (obs_tensor["derived_sub_indices"].sum(dim=(-1, -2)) != 0).sum(dim=-1).cpu().numpy()
             all_sub_indices = observations["sub_index"]
             for i, env_i in enumerate(active_np):
-                current_state_histories[env_i].append(all_sub_indices[env_i].squeeze(0))
+                subidx = all_sub_indices[env_i].squeeze(0)                # (P, A+1)
+                state_str = index_manager.state_subindex_to_str(subidx,   # <- make the string now
+                                                                truncate=True)
+                current_state_histories[env_i].append(state_str)          # store the *string*
                 current_choices_histories[env_i].append(num_choices[i])
 
         current_lp[active_idx] += lp_tensor
@@ -140,17 +143,26 @@ def evaluate_policy(
                 # finalize per done env
                 for env_i in done_idx.cpu().tolist():
                     if current_steplogprob_histories[env_i]:
+                        # 1. stash scalar histories
                         episode_logprob_histories.append(np.cumsum(current_steplogprob_histories[env_i]))
                         episode_steplogprob_histories.append(np.array(current_steplogprob_histories[env_i]))
                         episode_choices_histories.append(np.array(current_choices_histories[env_i]))
 
-                        term_obs = infos[env_i].get("terminal_observation", new_obs)
-                        term_sub = term_obs["sub_index"][env_i].squeeze(0)
-                        current_state_histories[env_i].append(term_sub)
-                        episode_state_histories.append(np.array([
-                            index_manager.state_subindex_to_str(s, truncate=True)
-                            for s in current_state_histories[env_i]
-                        ]))
+                        # 2. build the *final* state string
+                        term_obs = infos[env_i].get("terminal_observation", None)
+                        if term_obs is not None:                      # normal termination
+                            term_sub = term_obs["sub_index"].squeeze(0)
+                        else:                                         # time-limit or auto-reset
+                            term_sub = new_obs["sub_index"][env_i].squeeze(0)
+                        final_state_str = index_manager.state_subindex_to_str(term_sub, truncate=True)
+                        current_state_histories[env_i].append(final_state_str)
+
+                        # 3. freeze the whole list (now includes the final label)
+                        episode_state_histories.append(
+                            np.array(current_state_histories[env_i])
+                        )
+
+                        # 4. clear scratch buffers
                         current_steplogprob_histories[env_i].clear()
                         current_choices_histories[env_i].clear()
                         current_state_histories[env_i].clear()
@@ -557,7 +569,7 @@ def plot_logprob_heatmap(
                         ha='center', va='center', fontsize=8,
                         color='white', fontweight='bold'
                     )
-            
+            bbox = dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.75)
             if show_state_labels:
                 y_min, y_max = ax.get_ylim()
                 offset = (y_max - y_min) * 0.03 if y_max > y_min else 0.1
@@ -568,7 +580,8 @@ def plot_logprob_heatmap(
                             x=j, y=step_lp + offset, s=state_label,
                             ha='center', va='bottom', fontsize=8,
                             fontweight='light', color='darkslategray',
-                            rotation=15
+                            rotation=15,zorder=5,clip_on=False,
+                            bbox=bbox,
                         )
         
         # Plot average trajectory

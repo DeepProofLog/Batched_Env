@@ -453,6 +453,16 @@ class LogicEnv_gym(gym.Env):
 
         done = torch.tensor(done, device=self.device)
         reward = torch.tensor(1.0, device=self.device) if (done and successful and label == 1) else torch.tensor(0.0, device=self.device)
+        
+        # if done and successful and label == 1:
+        #     reward = torch.tensor(1.0, device=self.device)
+        # elif done and not successful and label == 1:
+        #     reward = torch.tensor(0.0, device=self.device)
+        # elif done and successful and label == 0:
+        #     reward = torch.tensor(-1.0, device=self.device)
+        # elif done and not successful and label == 0:
+        #     reward = torch.tensor(1.0, device=self.device)
+
         return done, reward, successful
     
     def get_random_queries(self,

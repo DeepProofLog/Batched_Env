@@ -1,5 +1,7 @@
 .idea/__pycache__/
 *.pyc
 models/*
+plots/*
+runs/*
 profiler_traces/
 __pycache__/

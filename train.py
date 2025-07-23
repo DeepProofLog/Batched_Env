@@ -173,7 +173,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         model_name = f"{date}"
         # timing_callback = EpochTimingCallback(verbose=1)
         callbacks = []
-        no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=7, verbose=1)
+        # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=7, verbose=1)
         reward_threshold_callback = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
         if hasattr(callback_env, 'type_') and callback_env.type_ == "custom_dummy":
             eval_callback = CustomEvalCallbackMRR(eval_env=callback_env,
@@ -188,7 +188,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                                 render=False,
                                                 name=model_name,
                                                 callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
-                                                callback_after_eval=no_improvement_callback,
+                                                # callback_after_eval=no_improvement_callback,
                                                 verbose=0,
                                                 )
         else:
@@ -201,7 +201,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                         render=False,
                                         name=model_name,
                                         callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
-                                        callback_after_eval=no_improvement_callback,
+                                        # callback_after_eval=no_improvement_callback,
                                         )
 
         training_callback = SB3TrainCheckpoint(

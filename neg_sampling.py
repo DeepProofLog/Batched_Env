@@ -349,7 +349,11 @@ def get_negatives(
         Shape (B, M, padding_atoms, max_arity+1) where M is either
         `num_negs` (sampled mode) or the per-batch maximum when enumerating
         all corruptions.  Unused slots are padded with `self.index_manager.padding_idx`.
-    """
+    """    
+    
+    if self.filterer._hashes_sorted.device != sub_indices.device:
+        self.filterer = self.filterer.to(sub_indices.device)
+    
     B = sub_indices.size(0)
 
     # -------------------------------------------------------
@@ -424,7 +428,7 @@ def get_negatives(
     # Drop duplicates & true triples (if filtered=True in the sampler)
     # Keep first `num_negs` per positive & corruption side
     # ----------------------------------------------------
-    chosen, _ = cand.unique(dim=0, return_inverse=False)
+    chosen = cand.unique(dim=0, return_inverse=False)
     chosen = chosen[: B * num_negs]            # simple truncation
 
     # Reshape and pad out to fixed size
@@ -466,13 +470,16 @@ def get_negatives_from_states(
     # Build sub-indices for each state
     subs = [self.index_manager.get_atom_sub_index(state) for state in states]
     # Stack to (B, padding_atoms, max_arity+1)
+    target_device = self.filterer._hashes_sorted.device 
     pos_subs = torch.stack(subs, dim=0).to(device)
     # Call tensor-based sampler
-    neg_subs = self.get_negatives(pos_subs,
-                                padding_atoms=pos_subs.size(1),
-                                max_arity=pos_subs.size(2)-1,
-                                device=device,
-                                num_negs=num_negs)
+    neg_subs = self.get_negatives(
+        pos_subs,
+        padding_atoms=pos_subs.size(1),
+        max_arity=pos_subs.size(2) - 1,
+        device=target_device,         # pass the same device downstream
+        num_negs=num_negs,
+    )
     # Convert to Term-based states
     B = neg_subs.size(0)
     if return_states:

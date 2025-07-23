@@ -59,8 +59,8 @@ if __name__ == "__main__":
         KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
     elif DATASET_NAME[0] == "wn18rr":
         KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-complex-True-256-256-1-rules.txt']
-    # KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
-    KGE_SCORES_FILE = [None]
+    KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
+    # KGE_SCORES_FILE = [None]
  
     RESTORE_BEST_VAL_MODEL = [True] # else restore the model from the last train epoch
     load_model = False
@@ -82,7 +82,7 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [8000000]
+    TIMESTEPS_TRAIN = [10000000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 256
     n_steps = 256
-    n_eval_envs = 100
+    n_eval_envs = 256
     # n_callback_eval_envs = 1 # Number of environments to use for evaluation in the callback # should be one in CustomEvalCallback
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
