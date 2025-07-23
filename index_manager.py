@@ -254,40 +254,47 @@ class IndexManager():
             results[batch_idx].append(term)
         return results
 
-    def subindex_to_str(self, sub_index: torch.Tensor, truncate=False) -> str:
-        """Converts a single sub_index tensor to a string representation of a Term."""
-        pred_idx = sub_index[0].item()
-        if pred_idx == self.padding_idx:
-            return "" 
-        
-        # This map needs to contain all possible terms, including variables
-        idx2term_map = {**self.constant_idx2str, **self.variable_idx2str}
-        
+    @torch._dynamo.disable
+    def subindex_to_str(self,
+                        sub_index: torch.Tensor,
+                        truncate: bool = False) -> str:
+        """
+        Turn a single `sub_index` tensor into a term string.
+
+        `sub_index` layout:
+            [ predicate_id, arg1_id, arg2_id, … , padding ]
+        """
+
+        # Convert the whole thing to ordinary Python objects in one go
+        indices    = sub_index.tolist()       # e.g. [14, 732, 11, 0, 0]
+        arg_indices = indices[1:]
+
+        pred_idx = sub_index[0]
+        is_pad  = pred_idx.eq(self.padding_idx)
+        if is_pad:
+            return ""
+
+        idx2term_map = {**self.constant_idx2str,
+                        **self.variable_idx2str}
+
         predicate = self.predicate_idx2str.get(pred_idx)
         if not predicate:
             return ""
 
-        if truncate: 
-            # if _kge is in the predicate, add it
-            if '_kge' in predicate:
-                predicate = predicate[:3]+'_kge'
-            else:
-                predicate = predicate[:3]
-        arg_indices = sub_index[1:].tolist()
+        if truncate:
+            predicate = (predicate[:3] + "_kge"
+                        if "_kge" in predicate else
+                        predicate[:3])
+
         args = []
         for arg_idx in arg_indices:
             if arg_idx == self.padding_idx:
                 break
             arg_str = idx2term_map.get(arg_idx)
             if arg_str:
-                if truncate:
-                    # Truncate each argument to the first 3 letters
-                    args.append(arg_str[:8])
-                else:
-                    args.append(arg_str)
-        
-        args_str = ','.join(args)
-        return f"{predicate}({args_str})"
+                args.append(arg_str[:8] if truncate else arg_str)
+
+        return f"{predicate}({','.join(args)})"
 
     def state_subindex_to_str(self, state_subindex: Union[torch.Tensor, np.ndarray],truncate=False) -> str:
         """Converts a state sub_index tensor (a list of atoms) to a single string."""

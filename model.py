@@ -466,7 +466,6 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         # If a KGE action was taken, overwrite its log_prob with the KGE score
         if self.kge_inference_engine is not None:
             log_prob = self.get_kge_log_probs(obs, actions, log_prob)
-        # print(f"Actions: {actions.item()}, Logprobs: {log_prob.item():.3f}, Action logits: {action_logits[:,:5]}")
         return actions, values, log_prob
 
 

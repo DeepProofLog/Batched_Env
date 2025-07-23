@@ -245,12 +245,18 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     # --- freeze Dropout & LayerNorm ---
     model.policy.apply(strip_eval_modules)
 
-    # --- ahead-of-time compile the policy once for inference ---
+    if args.use_kge_action:
+        model.policy.kge_inference_engine = kge_inference_engine
+        model.policy.index_manager = index_manager
+        kge_indices = [idx for pred, idx in index_manager.predicate_str2idx.items() if pred.endswith('_kge')]
+        model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
+
     model.policy = torch.compile(
         model.policy, mode="reduce-overhead", fullgraph=False
     )
 
     model.policy.set_training_mode(False)
+        
     print('\nTest set evaluation...')
     eval_function = eval_corruptions
     if args.test_neg_samples is not None:

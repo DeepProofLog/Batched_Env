@@ -27,7 +27,7 @@ if __name__ == "__main__":
         def flush(self):
             self.file.flush()
             self.stdout.flush()
-
+    # hpo: first ent_coef and then clip_range
     FALSE_RULES = [False] 
     MEMORY_PRUNING = [True]
     END_PROOF_ACTION = [False]

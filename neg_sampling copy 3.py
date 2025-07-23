@@ -84,75 +84,84 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
 
 
     def corrupt_batch(self, positive_batch: LongTensor, num_negs_per_pos: int) -> LongTensor:
-        batch_shape   = positive_batch.shape[:-1]
-        neg_batch     = positive_batch.view(-1, 3).repeat_interleave(num_negs_per_pos, dim=0)
+        batch_shape = positive_batch.shape[:-1]
+        # clone positive batch for corruption (.repeat_interleave creates a copy)
+        negative_batch = positive_batch.view(-1, 3).repeat_interleave(num_negs_per_pos, dim=0)
+        # Bind the total number of negatives to sample in this batch
+        total_num_negatives = negative_batch.shape[0]
 
-        # vectorise: look up domain for every entity once
-        ent_ids       = torch.arange(max(self.entity2domain)+1, device=neg_batch.device)
-        domain_of_ent = torch.tensor(
-            [self.entity2domain.get(int(e), -1) for e in ent_ids.tolist()],
-            device=neg_batch.device,
-        )
+        # Equally corrupt all sides
+        split_idx = int(math.ceil(total_num_negatives / len(self._corruption_indices)))
+        # Do not detach, as no gradients should flow into the indices.
+        for index, start in zip(self._corruption_indices, range(0, total_num_negatives, split_idx)):
+            stop = min(start + split_idx, total_num_negatives)
 
-        total = neg_batch.size(0)
-        split = math.ceil(total / len(self._corruption_indices))
-
-        for col, start in zip(self._corruption_indices, range(0, total, split)):
-            stop   = min(start + split, total)
-            slice_ = slice(start, stop)
-
-            orig_ents   = neg_batch[slice_, col]
-            dom_ids     = domain_of_ent[orig_ents]
-            pools       = [self.domain_entities[self.idx2domain[int(d)]] for d in dom_ids.tolist()]
-
-            # sample replacements in a single call per domain to avoid Python loop
-            max_pool = max(len(p) for p in pools)
-            indices  = torch.randint(
-                high=max_pool, size=(stop - start,), device=neg_batch.device
-            )
-            repl     = torch.stack([
-                pools[i][min(indices[i].item(), len(pools[i]) - 1)]
-                for i in range(indices.numel())
-            ])
-
-            # guarantee difference
-            clash      = repl == orig_ents
-            while clash.any():
-                new_idx          = torch.randint(high=max_pool, size=(clash.sum(),), device=neg_batch.device)
-                repl[clash]      = torch.stack([
-                    pools[i][min(new_idx[j].item(), len(pools[i]) - 1)]
-                    for j, i in enumerate(torch.nonzero(clash, as_tuple=False)[:, 0])
-                ])
-                clash            = repl == orig_ents
-
-            neg_batch[slice_, col] = repl
-
-        return neg_batch.view(*batch_shape, num_negs_per_pos, 3)
-    
-    def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
-        """
-        For each positive triple, generate negatives by enumerating all entities in the same domain
-        (excluding the original entity) for each corruption index.
-        """
-        negative_batches = []
-        for triple in positive_batch:
-            triple_negatives = []
-            for index in self._corruption_indices:
-                original_entity = triple[index].item()
+            for i in range(start, stop):
+                original_entity = negative_batch[i, index].item()
                 original_domain = self.entity2domain[original_entity]
-                domain_candidates = self.domain_entities[original_domain]
-                # Exclude the positive entity from the candidate list.
-                candidates = domain_candidates[domain_candidates != original_entity]
-                # Enumerate over all candidate entities.
-                for candidate in candidates.tolist():
-                    neg_triple = triple.clone()
-                    neg_triple[index] = candidate
-                    triple_negatives.append(neg_triple)
-            if triple_negatives:
-                negative_batches.append(torch.stack(triple_negatives, dim=0))
+
+                possible_entities = self.domain_entities[original_domain]
+                
+                replacement_index = torch.randint(high=len(possible_entities), size=(1,), device=negative_batch.device).item()
+                replacement_entity = possible_entities[replacement_index].item()
+                while replacement_entity==original_entity: #make sure that the entity is different
+                  replacement_index = torch.randint(high=len(possible_entities), size=(1,), device=negative_batch.device).item()
+                  replacement_entity = possible_entities[replacement_index].item()
+                negative_batch[i, index] = replacement_entity
+        return negative_batch.view(*batch_shape, num_negs_per_pos, 3)
+    
+    # def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
+    #     """
+    #     For each positive triple, generate negatives by enumerating all entities in the same domain
+    #     (excluding the original entity) for each corruption index.
+    #     """
+    #     negative_batches = []
+    #     for triple in positive_batch:
+    #         triple_negatives = []
+    #         for index in self._corruption_indices:
+    #             original_entity = triple[index].item()
+    #             original_domain = self.entity2domain[original_entity]
+    #             domain_candidates = self.domain_entities[original_domain]
+    #             # Exclude the positive entity from the candidate list.
+    #             candidates = domain_candidates[domain_candidates != original_entity]
+    #             # Enumerate over all candidate entities.
+    #             for candidate in candidates.tolist():
+    #                 neg_triple = triple.clone()
+    #                 neg_triple[index] = candidate
+    #                 triple_negatives.append(neg_triple)
+    #         if triple_negatives:
+    #             negative_batches.append(torch.stack(triple_negatives, dim=0))
+    #         else:
+    #             negative_batches.append(torch.empty((0, 3), dtype=torch.long, device=positive_batch.device))
+    #     return negative_batches
+
+    def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
+        """Efficiently enumerate *domain‑consistent* corruptions and drop true triples."""
+        device = positive_batch.device
+        negatives: List[torch.Tensor] = []
+
+        for triple in positive_batch:
+            per_triple = []
+            for index in self._corruption_indices:
+                src_ent = triple[index].item()
+                domain = self.entity2domain[src_ent]
+                # valid replacements for this domain (vector on correct device)
+                pool = self.domain_entities[domain]
+                pool = pool[pool != src_ent]  # exclude positive entity
+                if pool.numel() == 0:
+                    continue
+                new_triples = triple.repeat(pool.shape[0], 1)
+                new_triples[:, index] = pool
+                per_triple.append(new_triples)
+
+            # concatenate & filter
+            if per_triple:
+                cand = torch.cat(per_triple, dim=0)
+                cand = cand[self.filterer(cand)]  # keep only *false* triples
             else:
-                negative_batches.append(torch.empty((0, 3), dtype=torch.long, device=positive_batch.device))
-        return negative_batches
+                cand = torch.empty((0, 3), dtype=torch.long, device=device)
+            negatives.append(cand)
+        return negatives
 
 
 
@@ -164,7 +173,7 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         num_relations: int,
         filtered: bool = True,
         corruption_scheme: Optional[Collection[Target]] = None,
-        padding_idx: Optional[int] = 0,
+        padding_idx: Optional[Collection[int]] = None,
     ):
         super().__init__(
             mapped_triples=mapped_triples,
@@ -175,12 +184,8 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
             num_relations=num_relations,
         )
         self.num_entities = num_entities
-        self.pad_idx: int = int(padding_idx)
-        if self.pad_idx != 0:
-            logging.warning(
-                "Efficient replacement assumes pad_idx = 0; "
-                "fallback to slower rejection-sampling."
-            )
+        self.padding_idx = 0 if padding_idx is None else int(padding_idx)
+
         # Determine corruption scheme and indices
         self.corruption_scheme = corruption_scheme or (LABEL_HEAD, LABEL_TAIL)
         self._corruption_indices = [TARGET_TO_INDEX[side] for side in self.corruption_scheme]
@@ -212,24 +217,46 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         """
         if max_index <= 1:
             # Cannot sample anything if max_index is 0 or 1
-            logging.warning(f"Cannot replace index {index} with max_index={max_index}. Skipping.")
+            # logging.warning(f"Cannot replace index {index} with max_index={max_index}. Skipping.")
             return
 
-        orig = batch[selection, index]
+        original_values = batch[selection, index]
 
-        if pad_idx == 0:
-            # very fast path (unchanged)
-            rng = torch.randint(1, max_index, (size,), device=batch.device)
-            shift = (rng >= orig) & (orig > 0)
-            batch[selection, index] = rng + shift.long()
-        else:
-            # rare path – rejection sample until ok
-            cand = torch.randint(0, max_index, (size,), device=batch.device)
-            bad  = (cand == orig) | (cand == pad_idx)
-            while bad.any():
-                cand[bad] = torch.randint(0, max_index, (bad.sum(),), device=batch.device)
-                bad = (cand == orig) | (cand == pad_idx)
-            batch[selection, index] = cand
+        # Determine the valid range size excluding the padding index
+        # Example: if max_index=10, pad_idx=0 -> valid are {1..9}, size = 9
+        # Example: if max_index=10, pad_idx=3 -> valid are {0,1,2, 4..9}, size = 9
+        # General size = max_index - 1 (if pad_idx is within [0, max_index-1])
+        # For simplicity and efficiency, we strongly assume pad_idx = 0 here.
+        if pad_idx != 0:
+             # Fallback to a potentially less efficient or more complex method
+             # Or adapt the logic below, which becomes harder.
+             raise NotImplementedError("Efficient replacement currently requires padding index to be 0.")
+
+        # --- Optimized logic for pad_idx = 0 ---
+        # We want to sample from {1, 2, ..., max_index - 1} excluding original_value
+
+        num_valid_candidates = max_index - 1 # Size of the set {1, ..., max_index - 1}
+        if num_valid_candidates <= 0: # Only index 0 exists (max_index=1)
+             return
+
+        # Sample indices from [0, num_valid_candidates - 1]
+        replacement = torch.randint(
+            high=num_valid_candidates,
+            size=(size,),
+            device=batch.device,
+        )
+        # Shift indices to values [1, max_index - 1]
+        replacement = replacement + 1
+
+        # Avoid original value:
+        # Shift replacement up by 1 if it is >= original_value,
+        # but ONLY if original_value was within the sampling range [1, max_index - 1].
+        needs_shift = (replacement >= original_values) & (original_values > 0) # Check original > 0
+        replacement = replacement + needs_shift.long()
+
+        # Assign back to the selected slice
+        batch[selection, index] = replacement
+        # --- End of optimized logic ---
 
 
     def corrupt_batch(self, positive_batch: LongTensor, num_negs_per_pos: int) -> LongTensor:
@@ -283,152 +310,97 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         return negative_batch.view(*batch_shape, num_negs_per_pos, 3)
 
     def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
-        """
-        Exhaustively enumerate every legal head / relation / tail corruption
-        defined by ``self._corruption_indices`` for each triple *individually*.
-
-        Returns
-        -------
-        list(torch.Tensor)
-            Length = B.  The i-th item has shape (Mi, 3) with Mi ≥ 0 and
-            contains **only** negatives (no positive triple rows).
-        """
+        """Enumerate every legal corruption (padding & truth filtered)."""
         device = positive_batch.device
         negatives: List[torch.Tensor] = []
 
-        # pre-compute pools
-        ent_pool = torch.arange(self.num_entities, device=device)
-        if self.pad_idx is not None:
-            ent_pool = ent_pool[ent_pool != self.pad_idx]
+        # pre‑compute valid entity pool once
+        entity_pool = torch.arange(self.num_entities, device=device)
+        if self.padding_idx is not None:
+            entity_pool = entity_pool[entity_pool != self.padding_idx]
 
-        rel_pool = torch.arange(self.num_relations, device=device)
-
-        for triple in positive_batch:              # loop over batch (B is usually small)
-            triple_negs = []
-            for col in self._corruption_indices:
-                pool = rel_pool if col == 1 else ent_pool
-                # exclude the positive value in this slot
-                cand = pool[pool != triple[col]]
-                if cand.numel() == 0:
+        for triple in positive_batch:
+            per_triple = []
+            for index in self._corruption_indices:
+                if index == 1:  # relation column
+                    pool = torch.arange(self.num_relations, device=device)
+                else:
+                    pool = entity_pool
+                pool = pool[pool != triple[index]]  # exclude positive value
+                if pool.numel() == 0:
                     continue
-                # broadcast-replace
-                reps = triple.repeat(cand.numel(), 1)
-                reps[:, col] = cand
-                triple_negs.append(reps)
-            if triple_negs:
-                negatives.append(torch.cat(triple_negs, dim=0))
-            else:                                   # fully padded row
-                negatives.append(triple.new_empty((0, 3)))
+                new_triples = triple.repeat(pool.shape[0], 1)
+                new_triples[:, index] = pool
+                per_triple.append(new_triples)
+
+            if per_triple:
+                cand = torch.cat(per_triple, dim=0)
+                cand = cand[self.filterer(cand)]
+            else:
+                cand = torch.empty((0, 3), dtype=torch.long, device=device)
+            negatives.append(cand)
         return negatives
 
-def get_negatives(
-    self,
-    sub_indices: torch.Tensor,
+from typing import Optional, List, Union
+import torch
+
+def get_negatives(                                     # noqa: C901
+    self: Union["BasicNegativeSamplerCustom",
+                "BasicNegativeSamplerDomain"],
+    sub_indices: torch.Tensor,                         # (B, padding_atoms, max_arity+1)
     padding_atoms: int,
     max_arity: int,
     device: torch.device,
-    num_negs: Optional[int] = None,        # ← None ⇒ enumerate *all* corruptions
+    num_negs: Optional[int] = None,                    # None ⇒ enumerate *all* corruptions
 ) -> torch.Tensor:
-    """
-    Generate negative samples for a batch of query states.
+    """Return negative samples in sub-index form.
 
-    Parameters
-    ----------
-    sub_indices
-        Tensor with each query encoded as (padding_atoms, max_arity+1).  
-        We only look at slot 0 (= the triple).
-    padding_atoms / max_arity
-        Needed for shape construction of the output tensor.
-    num_negs
-        * int  ➟ sample `num_negs` negatives per positive (old behaviour)  
-        * None ➟ enumerate every legal corruption for every triple.
-
-    Returns
-    -------
-    neg_subs : torch.Tensor
-        Shape (B, M, padding_atoms, max_arity+1) where M is either
-        `num_negs` (sampled mode) or the per-batch maximum when enumerating
-        all corruptions.  Unused slots are padded with `self.index_manager.padding_idx`.
+    Output shape: (B, M, padding_atoms, max_arity+1) where  
+    *M* = `num_negs` (sampled mode) or the per-batch maximum when enumerating all
+    corruptions.  Unused slots are padded with `self.index_manager.padding_idx`.
     """
     B = sub_indices.size(0)
 
-    # -------------------------------------------------------
-    # 1⃣  Extract (r,h,t) triples from the first atom slot
-    # -------------------------------------------------------
-    rels  = sub_indices[:, 0, 0]  # (B,)
+    # ---- 1) extract positive triples -------------------------------------------------
+    rels  = sub_indices[:, 0, 0]
     heads = sub_indices[:, 0, 1]
     tails = sub_indices[:, 0, 2]
-    pos_batch = torch.stack([heads, rels, tails], dim=1)  # (B, 3)
+    pos_batch = torch.stack([heads, rels, tails], dim=1)        # (B, 3)
 
-    # -------------------------------------------------------
-    # 2⃣  Enumerate *all* corruptions  (num_negs is None)
-    # -------------------------------------------------------
-    if num_negs is None:
-        # ➊  let the concrete sampler enumerate candidates
-        neg_batches = self.corrupt_batch_all(pos_batch)    # list length B
-        lengths     = [nb.size(0) for nb in neg_batches]
-        total_rows  = sum(lengths)
-
-        if total_rows == 0:                                # nothing to pad
-            max_M = 0
-            neg_subs = torch.full(
-                (B, 0, padding_atoms, max_arity + 1),
-                fill_value=self.index_manager.padding_idx,
-                dtype=torch.long,
-                device=device,
-            )
-            return neg_subs
-
-        # ➋  run the filter ONCE on the flattened tensor
-        flat  = torch.cat(neg_batches, dim=0)              # (total_rows, 3)
-        mask  = self.filterer(flat)                        # True ⇒ keep
-
-        # ➌  slice the single mask back into per-batch tensors
-        filtered_batches: List[torch.Tensor] = []
-        cursor = 0
-        for L in lengths:
-            if L == 0:
-                filtered_batches.append(flat.new_empty((0, 3)))
-                continue
-            seg_mask = mask[cursor: cursor + L]
-            seg      = flat[cursor: cursor + L][seg_mask]
-            filtered_batches.append(seg)
-            cursor += L
-
-        # ➍  pad to equal length and write into output tensor
-        max_M = max(nb.size(0) for nb in filtered_batches)
+    # ==============================================================================
+    # 2) ENUMERATE ALL CORRUPTIONS  (num_negs is None)
+    # ==============================================================================
+    if num_negs is None and hasattr(self, "corrupt_batch_all"):
+        all_negs = self.corrupt_batch_all(pos_batch)  # List[len=B]
+        M = max(t.size(0) for t in all_negs) or 1
         neg_subs = torch.full(
-            (B, max_M, padding_atoms, max_arity + 1),
+            (B, M, padding_atoms, max_arity + 1),
             fill_value=self.index_manager.padding_idx,
             dtype=torch.long,
             device=device,
         )
-        for i, nb in enumerate(filtered_batches):
-            if nb.numel() == 0:
+        for b, cand in enumerate(all_negs):
+            m = cand.size(0)
+            if m == 0:
                 continue
-            m = nb.size(0)
-            neg_subs[i, :m, 0, 1] = nb[:, 0]   # head
-            neg_subs[i, :m, 0, 0] = nb[:, 1]   # relation
-            neg_subs[i, :m, 0, 2] = nb[:, 2]   # tail
+            neg_subs[b, :m, 0, 1] = cand[:, 0]
+            neg_subs[b, :m, 0, 0] = cand[:, 1]
+            neg_subs[b, :m, 0, 2] = cand[:, 2]
         return neg_subs
-    # -------------------------------------------------------
-    # 3⃣  Sampled negatives (old path, unchanged)
-    # -------------------------------------------------------
+
+
+    # ==============================================================================
+    # 3) SAMPLED NEGATIVES  (existing path, unchanged)
+    # ==============================================================================
     overshoot = 3
-    cand = self.corrupt_batch(
+    cand = self.corrupt_batch(                              # (B·overshoot·num_negs, 3)
         pos_batch,
-        num_negs_per_pos=overshoot * num_negs
-    ).view(-1, 3)                              # (B·overshoot·num_negs, 3)
-    cand = cand[self.filterer(cand)]
+        num_negs_per_pos=overshoot * num_negs,
+    ).view(-1, 3)
 
-    # Drop duplicates & true triples (if filtered=True in the sampler)
-    # Keep first `num_negs` per positive & corruption side
-    # ----------------------------------------------------
     chosen, _ = cand.unique(dim=0, return_inverse=False)
-    chosen = chosen[: B * num_negs]            # simple truncation
+    chosen = chosen[: B * num_negs].view(B, -1, 3)          # (B, num_negs, 3)
 
-    # Reshape and pad out to fixed size
-    chosen = chosen.view(B, -1, 3)             # (B, num_negs, 3)
     neg_subs = torch.full(
         (B, num_negs, padding_atoms, max_arity + 1),
         fill_value=self.index_manager.padding_idx,
@@ -440,6 +412,7 @@ def get_negatives(
     neg_subs[:, :, 0, 2] = chosen[:, :, 2]
 
     return neg_subs
+
 
 
 def get_negatives_from_states(
@@ -520,10 +493,6 @@ def get_sampler(data_handler: DataHandler,
     sampler.mapped_triples = triples_factory.mapped_triples.to(device)
 
     sampler.filterer = SortedHashTripleFilter(sampler.mapped_triples).to(device)
-
-
-    # if sampler.filterer is not None:
-    #     sampler.filterer = sampler.filterer.to(device)  # <-- add this
 
     # The BasicNegativeSamplerDomain has additional tensors that need to be moved.
     if isinstance(sampler, BasicNegativeSamplerDomain):

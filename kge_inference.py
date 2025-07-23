@@ -345,7 +345,7 @@ def score_datasets(inference_engine: KGEInference, output_file: str, num_negativ
         for atom_str, score in inference_engine.atom_scores.items():
              f_out.write(f"{atom_str}\t{score:.6f}\n")
 
-        for split in ["train", "valid", "test"]:
+        for split in ["test"]:
             print(f"\n--- Processing '{split}' set ---")
             
             dataset = data_handler.get_dataset(split=split, number_negatives=num_negatives)
