@@ -13,6 +13,15 @@ from python_unification import get_next_unification_python
 # from python_unification import get_next_unification_python_old as get_next_unification_python
 from prolog_unification import get_next_unification_prolog
 
+def _state_to_hashable(state: List[Term]) -> frozenset:
+    """
+    Converts a list of Term objects to a hashable frozenset representation.
+    A frozenset is inherently order-independent and efficient for hashing.
+    """
+    if not state:
+        return frozenset()
+    return frozenset((term.predicate, tuple(term.args)) for term in state)
+
 class LogicEnv_gym(gym.Env):
     batch_locked = False
     
@@ -196,7 +205,8 @@ class LogicEnv_gym(gym.Env):
         self.next_var_index = self.index_manager.variable_start_index
 
         self.memory = set()
-        self.memory.add(",".join(str(q) for q in query if q.predicate not in ['False', 'True', 'End']))
+        filtered_query = [q for q in query if q.predicate not in ['False', 'True', 'End']]
+        self.memory.add(_state_to_hashable(filtered_query))
 
         sub_index = self.index_manager.get_atom_sub_index(query)
         derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
@@ -366,24 +376,28 @@ class LogicEnv_gym(gym.Env):
                     truncated_flag = True
                     break
 
-
+        final_states = []
+        final_sub_indices = []
         # MEMORY MODULE
         if self.memory_pruning:
-            self.memory.add(",".join(str(s) for s in state if s.predicate not in ['False', 'True', 'End']))
-            visited_mask = [",".join(str(s) for s in state) in self.memory for state in derived_states]
+            self.memory.add(_state_to_hashable([s for s in state if s.predicate not in ['False', 'True', 'End']]))
 
-            if any(visited_mask):
-                print('\n-----------') if self.verbose else None
-                print(f"Memory: {self.memory}") if self.verbose else None
-                print(f"Visited mask: {visited_mask}. Current state: {current_state} -> Derived states: {derived_states}") if self.verbose else None
-                print('-----------\n') if self.verbose else None
-                derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
+        for d_state in derived_states:
+            # 1. Memory Pruning Check
+            if self.memory_pruning and _state_to_hashable(d_state) in self.memory:
+                continue
 
-        # TRUNCATE MAX ATOMS
-        mask_exceeded_max_atoms = [len(state) >= self.padding_atoms for state in derived_states]
-        if any(mask_exceeded_max_atoms):
-            print(f"Exceeded max atoms in next states: {[len(state) for state in derived_states]}") if self.verbose else None
-        derived_states = [state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if not is_exceeded]
+            # 2. Max Atoms Check
+            if len(d_state) >= self.padding_atoms:
+                if self.verbose:
+                    print(f"Exceeded max atoms in next states: {len(d_state)}")
+                continue
+
+            # If checks pass, convert to tensor and add to final lists
+            final_states.append(d_state)
+            final_sub_indices.append(self.index_manager.get_atom_sub_index(d_state))
+
+        derived_states = final_states # Use the filtered list from now on
 
         # KGE ACTION MODULE
         # It uses the original `state` variable to ensure alignment.
@@ -392,39 +406,30 @@ class LogicEnv_gym(gym.Env):
             kge_action_term = Term(predicate=kge_pred_name, args=state[0].args)
             
             # Avoid adding a duplicate KGE action
-            is_present = any(kge_action_term in derived_state for derived_state in derived_states)
-            if not is_present:
+            if not any(kge_action_term in derived_state for derived_state in derived_states):
                 derived_states.append([kge_action_term])
-            # # Check if the original state is a single, ground atom
-            # if not any(is_variable(arg) for arg in state[0].args):
-            #     kge_pred_name = f"{state[0].predicate}_kge"
-            #     kge_action_term = Term(predicate=kge_pred_name, args=state[0].args)
-                
-            #     # Avoid adding a duplicate KGE action
-            #     is_present = any(kge_action_term in derived_state for derived_state in derived_states)
-            #     if not is_present:
-            #         derived_states.append([kge_action_term])
-            # else:
-            #     raise ValueError(f"State {state} is not a ground atom, cannot add KGE action.")
+                final_sub_indices.append(self.index_manager.get_atom_sub_index([kge_action_term]))
 
         # TRUNCATE MAX STATES
-        max_num_states = self.padding_states if not self.end_proof_action else self.padding_states + -1
+        max_num_states = self.padding_states if not self.end_proof_action else self.padding_states - 1
         if len(derived_states) > max_num_states:
             print(f"Exceeded max next states: {len(derived_states)}") if self.verbose else None
-            derived_states = sorted(derived_states, key=lambda x: len(x))
-            derived_states = derived_states[:max_num_states]     
+            indices = sorted(range(len(derived_states)), key=lambda k: len(derived_states[k]))
+            derived_states = [derived_states[i] for i in indices[:max_num_states]]
+            final_sub_indices = [final_sub_indices[i] for i in indices[:max_num_states]]
 
         # END ACTION MODULE
         if self.end_proof_action:
             if any(atom.predicate not in ('True', 'False') for next_state in derived_states for atom in next_state):
-                derived_states.append([Term(predicate='End', args=())])
-
-        if len(derived_states) == 0:
+                end_term_state = [Term(predicate='End', args=())]
+                derived_states.append(end_term_state)
+                final_sub_indices.append(self.index_manager.get_atom_sub_index(end_term_state))
+        if not derived_states:
             derived_states = [[Term(predicate='False', args=())]]
+            derived_sub_indices = torch.stack([self.index_manager.get_atom_sub_index(s) for s in derived_states])
+        else:
+            derived_sub_indices = torch.stack(final_sub_indices)
 
-        # CREATE INDICES 
-        derived_sub_indices = torch.stack([self.index_manager.get_atom_sub_index(s) for s in derived_states])
-        
         # Pad derived_sub_indices
         num_derived = len(derived_states)
         if num_derived < self.padding_states:

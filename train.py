@@ -226,7 +226,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         training_args = {'total_timesteps': args.timesteps_train, 'callback': CallbackList(callbacks)}
 
         profile_code(False, training_function, **training_args)
-
+        # profile_code('cProfile', training_function, **training_args)
+        # raise SystemExit("Profiling complete. Exiting...")
         if args.restore_best_val_model: 
             model = eval_callback.restore_best_ckpt(env)
         else:
@@ -235,6 +236,20 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         if use_WB: run.finish()
 
     # --- TEST ---
+    import torch.nn as nn
+    def strip_eval_modules(m: nn.Module):
+        if isinstance(m, (nn.Dropout, nn.LayerNorm)):
+            m.eval()          # freeze statistics
+            m.training = False
+
+    # --- freeze Dropout & LayerNorm ---
+    model.policy.apply(strip_eval_modules)
+
+    # --- ahead-of-time compile the policy once for inference ---
+    model.policy = torch.compile(
+        model.policy, mode="reduce-overhead", fullgraph=False
+    )
+
     model.policy.set_training_mode(False)
     print('\nTest set evaluation...')
     eval_function = eval_corruptions
@@ -249,6 +264,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         'verbose': 1,
     }
     
+    # metrics_test = profile_code('cProfile', eval_function, **eval_args)
     metrics_test = profile_code(False, eval_function, **eval_args)
     print_eval_info('Test', metrics_test)
 

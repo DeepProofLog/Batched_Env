@@ -12,6 +12,7 @@ from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import dict_to_obs, obs_space_info
 
 from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from env import LogicEnv_gym
 
@@ -88,37 +89,12 @@ def create_environments(args, data_handler, index_manager):
     callback_env = DummyVecEnv(callback_env_fns)
     # callback_env = CustomDummyVecEnv(callback_env_fns)
 
+    # use SubprocVecEnv if you want to use multiple processes
+    # env = SubprocVecEnv(env_fns)
+    # eval_env = SubprocVecEnv(eval_env_fns)
+    # callback_env = SubprocVecEnv(callback_env_fns)
 
     return env, eval_env, callback_env
-
-
-    # env = SubprocVecEnv([make_env(
-    #                             mode='train', 
-    #                             seed=int(env_seeds[i]), 
-    #                             queries=data_handler.train_queries, 
-    #                             labels=[1]*len(data_handler.train_queries),
-    #                             facts=facts_set,
-    #                             ) 
-    #                             for i in range(args.n_envs)])
-
-    # eval_env = SubprocVecEnv([make_env(
-    #                                 mode='eval', 
-    #                                 seed=int(eval_env_seeds[i]), 
-    #                                 queries=data_handler.valid_queries,
-    #                                 labels=[1]*len(data_handler.valid_queries),
-    #                                 facts=facts_set,
-    #                                 ) 
-    #                                 for i in range(args.n_eval_envs)])
-
-    # callback_env = SubprocVecEnv([make_env(
-    #                                 mode='eval',
-    #                                 seed=int(callback_env_seeds[i]),
-    #                                 queries=data_handler.valid_queries,
-    #                                 labels=[1]*len(data_handler.valid_queries),
-    #                                 facts=facts_set,
-    #                                 )
-    #                                 for i in range(1)])
-
 
 class CustomDummyVecEnv(VecEnv):
     """
@@ -161,7 +137,7 @@ class CustomDummyVecEnv(VecEnv):
             done = terminated or truncated
             self.buf_rews[idx] = rew
             self.buf_dones[idx] = done
-            info["TimeLimit.truncated"] = truncated and not terminated
+            self.buf_infos[idx] = info
 
             if done:
                 # count this episode
@@ -171,11 +147,9 @@ class CustomDummyVecEnv(VecEnv):
                     self.active_envs[idx] = False
                 # save final obs & reset
                 info["terminal_observation"] = obs
-                self.buf_infos[idx] = info
                 obs, reset_info = self.envs[idx].reset()
-                # self.buf_infos[idx] = reset_info
-            else:
-                self.buf_infos[idx] = info
+                # Update info with reset info
+                self.buf_infos[idx].update(reset_info)
 
             # store obs
             if isinstance(obs, dict):
@@ -185,7 +159,11 @@ class CustomDummyVecEnv(VecEnv):
                 # assume array
                 self.buf_obs[self.keys[0]][idx] = obs
 
-        return self._obs_from_buf(), self.buf_rews.copy(), self.buf_dones.copy(), deepcopy(self.buf_infos)
+        # OPTIMIZATION: Use a shallow copy instead of a deepcopy.
+        # This is much faster and safe for SB3's training loop.
+        infos = [info.copy() for info in self.buf_infos]
+        return self._obs_from_buf(), self.buf_rews.copy(), self.buf_dones.copy(), infos
+        # return self._obs_from_buf(), self.buf_rews.copy(), self.buf_dones.copy(), deepcopy(self.buf_infos)
 
     def reset(self) -> Any:
         for idx in np.nonzero(self.active_envs)[0]:
@@ -233,7 +211,11 @@ class CustomDummyVecEnv(VecEnv):
                 self.buf_obs[key][env_idx] = obs[key]  # type: ignore[call-overload]
 
     def _obs_from_buf(self) -> VecEnvObs:
-        return dict_to_obs(self.observation_space, deepcopy(self.buf_obs))
+        # return dict_to_obs(self.observation_space, deepcopy(self.buf_obs))
+        return dict_to_obs(
+            self.observation_space,
+            {k: v.copy() for k, v in self.buf_obs.items()}
+        )
 
     def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> list[Any]:
         """Return attribute from vectorized environment (see base class)."""

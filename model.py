@@ -392,26 +392,19 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             embed_dim=self.features_extractor_kwargs['features_dim']
         )
 
-
-    def get_kge_log_probs(self, obs: PyTorchObs, actions: torch.Tensor, log_prob: torch.Tensor) -> None:
-        """
-        Computes the KGE log probabilities for the actions based on the latent policy output.
-        This is used to replace the log probabilities of KGE actions with their KGE scores.
-        """
-        # Squeeze actions if it has an extra dimension
+    def get_kge_log_probs(self, obs: PyTorchObs, actions: torch.Tensor, log_prob: torch.Tensor) -> torch.Tensor:
         actions_squeezed = actions.squeeze(1) if actions.ndim > 1 else actions
-        
-        # Get the predicate indices of the chosen actions
         batch_indices = torch.arange(actions_squeezed.shape[0], device=actions_squeezed.device)
+
         chosen_action_sub_indices = obs["derived_sub_indices"][batch_indices, actions_squeezed]
         chosen_action_pred_indices = chosen_action_sub_indices[:, 0, 0]
 
-        # Find which of the chosen actions are KGE actions
         kge_action_mask = torch.isin(chosen_action_pred_indices, self.kge_indices_tensor.to(chosen_action_pred_indices.device))
         kge_batch_indices = kge_action_mask.nonzero(as_tuple=False).squeeze(-1)
 
-        # For those actions, get the KGE score and update the log_prob
         if kge_batch_indices.numel() > 0:
+            atoms_to_predict, original_indices = [], []
+
             for batch_idx in kge_batch_indices:
                 kge_action_sub_index = chosen_action_sub_indices[batch_idx, 0, :]
                 kge_action_str = self.index_manager.subindex_to_str(kge_action_sub_index)
@@ -420,11 +413,26 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
                 if kge_action_str and kge_pred_str:
                     original_pred_str = kge_pred_str.removesuffix('_kge')
                     original_atom_str = f"{original_pred_str}{kge_action_str[len(kge_pred_str):]}"
-                    score = self.kge_inference_engine.predict(original_atom_str)
-                    kge_log_prob = math.log(score + 1e-9)
-                    # print(f"Computing KGE score for action: {original_atom_str}_kge, score: {score:.5f}, log_prob: {kge_log_prob:.3f}")
-                    
-                    log_prob[batch_idx] = kge_log_prob
+                    atoms_to_predict.append(original_atom_str)
+                    # convert tensor → python int once, it makes indexing simpler
+                    original_indices.append(int(batch_idx))
+        
+            if atoms_to_predict:
+                # 1. KGE scores
+                scores = self.kge_inference_engine.predict_batch(atoms_to_predict)
+                # print(f"Atoms to predict: {len(atoms_to_predict)}, {atoms_to_predict}, Scores: {scores}")
+                kge_log_probs = torch.log(
+                    torch.as_tensor(scores, device=log_prob.device, dtype=log_prob.dtype)
+                    + 1e-9
+                )
+
+                # 2. Normalise shapes so we can safely scatter-update
+                flat_lp = log_prob.view(-1)          # works for () , (B,) or (B,1)
+                idx_tensor = torch.tensor(original_indices,
+                                        device=log_prob.device, dtype=torch.long)
+                flat_lp[idx_tensor] = kge_log_probs  # in-place
+                log_prob = flat_lp.view_as(log_prob) # restore original shape
+
         return log_prob
 
     def forward(self, obs: torch.Tensor, deterministic: bool = False, verbose: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

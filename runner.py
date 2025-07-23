@@ -9,9 +9,11 @@ import numpy as np
 from utils import FileLogger
 import datetime
 import sys
+torch.set_float32_matmul_precision('high')
+# torch.cuda.set_allocator_config(garbage_collection_threshold=0.9)
+
 
 if __name__ == "__main__":
-
     class Tee:
         def __init__(self, file_path):
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -92,7 +94,7 @@ if __name__ == "__main__":
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 256
     n_steps = 256
-    n_eval_envs = 256
+    n_eval_envs = 100
     # n_callback_eval_envs = 1 # Number of environments to use for evaluation in the callback # should be one in CustomEvalCallback
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
@@ -117,6 +119,7 @@ if __name__ == "__main__":
     parser.add_argument("--train_neg_ratio", default=None, type=int, help="Ratio of negative to positive queries for training")
     parser.add_argument("--eval_neg_samples", default=None, help="Number of negatives for validation set ('None' for all)")
     parser.add_argument("--test_neg_samples", default=None, help="Number of negatives for test set ('None' for all)")
+    parser.add_argument("--use_kge_action", default=None, action='store_const', const=True, help="Use KGE action")
 
 
     args = parser.parse_args()
@@ -136,6 +139,17 @@ if __name__ == "__main__":
         EVAL_NEG_SAMPLES = [None if args.eval_neg_samples.lower() in ['none', '-1'] else int(args.eval_neg_samples)]
     if args.test_neg_samples is not None:
         TEST_NEG_SAMPLES = [None if args.test_neg_samples.lower() in ['none', '-1'] else int(args.test_neg_samples)]
+    if args.use_kge_action is not None:
+        USE_KGE_ACTION = [args.use_kge_action]
+        if USE_KGE_ACTION[0]:
+            KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
+            if DATASET_NAME[0] == "countries_s3":
+                KGE_RUN_SIGNATURE = ['countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt']
+            elif DATASET_NAME[0] == "family":
+                KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
+            elif DATASET_NAME[0] == "wn18rr":
+                KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-complex-True-256-256-1-rules.txt']
+            KGE_SCORES_FILE = [None]
 
 
     print('Running experiments for the following parameters:','DATASET_NAME:'\

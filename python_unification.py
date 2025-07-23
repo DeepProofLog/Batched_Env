@@ -1,7 +1,6 @@
 from typing import List, Dict, Set, Tuple, FrozenSet, Optional
 from utils import Term, Rule
 
-
 def is_variable(arg: str) -> bool:
     """Check if an argument is a variable."""
     return arg[0].isupper() or arg[0] == '_'
@@ -265,8 +264,6 @@ def rename_vars(next_states: List[Term],
         print('Original states:', next_states) if verbose else None
 
     return renamed_states, next_var_index
-
-
 
 def get_next_unification_python(state: List[Term], 
                                 facts_set: FrozenSet, 

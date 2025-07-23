@@ -3,6 +3,8 @@ import itertools
 import torch
 import numpy as np
 from utils import is_variable, Term, Rule
+from functools import lru_cache
+import torch
 
 class IndexManager():
     '''
@@ -122,62 +124,94 @@ class IndexManager():
             self.variable_idx2str[var_index] = var_name
 
 
+    def state_to_tuple(self, state: List[Term]) -> Tuple[int, ...]:
+        """
+        Convert a list of Term objects to a flat, hashable tuple of indices:
+
+            (pred_idx, arg1_idx, arg2_idx, ..., PAD,  pred_idx, ...)
+
+        The tuple has fixed length = padding_atoms * (max_arity + 1) so it can be
+        used directly as an LRU-cache key.
+        """
+        flat: List[int] = []
+        pmap, amap   = self.predicate_str2idx, self.unified_term_map
+        pad, A, P    = self.padding_idx, self.max_arity, self.padding_atoms
+
+        for atom in state[:P]:
+            flat.append(pmap[atom.predicate])
+            # copy args (and pad if arity < max_arity)
+            for arg in atom.args[:A]:
+                flat.append(amap[arg])
+            flat.extend([pad] * (A - len(atom.args)))
+
+        # pad missing atoms
+        missing_atoms = P - len(state)
+        flat.extend([pad] * missing_atoms * (A + 1))
+        return tuple(flat)
+
+
+    @lru_cache(maxsize=131_072)
+    def _state_tuple_to_subidx(self, key: Tuple[int, ...]) -> torch.Tensor:   # type: ignore[misc]
+        """
+        Same contract as the old _state_key_to_subidx but without     │
+        (i) string parsing and (ii) per-call Python → Torch copies.   │
+        """
+        # `as_tensor()` avoids an extra copy when the cache hits
+        flat = torch.as_tensor(key, dtype=torch.int64, device=self.device)
+        return flat.view(self.padding_atoms, self.max_arity + 1)
+
     def get_atom_sub_index(self, state: List[Term]) -> torch.Tensor:
-        """
-        Get sub-indices (predicate, args) for each atom in a state in a single pass.
-        Uses a unified term map for faster argument lookup by processing arguments together.
+        # zero-copy lookup; DO NOT mutate the returned tensor
+        return self._state_tuple_to_subidx(self.state_to_tuple(state))
 
-        Args:
-            state: A list of Term objects representing the logical state.
 
-        Returns:
-            sub_index: Tensor (padding_atoms, max_arity + 1) with indices.
-        """
-        # --- State Length Check ---
-        state_len = len(state)
-        if state_len > self.padding_atoms:
-             raise ValueError(f"Length of processed state ({state_len}) exceeds padding_atoms ({self.padding_atoms}).")
+    # def get_atom_sub_index(self, state: List[Term]) -> torch.Tensor:
+    #     """
+    #     Get sub-indices (predicate, args) for each atom in a state in a single pass.
+    #     Uses a unified term map for faster argument lookup by processing arguments together.
 
-        # --- Initialize Tensor ---
-        sub_index = torch.zeros(self.padding_atoms, self.max_arity + 1, device=self.device, dtype=torch.int64)
+    #     Args:
+    #         state: A list of Term objects representing the logical state.
 
-        # --- Single Pass for Indexing ---
-        # Local references to maps for efficiency
-        predicate_map = self.predicate_str2idx
-        unified_map = self.unified_term_map
+    #     Returns:
+    #         sub_index: Tensor (padding_atoms, max_arity + 1) with indices.
+    #     """
+    #     # --- State Length Check ---
+    #     state_len = len(state)
+    #     if state_len > self.padding_atoms:
+    #          raise ValueError(f"Length of processed state ({state_len}) exceeds padding_atoms ({self.padding_atoms}).")
 
-        for i, atom in enumerate(state):
-            current_sub_row = sub_index[i]
+    #     # --- Initialize Tensor ---
+    #     sub_index = torch.zeros(self.padding_atoms, self.max_arity + 1, device=self.device, dtype=torch.int64)
 
-            # --- Predicate Index ---
-            pred_str = atom.predicate
-            try:
-                current_sub_row[0] = predicate_map[pred_str]
-            except KeyError:
-                 raise KeyError(f"Predicate '{pred_str}' not found in predicate map.")
+    #     # --- Single Pass for Indexing ---
+    #     # Local references to maps for efficiency
+    #     predicate_map = self.predicate_str2idx
+    #     unified_map = self.unified_term_map
 
-            # --- Argument Indices ---
-            num_args = len(atom.args)
-            max_j = min(num_args, self.max_arity) # Process up to max_arity
+    #     for i, atom in enumerate(state):
+    #         # --- Predicate Index ---
 
-            # Extract relevant argument strings
-            arg_strings = atom.args[:max_j]
+    #         try:
+    #             sub_index[i, 0] = predicate_map[atom.predicate]
+    #         except KeyError:
+    #              raise KeyError(f"Predicate '{atom.predicate}' not found in predicate map.")
 
-            # # if 'X' in arg_strings or 'Y' in arg_strings:
-            # print('\narg_strings:', arg_strings)
-            # print('Unified map:', unified_map)
+    #         # --- Argument Indices ---
+    #         num_args = len(atom.args)
+    #         if num_args > 0:
+    #             max_j = min(num_args, self.max_arity)
+    #             try:
+    #                 # Directly assign the slice from a list comprehension
+    #                 sub_index[i, 1:max_j + 1] = torch.tensor(
+    #                     [unified_map[arg] for arg in atom.args[:max_j]],
+    #                     device=self.device,
+    #                     dtype=torch.int64
+    #                 )
+    #             except KeyError as e:
+    #                  raise KeyError(f"Argument '{e}' not in constant or variable maps.") from e
 
-            # Get indices for all relevant argument strings using the unified map
-            try:
-                arg_indices = [unified_map[arg] for arg in arg_strings]
-            except KeyError as e:
-                 raise KeyError(f"Argument '{e}' not in constant or variable maps.") from e
-
-            # Assign argument indices to the tensor row
-            if arg_indices: # Check if there are any arguments to assign
-                current_sub_row[1:max_j + 1] = torch.tensor(arg_indices, device=self.device, dtype=torch.int64)
-
-        return sub_index
+    #     return sub_index
 
     def subindices_to_terms(
         self,

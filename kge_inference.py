@@ -5,7 +5,7 @@ import random
 import json
 import re
 import sys
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union, Sequence
 import time
 import argparse
 
@@ -15,6 +15,40 @@ import ns_lib as ns
 from kge_loader import KGCDataHandler
 from kge_model import CollectiveModel
 
+
+# def get_kge_log_probs(self, obs: PyTorchObs, actions: torch.Tensor, log_prob: torch.Tensor) -> None:
+#     """
+#     Computes the KGE log probabilities for the actions based on the latent policy output.
+#     This is used to replace the log probabilities of KGE actions with their KGE scores.
+#     """
+#     # Squeeze actions if it has an extra dimension
+#     actions_squeezed = actions.squeeze(1) if actions.ndim > 1 else actions
+    
+#     # Get the predicate indices of the chosen actions
+#     batch_indices = torch.arange(actions_squeezed.shape[0], device=actions_squeezed.device)
+#     chosen_action_sub_indices = obs["derived_sub_indices"][batch_indices, actions_squeezed]
+#     chosen_action_pred_indices = chosen_action_sub_indices[:, 0, 0]
+
+#     # Find which of the chosen actions are KGE actions
+#     kge_action_mask = torch.isin(chosen_action_pred_indices, self.kge_indices_tensor.to(chosen_action_pred_indices.device))
+#     kge_batch_indices = kge_action_mask.nonzero(as_tuple=False).squeeze(-1)
+
+#     # For those actions, get the KGE score and update the log_prob
+#     if kge_batch_indices.numel() > 0:
+#         for batch_idx in kge_batch_indices:
+#             kge_action_sub_index = chosen_action_sub_indices[batch_idx, 0, :]
+#             kge_action_str = self.index_manager.subindex_to_str(kge_action_sub_index)
+#             kge_pred_str = self.index_manager.predicate_idx2str.get(kge_action_sub_index[0].item())
+
+#             if kge_action_str and kge_pred_str:
+#                 original_pred_str = kge_pred_str.removesuffix('_kge')
+#                 original_atom_str = f"{original_pred_str}{kge_action_str[len(kge_pred_str):]}"
+#                 score = self.kge_inference_engine.predict(original_atom_str)
+#                 kge_log_prob = math.log(score + 1e-9)
+#                 # print(f"Computing KGE score for action: {original_atom_str}_kge, score: {score:.5f}, log_prob: {kge_log_prob:.3f}")
+                
+#                 log_prob[batch_idx] = kge_log_prob
+#     return log_prob
 
 class Domain:
     """Represents a domain of constants in the First-Order Logic."""
@@ -245,52 +279,55 @@ class KGEInference:
         
         return score
 
-    def predict_batch(self, atom_tuples: List[Tuple]) -> List[float]:
+    def predict_batch(self,
+                    atoms: Sequence[Union[str, Tuple]]) -> List[float]:
         """
-        Evaluates a batch of atom tuples and returns their scores, using cached scores if available.
+        Evaluate a batch of atoms (either functional strings or tuples) and
+        return their KGE scores in the original order.  Results are cached using
+        the functional-style string representation, so duplicates across (and
+        within) calls are computed only once.
         """
-        if not atom_tuples:
+        if not atoms:
             return []
-            
-        # Separate atoms into cached and non-cached
-        cached_scores = {}
-        non_cached_tuples = []
-        original_order_map = {}
-        
-        for i, atom_tuple in enumerate(atom_tuples):
-            atom_str = f"{atom_tuple[0]}({','.join(map(str, atom_tuple[1:]))})"
-            original_order_map[i] = atom_tuple
-            if atom_str in self.atom_scores:
-                cached_scores[atom_tuple] = self.atom_scores[atom_str]
+
+        # ---------- 1. normalise to (string, tuple) -----------------------------
+        strings: List[str]  = []
+        tuples:  List[Tuple] = []
+
+        for a in atoms:
+            if isinstance(a, tuple):
+                tup = a
+                s   = f"{tup[0]}({','.join(map(str, tup[1:]))})"
+            elif isinstance(a, str):
+                s   = a
+                tup = Atom(s=s, format="functional").toTuple()
             else:
-                non_cached_tuples.append(atom_tuple)
+                raise TypeError(f"Unsupported atom type: {type(a)}")
+            strings.append(s)
+            tuples.append(tup)
 
-        # Predict scores for non-cached atoms
-        new_scores = {}
-        if non_cached_tuples:
-            (model_inputs, _y) = self._prepare_batch(non_cached_tuples)
+        # ---------- 2. work out what still needs the model ----------------------
+        to_eval_strs, to_eval_tuples = [], []
+        for s, t in zip(strings, tuples):
+            if s not in self.atom_scores:
+                # only keep unique unseen atoms
+                if s not in to_eval_strs:
+                    to_eval_strs.append(s)
+                    to_eval_tuples.append(t)
 
+        # ---------- 3. run the model once for the uncached atoms ----------------
+        if to_eval_tuples:
+            model_inputs, _ = self._prepare_batch(to_eval_tuples)
             if self.model is None:
                 self.model = self._build_and_load_model()
 
             kge_inputs = (model_inputs[0], model_inputs[1])
-            atom_outputs, _ = self.model.kge_model.call(kge_inputs)
+            batch_scores, _ = self.model.kge_model.call(kge_inputs)
+            for s, score in zip(to_eval_strs, batch_scores.numpy().flatten()):
+                self.atom_scores[s] = float(score)
 
-            scores_list = atom_outputs.numpy().flatten().tolist()
-
-            for atom_tuple, score in zip(non_cached_tuples, scores_list):
-                new_scores[atom_tuple] = score
-                # Also add to the main cache
-                atom_str = f"{atom_tuple[0]}({','.join(map(str, atom_tuple[1:]))})"
-                self.atom_scores[atom_str] = score
-
-        # Combine results in the original order
-        final_scores = []
-        all_scores = {**cached_scores, **new_scores}
-        for i in range(len(atom_tuples)):
-            final_scores.append(all_scores[original_order_map[i]])
-
-        return final_scores
+        # ---------- 4. materialise results in original order --------------------
+        return [self.atom_scores[s] for s in strings]
 
 def score_datasets(inference_engine: KGEInference, output_file: str, num_negatives: Optional[int], batch_size: int = 256):
     """

@@ -21,176 +21,185 @@ def evaluate_policy(
     env: Union[gym.Env, VecEnv],
     n_eval_episodes: int = 10,
     deterministic: bool = True,
-    target_episodes: np.ndarray | None = None,
+    target_episodes: np.ndarray = None,
     verbose: int = 0,
     track_logprobs: bool = False,
-):
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
     """
-    Fast eval: tensor-first, vectorized finalization.
-    Returns:
-        rewards, lengths, logps, mask, proof_successful,
-        episode_logprob_histories, episode_choices_histories,
-        episode_steplogprob_histories, episode_state_histories
+    Run policy for a specified number of episodes per env, returning
+    rewards, lengths, log_probs, a validity mask, a proof success mask,
+    and histories for plotting.
     """
-    # --- ensure VecEnv ---
     if not isinstance(env, VecEnv):
-        if verbose:
-            print("Warning: wrapping single env in DummyVecEnv")
+        print("Warning: wrapping single env in DummyVecEnv")
         env = DummyVecEnv([lambda: env])
-    assert getattr(env, "type_", None) == "custom_dummy", "Requires custom_dummy VecEnv"
 
-    device = model.device
+    assert env.type_ == "custom_dummy", "Requires custom_dummy VecEnv"
+
     n_envs = env.num_envs
-
-    # --- targets ---
     if target_episodes is None:
         targets = np.array([(n_eval_episodes + i) // n_envs for i in range(n_envs)], dtype=int)
     else:
-        targets = np.asarray(target_episodes, dtype=int)
+        targets = np.array(target_episodes, dtype=int)
 
     padded_targets = np.zeros(n_envs, dtype=int)
-    padded_targets[: len(targets)] = targets
-    max_t = int(padded_targets.max())
-    total = int(padded_targets.sum())
+    padded_targets[:len(targets)] = targets
 
+    total = padded_targets.sum()
     if verbose:
-        print(f"\nEvaluating {total} episodes on {n_envs} envs (avg target: {targets.mean():.2f})")
+        print(f"\nEvaluating {total} episodes on {n_envs} envs (avg target: {targets.mean()})")
 
-    # tell env
     env._episode_target[:] = padded_targets
-    env._episode_count[:]  = 0
-    env.active_envs[:]     = True
+    env._episode_count[:] = 0
+    env.active_envs[:] = True
 
-    # --- buffers on device ---
-    rewards          = torch.zeros((n_envs, max_t), device=device)
-    lengths          = torch.zeros_like(rewards, dtype=torch.int32)
-    logps            = torch.zeros_like(rewards)
-    proof_successful = torch.zeros_like(rewards, dtype=torch.bool)
+    rewards = np.zeros((n_envs, padded_targets.max()), dtype=float)
+    lengths = np.zeros_like(rewards, dtype=int)
+    logps   = np.zeros_like(rewards, dtype=float)
+    # Array to store whether a proof was successfully found
+    proof_successful = np.zeros_like(rewards, dtype=bool)
+    counts  = np.zeros(n_envs, dtype=int)
 
-    counts      = torch.zeros(n_envs, dtype=torch.int32, device=device)
-    current_rew = torch.zeros(n_envs, device=device)
-    current_len = torch.zeros(n_envs, dtype=torch.int32, device=device)
-    current_lp  = torch.zeros(n_envs, device=device)
-
-    # histories (only if needed)
-    episode_logprob_histories    : list[np.ndarray] = []
-    episode_choices_histories    : list[np.ndarray] = []
-    episode_steplogprob_histories: list[np.ndarray] = []
-    episode_state_histories      : list[np.ndarray] = []
+    # History tracking
+    episode_logprob_histories = []
+    episode_choices_histories = []
+    episode_steplogprob_histories = []
+    episode_state_histories = []
     if track_logprobs:
+        current_logprob_histories = [[] for _ in range(n_envs)]
+        current_choices_histories = [[] for _ in range(n_envs)]
         current_steplogprob_histories = [[] for _ in range(n_envs)]
-        current_choices_histories     = [[] for _ in range(n_envs)]
-        current_state_histories       = [[] for _ in range(n_envs)]
-        index_manager = env.get_attr("index_manager")[0]
+        current_state_histories = [[] for _ in range(n_envs)]
 
-    # env needs numpy actions
-    action_shape = env.action_space.shape
-    full_actions = np.zeros((n_envs, *action_shape), dtype=env.action_space.dtype)
+    index_manager = env.get_attr("index_manager")[0]
+    true_pred_idx = index_manager.predicate_str2idx['True']
 
     observations = env.reset()
-    padded_targets_t = torch.as_tensor(padded_targets, device=device)
+    current_rew = np.zeros(n_envs, dtype=float)
+    current_len = np.zeros(n_envs, dtype=int)
+    current_lp  = np.zeros(n_envs, dtype=float)
 
-    while torch.any(counts < padded_targets_t).item():
-        active_mask_t = counts < padded_targets_t
-        active_idx    = torch.where(active_mask_t)[0]
-        active_np     = active_idx.cpu().numpy()
+    action_shape = env.action_space.shape
+    action_dtype = env.action_space.dtype
+    full_actions = np.zeros((n_envs, *action_shape), dtype=action_dtype)
+    obs_active_dict = {k: None for k in observations} if isinstance(observations, dict) else None
 
-        # slice obs
-        if isinstance(observations, dict):
-            obs_active = {k: torch.as_tensor(v[active_np], device=device) for k, v in observations.items()}
-        else:
-            obs_active = torch.as_tensor(observations[active_np], device=device)
+    while np.any(counts < padded_targets):
+        # print("counts per env:", counts)
+        active_mask = counts < padded_targets
 
-        obs_tensor = obs_as_tensor(obs_active, device)
-        acts_tensor, _, lp_tensor = model.policy(obs_tensor, deterministic=deterministic)
-
-        # track histories (before step)
+        # --- Data Collection for Plotting ---
         if track_logprobs:
+            all_sub_indices = observations["sub_index"]
+            # Convert state observations to strings for active envs
+            for env_idx in np.where(active_mask)[0]:
+                # Squeeze out the middle dimension of size 1, shape becomes (padding_atoms, max_arity+1)
+                state_subidx_tensor = all_sub_indices[env_idx].squeeze(0)
+                state_str = index_manager.state_subindex_to_str(state_subidx_tensor,truncate=True)
+                current_state_histories[env_idx].append(state_str)
+
+
+        # slice observations for active envs
+        if isinstance(observations, dict):
+            for k, v in observations.items():
+                obs_active_dict[k] = v[active_mask]
+            obs_tensor = obs_as_tensor(obs_active_dict, model.device)
+        else:
+            obs_active = observations[active_mask]
+            # forward pass only for active
+            obs_tensor = obs_as_tensor(obs_active, model.device)
+
+        acts_tensor, _, lp_tensor = model.policy(obs_tensor, deterministic=deterministic)
+        # to NumPy
+        actions_active = acts_tensor.cpu().numpy()
+        lp_active = lp_tensor.cpu().numpy()
+
+        # --- Data Collection for Plotting (Optimized) ---
+        if track_logprobs:
+            # Get number of choices directly from the observation tensor for active envs
             num_choices = (obs_tensor["derived_sub_indices"].sum(dim=(-1, -2)) != 0).sum(dim=-1).cpu().numpy()
             all_sub_indices = observations["sub_index"]
-            for i, env_i in enumerate(active_np):
-                current_state_histories[env_i].append(all_sub_indices[env_i].squeeze(0))
-                current_choices_histories[env_i].append(num_choices[i])
+            active_indices = np.where(active_mask)[0]
+            for i, env_idx in enumerate(active_indices):
+                current_state_histories[env_idx].append(all_sub_indices[env_idx].squeeze(0))
+                current_steplogprob_histories[env_idx].append(lp_active[i])
+                current_choices_histories[env_idx].append(num_choices[i])
 
-        current_lp[active_idx] += lp_tensor
 
-        full_actions[active_np] = acts_tensor.detach().cpu().numpy()
-        new_obs, rews_np, dones_np, infos = env.step(full_actions)
+        # --- Step Environments ---
+        current_lp[active_mask] += lp_active
+        full_actions[active_mask] = actions_active
+        new_obs, rews, dones, infos = env.step(full_actions)
 
-        rews_t  = torch.as_tensor(rews_np, device=device, dtype=torch.float32)
-        dones_t = torch.as_tensor(dones_np, device=device, dtype=torch.bool)
+        current_rew[active_mask] += rews[active_mask]
+        current_len[active_mask] += 1
 
-        current_rew[active_idx] += rews_t[active_idx]
-        current_len[active_idx] += 1
+        done_and_active = dones & active_mask
 
-        done_and_active = dones_t & active_mask_t
-        if done_and_active.any():
-            done_idx = torch.where(done_and_active)[0]
-            slots    = counts[done_idx]
+        # --- Vectorized Update for Completed Episodes ---
+        if np.any(done_and_active):
+            done_indices = np.where(done_and_active)[0]
+            slots = counts[done_indices]
 
-            rewards[done_idx, slots] = current_rew[done_idx]
-            lengths[done_idx, slots] = current_len[done_idx]
-            logps[done_idx, slots]   = current_lp[done_idx]
+            # Store metrics
+            rewards[done_indices, slots] = current_rew[done_indices]
+            lengths[done_indices, slots] = current_len[done_indices]
+            logps[done_indices, slots] = current_lp[done_indices]
 
-            succ_list = [infos[int(i)].get("is_success", False) for i in done_idx.cpu().tolist()]
-            proof_successful[done_idx, slots] = torch.as_tensor(succ_list, device=device)
+            # Check for success from infos
+            for i, env_idx in enumerate(done_indices):
+                is_success = infos[env_idx].get("is_success", False)
+                if is_success:
+                    proof_successful[env_idx, slots[i]] = True
 
-            if track_logprobs:
-                lp_active_np = lp_tensor.detach().cpu().numpy()
-                # finalize per done env
-                for env_i in done_idx.cpu().tolist():
-                    if current_steplogprob_histories[env_i]:
-                        episode_logprob_histories.append(np.cumsum(current_steplogprob_histories[env_i]))
-                        episode_steplogprob_histories.append(np.array(current_steplogprob_histories[env_i]))
-                        episode_choices_histories.append(np.array(current_choices_histories[env_i]))
+                if track_logprobs:
+                    # Finalize histories for this episode
+                    # The cumulative logprob history needs to be computed now
+                    logprob_hist = np.cumsum(current_steplogprob_histories[env_idx])
+                    episode_logprob_histories.append(logprob_hist)
+                    episode_choices_histories.append(np.array(current_choices_histories[env_idx]))
+                    episode_steplogprob_histories.append(np.array(current_steplogprob_histories[env_idx]))
 
-                        term_obs = infos[env_i].get("terminal_observation", new_obs)
-                        term_sub = term_obs["sub_index"][env_i].squeeze(0)
-                        current_state_histories[env_i].append(term_sub)
-                        episode_state_histories.append(np.array([
-                            index_manager.state_subindex_to_str(s, truncate=True)
-                            for s in current_state_histories[env_i]
-                        ]))
-                        current_steplogprob_histories[env_i].clear()
-                        current_choices_histories[env_i].clear()
-                        current_state_histories[env_i].clear()
+                    # Add terminal state to history
+                    terminal_obs = infos[env_idx].get("terminal_observation", new_obs)
+                    current_state_histories[env_idx].append(terminal_obs["sub_index"][env_idx].squeeze(0))
+                    episode_state_histories.append(current_state_histories[env_idx]) # Append the list of tensors
 
-            counts[done_idx]     += 1
-            current_rew[done_idx] = 0
-            current_len[done_idx] = 0
-            current_lp[done_idx]  = 0
+                    # Reset history for this env
+                    current_logprob_histories[env_idx] = []
+                    current_choices_histories[env_idx] = []
+                    current_steplogprob_histories[env_idx] = []
+                    current_state_histories[env_idx] = []
 
-        # append step lps
-        if track_logprobs:
-            step_lp_np = lp_tensor.detach().cpu().numpy()
-            for i, env_i in enumerate(active_np):
-                current_steplogprob_histories[env_i].append(step_lp_np[i])
+
+            # Reset trackers for done envs
+            counts[done_indices] += 1
+            current_rew[done_indices] = 0
+            current_len[done_indices] = 0
+            current_lp[done_indices] = 0
 
         observations = new_obs
         if verbose:
-            print(f"\rEpisodes done: {int(counts.sum())}/{total}", end="", flush=True)
+            print(f"\rEpisodes done: {counts.sum()}/{total}", end="", flush=True)
 
     if verbose:
         print("\r" + " " * 80 + "\r", end="")
 
-    # mask
-    mask = (torch.arange(max_t, device=device)[None, :]
-            < torch.as_tensor(padded_targets, device=device)[:, None])
-
-    # trim
+    # --- Finalize and Return ---
+    mask = np.zeros_like(rewards, dtype=bool)
+    for i, t in enumerate(padded_targets):
+        mask[i, :t] = True
+    
+    # Trim to original target length to exclude padding envs
     if target_episodes is not None:
-        L = len(target_episodes)
-        rewards, lengths, logps, mask, proof_successful = [
-            x[:L].cpu().numpy() for x in (rewards, lengths, logps, mask, proof_successful)
-        ]
-    else:
-        rewards, lengths, logps, mask, proof_successful = [
-            x.cpu().numpy() for x in (rewards, lengths, logps, mask, proof_successful)
-        ]
+        targets_len = len(target_episodes)
+        rewards = rewards[:targets_len]
+        lengths = lengths[:targets_len]
+        logps = logps[:targets_len]
+        mask = mask[:targets_len]
+        proof_successful = proof_successful[:targets_len]
 
-    return (rewards, lengths, logps, mask, proof_successful,
-            episode_logprob_histories, episode_choices_histories,
-            episode_steplogprob_histories, episode_state_histories)
+    return rewards, lengths, logps, mask, proof_successful, episode_logprob_histories, episode_choices_histories, episode_steplogprob_histories, episode_state_histories
 
 
 def eval_corruptions(
