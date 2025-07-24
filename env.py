@@ -4,14 +4,14 @@ from tensordict import TensorDict, NonTensorData
 import torch
 import gymnasium as gym
 import numpy as np
-import janus_swi as janus
+# import janus_swi as janus
 
 from dataset import DataHandler
 from index_manager import IndexManager
 from utils import Rule, Term, print_state_transition
 from python_unification import get_next_unification_python
 # from python_unification import get_next_unification_python_old as get_next_unification_python
-from prolog_unification import get_next_unification_prolog
+# from prolog_unification import get_next_unification_prolog
 
 def _state_to_hashable(state: List[Term]) -> frozenset:
     """
@@ -188,10 +188,10 @@ class LogicEnv_gym(gym.Env):
         else:
             raise ValueError(f"Invalid mode: {self.mode}. Choose from 'train', 'eval', or 'eval_with_restart'.")
                 
-        if self.engine == 'prolog' and (self.mode == 'train' or self.consult_janus_eval == True) and label == 1:
-            if state in self.facts:
-                janus.query_once(f"retract({state.prolog_str()}).")
-                # janus.query_once(f"retract({state}).")
+        # if self.engine == 'prolog' and (self.mode == 'train' or self.consult_janus_eval == True) and label == 1:
+        #     if state in self.facts:
+        #         janus.query_once(f"retract({state.prolog_str()}).")
+        #         # janus.query_once(f"retract({state}).")
 
         self.current_query = state
         self.current_label = label
@@ -258,9 +258,9 @@ class LogicEnv_gym(gym.Env):
         info = {}
         if done_next:
             info["is_success"] = successful and not truncated
-            if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
-                janus.query_once(f"asserta({self.current_query.prolog_str()}).")
-                # janus.query_once(f"asserta({self.current_query}).")
+            # if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
+            #     janus.query_once(f"asserta({self.current_query.prolog_str()}).")
+            #     # janus.query_once(f"asserta({self.current_query}).")
             self.current_query, self.current_label = None, None
 
         self.tensordict.update(TensorDict({
@@ -301,11 +301,11 @@ class LogicEnv_gym(gym.Env):
             else: state = filtered_state
             # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
-        if self.engine == 'prolog':
-            derived_states, self.next_var_idx = get_next_unification_prolog(state,
-                                                         next_var_index=self.index_manager.next_var_index, 
-                                                         verbose=self.prover_verbose)
-        elif self.engine == 'python':
+        # if self.engine == 'prolog':
+        #     derived_states, self.next_var_idx = get_next_unification_prolog(state,
+        #                                                  next_var_index=self.index_manager.next_var_index, 
+        #                                                  verbose=self.prover_verbose)
+        if self.engine == 'python':
             derived_states, self.next_var_index = get_next_unification_python(state,
                                                             facts_set=self.facts,
                                                             facts_indexed=self.index_manager.fact_index,
@@ -335,11 +335,11 @@ class LogicEnv_gym(gym.Env):
                     else: state = filtered_state
                     # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
-                if self.engine == 'prolog':
-                    derived_states, self.next_var_idx = get_next_unification_prolog(state,
-                                                next_var_index=self.next_var_index, 
-                                                verbose=self.prover_verbose)
-                elif self.engine == 'python':
+                # if self.engine == 'prolog':
+                #     derived_states, self.next_var_idx = get_next_unification_prolog(state,
+                #                                 next_var_index=self.next_var_index, 
+                #                                 verbose=self.prover_verbose)
+                if self.engine == 'python':
                     derived_states, self.next_var_idx = get_next_unification_python(
                         current_state,
                         facts_set=self.facts,

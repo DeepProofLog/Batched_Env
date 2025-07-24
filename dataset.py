@@ -1,5 +1,5 @@
 from os.path import join 
-import janus_swi as janus
+# import janus_swi as janus
 from typing import List, Tuple, Dict, Optional, Set
 import re
 import json
@@ -381,13 +381,13 @@ class DataHandler:
         self.valid_queries = self.valid_queries[:n_eval_queries]
         self.test_queries = self.test_queries[:n_test_queries]
 
-        # Load Janus facts
-        if janus_file:
-            self.janus_facts = []
-            with open(janus_path, "r") as f:
-                self.janus_facts = f.readlines()
-        else:
-            self.janus_facts = None
+        # # Load Janus facts
+        # if janus_file:
+        #     self.janus_facts = []
+        #     with open(janus_path, "r") as f:
+        #         self.janus_facts = f.readlines()
+        # else:
+        self.janus_facts = None
 
         # Extract predicates, constants, variables
         self.predicates, self.predicates_arity, self.constants, self.variables = get_predicates_and_arguments(

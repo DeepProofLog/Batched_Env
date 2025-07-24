@@ -32,7 +32,7 @@ if __name__ == "__main__":
     MEMORY_PRUNING = [True]
     END_PROOF_ACTION = [False]
     SKIP_UNARY_ACTIONS = [True]
-    ENT_COEF = [0.5]
+    ENT_COEF = [0.2]
     CLIP_RANGE = [0.2]
     ENGINE = ['python']
     # reward_type = 1

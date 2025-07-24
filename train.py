@@ -14,7 +14,7 @@ from model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom a
 from embeddings import get_embedder
 from neg_sampling import get_sampler
 from model_eval import eval_corruptions
-from kge_inference import KGEInference
+# from kge_inference import KGEInference
 from stable_baselines3.common.callbacks import (
     StopTrainingOnRewardThreshold,
     CallbackList,
@@ -43,17 +43,17 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
 
     # ---- KGE INFERENCE ENGINE ----
     kge_inference_engine = None
-    if args.use_kge_action:
-        print("\nInitializing KGE Inference Engine...", flush=True)
-        kge_inference_engine = KGEInference(
-            dataset_name=args.dataset_name,
-            base_path=args.data_path,
-            checkpoint_dir=args.kge_checkpoint_dir,
-            run_signature=args.kge_run_signature,
-            seed=0,
-            scores_file_path=args.kge_scores_file
-        )
-        print("KGE Inference Engine Initialized.\n")
+    # if args.use_kge_action:
+    #     print("\nInitializing KGE Inference Engine...", flush=True)
+    #     kge_inference_engine = KGEInference(
+    #         dataset_name=args.dataset_name,
+    #         base_path=args.data_path,
+    #         checkpoint_dir=args.kge_checkpoint_dir,
+    #         run_signature=args.kge_run_signature,
+    #         seed=0,
+    #         scores_file_path=args.kge_scores_file
+    #     )
+    #     print("KGE Inference Engine Initialized.\n")
 
     # ---- DATASET, INDEX MANAGER ----
     data_handler = DataHandler(
@@ -125,11 +125,11 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
             'features_extractor_kwargs': {'features_dim': embedder.embed_dim, 'embedder': embedder}
         }
     )
-    if args.use_kge_action:
-        model.policy.kge_inference_engine = kge_inference_engine
-        model.policy.index_manager = index_manager
-        kge_indices = [idx for pred, idx in index_manager.predicate_str2idx.items() if pred.endswith('_kge')]
-        model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
+    # if args.use_kge_action:
+    #     model.policy.kge_inference_engine = kge_inference_engine
+    #     model.policy.index_manager = index_manager
+    #     kge_indices = [idx for pred, idx in index_manager.predicate_str2idx.items() if pred.endswith('_kge')]
+    #     model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
 
     # --- TRAIN ---
     model_path = os.path.join(args.models_path, args.run_signature, f"seed_{args.seed_run_i}")
@@ -200,7 +200,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                         deterministic=True,
                                         render=False,
                                         name=model_name,
-                                        callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
+                                        callback_on_new_best=reward_threshold_callback if args.restore_best_val_model and not args.use_kge_action else None,
                                         # callback_after_eval=no_improvement_callback,
                                         )
 
@@ -245,11 +245,11 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     # --- freeze Dropout & LayerNorm ---
     model.policy.apply(strip_eval_modules)
 
-    if args.use_kge_action:
-        model.policy.kge_inference_engine = kge_inference_engine
-        model.policy.index_manager = index_manager
-        kge_indices = [idx for pred, idx in index_manager.predicate_str2idx.items() if pred.endswith('_kge')]
-        model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
+    # if args.use_kge_action:
+    #     model.policy.kge_inference_engine = kge_inference_engine
+    #     model.policy.index_manager = index_manager
+    #     kge_indices = [idx for pred, idx in index_manager.predicate_str2idx.items() if pred.endswith('_kge')]
+    #     model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
 
     model.policy = torch.compile(
         model.policy, mode="reduce-overhead", fullgraph=False
