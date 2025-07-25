@@ -83,7 +83,7 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [8000000]
+    TIMESTEPS_TRAIN = [10000000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
