@@ -560,11 +560,18 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             hits10 = mrr_eval_results.get('hits10_mean', None)
             auc_pr = mrr_eval_results.get('auc_pr', None)
 
+            accuracy = mrr_eval_results.get('accuracy', 0.0)
+            precision = mrr_eval_results.get('precision', 0.0)
+            recall = mrr_eval_results.get('recall', 0.0)
+            f1_score = mrr_eval_results.get('f1_score', 0.0)
+
             print(f"\nEval num_timesteps={self.num_timesteps}. Rewards Positive: {mean_reward_pos:.4f}+/-{std_reward_pos:.4f}")
             print(f"Ep len Positive: {mean_ep_length:.2f} +/- {std_ep_length:.2f}. Ep len Negative: {std_ep_length:.2f}+/- {std_ep_length:.2f}")
             print(f"Rewards Negative: {mean_reward_neg:.4f}+/-{std_reward_neg:.4f}")
             print(f"MRR: {mean_mrr:.4f}")
             # print(f"Hits@1: {hits1:.4f}, Hits@3: {hits3:.4f}, Hits@10: {hits10:.4f}, AUC-PR: {auc_pr:.4f}")
+            print(f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1-Score: {f1_score:.4f}")
+
 
             mean_reward = mrr_eval_results.get('rewards_pos_mean')
             std_reward = mrr_eval_results.get('rewards_pos_std')
@@ -576,6 +583,11 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             self.logger.record("eval/mean_reward", float(mean_reward))
             self.logger.record("eval/mean_ep_length", mean_ep_length)
             self.logger.record("eval/mrr_mean", float(mean_mrr))
+
+            self.logger.record("eval/accuracy", float(accuracy))
+            self.logger.record("eval/precision", float(precision))
+            self.logger.record("eval/recall", float(recall))
+            self.logger.record("eval/f1_score", float(f1_score))
 
             if len(self._is_success_buffer) > 0:
                 success_rate = np.mean(self._is_success_buffer)
@@ -609,6 +621,10 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                     "eval/std_ep_length": std_ep_length, 
                     "eval/num_timesteps": self.num_timesteps,
                     "eval/mrr_mean": mean_mrr,
+                    "eval/accuracy": accuracy,
+                    "eval/precision": precision,
+                    "eval/recall": recall,
+                    "eval/f1_score": f1_score,
                 })
                 
 

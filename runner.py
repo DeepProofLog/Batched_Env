@@ -30,12 +30,13 @@ if __name__ == "__main__":
     # hpo: first ent_coef and then clip_range
     FALSE_RULES = [False] 
     MEMORY_PRUNING = [True]
-    END_PROOF_ACTION = [False]
+    ENDT_ACTION = [False]
+    ENDF_ACTION = [False]
     SKIP_UNARY_ACTIONS = [True]
     ENT_COEF = [0.2]
     CLIP_RANGE = [0.2]
     ENGINE = ['python']
-    # reward_type = 1
+    REWARD_TYPE = [2] # 0: simple success, 1: success/fail, 2: success/fail vs label
  
     # Dataset settings 
     DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
@@ -82,12 +83,12 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [10000000]
+    TIMESTEPS_TRAIN = [8000000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
-    EVAL_NEG_SAMPLES = [0]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
-    TEST_NEG_SAMPLES = [None]   # Number of negative samples per positive for testing. Use None for all.
+    EVAL_NEG_SAMPLES = [1]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
+    TEST_NEG_SAMPLES = [1]   # Number of negative samples per positive for testing. Use None for all.
     n_eval_queries = None
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
@@ -120,6 +121,9 @@ if __name__ == "__main__":
     parser.add_argument("--eval_neg_samples", default=None, help="Number of negatives for validation set ('None' for all)")
     parser.add_argument("--test_neg_samples", default=None, help="Number of negatives for test set ('None' for all)")
     parser.add_argument("--use_kge_action", default=None, action='store_const', const=True, help="Use KGE action")
+    parser.add_argument("--reward_type", default=None, type=int, help="Reward scheme to use (0, 1, or 2)")
+    parser.add_argument("--endt_action", default=None, type=ast.literal_eval, help="Enable Endt action")
+    parser.add_argument("--endf_action", default=None, type=ast.literal_eval, help="Enable Endf action")
 
 
     args = parser.parse_args()
@@ -150,6 +154,10 @@ if __name__ == "__main__":
             elif DATASET_NAME[0] == "wn18rr":
                 KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-complex-True-256-256-1-rules.txt']
             KGE_SCORES_FILE = [None]
+    if args.reward_type is not None:
+        REWARD_TYPE = [args.reward_type]
+    if args.endt_action is not None: ENDT_ACTION = [args.endt_action]
+    if args.endf_action is not None: ENDF_ACTION = [args.endf_action]
 
 
     print('Running experiments for the following parameters:','DATASET_NAME:'\
@@ -173,7 +181,8 @@ if __name__ == "__main__":
         'eval_neg_samples': EVAL_NEG_SAMPLES,
         'test_neg_samples': TEST_NEG_SAMPLES,
         'false_rules': FALSE_RULES,
-        'end_proof_action': END_PROOF_ACTION,
+        'endt_action': ENDT_ACTION,
+        'endf_action': ENDF_ACTION,
         'skip_unary_actions': SKIP_UNARY_ACTIONS,
         'ent_coef': ENT_COEF,
         'clip_range': CLIP_RANGE,
@@ -187,6 +196,7 @@ if __name__ == "__main__":
         'kge_checkpoint_dir': KGE_CHECKPOINT_DIR,
         'kge_run_signature': KGE_RUN_SIGNATURE,
         'kge_scores_file': KGE_SCORES_FILE,
+        'reward_type': REWARD_TYPE,
     }
 
     # Generate all combinations using product
@@ -284,9 +294,10 @@ if __name__ == "__main__":
         args.lr = lr
 
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,
-                    args.padding_atoms,args.padding_states,args.false_rules,args.end_proof_action, 
-                    args.skip_unary_actions,args.memory_pruning,args.max_depth,
-                    args.ent_coef,args.clip_range,args.engine,args.train_neg_ratio, args.use_kge_action
+                    args.padding_atoms,args.padding_states,args.false_rules,args.endt_action, 
+                    args.endf_action, args.skip_unary_actions,args.memory_pruning,args.max_depth,
+                    args.ent_coef,args.clip_range,args.engine,args.train_neg_ratio, args.use_kge_action,
+                    args.reward_type
                     )
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)

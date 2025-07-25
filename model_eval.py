@@ -6,7 +6,7 @@ import random
 
 import gymnasium as gym
 import numpy as np
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, accuracy_score, precision_score, recall_score, f1_score
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import torch
@@ -240,6 +240,9 @@ def eval_corruptions(
     all_neg_lp, all_neg_rw, all_neg_len = [], [], []
     mrr_list, hits1_list, hits3_list, hits10_list = [], [], [], []
 
+    # Accumulators for classification metrics
+    all_y_true, all_y_pred = [], []
+
     # AGGREGATION SETUP: Initialize a dict to hold data from all batches for the final plot
     if track_logprobs:
         os.makedirs("plots", exist_ok=True)
@@ -288,7 +291,7 @@ def eval_corruptions(
             env,
             deterministic=deterministic,
             target_episodes=targets,
-            verbose=1,
+            verbose=0,
             track_logprobs=track_logprobs,
         )
         if verbose: print(f"Eval time: {time.time() - start_time:.2f}s")
@@ -306,6 +309,19 @@ def eval_corruptions(
         #                 if hist_idx < len(logprob_histories) and len(logprob_histories[hist_idx]) > 0:
         #                     logprob_histories[hist_idx] -= 100
         #             hist_idx += 1
+
+        # --- Classification Metrics Logic ---
+        # Create true labels based on the query type (positive or negative)
+        # Positive query is always at index 0 for each environment in the batch
+        true_labels = np.zeros_like(mask, dtype=int)
+        true_labels[:, 0] = 1 # Mark positive queries
+
+        # Use the mask to get only valid (non-padded) episodes
+        y_true_batch = true_labels[mask]
+        y_pred_batch = proof_successful[mask].astype(int)
+
+        all_y_true.extend(y_true_batch.tolist())
+        all_y_pred.extend(y_pred_batch.tolist())
 
         # Collect metrics using mask
         # Positives: column 0
@@ -430,6 +446,14 @@ def eval_corruptions(
     neg_rw, neg_len, neg_lp = np.array(all_neg_rw), np.array(all_neg_len), np.array(all_neg_lp)
     mrr_arr, h1, h3, h10 = np.array(mrr_list), np.array(hits1_list), np.array(hits3_list), np.array(hits10_list)
 
+    # Calculate final classification metrics
+    try:
+        accuracy = accuracy_score(all_y_true, all_y_pred)
+        precision = precision_score(all_y_true, all_y_pred, zero_division=0)
+        recall = recall_score(all_y_true, all_y_pred, zero_division=0)
+        f1 = f1_score(all_y_true, all_y_pred, zero_division=0)
+    except ValueError:
+        accuracy, precision, recall, f1 = 0.0, 0.0, 0.0, 0.0
     return {
         'pos_queries': len(pos_rw),
         'neg_queries': len(neg_rw),
@@ -468,6 +492,11 @@ def eval_corruptions(
         'hits3_std': float(h3.std()) if h3.size else 0.0,
         'hits10_mean': float(h10.mean()) if h10.size else 0.0,
         'hits10_std': float(h10.std()) if h10.size else 0.0,
+        # Add classification metrics to the returned dictionary
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1_score': float(f1),
     }
 
 

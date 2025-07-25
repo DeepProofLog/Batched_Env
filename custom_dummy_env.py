@@ -37,13 +37,15 @@ def create_environments(args, data_handler, index_manager):
                 seed=seed,
                 max_depth=args.max_depth,
                 memory_pruning=args.memory_pruning,
-                end_proof_action=args.end_proof_action,
+                endt_action=args.endt_action,
+                endf_action=args.endf_action,
                 skip_unary_actions=args.skip_unary_actions,
                 padding_atoms=args.padding_atoms,
                 padding_states=args.padding_states,
                 device='cpu',
                 engine=args.engine,
                 use_kge_action=args.use_kge_action,
+                reward_type=args.reward_type,
             )
             env = Monitor(env)
             return env
@@ -86,8 +88,8 @@ def create_environments(args, data_handler, index_manager):
 
     env = DummyVecEnv(env_fns)
     eval_env = CustomDummyVecEnv(eval_env_fns)
-    callback_env = DummyVecEnv(callback_env_fns)
-    # callback_env = CustomDummyVecEnv(callback_env_fns)
+    # callback_env = DummyVecEnv(callback_env_fns)
+    callback_env = CustomDummyVecEnv(callback_env_fns)
 
     # use SubprocVecEnv if you want to use multiple processes
     # env = SubprocVecEnv(env_fns)

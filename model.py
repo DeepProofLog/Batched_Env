@@ -430,7 +430,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
                 flat_lp = log_prob.view(-1)          # works for () , (B,) or (B,1)
                 idx_tensor = torch.tensor(original_indices,
                                         device=log_prob.device, dtype=torch.long)
-                flat_lp[idx_tensor] = kge_log_probs  # in-place
+                flat_lp[idx_tensor] += kge_log_probs  # in-place
                 log_prob = flat_lp.view_as(log_prob) # restore original shape
 
         return log_prob

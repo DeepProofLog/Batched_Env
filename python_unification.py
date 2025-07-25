@@ -197,7 +197,7 @@ def rename_vars_local(next_states: List[List[Term]],
     if renamed_states_outer != next_states:
         print('\n\nRenamed states:', renamed_states_outer) if verbose else None
         print('Original states:', next_states) if verbose else None
-    return renamed_states_outer
+    return renamed_states_outer, max(global_next_var_index, current_state_var_index)
 
 
 def rename_vars(next_states: List[Term], 
@@ -373,7 +373,7 @@ def get_next_unification_python(state: List[Term],
     # if unification_strategy == 'rules_and_facts':
     #     # next_states, next_var_index = rename_vars(next_states, next_var_index)
     #     next_states = rename_vars_local(next_states, next_var_index, verbose=0)
-    next_states = rename_vars_local(next_states, next_var_index, verbose=0)
+    next_states, next_var_index = rename_vars_local(next_states, next_var_index, verbose=0)
 
     print('\nNext states:', next_states) if verbose else None
     print('++++++++++++++\n') if verbose else None
@@ -480,7 +480,7 @@ def get_next_unification_python_old(state: List[Term],
         new_state = body + new_remaining 
         next_states.append(new_state)
 
-    next_states = rename_vars_local(next_states, next_var_index, verbose=0)
+    next_states, next_var_index = rename_vars_local(next_states, next_var_index, verbose=0)
 
     if verbose:
         ordered_next_states = [sorted(state, key=lambda term: (term.predicate, term.args)) for state in next_states]

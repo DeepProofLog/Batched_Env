@@ -29,7 +29,7 @@ class IndexManager():
         
         # Dynamically create a KGE-specific version for each predicate
         self.kge_preds = {f"{p}_kge" for p in self.predicates}
-        self.special_preds = ['True', 'False', 'End'] + sorted(list(self.kge_preds))
+        self.special_preds = ['True', 'False', 'Endf', 'Endt'] + sorted(list(self.kge_preds))
         self.padding_idx = 0
 
         self.max_total_vars = max_total_vars # Max *pre-assigned* variables

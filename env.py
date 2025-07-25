@@ -38,7 +38,8 @@ class LogicEnv_gym(gym.Env):
                 seed: Optional[int] = None,
                 max_depth: int = 10,
                 memory_pruning: bool = True,
-                end_proof_action: bool = False,
+                endt_action: bool = False,
+                endf_action: bool = False,
                 skip_unary_actions: bool = False,
                 padding_atoms: int = 10,
                 padding_states: int = 20,
@@ -47,13 +48,14 @@ class LogicEnv_gym(gym.Env):
                 device: torch.device = torch.device("cpu"),
                 engine: str = 'python',
                 use_kge_action: bool = False,
+                reward_type: int = 2,
                 ):
 
         '''Initialize the environment'''
         super().__init__()
 
         self.engine = engine
-
+        self.reward_type = reward_type
         self.verbose = verbose
         self.prover_verbose = prover_verbose
         self.device = device
@@ -86,7 +88,8 @@ class LogicEnv_gym(gym.Env):
 
         self.memory = set() # Store grounded predicates, avoid loop
         self.memory_pruning = memory_pruning # two ways to avoid loop: limit action space, stop when a state has been visited
-        self.end_proof_action = end_proof_action # Add the action 'end of the proof' to the action space
+        self.endt_action = endt_action
+        self.endf_action = endf_action
         self.skip_unary_actions = skip_unary_actions # Skip unary actions in the action space
         self.predicate_false_idx = index_manager.predicate_str2idx['False'] 
 
@@ -287,13 +290,26 @@ class LogicEnv_gym(gym.Env):
         """Get next possible states and their indices for all states in the batch"""
         truncated_flag = False
 
+        terminal_predicates = {'True', 'False', 'Endt', 'Endf'}
+        if len(state) > 1 and all(atom.predicate in terminal_predicates for atom in state):
+            raise ValueError(f"Invalid state: A state should not contain multiple only terminal atoms. Received: {state}")
+
+        # If the state is a single terminal atom, return it as the only option.
+        if state and len(state) == 1 and state[0].predicate in terminal_predicates:
+            # As requested, return the state itself as the only possible next state.
+            # The training loop's handling of the 'done' flag is responsible for actual termination.
+            derived_states = [state]
+            
+            # Compute and pad the sub_indices tensor to the expected shape.
+            derived_sub_indices = self.index_manager.get_atom_sub_index(state).unsqueeze(0)
+            padding = torch.zeros(self.padding_states - 1, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=torch.int64)
+            derived_sub_indices = torch.cat([derived_sub_indices, padding])
+            
+            return derived_states, derived_sub_indices, truncated_flag
+
         # END ACTION MODULE
-        if self.end_proof_action: # filter the end of the proof action to get the next states
-            if len(state) > 1:
-                state = [atom for atom in state if atom.predicate != 'End']
-            else:
-                if state[0].predicate == 'End':
-                    state = [Term(predicate='False', args=())]
+        if self.endt_action or self.endf_action:
+            state = [atom for atom in state if atom.predicate not in ['Endt', 'Endf']]
 
         if self.use_kge_action and state:
             filtered_state = [term for term in state if not term.predicate.endswith('_kge')]
@@ -411,7 +427,12 @@ class LogicEnv_gym(gym.Env):
                 final_sub_indices.append(self.index_manager.get_atom_sub_index([kge_action_term]))
 
         # TRUNCATE MAX STATES
-        max_num_states = self.padding_states if not self.end_proof_action else self.padding_states - 1
+        max_num_states = self.padding_states
+        if self.endt_action:
+            max_num_states -= 1
+        if self.endf_action:
+            max_num_states -= 1
+
         if len(derived_states) > max_num_states:
             print(f"Exceeded max next states: {len(derived_states)}") if self.verbose else None
             indices = sorted(range(len(derived_states)), key=lambda k: len(derived_states[k]))
@@ -419,11 +440,31 @@ class LogicEnv_gym(gym.Env):
             final_sub_indices = [final_sub_indices[i] for i in indices[:max_num_states]]
 
         # END ACTION MODULE
-        if self.end_proof_action:
-            if any(atom.predicate not in ('True', 'False') for next_state in derived_states for atom in next_state):
-                end_term_state = [Term(predicate='End', args=())]
-                derived_states.append(end_term_state)
-                final_sub_indices.append(self.index_manager.get_atom_sub_index(end_term_state))
+        # if self.endt_action or self.endf_action:
+        #     # Add end actions only if there is at least one non-terminal path
+        #     # If there are no true/false predicates, we add Endf and Endt actions
+        #     add_end_action = False
+        #     if not derived_states:
+        #         add_end_action = True
+        #     else:
+        #         for s in derived_states:
+        #             # A path is non-terminal if it's empty or its predicate isn't True/False
+        #             if not s or s[0].predicate not in ('True', 'False'):
+        #                 add_end_action = True
+        #                 break
+
+        if self.endf_action:
+            # Add Endf (End proof as False)
+            endf_state = [Term(predicate='Endf', args=())]
+            derived_states.append(endf_state)
+            final_sub_indices.append(self.index_manager.get_atom_sub_index(endf_state))
+
+        if self.endt_action:
+            # Add Endt (End proof as True)
+            endt_state = [Term(predicate='Endt', args=())]
+            derived_states.append(endt_state)
+            final_sub_indices.append(self.index_manager.get_atom_sub_index(endt_state))
+
         if not derived_states:
             derived_states = [[Term(predicate='False', args=())]]
             derived_sub_indices = torch.stack([self.index_manager.get_atom_sub_index(s) for s in derived_states])
@@ -448,20 +489,34 @@ class LogicEnv_gym(gym.Env):
         done = any_atom_false or all_atoms_true
         successful = all_atoms_true
 
-        if self.end_proof_action and any(atom.predicate == 'End' for atom in state):
+        if self.endf_action and any(atom.predicate == 'Endf' for atom in state):
+            assert len(state) == 1, f"State with Endf action should have only one atom, but has {len(state)}: {state}"
             done, successful = True, False
+        if self.endt_action and any(atom.predicate == 'Endt' for atom in state):
+            assert len(state) == 1, f"State with Endt action should have only one atom, but has {len(state)}: {state}"
+            done, successful = True, True
 
         done = torch.tensor(done, device=self.device)
-        reward = torch.tensor(1.0, device=self.device) if (done and successful and label == 1) else torch.tensor(0.0, device=self.device)
-        
-        # if done and successful and label == 1:
-        #     reward = torch.tensor(1.0, device=self.device)
-        # elif done and not successful and label == 1:
-        #     reward = torch.tensor(0.0, device=self.device)
-        # elif done and successful and label == 0:
-        #     reward = torch.tensor(-1.0, device=self.device)
-        # elif done and not successful and label == 0:
-        #     reward = torch.tensor(1.0, device=self.device)
+
+        if self.reward_type == 0:
+            reward = torch.tensor(1.0, device=self.device) if (done and successful and label == 1) else torch.tensor(0.0, device=self.device)
+        elif self.reward_type == 1:
+            if done and successful and label == 1:
+                reward = torch.tensor(1.0, device=self.device)
+            elif done and successful and label == 0:
+                reward = torch.tensor(-1.0, device=self.device)
+                print(f"Done with success but label is 0: {state}")
+            else:
+                reward = torch.tensor(0.0, device=self.device)
+        elif self.reward_type == 2:
+            if done and successful and label == 1:
+                reward = torch.tensor(1.0, device=self.device)
+            elif done and not successful and label == 0:
+                reward = torch.tensor(1.0, device=self.device)
+            else:
+                reward = torch.tensor(0.0, device=self.device)
+        else: 
+            raise ValueError(f"Invalid reward type: {self.reward_type}. Choose from 0, 1, or 2.")
 
         return done, reward, successful
     
