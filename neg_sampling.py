@@ -297,7 +297,7 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         negatives: List[torch.Tensor] = []
 
         # pre-compute pools
-        ent_pool = torch.arange(self.num_entities, device=device)
+        ent_pool = torch.arange(1, self.num_entities + 1, device=device)
         if self.pad_idx is not None:
             ent_pool = ent_pool[ent_pool != self.pad_idx]
 
@@ -495,7 +495,8 @@ def get_sampler(data_handler: DataHandler,
                 device: torch.device = torch.device("cpu"),
                 )-> Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain]:
 
-    np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in data_handler.facts], dtype=str)
+    all_triples_for_filtering = data_handler.all_known_triples 
+    np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in all_triples_for_filtering], dtype=str)
     triples_factory = TriplesFactory.from_labeled_triples(triples=np_facts,
                                                         entity_to_id=index_manager.constant_str2idx,
                                                         relation_to_id=index_manager.predicate_str2idx,

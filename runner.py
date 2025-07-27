@@ -36,7 +36,7 @@ if __name__ == "__main__":
     ENT_COEF = [0.2]
     CLIP_RANGE = [0.2]
     ENGINE = ['python']
-    REWARD_TYPE = [2] # 0: simple success, 1: success/fail, 2: success/fail vs label
+    REWARD_TYPE = [0] # 0: initial, 1: avoiding neg proofs, 2: classification
  
     # Dataset settings 
     DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
@@ -60,8 +60,8 @@ if __name__ == "__main__":
         KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
     elif DATASET_NAME[0] == "wn18rr":
         KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-complex-True-256-256-1-rules.txt']
-    KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
-    # KGE_SCORES_FILE = [None]
+    # KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
+    KGE_SCORES_FILE = [None]
  
     RESTORE_BEST_VAL_MODEL = [True] # else restore the model from the last train epoch
     load_model = False
@@ -88,14 +88,14 @@ if __name__ == "__main__":
     MAX_DEPTH = [20]
     TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
     EVAL_NEG_SAMPLES = [1]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
-    TEST_NEG_SAMPLES = [1]   # Number of negative samples per positive for testing. Use None for all.
+    TEST_NEG_SAMPLES = [None]   # Number of negative samples per positive for testing. Use None for all.
     n_eval_queries = None
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 256
     n_steps = 256
-    n_eval_envs = 256
+    n_eval_envs = 128
     # n_callback_eval_envs = 1 # Number of environments to use for evaluation in the callback # should be one in CustomEvalCallback
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout

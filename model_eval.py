@@ -126,6 +126,12 @@ def evaluate_policy(
         current_rew[active_idx] += rews_t[active_idx]
         current_len[active_idx] += 1
 
+        # append step lps BEFORE checking for done episodes
+        if track_logprobs:
+            step_lp_np = lp_tensor.detach().cpu().numpy()
+            for i, env_i in enumerate(active_np):
+                current_steplogprob_histories[env_i].append(step_lp_np[i])
+
         done_and_active = dones_t & active_mask_t
         if done_and_active.any():
             done_idx = torch.where(done_and_active)[0]
@@ -139,44 +145,44 @@ def evaluate_policy(
             proof_successful[done_idx, slots] = torch.as_tensor(succ_list, device=device)
 
             if track_logprobs:
-                lp_active_np = lp_tensor.detach().cpu().numpy()
                 # finalize per done env
                 for env_i in done_idx.cpu().tolist():
-                    if current_steplogprob_histories[env_i]:
-                        # 1. stash scalar histories
-                        episode_logprob_histories.append(np.cumsum(current_steplogprob_histories[env_i]))
-                        episode_steplogprob_histories.append(np.array(current_steplogprob_histories[env_i]))
-                        episode_choices_histories.append(np.array(current_choices_histories[env_i]))
+                    # Check if there's anything to store to avoid empty histories
+                    if not current_steplogprob_histories[env_i]:
+                        continue
+                        
+                    # Append final zero-action step for terminal state alignment
+                    current_choices_histories[env_i].append(0)
+                    current_steplogprob_histories[env_i].append(0.0)
 
-                        # 2. build the *final* state string
-                        term_obs = infos[env_i].get("terminal_observation", None)
-                        if term_obs is not None:                      # normal termination
-                            term_sub = term_obs["sub_index"].squeeze(0)
-                        else:                                         # time-limit or auto-reset
-                            term_sub = new_obs["sub_index"][env_i].squeeze(0)
-                        final_state_str = index_manager.state_subindex_to_str(term_sub, truncate=True)
-                        current_state_histories[env_i].append(final_state_str)
+                    # 1. stash scalar histories
+                    episode_logprob_histories.append(np.cumsum(current_steplogprob_histories[env_i]))
+                    episode_steplogprob_histories.append(np.array(current_steplogprob_histories[env_i]))
+                    episode_choices_histories.append(np.array(current_choices_histories[env_i]))
 
-                        # 3. freeze the whole list (now includes the final label)
-                        episode_state_histories.append(
-                            np.array(current_state_histories[env_i])
-                        )
+                    # 2. build the *final* state string
+                    term_obs = infos[env_i].get("terminal_observation", None)
+                    if term_obs is not None:
+                        term_sub = term_obs["sub_index"].squeeze(0)
+                    else:
+                        term_sub = new_obs["sub_index"][env_i].squeeze(0)
+                    final_state_str = index_manager.state_subindex_to_str(term_sub, truncate=True)
+                    current_state_histories[env_i].append(final_state_str)
 
-                        # 4. clear scratch buffers
-                        current_steplogprob_histories[env_i].clear()
-                        current_choices_histories[env_i].clear()
-                        current_state_histories[env_i].clear()
+                    # 3. freeze the whole list
+                    episode_state_histories.append(
+                        np.array(current_state_histories[env_i])
+                    )
+
+                    # 4. clear scratch buffers
+                    current_steplogprob_histories[env_i].clear()
+                    current_choices_histories[env_i].clear()
+                    current_state_histories[env_i].clear()
 
             counts[done_idx]     += 1
             current_rew[done_idx] = 0
             current_len[done_idx] = 0
             current_lp[done_idx]  = 0
-
-        # append step lps
-        if track_logprobs:
-            step_lp_np = lp_tensor.detach().cpu().numpy()
-            for i, env_i in enumerate(active_np):
-                current_steplogprob_histories[env_i].append(step_lp_np[i])
 
         observations = new_obs
         if verbose:
@@ -215,6 +221,8 @@ def eval_corruptions(
     verbose: int = 1,
     consult_janus: bool = False,
     plot: bool = False,
+    kge_inference_engine: Optional[Any] = None,
+    use_kge_hybrid_score: bool = False,
 ) -> Dict[str, Any]:
     """
     Evaluate model on each query plus its corruptions, returning the same
@@ -309,6 +317,34 @@ def eval_corruptions(
         #                 if hist_idx < len(logprob_histories) and len(logprob_histories[hist_idx]) > 0:
         #                     logprob_histories[hist_idx] -= 100
         #             hist_idx += 1
+
+        # --- Determine the final scores for ranking based on the selected mode ---
+        if use_kge_hybrid_score:
+            if kge_inference_engine is None:
+                raise ValueError("`kge_inference_engine` must be provided when `use_kge_hybrid_score` is True.")
+            
+            # Collect all atoms in the batch to score with KGE
+            all_atoms_in_batch, atom_map = [], {}
+            for i, (q, negs) in enumerate(zip(batch, corrs)):
+                all_atoms_in_batch.append(q)
+                atom_map[q] = (i, 0)
+                for j, neg_tuple in enumerate(negs):
+                    neg_str = f"{neg_tuple[0]}({','.join(map(str, neg_tuple[1:]))})"
+                    all_atoms_in_batch.append(neg_str)
+                    atom_map[neg_str] = (i, j + 1)
+
+            # Get KGE scores and reshape
+            kge_scores = kge_inference_engine.predict_batch(all_atoms_in_batch)
+            kge_log_scores_flat = np.log(np.array(kge_scores) + 1e-9)
+            max_target_in_batch = targets.max()
+            kge_log_scores = np.full((B, max_target_in_batch), -np.inf, dtype=float)
+            for atom_str, log_score in zip(all_atoms_in_batch, kge_log_scores_flat):
+                env_idx, ep_idx = atom_map[atom_str]
+                kge_log_scores[env_idx, ep_idx] = log_score
+            
+            # Combine Scores: if proof succeeded, score = rl_log_prob + kge_log_score, else score = kge_log_score
+            log_probs = np.where(proof_successful, log_probs + kge_log_scores, kge_log_scores)
+
 
         # --- Classification Metrics Logic ---
         # Create true labels based on the query type (positive or negative)

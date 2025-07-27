@@ -356,6 +356,8 @@ class DataHandler:
         else:
             self.test_queries = get_filtered_queries(test_path, test_depth, "test")
 
+        self.all_known_triples = self.train_queries + self.valid_queries + self.test_queries
+
                
         # Filter queries with predicates not in the rules
         rules_head_predicates = set(rule.head.predicate for rule in self.rules)

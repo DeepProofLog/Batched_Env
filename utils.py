@@ -49,6 +49,17 @@ class Term:
             [f'"{arg}"' if not arg.startswith('Var') else f'_{arg}' for arg in self.args]
         )
         return f'{self.predicate}({args_str})'
+    # include a sorting method to sort terms alphabetically by predicate and then by args
+    # def __lt__(self, other):
+    #     """
+    #     Less than comparison for sorting terms.
+    #     Compares first by predicate, then by arguments.
+    #     """
+    #     if not isinstance(other, Term):
+    #         return NotImplemented
+    #     if self.predicate != other.predicate:
+    #         return self.predicate < other.predicate
+    #     return self.args < other.args
 
 @dataclasses.dataclass
 class Rule:

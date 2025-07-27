@@ -505,7 +505,7 @@ class LogicEnv_gym(gym.Env):
                 reward = torch.tensor(1.0, device=self.device)
             elif done and successful and label == 0:
                 reward = torch.tensor(-1.0, device=self.device)
-                print(f"Done with success but label is 0: {state}")
+                # print(f"Done with success but label is 0: {state}")
             else:
                 reward = torch.tensor(0.0, device=self.device)
         elif self.reward_type == 2:

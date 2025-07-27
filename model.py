@@ -420,7 +420,6 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             if atoms_to_predict:
                 # 1. KGE scores
                 scores = self.kge_inference_engine.predict_batch(atoms_to_predict)
-                # print(f"Atoms to predict: {len(atoms_to_predict)}, {atoms_to_predict}, Scores: {scores}")
                 kge_log_probs = torch.log(
                     torch.as_tensor(scores, device=log_prob.device, dtype=log_prob.dtype)
                     + 1e-9
@@ -428,9 +427,13 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
 
                 # 2. Normalise shapes so we can safely scatter-update
                 flat_lp = log_prob.view(-1)          # works for () , (B,) or (B,1)
+                # for i, atom in enumerate(atoms_to_predict):
+                #     print(f"Atom: {atom}, Score: {scores[i]}")
                 idx_tensor = torch.tensor(original_indices,
                                         device=log_prob.device, dtype=torch.long)
-                flat_lp[idx_tensor] += kge_log_probs  # in-place
+                flat_lp[idx_tensor] = kge_log_probs  # in-place
+                # for i, idx in enumerate(original_indices):
+                #     print(f"KGE for {atoms_to_predict[i]} with score: {kge_log_probs[i].exp().item()}->logprob:{kge_log_probs[i].item()}")
                 log_prob = flat_lp.view_as(log_prob) # restore original shape
 
         return log_prob
@@ -466,6 +469,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         # If a KGE action was taken, overwrite its log_prob with the KGE score
         if self.kge_inference_engine is not None:
             log_prob = self.get_kge_log_probs(obs, actions, log_prob)
+        # print(f"Actions: {actions}, Values: {values}, Score: {log_prob.exp()}->logprob:{log_prob}")
         return actions, values, log_prob
 
 
