@@ -365,7 +365,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
     ):
         self.kge_inference_engine = kwargs.pop("kge_inference_engine", None)
         self.index_manager = kwargs.pop("index_manager", None)
-        self.kge_integration_strategy = kwargs.pop("kge_integration_strategy", None)
+        # self.kge_integration_strategy = kwargs.pop("kge_integration_strategy", None)
         self.features_extractor_kwargs = kwargs.pop('features_extractor_kwargs', {})
 
         super(CustomActorCriticPolicy, self).__init__(
@@ -383,28 +383,28 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         # Disable orthogonal initialization
         self.ortho_init = False
 
-        self.kge_fusion_mlp = None
-        self.kge_indices_tensor = None
+    #     self.kge_fusion_mlp = None
+    #     self.kge_indices_tensor = None
 
-    def _setup_kge_integration(self):
-        """Initializes KGE integration components. Must be called after model creation."""
-        if not self.kge_inference_engine:
-            return
+    # def _setup_kge_integration(self):
+    #     """Initializes KGE integration components. Must be called after model creation."""
+    #     if not self.kge_inference_engine:
+    #         return
 
-        print(f"Setting up KGE integration with strategy: '{self.kge_integration_strategy}'")
+    #     print(f"Setting up KGE integration with strategy: '{self.kge_integration_strategy}'")
         
-        kge_preds = [pred for pred in self.index_manager.predicate_str2idx if pred.endswith('_kge')]
-        kge_indices = [self.index_manager.predicate_str2idx[p] for p in kge_preds]
-        self.kge_indices_tensor = torch.tensor(kge_indices, device=self.device, dtype=torch.long)
+    #     kge_preds = [pred for pred in self.index_manager.predicate_str2idx if pred.endswith('_kge')]
+    #     kge_indices = [self.index_manager.predicate_str2idx[p] for p in kge_preds]
+    #     self.kge_indices_tensor = torch.tensor(kge_indices, device=self.device, dtype=torch.long)
 
-        if self.kge_integration_strategy == 'train_bias':
-            # A simple MLP to learn a bias for the KGE score
-            self.kge_fusion_mlp = nn.Sequential(
-                nn.Linear(1, 32),
-                nn.ReLU(),
-                nn.Linear(32, 1)
-            ).to(self.device)
-            print("Initialized KGE fusion MLP.")
+    #     if self.kge_integration_strategy == 'train_bias':
+    #         # A simple MLP to learn a bias for the KGE score
+    #         self.kge_fusion_mlp = nn.Sequential(
+    #             nn.Linear(1, 32),
+    #             nn.ReLU(),
+    #             nn.Linear(32, 1)
+    #         ).to(self.device)
+    #         print("Initialized KGE fusion MLP.")
 
     def _build_mlp_extractor(self) -> None:
         """
@@ -452,15 +452,15 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
                 # for i, idx in enumerate(original_indices):
                 #     print(f"KGE for {atoms_to_predict[i]} with score: {kge_log_probs[i].exp().item()}->logprob:{kge_log_probs[i].item()}")
                 # Apply the selected integration strategy
-                if self.kge_integration_strategy == 'train':
-                    flat_lp[idx_tensor] = kge_log_probs
-                elif self.kge_integration_strategy == 'train_bias':
-                    if self.kge_fusion_mlp is None:
-                        raise RuntimeError("Learned fusion strategy requires kge_fusion_mlp, but it's not initialized.")
-                    # Pass KGE log-probabilities through MLP to get a learned bias
-                    kge_bias = self.kge_fusion_mlp(kge_log_probs.unsqueeze(-1)).squeeze(-1)
-                    flat_lp[idx_tensor] = kge_bias
-                
+                # if self.kge_integration_strategy == 'train':
+                #     flat_lp[idx_tensor] = kge_log_probs
+                # elif self.kge_integration_strategy == 'train_bias':
+                #     if self.kge_fusion_mlp is None:
+                #         raise RuntimeError("Learned fusion strategy requires kge_fusion_mlp, but it's not initialized.")
+                #     # Pass KGE log-probabilities through MLP to get a learned bias
+                #     kge_bias = self.kge_fusion_mlp(kge_log_probs.unsqueeze(-1)).squeeze(-1)
+                #     flat_lp[idx_tensor] = kge_bias
+                flat_lp[idx_tensor] = kge_log_probs
                 log_prob = flat_lp.view_as(log_prob) # restore original shape
 
         return log_prob
@@ -494,7 +494,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         log_prob = distribution.log_prob(actions)
 
         # If a KGE action was taken, overwrite its log_prob with the KGE score
-        if self.kge_integration_strategy is not None:
+        if self.kge_inference_engine is not None:
             log_prob = self.get_kge_log_probs(obs, actions, log_prob)
         # print(f"Actions: {actions}, Values: {values}, Score: {log_prob.exp()}->logprob:{log_prob}")
         return actions, values, log_prob
@@ -529,7 +529,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         entropy = distribution.entropy()
 
         # If a KGE action was taken, overwrite its log_prob with the KGE score
-        if self.kge_integration_strategy is not None:
+        if self.kge_inference_engine is not None:
             log_prob = self.get_kge_log_probs(obs, actions, log_prob)
         
         return values, log_prob, entropy

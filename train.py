@@ -42,9 +42,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     print(f"CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
 
     # ---- KGE INFERENCE ENGINE ----
-    # args.use_kge_action = True
     kge_inference_engine = None
-    if args.use_kge_action:
+    if args.use_kge_action or args.kge_integration_strategy== 'sum_eval':
         print("\nInitializing KGE Inference Engine...", flush=True)
         kge_inference_engine = KGEInference(
             dataset_name=args.dataset_name,
@@ -114,12 +113,12 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         'features_extractor_class': CustomCombinedExtractor,
         'features_extractor_kwargs': {'features_dim': embedder.embed_dim, 'embedder': embedder}
     }
-    if args.kge_integration_strategy and args.kge_integration_strategy is not 'sum_eval':
-        policy_kwargs.update({
-            'kge_inference_engine': kge_inference_engine,
-            'index_manager': index_manager,
-            'kge_integration_strategy': args.kge_integration_strategy,
-        })
+    # if args.kge_integration_strategy and args.kge_integration_strategy is not 'sum_eval':
+    #     policy_kwargs.update({
+    #         'kge_inference_engine': kge_inference_engine,
+    #         'index_manager': index_manager,
+    #         'kge_integration_strategy': args.kge_integration_strategy,
+    #     })
 
     model = PPO(
         CustomActorCriticPolicy,
@@ -136,7 +135,11 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     )
     
     if args.use_kge_action:
-        model.policy._setup_kge_integration()
+        # model.policy._setup_kge_integration()
+        model.policy.kge_inference_engine = kge_inference_engine
+        model.policy.index_manager = index_manager
+        kge_indices = [idx for pred, idx in index_manager.predicate_str2idx.items() if pred.endswith('_kge')]
+        model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
 
     # --- TRAIN ---
     model_path = os.path.join(args.models_path, args.run_signature, f"seed_{args.seed_run_i}")
@@ -151,21 +154,17 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
             # Ensure the model directory exists before trying to list its contents
             if not os.path.isdir(model_path):
                 raise FileNotFoundError(f"Model directory does not exist: {model_path}")
-
             # Find all model files matching the keyword and seed
             models = sorted([
                 m for m in os.listdir(model_path)
                 if load_keyword in m and m.endswith('.zip')
             ])
-
             if models:
                 # Load the most recent model (lexicographically, due to date in name)
                 model_to_load = models[-1]
                 load_path = os.path.join(model_path, model_to_load)
                 print(f"Loading model from {load_path}")
                 model = PPO.load(load_path, env=eval_env, device=device)#, policy_kwargs=policy_kwargs)
-                if args.use_kge_action:
-                    model.policy._setup_kge_integration()
             else:
                 raise FileNotFoundError(f"No suitable '{load_keyword}' model found in {model_path}")
 
@@ -196,7 +195,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                                 deterministic=True,
                                                 render=False,
                                                 name=model_name,
-                                                callback_on_new_best=reward_threshold_callback if args.restore_best_val_model else None,
+                                                callback_on_new_best=reward_threshold_callback if args.restore_best_val_model and not args.use_kge_action else None,
                                                 # callback_after_eval=no_improvement_callback,
                                                 verbose=0,
                                                 )
@@ -255,7 +254,11 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     model.policy.apply(strip_eval_modules)
 
     if args.use_kge_action:
-        model.policy._setup_kge_integration()
+        # model.policy._setup_kge_integration()
+        model.policy.kge_inference_engine = kge_inference_engine
+        model.policy.index_manager = index_manager
+        kge_indices = [idx for pred, idx in index_manager.predicate_str2idx.items() if pred.endswith('_kge')]
+        model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
 
     model.policy = torch.compile(
         model.policy, mode="reduce-overhead", fullgraph=False
@@ -273,7 +276,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     else:
         # For sum_logprob and learned_fusion, the model itself handles the fusion.
         eval_corruption_mode = 'rl_only'
-    # eval_corruption_mode = 'rl_only'
+    # eval_corruption_mode = 'kge_only'
     eval_args = {
         'model': model,
         'env': eval_env,

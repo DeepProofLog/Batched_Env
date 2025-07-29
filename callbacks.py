@@ -316,8 +316,6 @@ class SB3TrainCheckpoint(BaseCallback):
             if self.verbose:
                 print(f'Improved {self.monitor} to {self.current_value:.4f} in train')
 
-    
-    def _on_step(self) -> bool:
         if self.model_path:
             save_path = os.path.join(self.model_path, f"last_epoch_{self.name}.zip")
             self.model_.save(save_path)
@@ -543,7 +541,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                 n_corruptions=self.n_corruptions,
                 deterministic=self.deterministic,
                 verbose=self.verbose,
-                consult_janus=self.consult_janus,
+                # consult_janus=self.consult_janus,
             )
             self.model.policy.set_training_mode(True)
 

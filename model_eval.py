@@ -214,7 +214,7 @@ def eval_corruptions(
     verbose: int = 1,
     plot: bool = False,
     kge_inference_engine: Optional[KGEInference] = None,
-    evaluation_mode: str = 'hybrid',
+    evaluation_mode: str = 'rl_only',
 ) -> Dict[str, Any]:
     """
     Evaluates a model on a dataset by generating head/tail corruptions for each query.
@@ -252,7 +252,11 @@ def eval_corruptions(
         'head_mrr': [], 'head_h1': [], 'head_h3': [], 'head_h10': [],
         'tail_mrr': [], 'tail_h1': [], 'tail_h3': [], 'tail_h10': []
     }
-    
+
+    if plot:
+        os.makedirs("plots", exist_ok=True)
+        aggregated_plot_data = {"pos_success": [], "pos_fail": [], "neg_success": [], "neg_fail": []}
+
     # --- Batch Processing Loop ---
     total_batches = (len(data) + num_envs - 1) // num_envs
     for b, start in enumerate(range(0, len(data), num_envs)):
@@ -292,13 +296,14 @@ def eval_corruptions(
                     e.mode, e.queries, e.labels, e.n_episodes, e.eval_idx = "eval", seq, [1] + [0]*len(negs), len(seq), 0
                 
                 rewards, lengths, log_probs, _, proof_successful = evaluate_policy(model, env, 
-                                                    deterministic=deterministic, target_episodes=targets, verbose=verbose>1)
-                
-                log_probs[~proof_successful] -= 100 # Penalize failed proofs
+                                                    deterministic=deterministic, target_episodes=targets, 
+                                                    verbose=verbose>1,track_logprobs=plot)
                 
                 if evaluation_mode == 'hybrid':
                     kge_log_scores = kge_eval(batch, corrs, mask, kge_inference_engine)
                     log_probs += kge_log_scores # Add KGE score to RL log-prob
+
+                log_probs[~proof_successful] -= 100 # Penalize failed proofs
 
             # --- Accumulate Metrics ---
             _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_type, mask, 
@@ -307,8 +312,8 @@ def eval_corruptions(
         # --- Report Batch Metrics ---
         if verbose:
             _report_batch_metrics(batch_metrics, global_metrics)
-        print(f"Batch {b+1} took {time.time() - time_start:.2f} seconds")
-            
+        print(f"Batch {b+1} took {time.time() - time_start:.2f} seconds") if verbose else None
+
     # --- Finalize and Return All Metrics ---
     return _finalize_and_get_results(global_metrics)
 

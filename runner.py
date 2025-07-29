@@ -53,15 +53,7 @@ if __name__ == "__main__":
     CORRUPTION_MODE =  ['dynamic']
 
     KGE_INTEGRATION_STRATEGY = [None] #['train', 'train_bias','sum_eval']
-    USE_KGE_ACTION = [False] # New parameter to enable KGE action
-    
     KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
-    if DATASET_NAME[0] == "countries_s3":
-        KGE_RUN_SIGNATURE = ['countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt']
-    elif DATASET_NAME[0] == "family":
-        KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
-    elif DATASET_NAME[0] == "wn18rr":
-        KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-complex-True-256-256-1-rules.txt']
     # KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
     KGE_SCORES_FILE = [None]
  
@@ -126,7 +118,8 @@ if __name__ == "__main__":
     parser.add_argument("--reward_type", default=None, type=int, help="Reward scheme to use (0, 1, or 2)")
     parser.add_argument("--endt_action", default=None, type=ast.literal_eval, help="Enable Endt action")
     parser.add_argument("--endf_action", default=None, type=ast.literal_eval, help="Enable Endf action")
-    parser.add_argument("--kge_integration_strategy", type=str, choices=["hybrid_eval", "sum_logprob", "learned_fusion"], help="How to integrate KGE scores.")
+    parser.add_argument("--kge_integration_strategy", type=str, choices=['train', 'train_bias', 'sum_eval', None], 
+                        default=None, help="KGE integration strategy (default: None)")
 
 
     args = parser.parse_args()
@@ -146,22 +139,29 @@ if __name__ == "__main__":
         EVAL_NEG_SAMPLES = [None if args.eval_neg_samples.lower() in ['none', '-1'] else int(args.eval_neg_samples)]
     if args.test_neg_samples is not None:
         TEST_NEG_SAMPLES = [None if args.test_neg_samples.lower() in ['none', '-1'] else int(args.test_neg_samples)]
-    if args.use_kge_action is not None:
-        USE_KGE_ACTION = [args.use_kge_action]
-        if USE_KGE_ACTION[0]:
-            KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
-            if DATASET_NAME[0] == "countries_s3":
-                KGE_RUN_SIGNATURE = ['countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt']
-            elif DATASET_NAME[0] == "family":
-                KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
-            elif DATASET_NAME[0] == "wn18rr":
-                KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-complex-True-256-256-1-rules.txt']
-            KGE_SCORES_FILE = [None]
+
     if args.reward_type is not None:
         REWARD_TYPE = [args.reward_type]
     if args.endt_action is not None: ENDT_ACTION = [args.endt_action]
     if args.endf_action is not None: ENDF_ACTION = [args.endf_action]
 
+    if args.kge_integration_strategy is not None:
+        KGE_INTEGRATION_STRATEGY = [args.kge_integration_strategy]
+
+    if KGE_INTEGRATION_STRATEGY == ['sum_eval'] or KGE_INTEGRATION_STRATEGY == [None]:
+        USE_KGE_ACTION = [False]
+    else:
+        USE_KGE_ACTION = [True] # New parameter to enable KGE action    
+
+    if DATASET_NAME[0] == "countries_s3":
+        KGE_RUN_SIGNATURE = ['countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt']
+    elif DATASET_NAME[0] == "family":
+        KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
+    elif DATASET_NAME[0] == "wn18rr":
+        KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-complex-True-256-256-1-rules.txt']
+
+    if USE_KGE_ACTION == [True] and REWARD_TYPE == [0]:
+        RESTORE_BEST_VAL_MODEL = [False] # If using KGE action, we cannot restore the best val model, as it is not saved during training.
 
     print('Running experiments for the following parameters:','DATASET_NAME:'\
           ,DATASET_NAME,'MODEL_NAME:',MODEL_NAME,'SEED:',SEED)
