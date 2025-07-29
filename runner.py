@@ -52,7 +52,7 @@ if __name__ == "__main__":
     ATOM_EMBEDDING_SIZE = [64] # 256 for countries (atomatically selected below)
     CORRUPTION_MODE =  ['dynamic']
 
-    KGE_INTEGRATION_STRATEGY = ['sum_eval'] #['train', 'train_bias','sum_eval']
+    KGE_INTEGRATION_STRATEGY = [None] #['train', 'train_bias','sum_eval']
     USE_KGE_ACTION = [False] # New parameter to enable KGE action
     
     KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
@@ -301,7 +301,7 @@ if __name__ == "__main__":
                     args.padding_atoms,args.padding_states,args.false_rules,args.endt_action, 
                     args.endf_action, args.skip_unary_actions,args.memory_pruning,args.max_depth,
                     args.ent_coef,args.clip_range,args.engine,args.train_neg_ratio, args.use_kge_action,
-                    args.reward_type, #args.kge_integration_strategy
+                    args.reward_type, args.kge_integration_strategy
                     )
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
