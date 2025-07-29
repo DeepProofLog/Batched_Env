@@ -6,7 +6,7 @@ import random
 
 import gymnasium as gym
 import numpy as np
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, accuracy_score, precision_score, recall_score, f1_score
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import torch
@@ -21,185 +21,194 @@ def evaluate_policy(
     env: Union[gym.Env, VecEnv],
     n_eval_episodes: int = 10,
     deterministic: bool = True,
-    target_episodes: np.ndarray = None,
+    target_episodes: np.ndarray | None = None,
     verbose: int = 0,
     track_logprobs: bool = False,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
+):
     """
-    Run policy for a specified number of episodes per env, returning
-    rewards, lengths, log_probs, a validity mask, a proof success mask,
-    and histories for plotting.
+    Fast eval: tensor-first, vectorized finalization.
+    Returns:
+        rewards, lengths, logps, mask, proof_successful,
+        episode_logprob_histories, episode_choices_histories,
+        episode_steplogprob_histories, episode_state_histories
     """
+    # --- ensure VecEnv ---
     if not isinstance(env, VecEnv):
-        print("Warning: wrapping single env in DummyVecEnv")
+        if verbose:
+            print("Warning: wrapping single env in DummyVecEnv")
         env = DummyVecEnv([lambda: env])
+    assert getattr(env, "type_", None) == "custom_dummy", "Requires custom_dummy VecEnv"
 
-    assert env.type_ == "custom_dummy", "Requires custom_dummy VecEnv"
-
+    device = model.device
     n_envs = env.num_envs
+
+    # --- targets ---
     if target_episodes is None:
         targets = np.array([(n_eval_episodes + i) // n_envs for i in range(n_envs)], dtype=int)
     else:
-        targets = np.array(target_episodes, dtype=int)
+        targets = np.asarray(target_episodes, dtype=int)
 
     padded_targets = np.zeros(n_envs, dtype=int)
-    padded_targets[:len(targets)] = targets
+    padded_targets[: len(targets)] = targets
+    max_t = int(padded_targets.max())
+    total = int(padded_targets.sum())
 
-    total = padded_targets.sum()
     if verbose:
-        print(f"\nEvaluating {total} episodes on {n_envs} envs (avg target: {targets.mean()})")
+        print(f"\nEvaluating {total} episodes on {n_envs} envs (avg target: {targets.mean():.2f})")
 
+    # tell env
     env._episode_target[:] = padded_targets
-    env._episode_count[:] = 0
-    env.active_envs[:] = True
+    env._episode_count[:]  = 0
+    env.active_envs[:]     = True
 
-    rewards = np.zeros((n_envs, padded_targets.max()), dtype=float)
-    lengths = np.zeros_like(rewards, dtype=int)
-    logps   = np.zeros_like(rewards, dtype=float)
-    # Array to store whether a proof was successfully found
-    proof_successful = np.zeros_like(rewards, dtype=bool)
-    counts  = np.zeros(n_envs, dtype=int)
+    # --- buffers on device ---
+    rewards          = torch.zeros((n_envs, max_t), device=device)
+    lengths          = torch.zeros_like(rewards, dtype=torch.int32)
+    logps            = torch.zeros_like(rewards)
+    proof_successful = torch.zeros_like(rewards, dtype=torch.bool)
 
-    # History tracking
-    episode_logprob_histories = []
-    episode_choices_histories = []
-    episode_steplogprob_histories = []
-    episode_state_histories = []
+    counts      = torch.zeros(n_envs, dtype=torch.int32, device=device)
+    current_rew = torch.zeros(n_envs, device=device)
+    current_len = torch.zeros(n_envs, dtype=torch.int32, device=device)
+    current_lp  = torch.zeros(n_envs, device=device)
+
+    # histories (only if needed)
+    episode_logprob_histories    : list[np.ndarray] = []
+    episode_choices_histories    : list[np.ndarray] = []
+    episode_steplogprob_histories: list[np.ndarray] = []
+    episode_state_histories      : list[np.ndarray] = []
     if track_logprobs:
-        current_logprob_histories = [[] for _ in range(n_envs)]
-        current_choices_histories = [[] for _ in range(n_envs)]
         current_steplogprob_histories = [[] for _ in range(n_envs)]
-        current_state_histories = [[] for _ in range(n_envs)]
+        current_choices_histories     = [[] for _ in range(n_envs)]
+        current_state_histories       = [[] for _ in range(n_envs)]
+        index_manager = env.get_attr("index_manager")[0]
 
-    index_manager = env.get_attr("index_manager")[0]
-    true_pred_idx = index_manager.predicate_str2idx['True']
+    # env needs numpy actions
+    action_shape = env.action_space.shape
+    full_actions = np.zeros((n_envs, *action_shape), dtype=env.action_space.dtype)
 
     observations = env.reset()
-    current_rew = np.zeros(n_envs, dtype=float)
-    current_len = np.zeros(n_envs, dtype=int)
-    current_lp  = np.zeros(n_envs, dtype=float)
+    padded_targets_t = torch.as_tensor(padded_targets, device=device)
 
-    action_shape = env.action_space.shape
-    action_dtype = env.action_space.dtype
-    full_actions = np.zeros((n_envs, *action_shape), dtype=action_dtype)
-    obs_active_dict = {k: None for k in observations} if isinstance(observations, dict) else None
+    while torch.any(counts < padded_targets_t).item():
+        active_mask_t = counts < padded_targets_t
+        active_idx    = torch.where(active_mask_t)[0]
+        active_np     = active_idx.cpu().numpy()
 
-    while np.any(counts < padded_targets):
-        # print("counts per env:", counts)
-        active_mask = counts < padded_targets
-
-        # --- Data Collection for Plotting ---
-        if track_logprobs:
-            all_sub_indices = observations["sub_index"]
-            # Convert state observations to strings for active envs
-            for env_idx in np.where(active_mask)[0]:
-                # Squeeze out the middle dimension of size 1, shape becomes (padding_atoms, max_arity+1)
-                state_subidx_tensor = all_sub_indices[env_idx].squeeze(0)
-                state_str = index_manager.state_subindex_to_str(state_subidx_tensor,truncate=True)
-                current_state_histories[env_idx].append(state_str)
-
-
-        # slice observations for active envs
+        # slice obs
         if isinstance(observations, dict):
-            for k, v in observations.items():
-                obs_active_dict[k] = v[active_mask]
-            obs_tensor = obs_as_tensor(obs_active_dict, model.device)
+            obs_active = {k: torch.as_tensor(v[active_np], device=device) for k, v in observations.items()}
         else:
-            obs_active = observations[active_mask]
-            # forward pass only for active
-            obs_tensor = obs_as_tensor(obs_active, model.device)
+            obs_active = torch.as_tensor(observations[active_np], device=device)
 
+        obs_tensor = obs_as_tensor(obs_active, device)
         acts_tensor, _, lp_tensor = model.policy(obs_tensor, deterministic=deterministic)
-        # to NumPy
-        actions_active = acts_tensor.cpu().numpy()
-        lp_active = lp_tensor.cpu().numpy()
 
-        # --- Data Collection for Plotting (Optimized) ---
+        # track histories (before step)
         if track_logprobs:
-            # Get number of choices directly from the observation tensor for active envs
             num_choices = (obs_tensor["derived_sub_indices"].sum(dim=(-1, -2)) != 0).sum(dim=-1).cpu().numpy()
             all_sub_indices = observations["sub_index"]
-            active_indices = np.where(active_mask)[0]
-            for i, env_idx in enumerate(active_indices):
-                current_state_histories[env_idx].append(all_sub_indices[env_idx].squeeze(0))
-                current_steplogprob_histories[env_idx].append(lp_active[i])
-                current_choices_histories[env_idx].append(num_choices[i])
+            for i, env_i in enumerate(active_np):
+                subidx = all_sub_indices[env_i].squeeze(0)                # (P, A+1)
+                state_str = index_manager.state_subindex_to_str(subidx,   # <- make the string now
+                                                                truncate=True)
+                current_state_histories[env_i].append(state_str)          # store the *string*
+                current_choices_histories[env_i].append(num_choices[i])
 
+        current_lp[active_idx] += lp_tensor
 
-        # --- Step Environments ---
-        current_lp[active_mask] += lp_active
-        full_actions[active_mask] = actions_active
-        new_obs, rews, dones, infos = env.step(full_actions)
+        full_actions[active_np] = acts_tensor.detach().cpu().numpy()
+        new_obs, rews_np, dones_np, infos = env.step(full_actions)
 
-        current_rew[active_mask] += rews[active_mask]
-        current_len[active_mask] += 1
+        rews_t  = torch.as_tensor(rews_np, device=device, dtype=torch.float32)
+        dones_t = torch.as_tensor(dones_np, device=device, dtype=torch.bool)
 
-        done_and_active = dones & active_mask
+        current_rew[active_idx] += rews_t[active_idx]
+        current_len[active_idx] += 1
 
-        # --- Vectorized Update for Completed Episodes ---
-        if np.any(done_and_active):
-            done_indices = np.where(done_and_active)[0]
-            slots = counts[done_indices]
+        # append step lps BEFORE checking for done episodes
+        if track_logprobs:
+            step_lp_np = lp_tensor.detach().cpu().numpy()
+            for i, env_i in enumerate(active_np):
+                current_steplogprob_histories[env_i].append(step_lp_np[i])
 
-            # Store metrics
-            rewards[done_indices, slots] = current_rew[done_indices]
-            lengths[done_indices, slots] = current_len[done_indices]
-            logps[done_indices, slots] = current_lp[done_indices]
+        done_and_active = dones_t & active_mask_t
+        if done_and_active.any():
+            done_idx = torch.where(done_and_active)[0]
+            slots    = counts[done_idx]
 
-            # Check for success from infos
-            for i, env_idx in enumerate(done_indices):
-                is_success = infos[env_idx].get("is_success", False)
-                if is_success:
-                    proof_successful[env_idx, slots[i]] = True
+            rewards[done_idx, slots] = current_rew[done_idx]
+            lengths[done_idx, slots] = current_len[done_idx]
+            logps[done_idx, slots]   = current_lp[done_idx]
 
-                if track_logprobs:
-                    # Finalize histories for this episode
-                    # The cumulative logprob history needs to be computed now
-                    logprob_hist = np.cumsum(current_steplogprob_histories[env_idx])
-                    episode_logprob_histories.append(logprob_hist)
-                    episode_choices_histories.append(np.array(current_choices_histories[env_idx]))
-                    episode_steplogprob_histories.append(np.array(current_steplogprob_histories[env_idx]))
+            succ_list = [infos[int(i)].get("is_success", False) for i in done_idx.cpu().tolist()]
+            proof_successful[done_idx, slots] = torch.as_tensor(succ_list, device=device)
 
-                    # Add terminal state to history
-                    terminal_obs = infos[env_idx].get("terminal_observation", new_obs)
-                    current_state_histories[env_idx].append(terminal_obs["sub_index"][env_idx].squeeze(0))
-                    episode_state_histories.append(current_state_histories[env_idx]) # Append the list of tensors
+            if track_logprobs:
+                # finalize per done env
+                for env_i in done_idx.cpu().tolist():
+                    # Check if there's anything to store to avoid empty histories
+                    if not current_steplogprob_histories[env_i]:
+                        continue
+                        
+                    # Append final zero-action step for terminal state alignment
+                    current_choices_histories[env_i].append(0)
+                    current_steplogprob_histories[env_i].append(0.0)
 
-                    # Reset history for this env
-                    current_logprob_histories[env_idx] = []
-                    current_choices_histories[env_idx] = []
-                    current_steplogprob_histories[env_idx] = []
-                    current_state_histories[env_idx] = []
+                    # 1. stash scalar histories
+                    episode_logprob_histories.append(np.cumsum(current_steplogprob_histories[env_i]))
+                    episode_steplogprob_histories.append(np.array(current_steplogprob_histories[env_i]))
+                    episode_choices_histories.append(np.array(current_choices_histories[env_i]))
 
+                    # 2. build the *final* state string
+                    term_obs = infos[env_i].get("terminal_observation", None)
+                    if term_obs is not None:
+                        term_sub = term_obs["sub_index"].squeeze(0)
+                    else:
+                        term_sub = new_obs["sub_index"][env_i].squeeze(0)
+                    final_state_str = index_manager.state_subindex_to_str(term_sub, truncate=True)
+                    current_state_histories[env_i].append(final_state_str)
 
-            # Reset trackers for done envs
-            counts[done_indices] += 1
-            current_rew[done_indices] = 0
-            current_len[done_indices] = 0
-            current_lp[done_indices] = 0
+                    # 3. freeze the whole list
+                    episode_state_histories.append(
+                        np.array(current_state_histories[env_i])
+                    )
+
+                    # 4. clear scratch buffers
+                    current_steplogprob_histories[env_i].clear()
+                    current_choices_histories[env_i].clear()
+                    current_state_histories[env_i].clear()
+
+            counts[done_idx]     += 1
+            current_rew[done_idx] = 0
+            current_len[done_idx] = 0
+            current_lp[done_idx]  = 0
 
         observations = new_obs
         if verbose:
-            print(f"\rEpisodes done: {counts.sum()}/{total}", end="", flush=True)
+            print(f"\rEpisodes done: {int(counts.sum())}/{total}", end="", flush=True)
 
     if verbose:
         print("\r" + " " * 80 + "\r", end="")
 
-    # --- Finalize and Return ---
-    mask = np.zeros_like(rewards, dtype=bool)
-    for i, t in enumerate(padded_targets):
-        mask[i, :t] = True
-    
-    # Trim to original target length to exclude padding envs
-    if target_episodes is not None:
-        targets_len = len(target_episodes)
-        rewards = rewards[:targets_len]
-        lengths = lengths[:targets_len]
-        logps = logps[:targets_len]
-        mask = mask[:targets_len]
-        proof_successful = proof_successful[:targets_len]
+    # mask
+    mask = (torch.arange(max_t, device=device)[None, :]
+            < torch.as_tensor(padded_targets, device=device)[:, None])
 
-    return rewards, lengths, logps, mask, proof_successful, episode_logprob_histories, episode_choices_histories, episode_steplogprob_histories, episode_state_histories
+    # trim
+    if target_episodes is not None:
+        L = len(target_episodes)
+        rewards, lengths, logps, mask, proof_successful = [
+            x[:L].cpu().numpy() for x in (rewards, lengths, logps, mask, proof_successful)
+        ]
+    else:
+        rewards, lengths, logps, mask, proof_successful = [
+            x.cpu().numpy() for x in (rewards, lengths, logps, mask, proof_successful)
+        ]
+
+    return (rewards, lengths, logps, mask, proof_successful,
+            episode_logprob_histories, episode_choices_histories,
+            episode_steplogprob_histories, episode_state_histories)
 
 
 def eval_corruptions(
@@ -212,6 +221,8 @@ def eval_corruptions(
     verbose: int = 1,
     consult_janus: bool = False,
     plot: bool = False,
+    kge_inference_engine: Optional[Any] = None,
+    use_kge_hybrid_score: bool = False,
 ) -> Dict[str, Any]:
     """
     Evaluate model on each query plus its corruptions, returning the same
@@ -236,6 +247,9 @@ def eval_corruptions(
     all_pos_lp, all_pos_rw, all_pos_len = [], [], []
     all_neg_lp, all_neg_rw, all_neg_len = [], [], []
     mrr_list, hits1_list, hits3_list, hits10_list = [], [], [], []
+
+    # Accumulators for classification metrics
+    all_y_true, all_y_pred = [], []
 
     # AGGREGATION SETUP: Initialize a dict to hold data from all batches for the final plot
     if track_logprobs:
@@ -271,6 +285,7 @@ def eval_corruptions(
         # configure each sub‐env
         start_time = time.time()
         for i, (q, negs) in enumerate(zip(batch, corrs)):
+            print(f"Queries in batch: {q} + {[n for n in negs]}") if verbose > 1 else None
             seq = [q] + negs
             e = env.envs[i].env
             e.mode = "eval"
@@ -285,7 +300,7 @@ def eval_corruptions(
             env,
             deterministic=deterministic,
             target_episodes=targets,
-            verbose=1,
+            verbose=verbose>1,
             track_logprobs=track_logprobs,
         )
         if verbose: print(f"Eval time: {time.time() - start_time:.2f}s")
@@ -303,6 +318,55 @@ def eval_corruptions(
         #                 if hist_idx < len(logprob_histories) and len(logprob_histories[hist_idx]) > 0:
         #                     logprob_histories[hist_idx] -= 100
         #             hist_idx += 1
+
+        # --- Determine the final scores for ranking based on the selected mode ---
+        if use_kge_hybrid_score:
+            if kge_inference_engine is None:
+                raise ValueError("`kge_inference_engine` must be provided when `use_kge_hybrid_score` is True.")
+            
+            # Collect all atoms in the batch to score with KGE
+            all_atoms_in_batch, atom_map = [], {}
+            for i, (q, negs) in enumerate(zip(batch, corrs)):
+                q_str = f"{q.predicate}({','.join(map(str, q.args))})"
+                all_atoms_in_batch.append(q_str)
+                atom_map[q_str] = (i, 0)
+                for j, neg_tuple in enumerate(negs):
+                    neg_str = f"{neg_tuple.predicate}({','.join(map(str, neg_tuple.args))})"
+                    all_atoms_in_batch.append(neg_str)
+                    atom_map[neg_str] = (i, j + 1)
+
+            print(f"Atom names in batch: {all_atoms_in_batch}")
+            # print(f"scores for each atom:")
+            # print(np.round(log_probs, 3))
+            # Get KGE scores and reshape
+            kge_scores = kge_inference_engine.predict_batch(all_atoms_in_batch)
+            print(f"KGE scores for each atom:")
+            print(np.round(kge_scores, 10))
+            kge_log_scores_flat = np.log(np.array(kge_scores) + 1e-9)
+            max_target_in_batch = targets.max()
+            kge_log_scores = np.full((B, max_target_in_batch), -np.inf, dtype=float)
+            print(f"KGE logscores for each atom:")
+            print(np.round(kge_log_scores, 3))
+            for atom_str, log_score in zip(all_atoms_in_batch, kge_log_scores_flat):
+                env_idx, ep_idx = atom_map[atom_str]
+                kge_log_scores[env_idx, ep_idx] = log_score
+            
+            # Combine Scores: if proof succeeded, score = rl_log_prob + kge_log_score, else score = kge_log_score
+            # log_probs = np.where(proof_successful, log_probs + kge_log_scores, kge_log_scores)
+            log_probs = kge_log_scores  # Use KGE scores only if proof was not successful
+
+        # --- Classification Metrics Logic ---
+        # Create true labels based on the query type (positive or negative)
+        # Positive query is always at index 0 for each environment in the batch
+        true_labels = np.zeros_like(mask, dtype=int)
+        true_labels[:, 0] = 1 # Mark positive queries
+
+        # Use the mask to get only valid (non-padded) episodes
+        y_true_batch = true_labels[mask]
+        y_pred_batch = proof_successful[mask].astype(int)
+
+        all_y_true.extend(y_true_batch.tolist())
+        all_y_pred.extend(y_pred_batch.tolist())
 
         # Collect metrics using mask
         # Positives: column 0
@@ -352,6 +416,11 @@ def eval_corruptions(
             print(f"\nrwds pos    : {np.round(np.mean(rwds_pos), 3)}   \trwds neg       : {np.round(np.mean(rwds_neg), 3)}")
             print(f"ep len pos  : {np.round(np.mean(lengths_pos), 3)} \tep len neg    : {np.round(np.mean(lengths_neg), 3)}")
             print(f"logprobs pos: {np.round(np.mean(log_probs_pos), 3)} \tlog probs neg  : {np.round(np.mean(log_probs_neg), 3)}")
+            
+            print(f"\nAccuracy: {accuracy_score(y_true_batch, y_pred_batch):.3f} \tPrecision: {precision_score(y_true_batch, y_pred_batch, zero_division=0):.3f}")
+            print(f"Recall: {recall_score(y_true_batch, y_pred_batch, zero_division=0):.3f} \tF1 Score: {f1_score(y_true_batch, y_pred_batch, zero_division=0):.3f}")
+            print(f"\nrolling Accuracy: {accuracy_score(all_y_true, all_y_pred):.3f} \trolling Precision: {precision_score(all_y_true, all_y_pred, zero_division=0):.3f}")
+            print(f"rolling Recall: {recall_score(all_y_true, all_y_pred, zero_division=0):.3f} \trolling F1 Score: {f1_score(all_y_true, all_y_pred, zero_division=0):.3f}")
 
             print('\nrolling rwds pos    :',np.round(np.mean(all_pos_rw),3)    , '\trolling rwds neg       :',np.round(np.mean(all_neg_rw),3))
             print('rolling ep len pos  :',np.round(np.mean(all_pos_len),3), '\trolling episode len neg:',np.round(np.mean(all_neg_len),3))
@@ -427,6 +496,14 @@ def eval_corruptions(
     neg_rw, neg_len, neg_lp = np.array(all_neg_rw), np.array(all_neg_len), np.array(all_neg_lp)
     mrr_arr, h1, h3, h10 = np.array(mrr_list), np.array(hits1_list), np.array(hits3_list), np.array(hits10_list)
 
+    # Calculate final classification metrics
+    try:
+        accuracy = accuracy_score(all_y_true, all_y_pred)
+        precision = precision_score(all_y_true, all_y_pred, zero_division=0)
+        recall = recall_score(all_y_true, all_y_pred, zero_division=0)
+        f1 = f1_score(all_y_true, all_y_pred, zero_division=0)
+    except ValueError:
+        accuracy, precision, recall, f1 = 0.0, 0.0, 0.0, 0.0
     return {
         'pos_queries': len(pos_rw),
         'neg_queries': len(neg_rw),
@@ -465,6 +542,11 @@ def eval_corruptions(
         'hits3_std': float(h3.std()) if h3.size else 0.0,
         'hits10_mean': float(h10.mean()) if h10.size else 0.0,
         'hits10_std': float(h10.std()) if h10.size else 0.0,
+        # Add classification metrics to the returned dictionary
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1_score': float(f1),
     }
 
 
@@ -566,7 +648,7 @@ def plot_logprob_heatmap(
                         ha='center', va='center', fontsize=8,
                         color='white', fontweight='bold'
                     )
-            
+            bbox = dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.75)
             if show_state_labels:
                 y_min, y_max = ax.get_ylim()
                 offset = (y_max - y_min) * 0.03 if y_max > y_min else 0.1
@@ -577,7 +659,8 @@ def plot_logprob_heatmap(
                             x=j, y=step_lp + offset, s=state_label,
                             ha='center', va='bottom', fontsize=8,
                             fontweight='light', color='darkslategray',
-                            rotation=15
+                            rotation=15,zorder=5,clip_on=False,
+                            bbox=bbox,
                         )
         
         # Plot average trajectory

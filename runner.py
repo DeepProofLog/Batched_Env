@@ -52,7 +52,9 @@ if __name__ == "__main__":
     ATOM_EMBEDDING_SIZE = [64] # 256 for countries (atomatically selected below)
     CORRUPTION_MODE =  ['dynamic']
 
+    KGE_INTEGRATION_STRATEGY = ['sum_eval'] #['train', 'train_bias','sum_eval']
     USE_KGE_ACTION = [False] # New parameter to enable KGE action
+    
     KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
     if DATASET_NAME[0] == "countries_s3":
         KGE_RUN_SIGNATURE = ['countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt']
@@ -83,12 +85,12 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [10000000]
+    TIMESTEPS_TRAIN = [3000000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
     EVAL_NEG_SAMPLES = [1]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
-    TEST_NEG_SAMPLES = [None]   # Number of negative samples per positive for testing. Use None for all.
+    TEST_NEG_SAMPLES = [None]  # Number of negative samples per positive for testing. Use None for all.
     n_eval_queries = None
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
@@ -124,6 +126,7 @@ if __name__ == "__main__":
     parser.add_argument("--reward_type", default=None, type=int, help="Reward scheme to use (0, 1, or 2)")
     parser.add_argument("--endt_action", default=None, type=ast.literal_eval, help="Enable Endt action")
     parser.add_argument("--endf_action", default=None, type=ast.literal_eval, help="Enable Endf action")
+    parser.add_argument("--kge_integration_strategy", type=str, choices=["hybrid_eval", "sum_logprob", "learned_fusion"], help="How to integrate KGE scores.")
 
 
     args = parser.parse_args()
@@ -197,6 +200,7 @@ if __name__ == "__main__":
         'kge_run_signature': KGE_RUN_SIGNATURE,
         'kge_scores_file': KGE_SCORES_FILE,
         'reward_type': REWARD_TYPE,
+        'kge_integration_strategy': KGE_INTEGRATION_STRATEGY,
     }
 
     # Generate all combinations using product
@@ -297,7 +301,7 @@ if __name__ == "__main__":
                     args.padding_atoms,args.padding_states,args.false_rules,args.endt_action, 
                     args.endf_action, args.skip_unary_actions,args.memory_pruning,args.max_depth,
                     args.ent_coef,args.clip_range,args.engine,args.train_neg_ratio, args.use_kge_action,
-                    args.reward_type
+                    args.reward_type, #args.kge_integration_strategy
                     )
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)

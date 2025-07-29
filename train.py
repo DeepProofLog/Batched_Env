@@ -42,6 +42,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     print(f"CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
 
     # ---- KGE INFERENCE ENGINE ----
+    # args.use_kge_action = True
     kge_inference_engine = None
     if args.use_kge_action:
         print("\nInitializing KGE Inference Engine...", flush=True)
@@ -109,6 +110,17 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     env, eval_env, callback_env = create_environments(args, data_handler, index_manager)
 
     # --- INIT MODEL ---
+    policy_kwargs = {
+        'features_extractor_class': CustomCombinedExtractor,
+        'features_extractor_kwargs': {'features_dim': embedder.embed_dim, 'embedder': embedder}
+    }
+    if args.kge_integration_strategy and args.kge_integration_strategy is not 'sum_eval':
+        policy_kwargs.update({
+            'kge_inference_engine': kge_inference_engine,
+            'index_manager': index_manager,
+            'kge_integration_strategy': args.kge_integration_strategy,
+        })
+
     model = PPO(
         CustomActorCriticPolicy,
         env,
@@ -120,16 +132,11 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         device=device,
         ent_coef=args.ent_coef,
         clip_range=args.clip_range,
-        policy_kwargs={
-            'features_extractor_class': CustomCombinedExtractor,
-            'features_extractor_kwargs': {'features_dim': embedder.embed_dim, 'embedder': embedder}
-        }
+        policy_kwargs=policy_kwargs
     )
+    
     if args.use_kge_action:
-        model.policy.kge_inference_engine = kge_inference_engine
-        model.policy.index_manager = index_manager
-        kge_indices = [idx for pred, idx in index_manager.predicate_str2idx.items() if pred.endswith('_kge')]
-        model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
+        model.policy._setup_kge_integration()
 
     # --- TRAIN ---
     model_path = os.path.join(args.models_path, args.run_signature, f"seed_{args.seed_run_i}")
@@ -156,7 +163,9 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                 model_to_load = models[-1]
                 load_path = os.path.join(model_path, model_to_load)
                 print(f"Loading model from {load_path}")
-                model = PPO.load(load_path, env=eval_env, device=device)
+                model = PPO.load(load_path, env=eval_env, device=device)#, policy_kwargs=policy_kwargs)
+                if args.use_kge_action:
+                    model.policy._setup_kge_integration()
             else:
                 raise FileNotFoundError(f"No suitable '{load_keyword}' model found in {model_path}")
 
@@ -246,10 +255,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     model.policy.apply(strip_eval_modules)
 
     if args.use_kge_action:
-        model.policy.kge_inference_engine = kge_inference_engine
-        model.policy.index_manager = index_manager
-        kge_indices = [idx for pred, idx in index_manager.predicate_str2idx.items() if pred.endswith('_kge')]
-        model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
+        model.policy._setup_kge_integration()
 
     model.policy = torch.compile(
         model.policy, mode="reduce-overhead", fullgraph=False
@@ -261,15 +267,23 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     eval_function = eval_corruptions
     if args.test_neg_samples is not None:
         print(f"Warning: Not using full samples will give different negatives for different env size")
+    # Determine evaluation mode for eval_corruptions
+    if args.kge_integration_strategy == 'sum_eval':
+        eval_corruption_mode = 'hybrid'
+    else:
+        # For sum_logprob and learned_fusion, the model itself handles the fusion.
+        eval_corruption_mode = 'rl_only'
+    # eval_corruption_mode = 'rl_only'
     eval_args = {
         'model': model,
         'env': eval_env,
         'data': data_handler.test_queries,
         'sampler': sampler,
         'n_corruptions': args.test_neg_samples,
-        'verbose': 1,
+        'verbose': 2,
         'kge_inference_engine': kge_inference_engine,
-        'use_kge_hybrid_score': False, #True if args.use_kge_action else False,
+        'evaluation_mode': eval_corruption_mode,
+        'plot': False,
     }
     
     # metrics_test = profile_code('cProfile', eval_function, **eval_args)
@@ -284,7 +298,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                         data_handler.valid_queries,
                                         sampler,
                                         n_corruptions=args.eval_neg_samples,
-                                        consult_janus=False,
+                                        evaluation_mode=eval_corruption_mode,
+                                        kge_inference_engine=kge_inference_engine,
                                         )
         print_eval_info('Validation', metrics_valid)
 
@@ -294,7 +309,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                         data_handler.train_queries,
                                         sampler,
                                         n_corruptions=args.train_neg_ratio,
-                                        consult_janus=True,
+                                        evaluation_mode=eval_corruption_mode,
+                                        kge_inference_engine=kge_inference_engine,
                                         )
         print_eval_info('Train', metrics_train)
     else:

@@ -10,7 +10,7 @@ import tensorflow as tf
 import numpy as np
 import random
 import re
-from typing import List, Tuple, Optional, Union, Sequence
+from typing import Dict, List, Tuple, Optional, Union, Sequence
 import time
 import pandas as pd
 
@@ -347,42 +347,74 @@ class KGEInference:
         self.atom_scores[atom_string] = score
         return score
 
-    def predict_batch(self, atoms: Sequence[Union[str, Tuple]]) -> List[float]:
-        """Evaluate a batch of atoms and return their KGE scores."""
-        if not atoms:
+    def predict_batch(self, atoms_for_ranking: Sequence[Union[str, Tuple]]) -> List[float]:
+        """
+        Evaluates a batch of candidate atoms FOR A SINGLE RANKING TASK.
+        The first atom in the sequence is assumed to be the positive sample.
+        This function is specialized for MRR calculation and correctly formats
+        the data for the model's ranking evaluation protocol.
+        """
+        if not atoms_for_ranking:
             return []
 
-        strings, tuples = [], []
-        for a in atoms:
-            if isinstance(a, tuple):
-                tup = a
-                s = f"{tup[0]}({','.join(map(str, tup[1:]))})"
-            else:
-                s = a
-                tup = Atom(s=s, format="functional").toTuple()
-            strings.append(s)
-            tuples.append(tup)
+        # Ensure all items are tuples
+        atom_tuples = []
+        for a in atoms_for_ranking:
+            if not isinstance(a, tuple):
+                a = Atom(s=a, format="functional").toTuple()
+            atom_tuples.append(a)
 
-        to_eval_strs, to_eval_tuples = [], []
-        for s, t in zip(strings, tuples):
-            if s not in self.atom_scores:
-                if s not in to_eval_strs:
-                    to_eval_strs.append(s)
-                    to_eval_tuples.append(t)
+        # --- THIS IS THE CRITICAL FIX ---
+        # We must structure the data as a single query (batch size = 1) that
+        # contains multiple candidate atoms. The shape is (1, num_candidates).
+        queries = [atom_tuples]
+        # The labels are not used in prediction, but this reflects the structure.
+        labels = [[1.0] + [0.0] * (len(atom_tuples) - 1)]
 
-        if to_eval_tuples:
-            model_inputs, _ = self._prepare_batch(to_eval_tuples)
-            if self.model is None:
-                self.model = self._build_and_load_model()
-            kge_inputs = (model_inputs[0], model_inputs[1])
-            batch_scores, _ = self.model.kge_model.call(kge_inputs)
-            for s, score in zip(to_eval_strs, batch_scores.numpy().flatten()):
-                self.atom_scores[s] = float(score)
+        # Use the library's internal function to convert this structure to tensors.
+        # The result 'x' will be a dictionary of tensors, each with a shape
+        # like (1, num_candidates, ...), which is what the model expects.
+        x, y_unused = ns.dataset._from_strings_to_tensors(
+            fol=self.fol, serializer=self.serializer, queries=queries,
+            labels=labels, engine=None, ragged=False
+        )
 
-        return [self.atom_scores[s] for s in strings]
+        if self.model is None:
+            self.model = self._build_and_load_model()
+
+        # Call the main model (not the sub-module) as it handles the ranking logic.
+        predictions = self.model(x, training=False)
+
+        # The result is a dictionary; we need the 'concept' scores.
+        # The shape will be (1, num_candidates).
+        concept_scores = predictions['concept']
+
+        # Extract the scores for our single query and return as a flat list.
+        scores_list = concept_scores.numpy()[0].tolist()
+
+        return scores_list
 
 
-def score_datasets(inference_engine: KGEInference, output_file: str, num_negatives: Optional[int], batch_size: int = 256):
+
+def eval_batch(inference_engine: KGEInference, queries: List[str]):
+    """
+    Runs a test for a batch of queries and prints the results.
+    """
+    start_time = time.time()
+    # Use the existing predict_batch method
+    scores = inference_engine.predict_batch(queries)
+    end_time = time.time()
+    
+    print("\n--- Batch Evaluation Results ---")
+    results = {}
+    for query, score in zip(queries, scores):
+        print(f"Atom: '{query}', Score: {score:.8f}")
+        results[query] = score
+        
+    print(f"\nTotal inference time for batch: {end_time - start_time:.4f} seconds")
+    return results
+
+def eval_score_datasets(inference_engine: KGEInference, output_file: str, num_negatives: Optional[int], batch_size: int = 256):
     """
     Scores atoms from train, valid, and test sets with memory optimization.
     It processes one positive query and its negatives at a time to save memory.
@@ -453,7 +485,7 @@ def score_datasets(inference_engine: KGEInference, output_file: str, num_negativ
     print(f"\nAll datasets scored. Final results are in '{output_file}'.")
 
 
-def run_single_query_test(inference_engine: KGEInference, atom_string: str, ignore_cache: bool):
+def eval_query(inference_engine: KGEInference, atom_string: str, ignore_cache: bool):
     """
     Runs a test for a single atom, with an option to ignore the cache.
     """
@@ -485,6 +517,67 @@ def run_single_query_test(inference_engine: KGEInference, atom_string: str, igno
     print(f"Atom: '{atom_string}'")
     print(f"Score: {score:.8f}")
     print(f"Inference time: {end_time - start_time:.4f} seconds")
+
+def eval_query_and_its_corr(inference_engine: KGEInference, atom_string: str) -> Dict[str, Union[str, List[str], List[float]]]:
+    """
+    Generates all negative corruptions for a given query and returns their KGE scores along with the positive score.
+    """
+    print(f"\n--- Generating and Scoring All Negative Corruptions for: {atom_string} ---")
+
+    # 1. Convert string to atom tuple
+    try:
+        atom = Atom(s=atom_string, format="functional")
+        query_tuple = atom.toTuple()
+        if len(query_tuple) < 3:
+             raise ValueError("Atom must be binary (have two arguments) to generate head/tail corruptions.")
+    except Exception as e:
+        print(f"Error parsing atom string: {e}")
+        return
+
+    # 2. Get the data handler components
+    data_handler = inference_engine.data_handler
+    known_facts = data_handler.ground_facts_set
+    domain2constants = data_handler.domain2constants
+    constant2domain = data_handler.constant2domain
+
+    # 3. Generate all corruptions
+    # print("Generating corruptions...")
+    corruptions_list = KGCDataHandler.create_all_corruptions(
+        queries=[query_tuple],
+        known_facts=known_facts,
+        domain2constants=domain2constants,
+        constant2domain=constant2domain,
+        corrupt_mode='HEAD_AND_TAIL'
+    )
+    
+    if not corruptions_list:
+        print("Could not generate corruptions.")
+        return
+
+    # Extract head and tail corruptions
+    head_corruptions = corruptions_list[0].head
+    tail_corruptions = corruptions_list[0].tail
+    all_negatives_tuples = set(head_corruptions + tail_corruptions)
+
+    # Combine positive and negatives for scoring
+    all_atoms_to_score = [query_tuple] + list(all_negatives_tuples)
+
+    # 4. Score all atoms in a single batch
+    # print(f"Scoring {len(all_atoms_to_score)} atoms (1 positive + {len(all_negatives_tuples)} negatives)...")
+    scores = inference_engine.predict_batch(all_atoms_to_score)
+    
+    positive_score = scores[0]
+    negative_scores = scores[1:]
+    
+    negative_atom_strings = [f"{p}({args[0]},{args[1]})" for p, *args in all_negatives_tuples]
+
+    # 5. Return the results
+    return {
+        "positive_atom": atom_string,
+        "positive_score": positive_score,
+        "negative_atoms": negative_atom_strings,
+        "negative_scores": negative_scores
+    }
 
 
 def generate_and_sort_negatives(inference_engine: KGEInference, atom_string: str):
@@ -541,143 +634,107 @@ def generate_and_sort_negatives(inference_engine: KGEInference, atom_string: str
     # print(f"all_negatives_strings: {all_negatives_strings}")
 
 
-def _calculate_mrr_custom(scores: np.ndarray) -> float:
-    """
-    Helper to calculate reciprocal rank for a single query using the custom lexsort method.
-    """
-    random_keys = np.random.rand(len(scores))
-    sorted_indices = np.lexsort((-random_keys, -scores))
-    rank = np.where(sorted_indices == 0)[0][0] + 1
-    return 1.0 / rank
-
-
-def _calculate_mrr_tf_update(mrr_metric: ns.utils.MRRMetric, scores: np.ndarray):
-    """
-    Helper to update the state of the TF-Recommenders MRRMetric for a single query.
-    """
-    y_true = np.zeros_like(scores)
-    y_true[0] = 1.0
-    y_true_tf = tf.constant(y_true, dtype=tf.float32)[tf.newaxis, :]
-    scores_tf = tf.constant(scores, dtype=tf.float32)[tf.newaxis, :]
-    mrr_metric.update_state(y_true_tf, scores_tf)
-
-
 def calculate_mrr(inference_engine: KGEInference, n_test_queries: Optional[int] = None):
     """
-    Calculates the Mean Reciprocal Rank (MRR) on the test set using the same
-    method as kge_eval_test.py - using proper data generator with filtered protocol.
-    Also includes the custom MRR calculation for comparison.
+    Calculates Mean Reciprocal Rank (MRR) using predict_batch, showing concept scores.
+    NOTE: This version only evaluates 'concept' scores (direct KGE output) as it
+    relies on predict_batch, and therefore does not calculate 'task' metrics.
     """
-    print("\n--- Calculating MRR on the Test Set (Filtered Protocol) ---")
+    print("\n--- Calculating MRR on the Test Set (using predict_batch) ---")
     
-    # Use the same approach as kge_eval_test.py - create a proper data generator
     data_handler = inference_engine.data_handler
-    fol = inference_engine.fol
-    serializer = inference_engine.serializer
     
-    # Get test dataset with proper filtering (same as kge_eval_test.py)
+    # Get the test dataset with all negative corruptions for filtered evaluation
     dataset_test = data_handler.get_dataset(
         split="test",
-        number_negatives=None,  # Use all negatives for standard eval (same as kge_eval_test.py)
-        corrupt_mode='HEAD_AND_TAIL'  # Same as kge_eval_test.py
+        number_negatives=None,  # Use all negatives for standard evaluation
+        corrupt_mode='HEAD_AND_TAIL'
     )
     
-    # Create data generator (same as kge_eval_test.py)
-    data_gen_test = ns.dataset.DataGenerator(
-        dataset_test,
-        fol,
-        serializer,
-        engine=None,  # No grounding engine needed for KGE evaluation
-        batch_size=16,  # Same as kge_eval_test.py default
-        ragged=True  # Same as kge_eval_test.py
-    )
+    # Determine the number of queries to process
+    num_queries_to_process = n_test_queries if n_test_queries is not None else len(dataset_test)
+    print(f"INFO: Processing {num_queries_to_process} queries from the test set.")
     
-    if n_test_queries is not None:
-        print(f"INFO: Limiting to first {n_test_queries} batches for testing.")
-    
-    # Build model if not already built
+    # The model will be built and loaded automatically on the first call to predict_batch
     if inference_engine.model is None:
         inference_engine.model = inference_engine._build_and_load_model()
-    
-    # Initialize metric objects (same as kge_eval_test.py)
+
+    # Initialize metrics for concept scores ONLY
     concept_mrr = ns.utils.MRRMetric(name='concept_mrr')
     concept_h1 = ns.utils.HitsMetric(1, name='concept_hits@1')
     concept_h10 = ns.utils.HitsMetric(10, name='concept_hits@10')
-    task_mrr = ns.utils.MRRMetric(name='task_mrr')
-    task_h1 = ns.utils.HitsMetric(1, name='task_hits@1')
-    task_h10 = ns.utils.HitsMetric(10, name='task_hits@10')
 
-    # Additional custom MRR tracking
-    reciprocal_ranks_custom = []
+    # Process each positive query from the test set one by one
+    for i in range(num_queries_to_process):
+        # Retrieve the positive query and its lists of head and tail corruptions
+        queries_for_fact, _ = dataset_test[i]
+        
+        # The positive atom is the first in the list of candidates
+        positive_atom_tuple = queries_for_fact[0][0]
+        positive_atom_str = f"{positive_atom_tuple[0]}({','.join(map(str, positive_atom_tuple[1:]))})"
+        # print(f"\n===== Processing Query {i+1}/{num_queries_to_process}: {positive_atom_str} =====")
+        
+        # This loop runs twice: once for head corruptions, once for tail
+        for corruption_type, atom_tuples in zip(["Head", "Tail"], queries_for_fact):
+            if not atom_tuples or len(atom_tuples) <= 1:
+                print(f"--- Skipping {corruption_type} Corruptions (no negatives found) ---")
+                continue
 
-    # Iterate over the test dataset (same as kge_eval_test.py)
-    processed_batches = 0
-    for i, (x_batch, y_batch) in enumerate(data_gen_test):
-        if n_test_queries is not None and processed_batches >= n_test_queries:
-            break
+            # print(f"\n--- Evaluating {corruption_type} Corruptions ({len(atom_tuples)} candidates) ---")
+
+            # Use predict_batch to get the concept scores for all candidates
+            concept_scores = inference_engine.predict_batch(atom_tuples)
+
+            # Print a detailed table of atoms and their concept scores
+            # print(f"{'Atom':<30} | {'Concept Score':<15}")
+            # print("-" * 50)
+            for j, atom_tuple in enumerate(atom_tuples):
+                atom_str = f"{atom_tuple[0]}({','.join(map(str, atom_tuple[1:]))})"
+                is_positive = " (positive)" if j == 0 else ""
+                # print(f"{atom_str:<30} | {concept_scores[j]:<15.6f}{is_positive}")
             
-        if i >= len(data_gen_test):  # Prevent infinite loops
-            break
-            
-        print(f"Processing batch {i+1}/{len(data_gen_test)}", end='\r')
-        
-        # Get model predictions (same as kge_eval_test.py)
-        # y_pred = inference_engine.model.predict_on_batch(x_batch)
-        # y_pred = inference_engine.model.kge_model.call((x_batch[0], x_batch[1]))
-        y_pred = inference_engine.model(x_batch, training=False)
-        
-        # Update the state of each metric (same as kge_eval_test.py)
-        concept_mrr.update_state(y_batch['concept'], y_pred['concept'])
-        concept_h1.update_state(y_batch['concept'], y_pred['concept'])
-        concept_h10.update_state(y_batch['concept'], y_pred['concept'])
-        
-        task_mrr.update_state(y_batch['task'], y_pred['task'])
-        task_h1.update_state(y_batch['task'], y_pred['task'])
-        task_h10.update_state(y_batch['task'], y_pred['task'])
-        
-        # Custom MRR calculation for comparison
-        concept_scores = y_pred['concept'].numpy()
-        for batch_idx in range(concept_scores.shape[0]):
-            scores = concept_scores[batch_idx]
-            rr_custom = _calculate_mrr_custom(scores)
-            reciprocal_ranks_custom.append(rr_custom)
-        
-        processed_batches += 1
-        rolling_mrr_custom = np.mean(reciprocal_ranks_custom) if reciprocal_ranks_custom else 0.0
-        print(f"Processed query {i+1}/{len(data_gen_test)}",
-            f"Rolling MRR: {concept_mrr.result().numpy():.4f},",
-            f"Custom MRR: {rolling_mrr_custom:.4f}", end='\r')
-        
-    print("\nManual evaluation loop finished.")
+            # Prepare tensors for metric update. The ground truth (y_true) has the
+            # positive sample at index 0.
+            scores_np = np.array(concept_scores, dtype=np.float32)
+            y_true = np.zeros_like(scores_np)
+            y_true[0] = 1.0
 
-    # Display Results (same as kge_eval_test.py)
+            # Reshape for the metric update function, which expects (batch_size, num_candidates)
+            y_true_tf = tf.constant(y_true, dtype=tf.float32)[tf.newaxis, :]
+            scores_tf = tf.constant(scores_np, dtype=tf.float32)[tf.newaxis, :]
+            
+            # Update the state of each metric
+            concept_mrr.update_state(y_true_tf, scores_tf)
+            concept_h1.update_state(y_true_tf, scores_tf)
+            concept_h10.update_state(y_true_tf, scores_tf)
+            print(f"Processed query {i+1}/{len(dataset_test)}",
+                f"Negatives: {len(atom_tuples)},",
+                f"Rolling MRR: {concept_mrr.result().numpy():.4f},")
+    # Display the final aggregated results
     print("\n" + "="*50)
     print("          MRR Calculation Complete")
     print("="*50)
     print(f"Run Signature: {inference_engine.run_signature}")
     print(f"Seed: {inference_engine.seed}")
-    print("\nMetrics:")
+    print("\nMetrics (Concept Scores Only):")
 
-    # Collect and print results from the metric objects (same as kge_eval_test.py)
     results = {
         'concept_mrr': concept_mrr.result().numpy(),
         'concept_hits@1': concept_h1.result().numpy(),
         'concept_hits@10': concept_h10.result().numpy(),
-        'task_mrr': task_mrr.result().numpy(),
-        'task_hits@1': task_h1.result().numpy(),
-        'task_hits@10': task_h10.result().numpy(),
     }
     for key, value in results.items():
         print(f"  {key:<25}: {value:.4f}")
-    print("="*50)
+    print("-" * 50)
+    print("NOTE: 'Task' metrics were not computed as this mode uses 'predict_batch'.")
 
 
 def main():
     parser = argparse.ArgumentParser(description="KGE Model Inference and Scoring")
     parser.add_argument('--mode', type=str, default='calculate_mrr', 
-                        choices=['predict', 'calculate_mrr', 'score', 'test_single', 'generate_negatives'], 
+                        choices=['predict', 'calculate_mrr', 'score', 'test_single', 'generate_negatives', 'eval_batch'], 
                         help="Execution mode.")
-    parser.add_argument('--atom', type=str, default='aunt(5,76)', 
+    parser.add_argument('--atom', type=str, default='aunt(1211,895)', 
                         help="The atom to use for 'predict', 'test_single', or 'generate_negatives' mode.")
     parser.add_argument('--dataset', type=str, default='family', help="Name of the dataset.")
     parser.add_argument('--base_path', type=str, default='data', help="Base path to the data directory.")
@@ -685,7 +742,7 @@ def main():
     parser.add_argument('--run_signature', type=str, default='kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt', help="The signature of the training run.")
     parser.add_argument('--seed', type=int, default=0, help="Random seed.")
     parser.add_argument('--scores_file', type=str, default=None, help="Optional path to a file with pre-computed atom scores.")
-    parser.add_argument('--n_test_queries', type=int, default=None, help="Number of test batches for a quick MRR test.")
+    parser.add_argument('--n_test_queries', type=int, default=None, help="Number of test queries to process for a quick MRR test. Default is 10.")
     parser.add_argument('--num_negatives', type=int, default=None, help="Number of negative samples per positive. Default is all.")
     parser.add_argument('--batch_size', type=int, default=2048, help="Batch size for scoring.")
     parser.add_argument('--ignore_cache', action='store_true', help="Force live inference by ignoring the scores cache for 'test_single' mode.")
@@ -708,17 +765,28 @@ def main():
             print(f"\n--- Running in 'predict' mode for atom: {args.atom} ---")
             score = inference_engine.predict(args.atom)
             print(f"\nFinal prediction score: {score:.4f}")
-        
+
+        elif args.mode == 'eval_batch':
+            # The specific list of queries you want to evaluate
+            queries_to_eval = [
+                'aunt(5,76)', 'aunt(1074,76)', 'aunt(1094,76)', 'aunt(1168,76)',
+                'aunt(1186,76)', 'aunt(1308,76)', 'aunt(1457,76)', 'aunt(1873,76)',
+                'aunt(2031,76)', 'aunt(2066,76)', 'aunt(2152,76)', 'aunt(2341,76)',
+                'aunt(2353,76)', 'aunt(2481,76)', 'aunt(2492,76)', 'aunt(253,76)',
+                'aunt(256,76)', 'aunt(2601,76)', 'aunt(2622,76)', 'aunt(2672,76)',
+                'aunt(272,76)'
+            ]
+            eval_batch(inference_engine, queries_to_eval)  
         elif args.mode == 'calculate_mrr':
             calculate_mrr(inference_engine, args.n_test_queries)
             
         elif args.mode == 'score':
             print("\n--- Running in 'score' mode ---")
             output_file = os.path.join(args.base_path, f'kge_scores_{args.dataset}.txt')
-            score_datasets(inference_engine, output_file, args.num_negatives, args.batch_size)
+            eval_score_datasets(inference_engine, output_file, args.num_negatives, args.batch_size)
             
         elif args.mode == 'test_single':
-            run_single_query_test(inference_engine, args.atom, args.ignore_cache)
+            eval_query(inference_engine, args.atom, args.ignore_cache)
             
         elif args.mode == 'generate_negatives':
             generate_and_sort_negatives(inference_engine, args.atom)

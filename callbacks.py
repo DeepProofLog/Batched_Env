@@ -5,7 +5,7 @@ from typing import Optional, Union, Any, List, Dict
 import time
 import sys
 
-from model_eval import evaluate_policy as evaluate_policy_mrr
+# from model_eval import evaluate_policy as evaluate_policy_mrr
 from model_eval import eval_corruptions as eval_corruptions_mrr
 import gymnasium as gym
 from stable_baselines3 import PPO
@@ -317,7 +317,7 @@ class SB3TrainCheckpoint(BaseCallback):
                 print(f'Improved {self.monitor} to {self.current_value:.4f} in train')
 
     
-    def _on_training_end(self) -> bool:
+    def _on_step(self) -> bool:
         if self.model_path:
             save_path = os.path.join(self.model_path, f"last_epoch_{self.name}.zip")
             self.model_.save(save_path)

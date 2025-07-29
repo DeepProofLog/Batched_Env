@@ -6,7 +6,7 @@ from pykeen.triples import TriplesFactory
 from pykeen.sampling import BasicNegativeSampler
 from typing_extensions import TypeAlias 
 import math
-from typing import Collection, Optional, Union,Literal, Dict, List
+from typing import Collection, Optional, Union,Literal, Dict, List, Tuple
 import types
 from pykeen.constants import TARGET_TO_INDEX, LABEL_HEAD, LABEL_TAIL, LABEL_RELATION
 import logging
@@ -489,6 +489,86 @@ def get_negatives_from_states(
         return neg_subs.squeeze(0) if B == 1 else neg_subs
 
 
+def get_negatives_from_states_separate(
+    self: Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain],
+    states: List[List[Term]],
+    device: torch.device,
+    num_negs: Optional[int] = None,
+    return_states: bool = True,
+) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[List[List[Term]], List[List[Term]]]]:
+    """
+    Convert a list of Term-lists to sub-indices, generate negatives separately for head and tail, 
+    and return separate tensors/lists.
+
+    Args:
+        states: list of B query states, each a list of Term
+        num_negs: number of negatives per corruption type, or None for all
+        return_states: whether to return Term lists or tensor sub-indices
+        
+    Returns:
+        If return_states=True: (head_neg_terms, tail_neg_terms) - both List[List[Term]]
+        If return_states=False: (head_neg_subs, tail_neg_subs) - both torch.Tensor
+    """
+    # Handle input format
+    if isinstance(states, Term):
+        states = [[states]]
+    elif isinstance(states, list) and states and isinstance(states[0], Term):
+        states = [states]
+    
+    # Build sub-indices for each state
+    subs = [self.index_manager.get_atom_sub_index(state) for state in states]
+    target_device = self.filterer._hashes_sorted.device 
+    pos_subs = torch.stack(subs, dim=0).to(device)
+    
+    B = pos_subs.size(0)
+    
+    # Store original corruption scheme
+    original_scheme = self.corruption_scheme
+    original_indices = self._corruption_indices
+    
+    # Generate head corruptions (corrupt position 0 - head/subject)
+    self.corruption_scheme = ['head']
+    self._corruption_indices = [0]  # head is at position 0 in (h,r,t)
+    
+    head_neg_subs = self.get_negatives(
+        pos_subs,
+        padding_atoms=pos_subs.size(1),
+        max_arity=pos_subs.size(2) - 1,
+        device=target_device,
+        num_negs=num_negs,
+    )
+    
+    # Generate tail corruptions (corrupt position 2 - tail/object)
+    self.corruption_scheme = ['tail']
+    self._corruption_indices = [2]  # tail is at position 2 in (h,r,t)
+    
+    tail_neg_subs = self.get_negatives(
+        pos_subs,
+        padding_atoms=pos_subs.size(1),
+        max_arity=pos_subs.size(2) - 1,
+        device=target_device,
+        num_negs=num_negs,
+    )
+    
+    # Restore original corruption scheme
+    self.corruption_scheme = original_scheme
+    self._corruption_indices = original_indices
+    
+    if return_states:
+        # Convert to Term-based states
+        head_neg_terms = self.index_manager.subindices_to_terms(head_neg_subs)
+        tail_neg_terms = self.index_manager.subindices_to_terms(tail_neg_subs)
+        
+        if B == 1:
+            return head_neg_terms[0], tail_neg_terms[0]
+        else:
+            return head_neg_terms, tail_neg_terms
+    else:
+        if B == 1:
+            return head_neg_subs.squeeze(0), tail_neg_subs.squeeze(0)
+        else:
+            return head_neg_subs, tail_neg_subs
+
 def get_sampler(data_handler: DataHandler, 
                 index_manager: IndexManager,
                 corruption_scheme: Optional[Collection[Target]] = None,
@@ -541,6 +621,6 @@ def get_sampler(data_handler: DataHandler,
     sampler.index_manager = index_manager
     sampler.get_negatives = types.MethodType(get_negatives, sampler)
     sampler.get_negatives_from_states = types.MethodType(get_negatives_from_states, sampler)
-
+    sampler.get_negatives_from_states_separate = types.MethodType(get_negatives_from_states_separate, sampler)
 
     return sampler
