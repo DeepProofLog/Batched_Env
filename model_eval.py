@@ -15,10 +15,6 @@ from stable_baselines3.common import type_aliases
 from stable_baselines3.common.on_policy_algorithm import obs_as_tensor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
 
-from kge_inference import KGEInference
-# The KGCDataHandler is not needed for this hybrid approach
-# from kge_loader import KGCDataHandler
-
 @torch.inference_mode()
 def evaluate_policy(
     model: "type_aliases.PolicyPredictor",
@@ -213,7 +209,7 @@ def eval_corruptions(
     deterministic: bool = True,
     verbose: int = 1,
     plot: bool = False,
-    kge_inference_engine: Optional[KGEInference] = None,
+    kge_inference_engine = None,
     evaluation_mode: str = 'rl_only',
     corruption_scheme: List[str] = None
 ) -> Dict[str, Any]:
