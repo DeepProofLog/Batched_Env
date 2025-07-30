@@ -101,9 +101,9 @@ def evaluate_policy(
 
         # slice obs
         if isinstance(observations, dict):
-            obs_active = {k: torch.as_tensor(v[active_np], device=device) for k, v in observations.items()}
+            obs_active = {k: v[active_np] for k, v in observations.items()}
         else:
-            obs_active = torch.as_tensor(observations[active_np], device=device)
+            obs_active = observations[active_np]
 
         obs_tensor = obs_as_tensor(obs_active, device)
         acts_tensor, _, lp_tensor = model.policy(obs_tensor, deterministic=deterministic)
@@ -215,6 +215,7 @@ def eval_corruptions(
     plot: bool = False,
     kge_inference_engine: Optional[KGEInference] = None,
     evaluation_mode: str = 'rl_only',
+    corruption_scheme: List[str] = None
 ) -> Dict[str, Any]:
     """
     Evaluates a model on a dataset by generating head/tail corruptions for each query.
@@ -248,7 +249,7 @@ def eval_corruptions(
     # Global accumulator for all metrics across all batches
     global_metrics = {
         'pos_rw': [], 'neg_rw': [], 'pos_len': [], 'neg_len': [], 'pos_lp': [], 'neg_lp': [],
-        'y_true': [], 'y_pred': [],
+        'y_true': [], 'y_pred': [], 'y_score': [],
         'head_mrr': [], 'head_h1': [], 'head_h3': [], 'head_h10': [],
         'tail_mrr': [], 'tail_h1': [], 'tail_h3': [], 'tail_h10': []
     }
@@ -266,7 +267,7 @@ def eval_corruptions(
         B = len(batch)
 
         # Per-batch accumulator for reporting
-        batch_metrics = {key: [] for key in ['pos_rw', 'neg_rw', 'pos_len', 'neg_len', 'pos_lp', 'neg_lp', 'y_true', 'y_pred', 'mrr', 'h1', 'h3', 'h10']}
+        batch_metrics = {key: [] for key in ['pos_rw', 'neg_rw', 'pos_len', 'neg_len', 'pos_lp', 'neg_lp', 'y_true', 'y_pred', 'y_score', 'mrr', 'h1', 'h3', 'h10']}
 
         # --- Corruption Generation ---
         head_corrs, tail_corrs = sampler.get_negatives_from_states_separate([[q] for q in batch], model.device, num_negs=n_corruptions) if n_corruptions != 0 else ([[] for _ in range(B)], [[] for _ in range(B)])
@@ -276,37 +277,42 @@ def eval_corruptions(
 
         # --- Evaluate Head and Tail Corruptions ---
         for corruption_type, corrs in [("head", head_corrs), ("tail", tail_corrs)]:
+            if corruption_type not in corruption_scheme:
+                continue                         # ← ignore it entirely
             targets = np.array([1 + len(c) for c in corrs], dtype=int)
-            if not np.any(targets): continue
+            if not np.any(targets > 1):
+                continue
             
             max_t = targets.max()
             padded_targets = np.zeros(num_envs, dtype=int); padded_targets[:B] = targets
-            mask = (np.arange(max_t)[None, :] < padded_targets[:, None])
-            
+
+            # The mask used for evaluation within evaluate_policy
+            eval_mask = (np.arange(max_t)[None, :] < padded_targets[:, None])
+
             rewards, lengths, log_probs, proof_successful = None, None, None, None
 
             # --- Score Calculation (KGE, RL, or Hybrid) ---
             if evaluation_mode == 'kge_only':
-                log_probs = kge_eval(batch, corrs, mask, kge_inference_engine)
-                proof_successful = np.zeros_like(mask, dtype=bool) # No proofs in KGE-only mode
+                log_probs = kge_eval(batch, corrs, eval_mask, kge_inference_engine)
+                proof_successful = np.zeros_like(eval_mask, dtype=bool) # No proofs in KGE-only mode
             else: # 'rl_only' or 'hybrid'
                 for i, (q, negs) in enumerate(zip(batch, corrs)):
                     seq = [q] + negs
                     e = env.envs[i].env
                     e.mode, e.queries, e.labels, e.n_episodes, e.eval_idx = "eval", seq, [1] + [0]*len(negs), len(seq), 0
                 
-                rewards, lengths, log_probs, _, proof_successful = evaluate_policy(model, env, 
+                rewards, lengths, log_probs, returned_mask, proof_successful = evaluate_policy(model, env, 
                                                     deterministic=deterministic, target_episodes=targets, 
                                                     verbose=verbose>1,track_logprobs=plot)
                 
                 if evaluation_mode == 'hybrid':
-                    kge_log_scores = kge_eval(batch, corrs, mask, kge_inference_engine)
+                    kge_log_scores = kge_eval(batch, corrs, returned_mask, kge_inference_engine)
                     log_probs += kge_log_scores # Add KGE score to RL log-prob
 
                 log_probs[~proof_successful] -= 100 # Penalize failed proofs
 
             # --- Accumulate Metrics ---
-            _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_type, mask, 
+            _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_type, returned_mask, 
                                             proof_successful, log_probs, rewards, lengths)
 
         # --- Report Batch Metrics ---
@@ -351,9 +357,12 @@ def _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_ty
     # Classification metrics
     true_labels = np.zeros_like(mask, dtype=int); true_labels[:, 0] = 1
     y_true_part, y_pred_part = true_labels[mask], proof_successful[mask].astype(int)
+    y_score_part = log_probs[mask]
+
     batch_metrics['y_true'].extend(y_true_part.tolist()); global_metrics['y_true'].extend(y_true_part.tolist())
     batch_metrics['y_pred'].extend(y_pred_part.tolist()); global_metrics['y_pred'].extend(y_pred_part.tolist())
-    
+    batch_metrics['y_score'].extend(y_score_part.tolist()); global_metrics['y_score'].extend(y_score_part.tolist())
+
     # Log probabilities
     pos_lp, neg_lp = log_probs[:, 0][mask[:, 0]], log_probs[:, 1:][mask[:, 1:]]
     batch_metrics['pos_lp'].extend(pos_lp.tolist()); global_metrics['pos_lp'].extend(pos_lp.tolist())
@@ -383,6 +392,9 @@ def _report_batch_metrics(batch_metrics, global_metrics):
     """Prints a formatted summary of metrics for the current batch and rolling totals."""
     def safe_mean(arr): return np.mean(arr) if arr else 0.0
     def safe_str(val): return f"{val:.3f}" if isinstance(val, float) else val
+    def safe_ap(y_true, y_score):
+        if len(np.unique(y_true)) < 2: return 0.0
+        return average_precision_score(y_true, y_score)
 
     # --- Batch Metrics ---
     b_pos_rw = safe_mean(batch_metrics['pos_rw']); b_neg_rw = safe_mean(batch_metrics['neg_rw'])
@@ -390,6 +402,7 @@ def _report_batch_metrics(batch_metrics, global_metrics):
     b_pos_lp = safe_mean(batch_metrics['pos_lp']); b_neg_lp = safe_mean(batch_metrics['neg_lp'])
     b_acc = accuracy_score(batch_metrics['y_true'], batch_metrics['y_pred']); b_prec = precision_score(batch_metrics['y_true'], batch_metrics['y_pred'], zero_division=0)
     b_rec = recall_score(batch_metrics['y_true'], batch_metrics['y_pred'], zero_division=0); b_f1 = f1_score(batch_metrics['y_true'], batch_metrics['y_pred'], zero_division=0)
+    b_ap = safe_ap(batch_metrics['y_true'], batch_metrics['y_score'])
     b_mrr = safe_mean(batch_metrics['mrr']); b_h1 = safe_mean(batch_metrics['h1']); b_h3 = safe_mean(batch_metrics['h3']); b_h10 = safe_mean(batch_metrics['h10'])
     
     # --- Rolling Metrics ---
@@ -398,6 +411,7 @@ def _report_batch_metrics(batch_metrics, global_metrics):
     r_pos_lp = safe_mean(global_metrics['pos_lp']); r_neg_lp = safe_mean(global_metrics['neg_lp'])
     r_acc = accuracy_score(global_metrics['y_true'], global_metrics['y_pred']); r_prec = precision_score(global_metrics['y_true'], global_metrics['y_pred'], zero_division=0)
     r_rec = recall_score(global_metrics['y_true'], global_metrics['y_pred'], zero_division=0); r_f1 = f1_score(global_metrics['y_true'], global_metrics['y_pred'], zero_division=0)
+    r_ap = safe_ap(global_metrics['y_true'], global_metrics['y_score'])
     r_mrr = safe_mean(global_metrics['head_mrr'] + global_metrics['tail_mrr']); r_h1 = safe_mean(global_metrics['head_h1'] + global_metrics['tail_h1'])
     r_h3 = safe_mean(global_metrics['head_h3'] + global_metrics['tail_h3']); r_h10 = safe_mean(global_metrics['head_h10'] + global_metrics['tail_h10'])
 
@@ -405,8 +419,8 @@ def _report_batch_metrics(batch_metrics, global_metrics):
     print(f"\nrwds pos    : {safe_str(b_pos_rw) if b_pos_rw else 'N/A'}   \trwds neg       : {safe_str(b_neg_rw) if b_neg_rw else 'N/A'}")
     print(f"ep len pos  : {safe_str(b_pos_len) if b_pos_len else 'N/A'} \tep len neg    : {safe_str(b_neg_len) if b_neg_len else 'N/A'}")
     print(f"logprobs pos: {b_pos_lp:.3f} \tlog probs neg  : {safe_str(b_neg_lp) if b_neg_lp else 'N/A'}")
-    print(f"\nAccuracy: {b_acc:.3f} \tPrecision: {b_prec:.3f} \tRecall: {b_rec:.3f} \tF1 Score: {b_f1:.3f}")
-    print(f"\nrolling Accuracy: {r_acc:.3f} \trolling Precision: {r_prec:.3f} \trolling Recall: {r_rec:.3f} \trolling F1 Score: {r_f1:.3f}")
+    print(f"\nAccuracy: {b_acc:.3f} \tPrecision: {b_prec:.3f} \tRecall: {b_rec:.3f} \tF1 Score: {b_f1:.3f} \tAP: {b_ap:.3f}")
+    print(f"\nrolling Accuracy: {r_acc:.3f} \trolling Precision: {r_prec:.3f} \trolling Recall: {r_rec:.3f} \trolling F1 Score: {r_f1:.3f} \trolling AP: {r_ap:.3f}")
     print(f"\nrolling rwds pos    : {safe_str(r_pos_rw) if r_pos_rw else 'N/A'} \trolling rwds neg       : {safe_str(r_neg_rw) if r_neg_rw else 'N/A'}")
     print(f"rolling ep len pos  : {safe_str(r_pos_len) if r_pos_len else 'N/A'} \trolling episode len neg: {safe_str(r_neg_len) if r_neg_len else 'N/A'}")
     print(f"rolling logprobs pos: {r_pos_lp:.3f} \trolling log probs neg  : {safe_str(r_neg_lp) if r_neg_lp else 'N/A'}")
@@ -422,6 +436,11 @@ def _finalize_and_get_results(metrics):
         arr = np.array(data)
         return (arr.mean(), arr.std()) if arr.size > 0 else (0.0, 0.0)
 
+    def safe_ap(y_true, y_score):
+        y_true, y_score = np.array(y_true), np.array(y_score)
+        if len(np.unique(y_true)) < 2 or y_true.size == 0 or y_score.size == 0:
+            return 0.0
+        return average_precision_score(y_true, y_score)
     # Combined rank metrics
     all_mrr, all_h1, all_h3, all_h10 = (np.array(metrics['head_mrr'] + metrics['tail_mrr']), np.array(metrics['head_h1'] + metrics['tail_h1']),
                                         np.array(metrics['head_h3'] + metrics['tail_h3']), np.array(metrics['head_h10'] + metrics['tail_h10']))
@@ -433,8 +452,11 @@ def _finalize_and_get_results(metrics):
         'head_hits1_mean': get_stats(metrics['head_h1'])[0], 'tail_hits1_mean': get_stats(metrics['tail_h1'])[0],
         'head_hits3_mean': get_stats(metrics['head_h3'])[0], 'tail_hits3_mean': get_stats(metrics['tail_h3'])[0],
         'head_hits10_mean': get_stats(metrics['head_h10'])[0], 'tail_hits10_mean': get_stats(metrics['tail_h10'])[0],
-        'accuracy': accuracy_score(metrics['y_true'], metrics['y_pred']), 'precision': precision_score(metrics['y_true'], metrics['y_pred'], zero_division=0),
-        'recall': recall_score(metrics['y_true'], metrics['y_pred'], zero_division=0), 'f1_score': f1_score(metrics['y_true'], metrics['y_pred'], zero_division=0)
+        'accuracy': accuracy_score(metrics['y_true'], metrics['y_pred']) if metrics['y_true'] else 0.0,
+        'precision': precision_score(metrics['y_true'], metrics['y_pred'], zero_division=0) if metrics['y_true'] else 0.0,
+        'recall': recall_score(metrics['y_true'], metrics['y_pred'], zero_division=0) if metrics['y_true'] else 0.0,
+        'f1_score': f1_score(metrics['y_true'], metrics['y_pred'], zero_division=0) if metrics['y_true'] else 0.0,
+        'average_precision': safe_ap(metrics['y_true'], metrics['y_score'])
     }
     for key in ['pos_rw', 'neg_rw', 'pos_len', 'neg_len', 'pos_lp', 'neg_lp']:
         mean, std = get_stats(metrics[key])

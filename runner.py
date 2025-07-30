@@ -27,7 +27,7 @@ if __name__ == "__main__":
         def flush(self):
             self.file.flush()
             self.stdout.flush()
-    # hpo: first ent_coef and then clip_range
+    # hpo: first ent_coef, try with reward type, 5 seeds, 300k steps
     FALSE_RULES = [False] 
     MEMORY_PRUNING = [True]
     ENDT_ACTION = [False]
@@ -89,11 +89,11 @@ if __name__ == "__main__":
     # The total number of steps in each rollout is n_steps*n_envs.
     n_envs = 256
     n_steps = 256
+    batch_size = 256 # Ensure batch size is a factor of n_steps (for the buffer).
     n_eval_envs = 128
     # n_callback_eval_envs = 1 # Number of environments to use for evaluation in the callback # should be one in CustomEvalCallback
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
-    batch_size = 256 # Ensure batch size is a factor of n_steps (for the buffer).
     lr = 3e-4
 
     max_total_vars = 100
@@ -153,12 +153,12 @@ if __name__ == "__main__":
     else:
         USE_KGE_ACTION = [True] # New parameter to enable KGE action    
 
-    if DATASET_NAME[0] == "countries_s3":
-        KGE_RUN_SIGNATURE = ['countries_s3-backward_0_1-no_reasoner-complex-True-256-256-128-rules.txt']
+    if DATASET_NAME[0] == "countries_s3" or DATASET_NAME[0] == "countries_s2" or DATASET_NAME[0] == "countries_s1":
+        KGE_RUN_SIGNATURE = [f'{DATASET_NAME[0]}-backward_0_1-no_reasoner-rotate-True-256-256-128-rules.txt']
     elif DATASET_NAME[0] == "family":
-        KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt']
+        KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-rotate-True-256-256-4-rules.txt']
     elif DATASET_NAME[0] == "wn18rr":
-        KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-complex-True-256-256-1-rules.txt']
+        KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-rotate-True-256-256-1-rules.txt']
 
     if USE_KGE_ACTION == [True] and REWARD_TYPE == [0]:
         RESTORE_BEST_VAL_MODEL = [False] # If using KGE action, we cannot restore the best val model, as it is not saved during training.

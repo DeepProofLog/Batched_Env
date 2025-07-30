@@ -106,7 +106,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
 
 
     # --- ENVIRONMENT ---
-    env, eval_env, callback_env = create_environments(args, data_handler, index_manager)
+    env, eval_env, callback_env = create_environments(args, data_handler, index_manager, detailed_eval_env=False)
 
     # --- INIT MODEL ---
     policy_kwargs = {
@@ -233,8 +233,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         training_function = model.learn
         training_args = {'total_timesteps': args.timesteps_train, 'callback': CallbackList(callbacks)}
 
-        profile_code(False, training_function, **training_args)
-        # profile_code('cProfile', training_function, **training_args)
+        profile_code(False, training_function, **training_args) #cProfile
         # raise SystemExit("Profiling complete. Exiting...")
         if args.restore_best_val_model: 
             model = eval_callback.restore_best_ckpt(env)
@@ -272,11 +271,11 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         print(f"Warning: Not using full samples will give different negatives for different env size")
     # Determine evaluation mode for eval_corruptions
     if args.kge_integration_strategy == 'sum_eval':
-        eval_corruption_mode = 'hybrid'
+        eval_mode = 'hybrid'
     else:
         # For sum_logprob and learned_fusion, the model itself handles the fusion.
-        eval_corruption_mode = 'rl_only'
-    # eval_corruption_mode = 'kge_only'
+        eval_mode = 'rl_only'
+    # eval_mode = 'kge_only'
     eval_args = {
         'model': model,
         'env': eval_env,
@@ -285,8 +284,9 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         'n_corruptions': args.test_neg_samples,
         'verbose': 2,
         'kge_inference_engine': kge_inference_engine,
-        'evaluation_mode': eval_corruption_mode,
+        'evaluation_mode': eval_mode,
         'plot': False,
+        'corruption_scheme': args.corruption_scheme,
     }
     
     # metrics_test = profile_code('cProfile', eval_function, **eval_args)
@@ -301,8 +301,9 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                         data_handler.valid_queries,
                                         sampler,
                                         n_corruptions=args.eval_neg_samples,
-                                        evaluation_mode=eval_corruption_mode,
+                                        evaluation_mode=eval_mode,
                                         kge_inference_engine=kge_inference_engine,
+                                        corruption_scheme=args.corruption_scheme,
                                         )
         print_eval_info('Validation', metrics_valid)
 
@@ -312,8 +313,9 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                         data_handler.train_queries,
                                         sampler,
                                         n_corruptions=args.train_neg_ratio,
-                                        evaluation_mode=eval_corruption_mode,
+                                        evaluation_mode=eval_mode,
                                         kge_inference_engine=kge_inference_engine,
+                                        corruption_scheme=args.corruption_scheme,
                                         )
         print_eval_info('Train', metrics_train)
     else:

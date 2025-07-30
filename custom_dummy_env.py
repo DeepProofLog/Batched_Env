@@ -16,7 +16,7 @@ from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from env import LogicEnv_gym
 
-def create_environments(args, data_handler, index_manager):
+def create_environments(args, data_handler, index_manager, detailed_eval_env=False):
     """
     Creates and seeds the training, evaluation, and callback environments.
     """
@@ -88,8 +88,10 @@ def create_environments(args, data_handler, index_manager):
 
     env = DummyVecEnv(env_fns)
     eval_env = CustomDummyVecEnv(eval_env_fns)
-    # callback_env = DummyVecEnv(callback_env_fns)
-    callback_env = CustomDummyVecEnv(callback_env_fns)
+    if detailed_eval_env:
+        callback_env = CustomDummyVecEnv(callback_env_fns)
+    else:
+        callback_env = DummyVecEnv(callback_env_fns)
 
     # use SubprocVecEnv if you want to use multiple processes
     # env = SubprocVecEnv(env_fns)

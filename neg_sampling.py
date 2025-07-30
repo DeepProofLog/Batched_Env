@@ -60,7 +60,9 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
                  domain2idx: Dict[str, List[int]],
                  entity2domain: Dict[int, str],
                  filtered: bool = True,
-                 corruption_scheme: List[str] = ['tail']):
+                 corruption_scheme: List[str] = ['tail'],
+                 device: torch.device = torch.device("cpu")
+                 ):
         """
         Initialize the Domain-based negative sampler.
         """
@@ -71,6 +73,11 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
         )
         self.domain2idx = domain2idx
         self.entity2domain = entity2domain
+
+        # Create a numerical mapping for domain names
+        self.domain_names = sorted(domain2idx.keys())
+        self.domain_str2int = {name: i for i, name in enumerate(self.domain_names)}
+        self.domain_int2str = {i: name for i, name in enumerate(self.domain_names)}
         self.idx2domain = {idx: domain for domain, idxs in domain2idx.items() for idx in idxs}
         self.domain_entities = {}
         for entity, domain in self.entity2domain.items():
@@ -80,19 +87,18 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
         for domain in self.domain_entities:
             self.domain_entities[domain] = torch.tensor(self.domain_entities[domain], 
                                                         dtype=torch.long, 
-                                                        device=mapped_triples.device)
-
+                                                        device=device)
 
     def corrupt_batch(self, positive_batch: LongTensor, num_negs_per_pos: int) -> LongTensor:
         batch_shape   = positive_batch.shape[:-1]
         neg_batch     = positive_batch.view(-1, 3).repeat_interleave(num_negs_per_pos, dim=0)
 
         # vectorise: look up domain for every entity once
-        ent_ids       = torch.arange(max(self.entity2domain)+1, device=neg_batch.device)
-        domain_of_ent = torch.tensor(
-            [self.entity2domain.get(int(e), -1) for e in ent_ids.tolist()],
-            device=neg_batch.device,
-        )
+        # Create a tensor mapping each entity ID to its corresponding domain's INTEGER ID
+        max_entity_id = max(self.entity2domain.keys())
+        ent_to_domain_id = torch.empty(max_entity_id + 1, dtype=torch.long, device=neg_batch.device)
+        for ent_id, domain_name in self.entity2domain.items():
+            ent_to_domain_id[ent_id] = self.domain_str2int[domain_name]
 
         total = neg_batch.size(0)
         split = math.ceil(total / len(self._corruption_indices))
@@ -102,8 +108,10 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
             slice_ = slice(start, stop)
 
             orig_ents   = neg_batch[slice_, col]
-            dom_ids     = domain_of_ent[orig_ents]
-            pools       = [self.domain_entities[self.idx2domain[int(d)]] for d in dom_ids.tolist()]
+            # Use the new mapping to get domain integer IDs
+            dom_ids = ent_to_domain_id[orig_ents]
+            # Use the integer-to-string mapping to get the pool of entities
+            pools = [self.domain_entities[self.domain_int2str[d.item()]] for d in dom_ids]
 
             # sample replacements in a single call per domain to avoid Python loop
             max_pool = max(len(p) for p in pools)
@@ -400,7 +408,7 @@ def get_negatives(
             cursor += L
 
         # ➍  pad to equal length and write into output tensor
-        max_M = max(nb.size(0) for nb in filtered_batches)
+        max_M = max(nb.size(0) for nb in filtered_batches) if filtered_batches else 0
         neg_subs = torch.full(
             (B, max_M, padding_atoms, max_arity + 1),
             fill_value=self.index_manager.padding_idx,
@@ -471,7 +479,7 @@ def get_negatives_from_states(
     subs = [self.index_manager.get_atom_sub_index(state) for state in states]
     # Stack to (B, padding_atoms, max_arity+1)
     target_device = self.filterer._hashes_sorted.device 
-    pos_subs = torch.stack(subs, dim=0).to(device)
+    pos_subs = torch.stack(subs, dim=0).to(target_device)
     # Call tensor-based sampler
     neg_subs = self.get_negatives(
         pos_subs,
@@ -486,8 +494,7 @@ def get_negatives_from_states(
         neg_terms = self.index_manager.subindices_to_terms(neg_subs)
         return neg_terms[0] if B == 1 else neg_terms
     else:
-        return neg_subs.squeeze(0) if B == 1 else neg_subs
-
+        return neg_subs.squeeze(0).to(device) if B == 1 else neg_subs.to(device)
 
 def get_negatives_from_states_separate(
     self: Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain],
@@ -520,36 +527,34 @@ def get_negatives_from_states_separate(
     target_device = self.filterer._hashes_sorted.device 
     pos_subs = torch.stack(subs, dim=0).to(device)
     
-    B = pos_subs.size(0)
+    B, P, A = pos_subs.size(0), pos_subs.size(1), pos_subs.size(2)
     
-    # Store original corruption scheme
+    # Store original corruption scheme to restore it later
     original_scheme = self.corruption_scheme
     original_indices = self._corruption_indices
     
     # Generate head corruptions (corrupt position 0 - head/subject)
-    self.corruption_scheme = ['head']
-    self._corruption_indices = [0]  # head is at position 0 in (h,r,t)
+    if 'head' in original_scheme:
+        self.corruption_scheme = ['head']
+        self._corruption_indices = [0]  # head is at position 0 in (h,r,t)
+        head_neg_subs = self.get_negatives(
+            pos_subs, padding_atoms=P, max_arity=A - 1,
+            device=target_device, num_negs=num_negs,
+        )
+    else:
+        head_neg_subs = torch.full((B, 0, P, A), fill_value=self.index_manager.padding_idx, dtype=torch.long, device=target_device)
     
-    head_neg_subs = self.get_negatives(
-        pos_subs,
-        padding_atoms=pos_subs.size(1),
-        max_arity=pos_subs.size(2) - 1,
-        device=target_device,
-        num_negs=num_negs,
-    )
-    
-    # Generate tail corruptions (corrupt position 2 - tail/object)
-    self.corruption_scheme = ['tail']
-    self._corruption_indices = [2]  # tail is at position 2 in (h,r,t)
-    
-    tail_neg_subs = self.get_negatives(
-        pos_subs,
-        padding_atoms=pos_subs.size(1),
-        max_arity=pos_subs.size(2) - 1,
-        device=target_device,
-        num_negs=num_negs,
-    )
-    
+    # --- Generate Tail Corruptions ---
+    if 'tail' in original_scheme:
+        self.corruption_scheme = ['tail']
+        self._corruption_indices = [2]  # tail is at position 2 in (h,r,t)
+        tail_neg_subs = self.get_negatives(
+            pos_subs, padding_atoms=P, max_arity=A - 1,
+            device=target_device, num_negs=num_negs,
+        )
+    else:
+        tail_neg_subs = torch.full((B, 0, P, A), fill_value=self.index_manager.padding_idx, dtype=torch.long, device=target_device)
+
     # Restore original corruption scheme
     self.corruption_scheme = original_scheme
     self._corruption_indices = original_indices
@@ -559,15 +564,11 @@ def get_negatives_from_states_separate(
         head_neg_terms = self.index_manager.subindices_to_terms(head_neg_subs)
         tail_neg_terms = self.index_manager.subindices_to_terms(tail_neg_subs)
         
-        if B == 1:
-            return head_neg_terms[0], tail_neg_terms[0]
-        else:
-            return head_neg_terms, tail_neg_terms
+        if B == 1: return head_neg_terms[0], tail_neg_terms[0]
+        else: return head_neg_terms, tail_neg_terms
     else:
-        if B == 1:
-            return head_neg_subs.squeeze(0), tail_neg_subs.squeeze(0)
-        else:
-            return head_neg_subs, tail_neg_subs
+        if B == 1: return head_neg_subs.squeeze(0), tail_neg_subs.squeeze(0)
+        else: return head_neg_subs, tail_neg_subs
 
 def get_sampler(data_handler: DataHandler, 
                 index_manager: IndexManager,
@@ -589,11 +590,13 @@ def get_sampler(data_handler: DataHandler,
         domain2idx = {domain: [index_manager.constant_str2idx[e] for e in entities] for domain, entities in data_handler.domain2entity.items()}
         entity2domain: Dict[int, str] = {index_manager.constant_str2idx[e]: domain for domain, entities in data_handler.domain2entity.items() for e in entities}
         sampler = BasicNegativeSamplerDomain(
-                                            mapped_triples=mapped_triples_cpu, # Use CPU version for init
+                                            mapped_triples=mapped_triples_cpu,
                                             domain2idx=domain2idx,
                                             entity2domain=entity2domain,
                                             filtered=True,
-                                            corruption_scheme=corruption_scheme)
+                                            corruption_scheme=corruption_scheme,
+                                            device=device # --- ADD THIS ---
+                                            )
     else:
         sampler = BasicNegativeSamplerCustom(   
             mapped_triples=mapped_triples_cpu, # Use CPU version for init
@@ -609,14 +612,6 @@ def get_sampler(data_handler: DataHandler,
 
     sampler.filterer = SortedHashTripleFilter(sampler.mapped_triples).to(device)
 
-
-    # if sampler.filterer is not None:
-    #     sampler.filterer = sampler.filterer.to(device)  # <-- add this
-
-    # The BasicNegativeSamplerDomain has additional tensors that need to be moved.
-    if isinstance(sampler, BasicNegativeSamplerDomain):
-        for domain in sampler.domain_entities:
-            sampler.domain_entities[domain] = sampler.domain_entities[domain].to(device)
     # add the get_negatives method and the get_negatives_from_states method to the sampler
     sampler.index_manager = index_manager
     sampler.get_negatives = types.MethodType(get_negatives, sampler)
