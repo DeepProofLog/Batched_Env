@@ -291,6 +291,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     
     # metrics_test = profile_code('cProfile', eval_function, **eval_args)
     metrics_test = profile_code(False, eval_function, **eval_args)
+    print('results for:',args.run_signature)
     print_eval_info('Test', metrics_test)
 
     eval_only_test = True

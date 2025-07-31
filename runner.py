@@ -40,9 +40,9 @@ if __name__ == "__main__":
  
     # Dataset settings 
     DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
-    TRAIN_DEPTH = [None] # [{-1,3,2}]
-    VALID_DEPTH = [None]
-    TEST_DEPTH = [None]
+    TRAIN_DEPTH = [None] #[{2,3,4}] # [{-1,3,2}]
+    VALID_DEPTH = [None] #[{2,3,4}]
+    TEST_DEPTH = [None] #[{2,3,4}]
     SEED = [[0]]
     LEARN_EMBEDDINGS = [True]
     ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']

@@ -283,32 +283,33 @@ def eval_corruptions(
             padded_targets = np.zeros(num_envs, dtype=int); padded_targets[:B] = targets
 
             # The mask used for evaluation within evaluate_policy
-            eval_mask = (np.arange(max_t)[None, :] < padded_targets[:, None])
+            mask = (np.arange(max_t)[None, :] < padded_targets[:, None])
 
             rewards, lengths, log_probs, proof_successful = None, None, None, None
 
             # --- Score Calculation (KGE, RL, or Hybrid) ---
             if evaluation_mode == 'kge_only':
-                log_probs = kge_eval(batch, corrs, eval_mask, kge_inference_engine)
-                proof_successful = np.zeros_like(eval_mask, dtype=bool) # No proofs in KGE-only mode
+                log_probs = kge_eval(batch, corrs, mask, kge_inference_engine)
+                proof_successful = np.zeros_like(mask, dtype=bool) # No proofs in KGE-only mode
             else: # 'rl_only' or 'hybrid'
                 for i, (q, negs) in enumerate(zip(batch, corrs)):
                     seq = [q] + negs
                     e = env.envs[i].env
                     e.mode, e.queries, e.labels, e.n_episodes, e.eval_idx = "eval", seq, [1] + [0]*len(negs), len(seq), 0
                 
-                rewards, lengths, log_probs, returned_mask, proof_successful = evaluate_policy(model, env, 
+                rewards, lengths, log_probs, mask, proof_successful = evaluate_policy(model, env, 
                                                     deterministic=deterministic, target_episodes=targets, 
                                                     verbose=verbose>1,track_logprobs=plot)
                 
                 if evaluation_mode == 'hybrid':
-                    kge_log_scores = kge_eval(batch, corrs, returned_mask, kge_inference_engine)
-                    log_probs += kge_log_scores # Add KGE score to RL log-prob
-
+                    kge_log_scores = kge_eval(batch, corrs, mask, kge_inference_engine)
+                    # log_probs += kge_log_scores # Add KGE score to RL log-prob
+                    # if the proof doesnt end in true, the logprobs are give by kge, else the sum of both
+                    log_probs[mask] = np.where(proof_successful[mask],kge_log_scores[mask]+log_probs[mask],kge_log_scores[mask])
                 log_probs[~proof_successful] -= 100 # Penalize failed proofs
 
             # --- Accumulate Metrics ---
-            _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_type, returned_mask, 
+            _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_type, mask, 
                                             proof_successful, log_probs, rewards, lengths)
 
         # --- Report Batch Metrics ---
