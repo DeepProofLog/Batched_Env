@@ -22,7 +22,7 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
     """
     facts_set = set(data_handler.facts)
 
-    def make_env(mode='train', seed=0, queries=None, labels=None, facts=None):
+    def make_env(mode='train', seed=0, queries=None, labels=None, facts=None, verbose=0, prover_verbose=0):
         def _init():
             env = LogicEnv_gym(
                 index_manager=index_manager,
@@ -46,6 +46,8 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
                 engine=args.engine,
                 use_kge_action=args.use_kge_action,
                 reward_type=args.reward_type,
+                verbose=verbose,
+                prover_verbose=prover_verbose,
             )
             env = Monitor(env)
             return env
@@ -83,6 +85,8 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
         queries=data_handler.valid_queries,
         labels=[1] * len(data_handler.valid_queries),
         facts=facts_set,
+        verbose=1,
+        prover_verbose=1,
     ) for i in range(1)]
 
 

@@ -108,6 +108,8 @@ class LogicEnv_gym(gym.Env):
             self.train_neg_ratio = train_neg_ratio
             assert self.sampler.num_negs_per_pos <3, f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
 
+        self.total_next_actions_positive_queries = 0
+
     def _set_seed(self, seed:int):
         '''Set the seed for the environment. If no seed is provided, generate a random one'''
         self.seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
@@ -330,6 +332,10 @@ class LogicEnv_gym(gym.Env):
                                                             verbose=self.prover_verbose,
                                                             next_var_index=self.next_var_index,
                                                             )
+            # if self.current_label == 1:
+            #     if not (len(derived_states) == 1 and derived_states[0] and derived_states[0][0].predicate == 'False'):
+            #         self.total_next_actions_positive_queries += len(derived_states)
+            #         print(f"Total next actions for positive queries: {self.total_next_actions_positive_queries}")
         # print(f"\nCurrent state after unification: {state} -> derived states: {derived_states}") if self.verbose else None
 
 
@@ -365,6 +371,10 @@ class LogicEnv_gym(gym.Env):
                         verbose=self.prover_verbose,
                         next_var_index=self.next_var_index,
                     )
+                # if self.current_label == 1:
+                #     if not (len(derived_states) == 1 and derived_states[0] and derived_states[0][0].predicate == 'False'):
+                #         self.total_next_actions_positive_queries += len(derived_states)
+                #         print(f"Total next actions for positive queries: {self.total_next_actions_positive_queries}")
                 # print(f"\nCurrent state after unification: {current_state} -> derived states: {derived_states}") if self.verbose else None
 
 

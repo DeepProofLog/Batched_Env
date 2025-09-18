@@ -364,6 +364,13 @@ def get_next_unification_python(state: List[Term],
     if rule_states and unification_strategy == 'rules_and_facts':
         next_states.extend(rule_states)
 
+    # if not next_states and unification_strategy == "only_rules":
+    #     # None of the rule→fact paths worked, so we push the pure *rule_states*
+    #     # back into the search queue. The outer proof search will now attempt
+    #     # rule expansion on them, effectively achieving the desired
+    #     # rule + (rule + fact) behaviour.
+    #     next_states = rule_states.copy()
+
     if not next_states:
         print('No unification with facts') if verbose else None
         print('++++++++++++++\n') if verbose else None
@@ -378,6 +385,91 @@ def get_next_unification_python(state: List[Term],
     print('\nNext states:', next_states) if verbose else None
     print('++++++++++++++\n') if verbose else None
     return next_states, next_var_index
+
+
+
+# def get_next_unification_python(state: List[Term],
+#                     facts_set: FrozenSet,
+#                     facts_indexed: Dict[Tuple, Set[Term]],
+#                     rules: List[Rule],
+#                     excluded_fact: Optional[Term] = None,
+#                     next_var_index: Optional[int] = 0,
+#                     # 'standard': Try facts and rules.
+#                     # 'rules_first': Try rules. If none match, try facts.
+#                     # 'only_rules': Try only rules.
+#                     unification_strategy: str = 'standard',
+#                     verbose: int = 0) -> Tuple[List[List[Term]], Optional[int]]:
+#     """
+#     Performs one step of SLD resolution on the current state.
+
+#     It takes the first goal in the state and finds all possible next states
+#     by unifying it with either facts or rule heads.
+#     """
+#     print('\n\n++++++++++++++') if verbose else None
+#     print('State:', state) if verbose else None
+
+#     # --- 1. Handle Terminal States & Goal Selection ---
+#     if any(term.predicate == 'False' for term in state):
+#         return [[Term('False', ())]], next_var_index
+#     state = [term for term in state if term.predicate != 'True']
+#     if not state:
+#         return [[Term('True', ())]], next_var_index
+
+#     # Simple strategy: sort goals to prioritize those with more constants.
+#     state.sort(key=lambda term: sum(is_variable(arg) for arg in term.args))
+#     query = state[0]
+#     remaining_state = state[1:]
+
+#     next_states = []
+    
+#     # --- 2. Unify with Rules ---
+#     rule_results = []
+#     if unification_strategy in ['standard', 'rules_first', 'only_rules']:
+#         print('\nUnifying query with rules:', query) if verbose else None
+#         rule_results = unify_with_rules(query, rules, verbose=verbose)
+#         for body, subs in rule_results:
+#             new_remaining = [
+#                 (term if not (s_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
+#                  else Term(term.predicate, s_args))
+#                 for term in remaining_state
+#             ]
+#             # The new state is the rule body + the rest of the old state
+#             new_state = body + new_remaining
+#             next_states.append(new_state)
+
+#     # --- 3. Unify with Facts ---
+#     # Condition: Unify with facts if strategy is 'standard', OR if it's 'rules_first' and no rules matched.
+#     if unification_strategy == 'standard' or (unification_strategy == 'rules_first' and not rule_results):
+#         print('\nUnifying query with facts:', query) if verbose else None
+#         fact_substitutions = unify_with_facts(query, facts_indexed, facts_set, excluded_fact, verbose=0)
+
+#         for subs in fact_substitutions:
+#             # If there are no more goals, we are done!
+#             if not remaining_state:
+#                 return [[Term('True', ())]], next_var_index
+
+#             # If the query was ground and found a fact, the substitution is {'True': 'True'}
+#             if subs.get('True') == 'True':
+#                 next_states.append(remaining_state)
+#             else: # Apply substitutions from non-ground query unification
+#                 new_state = [
+#                     (term if not (s_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
+#                      else Term(term.predicate, s_args))
+#                     for term in remaining_state
+#                 ]
+#                 next_states.append(new_state)
+
+#     # --- 4. Finalize and Return ---
+#     if not next_states:
+#         return [[Term('False', ())]], next_var_index
+
+#     # Rename variables to avoid clashes in the next iteration of the search
+#     next_states, next_var_index = rename_vars_local(next_states, next_var_index, verbose=verbose)
+
+#     print('\nGenerated Next states:', next_states) if verbose else None
+#     print('++++++++++++++\n') if verbose else None
+
+#     return next_states, next_var_index
 
 
 def get_next_unification_python_old(state: List[Term], 

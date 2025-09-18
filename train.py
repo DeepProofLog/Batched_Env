@@ -196,6 +196,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                                 render=False,
                                                 name=model_name,
                                                 callback_on_new_best=reward_threshold_callback if args.restore_best_val_model and not args.use_kge_action else None,
+                                                corruption_scheme=args.corruption_scheme,
                                                 # callback_after_eval=no_improvement_callback,
                                                 verbose=0,
                                                 )
@@ -208,7 +209,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
                                         deterministic=True,
                                         render=False,
                                         name=model_name,
-                                        callback_on_new_best=reward_threshold_callback if args.restore_best_val_model and not args.use_kge_action else None,
+                                        # callback_on_new_best=reward_threshold_callback if args.restore_best_val_model and not args.use_kge_action else None,
                                         # callback_after_eval=no_improvement_callback,
                                         )
 

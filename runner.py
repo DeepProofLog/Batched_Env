@@ -10,6 +10,8 @@ from utils import FileLogger
 import datetime
 import sys
 torch.set_float32_matmul_precision('high')
+# import gc
+# gc.disable()  
 # torch.cuda.set_allocator_config(garbage_collection_threshold=0.9)
 
 
@@ -33,13 +35,13 @@ if __name__ == "__main__":
     ENDT_ACTION = [False]
     ENDF_ACTION = [False]
     SKIP_UNARY_ACTIONS = [True]
-    ENT_COEF = [0.2]
-    CLIP_RANGE = [0.2]
+    ENT_COEF = [0.2]#,0.5,0.8]
+    CLIP_RANGE = [0.2]#0.1]
     ENGINE = ['python']
     REWARD_TYPE = [0] # 0: initial, 1: avoiding neg proofs, 2: classification
  
     # Dataset settings 
-    DATASET_NAME =  ["family"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
+    DATASET_NAME =  ["countries_s3"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
     TRAIN_DEPTH = [None] #[{2,3,4}] # [{-1,3,2}]
     VALID_DEPTH = [None] #[{2,3,4}]
     TEST_DEPTH = [None] #[{2,3,4}]
@@ -52,13 +54,13 @@ if __name__ == "__main__":
     ATOM_EMBEDDING_SIZE = [64] # 256 for countries (atomatically selected below)
     CORRUPTION_MODE =  ['dynamic']
 
-    KGE_INTEGRATION_STRATEGY = [None] #['train', 'train_bias','sum_eval']
+    KGE_INTEGRATION_STRATEGY = ['sum_eval'] #['train', 'train_bias','sum_eval']
     KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
     # KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
     KGE_SCORES_FILE = [None]
  
     RESTORE_BEST_VAL_MODEL = [True] # else restore the model from the last train epoch
-    load_model = False
+    load_model = True
     save_model = True
 
     # Loggin settings 
@@ -77,12 +79,12 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [3000000]
+    TIMESTEPS_TRAIN = [500000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
-    EVAL_NEG_SAMPLES = [1]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
-    TEST_NEG_SAMPLES = [None]  # Number of negative samples per positive for testing. Use None for all.
+    EVAL_NEG_SAMPLES = [None]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
+    TEST_NEG_SAMPLES = [100]  # Number of negative samples per positive for testing. Use None for all.
     n_eval_queries = None
     n_test_queries = None
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.

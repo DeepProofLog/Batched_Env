@@ -486,6 +486,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
         warn: bool = True,
         name='rl_model',
         consult_janus: bool = False,
+        corruption_scheme: List[str] = None
     ):
         self.verbose = verbose
         assert eval_env.type_ == "custom_dummy", "Requires custom_dummy VecEnv"
@@ -509,6 +510,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
         self.sampler = sampler
         self.eval_data = eval_data
         self.n_corruptions = n_corruptions
+        self.corruption_scheme = corruption_scheme
         self.consult_janus = consult_janus
 
     def _on_step(self) -> bool:
@@ -541,6 +543,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                 n_corruptions=self.n_corruptions,
                 deterministic=self.deterministic,
                 verbose=self.verbose,
+                corruption_scheme=self.corruption_scheme,
                 # consult_janus=self.consult_janus,
             )
             self.model.policy.set_training_mode(True)

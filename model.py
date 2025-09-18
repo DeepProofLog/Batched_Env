@@ -5,7 +5,7 @@ from typing import List, Union, Dict, Type, Optional, Callable, Tuple
 import torch as th
 import torch
 from torch import log, nn
-
+import torch._dynamo
 import gymnasium as gym
 from gymnasium import spaces
 
@@ -383,6 +383,12 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         # Disable orthogonal initialization
         self.ortho_init = False
 
+        self.inference_second_action = False
+        if self.inference_second_action:
+            # Get the integer index for the 'Endf' predicate
+            self.endf_pred_idx = 7 # this is just temporary, substitute by line below
+            # self.endf_pred_idx = self.index_manager.predicate_str2idx.get('Endf', None)
+
     #     self.kge_fusion_mlp = None
     #     self.kge_indices_tensor = None
 
@@ -465,6 +471,61 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
 
         return log_prob
 
+    @torch._dynamo.disable
+    def _get_second_best_log_prob(self, obs: PyTorchObs, actions: torch.Tensor, logits: torch.Tensor, distribution: Distribution, original_log_prob: torch.Tensor) -> torch.Tensor:
+        """
+        If 'Endf' is chosen, replaces its log_prob with the log_prob of the second-best action.
+        This function will now run in eager mode, avoiding compilation errors.
+        """
+        # Find which of the *chosen* actions correspond to 'Endf'
+        action_pred_indices = obs["derived_sub_indices"][:, :, 0, 0]
+        is_endf_action_matrix = (action_pred_indices == self.endf_pred_idx)
+        chosen_action_is_endf = torch.gather(is_endf_action_matrix, 1, actions.unsqueeze(-1)).squeeze(-1)
+
+        # Proceed if any 'Endf' action was actually chosen
+        if torch.any(chosen_action_is_endf):
+            # Get the batch indices where 'Endf' was the chosen action
+            endf_chosen_indices = torch.where(chosen_action_is_endf)[0]
+
+            # --- REVISED LOGIC START ---
+
+            # 1. Select the logits for only the environments that chose 'Endf'
+            selected_logits = logits[endf_chosen_indices]
+
+            # 2. To find the second-best action, temporarily set the logit of the 'Endf' action to -inf
+            # We need to get the chosen actions for this specific subset of environments
+            selected_actions = actions[endf_chosen_indices]
+            
+            logits_clone = selected_logits.clone()
+            # The indices for this in-place modification must be 0-indexed within the sub-batch
+            batch_idx_for_clone = torch.arange(len(endf_chosen_indices), device=logits.device)
+            logits_clone[batch_idx_for_clone, selected_actions] = -float('inf')
+
+            # 3. Get the indices of the new best actions (which are the original second-best)
+            _, second_best_action_indices = logits_clone.max(dim=1)
+
+            # 4. Manually calculate log_softmax on the selected logits and gather the values.
+            # This avoids the broadcasting issue with the original distribution object.
+            selected_log_probs_all_actions = torch.nn.functional.log_softmax(selected_logits, dim=1)
+            second_best_log_probs = torch.gather(selected_log_probs_all_actions, 1, second_best_action_indices.unsqueeze(-1)).squeeze(-1)
+
+            # --- REVISED LOGIC END ---
+            print("\n--- [Verbose] Score Substitution Triggered ---")
+            # Loop through each instance in the batch where the substitution happened
+            for i, batch_idx in enumerate(endf_chosen_indices):
+                original_lp = original_log_prob[batch_idx].item()
+                new_lp = second_best_log_probs[i].item()
+                print(f"  Instance in Batch (Index {batch_idx.item()}): 'Endf' action was chosen.")
+                print(f"    - Original 'Endf' LogProb: {original_lp:.4f}")
+                print(f"    - Second-Best LogProb:     {new_lp:.4f} (Substituting)")
+            print("--------------------------------------------")
+            # 5. Now, this assignment will work because both sides have the same shape.
+            modified_log_prob = original_log_prob.clone()
+            modified_log_prob[endf_chosen_indices] = second_best_log_probs
+            return modified_log_prob
+
+        return original_log_prob
+
     def forward(self, obs: torch.Tensor, deterministic: bool = False, verbose: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
@@ -497,6 +558,8 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         if self.kge_inference_engine is not None:
             log_prob = self.get_kge_log_probs(obs, actions, log_prob)
         # print(f"Actions: {actions}, Values: {values}, Score: {log_prob.exp()}->logprob:{log_prob}")
+        if self.inference_second_action:
+            log_prob = self._get_second_best_log_prob(obs, actions, action_logits, distribution, log_prob)
         return actions, values, log_prob
 
 
@@ -531,7 +594,10 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         # If a KGE action was taken, overwrite its log_prob with the KGE score
         if self.kge_inference_engine is not None:
             log_prob = self.get_kge_log_probs(obs, actions, log_prob)
-        
+
+        if self.inference_second_action:
+            log_prob = self._get_second_best_log_prob(obs, actions, action_logits, distribution, log_prob)
+
         return values, log_prob, entropy
 
     def predict_values(self, obs: PyTorchObs) -> torch.Tensor:

@@ -268,8 +268,8 @@ def eval_corruptions(
         # --- Corruption Generation ---
         head_corrs, tail_corrs = sampler.get_negatives_from_states_separate([[q] for q in batch], model.device, num_negs=n_corruptions) if n_corruptions != 0 else ([[] for _ in range(B)], [[] for _ in range(B)])
         if B == 1:
-            if not isinstance(head_corrs[0], list): head_corrs = [head_corrs]
-            if not isinstance(tail_corrs[0], list): tail_corrs = [tail_corrs]
+            if head_corrs and not isinstance(head_corrs[0], list): head_corrs = [head_corrs]
+            if tail_corrs and not isinstance(tail_corrs[0], list): tail_corrs = [tail_corrs]
 
         # --- Evaluate Head and Tail Corruptions ---
         for corruption_type, corrs in [("head", head_corrs), ("tail", tail_corrs)]:
@@ -303,11 +303,24 @@ def eval_corruptions(
                 
                 if evaluation_mode == 'hybrid':
                     kge_log_scores = kge_eval(batch, corrs, mask, kge_inference_engine)
-                    # log_probs += kge_log_scores # Add KGE score to RL log-prob
-                    # if the proof doesnt end in true, the logprobs are give by kge, else the sum of both
-                    log_probs[mask] = np.where(proof_successful[mask],kge_log_scores[mask]+log_probs[mask],kge_log_scores[mask])
-                log_probs[~proof_successful] -= 100 # Penalize failed proofs
 
+                    # print('proof_successful', proof_successful)
+                    # print('rl log probs',log_probs, 'rl mean',log_probs.mean())
+                    # print('kge log scores',kge_log_scores, 'kge mean',kge_log_scores.mean())
+                    # print('rl scores where successful',log_probs[proof_successful])
+                    # print('kge scores where successful',kge_log_scores[proof_successful])
+                    # # print('1:',np.where(proof_successful[mask],kge_log_scores[mask]+log_probs[mask],kge_log_scores[mask]))
+                    # print('2:',np.where(proof_successful[mask],kge_log_scores[mask]+0.5*log_probs[mask],kge_log_scores[mask]))
+
+                    # # if the proof doesnt end in true, the logprobs are give by kge, else the sum of both
+                    log_probs[mask] = np.where(proof_successful[mask],2*kge_log_scores[mask]+log_probs[mask],kge_log_scores[mask])
+                    # log_probs = kge_log_scores.copy() 
+
+
+                log_probs[~proof_successful] -= 100 # Penalize failed proofs
+                # log_probs[proof_successful] += 10
+            # print('log probs',log_probs)
+            # print('log probs where successful',log_probs[proof_successful])
             # --- Accumulate Metrics ---
             _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_type, mask, 
                                             proof_successful, log_probs, rewards, lengths)
