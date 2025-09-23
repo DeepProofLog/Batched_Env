@@ -1,19 +1,121 @@
 from typing import List, Dict, Tuple
 import time
+import random
+import numpy as np # <-- ADD THIS IMPORT
 from dataset import DataHandler
 from index_manager import IndexManager
 from utils import Term, Rule
 from python_unification import get_next_unification_python
-from python_unification import get_next_unification_python_old as get_next_unification_python
 
 
-def check_provability_at_depth(state: List[Term], 
-                                n: int, 
-                                rules: List[Rule], 
+# (The check_provability_random_walk function and others remain the same)
+def check_provability_random_walk(state: List[Term],
+                                  n: int,
+                                  rules: List[Rule],
+                                  facts: List[Term],
+                                  index_manager: IndexManager = None,
+                                  is_train_data: bool = False,
+                                  max_atoms: int = 20) -> str:
+    """
+    Checks if a goal is provable by following a single random path up to depth n.
+    """
+    current_state = state
+    for depth in range(n):
+        branch_next_states, _ = get_next_unification_python(
+            current_state,
+            facts_set=facts,
+            facts_indexed=index_manager.fact_index,
+            rules=rules,
+            excluded_fact=state[0] if is_train_data else None,
+            verbose=0,
+            next_var_index=index_manager.variable_start_index,
+        )
+        if any(all(term.predicate == 'True' for term in branch_state)
+               for branch_state in branch_next_states):
+            return 'provable'
+        valid_next_states = [
+            branch_state for branch_state in branch_next_states
+            if (branch_state and
+                not any(term.predicate == 'False' for term in branch_state) and
+                len(branch_state) <= max_atoms)
+        ]
+        if not valid_next_states:
+            return 'not_provable'
+        current_state = random.choice(valid_next_states)
+    return 'depth_limit_exceeded'
+
+
+def run_random_agent_on_queries(
+    queries: List[Term],
+    max_depth: int,
+    num_trials: int,
+    rules: List[Rule],
+    facts: set,
+    index_manager: IndexManager = None,
+    is_train_data: bool = False,
+    max_atoms: int = 20
+):
+    """
+    Calculates the success rate of a random agent over multiple independent trials.
+    In each trial, the agent attempts to solve ALL queries.
+    """
+    start_time = time.time()
+    num_queries = len(queries)
+    
+    print(f"Testing a random agent on {num_queries} queries over {num_trials} independent trials.")
+    print(f"Parameters: max_depth={max_depth}\n")
+
+    proven_counts_per_trial = []
+
+    # Loop through trials
+    for trial_num in range(1, num_trials + 1):
+        proven_in_this_trial = 0
+        
+        # In each trial, attempt every query
+        for goal in queries:
+            status = check_provability_random_walk(
+                [goal], max_depth, rules, facts,
+                index_manager=index_manager,
+                is_train_data=is_train_data,
+                max_atoms=max_atoms
+            )
+            if status == 'provable':
+                proven_in_this_trial += 1
+        
+        # Record the number of successes for this independent trial
+        proven_counts_per_trial.append(proven_in_this_trial)
+        
+        success_rate = (proven_in_this_trial / num_queries) * 100
+        print(f"Trial {trial_num:>2}/{num_trials}: {proven_in_this_trial:>3}/{num_queries} queries proven ({success_rate:.2f}%)")
+
+    end_time = time.time()
+    
+    # Calculate final summary statistics based on the independent trials
+    avg_proven_count = np.mean(proven_counts_per_trial)
+    std_dev_proven_count = np.std(proven_counts_per_trial)
+    avg_success_rate = (avg_proven_count / num_queries)
+    
+    min_success_rate = (min(proven_counts_per_trial) / num_queries)
+    max_success_rate = (max(proven_counts_per_trial) / num_queries)
+
+    print(f"\n--- Random Agent Summary (Independent Trials) ---")
+    print(f"Total queries per trial: {num_queries}")
+    print(f"Number of trials: {num_trials}")
+    print(f"Average Success Rate: {avg_success_rate:.2%}")
+    print(f"Success Rate Range: {min_success_rate:.2%} - {max_success_rate:.2%}")
+    print(f"Avg. Proven Queries per Trial: {avg_proven_count:.2f} ± {std_dev_proven_count:.2f}")
+    print(f"Total time: {end_time - start_time:.2f} seconds")
+
+    return proven_counts_per_trial
+
+
+def check_provability_at_depth(state: List[Term],
+                                n: int,
+                                rules: List[Rule],
                                 facts: List[Term],
                                 index_manager: IndexManager = None,
                                 is_train_data: bool = False,
-                                max_atoms: int = 20, 
+                                max_atoms: int = 20,
                                 verbose: bool = False) -> str:
     """
     Checks if a goal is provable within depth n by exploring all branches.
@@ -41,14 +143,14 @@ def check_provability_at_depth(state: List[Term],
                 rules=rules,
                 excluded_fact=state[0] if is_train_data else None,
                 verbose=0,
-                next_var_index=index_manager.next_var_index,
+                next_var_index=index_manager.variable_start_index,
             )
             
             if verbose:
                 print(f"Branch next states: {branch_next_states}")
             
             # Check for successful proof
-            if any(all(term.predicate == 'True' for term in branch_state) 
+            if any(all(term.predicate == 'True' for term in branch_state)
                   for branch_state in branch_next_states):
                 if verbose: print('provable')
                 return 'provable'
@@ -56,7 +158,7 @@ def check_provability_at_depth(state: List[Term],
             # Filter out falsified and oversized branches
             valid_next_states = []
             for branch_state in branch_next_states:
-                if (branch_state and 
+                if (branch_state and
                     not any(term.predicate == 'False' for term in branch_state) and
                     len(branch_state) <= max_atoms):
                     valid_next_states.append(branch_state)
@@ -207,13 +309,14 @@ def load_queries(dataset_name: str, set_file: str, data_path: str, root_dir: str
 
 
 if __name__ == "__main__":
-    max_depth_check = 4
     max_atoms = 5
-    dataset_name = 'wn18rr'
+    dataset_name = 'countries_s3'
     data_path = "./data/"
     root_dir = data_path + dataset_name + '/'
 
-    for set_file in ['train','valid','test']:
+    mode = 'depth_check' # 'random_agent' or 'depth_check'
+
+    for set_file in ['valid']: #['train','valid','test']:
         queries, rules, facts_set, index_manager = load_queries(
             dataset_name, set_file, data_path, root_dir
         )
@@ -223,22 +326,37 @@ if __name__ == "__main__":
 
         print(f"Loaded {len(queries)} queries from {dataset_name} for set {set_file}")
         
-        proven_by_depth, proved_queries = calculate_provability_ratios_by_depth(
-            queries, max_depth_check, rules, facts_set, 
-            index_manager, is_train_data=(set_file == 'train'), 
-            max_atoms=max_atoms
-        )
-        print(f"\nProven by depth: {proven_by_depth}. Total proved queries: {len(proved_queries)}/ {len(queries)}")
+        if mode == 'depth_check':
+            max_depth_check = 4
+            proven_by_depth, proved_queries = calculate_provability_ratios_by_depth(
+                queries, max_depth_check, rules, facts_set, 
+                index_manager, is_train_data=(set_file == 'train'), 
+                max_atoms=max_atoms
+            )
+            print(f"\nProven by depth: {proven_by_depth}. Total proved queries: {len(proved_queries)}/ {len(queries)}")
 
-        # print(f"\n--- Proven Queries ---")
-        # print([(query, depth) for query, depth in proved_queries.items()])
+            # print(f"\n--- Proven Queries ---")
+            # print([(query, depth) for query, depth in proved_queries.items()])
 
-        # # Save results
-        # if proved_queries:
-        #     output_file = root_dir + set_file + '_depths.txt'
-        #     with open(output_file, 'w') as f:
-        #         for query in queries:
-        #             clean_query = str(query).replace(' ', '')
-        #             depth = proved_queries.get(str(query), -1)
-        #             f.write(f"{clean_query} {depth}\n")
-        #     print(f"Saved results to {output_file}")
+            # # Save results
+            # if proved_queries:
+            #     output_file = root_dir + set_file + '_depths.txt'
+            #     with open(output_file, 'w') as f:
+            #         for query in queries:
+            #             clean_query = str(query).replace(' ', '')
+            #             depth = proved_queries.get(str(query), -1)
+            #             f.write(f"{clean_query} {depth}\n")
+            #     print(f"Saved results to {output_file}")
+
+        elif mode != 'random_agent':
+            num_random_trials = 10 # Number of random walks per query. ONLY FOR RANDOM AGENT (run_random_agent_on_queries)
+            run_random_agent_on_queries(
+                queries=queries, 
+                max_depth=max_depth_check, 
+                num_trials=num_random_trials,
+                rules=rules, 
+                facts=facts_set, 
+                index_manager=index_manager, 
+                is_train_data=(set_file == 'train'), 
+                max_atoms=max_atoms
+            )

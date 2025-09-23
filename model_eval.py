@@ -1,7 +1,60 @@
+"""
+model_eval.py — Evaluation utilities for RL + NeSy policies
+
+
+This module contains two layers of evaluation utilities for a policy trained on
+logical reasoning environments that expose a *vectorized* Gymnasium `VecEnv`:
+
+
+1) `evaluate_policy(...)` — a fast, tensor-first evaluator that rolls out a
+(possibly batched) policy on a `VecEnv`, collecting per-episode rewards,
+lengths and *log-probabilities*.
+
+
+2) `eval_corruptions(...)` — a higher-level evaluator for link-prediction style
+tasks. For each positive query, it generates *head/tail corruptions* using a
+negative sampler and scores all candidates using:
+- RL only (agent policy),
+- KGE only (knowledge-graph embedding model), or
+- a Hybrid fusion (KGE everywhere + RL bonus on successful proofs).
+
+
+It also computes a rich set of classification and ranking metrics (Accuracy,
+Precision/Recall/F1, Average Precision; MRR and Hits@K) and can optionally
+assemble plotting-ready trajectories for analysis.
+
+
+Assumptions / Requirements
+--------------------------
+• The environment is a *custom* vectorized wrapper (see `custom_dummy_env`) with
+these attributes used during evaluation:
+- `env._episode_target` (np.ndarray[int]): episodes to run per sub-env
+- `env._episode_count` (np.ndarray[int]): completed episodes per sub-env
+- `env.active_envs` (np.ndarray[bool]): which sub-envs are active
+- `env.get_attr("index_manager")[0]` (optional, for pretty state logs)
+`evaluate_policy()` asserts `getattr(env, "type_", None) == "custom_dummy"`.
+
+
+• The policy is a Stable-Baselines3 policy-like object: it is called via
+`model.policy(obs_tensor, deterministic)` and returns `(actions, values, logp)`.
+
+
+• Observations follow SB3's multi-input convention and are converted via
+`stable_baselines3.common.on_policy_algorithm.obs_as_tensor`.
+
+
+• For corruption evaluation, a negative sampler exposes:
+`get_negatives_from_states_separate([[q] for q in batch], device, num_negs)`
+(and the env supports sequential evaluation of a list of queries per sub-env).
+
+
+Tip: This file deliberately stays *framework-agnostic* outside of SB3 to allow
+plugging different policies and samplers.
+"""
+from __future__ import annotations
 from typing import Any, Dict, List, Tuple, Union, Optional
-import time
-import sys
 import os
+import time
 import random
 
 import gymnasium as gym
@@ -15,6 +68,11 @@ from stable_baselines3.common import type_aliases
 from stable_baselines3.common.on_policy_algorithm import obs_as_tensor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
 
+
+# ---------------------------------------------------------------------------
+# Low-level, fast vectorized evaluator
+# ---------------------------------------------------------------------------
+
 @torch.inference_mode()
 def evaluate_policy(
     model: "type_aliases.PolicyPredictor",
@@ -24,13 +82,51 @@ def evaluate_policy(
     target_episodes: np.ndarray | None = None,
     verbose: int = 0,
     track_logprobs: bool = False,
-):
-    """
-    Fast eval: tensor-first, vectorized finalization.
-    Returns:
-        rewards, lengths, logps, mask, proof_successful,
-        episode_logprob_histories, episode_choices_histories,
-        episode_steplogprob_histories, episode_state_histories
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Roll out a policy on a *vectorized* env and aggregate per-episode stats.
+
+    Parameters
+    ----------
+    model : type_aliases.PolicyPredictor
+        SB3 policy-like model. Must expose `policy(obs, deterministic)` returning
+        `(actions, values, log_probs)`.
+    env : Union[gym.Env, VecEnv]
+        Evaluation environment. If not already a `VecEnv`, it will be wrapped in
+        `DummyVecEnv`. **Required** attribute: `type_ == "custom_dummy"` and
+        internal buffers (`_episode_target`, `_episode_count`, `active_envs`).
+    n_eval_episodes : int, default 10
+        Total target episodes across all sub-envs (if `target_episodes` is not
+        provided).
+    deterministic : bool, default True
+        Whether to use deterministic policy actions.
+    target_episodes : np.ndarray | None, default None
+        Optional per-env episode targets (shape `(n_envs,)`). If `None`, targets
+        are distributed as evenly as possible.
+    verbose : int, default 0
+        Print a running counter when > 0.
+    track_logprobs : bool, default False
+        If True, collects *per-step* log-prob trajectories and state strings.
+        (Kept for debugging/plotting; not returned in this simplified API.)
+
+    Returns
+    -------
+    rewards : np.ndarray, shape (L, T_max)
+        Sum of rewards per finished episode slot for each env.
+    lengths : np.ndarray, shape (L, T_max)
+        Episode lengths per slot.
+    logps : np.ndarray, shape (L, T_max)
+        Accumulated action log-probabilities per episode.
+    mask : np.ndarray, shape (L, T_max), dtype=bool
+        Mask marking valid episode slots per env.
+    proof_successful : np.ndarray, shape (L, T_max), dtype=bool
+        Whether the env reported success for each finished episode.
+
+    Notes
+    -----
+    • This is *tensor-first*: it computes per-env tensors on the GPU when
+      possible and finalizes in vectorized fashion.
+    • The function expects the env to expose numpy action spaces and to return
+      SB3-compatible `(obs, reward, done, info)` per step (via `VecEnv.step`).
     """
     # --- ensure VecEnv ---
     if not isinstance(env, VecEnv):
@@ -72,15 +168,15 @@ def evaluate_policy(
     current_len = torch.zeros(n_envs, dtype=torch.int32, device=device)
     current_lp  = torch.zeros(n_envs, device=device)
 
-    # histories (only if needed)
+    # Optional histories for plotting/debug (not returned)
     episode_logprob_histories    : list[np.ndarray] = []
     episode_choices_histories    : list[np.ndarray] = []
     episode_steplogprob_histories: list[np.ndarray] = []
     episode_state_histories      : list[np.ndarray] = []
     if track_logprobs:
-        current_steplogprob_histories = [[] for _ in range(n_envs)]
-        current_choices_histories     = [[] for _ in range(n_envs)]
-        current_state_histories       = [[] for _ in range(n_envs)]
+        current_steplogprob_histories: list[list[float]] = [[] for _ in range(n_envs)]
+        current_choices_histories: list[list[int]] = [[] for _ in range(n_envs)]
+        current_state_histories: list[list[str]] = [[] for _ in range(n_envs)]
         index_manager = env.get_attr("index_manager")[0]
 
     # env needs numpy actions
@@ -95,7 +191,7 @@ def evaluate_policy(
         active_idx    = torch.where(active_mask_t)[0]
         active_np     = active_idx.cpu().numpy()
 
-        # slice obs
+        # slice obs to active envs only
         if isinstance(observations, dict):
             obs_active = {k: v[active_np] for k, v in observations.items()}
         else:
@@ -189,16 +285,27 @@ def evaluate_policy(
 
     if verbose: print("\r" + " " * 80 + "\r", end="")
 
-    # mask
+    # mask marking valid episode slots per env
     mask = (torch.arange(max_t, device=device)[None, :]
             < torch.as_tensor(padded_targets, device=device)[:, None])
 
-    # trim
+    # trim to L = len(target_episodes) if provided (multi-run convenience)
     L = len(target_episodes) if target_episodes is not None else n_envs
-    return tuple(x[:L].cpu().numpy() for x in (rewards, lengths, logps, mask, proof_successful))
+    rewards, lengths, logps, mask, proof_successful = [
+        x[:L].cpu().numpy() for x in (rewards, lengths, logps, mask, proof_successful)
+    ]
 
-
-
+    if track_logprobs:
+        return (
+            rewards, lengths, logps, mask, proof_successful,
+            episode_logprob_histories, episode_choices_histories,
+            episode_steplogprob_histories, episode_state_histories
+        )
+    else:
+        return (rewards, lengths, logps, mask, proof_successful)
+# ---------------------------------------------------------------------------
+# High-level evaluator for head/tail corruptions and ranking metrics
+# ---------------------------------------------------------------------------
 
 def eval_corruptions(
     model: "type_aliases.PolicyPredictor",
@@ -211,28 +318,62 @@ def eval_corruptions(
     plot: bool = False,
     kge_inference_engine = None,
     evaluation_mode: str = 'rl_only',
-    corruption_scheme: List[str] = None
+    corruption_scheme: List[str] | None = None,
 ) -> Dict[str, Any]:
-    """
-    Evaluates a model on a dataset by generating head/tail corruptions for each query.
+    """Evaluate a model by ranking a positive query vs. its corruptions.
 
-    Args:
-        model: The policy model to evaluate.
-        env: The vectorized environment.
-        data: The list of positive queries for evaluation.
-        sampler: The negative sampler for generating corruptions.
-        n_corruptions: Number of corruptions to generate per query. `None` for all.
-        deterministic: Whether the policy should be deterministic.
-        verbose: Verbosity level.
-        kge_inference_engine: An optional KGE model for hybrid scoring.
-        evaluation_mode: One of 'rl_only', 'kge_only', or 'hybrid'.
+    For each positive query in `data`, this function generates *head* and/or
+    *tail* corruptions using `sampler`. Then it assigns a score to each
+    candidate according to the selected `evaluation_mode`:
 
-    Returns:
-        A dictionary containing detailed evaluation metrics.
+    • "rl_only":
+        score = RL log-probability (from `evaluate_policy`) — failed proofs are
+        heavily penalized.
+    • "kge_only":
+        score = log(KGE score) — no proof notion here (success mask is False).
+    • "hybrid":
+        score = log(KGE score) for *all* candidates; for those where the RL
+        proof succeeds, add the RL log-probability as a bonus (here weighted as
+        `2*kge + rl`).
+
+    Metrics accumulated (per-batch + rolling):
+      - Classification: Accuracy, Precision, Recall, F1, Average Precision
+      - Ranking: MRR, Hits@1/3/10 (tracked separately for head/tail and merged)
+      - (RL-only) Episode rewards/lengths and log-probs for pos/neg.
+
+    Parameters
+    ----------
+    model, env : see `evaluate_policy`.
+    data : list
+        The list of positive queries (domain-specific objects) to evaluate.
+    sampler : Any
+        Negative sampler able to produce head/tail corruptions for each query.
+    n_corruptions : Optional[int]
+        Number of *negatives per type* to generate. Use `None` for *all*.
+        Use `-1` synonymously with `None`.
+    deterministic : bool, default True
+        Whether to use deterministic policy actions.
+    verbose : int, default 1
+        Print per-batch and rolling summaries.
+    plot : bool, default False
+        If True, collects per-step trajectories for later heatmap plots.
+    kge_inference_engine : optional
+        KGE model wrapper with a `.predict_batch([...]) -> List[float]` API.
+    evaluation_mode : {'rl_only','kge_only','hybrid'}
+        Scoring strategy.
+    corruption_scheme : list[str]
+        Subset of {"head","tail"} to evaluate.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Aggregated metrics (means/stds) and classification scores.
     """
     # --- Setup and Initialization ---
-    if evaluation_mode not in ['rl_only', 'kge_only', 'hybrid']: raise ValueError(f"Invalid evaluation_mode: {evaluation_mode}")
-    if evaluation_mode != 'rl_only' and kge_inference_engine is None: raise ValueError(f"`kge_inference_engine` must be provided for mode: '{evaluation_mode}'")
+    if evaluation_mode not in ['rl_only', 'kge_only', 'hybrid']: 
+        raise ValueError(f"Invalid evaluation_mode: {evaluation_mode}")
+    if evaluation_mode != 'rl_only' and kge_inference_engine is None: 
+        raise ValueError(f"`kge_inference_engine` must be provided for mode: '{evaluation_mode}'")
     
     env = DummyVecEnv([lambda: env]) if not isinstance(env, VecEnv) else env
     num_envs = env.num_envs
@@ -245,13 +386,16 @@ def eval_corruptions(
     # Global accumulator for all metrics across all batches
     global_metrics = {
         'pos_rw': [], 'neg_rw': [], 'pos_len': [], 'neg_len': [], 'pos_lp': [], 'neg_lp': [],
+        'pos_len_true': [], 'pos_len_false': [], 'neg_len_true': [], 'neg_len_false': [],
         'y_true': [], 'y_pred': [], 'y_score': [],
         'head_mrr': [], 'head_h1': [], 'head_h3': [], 'head_h10': [],
-        'tail_mrr': [], 'tail_h1': [], 'tail_h3': [], 'tail_h10': []
+        'tail_mrr': [], 'tail_h1': [], 'tail_h3': [], 'tail_h10': [],
+        'tail_ap': [], 'head_ap': [],
     }
 
     if plot:
         os.makedirs("plots", exist_ok=True)
+        date_str = time.strftime("%Y%m%d-%H%M%S")
         aggregated_plot_data = {"pos_success": [], "pos_fail": [], "neg_success": [], "neg_fail": []}
 
     # --- Batch Processing Loop ---
@@ -263,7 +407,10 @@ def eval_corruptions(
         B = len(batch)
 
         # Per-batch accumulator for reporting
-        batch_metrics = {key: [] for key in ['pos_rw', 'neg_rw', 'pos_len', 'neg_len', 'pos_lp', 'neg_lp', 'y_true', 'y_pred', 'y_score', 'mrr', 'h1', 'h3', 'h10']}
+        batch_metrics = {key: [] for key in [
+            'pos_rw', 'neg_rw', 'pos_len', 'neg_len', 'pos_lp', 'neg_lp', 
+            'pos_len_true', 'pos_len_false', 'neg_len_true', 'neg_len_false',
+            'y_true', 'y_pred', 'y_score', 'mrr', 'h1', 'h3', 'h10','ap']}
 
         # --- Corruption Generation ---
         head_corrs, tail_corrs = sampler.get_negatives_from_states_separate([[q] for q in batch], model.device, num_negs=n_corruptions) if n_corruptions != 0 else ([[] for _ in range(B)], [[] for _ in range(B)])
@@ -273,19 +420,20 @@ def eval_corruptions(
 
         # --- Evaluate Head and Tail Corruptions ---
         for corruption_type, corrs in [("head", head_corrs), ("tail", tail_corrs)]:
-            if corruption_type not in corruption_scheme:
+            if corruption_scheme and corruption_type not in corruption_scheme:
                 continue                         # ← ignore it entirely
             targets = np.array([1 + len(c) for c in corrs], dtype=int)
             if not np.any(targets > 1):
                 continue
             
             max_t = targets.max()
-            padded_targets = np.zeros(num_envs, dtype=int); padded_targets[:B] = targets
+            padded_targets = np.zeros(num_envs, dtype=int)
+            padded_targets[:B] = targets
 
-            # The mask used for evaluation within evaluate_policy
+            # mask used to pick valid episode slots
             mask = (np.arange(max_t)[None, :] < padded_targets[:, None])
 
-            rewards, lengths, log_probs, proof_successful = None, None, None, None
+            rewards = lengths = log_probs = proof_successful = None  # (reset per type)
 
             # --- Score Calculation (KGE, RL, or Hybrid) ---
             if evaluation_mode == 'kge_only':
@@ -297,30 +445,50 @@ def eval_corruptions(
                     e = env.envs[i].env
                     e.mode, e.queries, e.labels, e.n_episodes, e.eval_idx = "eval", seq, [1] + [0]*len(negs), len(seq), 0
                 
-                rewards, lengths, log_probs, mask, proof_successful = evaluate_policy(model, env, 
-                                                    deterministic=deterministic, target_episodes=targets, 
-                                                    verbose=verbose>1,track_logprobs=plot)
-                
+                # Evaluate policy (optionally collecting trajectories)
+                if plot:
+                    (rewards, lengths, log_probs, mask, proof_successful,
+                     logprob_histories, choices_histories,
+                     steplogprob_histories, state_histories) = evaluate_policy(
+                        model, env,deterministic=deterministic,target_episodes=targets,
+                        verbose=verbose > 1,track_logprobs=True,)
+                else:
+                    rewards, lengths, log_probs, mask, proof_successful = evaluate_policy(
+                        model, env,deterministic=deterministic,target_episodes=targets,
+                        verbose=verbose > 1,track_logprobs=False,)
+
                 if evaluation_mode == 'hybrid':
                     kge_log_scores = kge_eval(batch, corrs, mask, kge_inference_engine)
-
-                    # print('proof_successful', proof_successful)
-                    # print('rl log probs',log_probs, 'rl mean',log_probs.mean())
-                    # print('kge log scores',kge_log_scores, 'kge mean',kge_log_scores.mean())
-                    # print('rl scores where successful',log_probs[proof_successful])
-                    # print('kge scores where successful',kge_log_scores[proof_successful])
-                    # # print('1:',np.where(proof_successful[mask],kge_log_scores[mask]+log_probs[mask],kge_log_scores[mask]))
-                    # print('2:',np.where(proof_successful[mask],kge_log_scores[mask]+0.5*log_probs[mask],kge_log_scores[mask]))
 
                     # # if the proof doesnt end in true, the logprobs are give by kge, else the sum of both
                     log_probs[mask] = np.where(proof_successful[mask],2*kge_log_scores[mask]+log_probs[mask],kge_log_scores[mask])
                     # log_probs = kge_log_scores.copy() 
 
+                # # Print the queries and their scores for debugging
+                # for i, (q, negs) in enumerate(zip(batch, corrs)):
+                #     seq = [q] + negs
+                #     print(f" Query {i+1}: {seq[0]} | Score: {log_probs[i,0]:.4f} | Success: {proof_successful[i,0]}")
+                #     for j, neg in enumerate(negs):
+                #         print(f"    Neg {j+1}: {neg} | Score: {log_probs[i,j+1]:.4f} | Success: {proof_successful[i,j+1]}")
 
                 log_probs[~proof_successful] -= 100 # Penalize failed proofs
                 # log_probs[proof_successful] += 10
-            # print('log probs',log_probs)
-            # print('log probs where successful',log_probs[proof_successful])
+
+                if plot:
+                    prepare_batch_data(
+                        logprob_histories=logprob_histories,
+                        choices_histories=choices_histories,
+                        steplogprob_histories=steplogprob_histories,
+                        state_histories=state_histories,
+                        proof_successful=proof_successful,
+                        mask=mask,
+                        targets=targets,
+                        date_str=date_str,
+                        aggregated_plot_data=aggregated_plot_data,
+                        b=b,
+                        B=B,
+                    )
+
             # --- Accumulate Metrics ---
             _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_type, mask, 
                                             proof_successful, log_probs, rewards, lengths)
@@ -329,18 +497,43 @@ def eval_corruptions(
         if verbose:
             _report_batch_metrics(batch_metrics, global_metrics)
         print(f"Batch {b+1} took {time.time() - time_start:.2f} seconds") if verbose else None
+        # print(asd)
+    # --- Final aggregated heatmap ---
+    if plot:
+        aggregated_filename = f"plots/{date_str}_logprob_heatmap_aggregated.png"
+        plot_logprob_heatmap(
+            aggregated_plot_data,
+            filename=aggregated_filename,
+            multicolor_lines=True,
+            show_state_labels=False,
+            show_action_counts=True,
+            show_avg_trajectory=True,
+            dot_alpha=0.7,
+            line_alpha=0.7,
+        )
 
     # --- Finalize and Return All Metrics ---
     return _finalize_and_get_results(global_metrics)
 
 
+# ---------------------------------------------------------------------------
+# Helper utilities (KGE scoring, metrics, reporting, plotting hooks)
+# ---------------------------------------------------------------------------
 
+def kge_eval(
+    batch: List[Any],
+    corrs: List[List[Any]],
+    mask: np.ndarray,
+    kge_inference_engine: Any,
+) -> np.ndarray:
+    """Score a (pos + negatives) set using a KGE inference engine.
 
-
-
-def kge_eval(batch, corrs, mask, kge_inference_engine):
-    """Gets log-probability scores for a batch of atoms using the KGE model."""
-    all_atoms_in_batch, atom_map = [], {}
+    The KGE API is expected to expose `predict_batch([...]) -> List[float]` and
+    return *scores* in [0, 1]. This function returns **log-scores** aligned to
+    the `(env, episode-slot)` layout defined by `mask`.
+    """
+    all_atoms_in_batch: List[str] = []
+    atom_map: Dict[str, Tuple[int, int]] = {}
     for i, (q, negs) in enumerate(zip(batch, corrs)):
         if mask[i, 0]:
             atom_str = f"{q.predicate}({','.join(map(str, q.args))})"
@@ -362,9 +555,21 @@ def kge_eval(batch, corrs, mask, kge_inference_engine):
     return log_probs
 
 
-def _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_type, mask, proof_successful, log_probs, rewards=None, lengths=None):
-    """Extracts metrics from evaluation results and updates batch/global accumulators."""
-    # Classification metrics
+def _extract_and_accumulate_metrics(
+    batch_metrics: Dict[str, List[float]],
+    global_metrics: Dict[str, List[float]],
+    corruption_type: str,
+    mask: np.ndarray,
+    proof_successful: np.ndarray,
+    log_probs: np.ndarray,
+    rewards: Optional[np.ndarray] = None,
+    lengths: Optional[np.ndarray] = None,
+) -> None:
+    """Extract metrics from an evaluation pass and update accumulators.
+
+    The *positive* candidate is assumed at episode slot 0 for every env.
+    """
+    # Classification targets/predictions
     true_labels = np.zeros_like(mask, dtype=int); true_labels[:, 0] = 1
     y_true_part, y_pred_part = true_labels[mask], proof_successful[mask].astype(int)
     y_score_part = log_probs[mask]
@@ -386,67 +591,131 @@ def _extract_and_accumulate_metrics(batch_metrics, global_metrics, corruption_ty
         batch_metrics['neg_rw'].extend(neg_rw.tolist()); global_metrics['neg_rw'].extend(neg_rw.tolist())
         batch_metrics['pos_len'].extend(pos_len.tolist()); global_metrics['pos_len'].extend(pos_len.tolist())
         batch_metrics['neg_len'].extend(neg_len.tolist()); global_metrics['neg_len'].extend(neg_len.tolist())
-        
-    # Rank-based metrics
+
+        # Detailed episode lengths
+        # Positives
+        pos_mask = mask[:, 0]
+        if np.any(pos_mask):
+            pos_lengths = lengths[:, 0][pos_mask]
+            pos_success = proof_successful[:, 0][pos_mask]
+            
+            pos_len_true = pos_lengths[pos_success]
+            pos_len_false = pos_lengths[~pos_success]
+
+            batch_metrics['pos_len_true'].extend(pos_len_true.tolist())
+            global_metrics['pos_len_true'].extend(pos_len_true.tolist())
+            batch_metrics['pos_len_false'].extend(pos_len_false.tolist())
+            global_metrics['pos_len_false'].extend(pos_len_false.tolist())
+
+        # Negatives
+        neg_mask = mask[:, 1:]
+        if np.any(neg_mask):
+            neg_lengths = lengths[:, 1:][neg_mask]
+            neg_success = proof_successful[:, 1:][neg_mask]
+
+            neg_len_true = neg_lengths[neg_success]
+            neg_len_false = neg_lengths[~neg_success]
+
+            batch_metrics['neg_len_true'].extend(neg_len_true.tolist())
+            global_metrics['neg_len_true'].extend(neg_len_true.tolist())
+            batch_metrics['neg_len_false'].extend(neg_len_false.tolist())
+            global_metrics['neg_len_false'].extend(neg_len_false.tolist())
+
+    # Ranking metrics (avoid ties by random keys for stable tie‑breakers)
     if mask.shape[1] > 1:
         lp_batch = np.where(mask, log_probs, -np.inf)
         random_keys = np.random.rand(*lp_batch.shape)
         sorted_indices = np.lexsort((-random_keys, -lp_batch), axis=1)
         ranks = np.where(sorted_indices == 0)[1] + 1
         mrr, h1, h3, h10 = 1.0/ranks, (ranks == 1).astype(float), (ranks <= 3).astype(float), (ranks <= 10).astype(float)
+        ap = average_precision_score(y_true_part, y_score_part)
         
-        batch_metrics['mrr'].extend(mrr.tolist()); batch_metrics['h1'].extend(h1.tolist()); batch_metrics['h3'].extend(h3.tolist()); batch_metrics['h10'].extend(h10.tolist())
-        global_metrics[f'{corruption_type}_mrr'].extend(mrr.tolist()); global_metrics[f'{corruption_type}_h1'].extend(h1.tolist()); global_metrics[f'{corruption_type}_h3'].extend(h3.tolist()); global_metrics[f'{corruption_type}_h10'].extend(h10.tolist())
+        batch_metrics['mrr'].extend(mrr.tolist()); batch_metrics['h1'].extend(h1.tolist())
+        batch_metrics['h3'].extend(h3.tolist()); batch_metrics['h10'].extend(h10.tolist())
+        batch_metrics['ap'].append(ap)
+        global_metrics[f'{corruption_type}_mrr'].extend(mrr.tolist())
+        global_metrics[f'{corruption_type}_h1'].extend(h1.tolist())
+        global_metrics[f'{corruption_type}_h3'].extend(h3.tolist())
+        global_metrics[f'{corruption_type}_h10'].extend(h10.tolist())
+        global_metrics[f'{corruption_type}_ap'].append(ap)
 
-def _report_batch_metrics(batch_metrics, global_metrics):
-    """Prints a formatted summary of metrics for the current batch and rolling totals."""
-    def safe_mean(arr): return np.mean(arr) if arr else 0.0
-    def safe_str(val): return f"{val:.3f}" if isinstance(val, float) else val
-    def safe_ap(y_true, y_score):
+def _report_batch_metrics(batch_metrics: Dict[str, List[float]], global_metrics: Dict[str, List[float]]) -> None:
+    """Pretty-print current batch metrics and rolling totals."""
+    def safe_mean(arr: List[float]) -> float: return np.mean(arr) if arr else 0.0
+    def safe_str(val: float) -> str: return f"{val:.3f}" if isinstance(val, float) else val
+    def safe_ap(y_true: List[int], y_score: List[float]) -> float:
         if len(np.unique(y_true)) < 2: return 0.0
+        print( 'y_true:', y_true)
+        print( 'y_score:', y_score)
         return average_precision_score(y_true, y_score)
 
     # --- Batch Metrics ---
     b_pos_rw = safe_mean(batch_metrics['pos_rw']); b_neg_rw = safe_mean(batch_metrics['neg_rw'])
     b_pos_len = safe_mean(batch_metrics['pos_len']); b_neg_len = safe_mean(batch_metrics['neg_len'])
+    b_pos_len_true = safe_mean(batch_metrics['pos_len_true'])
+    b_pos_len_false = safe_mean(batch_metrics['pos_len_false'])
+    b_neg_len_true = safe_mean(batch_metrics['neg_len_true'])
+    b_neg_len_false = safe_mean(batch_metrics['neg_len_false'])
     b_pos_lp = safe_mean(batch_metrics['pos_lp']); b_neg_lp = safe_mean(batch_metrics['neg_lp'])
-    b_acc = accuracy_score(batch_metrics['y_true'], batch_metrics['y_pred']); b_prec = precision_score(batch_metrics['y_true'], batch_metrics['y_pred'], zero_division=0)
-    b_rec = recall_score(batch_metrics['y_true'], batch_metrics['y_pred'], zero_division=0); b_f1 = f1_score(batch_metrics['y_true'], batch_metrics['y_pred'], zero_division=0)
-    b_ap = safe_ap(batch_metrics['y_true'], batch_metrics['y_score'])
-    b_mrr = safe_mean(batch_metrics['mrr']); b_h1 = safe_mean(batch_metrics['h1']); b_h3 = safe_mean(batch_metrics['h3']); b_h10 = safe_mean(batch_metrics['h10'])
+    b_acc = accuracy_score(batch_metrics['y_true'], batch_metrics['y_pred'])
+    b_prec = precision_score(batch_metrics['y_true'], batch_metrics['y_pred'], zero_division=0)
+    b_rec = recall_score(batch_metrics['y_true'], batch_metrics['y_pred'], zero_division=0)
+    b_f1 = f1_score(batch_metrics['y_true'], batch_metrics['y_pred'], zero_division=0)
+    # b_ap = safe_ap(batch_metrics['y_true'], batch_metrics['y_score'])
+    b_ap = safe_mean(batch_metrics['ap'])
+    b_mrr = safe_mean(batch_metrics['mrr']); b_h1 = safe_mean(batch_metrics['h1'])
+    b_h3 = safe_mean(batch_metrics['h3']); b_h10 = safe_mean(batch_metrics['h10'])
     
     # --- Rolling Metrics ---
     r_pos_rw = safe_mean(global_metrics['pos_rw']); r_neg_rw = safe_mean(global_metrics['neg_rw'])
     r_pos_len = safe_mean(global_metrics['pos_len']); r_neg_len = safe_mean(global_metrics['neg_len'])
+    r_pos_len_true = safe_mean(global_metrics['pos_len_true'])
+    r_pos_len_false = safe_mean(global_metrics['pos_len_false'])
+    r_neg_len_true = safe_mean(global_metrics['neg_len_true'])
+    r_neg_len_false = safe_mean(global_metrics['neg_len_false'])
     r_pos_lp = safe_mean(global_metrics['pos_lp']); r_neg_lp = safe_mean(global_metrics['neg_lp'])
-    r_acc = accuracy_score(global_metrics['y_true'], global_metrics['y_pred']); r_prec = precision_score(global_metrics['y_true'], global_metrics['y_pred'], zero_division=0)
-    r_rec = recall_score(global_metrics['y_true'], global_metrics['y_pred'], zero_division=0); r_f1 = f1_score(global_metrics['y_true'], global_metrics['y_pred'], zero_division=0)
-    r_ap = safe_ap(global_metrics['y_true'], global_metrics['y_score'])
-    r_mrr = safe_mean(global_metrics['head_mrr'] + global_metrics['tail_mrr']); r_h1 = safe_mean(global_metrics['head_h1'] + global_metrics['tail_h1'])
-    r_h3 = safe_mean(global_metrics['head_h3'] + global_metrics['tail_h3']); r_h10 = safe_mean(global_metrics['head_h10'] + global_metrics['tail_h10'])
+    r_acc = accuracy_score(global_metrics['y_true'], global_metrics['y_pred'])
+    r_prec = precision_score(global_metrics['y_true'], global_metrics['y_pred'], zero_division=0)
+    r_rec = recall_score(global_metrics['y_true'], global_metrics['y_pred'], zero_division=0)
+    r_f1 = f1_score(global_metrics['y_true'], global_metrics['y_pred'], zero_division=0)
+    # r_ap = safe_ap(global_metrics['y_true'], global_metrics['y_score'])
+    r_ap = safe_mean(global_metrics['head_ap'] + global_metrics['tail_ap'])
+    r_mrr = safe_mean(global_metrics['head_mrr'] + global_metrics['tail_mrr'])
+    r_h1 = safe_mean(global_metrics['head_h1'] + global_metrics['tail_h1'])
+    r_h3 = safe_mean(global_metrics['head_h3'] + global_metrics['tail_h3'])
+    r_h10 = safe_mean(global_metrics['head_h10'] + global_metrics['tail_h10'])
 
     # --- Print ---
     print(f"\nrwds pos    : {safe_str(b_pos_rw) if b_pos_rw else 'N/A'}   \trwds neg       : {safe_str(b_neg_rw) if b_neg_rw else 'N/A'}")
     print(f"ep len pos  : {safe_str(b_pos_len) if b_pos_len else 'N/A'} \tep len neg    : {safe_str(b_neg_len) if b_neg_len else 'N/A'}")
+    print(f"  pos->T len: {safe_str(b_pos_len_true) if b_pos_len_true else 'N/A'} \t  neg->T len    : {safe_str(b_neg_len_true) if b_neg_len_true else 'N/A'}")
+    print(f"  pos->F len: {safe_str(b_pos_len_false) if b_pos_len_false else 'N/A'} \t  neg->F len    : {safe_str(b_neg_len_false) if b_neg_len_false else 'N/A'}")
     print(f"logprobs pos: {b_pos_lp:.3f} \tlog probs neg  : {safe_str(b_neg_lp) if b_neg_lp else 'N/A'}")
-    print(f"\nAccuracy: {b_acc:.3f} \tPrecision: {b_prec:.3f} \tRecall: {b_rec:.3f} \tF1 Score: {b_f1:.3f} \tAP: {b_ap:.3f}")
-    print(f"\nrolling Accuracy: {r_acc:.3f} \trolling Precision: {r_prec:.3f} \trolling Recall: {r_rec:.3f} \trolling F1 Score: {r_f1:.3f} \trolling AP: {r_ap:.3f}")
+    # print(f"\nAccuracy: {b_acc:.3f} \tPrecision: {b_prec:.3f} \tRecall: {b_rec:.3f} \tF1 Score: {b_f1:.3f} \tAP: {b_ap:.3f}")
+    # print(f"\nrolling Accuracy: {r_acc:.3f} \trolling Precision: {r_prec:.3f} \trolling Recall: {r_rec:.3f} \trolling F1 Score: {r_f1:.3f} \trolling AP: {r_ap:.3f}")
     print(f"\nrolling rwds pos    : {safe_str(r_pos_rw) if r_pos_rw else 'N/A'} \trolling rwds neg       : {safe_str(r_neg_rw) if r_neg_rw else 'N/A'}")
     print(f"rolling ep len pos  : {safe_str(r_pos_len) if r_pos_len else 'N/A'} \trolling episode len neg: {safe_str(r_neg_len) if r_neg_len else 'N/A'}")
+    print(f"  rolling pos->T len: {safe_str(r_pos_len_true) if r_pos_len_true else 'N/A'} \t  rolling neg->T len: {safe_str(r_neg_len_true) if r_neg_len_true else 'N/A'}")
+    print(f"  rolling pos->F len: {safe_str(r_pos_len_false) if r_pos_len_false else 'N/A'} \t  rolling neg->F len: {safe_str(r_neg_len_false) if r_neg_len_false else 'N/A'}")
     print(f"rolling logprobs pos: {r_pos_lp:.3f} \trolling log probs neg  : {safe_str(r_neg_lp) if r_neg_lp else 'N/A'}")
     print(f"\nmrr   : {b_mrr:.3f} \trolling mrr   : {r_mrr:.3f}")
+    print(f"AP   : {b_ap:.3f} \trolling AP   : {r_ap:.3f}")
     print(f"hits1 : {b_h1:.3f} \trolling hits1 : {r_h1:.3f}")
     print(f"hits3 : {b_h3:.3f} \trolling hits3 : {r_h3:.3f}")
     print(f"hits10: {b_h10:.3f} \trolling hits10: {r_h10:.3f}")
 
 
-def _finalize_and_get_results(metrics):
-    """Calculates final summary statistics from the global metrics accumulator and returns the results dict."""
-    def get_stats(data):
+def _finalize_and_get_results(metrics: Dict[str, List[float]]) -> Dict[str, float]:
+    """Summarize aggregated metrics into a flat result dictionary.
+
+    Returns a `Dict[str, float]` with means/stds for episode stats and classic
+    classification/ranking metrics (merged head/tail where applicable).
+    """
+    def get_stats(data: List[float]) -> Tuple[float, float]:
         arr = np.array(data)
         return (arr.mean(), arr.std()) if arr.size > 0 else (0.0, 0.0)
 
-    def safe_ap(y_true, y_score):
+    def safe_ap(y_true: List[int], y_score: List[float]) -> float:
         y_true, y_score = np.array(y_true), np.array(y_score)
         if len(np.unique(y_true)) < 2 or y_true.size == 0 or y_score.size == 0:
             return 0.0
@@ -454,6 +723,7 @@ def _finalize_and_get_results(metrics):
     # Combined rank metrics
     all_mrr, all_h1, all_h3, all_h10 = (np.array(metrics['head_mrr'] + metrics['tail_mrr']), np.array(metrics['head_h1'] + metrics['tail_h1']),
                                         np.array(metrics['head_h3'] + metrics['tail_h3']), np.array(metrics['head_h10'] + metrics['tail_h10']))
+    all_ap = np.array(metrics['head_ap'] + metrics['tail_ap'])
     
     final_results = {
         'mrr_mean': all_mrr.mean() if all_mrr.size > 0 else 0.0, 'hits1_mean': all_h1.mean() if all_h1.size > 0 else 0.0,
@@ -462,28 +732,50 @@ def _finalize_and_get_results(metrics):
         'head_hits1_mean': get_stats(metrics['head_h1'])[0], 'tail_hits1_mean': get_stats(metrics['tail_h1'])[0],
         'head_hits3_mean': get_stats(metrics['head_h3'])[0], 'tail_hits3_mean': get_stats(metrics['tail_h3'])[0],
         'head_hits10_mean': get_stats(metrics['head_h10'])[0], 'tail_hits10_mean': get_stats(metrics['tail_h10'])[0],
-        'accuracy': accuracy_score(metrics['y_true'], metrics['y_pred']) if metrics['y_true'] else 0.0,
-        'precision': precision_score(metrics['y_true'], metrics['y_pred'], zero_division=0) if metrics['y_true'] else 0.0,
-        'recall': recall_score(metrics['y_true'], metrics['y_pred'], zero_division=0) if metrics['y_true'] else 0.0,
-        'f1_score': f1_score(metrics['y_true'], metrics['y_pred'], zero_division=0) if metrics['y_true'] else 0.0,
-        'average_precision': safe_ap(metrics['y_true'], metrics['y_score'])
+        # 'accuracy': accuracy_score(metrics['y_true'], metrics['y_pred']) if metrics['y_true'] else 0.0,
+        # 'precision': precision_score(metrics['y_true'], metrics['y_pred'], zero_division=0) if metrics['y_true'] else 0.0,
+        # 'recall': recall_score(metrics['y_true'], metrics['y_pred'], zero_division=0) if metrics['y_true'] else 0.0,
+        # 'f1_score': f1_score(metrics['y_true'], metrics['y_pred'], zero_division=0) if metrics['y_true'] else 0.0,
+        # 'average_precision': safe_ap(metrics['y_true'], metrics['y_score'])
+        'average_precision': all_ap.mean() if all_ap.size > 0 else 0.0,
     }
-    for key in ['pos_rw', 'neg_rw', 'pos_len', 'neg_len', 'pos_lp', 'neg_lp']:
+    for key in ['pos_rw', 'neg_rw', 'pos_len', 'neg_len', 'pos_lp', 'neg_lp',
+                'pos_len_true', 'pos_len_false', 'neg_len_true', 'neg_len_false']:
         mean, std = get_stats(metrics[key])
-        name_map = {'pos_rw': 'rewards_pos', 'neg_rw': 'rewards_neg', 'pos_len': 'episode_len_pos', 'neg_len': 'episode_len_neg', 'pos_lp': 'log_probs_pos', 'neg_lp': 'log_probs_neg'}
+        name_map = {
+            'pos_rw': 'rewards_pos', 'neg_rw': 'rewards_neg', 
+            'pos_len': 'episode_len_pos', 'neg_len': 'episode_len_neg', 
+            'pos_lp': 'log_probs_pos', 'neg_lp': 'log_probs_neg',
+            'pos_len_true': 'episode_len_pos_true', 'pos_len_false': 'episode_len_pos_false',
+            'neg_len_true': 'episode_len_neg_true', 'neg_len_false': 'episode_len_neg_false'
+            }
         final_results[f'{name_map[key]}_mean'], final_results[f'{name_map[key]}_std'] = mean, std
-        
+
     return {k: float(v) for k, v in final_results.items()}
 
 
-
+# ---------------------------------------------------------------------------
+# Optional plotting helpers
+# ---------------------------------------------------------------------------
 
 def prepare_batch_data(
-    logprob_histories: List[np.ndarray], choices_histories: List[np.ndarray], steplogprob_histories: List[np.ndarray], state_histories: List[np.ndarray],
-    proof_successful: np.ndarray, mask: np.ndarray, targets: np.ndarray, date_str: str,
-    aggregated_plot_data: Dict[str, List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]], b: int = 0, B: int = 0
-):
-    # This function remains unchanged
+    logprob_histories: List[np.ndarray],
+    choices_histories: List[np.ndarray],
+    steplogprob_histories: List[np.ndarray],
+    state_histories: List[np.ndarray],
+    proof_successful: np.ndarray,
+    mask: np.ndarray,
+    targets: np.ndarray,
+    date_str: str,
+    aggregated_plot_data: Dict[str, List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]],
+    b: int = 0,
+    B: int = 0,
+) -> None:
+    """Repackage per-episode histories into category buckets for heatmaps.
+
+    Splits trajectories into four buckets: {pos,neg} × {success,fail} and saves
+    a figure for the current batch. Extends the provided `aggregated_plot_data`.
+    """
     hist_idx = 0
     batch_plot_data = {"pos_success": [], "pos_fail": [], "neg_success": [], "neg_fail": []}
     for i in range(B):
@@ -510,11 +802,23 @@ def prepare_batch_data(
 
 def plot_logprob_heatmap(
     data_dict: Dict[str, List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]],
-    filename: str = "logprob_heatmap.png", multicolor_lines: bool = True, show_state_labels: bool = True,
-    show_action_counts: bool = True, show_avg_trajectory: bool = False, max_trajectories_to_plot: Optional[int] = None,
-    dot_alpha: float = 0.9, line_alpha: float = 0.7, dot_size: int = 150
-):
-    # This function remains unchanged
+    filename: str = "logprob_heatmap.png",
+    multicolor_lines: bool = True,
+    show_state_labels: bool = True,
+    show_action_counts: bool = True,
+    show_avg_trajectory: bool = False,
+    max_trajectories_to_plot: Optional[int] = None,
+    dot_alpha: float = 0.9,
+    line_alpha: float = 0.7,
+    dot_size: int = 150,
+) -> None:
+    """Plot per-step accumulated log-prob trajectories as a 2×2 grid of axes.
+
+    Each panel corresponds to one of the four buckets (pos/neg × success/fail).
+    Points are colored by *step* log-probabilities and optionally annotated with
+    the number of valid actions at that step and the (truncated) state string.
+    The function writes a PNG to `filename` and closes the figure.
+    """
     fig, axs = plt.subplots(2, 2, figsize=(22, 18), sharex=True, sharey=True)
     axs = axs.flatten()
     titles = {"pos_success": "Positive Query -> Proved True", "pos_fail": "Positive Query -> Failed", "neg_success": "Negative Query -> Proved True (Model Error)", "neg_fail": "Negative Query -> Proved False (Correct)"}

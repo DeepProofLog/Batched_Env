@@ -16,6 +16,7 @@ torch.set_float32_matmul_precision('high')
 
 
 if __name__ == "__main__":
+
     class Tee:
         def __init__(self, file_path):
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -29,21 +30,23 @@ if __name__ == "__main__":
         def flush(self):
             self.file.flush()
             self.stdout.flush()
+
     # hpo: first ent_coef, try with reward type, 5 seeds, 300k steps
     FALSE_RULES = [False] 
     MEMORY_PRUNING = [True]
-    ENDT_ACTION = [False]
-    ENDF_ACTION = [False]
+    ENDT_ACTION = [False] # Append an action to stop the proof search in True
+    ENDF_ACTION = [False] # Append an action to stop the proof search in fail
     SKIP_UNARY_ACTIONS = [True]
-    ENT_COEF = [0.2]#,0.5,0.8]
-    CLIP_RANGE = [0.2]#0.1]
+    ENT_COEF = [0.2]# [0.5,0.8]
+    CLIP_RANGE = [0.2]# [0.1]
     ENGINE = ['python']
+    ENGINE_STRATEGY = ['cmp'] # complete (cmp) or rules_then_facts (rtf)
     REWARD_TYPE = [0] # 0: initial, 1: avoiding neg proofs, 2: classification
  
     # Dataset settings 
     DATASET_NAME =  ["countries_s3"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
-    TRAIN_DEPTH = [None] #[{2,3,4}] # [{-1,3,2}]
-    VALID_DEPTH = [None] #[{2,3,4}]
+    TRAIN_DEPTH = [None] #[{-1,3,2}]
+    VALID_DEPTH = [None] #[{3,4}]
     TEST_DEPTH = [None] #[{2,3,4}]
     SEED = [[0]]
     LEARN_EMBEDDINGS = [True]
@@ -51,16 +54,19 @@ if __name__ == "__main__":
     STATE_EMBEDDER = ['mean']
     PADDING_ATOMS = [6]
     PADDING_STATES = [-1] # -1 sets the max padding size to a preset value (check below)
-    ATOM_EMBEDDING_SIZE = [64] # 256 for countries (atomatically selected below)
+    ATOM_EMBEDDING_SIZE = [64] # 256 for countries (automatically selected below)
     CORRUPTION_MODE =  ['dynamic']
 
-    KGE_INTEGRATION_STRATEGY = ['sum_eval'] #['train', 'train_bias','sum_eval']
+    # sum_eval sums the KGE scores during eval only
+    # train combines the KGE scores with problogs during training
+    # train_bias uses an MLP to learn a bias on the KGE scores
+    KGE_INTEGRATION_STRATEGY = [None] #['train', 'train_bias','sum_eval'] 
     KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
     # KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
-    KGE_SCORES_FILE = [None]
+    KGE_SCORES_FILE = [None] # Whether to load precomputed KGE scores (not neccessarily all)
  
     RESTORE_BEST_VAL_MODEL = [True] # else restore the model from the last train epoch
-    load_model = True
+    load_model = False
     save_model = True
 
     # Loggin settings 
@@ -79,20 +85,22 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [500000]
+    TIMESTEPS_TRAIN = [900000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
     TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
     EVAL_NEG_SAMPLES = [None]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
-    TEST_NEG_SAMPLES = [100]  # Number of negative samples per positive for testing. Use None for all.
+    TEST_NEG_SAMPLES = [None]  # Number of negative samples per positive for testing. Use None for all.
     n_eval_queries = None
     n_test_queries = None
+    extended_eval_info = True # Whether to compute detailed eval info (e.g., MRR). Slower and different eval env
+    plot = False # Whether to plot the policy behaviour during eval
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 256
-    n_steps = 256
-    batch_size = 256 # Ensure batch size is a factor of n_steps (for the buffer).
-    n_eval_envs = 128
+    n_envs = 128
+    n_steps = 128
+    batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
+    n_eval_envs = 1
     # n_callback_eval_envs = 1 # Number of environments to use for evaluation in the callback # should be one in CustomEvalCallback
     eval_freq = n_steps*n_envs
     n_epochs = 10 # number of epochs to train the model with the collected rollout
@@ -108,6 +116,7 @@ if __name__ == "__main__":
     parser.add_argument("--s", help="Seeds")
     parser.add_argument("--timesteps", help="Timesteps to train")
     parser.add_argument("--engine", help="Engine to use")
+    parser.add_argument("--engine_strategy", help="Engine strategy to use")
     parser.add_argument("--eval", default = None, action='store_const', const=True)
     parser.add_argument("--test_depth", default = None, help="test_depth")
     parser.add_argument("--n_test_queries", default = None, help="n_test_queries")
@@ -130,6 +139,7 @@ if __name__ == "__main__":
     if args.d: DATASET_NAME = args.d
     if args.s: SEED = [ast.literal_eval(args.s)]
     if args.engine: ENGINE = [args.engine]
+    if args.engine_strategy: ENGINE_STRATEGY = [args.engine_strategy]
     if args.eval: load_model = True; TIMESTEPS_TRAIN = [0]
     if args.test_depth: TEST_DEPTH = [str(args.test_depth)]
     if args.n_test_queries: n_test_queries = int(args.n_test_queries)
@@ -142,8 +152,7 @@ if __name__ == "__main__":
     if args.test_neg_samples is not None:
         TEST_NEG_SAMPLES = [None if args.test_neg_samples.lower() in ['none', '-1'] else int(args.test_neg_samples)]
 
-    if args.reward_type is not None:
-        REWARD_TYPE = [args.reward_type]
+    if args.reward_type is not None: REWARD_TYPE = [args.reward_type]
     if args.endt_action is not None: ENDT_ACTION = [args.endt_action]
     if args.endf_action is not None: ENDF_ACTION = [args.endf_action]
 
@@ -163,9 +172,10 @@ if __name__ == "__main__":
         KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-rotate-True-256-256-1-rules.txt']
 
     if USE_KGE_ACTION == [True] and REWARD_TYPE == [0]:
-        RESTORE_BEST_VAL_MODEL = [False] # If using KGE action, we cannot restore the best val model, as it is not saved during training.
+        # If using KGE action, we cannot restore the best val model, as it is not saved during training.
+        RESTORE_BEST_VAL_MODEL = [False]
 
-    print('Running experiments for the following parameters:','DATASET_NAME:'\
+    print('\n\nRunning experiments for the following parameters:','DATASET_NAME:'\
           ,DATASET_NAME,'MODEL_NAME:',MODEL_NAME,'SEED:',SEED)
     
     # Create a dictionary of all parameters
@@ -192,6 +202,7 @@ if __name__ == "__main__":
         'ent_coef': ENT_COEF,
         'clip_range': CLIP_RANGE,
         'engine': ENGINE,
+        'engine_strategy': ENGINE_STRATEGY,
         'train_depth': TRAIN_DEPTH,
         'valid_depth': VALID_DEPTH,
         'test_depth': TEST_DEPTH,
@@ -274,8 +285,12 @@ if __name__ == "__main__":
         args.test_file = test_file
         args.rules_file = rules_file
         args.facts_file = facts_file
+        args.extended_eval_info = extended_eval_info
+        args.plot = plot
         
-        args.atom_embedding_size = args.atom_embedding_size #if args.atom_embedder != "concat" else it is (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
+        # if args.atom_embedder != "concat" else it is 
+        # (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
+        args.atom_embedding_size = args.atom_embedding_size
         args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" \
             else args.atom_embedding_size*args.padding_atoms
         args.constant_embedding_size = constant_embedding_size
@@ -302,7 +317,7 @@ if __name__ == "__main__":
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,
                     args.padding_atoms,args.padding_states,args.false_rules,args.endt_action, 
                     args.endf_action, args.skip_unary_actions,args.memory_pruning,args.max_depth,
-                    args.ent_coef,args.clip_range,args.engine,args.train_neg_ratio, args.use_kge_action,
+                    args.ent_coef,args.clip_range,args.engine,args.engine_strategy,args.train_neg_ratio, args.use_kge_action,
                     args.reward_type, args.kge_integration_strategy
                     )
         
@@ -350,7 +365,6 @@ if __name__ == "__main__":
                 rewards_pos_mean = np.round(np.mean(test_metrics['rewards_pos_mean']),3)
                 mrr = np.round(np.mean(test_metrics['mrr_mean']),3)
                 metrics = "{:.3f}_{:.3f}".format(rewards_pos_mean,mrr)
-                # print the mean reward with 3 decimals 
                 log_filename_run_name = os.path.join(logger_path,'indiv_runs', '_ind_log-{}-{}-{}-seed_{}.csv'.format(
                                                             args.run_signature,date,metrics,seed))
                 logger.finalize_log_file(log_filename_tmp,log_filename_run_name)

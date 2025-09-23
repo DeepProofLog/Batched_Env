@@ -69,6 +69,8 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
         queries=data_handler.train_queries,
         labels=[1] * len(data_handler.train_queries),
         facts=facts_set,
+        verbose=0,
+        prover_verbose=0,
     ) for i in range(args.n_envs)]
 
     eval_env_fns = [make_env(
@@ -77,6 +79,8 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
         queries=data_handler.valid_queries,
         labels=[1] * len(data_handler.valid_queries),
         facts=facts_set,
+        verbose=1,
+        prover_verbose=1,
     ) for i in range(args.n_eval_envs)]
     
     callback_env_fns = [make_env(
@@ -85,8 +89,8 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
         queries=data_handler.valid_queries,
         labels=[1] * len(data_handler.valid_queries),
         facts=facts_set,
-        verbose=1,
-        prover_verbose=1,
+        verbose=0,
+        prover_verbose=0,
     ) for i in range(1)]
 
 

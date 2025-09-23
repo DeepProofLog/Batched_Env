@@ -564,7 +564,7 @@ class FileLogger:
                             avg_results[name].append(data[name])
 
         len_keys = [len(v) for v in avg_results.values()]
-        assert all([l == len_keys[0] for l in len_keys]), f'Not all the keys in avg_results have the same length! {[(k, len(v)) for k, v in avg_results.items()]}'                  
+        assert all([l == len_keys[0] for l in len_keys]), f'Not all the keys in avg_results have the same length! {[(k, len(v)) for k, v in avg_results.items()], avg_results}'                  
         assert len(seeds_found) == len(seeds), f'Number of seeds {seeds_found} found in the experiments is different from the number of seeds {seeds}!'
         
         avg_results = {key: [np.mean(values), np.std(values)] for key, values in avg_results.items()}

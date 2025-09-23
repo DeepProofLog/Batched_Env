@@ -64,7 +64,10 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
                  device: torch.device = torch.device("cpu")
                  ):
         """
-        Initialize the Domain-based negative sampler.
+        Domain-aware negative sampler.
+
+        Key optimization: all domain lookups are precomputed once and stored
+        as device tensors so that batch corruption is fully vectorized.
         """
         super().__init__(
             mapped_triples=mapped_triples,
@@ -73,96 +76,153 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
         )
         self.domain2idx = domain2idx
         self.entity2domain = entity2domain
+        self.device = device
 
-        # Create a numerical mapping for domain names
-        self.domain_names = sorted(domain2idx.keys())
+        # ---- Build stable integer IDs for domains ----
+        self.domain_names = sorted(self.domain2idx.keys())
         self.domain_str2int = {name: i for i, name in enumerate(self.domain_names)}
         self.domain_int2str = {i: name for i, name in enumerate(self.domain_names)}
-        self.idx2domain = {idx: domain for domain, idxs in domain2idx.items() for idx in idxs}
-        self.domain_entities = {}
-        for entity, domain in self.entity2domain.items():
-            if domain not in self.domain_entities:
-                self.domain_entities[domain] = []
-            self.domain_entities[domain].append(entity)
-        for domain in self.domain_entities:
-            self.domain_entities[domain] = torch.tensor(self.domain_entities[domain], 
-                                                        dtype=torch.long, 
-                                                        device=device)
+
+        # ---- Build per-domain pools as a single padded 2-D tensor ----
+        domain_lists: List[torch.Tensor] = []
+        for name in self.domain_names:
+            ents = torch.tensor(self.domain2idx[name], dtype=torch.long, device=device)
+            domain_lists.append(ents)
+
+        self.num_domains = len(domain_lists)
+        self.max_pool_len = max((t.numel() for t in domain_lists), default=0)
+        # (D, Lmax) padded with 0 (padding id); entities start at 1 so 0 is safe
+        self.domain_padded = torch.zeros((self.num_domains, self.max_pool_len), dtype=torch.long, device=device)
+        self.domain_len = torch.zeros((self.num_domains,), dtype=torch.long, device=device)
+        for i, t in enumerate(domain_lists):
+            self.domain_padded[i, :t.numel()] = t
+            self.domain_len[i] = t.numel()
+
+        # ---- Fast maps: entity -> domain_id   and   entity -> position within its domain ----
+        max_ent_id = max(entity2domain.keys(), default=0)
+        ent2dom = torch.full((max_ent_id + 1,), -1, dtype=torch.long, device=device)
+        pos_in_dom = torch.zeros((max_ent_id + 1,), dtype=torch.long, device=device)
+        # We iterate once over our padded pools to fill both maps
+        for d, name in enumerate(self.domain_names):
+            row = self.domain_padded[d, : self.domain_len[d]]
+            # guard: row can be empty for corner cases
+            if row.numel() == 0:
+                continue
+            ent2dom[row] = d
+            # position of each entity in its domain
+            pos_in_dom[row] = torch.arange(row.numel(), device=device, dtype=torch.long)
+
+        self.ent2dom = ent2dom
+        self.pos_in_dom = pos_in_dom
+
+        # Infer number of relations from mapped triples (works with non-compact ids too)
+        # Relations are stored in column 1 of mapped_triples
+        self.num_relations = int(mapped_triples[:, 1].max().item()) + 1 if mapped_triples.numel() > 0 else 0
+
+        # Validate corruption indices (0=head, 1=rel, 2=tail)
+        self.corruption_scheme = corruption_scheme or ['head', 'tail']
+        self._corruption_indices = [TARGET_TO_INDEX[c] for c in self.corruption_scheme]
+        if any(idx not in (0, 1, 2) for idx in self._corruption_indices):
+            raise ValueError(f"Invalid corruption index in scheme: {self._corruption_indices}")
+
+    def _replace_relation_uniform_(self, batch: torch.Tensor, sel: slice) -> None:
+        """Uniformly replace relations in batch[sel, 1] excluding the original id."""
+        if self.num_relations <= 1:
+            return
+        orig = batch[sel, 1]
+        # Draw from [0, num_rel-1] \ {orig}; use add-one trick
+        # NB: relations here are 0-based ids in mapped_triples
+        high = torch.full_like(orig, self.num_relations - 1)
+        # sample per-row: floor(rand * high)
+        rnd = torch.floor(torch.rand_like(orig, dtype=torch.float32) * high.to(torch.float32)).to(torch.long)
+        # shift values >= orig
+        batch[sel, 1] = rnd + (rnd >= orig)
 
     def corrupt_batch(self, positive_batch: LongTensor, num_negs_per_pos: int) -> LongTensor:
-        batch_shape   = positive_batch.shape[:-1]
-        neg_batch     = positive_batch.view(-1, 3).repeat_interleave(num_negs_per_pos, dim=0)
+        """
+        Vectorized corruption for head/tail within the same domain and (optional) relation.
+        """
+        batch_shape = positive_batch.shape[:-1]
+        neg = positive_batch.view(-1, 3).repeat_interleave(num_negs_per_pos, dim=0)
+        total = neg.size(0)
+        if total == 0:
+            return neg.view(*batch_shape, num_negs_per_pos, 3)
 
-        # vectorise: look up domain for every entity once
-        # Create a tensor mapping each entity ID to its corresponding domain's INTEGER ID
-        max_entity_id = max(self.entity2domain.keys())
-        ent_to_domain_id = torch.empty(max_entity_id + 1, dtype=torch.long, device=neg_batch.device)
-        for ent_id, domain_name in self.entity2domain.items():
-            ent_to_domain_id[ent_id] = self.domain_str2int[domain_name]
+        # Split work roughly equally across the selected indices (0/1/2)
+        step = math.ceil(total / max(1, len(self._corruption_indices)))
+        for col, start in zip(self._corruption_indices, range(0, total, step)):
+            stop = min(start + step, total)
+            sel = slice(start, stop)
+            if col == 1:
+                # relation corruption (rarely used in domain datasets)
+                self._replace_relation_uniform_(neg, sel)
+                continue
 
-        total = neg_batch.size(0)
-        split = math.ceil(total / len(self._corruption_indices))
+            # ---- entity corruption within the same domain ----
+            orig = neg[sel, col]
+            valid = orig > 0  # ignore padding rows defensively
+            if not valid.any():
+                continue
+            d_ids = self.ent2dom[orig[valid]]                     # (N,)
+            pool_len = self.domain_len[d_ids]                     # (N,)
+            pos = self.pos_in_dom[orig[valid]]                    # (N,)
 
-        for col, start in zip(self._corruption_indices, range(0, total, split)):
-            stop   = min(start + split, total)
-            slice_ = slice(start, stop)
+            # rows where the domain only has one entity cannot be corrupted
+            can = pool_len > 1
+            if not can.any():
+                continue
 
-            orig_ents   = neg_batch[slice_, col]
-            # Use the new mapping to get domain integer IDs
-            dom_ids = ent_to_domain_id[orig_ents]
-            # Use the integer-to-string mapping to get the pool of entities
-            pools = [self.domain_entities[self.domain_int2str[d.item()]] for d in dom_ids]
+            # Draw per-row index in [0, pool_len-2] then add +1 for rows where idx >= pos
+            # Implement per-row high via rand()* (L-1)
+            Lm1 = (pool_len[can] - 1).to(torch.float32)
+            rnd = torch.floor(torch.rand(Lm1.shape, device=neg.device) * Lm1).to(torch.long)
+            adj = rnd + (rnd >= pos[can])
+            repl = self.domain_padded[d_ids[can], adj]
 
-            # sample replacements in a single call per domain to avoid Python loop
-            max_pool = max(len(p) for p in pools)
-            indices  = torch.randint(
-                high=max_pool, size=(stop - start,), device=neg_batch.device
-            )
-            repl     = torch.stack([
-                pools[i][min(indices[i].item(), len(pools[i]) - 1)]
-                for i in range(indices.numel())
-            ])
+            # write back only for rows that can be corrupted
+            tmp = orig.clone()
+            tmp[can] = repl
+            neg[sel, col] = tmp
 
-            # guarantee difference
-            clash      = repl == orig_ents
-            while clash.any():
-                new_idx          = torch.randint(high=max_pool, size=(clash.sum(),), device=neg_batch.device)
-                repl[clash]      = torch.stack([
-                    pools[i][min(new_idx[j].item(), len(pools[i]) - 1)]
-                    for j, i in enumerate(torch.nonzero(clash, as_tuple=False)[:, 0])
-                ])
-                clash            = repl == orig_ents
+        return neg.view(*batch_shape, num_negs_per_pos, 3)
 
-            neg_batch[slice_, col] = repl
-
-        return neg_batch.view(*batch_shape, num_negs_per_pos, 3)
-    
     def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
         """
-        For each positive triple, generate negatives by enumerating all entities in the same domain
-        (excluding the original entity) for each corruption index.
+        Enumerate all legal domain-respecting corruptions for each triple.
+        Uses vectorized repeat+assign instead of Python loops per candidate.
         """
-        negative_batches = []
+        out: List[torch.Tensor] = []
         for triple in positive_batch:
-            triple_negatives = []
-            for index in self._corruption_indices:
-                original_entity = triple[index].item()
-                original_domain = self.entity2domain[original_entity]
-                domain_candidates = self.domain_entities[original_domain]
-                # Exclude the positive entity from the candidate list.
-                candidates = domain_candidates[domain_candidates != original_entity]
-                # Enumerate over all candidate entities.
-                for candidate in candidates.tolist():
-                    neg_triple = triple.clone()
-                    neg_triple[index] = candidate
-                    triple_negatives.append(neg_triple)
-            if triple_negatives:
-                negative_batches.append(torch.stack(triple_negatives, dim=0))
-            else:
-                negative_batches.append(torch.empty((0, 3), dtype=torch.long, device=positive_batch.device))
-        return negative_batches
-
-
+            parts = []
+            for col in self._corruption_indices:
+                if col == 1:
+                    # enumerate all relations except the current one
+                    if self.num_relations <= 1:
+                        continue
+                    rels = torch.arange(self.num_relations, device=triple.device, dtype=torch.long)
+                    rels = rels[rels != triple[1]]
+                    if rels.numel() == 0:
+                        continue
+                    t = triple.repeat(rels.numel(), 1)
+                    t[:, 1] = rels
+                    parts.append(t)
+                else:
+                    e = triple[col].item()
+                    if e <= 0:
+                        continue
+                    d = self.ent2dom[e].item()
+                    L = int(self.domain_len[d].item())
+                    if L <= 1:
+                        continue
+                    pool = self.domain_padded[d, :L]
+                    cand = pool[pool != e]
+                    if cand.numel() == 0:
+                        continue
+                    t = triple.repeat(cand.numel(), 1)
+                    t[:, col] = cand
+                    parts.append(t)
+            out.append(torch.cat(parts, dim=0) if parts else triple.new_empty((0, 3)))
+        return out
 
 class BasicNegativeSamplerCustom(BasicNegativeSampler):
     def __init__(

@@ -243,7 +243,6 @@ class CustomEvalCallback(EvalCallback):
                 raise ValueError(f"Warning: Info file not found: {info_path}")
         else:
             raise ValueError("No best model found to restore.")
-            return
         return self.model
 
 
@@ -512,6 +511,8 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
         self.n_corruptions = n_corruptions
         self.corruption_scheme = corruption_scheme
         self.consult_janus = consult_janus
+        self.best_auc_pr = -np.inf
+
 
     def _on_step(self) -> bool:
         """
@@ -535,7 +536,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             # Reset success rate buffer
             self.model.policy.set_training_mode(False)
             self._is_success_buffer = []
-            mrr_eval_results = eval_corruptions_mrr(
+            eval_results = eval_corruptions_mrr(
                 self.model,
                 self.eval_env,
                 self.eval_data,
@@ -544,56 +545,64 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                 deterministic=self.deterministic,
                 verbose=self.verbose,
                 corruption_scheme=self.corruption_scheme,
+                plot=False,
                 # consult_janus=self.consult_janus,
             )
             self.model.policy.set_training_mode(True)
 
             # --- ADAPTATION STEP ---
-            mean_mrr = mrr_eval_results.get('mrr_mean', None)
-            mean_reward_pos = mrr_eval_results.get('rewards_pos_mean', None)
-            std_reward_pos = mrr_eval_results.get('rewards_pos_std', None)
-            mean_reward_neg = mrr_eval_results.get('rewards_neg_mean', None)
-            std_reward_neg = mrr_eval_results.get('rewards_neg_std', None)
-            mean_ep_length = mrr_eval_results.get('episode_len_pos_mean', None)
-            std_ep_length = mrr_eval_results.get('episode_len_pos_std', None)
-            hits1 = mrr_eval_results.get('hits1_mean', None)
-            hits3 = mrr_eval_results.get('hits3_mean', None)
-            hits10 = mrr_eval_results.get('hits10_mean', None)
-            auc_pr = mrr_eval_results.get('auc_pr', None)
+            # Extract standard metrics
+            mean_mrr = eval_results.get('mrr_mean', 0.0)
+            auc_pr = eval_results.get('average_precision', 0.0)
 
-            accuracy = mrr_eval_results.get('accuracy', 0.0)
-            precision = mrr_eval_results.get('precision', 0.0)
-            recall = mrr_eval_results.get('recall', 0.0)
-            f1_score = mrr_eval_results.get('f1_score', 0.0)
+            # Extract reward and general length metrics
+            mean_reward_pos = eval_results.get('rewards_pos_mean', 0.0)
+            std_reward_pos = eval_results.get('rewards_pos_std', 0.0)
+            mean_reward_neg = eval_results.get('rewards_neg_mean', 0.0)
+            std_reward_neg = eval_results.get('rewards_neg_std', 0.0)
+            mean_ep_length_pos = eval_results.get('episode_len_pos_mean', 0.0)
+            std_ep_length_pos = eval_results.get('episode_len_pos_std', 0.0)
+            mean_ep_length_neg = eval_results.get('episode_len_neg_mean', 0.0)
+            std_ep_length_neg = eval_results.get('episode_len_neg_std', 0.0)
 
-            print(f"\nEval num_timesteps={self.num_timesteps}. Rewards Positive: {mean_reward_pos:.4f}+/-{std_reward_pos:.4f}")
-            print(f"Ep len Positive: {mean_ep_length:.2f} +/- {std_ep_length:.2f}. Ep len Negative: {std_ep_length:.2f}+/- {std_ep_length:.2f}")
-            print(f"Rewards Negative: {mean_reward_neg:.4f}+/-{std_reward_neg:.4f}")
-            print(f"MRR: {mean_mrr:.4f}")
-            # print(f"Hits@1: {hits1:.4f}, Hits@3: {hits3:.4f}, Hits@10: {hits10:.4f}, AUC-PR: {auc_pr:.4f}")
-            print(f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1-Score: {f1_score:.4f}")
+            # Extract new, detailed episode length metrics
+            mean_ep_length_pos_true = eval_results.get('episode_len_pos_true_mean', 0.0)
+            std_ep_length_pos_true = eval_results.get('episode_len_pos_true_std', 0.0)
+            mean_ep_length_pos_false = eval_results.get('episode_len_pos_false_mean', 0.0)
+            std_ep_length_pos_false = eval_results.get('episode_len_pos_false_std', 0.0)
+            mean_ep_length_neg_true = eval_results.get('episode_len_neg_true_mean', 0.0)
+            std_ep_length_neg_true = eval_results.get('episode_len_neg_true_std', 0.0)
+            mean_ep_length_neg_false = eval_results.get('episode_len_neg_false_mean', 0.0)
+            std_ep_length_neg_false = eval_results.get('episode_len_neg_false_std', 0.0)
 
+            # --- Reporting ---
+            print(f"\nEval num_timesteps={self.num_timesteps}. Rewards Positive: {mean_reward_pos:.4f} +/- {std_reward_pos:.4f}")
+            print(f"Rewards Negative: {mean_reward_neg:.4f} +/- {std_reward_neg:.4f}")
+            print(f"Ep len Positive: {mean_ep_length_pos:.2f} +/- {std_ep_length_pos:.2f}. Ep len Negative: {mean_ep_length_neg:.2f} +/- {std_ep_length_neg:.2f}")
+            print(f"  Pos->True len: {mean_ep_length_pos_true:.2f} +/- {std_ep_length_pos_true:.2f},  Pos->False len: {mean_ep_length_pos_false:.2f} +/- {std_ep_length_pos_false:.2f}")
+            print(f"  Neg->True len: {mean_ep_length_neg_true:.2f} +/- {std_ep_length_neg_true:.2f},  Neg->False len: {mean_ep_length_neg_false:.2f} +/- {std_ep_length_neg_false:.2f}")
+            print(f"MRR: {mean_mrr:.4f}, AUC-PR: {auc_pr:.4f}")
 
-            mean_reward = mrr_eval_results.get('rewards_pos_mean')
-            std_reward = mrr_eval_results.get('rewards_pos_std')
-            mean_ep_length = mrr_eval_results.get('episode_len_pos_mean')
-            std_ep_length = mrr_eval_results.get('episode_len_pos_std')
-            mean_mrr = mrr_eval_results.get('mrr_mean')
 
             # Add to current Logger
-            self.logger.record("eval/mean_reward", float(mean_reward))
-            self.logger.record("eval/mean_ep_length", mean_ep_length)
+            self.logger.record("eval/mean_reward_pos", float(mean_reward_pos))
+            self.logger.record("eval/mean_reward_neg", float(mean_reward_neg))
+            self.logger.record("eval/mean_ep_length_pos", mean_ep_length_pos)
+            self.logger.record("eval/mean_ep_length_neg", mean_ep_length_neg)
             self.logger.record("eval/mrr_mean", float(mean_mrr))
+            self.logger.record("eval/auc_pr", float(auc_pr))
 
-            self.logger.record("eval/accuracy", float(accuracy))
-            self.logger.record("eval/precision", float(precision))
-            self.logger.record("eval/recall", float(recall))
-            self.logger.record("eval/f1_score", float(f1_score))
+            # Log new detailed metrics
+            self.logger.record("eval/mean_ep_length_pos_true", mean_ep_length_pos_true)
+            self.logger.record("eval/mean_ep_length_pos_false", mean_ep_length_pos_false)
+            self.logger.record("eval/mean_ep_length_neg_true", mean_ep_length_neg_true)
+            self.logger.record("eval/mean_ep_length_neg_false", mean_ep_length_neg_false)
+
 
             if len(self._is_success_buffer) > 0:
                 success_rate = np.mean(self._is_success_buffer)
-                if self.verbose >= 1:
-                    print(f"Success rate: {100 * success_rate:.2f}%")
+                # if self.verbose >= 1:
+                #     print(f"Success rate: {100 * success_rate:.2f}%")
                 self.logger.record("eval/success_rate", success_rate)
 
             # Dump log so the evaluation results are printed with the correct timestep
@@ -602,9 +611,9 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             self.logger.name_to_value = {k: v for k, v in self.logger.name_to_value.items() if 
                                          "eval" not in k and "total_timesteps" not in k}
 
-            if mean_reward > self.best_mean_reward:
-                print("New best mean reward in eval!")
-                self.best_mean_reward = float(mean_reward)
+            if auc_pr > self.best_auc_pr:
+                print(f"New best AUC-PR in eval: {auc_pr:.4f}!")
+                self.best_auc_pr = float(auc_pr)
                 self.best_epoch = self.num_timesteps
                 if self.model_path is not None:
                     self.model.save(os.path.join(self.model_path, f"best_eval_{self.name}.zip"))
@@ -616,16 +625,22 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
 
             if self.log_path:
                 self._log_values({
-                    "eval/mean_reward": mean_reward, 
-                    "eval/std_reward": std_reward, 
-                    "eval/mean_ep_length": mean_ep_length, 
-                    "eval/std_ep_length": std_ep_length, 
+                    "eval/mean_reward": mean_reward_pos,
+                    "eval/std_reward": std_reward_pos,
+                    "eval/mean_ep_length": mean_ep_length_pos,
+                    "eval/std_ep_length": std_ep_length_pos,
                     "eval/num_timesteps": self.num_timesteps,
                     "eval/mrr_mean": mean_mrr,
-                    "eval/accuracy": accuracy,
-                    "eval/precision": precision,
-                    "eval/recall": recall,
-                    "eval/f1_score": f1_score,
+                    "eval/auc_pr": auc_pr,
+                    # Add new detailed metrics to the log file
+                    "eval/mean_ep_length_pos_true": mean_ep_length_pos_true,
+                    "eval/std_ep_length_pos_true": std_ep_length_pos_true,
+                    "eval/mean_ep_length_pos_false": mean_ep_length_pos_false,
+                    "eval/std_ep_length_pos_false": std_ep_length_pos_false,
+                    "eval/mean_ep_length_neg_true": mean_ep_length_neg_true,
+                    "eval/std_ep_length_neg_true": std_ep_length_neg_true,
+                    "eval/mean_ep_length_neg_false": mean_ep_length_neg_false,
+                    "eval/std_ep_length_neg_false": std_ep_length_neg_false,
                 })
                 
 
@@ -635,3 +650,47 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
 
             print(f'\n---------------evaluation finished---------------  took {time.time()-start:.2f} seconds')
         return continue_training
+
+    # NEW: Overridden method to save info based on AUC-PR
+    def write_info(self, description: str):
+        """Save checkpoint metadata."""
+        info = {
+            'metric': 'eval/auc_pr',
+            'best_value': float(self.best_auc_pr),
+            'timesteps': self.num_timesteps,
+            'epoch': self.best_epoch,
+        }
+        info_path = os.path.join(self.model_path, f'info_{description}_{self.name}.json')
+        with open(info_path, 'w') as f:
+            json.dump(info, f, indent=4)
+
+    # NEW: Overridden method to restore and report based on AUC-PR
+    def restore_best_ckpt(self, env):
+        """
+        Restore the best model found during evaluation.
+        """
+        if self.model_path is None:
+            print("Warning: `model_path` is not set. Cannot restore model.")
+            return
+
+        model_files = [f for f in os.listdir(self.model_path) if '.zip' in f and 'best_eval_' in f]
+        if len(model_files) >= 1:
+            model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
+            self.model = PPO.load(
+                os.path.join(self.model_path, model_files[0]),
+                env=env,
+                device=self.model.device,
+                print_system_info=False
+            )
+            info_path = os.path.join(self.model_path, f'info_best_eval_{self.name}.json')
+            if os.path.exists(info_path):
+                with open(info_path, 'r') as f:
+                    info = json.load(f)
+                best_timestep = info.get('timesteps', None)
+                best_auc_pr = info.get('best_value', None)
+                print(f'Restored best val model from step {best_timestep}, with auc_pr={best_auc_pr:.3f}.')
+            else:
+                raise ValueError(f"Warning: Info file not found: {info_path}")
+        else:
+            raise ValueError("No best model found to restore.")
+        return self.model

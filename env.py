@@ -44,9 +44,10 @@ class LogicEnv_gym(gym.Env):
                 padding_atoms: int = 10,
                 padding_states: int = 20,
                 verbose: int = 0,
-                prover_verbose: int = 0,
+                prover_verbose: int = 1,
                 device: torch.device = torch.device("cpu"),
                 engine: str = 'python',
+                engine_strategy: str = 'rtf', # 'cmp' (complete) or 'rtf' (rules_then_facts)
                 use_kge_action: bool = False,
                 reward_type: int = 2,
                 ):
@@ -55,11 +56,13 @@ class LogicEnv_gym(gym.Env):
         super().__init__()
 
         self.engine = engine
+        self.engine_strategy = 'rules_then_facts' if engine_strategy=='rtf' else 'complete'
         self.reward_type = reward_type
         self.verbose = verbose
         self.prover_verbose = prover_verbose
         self.device = device
-
+        self.pt_idx_dtype = torch.int32
+        self.np_idx_dtype = np.int32
         self.max_arity = data_handler.max_arity # Maximum arity of the predicates
         self.padding_atoms = padding_atoms  # Maximum number of atoms in a state
         self.padding_states = padding_states # Maximum number of possible next states
@@ -112,7 +115,7 @@ class LogicEnv_gym(gym.Env):
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment. If no seed is provided, generate a random one'''
-        self.seed = seed if seed is not None else torch.empty((), dtype=torch.int64).random_().item()
+        self.seed = seed if seed is not None else torch.empty((), dtype=self.pt_idx_dtype).random_().item()
         rng = torch.manual_seed(seed)
         self.rng = rng
         self.seed_gen = random.Random(seed)
@@ -125,14 +128,14 @@ class LogicEnv_gym(gym.Env):
                 low=float('-inf'),
                 high=float('inf'),
                 shape = torch.Size([1])+ torch.Size([self.padding_atoms])+ torch.Size([self.max_arity+1]),
-                dtype=np.int64,
+                dtype=self.np_idx_dtype,
             ),
 
             'derived_sub_indices': gym.spaces.Box(
                 low=float('-inf'),
                 high=float('inf'),
                 shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
-                dtype=np.int64,
+                dtype=self.np_idx_dtype,
             ),  
         }
         self.observation_space = gym.spaces.Dict(obs_spaces)
@@ -213,7 +216,7 @@ class LogicEnv_gym(gym.Env):
         filtered_query = [q for q in query if q.predicate not in ['False', 'True', 'End']]
         self.memory.add(_state_to_hashable(filtered_query))
 
-        sub_index = self.index_manager.get_atom_sub_index(query)
+        sub_index = self.index_manager.get_atom_sub_index(query).to(self.pt_idx_dtype)
         derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
         if truncated_flag: # end in false
             size_sub_index = torch.Size([self.padding_states]) + sub_index.size()
@@ -289,7 +292,17 @@ class LogicEnv_gym(gym.Env):
 
     
     def get_next_states(self,state: List[Term]) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
-        """Get next possible states and their indices for all states in the batch"""
+        """Compute candidate next states from a given state.
+
+        Returns
+        -------
+        derived_states : list[list[Term]]
+            Next symbolic states (unpadded list).
+        derived_sub_indices : torch.Tensor
+            Int64 tensor of shape ``(padding_states, padding_atoms, max_arity+1)``.
+        truncated_flag : bool
+            True if truncation enforced (e.g., explicit end).
+        """
         truncated_flag = False
 
         terminal_predicates = {'True', 'False', 'Endt', 'Endf'}
@@ -303,8 +316,8 @@ class LogicEnv_gym(gym.Env):
             derived_states = [state]
             
             # Compute and pad the sub_indices tensor to the expected shape.
-            derived_sub_indices = self.index_manager.get_atom_sub_index(state).unsqueeze(0)
-            padding = torch.zeros(self.padding_states - 1, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=torch.int64)
+            derived_sub_indices = self.index_manager.get_atom_sub_index(state).to(self.pt_idx_dtype).unsqueeze(0)
+            padding = torch.zeros(self.padding_states - 1, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=self.pt_idx_dtype)
             derived_sub_indices = torch.cat([derived_sub_indices, padding])
             
             return derived_states, derived_sub_indices, truncated_flag
@@ -328,9 +341,10 @@ class LogicEnv_gym(gym.Env):
                                                             facts_set=self.facts,
                                                             facts_indexed=self.index_manager.fact_index,
                                                             rules=self.index_manager.rules,
-                                                            excluded_fact = self.current_query if self.current_label == 1 else {},
+                                                            excluded_fact = self.current_query if self.current_label == 1 else None,
                                                             verbose=self.prover_verbose,
                                                             next_var_index=self.next_var_index,
+                                                            strategy= self.engine_strategy
                                                             )
             # if self.current_label == 1:
             #     if not (len(derived_states) == 1 and derived_states[0] and derived_states[0][0].predicate == 'False'):
@@ -370,6 +384,7 @@ class LogicEnv_gym(gym.Env):
                         excluded_fact = self.current_query if self.current_label == 1 else None,
                         verbose=self.prover_verbose,
                         next_var_index=self.next_var_index,
+                        strategy= self.engine_strategy
                     )
                 # if self.current_label == 1:
                 #     if not (len(derived_states) == 1 and derived_states[0] and derived_states[0][0].predicate == 'False'):
@@ -477,20 +492,30 @@ class LogicEnv_gym(gym.Env):
 
         if not derived_states:
             derived_states = [[Term(predicate='False', args=())]]
-            derived_sub_indices = torch.stack([self.index_manager.get_atom_sub_index(s) for s in derived_states])
+            derived_sub_indices = torch.stack([self.index_manager.get_atom_sub_index(s).to(self.pt_idx_dtype) for s in derived_states])
         else:
-            derived_sub_indices = torch.stack(final_sub_indices)
+            derived_sub_indices = torch.stack(final_sub_indices).to(self.pt_idx_dtype)
 
         # Pad derived_sub_indices
         num_derived = len(derived_states)
         if num_derived < self.padding_states:
-            padding = torch.zeros(self.padding_states - num_derived, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=torch.int64)
+            padding = torch.zeros(self.padding_states - num_derived, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=self.pt_idx_dtype)
             derived_sub_indices = torch.cat([derived_sub_indices, padding])
 
         return derived_states, derived_sub_indices, truncated_flag
     
     def get_done_reward(self,state: List[Term], label: int) -> Tuple[torch.Tensor, torch.Tensor, bool]:
-        """Get done, reward, and success flag for a state."""
+        """Compute termination and reward signals for a proposed next state.
+
+        Returns
+        -------
+        done : torch.Tensor
+            Boolean scalar.
+        reward : torch.Tensor
+            Scalar reward.
+        successful : bool
+            Whether the transition solved the query.
+        """
         assert label is not None, f"Label is None"
 
         any_atom_false = any(atom.predicate == 'False' for atom in state)
@@ -534,7 +559,17 @@ class LogicEnv_gym(gym.Env):
                            queries: List[Rule], 
                            n: int = 1, 
                            labels: List[int] = None):
-        """Get random queries from a list of queries"""
+        """Sample queries (and labels) from a pool.
+
+        Parameters
+        ----------
+        queries : list[Term]
+            Source pool to sample from.
+        n : int
+            Number to sample.
+        return_tensor : bool
+            If True, also return tensor versions.
+        """
         assert n <= len(queries), f"Number of queries ({n}) is greater than the number of queries ({len(queries)})"
         sampled_indices = self.seed_gen.sample(range(len(queries)), n)
         sampled_queries = [queries[i] for i in sampled_indices]
@@ -551,8 +586,8 @@ class LogicEnv_gym(gym.Env):
         false_state = Term(predicate="False", args=())
 
         derived_states_next = [[false_state]]
-        derived_sub_indices_next = torch.zeros(sub_indices_shape, device=self.device, dtype=torch.int64)
+        derived_sub_indices_next = torch.zeros(sub_indices_shape, device=self.device, dtype=self.pt_idx_dtype)
 
-        false_sub_id = torch.tensor([self.predicate_false_idx, 0, 0], device=self.device, dtype=torch.int64)
+        false_sub_id = torch.tensor([self.predicate_false_idx, 0, 0], device=self.device, dtype=self.pt_idx_dtype)
         derived_sub_indices_next[0, 0] = false_sub_id
         return derived_states_next, derived_sub_indices_next

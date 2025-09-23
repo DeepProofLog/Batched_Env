@@ -151,11 +151,8 @@ class IndexManager():
 
 
     @lru_cache(maxsize=131_072)
-    def _state_tuple_to_subidx(self, key: Tuple[int, ...]) -> torch.Tensor:   # type: ignore[misc]
-        """
-        Same contract as the old _state_key_to_subidx but without     │
-        (i) string parsing and (ii) per-call Python → Torch copies.   │
-        """
+    def _state_tuple_to_subidx(self, key: Tuple[int, ...]) -> torch.Tensor:
+        """Convert a state tuple key back to a sub-index tensor."""
         # `as_tensor()` avoids an extra copy when the cache hits
         flat = torch.as_tensor(key, dtype=torch.int64, device=self.device)
         return flat.view(self.padding_atoms, self.max_arity + 1)
@@ -297,6 +294,26 @@ class IndexManager():
         return ", ".join(terms)
 
     def build_fact_index(self, facts: List[Term]) -> Dict[Tuple, Set[Term]]:
+        """Build an inverted index over facts supporting partial-argument lookup.
+
+        The index key format is:
+            (predicate, (pos0, const0), (pos1, const1), ...)
+        where each ``(pos, const)`` pair indicates a fixed (non-variable) argument position
+        and its ground constant. For every fact we generate keys for **all** subsets of its
+        fixed-argument positions, enabling queries such as:
+            - all facts of a predicate
+            - facts of a predicate with the 1st argument fixed, etc.
+
+        Parameters
+        ----------
+        facts : List[Term]
+            Iterable of ground facts to index.
+
+        Returns
+        -------
+        Dict[Tuple, Set[Term]]
+            Mapping from subset-keys to the set of matching facts.
+        """
         self.fact_index.clear()
         for fact in facts:
             predicate = fact.predicate
