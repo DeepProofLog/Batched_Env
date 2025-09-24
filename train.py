@@ -282,6 +282,7 @@ def _train_if_needed(
     training_fn = model.learn
     training_args = {"total_timesteps": args.timesteps_train, "callback": callbacks}
     profile_code(False, training_fn, **training_args)  # cProfile
+    # exit(0)
     # Restore desired checkpoint
     if args.restore_best_val_model:
         model = eval_cb.restore_best_ckpt(model.get_env())
@@ -300,7 +301,7 @@ def _attach_kge_to_policy(model: PPO, im: IndexManager, engine: Optional[KGEInfe
     model.policy.kge_inference_engine = engine
     model.policy.index_manager = im
     kge_indices = [idx for pred, idx in im.predicate_str2idx.items() if pred.endswith("_kge")]
-    model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.long)
+    model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.int32)
 
 
 def _eval_mode_from_args(args: Any) -> str:

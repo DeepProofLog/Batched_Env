@@ -1058,7 +1058,7 @@ class HybridConstantEmbedder(nn.Module):
             image_indices = indices[image_mask]
             
             # Directly index using valid positions
-            selected_images = self.image_data[image_indices.long()]
+            selected_images = self.image_data[image_indices.to(torch.int32)]
             
             # Add channel dimension if missing (for single images)
             if selected_images.dim() == 3:
@@ -1071,7 +1071,7 @@ class HybridConstantEmbedder(nn.Module):
         # Process regular indices
         if regular_mask.any():
             regular_indices = indices[regular_mask] - self.num_image
-            embeddings[regular_mask] = self.regular_embedder(regular_indices.long())
+            embeddings[regular_mask] = self.regular_embedder(regular_indices.to(torch.int32))
             
         return embeddings
 

@@ -137,6 +137,7 @@ class LogicEnv_gym(gym.Env):
                 shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
                 dtype=self.np_idx_dtype,
             ),  
+            'action_mask': gym.spaces.MultiBinary(self.padding_states),
         }
         self.observation_space = gym.spaces.Dict(obs_spaces)
         self.action_space = gym.spaces.Discrete(self.padding_states)
@@ -218,6 +219,9 @@ class LogicEnv_gym(gym.Env):
 
         sub_index = self.index_manager.get_atom_sub_index(query).to(self.pt_idx_dtype)
         derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
+        valid = len(derived_states)
+        action_mask = torch.zeros(self.padding_states, dtype=torch.uint8)
+        action_mask[:valid] = 1
         if truncated_flag: # end in false
             size_sub_index = torch.Size([self.padding_states]) + sub_index.size()
             derived_states, derived_sub_indices = self.end_in_false(size_sub_index)
@@ -228,13 +232,14 @@ class LogicEnv_gym(gym.Env):
                 "state": NonTensorData(data=query),
                 "label": torch.tensor(label, device=self.device),
                 "done": torch.tensor(0, dtype=torch.bool, device=self.device),
-                "reward": torch.tensor(0, dtype=torch.float32, device=self.device),
+                "reward": torch.tensor(0, dtype=self.pt_idx_dtype, device=self.device),
                 "derived_states": NonTensorData(data=derived_states),
                 "derived_sub_indices": derived_sub_indices,
             },
         )
         obs = {'sub_index': self.tensordict['sub_index'].cpu().numpy(),
-               'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy()}
+               'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy(),
+               'action_mask': action_mask.cpu().numpy(),}
         if self.verbose:
             print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'],label=label)
         return obs, {}
@@ -256,6 +261,9 @@ class LogicEnv_gym(gym.Env):
 
         done_next, reward_next, successful = self.get_done_reward(next_state, self.tensordict['label'].item())
         derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
+        valid = len(derived_states_next)
+        action_mask = torch.zeros(self.padding_states, dtype=torch.uint8)
+        action_mask[:valid] = 1
         self.current_depth += 1
         exceeded_max_depth = (self.current_depth >= self.max_depth)
         if exceeded_max_depth: print('\nMax depth reached', self.current_depth.item()) if self.verbose else None
@@ -282,7 +290,8 @@ class LogicEnv_gym(gym.Env):
         }))
 
         obs = {'sub_index': self.tensordict['sub_index'].cpu().numpy(),
-               'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy()}
+               'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy(),
+               'action_mask': action_mask.cpu().numpy(),}
         reward = self.tensordict['reward'].cpu().numpy()
         done = self.tensordict['done'].cpu().numpy()
         if self.verbose:
@@ -299,7 +308,7 @@ class LogicEnv_gym(gym.Env):
         derived_states : list[list[Term]]
             Next symbolic states (unpadded list).
         derived_sub_indices : torch.Tensor
-            Int64 tensor of shape ``(padding_states, padding_atoms, max_arity+1)``.
+            Int32 tensor of shape ``(padding_states, padding_atoms, max_arity+1)``.
         truncated_flag : bool
             True if truncation enforced (e.g., explicit end).
         """
@@ -395,8 +404,8 @@ class LogicEnv_gym(gym.Env):
 
                 # MEMORY
                 if self.memory_pruning:
-                    self.memory.add(",".join(str(s) for s in current_state if s.predicate not in ['False', 'True', 'End']))
-                    visited_mask = [",".join(str(s) for s in state) in self.memory for state in derived_states]
+                    self.memory.add(_state_to_hashable([s for s in current_state if s.predicate not in ['False','True','End']]))
+                    visited_mask = [_state_to_hashable(state) in self.memory for state in derived_states]
                     if any(visited_mask):
                         print(f"Memory: {self.memory}") if self.verbose else None
                         print(f"Visited mask: {visited_mask}. Current state: {current_state} -> Derived states: {derived_states}") if self.verbose else None

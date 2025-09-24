@@ -196,7 +196,7 @@ class PolicyNetwork(nn.Module):
             nn.Linear(hidden_dim, embed_dim)
         )
     
-    def forward(self, obs_embeddings, action_embeddings, action_atom_indices):
+    def forward(self, obs_embeddings, action_embeddings, action_mask):
         # Process observation embeddings through initial transformation
         x = self.obs_transform(obs_embeddings)
         # Pass through a series of residual blocks to deepen the representation
@@ -209,8 +209,9 @@ class PolicyNetwork(nn.Module):
         # Compute similarity (dot product) between observation and action embeddings
         logits = torch.matmul(x, action_embeddings.transpose(-2, -1)).squeeze(-2)
         # logits = F.cosine_similarity(x, action_embeddings, dim=-1) # Compare along the embedding dimension
-        padding_condition = action_atom_indices.sum(dim=-1).sum(dim=-1) 
-        logits = torch.where(padding_condition == 0, float('-inf'), logits)  
+
+        # action_mask: (batch, pad_states) with 1 for valid slots
+        logits = logits.masked_fill(~action_mask.bool(), float("-inf"))  
 
         return logits
 
@@ -286,8 +287,8 @@ class CustomNetwork(nn.Module):
         - latent value representation
         """
         # Assuming `features` is observation sub_indices passed here for embedding
-        obs_embeddings, action_embeddings, action_atom_indices = features
-        probs = self.policy_network(obs_embeddings, action_embeddings, action_atom_indices) # (batch_size=n_envs,pad_states)
+        obs_embeddings, action_embeddings, action_mask = features
+        probs = self.policy_network(obs_embeddings, action_embeddings, action_mask) # (batch_size=n_envs,pad_states)
         value = self.value_network(obs_embeddings) # (batch_size=n_envs,n_states=1)
         return probs, value
     
@@ -296,8 +297,8 @@ class CustomNetwork(nn.Module):
         Forward method for the actor network.
         Accepts features (which can include sub_indices for embedding) and outputs the latent policy representation.
         """
-        obs_embeddings, action_embeddings, action_atom_indices, = features
-        return self.policy_network(obs_embeddings, action_embeddings, action_atom_indices)
+        obs_embeddings, action_embeddings, action_mask = features
+        return self.policy_network(obs_embeddings, action_embeddings, action_mask)
 
 
     def forward_critic(self, features: torch.Tensor) -> torch.Tensor:
@@ -305,7 +306,7 @@ class CustomNetwork(nn.Module):
         Forward method for the critic network.
         Accepts features (which can include sub_indices for embedding) and outputs the latent value representation.
         """
-        obs_embeddings, _, _ = features
+        obs_embeddings, _, _, _ = features
         return self.value_network(obs_embeddings)
 
 
@@ -341,12 +342,11 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
 
         obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
         action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
-        action_atom_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3)
+        action_mask = observations["action_mask"]
+        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.to(torch.int32)) # (batch_size=n_envs,n_states=1,embedding_dim)
+        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices.to(torch.int32)) # (batch_size=n_envs,pad_states,embedding_dim)
 
-        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.long()) # (batch_size=n_envs,n_states=1,embedding_dim)
-        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices.long()) # (batch_size=n_envs,pad_states,embedding_dim)
-
-        return obs_embeddings, action_embeddings, action_atom_indices #, valid_actions_mask
+        return obs_embeddings, action_embeddings, action_mask #, valid_actions_mask
 
 
 
@@ -401,7 +401,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         
     #     kge_preds = [pred for pred in self.index_manager.predicate_str2idx if pred.endswith('_kge')]
     #     kge_indices = [self.index_manager.predicate_str2idx[p] for p in kge_preds]
-    #     self.kge_indices_tensor = torch.tensor(kge_indices, device=self.device, dtype=torch.long)
+    #     self.kge_indices_tensor = torch.tensor(kge_indices, device=self.device, dtype=torch.int32)
 
     #     if self.kge_integration_strategy == 'train_bias':
     #         # A simple MLP to learn a bias for the KGE score
@@ -451,7 +451,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
                 # 1. KGE scores
                 scores = self.kge_inference_engine.predict_batch(atoms_to_predict)
                 kge_log_probs = torch.log(torch.as_tensor(scores, device=log_prob.device, dtype=log_prob.dtype) + 1e-9)
-                idx_tensor = torch.tensor(original_indices, device=log_prob.device, dtype=torch.long)
+                idx_tensor = torch.tensor(original_indices, device=log_prob.device, dtype=torch.int32)
                 flat_lp = log_prob.view(-1)
                 # for i, atom in enumerate(atoms_to_predict):
                 #     print(f"Atom: {atom}, Score: {scores[i]}")

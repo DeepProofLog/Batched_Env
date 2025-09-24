@@ -37,30 +37,30 @@ if __name__ == "__main__":
     ENDT_ACTION = [False] # Append an action to stop the proof search in True
     ENDF_ACTION = [False] # Append an action to stop the proof search in fail
     SKIP_UNARY_ACTIONS = [True]
-    ENT_COEF = [0.2]# [0.5,0.8]
-    CLIP_RANGE = [0.2]# [0.1]
+    ENT_COEF = [0.2] # [0.5,0.8]
+    CLIP_RANGE = [0.2] # [0.2, 0.4]
     ENGINE = ['python']
-    ENGINE_STRATEGY = ['cmp'] # complete (cmp) or rules_then_facts (rtf)
+    ENGINE_STRATEGY = ['cmp','rft'] # ['cmp','rft'] # complete (cmp) or rules_then_facts (rtf)
     REWARD_TYPE = [0] # 0: initial, 1: avoiding neg proofs, 2: classification
  
     # Dataset settings 
-    DATASET_NAME =  ["countries_s3"] #["countries_s2", "countries_s3", 'family', 'wn18rr']
-    TRAIN_DEPTH = [None] #[{-1,3,2}]
-    VALID_DEPTH = [None] #[{3,4}]
-    TEST_DEPTH = [None] #[{2,3,4}]
+    DATASET_NAME =  ["countries_s3"] # ["countries_s2", "countries_s3", 'family', 'wn18rr']
+    TRAIN_DEPTH = [None] # [{-1,3,2}]
+    VALID_DEPTH = [None] # [{3,4}]
+    TEST_DEPTH = [None] # [{2,3,4}]
     SEED = [[0]]
     LEARN_EMBEDDINGS = [True]
-    ATOM_EMBEDDER = ['transe'] #['complex','rotate','transe','attention','rnn']
+    ATOM_EMBEDDER = ['transe'] # ['complex','rotate','transe','attention','rnn']
     STATE_EMBEDDER = ['mean']
     PADDING_ATOMS = [6]
     PADDING_STATES = [-1] # -1 sets the max padding size to a preset value (check below)
-    ATOM_EMBEDDING_SIZE = [64] # 256 for countries (automatically selected below)
+    ATOM_EMBEDDING_SIZE = [256] # 256 for countries (automatically selected below)
     CORRUPTION_MODE =  ['dynamic']
 
     # sum_eval sums the KGE scores during eval only
     # train combines the KGE scores with problogs during training
     # train_bias uses an MLP to learn a bias on the KGE scores
-    KGE_INTEGRATION_STRATEGY = [None] #['train', 'train_bias','sum_eval'] 
+    KGE_INTEGRATION_STRATEGY = [None] # [None, 'train', 'train_bias','sum_eval'] 
     KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
     # KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
     KGE_SCORES_FILE = [None] # Whether to load precomputed KGE scores (not neccessarily all)
@@ -85,10 +85,10 @@ if __name__ == "__main__":
     test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [900000]
+    TIMESTEPS_TRAIN = [500000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
-    TRAIN_NEG_RATIO = [1]       # Ratio of negative to positive queries during training.
+    TRAIN_NEG_RATIO = [1,4] # [1,4] Ratio of negative to positive queries during training.
     EVAL_NEG_SAMPLES = [None]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
     TEST_NEG_SAMPLES = [None]  # Number of negative samples per positive for testing. Use None for all.
     n_eval_queries = None
@@ -97,14 +97,14 @@ if __name__ == "__main__":
     plot = False # Whether to plot the policy behaviour during eval
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    n_envs = 128
+    N_ENVS = [16, 128] # [16,128]
     n_steps = 128
-    batch_size = 128 # Ensure batch size is a factor of n_steps (for the buffer).
+    BATCH_SIZE = [128,16] # [128,16] Ensure batch size is a factor of n_steps (for the buffer).
     n_eval_envs = 1
     # n_callback_eval_envs = 1 # Number of environments to use for evaluation in the callback # should be one in CustomEvalCallback
-    eval_freq = n_steps*n_envs
-    n_epochs = 10 # number of epochs to train the model with the collected rollout
-    lr = 3e-4
+    # eval_freq = n_steps*n_envs
+    N_EPOCHS = [10,30] # [10,30] number of epochs to train the model with the collected rollout
+    LR = [3e-4, 1e-4]
 
     max_total_vars = 100
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     if args.eval: load_model = True; TIMESTEPS_TRAIN = [0]
     if args.test_depth: TEST_DEPTH = [str(args.test_depth)]
     if args.n_test_queries: n_test_queries = int(args.n_test_queries)
-    if args.n_envs: n_envs = int(args.n_envs)
+    # if args.n_envs: n_envs = int(args.n_envs)
     if args.n_eval_envs: n_eval_envs = int(args.n_eval_envs)
     if args.timesteps: TIMESTEPS_TRAIN = [int(args.timesteps)]
     if args.train_neg_ratio is not None: TRAIN_NEG_RATIO = [args.train_neg_ratio]
@@ -214,6 +214,10 @@ if __name__ == "__main__":
         'kge_scores_file': KGE_SCORES_FILE,
         'reward_type': REWARD_TYPE,
         'kge_integration_strategy': KGE_INTEGRATION_STRATEGY,
+        'n_epochs': N_EPOCHS,
+        'lr': LR,
+        'n_envs': N_ENVS,
+        'batch_size': BATCH_SIZE,
     }
 
     # Generate all combinations using product
@@ -306,19 +310,20 @@ if __name__ == "__main__":
         args.models_path = models_path
         args.n_eval_queries = n_eval_queries
         args.n_test_queries = n_test_queries
-        args.eval_freq = eval_freq
-        args.n_envs = n_envs
+        # args.n_envs = n_envs
         args.n_eval_envs = n_eval_envs
         args.n_steps = n_steps
-        args.n_epochs = n_epochs
-        args.batch_size = batch_size
-        args.lr = lr
+        # args.eval_freq = eval_freq
+        args.eval_freq = n_steps*args.n_envs
+        # args.n_epochs = n_epochs
+        # args.batch_size = batch_size
+        # args.lr = lr
 
         run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,
                     args.padding_atoms,args.padding_states,args.false_rules,args.endt_action, 
                     args.endf_action, args.skip_unary_actions,args.memory_pruning,args.max_depth,
                     args.ent_coef,args.clip_range,args.engine,args.engine_strategy,args.train_neg_ratio, args.use_kge_action,
-                    args.reward_type, args.kge_integration_strategy
+                    args.reward_type, args.kge_integration_strategy, args.n_epochs, args.lr, args.n_envs
                     )
         
         args.run_signature = '-'.join(f'{v}' for v in run_vars)

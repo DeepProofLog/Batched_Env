@@ -79,8 +79,8 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
         queries=data_handler.valid_queries,
         labels=[1] * len(data_handler.valid_queries),
         facts=facts_set,
-        verbose=1,
-        prover_verbose=1,
+        verbose=0,
+        prover_verbose=0,
     ) for i in range(args.n_eval_envs)]
     
     callback_env_fns = [make_env(
@@ -133,8 +133,8 @@ class CustomDummyVecEnv(VecEnv):
         self.metadata = env0.metadata
 
         # track per-env episode counts/targets (to be set externally)
-        self._episode_count = np.zeros(self.num_envs, dtype=int)
-        self._episode_target = np.full(self.num_envs, fill_value=np.inf, dtype=int)
+        self._episode_count = np.zeros(self.num_envs, dtype=np.int32)
+        self._episode_target = np.full(self.num_envs, fill_value=np.inf, dtype=np.int32)
 
         # only step/reset active envs
         self.active_envs = np.ones(self.num_envs, dtype=bool)
