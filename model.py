@@ -306,7 +306,7 @@ class CustomNetwork(nn.Module):
         Forward method for the critic network.
         Accepts features (which can include sub_indices for embedding) and outputs the latent value representation.
         """
-        obs_embeddings, _, _, _ = features
+        obs_embeddings, _, _ = features
         return self.value_network(obs_embeddings)
 
 
