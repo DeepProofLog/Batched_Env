@@ -34,17 +34,24 @@ if __name__ == "__main__":
     # hpo: first ent_coef, try with reward type, 5 seeds, 300k steps
     FALSE_RULES = [False] 
     MEMORY_PRUNING = [True]
-    ENDT_ACTION = [False] # Append an action to stop the proof search in True
-    ENDF_ACTION = [False] # Append an action to stop the proof search in fail
+    ENDT_ACTION = [False] # Append an action to stop the proof search in False
+    ENDF_ACTION = [True] # Append an action to stop the proof search in fail
     SKIP_UNARY_ACTIONS = [True]
     ENT_COEF = [0.2] # [0.5,0.8]
     CLIP_RANGE = [0.2] # [0.2, 0.4]
     ENGINE = ['python']
-    ENGINE_STRATEGY = ['cmp','rft'] # ['cmp','rft'] # complete (cmp) or rules_then_facts (rtf)
-    REWARD_TYPE = [0] # 0: initial, 1: avoiding neg proofs, 2: classification
+    ENGINE_STRATEGY = ['rft'] # ['cmp','rft'] # complete (cmp) or rules_then_facts (rtf)
+    REWARD_TYPE = [2] # 0: initial, 1: avoiding neg proofs, 2: classification
+
+    TOP_K_ACTIONS = [None]  # Number of actions to keep based on value scores (None disables filtering)
+    TOP_K_CURRICULUM = [False]
+    TOP_K_INITIAL = [8]
+    TOP_K_FINAL = [8]
+    TOP_K_SCHEDULE = ['cte']
+    TOP_K_START_STEP = [200000]  # Delay (timesteps) before enabling curriculum filtering
  
     # Dataset settings 
-    DATASET_NAME =  ["countries_s3"] # ["countries_s2", "countries_s3", 'family', 'wn18rr']
+    DATASET_NAME =  ["family"] # ["countries_s2", "countries_s3", 'family', 'wn18rr']
     TRAIN_DEPTH = [None] # [{-1,3,2}]
     VALID_DEPTH = [None] # [{3,4}]
     TEST_DEPTH = [None] # [{2,3,4}]
@@ -80,31 +87,29 @@ if __name__ == "__main__":
     models_path = "models/"
     rules_file = "rules.txt"
     facts_file = "train.txt"
-    train_file = "train.txt"
-    valid_file = "valid.txt"
-    test_file = "test.txt"
 
     # Training parameters
-    TIMESTEPS_TRAIN = [500000]
+    TIMESTEPS_TRAIN = [700000]
     MODEL_NAME = ["PPO"]
     MAX_DEPTH = [20]
-    TRAIN_NEG_RATIO = [1,4] # [1,4] Ratio of negative to positive queries during training.
-    EVAL_NEG_SAMPLES = [None]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
-    TEST_NEG_SAMPLES = [None]  # Number of negative samples per positive for testing. Use None for all.
-    n_eval_queries = None
+    TRAIN_NEG_RATIO = [1] # [1,4] Ratio of negative to positive queries during training.
+    EVAL_NEG_SAMPLES = [1]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
+    TEST_NEG_SAMPLES = [100]  # Number of negative samples per positive for testing. Use None for all.
+    n_train_queries = None
+    n_eval_queries = 500
     n_test_queries = None
     extended_eval_info = True # Whether to compute detailed eval info (e.g., MRR). Slower and different eval env
     plot = False # Whether to plot the policy behaviour during eval
     # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
     # The total number of steps in each rollout is n_steps*n_envs.
-    N_ENVS = [16, 128] # [16,128]
+    N_ENVS = [10] # [16,128]
     n_steps = 128
-    BATCH_SIZE = [128,16] # [128,16] Ensure batch size is a factor of n_steps (for the buffer).
-    n_eval_envs = 1
+    BATCH_SIZE = [128] # [128,16] Ensure batch size is a factor of n_steps (for the buffer).
+    n_eval_envs = 100
     # n_callback_eval_envs = 1 # Number of environments to use for evaluation in the callback # should be one in CustomEvalCallback
     # eval_freq = n_steps*n_envs
-    N_EPOCHS = [10,30] # [10,30] number of epochs to train the model with the collected rollout
-    LR = [3e-4, 1e-4]
+    N_EPOCHS = [10] # [10,30] number of epochs to train the model with the collected rollout
+    LR = [3e-4] # [3e-4, 1e-4]
 
     max_total_vars = 100
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -131,6 +136,18 @@ if __name__ == "__main__":
     parser.add_argument("--endf_action", default=None, type=ast.literal_eval, help="Enable Endf action")
     parser.add_argument("--kge_integration_strategy", type=str, choices=['train', 'train_bias', 'sum_eval', None], 
                         default=None, help="KGE integration strategy (default: None)")
+    parser.add_argument("--top_k_actions", default=None, type=int,
+                        help="Keep only the top-k actions per state according to the value network (set <=0 to disable)")
+    parser.add_argument("--top_k_curriculum", action='store_true',
+                        help="Enable curriculum learning for top_k_actions")
+    parser.add_argument("--top_k_initial", default=None, type=int,
+                        help="Initial value for top_k in curriculum (None for no filtering)")
+    parser.add_argument("--top_k_final", default=5, type=int,
+                        help="Final value for top_k in curriculum (default: 5)")
+    parser.add_argument("--top_k_schedule", default='linear', choices=['linear', 'exponential', 'step'],
+                        help="Curriculum schedule type (default: linear)")
+    parser.add_argument("--top_k_start_step", default=None, type=int,
+                        help="Timesteps to wait before enabling top-k filtering (overrides default experiment setting)")
 
 
     args = parser.parse_args()
@@ -155,6 +172,24 @@ if __name__ == "__main__":
     if args.reward_type is not None: REWARD_TYPE = [args.reward_type]
     if args.endt_action is not None: ENDT_ACTION = [args.endt_action]
     if args.endf_action is not None: ENDF_ACTION = [args.endf_action]
+
+    if args.top_k_actions is not None:
+        TOP_K_ACTIONS = [None if args.top_k_actions <= 0 else int(args.top_k_actions)]
+
+    if args.top_k_curriculum:
+        TOP_K_CURRICULUM = [True]
+
+    if args.top_k_initial is not None:
+        TOP_K_INITIAL = [args.top_k_initial]
+
+    if args.top_k_final is not None:
+        TOP_K_FINAL = [args.top_k_final]
+
+    if args.top_k_schedule is not None:
+        TOP_K_SCHEDULE = [args.top_k_schedule]
+
+    if args.top_k_start_step is not None:
+        TOP_K_START_STEP = [max(0, int(args.top_k_start_step))]
 
     if args.kge_integration_strategy is not None:
         KGE_INTEGRATION_STRATEGY = [args.kge_integration_strategy]
@@ -218,6 +253,12 @@ if __name__ == "__main__":
         'lr': LR,
         'n_envs': N_ENVS,
         'batch_size': BATCH_SIZE,
+        'top_k_actions': TOP_K_ACTIONS,
+        'top_k_curriculum': TOP_K_CURRICULUM,
+        'top_k_initial': TOP_K_INITIAL,
+        'top_k_final': TOP_K_FINAL,
+        'top_k_schedule': TOP_K_SCHEDULE,
+        'top_k_start_step': TOP_K_START_STEP,
     }
 
     # Generate all combinations using product
@@ -270,7 +311,11 @@ if __name__ == "__main__":
 
         if args.dataset_name == "mnist_addition":
             args.corruption_mode = None
-    
+
+        train_file = "train.txt"
+        valid_file = "valid.txt"
+        test_file = "test.txt"
+        
         if args.corruption_mode == "static":
             train_file = "train_label_corruptions.json"
             valid_file = "valid_label_corruptions.json"
@@ -308,6 +353,7 @@ if __name__ == "__main__":
         args.load_model = load_model
         args.save_model = save_model
         args.models_path = models_path
+        args.n_train_queries = n_train_queries
         args.n_eval_queries = n_eval_queries
         args.n_test_queries = n_test_queries
         # args.n_envs = n_envs
@@ -319,13 +365,38 @@ if __name__ == "__main__":
         # args.batch_size = batch_size
         # args.lr = lr
 
-        run_vars = (args.dataset_name,args.atom_embedder,args.state_embedder,args.atom_embedding_size,
-                    args.padding_atoms,args.padding_states,args.false_rules,args.endt_action, 
-                    args.endf_action, args.skip_unary_actions,args.memory_pruning,args.max_depth,
-                    args.ent_coef,args.clip_range,args.engine,args.engine_strategy,args.train_neg_ratio, args.use_kge_action,
-                    args.reward_type, args.kge_integration_strategy, args.n_epochs, args.lr, args.n_envs
-                    )
-        
+        run_vars = (
+            args.dataset_name,
+            args.atom_embedder,
+            args.state_embedder,
+            args.atom_embedding_size,
+            args.padding_atoms,
+            args.padding_states,
+            args.false_rules,
+            args.endt_action,
+            args.endf_action,
+            args.skip_unary_actions,
+            args.memory_pruning,
+            args.max_depth,
+            args.ent_coef,
+            args.clip_range,
+            args.engine,
+            args.engine_strategy,
+            args.train_neg_ratio,
+            args.use_kge_action,
+            args.reward_type,
+            args.kge_integration_strategy,
+            args.top_k_actions,
+            args.top_k_curriculum,
+            args.top_k_initial,
+            args.top_k_final,
+            args.top_k_schedule,
+            args.top_k_start_step,
+            args.n_epochs,
+            args.lr,
+            args.n_envs,
+        )
+
         args.run_signature = '-'.join(f'{v}' for v in run_vars)
         # # Redirect stdout to the Tee class
         # if use_logger:

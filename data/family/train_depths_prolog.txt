@@ -126,7 +126,7 @@ aunt(1284,286) 1
 aunt(1465,2089) 1
 aunt(215,135) 1
 aunt(1653,1650) 1
-aunt(179,1962) -1
+aunt(179,1962) 2
 aunt(96,588) 1
 aunt(557,653) 1
 aunt(173,1962) 1
@@ -461,7 +461,7 @@ aunt(1205,1208) 1
 aunt(1195,1440) 1
 aunt(2503,2537) 1
 aunt(1836,1844) 1
-aunt(1760,1764) -1
+aunt(1760,1764) 2
 aunt(690,1120) 1
 aunt(1165,571) 1
 aunt(822,827) 1
@@ -799,7 +799,7 @@ aunt(771,321) 1
 aunt(557,413) 1
 aunt(1035,1041) 1
 aunt(1469,1632) -1
-aunt(2562,2570) -1
+aunt(2562,2570) 2
 aunt(958,454) 2
 aunt(610,1061) 1
 aunt(1331,1334) 1
@@ -1329,7 +1329,7 @@ aunt(906,910) 1
 aunt(41,405) 1
 aunt(2862,734) 1
 aunt(1369,1283) 1
-aunt(2782,2804) -1
+aunt(2782,2804) 2
 aunt(2700,1674) 1
 aunt(1155,1196) 1
 aunt(1232,2065) 1
@@ -1400,7 +1400,7 @@ aunt(2775,2823) 1
 aunt(729,742) 1
 aunt(7,86) 1
 aunt(734,2117) 1
-aunt(1239,1411) -1
+aunt(1239,1411) 2
 aunt(534,932) 1
 aunt(53,59) 1
 aunt(240,116) 1
@@ -1437,9 +1437,9 @@ aunt(1262,1751) 1
 aunt(524,539) 2
 aunt(106,801) 1
 aunt(77,233) 1
-aunt(747,951) -1
+aunt(747,951) 2
 aunt(1389,2224) 1
-aunt(746,951) -1
+aunt(746,951) 2
 aunt(123,449) 1
 aunt(1387,1853) 1
 aunt(714,698) 1
@@ -1489,7 +1489,7 @@ aunt(1267,1256) 1
 aunt(218,249) 1
 aunt(1258,1236) 1
 aunt(7,38) 1
-aunt(2673,2848) -1
+aunt(2673,2848) 2
 aunt(94,156) 1
 aunt(1258,1238) 1
 aunt(1035,441) 1
@@ -1523,7 +1523,7 @@ aunt(491,96) 1
 aunt(2861,730) 1
 aunt(3,85) 1
 aunt(2862,731) 1
-aunt(1385,1853) -1
+aunt(1385,1853) 2
 aunt(8,17) 1
 aunt(8,16) 1
 aunt(996,999) 1
@@ -1772,7 +1772,7 @@ aunt(1195,690) 1
 aunt(2782,2788) 1
 aunt(2673,2693) 1
 aunt(2072,1026) 1
-aunt(829,852) -1
+aunt(829,852) 2
 aunt(2100,847) 1
 aunt(135,266) 1
 aunt(895,921) 1
@@ -1897,7 +1897,7 @@ aunt(1284,1266) 1
 aunt(714,704) 1
 aunt(1681,1683) 1
 aunt(736,2415) 2
-aunt(8,129) -1
+aunt(8,129) 2
 aunt(830,852) 1
 aunt(1414,2540) -1
 aunt(163,236) 1
@@ -2419,7 +2419,7 @@ brother(2040,2039) -1
 brother(1622,2854) -1
 brother(2870,2872) -1
 brother(283,282) -1
-brother(712,693) -1
+brother(712,693) 2
 brother(414,411) -1
 brother(1982,1985) 1
 brother(2572,2574) -1
@@ -2500,7 +2500,7 @@ brother(1225,1223) -1
 brother(286,1270) 1
 brother(2756,2757) 1
 brother(2481,1894) -1
-brother(1696,138) -1
+brother(1696,138) 2
 brother(1231,1239) 1
 brother(568,1163) 1
 brother(727,732) -1
@@ -2933,7 +2933,7 @@ brother(1237,1238) 1
 brother(1377,1375) 1
 brother(1364,1377) -1
 brother(1236,1237) -1
-brother(2050,2052) -1
+brother(2050,2052) 2
 brother(274,275) -1
 brother(1236,1231) -1
 brother(1944,1942) -1
@@ -3316,7 +3316,7 @@ brother(1543,1754) -1
 brother(1033,1030) -1
 brother(1170,1169) 1
 brother(311,118) -1
-brother(2702,1670) -1
+brother(2702,1670) 2
 brother(256,259) -1
 brother(697,704) -1
 brother(150,152) -1
@@ -3493,7 +3493,7 @@ brother(991,993) -1
 brother(176,179) 1
 brother(40,94) 1
 brother(177,179) 1
-brother(603,2529) -1
+brother(603,2529) 2
 brother(2469,2471) -1
 brother(924,925) -1
 brother(731,727) -1
@@ -3641,7 +3641,7 @@ brother(203,133) -1
 brother(2867,2868) -1
 brother(1945,1946) -1
 brother(347,493) -1
-brother(227,254) -1
+brother(227,254) 2
 brother(1972,1969) -1
 brother(730,728) 1
 brother(412,418) -1
@@ -4038,7 +4038,7 @@ brother(1001,1006) 1
 brother(1637,1639) 1
 brother(731,732) -1
 brother(1070,1072) 1
-brother(742,745) -1
+brother(742,745) 2
 brother(1133,1135) -1
 brother(2578,2576) -1
 brother(141,215) 1
@@ -4122,7 +4122,7 @@ brother(329,327) -1
 brother(1241,1240) 1
 brother(1242,1239) 1
 brother(1034,1035) 1
-brother(712,713) -1
+brother(712,713) 2
 brother(328,329) -1
 brother(421,423) -1
 brother(447,448) -1
@@ -4313,7 +4313,7 @@ daughter(51,145) 1
 daughter(630,629) -1
 daughter(1595,2058) -1
 daughter(79,5) 1
-daughter(2857,1631) 3
+daughter(2857,1631) 2
 daughter(841,2442) -1
 daughter(204,131) 1
 daughter(868,1430) 1
@@ -4440,7 +4440,7 @@ daughter(2487,2488) -1
 daughter(1214,2651) -1
 daughter(2699,1669) 1
 daughter(1734,396) 1
-daughter(884,874) -1
+daughter(884,874) 2
 daughter(526,525) 1
 daughter(656,1216) 1
 daughter(1063,471) 1
@@ -4490,7 +4490,7 @@ daughter(628,627) -1
 daughter(2051,2047) 1
 daughter(905,902) 1
 daughter(451,598) 1
-daughter(527,519) -1
+daughter(527,519) 2
 daughter(527,525) 1
 daughter(972,469) 1
 daughter(682,680) -1
@@ -4872,7 +4872,7 @@ daughter(1318,1316) -1
 daughter(2773,2770) 1
 daughter(1667,605) 1
 daughter(1777,1778) -1
-daughter(2711,1033) -1
+daughter(2711,1033) 2
 daughter(999,998) 1
 daughter(923,520) 1
 daughter(52,51) 1
@@ -4970,7 +4970,7 @@ daughter(1449,1448) -1
 daughter(1427,839) 1
 daughter(391,395) -1
 daughter(38,22) 1
-daughter(1963,176) -1
+daughter(1963,176) 2
 daughter(821,2933) -1
 daughter(3,1) 1
 daughter(1410,1505) -1
@@ -5246,7 +5246,7 @@ daughter(626,624) -1
 daughter(2850,1620) 1
 daughter(2799,2798) -1
 daughter(806,2996) 1
-daughter(2941,2942) -1
+daughter(2941,2942) 2
 daughter(1240,1229) 1
 daughter(470,552) 1
 daughter(1713,385) 1
@@ -5968,8 +5968,8 @@ father(2113,2112) -1
 father(88,318) 1
 father(1300,1294) -1
 father(1281,1261) 1
-father(232,1064) -1
-father(435,442) -1
+father(232,1064) 2
+father(435,442) 2
 father(20,73) 1
 father(212,249) -1
 father(368,93) -1
@@ -6106,7 +6106,7 @@ father(1261,1271) 1
 father(1254,773) -1
 father(2139,724) -1
 father(2452,2471) 1
-father(660,1205) -1
+father(660,1205) 2
 father(631,632) -1
 father(145,180) 1
 father(1914,361) -1
@@ -6193,7 +6193,7 @@ father(264,270) 1
 father(1819,1456) -1
 father(2458,2533) 1
 father(303,137) 1
-father(1664,2699) -1
+father(1664,2699) 2
 father(658,659) -1
 father(2995,2998) 1
 father(988,991) 1
@@ -6673,7 +6673,7 @@ father(21,422) 1
 father(1913,1958) 1
 father(1559,1561) -1
 father(2048,2047) -1
-father(1643,299) -1
+father(1643,299) 2
 father(232,471) 1
 father(432,594) 1
 father(643,645) -1
@@ -7388,7 +7388,7 @@ husband(1219,1220) 1
 husband(2150,98) 1
 husband(2636,2637) 1
 husband(1840,1453) 1
-husband(1837,1838) -1
+husband(1837,1838) 2
 husband(2297,2296) -1
 husband(360,361) 1
 husband(1022,996) 1
@@ -7608,7 +7608,7 @@ mother(76,232) 1
 mother(1618,1655) 1
 mother(30,36) 1
 mother(93,1712) 1
-mother(485,303) -1
+mother(485,303) 2
 mother(2780,2787) -1
 mother(1372,1510) -1
 mother(1366,1368) 1
@@ -7670,7 +7670,7 @@ mother(228,405) 1
 mother(920,751) 1
 mother(94,97) 2
 mother(1967,1972) 1
-mother(93,65) -1
+mother(93,65) 2
 mother(998,1003) 1
 mother(726,731) 1
 mother(721,722) 1
@@ -7706,7 +7706,7 @@ mother(1222,1219) 1
 mother(127,1256) 1
 mother(170,822) -1
 mother(2996,2998) 1
-mother(470,1064) -1
+mother(470,1064) 2
 mother(97,895) 1
 mother(2245,2246) -1
 mother(693,695) 1
@@ -7757,7 +7757,7 @@ mother(38,103) 1
 mother(1959,2167) -1
 mother(2914,2915) -1
 mother(998,1004) 1
-mother(304,305) -1
+mother(304,305) 2
 mother(1017,920) -1
 mother(1331,989) 1
 mother(340,1653) 1
@@ -7778,7 +7778,7 @@ mother(2661,1312) -1
 mother(1817,2441) -1
 mother(111,114) 1
 mother(2996,806) 1
-mother(739,744) -1
+mother(739,744) 2
 mother(1493,1494) -1
 mother(690,1183) 1
 mother(707,693) 1
@@ -7803,7 +7803,7 @@ mother(627,628) -1
 mother(736,2124) 1
 mother(39,46) 1
 mother(1282,1287) 1
-mother(1802,1806) -1
+mother(1802,1806) 2
 mother(243,2990) -1
 mother(2920,1422) -1
 mother(2745,2754) 1
@@ -7930,7 +7930,7 @@ mother(1793,1796) 1
 mother(154,166) 1
 mother(690,691) 1
 mother(1569,1572) 2
-mother(738,2861) -1
+mother(738,2861) 2
 mother(1137,1074) 1
 mother(671,673) -1
 mother(2453,2469) 1
@@ -7956,7 +7956,7 @@ mother(1537,1538) -1
 mother(936,937) 1
 mother(1670,1674) 1
 mother(1142,1151) 1
-mother(304,306) -1
+mother(304,306) 3
 mother(1618,1650) 1
 mother(121,449) 1
 mother(267,269) 1
@@ -7985,7 +7985,7 @@ mother(1669,2700) 1
 mother(2342,2337) 1
 mother(908,909) 1
 mother(2345,2357) 1
-mother(1618,1660) -1
+mother(1618,1660) 2
 mother(2772,2777) 1
 mother(1348,1344) 1
 mother(2550,2552) 2
@@ -8023,7 +8023,7 @@ mother(2432,2434) -1
 mother(1724,1718) -1
 mother(1,7) 1
 mother(11,29) 1
-mother(1802,1807) -1
+mother(1802,1807) 2
 mother(27,430) 1
 mother(1077,1680) 1
 mother(1956,1958) 1
@@ -8169,7 +8169,7 @@ mother(1381,1385) 1
 mother(457,124) 1
 mother(895,903) 1
 mother(146,51) 1
-mother(250,252) -1
+mother(250,252) 3
 mother(350,357) 1
 mother(1612,2447) 1
 mother(2668,2669) 1
@@ -8177,7 +8177,7 @@ mother(1372,1373) 1
 mother(208,146) -1
 mother(146,174) 1
 mother(1340,1018) 1
-mother(2832,2837) -1
+mother(2832,2837) 2
 mother(633,634) -1
 mother(263,265) 1
 mother(1262,1276) 1
@@ -8283,7 +8283,7 @@ mother(2575,2579) 1
 mother(1295,1296) 2
 mother(89,90) 1
 mother(457,1408) 1
-mother(250,253) -1
+mother(250,253) 2
 mother(7,311) 1
 mother(254,257) 1
 mother(654,1689) 1
@@ -8305,7 +8305,7 @@ mother(1780,1784) -1
 mother(2439,2522) 1
 mother(1607,69) -1
 mother(254,552) 1
-mother(1669,2699) -1
+mother(1669,2699) 2
 mother(1299,1294) -1
 mother(2304,2301) -1
 mother(908,910) 1
@@ -8367,14 +8367,14 @@ mother(2213,2215) -1
 mother(1787,1788) 1
 mother(2764,2765) -1
 mother(2583,2584) -1
-mother(94,99) -1
+mother(94,99) 2
 mother(1392,1394) 1
 mother(332,334) 1
 mother(331,1640) 1
 mother(1362,236) 1
 mother(2614,2973) 1
 mother(822,826) 1
-mother(1802,1809) -1
+mother(1802,1809) 2
 mother(65,116) 1
 mother(263,266) 1
 mother(2339,2403) 1
@@ -8491,7 +8491,7 @@ mother(131,215) 1
 mother(496,248) -1
 mother(24,287) 1
 mother(2508,2509) -1
-mother(1644,299) -1
+mother(1644,299) 2
 mother(642,643) -1
 mother(11,28) 1
 mother(140,1737) -1
@@ -8540,7 +8540,7 @@ mother(559,1682) 1
 mother(2600,2602) 1
 mother(354,228) 1
 mother(2597,2599) -1
-mother(485,356) -1
+mother(485,356) 2
 mother(1378,1747) -1
 mother(375,373) -1
 mother(1831,2870) 1
@@ -8587,7 +8587,7 @@ mother(2832,2835) 1
 mother(451,452) 1
 mother(1954,1955) -1
 mother(2234,2236) -1
-mother(2403,2331) -1
+mother(2403,2331) 2
 mother(343,1169) 1
 mother(2784,2790) -1
 mother(348,486) 1
@@ -8640,7 +8640,7 @@ mother(1196,1440) -1
 mother(397,366) 1
 mother(1469,2868) 1
 mother(343,1166) 1
-mother(2358,2361) -1
+mother(2358,2361) 2
 mother(1079,1090) -1
 mother(65,115) 1
 mother(693,701) 1
@@ -8665,7 +8665,7 @@ mother(2786,2795) 1
 mother(1243,1221) 1
 mother(106,109) 1
 mother(322,325) 1
-mother(774,830) -1
+mother(774,830) 2
 mother(2558,2561) 1
 mother(882,883) -1
 mother(66,67) -1
@@ -8697,13 +8697,13 @@ mother(2782,2810) 1
 mother(1084,1086) 1
 mother(434,592) 1
 mother(2527,2718) -1
-mother(1186,1189) -1
+mother(1186,1189) 3
 mother(93,240) 1
 mother(1037,2706) -1
 mother(1196,1441) 1
 mother(778,401) -1
 mother(1974,1975) 1
-mother(1186,1190) -1
+mother(1186,1190) 3
 mother(33,244) 1
 mother(226,12) 1
 mother(502,503) -1
@@ -8725,7 +8725,7 @@ mother(2500,2501) 1
 mother(599,1123) 1
 mother(1348,2283) 1
 mother(806,243) -1
-mother(602,2526) -1
+mother(602,2526) 2
 mother(1327,998) -1
 mother(1546,1766) 2
 mother(998,1001) 1
@@ -9668,7 +9668,7 @@ nephew(341,767) 1
 nephew(2957,1387) 1
 nephew(541,520) 1
 nephew(565,575) 1
-nephew(468,439) -1
+nephew(468,439) 2
 nephew(309,1108) 1
 nephew(552,41) 1
 nephew(310,6) 1
@@ -9715,7 +9715,7 @@ nephew(1579,1570) 1
 nephew(159,491) 1
 nephew(886,875) 1
 nephew(444,594) 1
-nephew(249,204) -1
+nephew(249,204) 2
 nephew(852,830) 1
 nephew(1617,335) 1
 nephew(2115,733) 1
@@ -9861,7 +9861,7 @@ nephew(1213,416) -1
 nephew(1984,1986) 1
 nephew(483,148) -1
 nephew(2706,1033) 1
-nephew(249,214) -1
+nephew(249,214) 2
 nephew(1033,257) 1
 nephew(1221,1237) 1
 nephew(843,775) 1
@@ -9923,7 +9923,7 @@ nephew(1256,1266) 1
 nephew(918,890) 1
 nephew(2720,2528) 1
 nephew(465,2671) 1
-nephew(1649,299) -1
+nephew(1649,299) 2
 nephew(231,78) 1
 nephew(116,241) 1
 nephew(341,768) 1
@@ -10150,7 +10150,7 @@ nephew(129,5) 1
 nephew(921,522) 2
 nephew(461,84) 1
 nephew(1341,739) 1
-nephew(468,230) -1
+nephew(468,230) 2
 nephew(130,331) 1
 nephew(1289,1368) 1
 nephew(1664,41) 1
@@ -10322,7 +10322,7 @@ nephew(2643,29) 1
 nephew(992,1025) 1
 nephew(1764,1760) 1
 nephew(341,766) 1
-nephew(450,598) -1
+nephew(450,598) 2
 nephew(1940,1937) 1
 nephew(1289,1369) 1
 nephew(67,2967) 1
@@ -10629,7 +10629,7 @@ nephew(706,732) 1
 nephew(845,831) 1
 nephew(14,9) 1
 nephew(2608,2606) 1
-nephew(63,61) -1
+nephew(63,61) 2
 nephew(1409,124) -1
 nephew(107,32) 1
 nephew(1519,1390) 1
@@ -11225,7 +11225,7 @@ nephew(1023,1233) 1
 nephew(14,41) 1
 nephew(1236,1257) 1
 nephew(1177,2124) 1
-nephew(468,231) -1
+nephew(468,231) 2
 nephew(2756,2748) 1
 nephew(719,746) 1
 nephew(689,1180) -1
@@ -11255,7 +11255,7 @@ nephew(1799,1985) 1
 nephew(1096,1101) 1
 nephew(1971,1975) 1
 nephew(2126,2118) 1
-nephew(1497,1288) -1
+nephew(1497,1288) 2
 nephew(14,3) 1
 nephew(412,557) 1
 nephew(2848,104) 1
@@ -11862,7 +11862,7 @@ niece(2527,449) 1
 niece(958,2829) 1
 niece(2697,227) 1
 niece(2072,1239) 1
-niece(135,204) -1
+niece(135,204) 2
 niece(30,262) 1
 niece(1,2975) 1
 niece(53,174) 1
@@ -12176,7 +12176,7 @@ niece(808,65) 1
 niece(829,1003) 1
 niece(2446,2527) 1
 niece(209,334) 1
-niece(1766,1765) -1
+niece(1766,1765) 2
 niece(690,1195) 1
 niece(1064,1035) 1
 niece(1255,1465) 1
@@ -12541,7 +12541,7 @@ niece(1392,1547) 1
 niece(1195,1157) 1
 niece(27,487) 1
 niece(144,209) 1
-niece(503,238) -1
+niece(503,238) 2
 niece(78,4) 1
 niece(1807,1987) 1
 niece(59,147) 1
@@ -13035,7 +13035,7 @@ niece(571,1161) 1
 niece(16,1663) 1
 niece(499,45) 1
 niece(592,430) 1
-niece(136,204) -1
+niece(136,204) 2
 niece(1699,205) 1
 niece(1653,130) 1
 niece(1240,1257) 1
@@ -13398,7 +13398,7 @@ sister(96,97) -1
 sister(1263,286) 1
 sister(1358,1359) -1
 sister(1681,652) -1
-sister(441,471) -1
+sister(441,471) 2
 sister(2742,2743) -1
 sister(976,972) -1
 sister(7,10) 1
@@ -13511,7 +13511,7 @@ sister(2317,869) 1
 sister(2339,2338) 1
 sister(2318,2314) 1
 sister(47,48) -1
-sister(906,903) -1
+sister(906,903) 2
 sister(733,731) 1
 sister(2317,2312) 1
 sister(39,83) 1
@@ -13640,7 +13640,7 @@ sister(1655,1658) 1
 sister(720,719) 1
 sister(1985,1987) -1
 sister(1283,1288) -1
-sister(138,1696) -1
+sister(138,1696) 2
 sister(705,698) 1
 sister(598,1667) -1
 sister(224,486) 1
@@ -13695,7 +13695,7 @@ sister(2474,2470) 1
 sister(1064,471) 1
 sister(1169,1166) 1
 sister(720,717) 1
-sister(2052,2050) -1
+sister(2052,2050) 2
 sister(1388,1389) -1
 sister(1129,1128) -1
 sister(1390,1384) 1
@@ -13974,7 +13974,7 @@ sister(2087,2083) 1
 sister(2526,2527) -1
 sister(534,924) 1
 sister(1963,1962) -1
-sister(1670,2702) -1
+sister(1670,2702) 2
 sister(163,465) 1
 sister(847,844) 1
 sister(1270,1263) -1
@@ -14038,7 +14038,7 @@ sister(173,175) 1
 sister(426,423) 2
 sister(437,1096) 1
 sister(1854,1858) -1
-sister(995,992) -1
+sister(995,992) 2
 sister(1760,1753) -1
 sister(2746,2747) -1
 sister(324,331) -1
@@ -14066,7 +14066,7 @@ sister(442,443) -1
 sister(2973,1696) 1
 sister(209,133) 1
 sister(1264,1275) -1
-sister(693,712) -1
+sister(693,712) 2
 sister(2086,2087) -1
 sister(1987,1985) -1
 sister(1007,1001) 1
@@ -14306,7 +14306,7 @@ sister(1167,1166) 1
 sister(1273,1264) -1
 sister(2224,1394) 1
 sister(2917,2517) -1
-sister(534,921) -1
+sister(534,921) 2
 sister(1682,1681) -1
 sister(1809,1803) -1
 sister(1272,1266) 1
@@ -14344,7 +14344,7 @@ sister(305,306) -1
 sister(209,213) 1
 sister(220,221) -1
 sister(830,776) -1
-sister(1369,1367) -1
+sister(1369,1367) 2
 sister(1029,412) 1
 sister(524,523) -1
 sister(1721,1719) -1
@@ -14505,7 +14505,7 @@ sister(771,2126) 1
 sister(1639,1637) 1
 sister(1275,286) 1
 sister(218,214) -1
-sister(595,303) -1
+sister(595,303) 2
 sister(39,79) -1
 sister(699,703) 1
 sister(1810,1807) -1
@@ -14539,7 +14539,7 @@ sister(255,257) -1
 sister(2079,1335) 1
 sister(2528,2529) -1
 sister(16,18) 1
-sister(523,522) -1
+sister(523,522) 2
 sister(17,18) 1
 sister(76,75) 1
 sister(39,86) 1
@@ -14733,7 +14733,7 @@ sister(1379,1377) 1
 sister(2118,2115) 1
 sister(209,132) 1
 sister(7,6) 1
-sister(252,251) -1
+sister(252,251) 2
 sister(1806,1809) -1
 sister(2090,2086) -1
 sister(1190,1192) -1
@@ -14851,7 +14851,7 @@ sister(214,215) -1
 sister(694,702) -1
 sister(2116,736) -1
 sister(2921,2516) -1
-sister(535,921) -1
+sister(535,921) 2
 sister(2317,2316) -1
 sister(1273,1263) -1
 sister(1670,2699) -1
@@ -14918,7 +14918,7 @@ sister(2856,1625) 1
 sister(45,493) 1
 sister(1388,1386) -1
 sister(2792,2793) -1
-sister(1403,1399) -1
+sister(1403,1399) 2
 sister(1821,1457) 1
 sister(1733,366) -1
 sister(527,526) -1
@@ -15037,7 +15037,7 @@ sister(1325,1324) -1
 sister(511,411) 1
 sister(1004,999) -1
 sister(534,922) 1
-sister(1024,2280) -1
+sister(1024,2280) 2
 sister(127,2464) 1
 sister(1401,1400) 1
 sister(2941,2943) -1
@@ -16512,7 +16512,7 @@ son(2743,449) -1
 son(1971,1966) 1
 son(2706,1031) 1
 son(160,149) 1
-son(444,441) -1
+son(444,441) 2
 son(1671,606) 1
 son(2314,2310) 1
 son(1696,2448) 1
@@ -16825,7 +16825,7 @@ uncle(1663,258) 1
 uncle(6,38) 1
 uncle(217,262) 1
 uncle(1663,606) 1
-uncle(242,115) -1
+uncle(242,115) 2
 uncle(1237,1502) 1
 uncle(1666,2699) 1
 uncle(692,2855) 1
@@ -16927,7 +16927,7 @@ uncle(439,474) 1
 uncle(2677,2673) 1
 uncle(421,523) 1
 uncle(431,592) 1
-uncle(13,125) -1
+uncle(13,125) 2
 uncle(411,44) 1
 uncle(1290,1266) 1
 uncle(2338,2403) 1
@@ -17189,7 +17189,7 @@ uncle(520,543) 1
 uncle(465,439) 1
 uncle(95,895) 1
 uncle(2577,2584) 1
-uncle(130,1617) -1
+uncle(130,1617) 2
 uncle(424,470) 1
 uncle(1894,1739) -1
 uncle(475,892) 1
@@ -17269,7 +17269,7 @@ uncle(497,79) 1
 uncle(875,877) 1
 uncle(770,761) 1
 uncle(497,39) 1
-uncle(1287,2234) -1
+uncle(1287,2234) 2
 uncle(2872,1449) -1
 uncle(493,497) 1
 uncle(462,2631) 1
@@ -17326,7 +17326,7 @@ uncle(323,650) -1
 uncle(563,2654) 1
 uncle(2611,1704) 1
 uncle(1867,1374) 1
-uncle(828,1431) -1
+uncle(828,1431) 2
 uncle(165,2684) 1
 uncle(205,1114) 1
 uncle(236,2966) -1
@@ -17572,7 +17572,7 @@ uncle(40,1362) 1
 uncle(1470,2867) 1
 uncle(743,757) -1
 uncle(227,2697) 1
-uncle(104,1355) -1
+uncle(104,1355) 2
 uncle(1663,2673) 1
 uncle(1287,1267) 1
 uncle(75,234) 1
@@ -17661,7 +17661,7 @@ uncle(1513,2957) 1
 uncle(141,222) 1
 uncle(6,79) 1
 uncle(1120,1134) 1
-uncle(764,1618) -1
+uncle(764,1618) 2
 uncle(775,1431) 1
 uncle(4,122) 1
 uncle(731,765) 1
@@ -17706,7 +17706,7 @@ uncle(1153,1180) 1
 uncle(339,216) 1
 uncle(1383,1395) 1
 uncle(1236,1603) 1
-uncle(231,468) -1
+uncle(231,468) 2
 uncle(412,353) 1
 uncle(227,14) 1
 uncle(904,917) 1
@@ -17862,7 +17862,7 @@ uncle(1383,1397) 1
 uncle(520,542) 1
 uncle(329,340) 1
 uncle(898,1702) 1
-uncle(328,1736) -1
+uncle(328,1736) 2
 uncle(236,67) 1
 uncle(4,79) 1
 uncle(2674,1562) 1
@@ -17905,7 +17905,7 @@ uncle(2230,1842) 1
 uncle(2523,2616) -1
 uncle(189,182) 1
 uncle(71,451) 1
-uncle(1712,115) -1
+uncle(1712,115) 2
 uncle(594,443) 1
 uncle(95,436) 1
 uncle(122,449) 1
@@ -18044,7 +18044,7 @@ uncle(594,444) 1
 uncle(604,465) 1
 uncle(1177,1163) 1
 uncle(711,698) 1
-uncle(61,63) -1
+uncle(61,63) 2
 uncle(1115,1120) -1
 uncle(857,2339) 1
 uncle(1286,1270) 1
@@ -18079,7 +18079,7 @@ uncle(86,461) 1
 uncle(519,542) 1
 uncle(2518,2503) 1
 uncle(405,57) 1
-uncle(2125,761) -1
+uncle(2125,761) 2
 uncle(731,2116) 1
 uncle(1234,1412) 1
 uncle(237,106) 1
@@ -18183,7 +18183,7 @@ uncle(328,335) 1
 uncle(1286,1271) 1
 uncle(150,97) 1
 uncle(423,520) 1
-uncle(230,468) -1
+uncle(230,468) 2
 uncle(1289,1267) 1
 uncle(1241,2072) 1
 uncle(61,116) -1
@@ -18203,7 +18203,7 @@ uncle(2484,1739) 1
 uncle(591,594) 1
 uncle(10,123) -1
 uncle(2130,2427) -1
-uncle(828,835) -1
+uncle(828,835) 2
 uncle(353,1570) 1
 uncle(2747,2758) 1
 uncle(2551,2564) 1
@@ -18622,7 +18622,7 @@ uncle(328,340) 1
 uncle(132,249) -1
 uncle(133,249) 1
 uncle(447,2528) 1
-uncle(337,143) -1
+uncle(337,143) 2
 uncle(2114,2123) 1
 uncle(590,747) 1
 uncle(1003,830) 1
@@ -18736,7 +18736,7 @@ uncle(328,130) 1
 uncle(6,76) 1
 uncle(2561,2572) 1
 uncle(2420,2421) 1
-uncle(764,346) -1
+uncle(764,346) 2
 uncle(229,2693) 1
 uncle(423,470) 1
 uncle(1969,1986) 1
@@ -18957,7 +18957,7 @@ uncle(775,852) 1
 uncle(2252,2259) -1
 uncle(606,2699) 1
 uncle(180,52) 1
-uncle(907,917) -1
+uncle(907,917) 2
 uncle(2666,1572) 1
 uncle(424,1035) 1
 uncle(1470,1476) 1

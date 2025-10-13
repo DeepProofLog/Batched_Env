@@ -347,6 +347,19 @@ class KGEInference:
         self.atom_scores[atom_string] = score
         return score
 
+    def predict_many(self, atom_strings: Sequence[str]) -> List[float]:
+        """
+        Computes independent KGE scores for a list of atom strings.
+        Each atom is evaluated as a standalone query (no ranking assumption).
+        """
+        if not atom_strings:
+            return []
+
+        scores = []
+        for atom in atom_strings:
+            scores.append(self.predict(atom))
+        return scores
+
     def predict_batch(self, atoms_for_ranking: Sequence[Union[str, Tuple]]) -> List[float]:
         """
         Evaluates a batch of candidate atoms FOR A SINGLE RANKING TASK.

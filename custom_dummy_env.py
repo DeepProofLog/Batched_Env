@@ -22,13 +22,14 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
     """
     facts_set = set(data_handler.facts)
 
-    def make_env(mode='train', seed=0, queries=None, labels=None, facts=None, verbose=0, prover_verbose=0):
+    def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0):
         def _init():
             env = LogicEnv_gym(
                 index_manager=index_manager,
                 data_handler=data_handler,
                 queries=queries,
                 labels=labels,
+                query_depths=query_depths,
                 facts=facts,
                 mode=mode,
                 corruption_mode=args.corruption_mode,
@@ -68,6 +69,7 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
         seed=int(env_seeds[i]),
         queries=data_handler.train_queries,
         labels=[1] * len(data_handler.train_queries),
+        query_depths=data_handler.train_queries_depths,
         facts=facts_set,
         verbose=0,
         prover_verbose=0,
@@ -78,6 +80,7 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
         seed=int(eval_env_seeds[i]),
         queries=data_handler.valid_queries,
         labels=[1] * len(data_handler.valid_queries),
+        query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
         verbose=0,
         prover_verbose=0,
@@ -88,6 +91,7 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
         seed=int(callback_env_seeds[i]),
         queries=data_handler.valid_queries,
         labels=[1] * len(data_handler.valid_queries),
+        query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
         verbose=0,
         prover_verbose=0,

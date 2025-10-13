@@ -15,12 +15,10 @@ from python_unification import get_next_unification_python
 
 def _state_to_hashable(state: List[Term]) -> frozenset:
     """
-    Converts a list of Term objects to a hashable frozenset representation.
-    A frozenset is inherently order-independent and efficient for hashing.
+    Hashable, order-independent key for a state using Term objects directly.
+    Term is an immutable, hashable dataclass, so this is safe and cheap.
     """
-    if not state:
-        return frozenset()
-    return frozenset((term.predicate, tuple(term.args)) for term in state)
+    return frozenset(state) if state else frozenset()
 
 class LogicEnv_gym(gym.Env):
     batch_locked = False
@@ -30,6 +28,7 @@ class LogicEnv_gym(gym.Env):
                 data_handler: Optional[DataHandler] = None,
                 queries: Optional[List[Term]] = None,
                 labels: Optional[List[int]] = None,
+                query_depths: Optional[List[Optional[int]]] = None,
                 facts: Optional[Set[Term]] = None,
                 mode: str = 'train',
                 corruption_mode: Optional[str] = None,
@@ -102,10 +101,18 @@ class LogicEnv_gym(gym.Env):
         self.mode = mode
         self.queries = queries
         self.labels = labels
+        if query_depths is not None:
+            self.query_depths = list(query_depths)
+        elif queries is not None:
+            self.query_depths = [None] * len(queries)
+        else:
+            self.query_depths = []
         self.n_episodes = len(queries) if queries is not None else 0
         self.eval_idx = 0
         self.consult_janus_eval = False
         self.next_var_index = self.index_manager.variable_start_index
+
+        self.current_query_depth_value = None
 
         if self.mode == 'train':
             self.train_neg_ratio = train_neg_ratio
@@ -146,15 +153,19 @@ class LogicEnv_gym(gym.Env):
     def reset(self, seed: Optional[int]= None, options=None):
         print('\n\nReset-----------------------------') if self.verbose or self.prover_verbose else None
         '''Reset the environment and get a new query based on the environment configuration'''
+        depth = None
         if self.mode == 'eval':
             '''When the number of episodes is reached, we set the eval mask to false
             so that the other envs can finish the eval. After n_episodes, reset with a False state'''
             if self.eval_idx < self.n_episodes:
-                state = self.queries[self.eval_idx]
-                label = self.labels[self.eval_idx]
+                idx = self.eval_idx
+                state = self.queries[idx]
+                label = self.labels[idx]
+                depth = self.query_depths[idx] if idx < len(self.query_depths) else None
             else:
                 state = Term(predicate='False', args=())
                 label = 0
+                depth = None
             self.eval_idx += 1
 
         elif self.mode == 'eval_with_restart':
@@ -163,14 +174,21 @@ class LogicEnv_gym(gym.Env):
 
             assert self.eval_idx < self.n_episodes, f"Eval index: {self.eval_idx}, n_episodes: {self.n_episodes}. "\
                     f"Adjust the number of episodes to evaluate in the callback."
-            
-            state = self.queries[self.eval_idx]
-            label = self.labels[self.eval_idx]
+            idx = self.eval_idx
+            state = self.queries[idx]
+            label = self.labels[idx]
+            depth = self.query_depths[idx] if idx < len(self.query_depths) else None
             self.eval_idx += 1
 
         elif self.mode == 'train':
             if self.corruption_mode:
-                state, _ = self.get_random_queries(self.queries, n=1)
+                state, _, depth = self.get_random_queries(
+                    self.queries,
+                    n=1,
+                    labels=self.labels,
+                    depths=self.query_depths,
+                    return_depth=True,
+                )
                 label = 1
                 if self.counter % (int(self.train_neg_ratio) + 1) != 0:
                     # Determine the number of negatives to request from the sampler
@@ -189,10 +207,17 @@ class LogicEnv_gym(gym.Env):
                     assert len(state) == 1, f"Length of negatives should be 1, but is {len(state)}"
                     state = state[0] # In train there should be only one negative
                     label = 0
+                    depth = None
                 self.counter += 1
 
             else: # Default case
-                state, _ = self.get_random_queries(self.queries, n=1)
+                state, _, depth = self.get_random_queries(
+                    self.queries,
+                    n=1,
+                    labels=self.labels,
+                    depths=self.query_depths,
+                    return_depth=True,
+                )
                 label = 1
         else:
             raise ValueError(f"Invalid mode: {self.mode}. Choose from 'train', 'eval', or 'eval_with_restart'.")
@@ -204,6 +229,7 @@ class LogicEnv_gym(gym.Env):
 
         self.current_query = state
         self.current_label = label
+        self.current_query_depth_value = depth if label == 1 else None
         return self._reset([state], label)
 
 
@@ -260,6 +286,8 @@ class LogicEnv_gym(gym.Env):
         next_sub_index = derived_sub_indices[action]
 
         done_next, reward_next, successful = self.get_done_reward(next_state, self.tensordict['label'].item())
+        # if not bool(done_next):
+        #     reward_next = reward_next - torch.tensor(0.01, device=self.device)
         derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
         valid = len(derived_states_next)
         action_mask = torch.zeros(self.padding_states, dtype=torch.uint8)
@@ -271,7 +299,13 @@ class LogicEnv_gym(gym.Env):
         done_next = done_next | exceeded_max_depth | truncate_flag
         truncated = bool(exceeded_max_depth) or bool(truncate_flag)
         
-        info = {}
+        label_value = int(self.tensordict["label"].item())
+        info = {
+            "label": label_value,
+            "query_type": "positive" if label_value == 1 else "negative",
+        }
+        info["query_depth"] = self.current_query_depth_value
+        info["max_depth_reached"] = bool(exceeded_max_depth)
         if done_next:
             info["is_success"] = successful and not truncated
             # if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
@@ -337,19 +371,18 @@ class LogicEnv_gym(gym.Env):
 
         if self.use_kge_action and state:
             filtered_state = [term for term in state if not term.predicate.endswith('_kge')]
-            if not filtered_state: state = [Term(predicate='True', args=())]
-            else: state = filtered_state
+            current_state = [Term(predicate='True', args=())] if not filtered_state else filtered_state
             # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
         # if self.engine == 'prolog':
-        #     derived_states, self.next_var_idx = get_next_unification_prolog(state,
+        #     derived_states, self.next_var_index = get_next_unification_prolog(state,
         #                                                  next_var_index=self.index_manager.next_var_index, 
         #                                                  verbose=self.prover_verbose)
         if self.engine == 'python':
             derived_states, self.next_var_index = get_next_unification_python(state,
                                                             facts_set=self.facts,
                                                             facts_indexed=self.index_manager.fact_index,
-                                                            rules=self.index_manager.rules,
+                                                            rules=self.index_manager.rules_by_pred,
                                                             excluded_fact = self.current_query if self.current_label == 1 else None,
                                                             verbose=self.prover_verbose,
                                                             next_var_index=self.next_var_index,
@@ -375,21 +408,20 @@ class LogicEnv_gym(gym.Env):
                 current_state = derived_states[0].copy()    
 
                 if self.use_kge_action and current_state:
-                    filtered_state = [term for term in state if not term.predicate.endswith('_kge')]
-                    if not filtered_state: state = [Term(predicate='True', args=())]
-                    else: state = filtered_state
+                    filtered_state = [term for term in current_state if not term.predicate.endswith('_kge')]
+                    current_state = [Term(predicate='True', args=())] if not filtered_state else filtered_state
                     # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
                 # if self.engine == 'prolog':
-                #     derived_states, self.next_var_idx = get_next_unification_prolog(state,
+                #     derived_states, self.next_var_index = get_next_unification_prolog(state,
                 #                                 next_var_index=self.next_var_index, 
                 #                                 verbose=self.prover_verbose)
                 if self.engine == 'python':
-                    derived_states, self.next_var_idx = get_next_unification_python(
+                    derived_states, self.next_var_index = get_next_unification_python(
                         current_state,
                         facts_set=self.facts,
                         facts_indexed=self.index_manager.fact_index,
-                        rules=self.index_manager.rules,
+                        rules=self.index_manager.rules_by_pred,
                         excluded_fact = self.current_query if self.current_label == 1 else None,
                         verbose=self.prover_verbose,
                         next_var_index=self.next_var_index,
@@ -474,26 +506,19 @@ class LogicEnv_gym(gym.Env):
             final_sub_indices = [final_sub_indices[i] for i in indices[:max_num_states]]
 
         # END ACTION MODULE
-        # if self.endt_action or self.endf_action:
-        #     # Add end actions only if there is at least one non-terminal path
-        #     # If there are no true/false predicates, we add Endf and Endt actions
-        #     add_end_action = False
-        #     if not derived_states:
-        #         add_end_action = True
-        #     else:
-        #         for s in derived_states:
-        #             # A path is non-terminal if it's empty or its predicate isn't True/False
-        #             if not s or s[0].predicate not in ('True', 'False'):
-        #                 add_end_action = True
-        #                 break
+        if self.endt_action or self.endf_action:
+            has_terminal_outcome = any(
+                any(atom.predicate in ('True', 'False') for atom in state)
+                for state in derived_states
+            )
 
-        if self.endf_action:
+        if self.endf_action and not has_terminal_outcome:
             # Add Endf (End proof as False)
             endf_state = [Term(predicate='Endf', args=())]
             derived_states.append(endf_state)
             final_sub_indices.append(self.index_manager.get_atom_sub_index(endf_state))
 
-        if self.endt_action:
+        if self.endt_action and not has_terminal_outcome:
             # Add Endt (End proof as True)
             endt_state = [Term(predicate='Endt', args=())]
             derived_states.append(endt_state)
@@ -559,15 +584,33 @@ class LogicEnv_gym(gym.Env):
                 reward = torch.tensor(1.0, device=self.device)
             else:
                 reward = torch.tensor(0.0, device=self.device)
+        elif self.reward_type == 3:
+            if label == 1:
+                if done and successful:
+                    reward = torch.tensor(1.0, device=self.device)
+                elif done and not successful:
+                    reward = torch.tensor(-0.5, device=self.device)
+                else:
+                    reward = torch.tensor(0.0, device=self.device)
+            if label == 0:
+                if done and successful:
+                    # The asymmetric −1.5 on false positives makes the policy aggressively lower the log‑probabilities of spurious negative proofs
+                    reward = torch.tensor(-1.5, device=self.device)
+                elif done and not successful:
+                    reward = torch.tensor(1, device=self.device)
+                else:
+                    reward = torch.tensor(0.0, device=self.device)
         else: 
             raise ValueError(f"Invalid reward type: {self.reward_type}. Choose from 0, 1, or 2.")
 
         return done, reward, successful
     
     def get_random_queries(self,
-                           queries: List[Rule], 
+                           queries: List[Term], 
                            n: int = 1, 
-                           labels: List[int] = None):
+                           labels: List[int] = None,
+                           depths: Optional[List[Optional[int]]] = None,
+                           return_depth: bool = False):
         """Sample queries (and labels) from a pool.
 
         Parameters
@@ -583,11 +626,19 @@ class LogicEnv_gym(gym.Env):
         sampled_indices = self.seed_gen.sample(range(len(queries)), n)
         sampled_queries = [queries[i] for i in sampled_indices]
         sampled_labels = [labels[i] for i in sampled_indices] if labels else [None] * n
+        if depths is not None:
+            sampled_depths = [depths[i] if i < len(depths) else None for i in sampled_indices]
+        else:
+            sampled_depths = [None] * n
+
+        if return_depth:
+            if n == 1:
+                return sampled_queries[0], sampled_labels[0], sampled_depths[0]
+            return sampled_queries, sampled_labels, sampled_depths
 
         if n == 1:
             return sampled_queries[0], sampled_labels[0]
-        else:
-            return sampled_queries, sampled_labels
+        return sampled_queries, sampled_labels
 
 
     def end_in_false(self, sub_indices_shape: torch.Size) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:

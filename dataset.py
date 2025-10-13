@@ -1,9 +1,15 @@
+import os
 from os.path import join 
-# import janus_swi as janus
-from typing import List, Tuple, Dict, Optional, Set
+from typing import List, Tuple, Dict, Optional, Set, Union
 import re
-import json
+import ast
 from collections import defaultdict
+
+try:
+    import janus_swi as janus
+except ImportError:
+    janus = None  # type: ignore[assignment]
+
 from utils import is_variable, Term, Rule, get_atom_from_string, get_rule_from_string
 
 
@@ -228,41 +234,44 @@ def get_queries(path: str) -> List[Term]:
                 queries.append(get_atom_from_string(line))
     return queries
 
-def get_filtered_queries(path: str,
-                                 depth: Optional[Set[int]], # Explicitly Set[int]
-                                 name: str) -> List[Term]:
-    queries = []
+def get_filtered_queries(
+    path: str,
+    depth: Optional[Set[int]],
+    name: str,
+    return_depths: bool = False,
+) -> Union[List[Term], Tuple[List[Term], List[Optional[int]]]]:
+    queries: List[Term] = []
+    depths: List[Optional[int]] = []
+    lines_count = 0
     try:
-         with open(path, "r") as f:
-              lines_count = 0 # For logging percentage
-              for line in f: # Line-by-line
-                   lines_count += 1
-                   line = line.strip()
-                   if not line: continue
+        with open(path, "r") as f:
+            for line in f:
+                lines_count += 1
+                line = line.strip()
+                if not line:
+                    continue
 
-                   parts = line.split(" ", 1) # Split only once, max 1 split needed
-                   if len(parts) == 2:
-                        query_str = parts[0]
-                        depth_str = parts[1]
-                        try:
-                             query_depth = int(depth_str) if depth_str != "-1" else -1
-                             # Check against the depth set
-                             if depth is None or query_depth in depth:
-                                  # Use OPTIMIZED version
-                                  queries.append(get_atom_from_string(query_str))
-                        except ValueError:
-                             print(f"Warning: Skipping line in {name} due to non-integer depth: {line}")
-                        except IndexError:
-                             print(f"Warning: Skipping line in {name} due to missing depth: {line}")
-
-                   else: # Handle lines without a depth specified? Or warn?
-                       print(f"Warning: Skipping malformed line in {name} (expected 'query depth'): {line}")
-
+                parts = line.split(" ", 1)
+                if len(parts) == 2:
+                    query_str, depth_str = parts
+                    try:
+                        query_depth = int(depth_str) if depth_str != "-1" else -1
+                        if depth is None or query_depth in depth:
+                            queries.append(get_atom_from_string(query_str))
+                            depths.append(query_depth)
+                    except ValueError:
+                        print(f"Warning: Skipping line in {name} due to non-integer depth: {line}")
+                    except IndexError:
+                        print(f"Warning: Skipping line in {name} due to missing depth: {line}")
+                else:
+                    print(f"Warning: Skipping malformed line in {name} (expected 'query depth'): {line}")
     except FileNotFoundError:
-         raise FileNotFoundError(f"File {path} not found")
+        raise FileNotFoundError(f"File {path} not found")
 
-    # Correct logging total lines count
     print(f"Number of queries with depth {depth} in {name}: {len(queries)} / {lines_count}")
+
+    if return_depths:
+        return queries, depths
     return queries
 
 
@@ -298,12 +307,13 @@ class DataHandler:
                 test_file: str = None,
                 rules_file: str = None,
                 facts_file: str = None,
+                n_train_queries: int = None,
                 n_eval_queries: int = None,
                 n_test_queries: int = None,
                 corruption_mode: Optional[str] = None,
-                train_depth: Optional[Set] = None,
-                valid_depth: Optional[Set] = None,
-                test_depth: Optional[Set] = None):
+                train_depth: Optional[Set[int]] = None,
+                valid_depth: Optional[Set[int]] = None,
+                test_depth: Optional[Set[int]] = None):
         """
         Initialize dataset handler: consult Janus, read rules/facts, load and filter queries.
 
@@ -316,25 +326,29 @@ class DataHandler:
             test_file (str, optional): Filename of the test queries.
             rules_file (str, optional): Filename of the standalone rules file.
             facts_file (str, optional): Filename of the facts file.
+            n_train_queries (int, optional): Max number of training queries to keep.
             n_eval_queries (int, optional): Max number of validation queries to keep.
             n_test_queries (int, optional): Max number of test queries to keep.
             corruption_mode (str, optional): "static" or "dynamic" corruption handling.
-            train_depth (str, optional): Depth filter for training queries.
-            valid_depth (str, optional): Depth filter for validation queries.
-            test_depth (str, optional): Depth filter for test queries.
+            train_depth (Optional[Set[int]]): Depth filter for training queries.
+            valid_depth (Optional[Set[int]]): Depth filter for validation queries.
+            test_depth (Optional[Set[int]]): Depth filter for test queries.
         """
         self.dataset_name = dataset_name
-        
+
         base_path = join(base_path, dataset_name)
         janus_path = join(base_path, janus_file) if janus_file else None
         self.janus_path = janus_path
         if janus_file:
-            try:
-                janus.consult(janus_path)
-            except Exception as e:
-                raise RuntimeError(f"Failed to consult Janus file: {e}")
+            if janus is None:
+                print(f"Warning: janus_swi module not available; skipping consult of {janus_file}.")
+            else:
+                try:
+                    janus.consult(janus_path)
+                except Exception as e:
+                    raise RuntimeError(f"Failed to consult Janus file: {e}")
 
-        train_path = join(base_path, train_file) 
+        train_path = join(base_path, train_file)
         valid_path = join(base_path, valid_file)
         test_path = join(base_path, test_file)
         rules_file = join(base_path, rules_file) if rules_file else None
@@ -343,18 +357,55 @@ class DataHandler:
         self.facts = get_queries(facts_file)
         self.rules = get_rules_from_rules_file(rules_file)
         self.train_corruptions = self.valid_corruptions = self.test_corruptions = self.neg_train_queries = None
-        if not train_depth:
-            self.train_queries = get_queries(train_path)
-        else:
-            self.train_queries = get_filtered_queries(train_path, train_depth, "train")
-        if not valid_depth:
-            self.valid_queries = get_queries(valid_path)
-        else:
-            self.valid_queries = get_filtered_queries(valid_path, valid_depth, "valid")
-        if not test_depth:
-            self.test_queries = get_queries(test_path)
-        else:
-            self.test_queries = get_filtered_queries(test_path, test_depth, "test")
+
+        def _normalize_depth_filter(depth_filter: Optional[Union[Set[int], List[int], Tuple[int, ...], str]]) -> Optional[Set[int]]:
+            """Helper to normalize depth filter input into a set of integers or None.
+            What it does: Converts various input types into a standardized set of integers.
+            More specifically:
+             - If input is None, returns None (no filtering).
+             - If input is a set/list/tuple, converts elements to integers and returns as a set.
+             - If input is a string, attempts to parse it as a Python literal (e.g., '{1,2,3}' or '[1,2,3]')."""
+
+            if depth_filter is None:
+                return None
+            if isinstance(depth_filter, set):
+                return {int(d) for d in depth_filter}
+            if isinstance(depth_filter, (list, tuple)):
+                return {int(d) for d in depth_filter}
+            if isinstance(depth_filter, str):
+                value = depth_filter.strip()
+                if value.lower() in {"none", ""}:
+                    return None
+                try:
+                    parsed = ast.literal_eval(value)
+                except (ValueError, SyntaxError):
+                    raise ValueError(f"Invalid depth specification: {depth_filter}")
+                return _normalize_depth_filter(parsed)
+            raise ValueError(f"Unsupported depth filter type: {type(depth_filter)}")
+
+        def load_queries_with_depth(path: str, depth_filter: Optional[Union[Set[int], List[int], Tuple[int, ...], str]], name: str) -> Tuple[List[Term], List[Optional[int]]]:
+            normalized_filter = _normalize_depth_filter(depth_filter)
+            depth_path = None
+            if path.endswith("_depths.txt") and os.path.exists(path):
+                depth_path = path
+            elif path.endswith(".txt"):
+                candidate = path.replace(".txt", "_depths.txt")
+                if os.path.exists(candidate):
+                    depth_path = candidate
+
+            if normalized_filter is not None:
+                source_path = depth_path if depth_path else path
+                queries, depth_values = get_filtered_queries(source_path, normalized_filter, name, return_depths=True)
+            elif depth_path:
+                queries, depth_values = get_filtered_queries(depth_path, None, name, return_depths=True)
+            else:
+                queries = get_queries(path)
+                depth_values = [None] * len(queries)
+            return queries, depth_values
+
+        self.train_queries, self.train_queries_depths = load_queries_with_depth(train_path, train_depth, "train")
+        self.valid_queries, self.valid_queries_depths = load_queries_with_depth(valid_path, valid_depth, "valid")
+        self.test_queries, self.test_queries_depths = load_queries_with_depth(test_path, test_depth, "test")
 
         self.all_known_triples = self.train_queries + self.valid_queries + self.test_queries
 
@@ -375,13 +426,21 @@ class DataHandler:
         # if exclude_test > 0 and self.test_queries:
         #     print(f"Number of test queries excluded: {exclude_test}. Ratio excluded: {round(exclude_test/len(self.test_queries),3)}")
         
-        # Filter the queries
-        self.train_queries = [q for q in self.train_queries if q.predicate in rules_head_predicates]
-        # self.valid_queries = [q for q in self.valid_queries if q.predicate in rules_head_predicates]
-        # self.test_queries = [q for q in self.test_queries if q.predicate in rules_head_predicates]
+        # Filter the queries and keep depth alignment
+        train_filtered = [(q, d) for q, d in zip(self.train_queries, self.train_queries_depths)
+                          if q.predicate in rules_head_predicates]
+        if n_train_queries is not None:
+            train_filtered = train_filtered[:n_train_queries]
+        if train_filtered:
+            self.train_queries, self.train_queries_depths = map(list, zip(*train_filtered))
+        else:
+            self.train_queries, self.train_queries_depths = [], []
 
         self.valid_queries = self.valid_queries[:n_eval_queries]
+        self.valid_queries_depths = self.valid_queries_depths[:n_eval_queries]
         self.test_queries = self.test_queries[:n_test_queries]
+        self.test_queries_depths = self.test_queries_depths[:n_test_queries]
+        # self.valid_queries = self.test_queries.copy() # Use test queries as valid queries
 
         # # Load Janus facts
         # if janus_file:

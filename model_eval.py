@@ -52,7 +52,7 @@ Tip: This file deliberately stays *framework-agnostic* outside of SB3 to allow
 plugging different policies and samplers.
 """
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple, Union, Optional
+from typing import Any, Dict, List, Tuple, Union, Optional, Callable
 import os
 import time
 import random
@@ -82,6 +82,7 @@ def evaluate_policy(
     target_episodes: np.ndarray | None = None,
     verbose: int = 0,
     track_logprobs: bool = False,
+    info_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Roll out a policy on a *vectorized* env and aggregate per-episode stats.
 
@@ -107,6 +108,9 @@ def evaluate_policy(
     track_logprobs : bool, default False
         If True, collects *per-step* log-prob trajectories and state strings.
         (Kept for debugging/plotting; not returned in this simplified API.)
+    info_callback : callable, optional
+        If provided, called after each environment step with the list of info
+        dicts returned by the vectorized environment (useful for custom logging).
 
     Returns
     -------
@@ -216,6 +220,9 @@ def evaluate_policy(
         full_actions[active_np] = acts_tensor.detach().cpu().numpy()
         new_obs, rews_np, dones_np, infos = env.step(full_actions)
 
+        if info_callback is not None:
+            info_callback(infos)
+
         rews_t  = torch.as_tensor(rews_np, device=device, dtype=torch.float32)
         dones_t = torch.as_tensor(dones_np, device=device, dtype=torch.bool)
 
@@ -319,6 +326,8 @@ def eval_corruptions(
     kge_inference_engine = None,
     evaluation_mode: str = 'rl_only',
     corruption_scheme: List[str] | None = None,
+    info_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+    data_depths: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Evaluate a model by ranking a positive query vs. its corruptions.
 
@@ -363,6 +372,13 @@ def eval_corruptions(
         Scoring strategy.
     corruption_scheme : list[str]
         Subset of {"head","tail"} to evaluate.
+    info_callback : callable, optional
+        Callback receiving the list of info dicts after each env step during
+        RL-based evaluation (allows custom logging such as depth statistics).
+    data_depths : list[int], optional
+        The list of depth values corresponding to each query in `data`.
+        Used to properly set query_depths in the environment during evaluation.
+        If None, depth information will not be updated in the environment.
 
     Returns
     -------
@@ -443,7 +459,11 @@ def eval_corruptions(
                 for i, (q, negs) in enumerate(zip(batch, corrs)):
                     seq = [q] + negs
                     e = env.envs[i].env
-                    e.mode, e.queries, e.labels, e.n_episodes, e.eval_idx = "eval", seq, [1] + [0]*len(negs), len(seq), 0
+                    # Build query_depths list: depth for positive query, None for all corruptions
+                    batch_idx = start + i
+                    pos_depth = data_depths[batch_idx] if data_depths and batch_idx < len(data_depths) else None
+                    depths = [pos_depth] + [None] * len(negs)
+                    e.mode, e.queries, e.labels, e.query_depths, e.n_episodes, e.eval_idx = "eval", seq, [1] + [0]*len(negs), depths, len(seq), 0
                 
                 # Evaluate policy (optionally collecting trajectories)
                 if plot:
@@ -451,25 +471,27 @@ def eval_corruptions(
                      logprob_histories, choices_histories,
                      steplogprob_histories, state_histories) = evaluate_policy(
                         model, env,deterministic=deterministic,target_episodes=targets,
-                        verbose=verbose > 1,track_logprobs=True,)
+                        verbose=verbose > 1,track_logprobs=True, info_callback=info_callback,)
                 else:
                     rewards, lengths, log_probs, mask, proof_successful = evaluate_policy(
                         model, env,deterministic=deterministic,target_episodes=targets,
-                        verbose=verbose > 1,track_logprobs=False,)
+                        verbose=verbose > 1,track_logprobs=False, info_callback=info_callback,)
 
                 if evaluation_mode == 'hybrid':
                     kge_log_scores = kge_eval(batch, corrs, mask, kge_inference_engine)
 
-                    # # if the proof doesnt end in true, the logprobs are give by kge, else the sum of both
+                    # if the proof doesnt end in true, the logprobs are give by kge, else the sum of both
                     log_probs[mask] = np.where(proof_successful[mask],2*kge_log_scores[mask]+log_probs[mask],kge_log_scores[mask])
                     # log_probs = kge_log_scores.copy() 
 
-                # # Print the queries and their scores for debugging
-                # for i, (q, negs) in enumerate(zip(batch, corrs)):
-                #     seq = [q] + negs
-                #     print(f" Query {i+1}: {seq[0]} | Score: {log_probs[i,0]:.4f} | Success: {proof_successful[i,0]}")
-                #     for j, neg in enumerate(negs):
-                #         print(f"    Neg {j+1}: {neg} | Score: {log_probs[i,j+1]:.4f} | Success: {proof_successful[i,j+1]}")
+                # Print the queries and their scores for debugging
+                debug_queries = False
+                if debug_queries:
+                    for i, (q, negs) in enumerate(zip(batch, corrs)):
+                        seq = [q] + negs
+                        print(f" Query {i+1}: {seq[0]} | Score: {log_probs[i,0]:.4f} | Success: {proof_successful[i,0]}")
+                        for j, neg in enumerate(negs):
+                            print(f"    Neg {j+1}: {neg} | Score: {log_probs[i,j+1]:.4f} | Success: {proof_successful[i,j+1]}")
 
                 log_probs[~proof_successful] -= 100 # Penalize failed proofs
                 # log_probs[proof_successful] += 10

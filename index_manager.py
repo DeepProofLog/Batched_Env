@@ -24,6 +24,7 @@ class IndexManager():
                  device: torch.device = torch.device("cpu")):
 
         self.device = device
+        self.idx_dtype = torch.int32
         self.constants = constants
         self.predicates = predicates
         
@@ -34,7 +35,12 @@ class IndexManager():
 
         self.max_total_vars = max_total_vars # Max *pre-assigned* variables
 
-        self.rules = rules # Stored but not used for variable indexing in this version
+        self.rules = rules
+        # Pre-index rules by predicate to speed up unification
+        self.rules_by_pred = {}
+        for r in rules:
+            self.rules_by_pred.setdefault(r.head.predicate, []).append(r)
+            
         self.padding_atoms = padding_atoms
         self.constants_images = constants_images
         self.max_arity = max_arity
@@ -154,7 +160,7 @@ class IndexManager():
     def _state_tuple_to_subidx(self, key: Tuple[int, ...]) -> torch.Tensor:
         """Convert a state tuple key back to a sub-index tensor."""
         # `as_tensor()` avoids an extra copy when the cache hits
-        flat = torch.as_tensor(key, dtype=torch.int64, device=self.device)
+        flat = torch.as_tensor(key, dtype=self.idx_dtype, device=self.device)
         return flat.view(self.padding_atoms, self.max_arity + 1)
 
     def get_atom_sub_index(self, state: List[Term]) -> torch.Tensor:
@@ -179,7 +185,7 @@ class IndexManager():
     #          raise ValueError(f"Length of processed state ({state_len}) exceeds padding_atoms ({self.padding_atoms}).")
 
     #     # --- Initialize Tensor ---
-    #     sub_index = torch.zeros(self.padding_atoms, self.max_arity + 1, device=self.device, dtype=torch.int64)
+    #     sub_index = torch.zeros(self.padding_atoms, self.max_arity + 1, device=self.device, dtype=self.idx_dtype)
 
     #     # --- Single Pass for Indexing ---
     #     # Local references to maps for efficiency
@@ -203,7 +209,7 @@ class IndexManager():
     #                 sub_index[i, 1:max_j + 1] = torch.tensor(
     #                     [unified_map[arg] for arg in atom.args[:max_j]],
     #                     device=self.device,
-    #                     dtype=torch.int64
+    #                     dtype=self.idx_dtype
     #                 )
     #             except KeyError as e:
     #                  raise KeyError(f"Argument '{e}' not in constant or variable maps.") from e

@@ -10,7 +10,14 @@ import torch.nn as nn
 
 from index_manager import IndexManager
 from utils import get_device, print_eval_info, profile_code
-from callbacks import SB3TrainCheckpoint, CustomEvalCallbackMRR, CustomEvalCallback
+from callbacks import (
+    SB3TrainCheckpoint,
+    CustomEvalCallbackMRR,
+    CustomEvalCallback,
+    RewardBreakdownCallback,
+    DepthProofStatsCallback,
+    TopKCurriculumCallback,
+)
 from custom_dummy_env import create_environments
 from dataset import DataHandler
 from model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
@@ -74,6 +81,7 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         test_file=args.test_file,
         rules_file=args.rules_file,
         facts_file=args.facts_file,
+        n_train_queries=args.n_train_queries,
         n_eval_queries=args.n_eval_queries,
         n_test_queries=args.n_test_queries,
         corruption_mode=args.corruption_mode,
@@ -83,6 +91,11 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     )
 
     # Respect caps from args while ensuring >1 eval query for callbacks
+    args.n_train_queries = (
+        len(dh.train_queries)
+        if args.n_train_queries is None
+        else min(args.n_train_queries, len(dh.train_queries))
+    )
     args.n_eval_queries = (
         len(dh.valid_queries)
         if args.n_eval_queries is None
@@ -209,6 +222,7 @@ def _build_callbacks(
             eval_env=callback_env,
             sampler=sampler,
             eval_data=data_handler.valid_queries[: args.n_eval_queries],
+            eval_data_depths=data_handler.valid_queries_depths[: args.n_eval_queries],
             n_corruptions=args.eval_neg_samples,
             model_path=str(model_path) if args.save_model else None,
             log_path=log_filename,
@@ -247,7 +261,26 @@ def _build_callbacks(
         name=model_name,
     )
 
-    callbacks.extend([eval_cb, train_ckpt_cb])
+    reward_breakdown_cb = RewardBreakdownCallback(prefix="rollout")
+    depth_stats_cb = DepthProofStatsCallback(prefix="rollout", track_negative=True)
+
+    callbacks.extend([eval_cb, train_ckpt_cb, reward_breakdown_cb, depth_stats_cb])
+    
+    # Add curriculum learning callback if enabled
+    print(f"TopK Curriculum Learning Enabled: {args.top_k_curriculum}")
+    if args.top_k_curriculum:
+        print("Enabling TopK Curriculum Learning Callback")
+        curriculum_cb = TopKCurriculumCallback(
+            initial_k=args.top_k_initial,
+            final_k=args.top_k_final,
+            total_timesteps=args.timesteps_train,
+            schedule=args.top_k_schedule,
+            start_filter_timesteps=args.top_k_start_step,
+            verbose=1,
+        )
+        callbacks.append(curriculum_cb)
+        print(f"TopK Curriculum enabled: {args.top_k_initial} -> {args.top_k_final} ({args.top_k_schedule} schedule)")
+    
     return CallbackList(callbacks), eval_cb, train_ckpt_cb
 
 
@@ -295,13 +328,31 @@ def _train_if_needed(
 
 
 
-def _attach_kge_to_policy(model: PPO, im: IndexManager, engine: Optional[KGEInference], device: torch.device, use_kge_action: bool) -> None:
-    if not use_kge_action:
+def _attach_kge_to_policy(
+    model: PPO,
+    im: IndexManager,
+    engine: Optional[KGEInference],
+    device: torch.device,
+    use_kge_action: bool,
+    integration_strategy: Optional[str],
+) -> None:
+    policy = model.policy
+    policy.kge_integration_strategy = integration_strategy if use_kge_action else None
+
+    if hasattr(policy, "kge_fusion_mlp") and policy.kge_fusion_mlp is not None:
+        policy.kge_fusion_mlp.to(device)
+
+    if not use_kge_action or engine is None or im is None:
+        policy.kge_inference_engine = None
+        policy.index_manager = None
+        empty_indices = torch.empty(0, dtype=torch.int32, device=device)
+        policy.kge_indices_tensor = empty_indices
         return
-    model.policy.kge_inference_engine = engine
-    model.policy.index_manager = im
+
+    policy.kge_inference_engine = engine
+    policy.index_manager = im
     kge_indices = [idx for pred, idx in im.predicate_str2idx.items() if pred.endswith("_kge")]
-    model.policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.int32)
+    policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.int32)
 
 
 def _eval_mode_from_args(args: Any) -> str:
@@ -324,6 +375,7 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
         "evaluation_mode": eval_mode,
         "plot": args.plot,
         "corruption_scheme": args.corruption_scheme,
+        "data_depths": data_handler.test_queries_depths,
     }
     metrics_test = profile_code(False, eval_corruptions, **eval_args)
     print("results for:", args.run_signature)
@@ -341,6 +393,7 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
             evaluation_mode=eval_mode,
             kge_inference_engine=kge_engine,
             corruption_scheme=args.corruption_scheme,
+            data_depths=data_handler.valid_queries_depths,
         )
         print_eval_info("Validation", metrics_valid)
 
@@ -353,6 +406,7 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
             evaluation_mode=eval_mode,
             kge_inference_engine=kge_engine,
             corruption_scheme=args.corruption_scheme,
+            data_depths=data_handler.train_queries_depths,
         )
         print_eval_info("Train", metrics_train)
     else:
@@ -369,6 +423,19 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     _warn_non_reproducible(args)
     _set_seeds(args.seed_run_i)
 
+    if not hasattr(args, "top_k_actions"):
+        args.top_k_actions = None
+    if not hasattr(args, "top_k_curriculum"):
+        args.top_k_curriculum = False
+    if not hasattr(args, "top_k_initial"):
+        args.top_k_initial = None
+    if not hasattr(args, "top_k_final"):
+        args.top_k_final = 5
+    if not hasattr(args, "top_k_schedule"):
+        args.top_k_schedule = 'linear'
+    if not hasattr(args, "top_k_start_step"):
+        args.top_k_start_step = 0
+
     device = get_device(args.device)
     print(f"Device: {device}. CUDA available: {torch.cuda.is_available()},\
                             Device count: {torch.cuda.device_count()}")
@@ -381,8 +448,19 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     # --- INIT MODEL ---
     policy_kwargs = {
         'features_extractor_class': CustomCombinedExtractor,
-        'features_extractor_kwargs': {'features_dim': embedder.embed_dim, 'embedder': embedder}
+        'features_extractor_kwargs': {'features_dim': embedder.embed_dim, 'embedder': embedder},
+        'top_k_actions': args.top_k_actions,
+        'top_k_curriculum': args.top_k_curriculum,
+        'top_k_initial': args.top_k_initial,
+        'top_k_final': args.top_k_final,
     }
+
+    if args.kge_integration_strategy in {"train", "train_bias"}:
+        policy_kwargs.update(
+            {
+                "kge_integration_strategy": args.kge_integration_strategy,
+            }
+        )
 
     # if args.kge_integration_strategy and args.kge_integration_strategy is not 'sum_eval':
     #     policy_kwargs.update({
@@ -405,7 +483,14 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         policy_kwargs=policy_kwargs)
     
     # Optional policy KGE wiring
-    _attach_kge_to_policy(model, index_manager, kge_engine, device, args.use_kge_action)
+    _attach_kge_to_policy(
+        model,
+        index_manager,
+        kge_engine,
+        device,
+        args.use_kge_action,
+        args.kge_integration_strategy,
+    )
 
 
 
@@ -440,7 +525,14 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     model.policy.apply(_freeze_dropout_layernorm)
 
     # Re-attach KGE (if loaded model or after compile) and compile policy
-    _attach_kge_to_policy(model, index_manager, kge_engine, device, args.use_kge_action)
+    _attach_kge_to_policy(
+        model,
+        index_manager,
+        kge_engine,
+        device,
+        args.use_kge_action,
+        args.kge_integration_strategy,
+    )
 
     model.policy = torch.compile(model.policy, mode="reduce-overhead", fullgraph=False)
     model.policy.set_training_mode(False)

@@ -87,7 +87,7 @@ def unify_with_facts(query: Term,
         print('Fact:', fact, 'Substitutions:', subs) if verbose else None
     return substitutions
 
-def unify_with_rules(query: Term, rules: List[Rule], verbose: int=0) -> List[Tuple[List[Term], Dict[str, str]]]:
+def unify_with_rules(query: Term, rules_by_pred, verbose: int=0) -> List[Tuple[List[Term], Dict[str, str]]]:
     """
     Attempts to unify a query with the heads of rules and returns their bodies with substitutions.
     
@@ -99,19 +99,26 @@ def unify_with_rules(query: Term, rules: List[Rule], verbose: int=0) -> List[Tup
         List of tuples containing (rule body terms, substitution dictionary)
     """
     results = []
-    for rule in rules:
-        if rule.head.predicate == query.predicate:
-            subs = unify_terms(query, rule.head)
-            if subs is not None:
-                new_body = [
-                    (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
-                     else Term(term.predicate, substituted_args))
-                    for term in rule.body
-                ]
-                print('Rule:', rule, '      Subs:', subs, '     New body:', new_body) if verbose else None
-                results.append((new_body, subs))
+    for rule in rules_by_pred.get(query.predicate, ()):
+        subs = unify_terms(query, rule.head)
+        if subs is not None:
+            new_body = [
+                (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
+                 else Term(term.predicate, substituted_args))
+                for term in rule.body
+            ]
+            print('Rule:', rule, '      Subs:', subs, '     New body:', new_body) if verbose else None
+            results.append((new_body, subs))
     
     return results
+
+
+def _needs_renaming(state: List[Term]) -> bool:
+    for t in state:
+        for a in t.args:
+            if a and (a[0].isupper() or a[0] == '_') and not a.startswith('Var_'):
+                return True
+    return False
 
 def rename_vars_local(next_states: List[List[Term]],
                       global_next_var_index: int,
@@ -135,15 +142,19 @@ def rename_vars_local(next_states: List[List[Term]],
     if global_next_var_index is None:
         raise ValueError('global_next_var_index cannot be None')
 
-    renamed_states_outer = []
-    # Initialize the variable here before the loop
+    # Fast path: if no state contains non-canonical variables (uppercase or '_' not starting with 'Var_'),
+    # skip all work and return unchanged.
+    if not any(_needs_renaming(s) for s in next_states):
+        return next_states, global_next_var_index
+
+    renamed_states_outer = []    # Initialize the variable here before the loop
     current_state_var_index = global_next_var_index 
     max_index_seen = global_next_var_index
     for idx, state in enumerate(next_states):
         local_var_mapping: Dict[str, str] = {} # Mapping is local to this state
         renamed_state_inner = [None] * len(state)
 
-        # --- Collision Avoidance Step ---
+        # --- Collision Avoidance Step (only executed if we actually rename) ---
         # Find the max 'Var_k' index already in use in this state
         max_existing_k = -1
         existing_vars_in_state = set()
@@ -261,6 +272,7 @@ def get_next_unification_python(state: List[Term],
     # --- 3a. Generate states from direct Fact Unification ---
     fact_derived_states = []
     fact_substitutions = unify_with_facts(query, facts_indexed, facts_set, excluded_fact, verbose=0)
+    print('\nUnification with facts') if verbose else None
     for subs in fact_substitutions:
         if not remaining_state:
             # If there are no remaining goals, we can return True because we found a fact
@@ -316,7 +328,7 @@ def get_next_unification_python(state: List[Term],
         next_states = fact_derived_states + rule_derived_states
 
     elif strategy == 'rules_then_facts':
-        print('Strategy: rules_then_facts') if verbose else None
+        print('\nStrategy: rules_then_facts') if verbose else None
         # --- 4a. Rule -> Fact Path: Prioritize rules that lead to immediate fact resolution ---
         for r_state in rule_derived_states:
 
@@ -361,9 +373,15 @@ def get_next_unification_python(state: List[Term],
         # --- 4b. Direct Fact Path: Also include states from direct fact lookups ---
         next_states.extend(fact_derived_states)
 
-        # --- 4c. Fallback Logic: If no progress was made, use the rule states for the next step ---
-        if not next_states and rule_derived_states:
-            next_states = rule_derived_states
+        # # --- OPTION 1 --- 
+        # # --- 4d. This improves completeness but also more time! Append the rule states in any case
+        # next_states.extend(rule_derived_states) 
+
+        # # --- OPTION 2 --- 
+        # # --- 4c. Fallback Logic: If no progress was made, use the rule states for the next step ---
+        # if not next_states and rule_derived_states:
+        #     next_states = rule_derived_states
+
 
     # --- 5. Finalize and Return ---
     if not next_states:
@@ -373,6 +391,6 @@ def get_next_unification_python(state: List[Term],
     # Rename variables to avoid clashes in subsequent unification steps
     next_states, next_var_index = rename_vars_local(next_states, next_var_index, verbose=0)
 
-    print(f'\nNext states: {next_states}') if verbose else None
+    print(f'\nNext states: {len(next_states)}, {next_states}') if verbose else None
     print('++++++++++++++\n') if verbose else None
     return next_states, next_var_index
