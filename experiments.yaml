@@ -1,0 +1,21 @@
+# Example experiments configuration for runner.py
+experiments:
+  # - kge_integration_strategy: None
+  # - kge_integration_strategy: 'train_bias'
+  # - kge_integration_strategy: 'sum_eval'
+  # - top_k_curriculum: 'cte'
+  #   top_k_initial: 10
+  #   top_k_final: 5
+  #   top_k_start_step: 300000
+  - endf_action: False
+  - pbrs_beta: 0.5
+    pbrs_gamma: 0.99
+  - reward_type: 1
+  - reward_type: 2
+  - reward_type: 0
+  - engine_strategy: 'complete'
+  - endf_action: False
+  - kge_integration_strategy: 'logit_shaping'
+  - kge_integration_strategy: 'logit_shaping'
+    pbrs_beta: 0.5
+    pbrs_gamma: 0.99

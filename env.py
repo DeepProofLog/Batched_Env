@@ -1,9 +1,10 @@
-from typing import List, Optional, Tuple, Set
+from typing import List, Optional, Tuple, Set, Any, Dict
 import random
 from tensordict import TensorDict, NonTensorData
 import torch
 import gymnasium as gym
 import numpy as np
+import math
 # import janus_swi as janus
 
 from dataset import DataHandler
@@ -49,6 +50,9 @@ class LogicEnv_gym(gym.Env):
                 engine_strategy: str = 'rtf', # 'cmp' (complete) or 'rtf' (rules_then_facts)
                 use_kge_action: bool = False,
                 reward_type: int = 2,
+                shaping_beta: float = 0.0,
+                shaping_gamma: Optional[float] = None,
+                kge_inference_engine: Optional[Any] = None,
                 ):
 
         '''Initialize the environment'''
@@ -62,6 +66,7 @@ class LogicEnv_gym(gym.Env):
         self.device = device
         self.pt_idx_dtype = torch.int32
         self.np_idx_dtype = np.int32
+        self.reward_dtype = torch.float32
         self.max_arity = data_handler.max_arity # Maximum arity of the predicates
         self.padding_atoms = padding_atoms  # Maximum number of atoms in a state
         self.padding_states = padding_states # Maximum number of possible next states
@@ -95,6 +100,20 @@ class LogicEnv_gym(gym.Env):
         self.skip_unary_actions = skip_unary_actions # Skip unary actions in the action space
         self.predicate_false_idx = index_manager.predicate_str2idx['False'] 
 
+        self.special_predicates = set(getattr(self.index_manager, "special_preds", []))
+        end_predicates = {p for p in self.special_predicates if p.lower().startswith('end')}
+        # Retain legacy 'End' sentinel if present in data
+        end_predicates.add('End')
+        self.end_predicates = end_predicates
+        self.terminal_predicates = {'True', 'False'} | self.end_predicates
+
+        self.kge_inference_engine = kge_inference_engine
+        self.shaping_beta = float(shaping_beta)
+        self.shaping_gamma = float(shaping_gamma) if shaping_gamma is not None else 1.0
+        self.shaping_eps = 1e-9
+        self._potential_cache: Dict[str, float] = {}
+        self._last_potential = torch.zeros((), dtype=self.reward_dtype, device=self.device)
+
         self.current_query = None
         self.current_label = None
 
@@ -122,10 +141,12 @@ class LogicEnv_gym(gym.Env):
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment. If no seed is provided, generate a random one'''
-        self.seed = seed if seed is not None else torch.empty((), dtype=self.pt_idx_dtype).random_().item()
-        rng = torch.manual_seed(seed)
+        if seed is None:
+            seed = torch.empty((), dtype=self.pt_idx_dtype).random_().item()
+        self.seed = int(seed)
+        rng = torch.manual_seed(self.seed)
         self.rng = rng
-        self.seed_gen = random.Random(seed)
+        self.seed_gen = random.Random(self.seed)
 
 
     def _make_spec(self):
@@ -150,9 +171,56 @@ class LogicEnv_gym(gym.Env):
         self.action_space = gym.spaces.Discrete(self.padding_states)
 
 
+    def _normalize_state_obj(self, state: Any) -> List[Term]:
+        if isinstance(state, NonTensorData):
+            state = getattr(state, "data", getattr(state, "_data", state))
+        if isinstance(state, Term):
+            return [state]
+        return state if isinstance(state, list) else list(state)
+
+    def _compute_state_potential(self, state: Any) -> float:
+        if self.kge_inference_engine is None or self.shaping_beta == 0.0:
+            return 0.0
+        normalized = self._normalize_state_obj(state)
+        if not normalized:
+            return 0.0
+
+        for atom in normalized:
+            predicate = getattr(atom, "predicate", None)
+            if predicate is None:
+                continue
+            if predicate in self.terminal_predicates or predicate.endswith('_kge'):
+                continue
+            args = getattr(atom, "args", ())
+            atom_str = f"{predicate}({','.join(map(str, args))})"
+            cached = self._potential_cache.get(atom_str)
+            if cached is not None:
+                return cached
+
+            predictor_batch = getattr(self.kge_inference_engine, "predict_batch", None)
+            if predictor_batch is not None:
+                try:
+                    preds = predictor_batch([atom_str])
+                    score = preds[0] if preds else None
+                except Exception:
+                    score = None
+
+            if score is None:
+                return 0.0
+
+            score = max(float(score), self.shaping_eps)
+            potential = self.shaping_beta * math.log(score)
+            self._potential_cache[atom_str] = potential
+            return potential
+
+        return 0.0
+
+
     def reset(self, seed: Optional[int]= None, options=None):
         print('\n\nReset-----------------------------') if self.verbose or self.prover_verbose else None
         '''Reset the environment and get a new query based on the environment configuration'''
+        if seed is not None:
+            self._set_seed(seed)
         depth = None
         if self.mode == 'eval':
             '''When the number of episodes is reached, we set the eval mask to false
@@ -240,7 +308,7 @@ class LogicEnv_gym(gym.Env):
         self.next_var_index = self.index_manager.variable_start_index
 
         self.memory = set()
-        filtered_query = [q for q in query if q.predicate not in ['False', 'True', 'End']]
+        filtered_query = [q for q in query if q.predicate not in self.terminal_predicates]
         self.memory.add(_state_to_hashable(filtered_query))
 
         sub_index = self.index_manager.get_atom_sub_index(query).to(self.pt_idx_dtype)
@@ -251,6 +319,9 @@ class LogicEnv_gym(gym.Env):
         if truncated_flag: # end in false
             size_sub_index = torch.Size([self.padding_states]) + sub_index.size()
             derived_states, derived_sub_indices = self.end_in_false(size_sub_index)
+            valid = len(derived_states)
+            action_mask.zero_()
+            action_mask[:valid] = 1
 
         self.tensordict = TensorDict(
             {
@@ -258,11 +329,13 @@ class LogicEnv_gym(gym.Env):
                 "state": NonTensorData(data=query),
                 "label": torch.tensor(label, device=self.device),
                 "done": torch.tensor(0, dtype=torch.bool, device=self.device),
-                "reward": torch.tensor(0, dtype=self.pt_idx_dtype, device=self.device),
+                "reward": torch.zeros((), dtype=self.reward_dtype, device=self.device),
                 "derived_states": NonTensorData(data=derived_states),
                 "derived_sub_indices": derived_sub_indices,
             },
         )
+        initial_potential_value = self._compute_state_potential(self.tensordict["state"])
+        self._last_potential = torch.tensor(initial_potential_value, dtype=self.reward_dtype, device=self.device)
         obs = {'sub_index': self.tensordict['sub_index'].cpu().numpy(),
                'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy(),
                'action_mask': action_mask.cpu().numpy(),}
@@ -288,6 +361,16 @@ class LogicEnv_gym(gym.Env):
         done_next, reward_next, successful = self.get_done_reward(next_state, self.tensordict['label'].item())
         # if not bool(done_next):
         #     reward_next = reward_next - torch.tensor(0.01, device=self.device)
+
+        if self.kge_inference_engine is not None and self.shaping_beta != 0.0:
+            phi_s = self._last_potential
+            phi_sp_value = 0.0 if bool(done_next) else self._compute_state_potential(next_state)
+            phi_sp = torch.tensor(phi_sp_value, dtype=self.reward_dtype, device=self.device)
+            reward_next = reward_next + self.shaping_gamma * phi_sp - phi_s
+            self._last_potential = phi_sp if not bool(done_next) else torch.zeros_like(phi_sp)
+        else:
+            self._last_potential = torch.zeros((), dtype=self.reward_dtype, device=self.device)
+
         derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
         valid = len(derived_states_next)
         action_mask = torch.zeros(self.padding_states, dtype=torch.uint8)
@@ -348,7 +431,7 @@ class LogicEnv_gym(gym.Env):
         """
         truncated_flag = False
 
-        terminal_predicates = {'True', 'False', 'Endt', 'Endf'}
+        terminal_predicates = self.terminal_predicates
         if len(state) > 1 and all(atom.predicate in terminal_predicates for atom in state):
             raise ValueError(f"Invalid state: A state should not contain multiple only terminal atoms. Received: {state}")
 
@@ -363,15 +446,20 @@ class LogicEnv_gym(gym.Env):
             padding = torch.zeros(self.padding_states - 1, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=self.pt_idx_dtype)
             derived_sub_indices = torch.cat([derived_sub_indices, padding])
             
-            return derived_states, derived_sub_indices, truncated_flag
+            return derived_states, derived_sub_indices, False
 
         # END ACTION MODULE
         if self.endt_action or self.endf_action:
-            state = [atom for atom in state if atom.predicate not in ['Endt', 'Endf']]
+            state = [atom for atom in state if atom.predicate not in self.end_predicates]
 
         if self.use_kge_action and state:
             filtered_state = [term for term in state if not term.predicate.endswith('_kge')]
-            current_state = [Term(predicate='True', args=())] if not filtered_state else filtered_state
+            state = [Term(predicate='True', args=())] if not filtered_state else filtered_state
+            if len(state) == 1 and state[0].predicate in terminal_predicates:
+                derived_sub_indices = self.index_manager.get_atom_sub_index(state).to(self.pt_idx_dtype).unsqueeze(0)
+                padding = torch.zeros(self.padding_states - 1, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=self.pt_idx_dtype)
+                derived_sub_indices = torch.cat([derived_sub_indices, padding])
+                return [state], derived_sub_indices, False
             # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
         # if self.engine == 'prolog':
@@ -400,7 +488,7 @@ class LogicEnv_gym(gym.Env):
             counter = 0
             while (len(derived_states) == 1 and 
                 derived_states[0] and
-                derived_states[0][0].predicate not in ['End', 'False', 'True']):
+                derived_states[0][0].predicate not in terminal_predicates):
                 print('\n*********') if self.verbose else None
                 print(f"Skipping unary action: current state: {current_state} -> derived states: {derived_states}") if self.verbose else None
                 print('\n') if self.verbose else None
@@ -436,7 +524,7 @@ class LogicEnv_gym(gym.Env):
 
                 # MEMORY
                 if self.memory_pruning:
-                    self.memory.add(_state_to_hashable([s for s in current_state if s.predicate not in ['False','True','End']]))
+                    self.memory.add(_state_to_hashable([s for s in current_state if s.predicate not in self.terminal_predicates]))
                     visited_mask = [_state_to_hashable(state) in self.memory for state in derived_states]
                     if any(visited_mask):
                         print(f"Memory: {self.memory}") if self.verbose else None
@@ -462,7 +550,7 @@ class LogicEnv_gym(gym.Env):
         final_sub_indices = []
         # MEMORY MODULE
         if self.memory_pruning:
-            self.memory.add(_state_to_hashable([s for s in state if s.predicate not in ['False', 'True', 'End']]))
+            self.memory.add(_state_to_hashable([s for s in state if s.predicate not in self.terminal_predicates]))
 
         for d_state in derived_states:
             # 1. Memory Pruning Check
@@ -483,7 +571,7 @@ class LogicEnv_gym(gym.Env):
 
         # KGE ACTION MODULE
         # It uses the original `state` variable to ensure alignment.
-        if self.use_kge_action and state and state[0].predicate not in ['True', 'False', 'End']:
+        if self.use_kge_action and state and state[0].predicate not in terminal_predicates:
             kge_pred_name = f"{state[0].predicate}_kge"
             kge_action_term = Term(predicate=kge_pred_name, args=state[0].args)
             
@@ -568,38 +656,38 @@ class LogicEnv_gym(gym.Env):
         done = torch.tensor(done, device=self.device)
 
         if self.reward_type == 0:
-            reward = torch.tensor(1.0, device=self.device) if (done and successful and label == 1) else torch.tensor(0.0, device=self.device)
+            reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype) if (done and successful and label == 1) else torch.zeros((), device=self.device, dtype=self.reward_dtype)
         elif self.reward_type == 1:
             if done and successful and label == 1:
-                reward = torch.tensor(1.0, device=self.device)
+                reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
             elif done and successful and label == 0:
-                reward = torch.tensor(-1.0, device=self.device)
+                reward = torch.tensor(-1.0, device=self.device, dtype=self.reward_dtype)
                 # print(f"Done with success but label is 0: {state}")
             else:
-                reward = torch.tensor(0.0, device=self.device)
+                reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
         elif self.reward_type == 2:
             if done and successful and label == 1:
-                reward = torch.tensor(1.0, device=self.device)
+                reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
             elif done and not successful and label == 0:
-                reward = torch.tensor(1.0, device=self.device)
+                reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
             else:
-                reward = torch.tensor(0.0, device=self.device)
+                reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
         elif self.reward_type == 3:
             if label == 1:
                 if done and successful:
-                    reward = torch.tensor(1.0, device=self.device)
+                    reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
                 elif done and not successful:
-                    reward = torch.tensor(-0.5, device=self.device)
+                    reward = torch.tensor(-0.5, device=self.device, dtype=self.reward_dtype)
                 else:
-                    reward = torch.tensor(0.0, device=self.device)
+                    reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
             if label == 0:
                 if done and successful:
                     # The asymmetric −1.5 on false positives makes the policy aggressively lower the log‑probabilities of spurious negative proofs
-                    reward = torch.tensor(-1.5, device=self.device)
+                    reward = torch.tensor(-1.5, device=self.device, dtype=self.reward_dtype)
                 elif done and not successful:
-                    reward = torch.tensor(1, device=self.device)
+                    reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
                 else:
-                    reward = torch.tensor(0.0, device=self.device)
+                    reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
         else: 
             raise ValueError(f"Invalid reward type: {self.reward_type}. Choose from 0, 1, or 2.")
 

@@ -328,6 +328,9 @@ def eval_corruptions(
     corruption_scheme: List[str] | None = None,
     info_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     data_depths: Optional[List[int]] = None,
+    hybrid_kge_weight: float = 2.0,
+    hybrid_rl_weight: float = 1.0,
+    hybrid_success_only: bool = True,
 ) -> Dict[str, Any]:
     """Evaluate a model by ranking a positive query vs. its corruptions.
 
@@ -341,9 +344,10 @@ def eval_corruptions(
     • "kge_only":
         score = log(KGE score) — no proof notion here (success mask is False).
     • "hybrid":
-        score = log(KGE score) for *all* candidates; for those where the RL
-        proof succeeds, add the RL log-probability as a bonus (here weighted as
-        `2*kge + rl`).
+        score = α·log(KGE score) for all candidates; optionally add β·RL
+        log-probability either only to successful proofs (if
+        `hybrid_success_only` is True) or to every candidate. Defaults use
+        α=2.0 and β=1.0.
 
     Metrics accumulated (per-batch + rolling):
       - Classification: Accuracy, Precision, Recall, F1, Average Precision
@@ -379,6 +383,13 @@ def eval_corruptions(
         The list of depth values corresponding to each query in `data`.
         Used to properly set query_depths in the environment during evaluation.
         If None, depth information will not be updated in the environment.
+    hybrid_kge_weight : float, default 2.0
+        Multiplicative weight applied to log KGE scores in hybrid mode.
+    hybrid_rl_weight : float, default 1.0
+        Multiplicative weight applied to RL log-probabilities in hybrid mode.
+    hybrid_success_only : bool, default True
+        When True, adds the RL contribution only for successful proofs; when
+        False, adds it to every candidate regardless of success.
 
     Returns
     -------
@@ -478,11 +489,19 @@ def eval_corruptions(
                         verbose=verbose > 1,track_logprobs=False, info_callback=info_callback,)
 
                 if evaluation_mode == 'hybrid':
+                    rl_log_probs = np.copy(log_probs)
                     kge_log_scores = kge_eval(batch, corrs, mask, kge_inference_engine)
-
-                    # if the proof doesnt end in true, the logprobs are give by kge, else the sum of both
-                    log_probs[mask] = np.where(proof_successful[mask],2*kge_log_scores[mask]+log_probs[mask],kge_log_scores[mask])
-                    # log_probs = kge_log_scores.copy() 
+                    combined = np.copy(rl_log_probs)
+                    combined[mask] = hybrid_kge_weight * kge_log_scores[mask]
+                    if hybrid_success_only:
+                        combined[mask] += np.where(
+                            proof_successful[mask],
+                            hybrid_rl_weight * rl_log_probs[mask],
+                            0.0,
+                        )
+                    else:
+                        combined[mask] += hybrid_rl_weight * rl_log_probs[mask]
+                    log_probs = combined
 
                 # Print the queries and their scores for debugging
                 debug_queries = False
