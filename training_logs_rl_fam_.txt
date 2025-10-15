@@ -1,0 +1,2362 @@
+2025-10-15 05:13:59.273631: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2025-10-15 05:13:59.287925: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:477] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1760498039.304991   84322 cuda_dnn.cc:8310] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1760498039.310148   84322 cuda_blas.cc:1418] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+2025-10-15 05:13:59.329150: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+I0000 00:00:1760498043.115412   84322 gpu_device.cc:2022] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 5563 MB memory:  -> device: 0, name: NVIDIA GeForce RTX 4060 Laptop GPU, pci bus id: 0000:01:00.0, compute capability: 8.9
+/home/castellanoontiv/miniconda3/envs/rl_gpu/lib/python3.12/site-packages/numpy/_core/numeric.py:362: RuntimeWarning: invalid value encountered in cast
+  multiarray.copyto(a, fill_value, casting='unsafe')
+/home/castellanoontiv/miniconda3/envs/rl_gpu/lib/python3.12/site-packages/stable_baselines3/common/callbacks.py:418: UserWarning: Training and eval env are not of the same type<stable_baselines3.common.vec_env.dummy_vec_env.DummyVecEnv object at 0x7f46cf6d2e40> != <custom_dummy_env.CustomDummyVecEnv object at 0x7f478b45e9c0>
+  warnings.warn("Training and eval env are not of the same type" f"{self.training_env} != {self.eval_env}")
+
+
+Loaded 11 experiment(s) from /home/castellanoontiv/RL_main/Neural-guided-Grounding/experiments.yaml
+Experiment 1/11
+Seed 0 in [0]
+
+Run vars: family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128 
+ {'atom_embedder': 'transe', 'atom_embedding_size': 256, 'batch_size': 128, 'clip_range': 0.2, 'constant_embedding_size': 256, 'corruption_mode': 'dynamic', 'corruption_scheme': ['head', 'tail'], 'data_path': './data/', 'dataset_name': 'family', 'device': 'cuda', 'endf_action': True, 'endt_action': False, 'engine': 'python', 'engine_strategy': 'rft', 'ent_coef': 0.2, 'eval_best_metric': 'mrr', 'eval_freq': 16384, 'eval_hybrid_kge_weight': 2.0, 'eval_hybrid_rl_weight': 1.0, 'eval_hybrid_success_only': True, 'eval_neg_samples': 3, 'extended_eval_info': True, 'facts_file': 'train.txt', 'false_rules': False, 'gamma': 0.99, 'janus_file': None, 'kge_checkpoint_dir': './../../checkpoints/', 'kge_integration_strategy': 'None', 'kge_logit_eps': 1e-06, 'kge_logit_gain_anneal_steps': 300000, 'kge_logit_gain_final': 0.2, 'kge_logit_gain_init': 1.0, 'kge_logit_gain_warmup_steps': 0, 'kge_logit_transform': 'log', 'kge_run_signature': 'kinship_family-backward_0_1-no_reasoner-rotate-True-256-256-4-rules.txt', 'kge_scores_file': None, 'learn_embeddings': True, 'load_model': False, 'logger_path': './runs/', 'lr': 0.0003, 'max_depth': 20, 'max_total_vars': 100, 'memory_pruning': True, 'model_name': 'PPO', 'models_path': 'models/', 'n_envs': 128, 'n_epochs': 10, 'n_eval_envs': 100, 'n_eval_queries': 500, 'n_steps': 128, 'n_test_queries': None, 'n_train_queries': None, 'padding_atoms': 6, 'padding_states': 130, 'pbrs_beta': 0.0, 'pbrs_gamma': None, 'plot': False, 'predicate_embedding_size': 256, 'restore_best_val_model': True, 'reward_type': 3, 'rules_file': 'rules.txt', 'run_signature': 'family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128', 'save_model': True, 'seed': [0], 'seed_run_i': 0, 'skip_unary_actions': True, 'state_embedder': 'mean', 'state_embedding_size': 256, 'test_depth': None, 'test_file': 'test.txt', 'test_neg_samples': 100, 'timesteps_train': 700000, 'top_k_curriculum': None, 'top_k_final': 7, 'top_k_initial': 10, 'top_k_start_step': 200000, 'train_depth': None, 'train_file': 'train.txt', 'train_neg_ratio': 1, 'use_kge_action': False, 'use_logger': True, 'use_wb': False, 'valid_depth': None, 'valid_file': 'valid.txt', 'wb_path': './../wandb/'} 
+
+Device: cuda. CUDA available: True,                            Device count: 1
+Number of queries with depth None in train: 19845 / 19845
+Number of queries with depth None in valid: 2799 / 2799
+Number of queries with depth None in test: 5626 / 5626
+Using cuda device
+TopK Curriculum Selection: None
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Improved rollout/ep_rew_mean to 0.8500 in train
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 40.19
+Training model
+Epoch 0 - Loss: 2.55377, Policy Loss: 0.07641, Value Loss: 2.50104, Entropy Loss: -0.02368
+Epoch 1 - Loss: 0.71782, Policy Loss: 0.12732, Value Loss: 0.61210, Entropy Loss: -0.02160
+Epoch 2 - Loss: 0.23604, Policy Loss: 0.06450, Value Loss: 0.19580, Entropy Loss: -0.02426
+Epoch 3 - Loss: 0.22577, Policy Loss: 0.11128, Value Loss: 0.13794, Entropy Loss: -0.02345
+Epoch 4 - Loss: 0.16890, Policy Loss: 0.06018, Value Loss: 0.13091, Entropy Loss: -0.02219
+Epoch 5 - Loss: 0.15805, Policy Loss: 0.05233, Value Loss: 0.12860, Entropy Loss: -0.02288
+Epoch 6 - Loss: 0.15395, Policy Loss: 0.05149, Value Loss: 0.12629, Entropy Loss: -0.02383
+Epoch 7 - Loss: 0.15299, Policy Loss: 0.05214, Value Loss: 0.12536, Entropy Loss: -0.02451
+Epoch 8 - Loss: 0.14744, Policy Loss: 0.04780, Value Loss: 0.12442, Entropy Loss: -0.02478
+Epoch 9 - Loss: 0.14554, Policy Loss: 0.04592, Value Loss: 0.12370, Entropy Loss: -0.02408
+Time to train 42.73
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.26                   |
+|    ep_rew_mean          | 0.85                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (4804)  |
+|    proven_d_2_pos       | 0.275 +/- 0.45 (69)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (6294)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1498)  |
+|    proven_neg           | 0.000 +/- 0.00 (6294)  |
+|    proven_pos           | 0.757 +/- 0.43 (6372)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (4804)  |
+|    reward_d_2_pos       | -0.087 +/- 0.67 (69)   |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1498) |
+| time/                   |                        |
+|    fps                  | 197                    |
+|    iterations           | 1                      |
+|    total_timesteps      | 16384                  |
+| train/                  |                        |
+|    approx_kl            | 2.5795586              |
+|    clip_fraction        | 0.256                  |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.118                 |
+|    explained_variance   | -42.6                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | 0.159                  |
+|    n_updates            | 10                     |
+|    policy_gradient_loss | 0.0689                 |
+|    value_loss           | 0.841                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 35.5
+Training model
+Epoch 0 - Loss: 0.20916, Policy Loss: 0.14230, Value Loss: 0.09579, Entropy Loss: -0.02894
+Epoch 1 - Loss: 0.10856, Policy Loss: 0.04311, Value Loss: 0.09502, Entropy Loss: -0.02958
+Epoch 2 - Loss: 0.09808, Policy Loss: 0.03385, Value Loss: 0.09435, Entropy Loss: -0.03012
+Epoch 3 - Loss: 0.10392, Policy Loss: 0.04250, Value Loss: 0.09382, Entropy Loss: -0.03241
+Epoch 4 - Loss: 0.09280, Policy Loss: 0.03284, Value Loss: 0.09366, Entropy Loss: -0.03370
+Epoch 5 - Loss: 0.09376, Policy Loss: 0.03372, Value Loss: 0.09292, Entropy Loss: -0.03288
+Epoch 6 - Loss: 0.09656, Policy Loss: 0.04196, Value Loss: 0.09251, Entropy Loss: -0.03792
+Epoch 7 - Loss: 0.08011, Policy Loss: 0.03339, Value Loss: 0.09222, Entropy Loss: -0.04550
+Epoch 8 - Loss: 0.04965, Policy Loss: 0.03924, Value Loss: 0.09170, Entropy Loss: -0.08129
+Epoch 9 - Loss: 0.07062, Policy Loss: 0.13113, Value Loss: 0.09133, Entropy Loss: -0.15184
+Time to train 44.87
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.26                   |
+|    ep_rew_mean          | 0.775                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (4321)  |
+|    proven_d_2_pos       | 0.343 +/- 0.47 (70)    |
+|    proven_d_3_pos       | 0.500 +/- 0.50 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5682)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1306)  |
+|    proven_neg           | 0.000 +/- 0.00 (5682)  |
+|    proven_pos           | 0.763 +/- 0.43 (5699)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (4321)  |
+|    reward_d_2_pos       | 0.014 +/- 0.71 (70)    |
+|    reward_d_3_pos       | 0.250 +/- 0.75 (2)     |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1306) |
+| time/                   |                        |
+|    fps                  | 200                    |
+|    iterations           | 2                      |
+|    total_timesteps      | 32768                  |
+| train/                  |                        |
+|    approx_kl            | 0.9367288              |
+|    clip_fraction        | 0.289                  |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.252                 |
+|    explained_variance   | 0.0437                 |
+|    learning_rate        | 0.0003                 |
+|    loss                 | 0.0238                 |
+|    n_updates            | 20                     |
+|    policy_gradient_loss | 0.0574                 |
+|    value_loss           | 0.187                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Improved rollout/ep_rew_mean to 0.8950 in train
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 39.47
+Training model
+Epoch 0 - Loss: -0.06205, Policy Loss: 0.01388, Value Loss: 0.09915, Entropy Loss: -0.17507
+Epoch 1 - Loss: -0.07131, Policy Loss: 0.01212, Value Loss: 0.09781, Entropy Loss: -0.18125
+Epoch 2 - Loss: -0.07312, Policy Loss: 0.01208, Value Loss: 0.09690, Entropy Loss: -0.18210
+Epoch 3 - Loss: -0.07675, Policy Loss: 0.00920, Value Loss: 0.09660, Entropy Loss: -0.18255
+Epoch 4 - Loss: -0.07823, Policy Loss: 0.00813, Value Loss: 0.09552, Entropy Loss: -0.18188
+Epoch 5 - Loss: -0.07980, Policy Loss: 0.00680, Value Loss: 0.09493, Entropy Loss: -0.18153
+Epoch 6 - Loss: -0.08118, Policy Loss: 0.00653, Value Loss: 0.09382, Entropy Loss: -0.18154
+Epoch 7 - Loss: -0.08192, Policy Loss: 0.00547, Value Loss: 0.09386, Entropy Loss: -0.18125
+Epoch 8 - Loss: -0.08314, Policy Loss: 0.00535, Value Loss: 0.09286, Entropy Loss: -0.18135
+Epoch 9 - Loss: -0.08601, Policy Loss: 0.00543, Value Loss: 0.09074, Entropy Loss: -0.18217
+Time to train 44.45
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.67                   |
+|    ep_rew_mean          | 0.895                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (4043)  |
+|    proven_d_2_pos       | 0.533 +/- 0.50 (60)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5433)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1335)  |
+|    proven_neg           | 0.000 +/- 0.00 (5433)  |
+|    proven_pos           | 0.749 +/- 0.43 (5440)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (4043)  |
+|    reward_d_2_pos       | 0.300 +/- 0.75 (60)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1335) |
+| time/                   |                        |
+|    fps                  | 198                    |
+|    iterations           | 3                      |
+|    total_timesteps      | 49152                  |
+| train/                  |                        |
+|    approx_kl            | 0.037336532            |
+|    clip_fraction        | 0.089                  |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.905                 |
+|    explained_variance   | 0.0638                 |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.128                 |
+|    n_updates            | 30                     |
+|    policy_gradient_loss | 0.0085                 |
+|    value_loss           | 0.19                   |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+---------------evaluation started---------------
+New best MRR in eval: 0.8346!
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.835                 |
+|    auc_pr               | 0.813                 |
+|    len_neg              | 1.248 +/- 0.56 (2000) |
+|    len_pos              | 1.038 +/- 0.22 (1000) |
+|    length mean +/- std  | 1.178 +/- 0.48 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.235 +/- 0.42 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.704 +/- 0.46 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | -0.147 +/- 0.64 (34)  |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.556 +/- 0.68 (1000) |
+|    reward_overall       | 0.852 +/- 0.45 (3000) |
+|    success_rate         | 0.235                 |
+|    total_timesteps      | 65152                 |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 34.97 seconds
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 69.81
+Training model
+Epoch 0 - Loss: -0.08183, Policy Loss: 0.00396, Value Loss: 0.09571, Entropy Loss: -0.18150
+Epoch 1 - Loss: -0.08716, Policy Loss: 0.00082, Value Loss: 0.09411, Entropy Loss: -0.18210
+Epoch 2 - Loss: -0.08731, Policy Loss: 0.00155, Value Loss: 0.09336, Entropy Loss: -0.18222
+Epoch 3 - Loss: -0.09149, Policy Loss: -0.00122, Value Loss: 0.09183, Entropy Loss: -0.18209
+Epoch 4 - Loss: -0.09144, Policy Loss: 0.00035, Value Loss: 0.09047, Entropy Loss: -0.18226
+Epoch 5 - Loss: -0.09550, Policy Loss: -0.00229, Value Loss: 0.08898, Entropy Loss: -0.18219
+Epoch 6 - Loss: -0.09758, Policy Loss: -0.00265, Value Loss: 0.08721, Entropy Loss: -0.18213
+Epoch 7 - Loss: -0.10074, Policy Loss: -0.00303, Value Loss: 0.08445, Entropy Loss: -0.18216
+Epoch 8 - Loss: -0.10446, Policy Loss: -0.00368, Value Loss: 0.08131, Entropy Loss: -0.18210
+Epoch 9 - Loss: -0.10741, Policy Loss: -0.00401, Value Loss: 0.07863, Entropy Loss: -0.18203
+Time to train 43.93
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.82                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3952)  |
+|    proven_d_2_pos       | 0.425 +/- 0.49 (73)    |
+|    proven_d_3_pos       | 0.500 +/- 0.50 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5272)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1244)  |
+|    proven_neg           | 0.000 +/- 0.00 (5272)  |
+|    proven_pos           | 0.756 +/- 0.43 (5271)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3952)  |
+|    reward_d_2_pos       | 0.137 +/- 0.74 (73)    |
+|    reward_d_3_pos       | 0.250 +/- 0.75 (2)     |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1244) |
+| time/                   |                        |
+|    fps                  | 181                    |
+|    iterations           | 4                      |
+|    total_timesteps      | 65536                  |
+| train/                  |                        |
+|    approx_kl            | 0.004936084            |
+|    clip_fraction        | 0.0108                 |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.91                  |
+|    explained_variance   | 0.0682                 |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.0749                |
+|    n_updates            | 40                     |
+|    policy_gradient_loss | -0.00102               |
+|    value_loss           | 0.177                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 32.32
+Training model
+Epoch 0 - Loss: -0.08556, Policy Loss: 0.00029, Value Loss: 0.09632, Entropy Loss: -0.18217
+Epoch 1 - Loss: -0.08933, Policy Loss: -0.00066, Value Loss: 0.09379, Entropy Loss: -0.18246
+Epoch 2 - Loss: -0.09146, Policy Loss: -0.00131, Value Loss: 0.09222, Entropy Loss: -0.18236
+Epoch 3 - Loss: -0.09468, Policy Loss: -0.00203, Value Loss: 0.08965, Entropy Loss: -0.18230
+Epoch 4 - Loss: -0.09823, Policy Loss: -0.00284, Value Loss: 0.08687, Entropy Loss: -0.18226
+Epoch 5 - Loss: -0.10163, Policy Loss: -0.00346, Value Loss: 0.08416, Entropy Loss: -0.18233
+Epoch 6 - Loss: -0.10427, Policy Loss: -0.00383, Value Loss: 0.08192, Entropy Loss: -0.18236
+Epoch 7 - Loss: -0.10655, Policy Loss: -0.00432, Value Loss: 0.08014, Entropy Loss: -0.18238
+Epoch 8 - Loss: -0.11114, Policy Loss: -0.00484, Value Loss: 0.07602, Entropy Loss: -0.18232
+Epoch 9 - Loss: -0.11225, Policy Loss: -0.00514, Value Loss: 0.07527, Entropy Loss: -0.18239
+Time to train 45.7
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.54                   |
+|    ep_rew_mean          | 0.745                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3910)  |
+|    proven_d_2_pos       | 0.431 +/- 0.50 (65)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (3)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5217)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1254)  |
+|    proven_neg           | 0.000 +/- 0.00 (5217)  |
+|    proven_pos           | 0.753 +/- 0.43 (5232)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3910)  |
+|    reward_d_2_pos       | 0.146 +/- 0.74 (65)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (3)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1254) |
+| time/                   |                        |
+|    fps                  | 186                    |
+|    iterations           | 5                      |
+|    total_timesteps      | 81920                  |
+| train/                  |                        |
+|    approx_kl            | 0.0023482677           |
+|    clip_fraction        | 0.00538                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.912                 |
+|    explained_variance   | 0.0661                 |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.146                 |
+|    n_updates            | 50                     |
+|    policy_gradient_loss | -0.00282               |
+|    value_loss           | 0.171                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 35.64
+Training model
+Epoch 0 - Loss: -0.08390, Policy Loss: -0.00012, Value Loss: 0.09484, Entropy Loss: -0.17862
+Epoch 1 - Loss: -0.08729, Policy Loss: -0.00121, Value Loss: 0.09240, Entropy Loss: -0.17848
+Epoch 2 - Loss: -0.09235, Policy Loss: -0.00206, Value Loss: 0.08811, Entropy Loss: -0.17840
+Epoch 3 - Loss: -0.09440, Policy Loss: -0.00275, Value Loss: 0.08677, Entropy Loss: -0.17842
+Epoch 4 - Loss: -0.09899, Policy Loss: -0.00329, Value Loss: 0.08276, Entropy Loss: -0.17845
+Epoch 5 - Loss: -0.10233, Policy Loss: -0.00370, Value Loss: 0.07983, Entropy Loss: -0.17846
+Epoch 6 - Loss: -0.10714, Policy Loss: -0.00441, Value Loss: 0.07576, Entropy Loss: -0.17850
+Epoch 7 - Loss: -0.10989, Policy Loss: -0.00487, Value Loss: 0.07346, Entropy Loss: -0.17847
+Epoch 8 - Loss: -0.11442, Policy Loss: -0.00545, Value Loss: 0.06941, Entropy Loss: -0.17838
+Epoch 9 - Loss: -0.11742, Policy Loss: -0.00573, Value Loss: 0.06678, Entropy Loss: -0.17847
+Time to train 44.3
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.53                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3879)  |
+|    proven_d_2_pos       | 0.404 +/- 0.49 (57)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5201)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1265)  |
+|    proven_neg           | 0.000 +/- 0.00 (5201)  |
+|    proven_pos           | 0.750 +/- 0.43 (5201)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3879)  |
+|    reward_d_2_pos       | 0.105 +/- 0.74 (57)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1265) |
+| time/                   |                        |
+|    fps                  | 189                    |
+|    iterations           | 6                      |
+|    total_timesteps      | 98304                  |
+| train/                  |                        |
+|    approx_kl            | 0.0031035375           |
+|    clip_fraction        | 0.0092                 |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.892                 |
+|    explained_variance   | 0.115                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.129                 |
+|    n_updates            | 60                     |
+|    policy_gradient_loss | -0.00336               |
+|    value_loss           | 0.162                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 32.2
+Training model
+Epoch 0 - Loss: -0.08625, Policy Loss: 0.00001, Value Loss: 0.09350, Entropy Loss: -0.17976
+Epoch 1 - Loss: -0.09037, Policy Loss: -0.00060, Value Loss: 0.09017, Entropy Loss: -0.17994
+Epoch 2 - Loss: -0.09430, Policy Loss: -0.00128, Value Loss: 0.08698, Entropy Loss: -0.17999
+Epoch 3 - Loss: -0.09880, Policy Loss: -0.00202, Value Loss: 0.08321, Entropy Loss: -0.17999
+Epoch 4 - Loss: -0.10205, Policy Loss: -0.00262, Value Loss: 0.08054, Entropy Loss: -0.17998
+Epoch 5 - Loss: -0.10504, Policy Loss: -0.00309, Value Loss: 0.07798, Entropy Loss: -0.17994
+Epoch 6 - Loss: -0.10862, Policy Loss: -0.00384, Value Loss: 0.07504, Entropy Loss: -0.17983
+Epoch 7 - Loss: -0.11100, Policy Loss: -0.00422, Value Loss: 0.07305, Entropy Loss: -0.17984
+Epoch 8 - Loss: -0.11515, Policy Loss: -0.00487, Value Loss: 0.06952, Entropy Loss: -0.17980
+Epoch 9 - Loss: -0.11712, Policy Loss: -0.00509, Value Loss: 0.06785, Entropy Loss: -0.17988
+Time to train 43.43
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.58                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3874)  |
+|    proven_d_2_pos       | 0.327 +/- 0.47 (52)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5229)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1304)  |
+|    proven_neg           | 0.000 +/- 0.00 (5229)  |
+|    proven_pos           | 0.744 +/- 0.44 (5231)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3874)  |
+|    reward_d_2_pos       | -0.010 +/- 0.70 (52)   |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1304) |
+| time/                   |                        |
+|    fps                  | 192                    |
+|    iterations           | 7                      |
+|    total_timesteps      | 114688                 |
+| train/                  |                        |
+|    approx_kl            | 0.0020149467           |
+|    clip_fraction        | 0.00554                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.899                 |
+|    explained_variance   | 0.143                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.113                 |
+|    n_updates            | 70                     |
+|    policy_gradient_loss | -0.00276               |
+|    value_loss           | 0.16                   |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+---------------evaluation started---------------
+New best MRR in eval: 0.8466!
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.847                 |
+|    auc_pr               | 0.827                 |
+|    len_neg              | 1.731 +/- 0.89 (2000) |
+|    len_pos              | 1.154 +/- 0.47 (1000) |
+|    length mean +/- std  | 1.539 +/- 0.82 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.412 +/- 0.49 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.710 +/- 0.45 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | 0.118 +/- 0.74 (34)   |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.565 +/- 0.68 (1000) |
+|    reward_overall       | 0.855 +/- 0.44 (3000) |
+|    success_rate         | 0.237                 |
+|    total_timesteps      | 130176                |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 48.68 seconds
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 79.89
+Training model
+Epoch 0 - Loss: -0.08657, Policy Loss: 0.00016, Value Loss: 0.09023, Entropy Loss: -0.17696
+Epoch 1 - Loss: -0.09195, Policy Loss: -0.00068, Value Loss: 0.08559, Entropy Loss: -0.17687
+Epoch 2 - Loss: -0.09674, Policy Loss: -0.00155, Value Loss: 0.08157, Entropy Loss: -0.17675
+Epoch 3 - Loss: -0.10057, Policy Loss: -0.00235, Value Loss: 0.07856, Entropy Loss: -0.17679
+Epoch 4 - Loss: -0.10388, Policy Loss: -0.00291, Value Loss: 0.07584, Entropy Loss: -0.17681
+Epoch 5 - Loss: -0.10784, Policy Loss: -0.00367, Value Loss: 0.07263, Entropy Loss: -0.17680
+Epoch 6 - Loss: -0.11060, Policy Loss: -0.00403, Value Loss: 0.07023, Entropy Loss: -0.17679
+Epoch 7 - Loss: -0.11467, Policy Loss: -0.00493, Value Loss: 0.06697, Entropy Loss: -0.17671
+Epoch 8 - Loss: -0.11826, Policy Loss: -0.00515, Value Loss: 0.06370, Entropy Loss: -0.17681
+Epoch 9 - Loss: -0.12107, Policy Loss: -0.00554, Value Loss: 0.06131, Entropy Loss: -0.17684
+Time to train 45.32
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.5                    |
+|    ep_rew_mean          | 0.82                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3885)  |
+|    proven_d_2_pos       | 0.385 +/- 0.49 (52)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5189)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1258)  |
+|    proven_neg           | 0.000 +/- 0.00 (5189)  |
+|    proven_pos           | 0.752 +/- 0.43 (5196)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3885)  |
+|    reward_d_2_pos       | 0.077 +/- 0.73 (52)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1258) |
+| time/                   |                        |
+|    fps                  | 182                    |
+|    iterations           | 8                      |
+|    total_timesteps      | 131072                 |
+| train/                  |                        |
+|    approx_kl            | 0.001758584            |
+|    clip_fraction        | 0.00377                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.884                 |
+|    explained_variance   | 0.18                   |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.0996                |
+|    n_updates            | 80                     |
+|    policy_gradient_loss | -0.00307               |
+|    value_loss           | 0.149                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 34.61
+Training model
+Epoch 0 - Loss: -0.09516, Policy Loss: 0.00003, Value Loss: 0.08592, Entropy Loss: -0.18111
+Epoch 1 - Loss: -0.10029, Policy Loss: -0.00087, Value Loss: 0.08168, Entropy Loss: -0.18110
+Epoch 2 - Loss: -0.10473, Policy Loss: -0.00141, Value Loss: 0.07790, Entropy Loss: -0.18123
+Epoch 3 - Loss: -0.10862, Policy Loss: -0.00222, Value Loss: 0.07480, Entropy Loss: -0.18120
+Epoch 4 - Loss: -0.11260, Policy Loss: -0.00306, Value Loss: 0.07156, Entropy Loss: -0.18110
+Epoch 5 - Loss: -0.11679, Policy Loss: -0.00362, Value Loss: 0.06792, Entropy Loss: -0.18109
+Epoch 6 - Loss: -0.11914, Policy Loss: -0.00433, Value Loss: 0.06613, Entropy Loss: -0.18094
+Epoch 7 - Loss: -0.12284, Policy Loss: -0.00501, Value Loss: 0.06306, Entropy Loss: -0.18089
+Epoch 8 - Loss: -0.12559, Policy Loss: -0.00539, Value Loss: 0.06079, Entropy Loss: -0.18099
+Epoch 9 - Loss: -0.12938, Policy Loss: -0.00602, Value Loss: 0.05752, Entropy Loss: -0.18089
+Time to train 43.49
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.7                    |
+|    ep_rew_mean          | 0.82                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3798)  |
+|    proven_d_2_pos       | 0.493 +/- 0.50 (67)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5123)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1243)  |
+|    proven_neg           | 0.000 +/- 0.00 (5123)  |
+|    proven_pos           | 0.750 +/- 0.43 (5110)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3798)  |
+|    reward_d_2_pos       | 0.239 +/- 0.75 (67)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1243) |
+| time/                   |                        |
+|    fps                  | 184                    |
+|    iterations           | 9                      |
+|    total_timesteps      | 147456                 |
+| train/                  |                        |
+|    approx_kl            | 0.0019600475           |
+|    clip_fraction        | 0.00556                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.905                 |
+|    explained_variance   | 0.218                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.176                 |
+|    n_updates            | 90                     |
+|    policy_gradient_loss | -0.00319               |
+|    value_loss           | 0.141                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 30.47
+Training model
+Epoch 0 - Loss: -0.09984, Policy Loss: 0.00013, Value Loss: 0.07998, Entropy Loss: -0.17995
+Epoch 1 - Loss: -0.10511, Policy Loss: -0.00067, Value Loss: 0.07557, Entropy Loss: -0.18002
+Epoch 2 - Loss: -0.11049, Policy Loss: -0.00149, Value Loss: 0.07112, Entropy Loss: -0.18012
+Epoch 3 - Loss: -0.11354, Policy Loss: -0.00211, Value Loss: 0.06866, Entropy Loss: -0.18009
+Epoch 4 - Loss: -0.11729, Policy Loss: -0.00276, Value Loss: 0.06553, Entropy Loss: -0.18006
+Epoch 5 - Loss: -0.11935, Policy Loss: -0.00320, Value Loss: 0.06386, Entropy Loss: -0.18002
+Epoch 6 - Loss: -0.12266, Policy Loss: -0.00381, Value Loss: 0.06115, Entropy Loss: -0.18000
+Epoch 7 - Loss: -0.12633, Policy Loss: -0.00447, Value Loss: 0.05808, Entropy Loss: -0.17995
+Epoch 8 - Loss: -0.12721, Policy Loss: -0.00489, Value Loss: 0.05761, Entropy Loss: -0.17992
+Epoch 9 - Loss: -0.13176, Policy Loss: -0.00536, Value Loss: 0.05350, Entropy Loss: -0.17989
+Time to train 44.98
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.52                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3926)  |
+|    proven_d_2_pos       | 0.517 +/- 0.50 (60)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5223)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1228)  |
+|    proven_neg           | 0.000 +/- 0.00 (5223)  |
+|    proven_pos           | 0.759 +/- 0.43 (5214)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3926)  |
+|    reward_d_2_pos       | 0.275 +/- 0.75 (60)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1228) |
+| time/                   |                        |
+|    fps                  | 187                    |
+|    iterations           | 10                     |
+|    total_timesteps      | 163840                 |
+| train/                  |                        |
+|    approx_kl            | 0.0017450443           |
+|    clip_fraction        | 0.00474                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.9                   |
+|    explained_variance   | 0.254                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.146                 |
+|    n_updates            | 100                    |
+|    policy_gradient_loss | -0.00286               |
+|    value_loss           | 0.131                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 35.54
+Training model
+Epoch 0 - Loss: -0.10014, Policy Loss: 0.00007, Value Loss: 0.08397, Entropy Loss: -0.18418
+Epoch 1 - Loss: -0.10601, Policy Loss: -0.00061, Value Loss: 0.07882, Entropy Loss: -0.18422
+Epoch 2 - Loss: -0.11160, Policy Loss: -0.00159, Value Loss: 0.07413, Entropy Loss: -0.18413
+Epoch 3 - Loss: -0.11567, Policy Loss: -0.00228, Value Loss: 0.07070, Entropy Loss: -0.18409
+Epoch 4 - Loss: -0.12056, Policy Loss: -0.00304, Value Loss: 0.06655, Entropy Loss: -0.18407
+Epoch 5 - Loss: -0.12314, Policy Loss: -0.00354, Value Loss: 0.06455, Entropy Loss: -0.18415
+Epoch 6 - Loss: -0.12796, Policy Loss: -0.00417, Value Loss: 0.06029, Entropy Loss: -0.18408
+Epoch 7 - Loss: -0.12993, Policy Loss: -0.00485, Value Loss: 0.05891, Entropy Loss: -0.18399
+Epoch 8 - Loss: -0.13164, Policy Loss: -0.00507, Value Loss: 0.05749, Entropy Loss: -0.18406
+Epoch 9 - Loss: -0.13603, Policy Loss: -0.00580, Value Loss: 0.05380, Entropy Loss: -0.18403
+Time to train 45.34
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.73                   |
+|    ep_rew_mean          | 0.85                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3812)  |
+|    proven_d_2_pos       | 0.368 +/- 0.48 (57)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5136)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1259)  |
+|    proven_neg           | 0.000 +/- 0.00 (5136)  |
+|    proven_pos           | 0.747 +/- 0.43 (5128)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3812)  |
+|    reward_d_2_pos       | 0.053 +/- 0.72 (57)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1259) |
+| time/                   |                        |
+|    fps                  | 188                    |
+|    iterations           | 11                     |
+|    total_timesteps      | 180224                 |
+| train/                  |                        |
+|    approx_kl            | 0.0017514713           |
+|    clip_fraction        | 0.00412                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.921                 |
+|    explained_variance   | 0.254                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.0932                |
+|    n_updates            | 110                    |
+|    policy_gradient_loss | -0.00309               |
+|    value_loss           | 0.134                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+---------------evaluation started---------------
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.843                 |
+|    auc_pr               | 0.821                 |
+|    len_neg              | 1.752 +/- 0.84 (2000) |
+|    len_pos              | 1.178 +/- 0.49 (1000) |
+|    length mean +/- std  | 1.560 +/- 0.79 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.353 +/- 0.48 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.708 +/- 0.45 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | 0.029 +/- 0.72 (34)   |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.562 +/- 0.68 (1000) |
+|    reward_overall       | 0.854 +/- 0.44 (3000) |
+|    success_rate         | 0.236                 |
+|    total_timesteps      | 195200                |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 45.54 seconds
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 80.47
+Training model
+Epoch 0 - Loss: -0.09759, Policy Loss: 0.00018, Value Loss: 0.07922, Entropy Loss: -0.17698
+Epoch 1 - Loss: -0.10281, Policy Loss: -0.00057, Value Loss: 0.07476, Entropy Loss: -0.17700
+Epoch 2 - Loss: -0.10656, Policy Loss: -0.00120, Value Loss: 0.07169, Entropy Loss: -0.17704
+Epoch 3 - Loss: -0.11046, Policy Loss: -0.00186, Value Loss: 0.06831, Entropy Loss: -0.17692
+Epoch 4 - Loss: -0.11455, Policy Loss: -0.00251, Value Loss: 0.06495, Entropy Loss: -0.17700
+Epoch 5 - Loss: -0.11845, Policy Loss: -0.00311, Value Loss: 0.06164, Entropy Loss: -0.17698
+Epoch 6 - Loss: -0.12063, Policy Loss: -0.00353, Value Loss: 0.05989, Entropy Loss: -0.17699
+Epoch 7 - Loss: -0.12450, Policy Loss: -0.00402, Value Loss: 0.05647, Entropy Loss: -0.17694
+Epoch 8 - Loss: -0.12708, Policy Loss: -0.00459, Value Loss: 0.05443, Entropy Loss: -0.17691
+Epoch 9 - Loss: -0.13079, Policy Loss: -0.00500, Value Loss: 0.05116, Entropy Loss: -0.17695
+Time to train 43.52
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.4                    |
+|    ep_rew_mean          | 0.76                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3896)  |
+|    proven_d_2_pos       | 0.480 +/- 0.50 (75)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5219)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1242)  |
+|    proven_neg           | 0.000 +/- 0.00 (5219)  |
+|    proven_pos           | 0.754 +/- 0.43 (5213)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3896)  |
+|    reward_d_2_pos       | 0.220 +/- 0.75 (75)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1242) |
+| time/                   |                        |
+|    fps                  | 182                    |
+|    iterations           | 12                     |
+|    total_timesteps      | 196608                 |
+| train/                  |                        |
+|    approx_kl            | 0.0012871828           |
+|    clip_fraction        | 0.00227                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.885                 |
+|    explained_variance   | 0.273                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.137                 |
+|    n_updates            | 120                    |
+|    policy_gradient_loss | -0.00262               |
+|    value_loss           | 0.129                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 32.89
+Training model
+Epoch 0 - Loss: -0.10263, Policy Loss: 0.00005, Value Loss: 0.07675, Entropy Loss: -0.17943
+Epoch 1 - Loss: -0.10885, Policy Loss: -0.00065, Value Loss: 0.07133, Entropy Loss: -0.17953
+Epoch 2 - Loss: -0.11474, Policy Loss: -0.00120, Value Loss: 0.06612, Entropy Loss: -0.17966
+Epoch 3 - Loss: -0.11874, Policy Loss: -0.00195, Value Loss: 0.06290, Entropy Loss: -0.17970
+Epoch 4 - Loss: -0.12265, Policy Loss: -0.00254, Value Loss: 0.05950, Entropy Loss: -0.17961
+Epoch 5 - Loss: -0.12524, Policy Loss: -0.00298, Value Loss: 0.05735, Entropy Loss: -0.17961
+Epoch 6 - Loss: -0.12891, Policy Loss: -0.00358, Value Loss: 0.05426, Entropy Loss: -0.17959
+Epoch 7 - Loss: -0.13113, Policy Loss: -0.00399, Value Loss: 0.05249, Entropy Loss: -0.17963
+Epoch 8 - Loss: -0.13409, Policy Loss: -0.00446, Value Loss: 0.04999, Entropy Loss: -0.17962
+Epoch 9 - Loss: -0.13767, Policy Loss: -0.00483, Value Loss: 0.04685, Entropy Loss: -0.17968
+Time to train 44.78
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.44                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3925)  |
+|    proven_d_2_pos       | 0.457 +/- 0.50 (70)    |
+|    proven_d_3_pos       | 0.333 +/- 0.47 (3)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5239)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1248)  |
+|    proven_neg           | 0.000 +/- 0.00 (5239)  |
+|    proven_pos           | 0.754 +/- 0.43 (5246)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3925)  |
+|    reward_d_2_pos       | 0.186 +/- 0.75 (70)    |
+|    reward_d_3_pos       | 0.000 +/- 0.71 (3)     |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1248) |
+| time/                   |                        |
+|    fps                  | 184                    |
+|    iterations           | 13                     |
+|    total_timesteps      | 212992                 |
+| train/                  |                        |
+|    approx_kl            | 0.00236564             |
+|    clip_fraction        | 0.00645                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.898                 |
+|    explained_variance   | 0.318                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.148                 |
+|    n_updates            | 130                    |
+|    policy_gradient_loss | -0.00261               |
+|    value_loss           | 0.12                   |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 38.6
+Training model
+Epoch 0 - Loss: -0.10597, Policy Loss: -0.00008, Value Loss: 0.07411, Entropy Loss: -0.18000
+Epoch 1 - Loss: -0.11174, Policy Loss: -0.00107, Value Loss: 0.06930, Entropy Loss: -0.17996
+Epoch 2 - Loss: -0.11690, Policy Loss: -0.00220, Value Loss: 0.06510, Entropy Loss: -0.17980
+Epoch 3 - Loss: -0.12062, Policy Loss: -0.00315, Value Loss: 0.06225, Entropy Loss: -0.17972
+Epoch 4 - Loss: -0.12522, Policy Loss: -0.00411, Value Loss: 0.05847, Entropy Loss: -0.17958
+Epoch 5 - Loss: -0.12797, Policy Loss: -0.00468, Value Loss: 0.05639, Entropy Loss: -0.17968
+Epoch 6 - Loss: -0.13083, Policy Loss: -0.00513, Value Loss: 0.05400, Entropy Loss: -0.17970
+Epoch 7 - Loss: -0.13437, Policy Loss: -0.00555, Value Loss: 0.05091, Entropy Loss: -0.17973
+Epoch 8 - Loss: -0.13859, Policy Loss: -0.00638, Value Loss: 0.04743, Entropy Loss: -0.17964
+Epoch 9 - Loss: -0.14059, Policy Loss: -0.00676, Value Loss: 0.04586, Entropy Loss: -0.17969
+Time to train 44.46
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.37                   |
+|    ep_rew_mean          | 0.805                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3915)  |
+|    proven_d_2_pos       | 0.469 +/- 0.50 (64)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5179)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1209)  |
+|    proven_neg           | 0.000 +/- 0.00 (5179)  |
+|    proven_pos           | 0.760 +/- 0.43 (5190)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3915)  |
+|    reward_d_2_pos       | 0.203 +/- 0.75 (64)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1209) |
+| time/                   |                        |
+|    fps                  | 185                    |
+|    iterations           | 14                     |
+|    total_timesteps      | 229376                 |
+| train/                  |                        |
+|    approx_kl            | 0.0019563623           |
+|    clip_fraction        | 0.00546                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.899                 |
+|    explained_variance   | 0.337                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.113                 |
+|    n_updates            | 140                    |
+|    policy_gradient_loss | -0.00391               |
+|    value_loss           | 0.117                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 32.9
+Training model
+Epoch 0 - Loss: -0.10490, Policy Loss: 0.00017, Value Loss: 0.07339, Entropy Loss: -0.17846
+Epoch 1 - Loss: -0.10997, Policy Loss: -0.00067, Value Loss: 0.06922, Entropy Loss: -0.17852
+Epoch 2 - Loss: -0.11541, Policy Loss: -0.00108, Value Loss: 0.06440, Entropy Loss: -0.17872
+Epoch 3 - Loss: -0.11965, Policy Loss: -0.00179, Value Loss: 0.06087, Entropy Loss: -0.17873
+Epoch 4 - Loss: -0.12417, Policy Loss: -0.00238, Value Loss: 0.05683, Entropy Loss: -0.17862
+Epoch 5 - Loss: -0.12763, Policy Loss: -0.00281, Value Loss: 0.05393, Entropy Loss: -0.17875
+Epoch 6 - Loss: -0.13121, Policy Loss: -0.00360, Value Loss: 0.05098, Entropy Loss: -0.17859
+Epoch 7 - Loss: -0.13326, Policy Loss: -0.00413, Value Loss: 0.04953, Entropy Loss: -0.17867
+Epoch 8 - Loss: -0.13571, Policy Loss: -0.00458, Value Loss: 0.04737, Entropy Loss: -0.17850
+Epoch 9 - Loss: -0.13962, Policy Loss: -0.00501, Value Loss: 0.04402, Entropy Loss: -0.17863
+Time to train 43.29
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.39                   |
+|    ep_rew_mean          | 0.79                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3905)  |
+|    proven_d_2_pos       | 0.585 +/- 0.49 (65)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5226)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1263)  |
+|    proven_neg           | 0.000 +/- 0.00 (5226)  |
+|    proven_pos           | 0.753 +/- 0.43 (5233)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3905)  |
+|    reward_d_2_pos       | 0.377 +/- 0.74 (65)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1263) |
+| time/                   |                        |
+|    fps                  | 186                    |
+|    iterations           | 15                     |
+|    total_timesteps      | 245760                 |
+| train/                  |                        |
+|    approx_kl            | 0.0014916281           |
+|    clip_fraction        | 0.00583                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.893                 |
+|    explained_variance   | 0.348                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.115                 |
+|    n_updates            | 150                    |
+|    policy_gradient_loss | -0.00259               |
+|    value_loss           | 0.114                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+---------------evaluation started---------------
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.839                 |
+|    auc_pr               | 0.819                 |
+|    len_neg              | 1.638 +/- 0.76 (2000) |
+|    len_pos              | 1.156 +/- 0.43 (1000) |
+|    length mean +/- std  | 1.477 +/- 0.71 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.471 +/- 0.50 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.712 +/- 0.45 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | 0.206 +/- 0.75 (34)   |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.568 +/- 0.68 (1000) |
+|    reward_overall       | 0.856 +/- 0.44 (3000) |
+|    success_rate         | 0.237                 |
+|    total_timesteps      | 260224                |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 53.13 seconds
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 85.64
+Training model
+Epoch 0 - Loss: -0.10110, Policy Loss: 0.00000, Value Loss: 0.07592, Entropy Loss: -0.17702
+Epoch 1 - Loss: -0.10805, Policy Loss: -0.00069, Value Loss: 0.06983, Entropy Loss: -0.17720
+Epoch 2 - Loss: -0.11443, Policy Loss: -0.00133, Value Loss: 0.06413, Entropy Loss: -0.17723
+Epoch 3 - Loss: -0.11800, Policy Loss: -0.00221, Value Loss: 0.06142, Entropy Loss: -0.17721
+Epoch 4 - Loss: -0.12201, Policy Loss: -0.00296, Value Loss: 0.05814, Entropy Loss: -0.17719
+Epoch 5 - Loss: -0.12671, Policy Loss: -0.00342, Value Loss: 0.05387, Entropy Loss: -0.17716
+Epoch 6 - Loss: -0.12789, Policy Loss: -0.00380, Value Loss: 0.05317, Entropy Loss: -0.17727
+Epoch 7 - Loss: -0.13188, Policy Loss: -0.00453, Value Loss: 0.04985, Entropy Loss: -0.17720
+Epoch 8 - Loss: -0.13514, Policy Loss: -0.00494, Value Loss: 0.04696, Entropy Loss: -0.17716
+Epoch 9 - Loss: -0.13772, Policy Loss: -0.00543, Value Loss: 0.04484, Entropy Loss: -0.17712
+Time to train 45.37
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.86                   |
+|    ep_rew_mean          | 0.805                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3923)  |
+|    proven_d_2_pos       | 0.340 +/- 0.47 (53)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5242)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1269)  |
+|    proven_neg           | 0.000 +/- 0.00 (5242)  |
+|    proven_pos           | 0.751 +/- 0.43 (5246)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3923)  |
+|    reward_d_2_pos       | 0.009 +/- 0.71 (53)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1269) |
+| time/                   |                        |
+|    fps                  | 181                    |
+|    iterations           | 16                     |
+|    total_timesteps      | 262144                 |
+| train/                  |                        |
+|    approx_kl            | 0.0014686943           |
+|    clip_fraction        | 0.00498                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.886                 |
+|    explained_variance   | 0.349                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.0994                |
+|    n_updates            | 160                    |
+|    policy_gradient_loss | -0.00293               |
+|    value_loss           | 0.116                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 34.61
+Training model
+Epoch 0 - Loss: -0.10298, Policy Loss: -0.00008, Value Loss: 0.07519, Entropy Loss: -0.17809
+Epoch 1 - Loss: -0.10859, Policy Loss: -0.00130, Value Loss: 0.07061, Entropy Loss: -0.17790
+Epoch 2 - Loss: -0.11708, Policy Loss: -0.00228, Value Loss: 0.06290, Entropy Loss: -0.17770
+Epoch 3 - Loss: -0.12115, Policy Loss: -0.00230, Value Loss: 0.05922, Entropy Loss: -0.17807
+Epoch 4 - Loss: -0.12485, Policy Loss: -0.00319, Value Loss: 0.05627, Entropy Loss: -0.17793
+Epoch 5 - Loss: -0.12801, Policy Loss: -0.00375, Value Loss: 0.05363, Entropy Loss: -0.17788
+Epoch 6 - Loss: -0.13195, Policy Loss: -0.00419, Value Loss: 0.05024, Entropy Loss: -0.17799
+Epoch 7 - Loss: -0.13520, Policy Loss: -0.00488, Value Loss: 0.04758, Entropy Loss: -0.17789
+Epoch 8 - Loss: -0.13831, Policy Loss: -0.00545, Value Loss: 0.04497, Entropy Loss: -0.17783
+Epoch 9 - Loss: -0.14060, Policy Loss: -0.00590, Value Loss: 0.04316, Entropy Loss: -0.17786
+Time to train 43.61
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.62                   |
+|    ep_rew_mean          | 0.88                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3834)  |
+|    proven_d_2_pos       | 0.310 +/- 0.46 (58)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5149)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1250)  |
+|    proven_neg           | 0.000 +/- 0.00 (5149)  |
+|    proven_pos           | 0.749 +/- 0.43 (5143)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3834)  |
+|    reward_d_2_pos       | -0.034 +/- 0.69 (58)   |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1250) |
+| time/                   |                        |
+|    fps                  | 182                    |
+|    iterations           | 17                     |
+|    total_timesteps      | 278528                 |
+| train/                  |                        |
+|    approx_kl            | 0.0015180565           |
+|    clip_fraction        | 0.00383                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.89                  |
+|    explained_variance   | 0.364                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.136                 |
+|    n_updates            | 170                    |
+|    policy_gradient_loss | -0.00333               |
+|    value_loss           | 0.113                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 30.58
+Training model
+Epoch 0 - Loss: -0.11345, Policy Loss: 0.00003, Value Loss: 0.06791, Entropy Loss: -0.18139
+Epoch 1 - Loss: -0.12163, Policy Loss: -0.00077, Value Loss: 0.06070, Entropy Loss: -0.18155
+Epoch 2 - Loss: -0.12587, Policy Loss: -0.00157, Value Loss: 0.05736, Entropy Loss: -0.18167
+Epoch 3 - Loss: -0.13031, Policy Loss: -0.00235, Value Loss: 0.05374, Entropy Loss: -0.18170
+Epoch 4 - Loss: -0.13372, Policy Loss: -0.00306, Value Loss: 0.05106, Entropy Loss: -0.18172
+Epoch 5 - Loss: -0.13796, Policy Loss: -0.00375, Value Loss: 0.04749, Entropy Loss: -0.18170
+Epoch 6 - Loss: -0.14080, Policy Loss: -0.00440, Value Loss: 0.04529, Entropy Loss: -0.18170
+Epoch 7 - Loss: -0.14316, Policy Loss: -0.00492, Value Loss: 0.04343, Entropy Loss: -0.18168
+Epoch 8 - Loss: -0.14443, Policy Loss: -0.00536, Value Loss: 0.04261, Entropy Loss: -0.18168
+Epoch 9 - Loss: -0.14681, Policy Loss: -0.00598, Value Loss: 0.04083, Entropy Loss: -0.18166
+Time to train 44.53
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.46                   |
+|    ep_rew_mean          | 0.79                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3807)  |
+|    proven_d_2_pos       | 0.419 +/- 0.49 (62)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5149)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1273)  |
+|    proven_neg           | 0.000 +/- 0.00 (5149)  |
+|    proven_pos           | 0.745 +/- 0.44 (5143)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3807)  |
+|    reward_d_2_pos       | 0.129 +/- 0.74 (62)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1273) |
+| time/                   |                        |
+|    fps                  | 184                    |
+|    iterations           | 18                     |
+|    total_timesteps      | 294912                 |
+| train/                  |                        |
+|    approx_kl            | 0.0021054037           |
+|    clip_fraction        | 0.0056                 |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.908                 |
+|    explained_variance   | 0.423                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.141                 |
+|    n_updates            | 180                    |
+|    policy_gradient_loss | -0.00321               |
+|    value_loss           | 0.102                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Improved rollout/ep_rew_mean to 0.9100 in train
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 33.95
+Training model
+Epoch 0 - Loss: -0.10851, Policy Loss: -0.00004, Value Loss: 0.06939, Entropy Loss: -0.17786
+Epoch 1 - Loss: -0.11396, Policy Loss: -0.00101, Value Loss: 0.06487, Entropy Loss: -0.17782
+Epoch 2 - Loss: -0.12004, Policy Loss: -0.00202, Value Loss: 0.05980, Entropy Loss: -0.17782
+Epoch 3 - Loss: -0.12479, Policy Loss: -0.00297, Value Loss: 0.05598, Entropy Loss: -0.17780
+Epoch 4 - Loss: -0.13048, Policy Loss: -0.00385, Value Loss: 0.05110, Entropy Loss: -0.17773
+Epoch 5 - Loss: -0.13118, Policy Loss: -0.00445, Value Loss: 0.05102, Entropy Loss: -0.17775
+Epoch 6 - Loss: -0.13545, Policy Loss: -0.00515, Value Loss: 0.04746, Entropy Loss: -0.17775
+Epoch 7 - Loss: -0.13648, Policy Loss: -0.00571, Value Loss: 0.04702, Entropy Loss: -0.17779
+Epoch 8 - Loss: -0.14007, Policy Loss: -0.00637, Value Loss: 0.04401, Entropy Loss: -0.17770
+Epoch 9 - Loss: -0.14151, Policy Loss: -0.00691, Value Loss: 0.04305, Entropy Loss: -0.17765
+Time to train 45.09
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.64                   |
+|    ep_rew_mean          | 0.91                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3827)  |
+|    proven_d_2_pos       | 0.476 +/- 0.50 (63)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5171)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1257)  |
+|    proven_neg           | 0.000 +/- 0.00 (5171)  |
+|    proven_pos           | 0.749 +/- 0.43 (5147)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3827)  |
+|    reward_d_2_pos       | 0.214 +/- 0.75 (63)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1257) |
+| time/                   |                        |
+|    fps                  | 185                    |
+|    iterations           | 19                     |
+|    total_timesteps      | 311296                 |
+| train/                  |                        |
+|    approx_kl            | 0.002206654            |
+|    clip_fraction        | 0.00667                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.889                 |
+|    explained_variance   | 0.406                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.132                 |
+|    n_updates            | 190                    |
+|    policy_gradient_loss | -0.00385               |
+|    value_loss           | 0.107                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+---------------evaluation started---------------
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.838                 |
+|    auc_pr               | 0.817                 |
+|    len_neg              | 1.670 +/- 0.82 (2000) |
+|    len_pos              | 1.166 +/- 0.43 (1000) |
+|    length mean +/- std  | 1.502 +/- 0.75 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.353 +/- 0.48 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.708 +/- 0.45 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | 0.029 +/- 0.72 (34)   |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.562 +/- 0.68 (1000) |
+|    reward_overall       | 0.854 +/- 0.44 (3000) |
+|    success_rate         | 0.236                 |
+|    total_timesteps      | 325248                |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 42.33 seconds
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 77.67
+Training model
+Epoch 0 - Loss: -0.11847, Policy Loss: 0.00002, Value Loss: 0.06335, Entropy Loss: -0.18183
+Epoch 1 - Loss: -0.12502, Policy Loss: -0.00117, Value Loss: 0.05793, Entropy Loss: -0.18178
+Epoch 2 - Loss: -0.12902, Policy Loss: -0.00212, Value Loss: 0.05474, Entropy Loss: -0.18164
+Epoch 3 - Loss: -0.13469, Policy Loss: -0.00291, Value Loss: 0.04984, Entropy Loss: -0.18161
+Epoch 4 - Loss: -0.13905, Policy Loss: -0.00345, Value Loss: 0.04601, Entropy Loss: -0.18161
+Epoch 5 - Loss: -0.14074, Policy Loss: -0.00410, Value Loss: 0.04498, Entropy Loss: -0.18163
+Epoch 6 - Loss: -0.14375, Policy Loss: -0.00459, Value Loss: 0.04254, Entropy Loss: -0.18170
+Epoch 7 - Loss: -0.14598, Policy Loss: -0.00525, Value Loss: 0.04095, Entropy Loss: -0.18168
+Epoch 8 - Loss: -0.14831, Policy Loss: -0.00555, Value Loss: 0.03884, Entropy Loss: -0.18160
+Epoch 9 - Loss: -0.15096, Policy Loss: -0.00588, Value Loss: 0.03655, Entropy Loss: -0.18163
+Time to train 43.28
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.51                   |
+|    ep_rew_mean          | 0.865                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3818)  |
+|    proven_d_2_pos       | 0.414 +/- 0.49 (58)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5096)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1209)  |
+|    proven_neg           | 0.000 +/- 0.00 (5096)  |
+|    proven_pos           | 0.755 +/- 0.43 (5086)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3818)  |
+|    reward_d_2_pos       | 0.121 +/- 0.74 (58)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1209) |
+| time/                   |                        |
+|    fps                  | 182                    |
+|    iterations           | 20                     |
+|    total_timesteps      | 327680                 |
+| train/                  |                        |
+|    approx_kl            | 0.0018443346           |
+|    clip_fraction        | 0.00731                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.908                 |
+|    explained_variance   | 0.443                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.174                 |
+|    n_updates            | 200                    |
+|    policy_gradient_loss | -0.0035                |
+|    value_loss           | 0.0951                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 31.87
+Training model
+Epoch 0 - Loss: -0.11022, Policy Loss: 0.00013, Value Loss: 0.06702, Entropy Loss: -0.17738
+Epoch 1 - Loss: -0.11770, Policy Loss: -0.00054, Value Loss: 0.06020, Entropy Loss: -0.17735
+Epoch 2 - Loss: -0.12244, Policy Loss: -0.00124, Value Loss: 0.05619, Entropy Loss: -0.17740
+Epoch 3 - Loss: -0.12706, Policy Loss: -0.00206, Value Loss: 0.05229, Entropy Loss: -0.17728
+Epoch 4 - Loss: -0.13127, Policy Loss: -0.00273, Value Loss: 0.04883, Entropy Loss: -0.17737
+Epoch 5 - Loss: -0.13423, Policy Loss: -0.00338, Value Loss: 0.04645, Entropy Loss: -0.17730
+Epoch 6 - Loss: -0.13791, Policy Loss: -0.00384, Value Loss: 0.04331, Entropy Loss: -0.17739
+Epoch 7 - Loss: -0.14071, Policy Loss: -0.00455, Value Loss: 0.04128, Entropy Loss: -0.17743
+Epoch 8 - Loss: -0.14278, Policy Loss: -0.00505, Value Loss: 0.03974, Entropy Loss: -0.17746
+Epoch 9 - Loss: -0.14469, Policy Loss: -0.00567, Value Loss: 0.03849, Entropy Loss: -0.17751
+Time to train 44.84
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.49                   |
+|    ep_rew_mean          | 0.805                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3837)  |
+|    proven_d_2_pos       | 0.439 +/- 0.50 (57)    |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5213)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1320)  |
+|    proven_neg           | 0.000 +/- 0.00 (5213)  |
+|    proven_pos           | 0.741 +/- 0.44 (5215)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3837)  |
+|    reward_d_2_pos       | 0.158 +/- 0.74 (57)    |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)     |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1320) |
+| time/                   |                        |
+|    fps                  | 183                    |
+|    iterations           | 21                     |
+|    total_timesteps      | 344064                 |
+| train/                  |                        |
+|    approx_kl            | 0.0013386349           |
+|    clip_fraction        | 0.00214                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.887                 |
+|    explained_variance   | 0.473                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.0993                |
+|    n_updates            | 210                    |
+|    policy_gradient_loss | -0.00289               |
+|    value_loss           | 0.0988                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 34.98
+Training model
+Epoch 0 - Loss: -0.10905, Policy Loss: -0.00029, Value Loss: 0.06656, Entropy Loss: -0.17531
+Epoch 1 - Loss: -0.11703, Policy Loss: -0.00181, Value Loss: 0.05979, Entropy Loss: -0.17500
+Epoch 2 - Loss: -0.12176, Policy Loss: -0.00275, Value Loss: 0.05581, Entropy Loss: -0.17483
+Epoch 3 - Loss: -0.12740, Policy Loss: -0.00348, Value Loss: 0.05086, Entropy Loss: -0.17477
+Epoch 4 - Loss: -0.13029, Policy Loss: -0.00390, Value Loss: 0.04870, Entropy Loss: -0.17509
+Epoch 5 - Loss: -0.13224, Policy Loss: -0.00472, Value Loss: 0.04730, Entropy Loss: -0.17482
+Epoch 6 - Loss: -0.13644, Policy Loss: -0.00523, Value Loss: 0.04378, Entropy Loss: -0.17499
+Epoch 7 - Loss: -0.13737, Policy Loss: -0.00587, Value Loss: 0.04352, Entropy Loss: -0.17502
+Epoch 8 - Loss: -0.13875, Policy Loss: -0.00624, Value Loss: 0.04244, Entropy Loss: -0.17495
+Epoch 9 - Loss: -0.14286, Policy Loss: -0.00658, Value Loss: 0.03873, Entropy Loss: -0.17500
+Time to train 44.98
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.56                   |
+|    ep_rew_mean          | 0.895                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3854)  |
+|    proven_d_2_pos       | 0.453 +/- 0.50 (75)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (4)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5182)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1251)  |
+|    proven_neg           | 0.000 +/- 0.00 (5182)  |
+|    proven_pos           | 0.750 +/- 0.43 (5184)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3854)  |
+|    reward_d_2_pos       | 0.180 +/- 0.75 (75)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (4)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1251) |
+| time/                   |                        |
+|    fps                  | 184                    |
+|    iterations           | 22                     |
+|    total_timesteps      | 360448                 |
+| train/                  |                        |
+|    approx_kl            | 0.0021301664           |
+|    clip_fraction        | 0.00905                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.875                 |
+|    explained_variance   | 0.459                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.144                 |
+|    n_updates            | 220                    |
+|    policy_gradient_loss | -0.00409               |
+|    value_loss           | 0.0995                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 33.01
+Training model
+Epoch 0 - Loss: -0.11692, Policy Loss: -0.00017, Value Loss: 0.06281, Entropy Loss: -0.17957
+Epoch 1 - Loss: -0.12550, Policy Loss: -0.00106, Value Loss: 0.05534, Entropy Loss: -0.17978
+Epoch 2 - Loss: -0.13062, Policy Loss: -0.00185, Value Loss: 0.05103, Entropy Loss: -0.17980
+Epoch 3 - Loss: -0.13509, Policy Loss: -0.00241, Value Loss: 0.04716, Entropy Loss: -0.17984
+Epoch 4 - Loss: -0.13775, Policy Loss: -0.00317, Value Loss: 0.04522, Entropy Loss: -0.17980
+Epoch 5 - Loss: -0.14075, Policy Loss: -0.00393, Value Loss: 0.04290, Entropy Loss: -0.17972
+Epoch 6 - Loss: -0.14440, Policy Loss: -0.00433, Value Loss: 0.03964, Entropy Loss: -0.17972
+Epoch 7 - Loss: -0.14658, Policy Loss: -0.00483, Value Loss: 0.03794, Entropy Loss: -0.17969
+Epoch 8 - Loss: -0.14792, Policy Loss: -0.00533, Value Loss: 0.03711, Entropy Loss: -0.17970
+Epoch 9 - Loss: -0.15011, Policy Loss: -0.00578, Value Loss: 0.03534, Entropy Loss: -0.17967
+Time to train 43.38
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.77                   |
+|    ep_rew_mean          | 0.775                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3908)  |
+|    proven_d_2_pos       | 0.420 +/- 0.49 (69)    |
+|    proven_d_3_pos       | 0.500 +/- 0.50 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5269)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1268)  |
+|    proven_neg           | 0.000 +/- 0.00 (5269)  |
+|    proven_pos           | 0.751 +/- 0.43 (5247)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3908)  |
+|    reward_d_2_pos       | 0.130 +/- 0.74 (69)    |
+|    reward_d_3_pos       | 0.250 +/- 0.75 (2)     |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1268) |
+| time/                   |                        |
+|    fps                  | 185                    |
+|    iterations           | 23                     |
+|    total_timesteps      | 376832                 |
+| train/                  |                        |
+|    approx_kl            | 0.0018877888           |
+|    clip_fraction        | 0.0102                 |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.899                 |
+|    explained_variance   | 0.498                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.154                 |
+|    n_updates            | 230                    |
+|    policy_gradient_loss | -0.00329               |
+|    value_loss           | 0.0909                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+---------------evaluation started---------------
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.839                 |
+|    auc_pr               | 0.814                 |
+|    len_neg              | 1.708 +/- 0.84 (2000) |
+|    len_pos              | 1.172 +/- 0.48 (1000) |
+|    length mean +/- std  | 1.529 +/- 0.78 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.412 +/- 0.49 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.710 +/- 0.45 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | 0.118 +/- 0.74 (34)   |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.565 +/- 0.68 (1000) |
+|    reward_overall       | 0.855 +/- 0.44 (3000) |
+|    success_rate         | 0.237                 |
+|    total_timesteps      | 390272                |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 53.53 seconds
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 85.85
+Training model
+Epoch 0 - Loss: -0.11811, Policy Loss: 0.00012, Value Loss: 0.06065, Entropy Loss: -0.17888
+Epoch 1 - Loss: -0.12642, Policy Loss: -0.00087, Value Loss: 0.05344, Entropy Loss: -0.17900
+Epoch 2 - Loss: -0.13126, Policy Loss: -0.00174, Value Loss: 0.04959, Entropy Loss: -0.17911
+Epoch 3 - Loss: -0.13547, Policy Loss: -0.00260, Value Loss: 0.04616, Entropy Loss: -0.17904
+Epoch 4 - Loss: -0.13933, Policy Loss: -0.00313, Value Loss: 0.04282, Entropy Loss: -0.17902
+Epoch 5 - Loss: -0.14145, Policy Loss: -0.00377, Value Loss: 0.04131, Entropy Loss: -0.17899
+Epoch 6 - Loss: -0.14393, Policy Loss: -0.00454, Value Loss: 0.03960, Entropy Loss: -0.17899
+Epoch 7 - Loss: -0.14856, Policy Loss: -0.00507, Value Loss: 0.03546, Entropy Loss: -0.17895
+Epoch 8 - Loss: -0.14977, Policy Loss: -0.00553, Value Loss: 0.03472, Entropy Loss: -0.17897
+Epoch 9 - Loss: -0.15137, Policy Loss: -0.00608, Value Loss: 0.03357, Entropy Loss: -0.17886
+Time to train 45.07
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.57                   |
+|    ep_rew_mean          | 0.745                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3930)  |
+|    proven_d_2_pos       | 0.470 +/- 0.50 (66)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5199)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1201)  |
+|    proven_neg           | 0.000 +/- 0.00 (5199)  |
+|    proven_pos           | 0.762 +/- 0.43 (5199)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3930)  |
+|    reward_d_2_pos       | 0.205 +/- 0.75 (66)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1201) |
+| time/                   |                        |
+|    fps                  | 181                    |
+|    iterations           | 24                     |
+|    total_timesteps      | 393216                 |
+| train/                  |                        |
+|    approx_kl            | 0.0017343541           |
+|    clip_fraction        | 0.00756                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.895                 |
+|    explained_variance   | 0.468                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.186                 |
+|    n_updates            | 240                    |
+|    policy_gradient_loss | -0.00332               |
+|    value_loss           | 0.0875                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 35.17
+Training model
+Epoch 0 - Loss: -0.12222, Policy Loss: -0.00003, Value Loss: 0.05918, Entropy Loss: -0.18138
+Epoch 1 - Loss: -0.12961, Policy Loss: -0.00124, Value Loss: 0.05298, Entropy Loss: -0.18135
+Epoch 2 - Loss: -0.13521, Policy Loss: -0.00228, Value Loss: 0.04829, Entropy Loss: -0.18122
+Epoch 3 - Loss: -0.13897, Policy Loss: -0.00318, Value Loss: 0.04548, Entropy Loss: -0.18127
+Epoch 4 - Loss: -0.14111, Policy Loss: -0.00397, Value Loss: 0.04398, Entropy Loss: -0.18112
+Epoch 5 - Loss: -0.14610, Policy Loss: -0.00473, Value Loss: 0.03977, Entropy Loss: -0.18114
+Epoch 6 - Loss: -0.14883, Policy Loss: -0.00543, Value Loss: 0.03773, Entropy Loss: -0.18113
+Epoch 7 - Loss: -0.15110, Policy Loss: -0.00581, Value Loss: 0.03593, Entropy Loss: -0.18122
+Epoch 8 - Loss: -0.15226, Policy Loss: -0.00636, Value Loss: 0.03523, Entropy Loss: -0.18113
+Epoch 9 - Loss: -0.15502, Policy Loss: -0.00687, Value Loss: 0.03305, Entropy Loss: -0.18121
+Time to train 42.51
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.82                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3776)  |
+|    proven_d_2_pos       | 0.403 +/- 0.49 (67)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5112)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1267)  |
+|    proven_neg           | 0.000 +/- 0.00 (5112)  |
+|    proven_pos           | 0.744 +/- 0.44 (5110)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3776)  |
+|    reward_d_2_pos       | 0.104 +/- 0.74 (67)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1267) |
+| time/                   |                        |
+|    fps                  | 182                    |
+|    iterations           | 25                     |
+|    total_timesteps      | 409600                 |
+| train/                  |                        |
+|    approx_kl            | 0.001801377            |
+|    clip_fraction        | 0.00759                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.906                 |
+|    explained_variance   | 0.521                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.227                 |
+|    n_updates            | 250                    |
+|    policy_gradient_loss | -0.00399               |
+|    value_loss           | 0.0863                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 30.95
+Training model
+Epoch 0 - Loss: -0.11788, Policy Loss: -0.00006, Value Loss: 0.05985, Entropy Loss: -0.17767
+Epoch 1 - Loss: -0.12526, Policy Loss: -0.00090, Value Loss: 0.05332, Entropy Loss: -0.17768
+Epoch 2 - Loss: -0.12993, Policy Loss: -0.00196, Value Loss: 0.04954, Entropy Loss: -0.17751
+Epoch 3 - Loss: -0.13408, Policy Loss: -0.00260, Value Loss: 0.04603, Entropy Loss: -0.17751
+Epoch 4 - Loss: -0.13871, Policy Loss: -0.00317, Value Loss: 0.04203, Entropy Loss: -0.17757
+Epoch 5 - Loss: -0.14064, Policy Loss: -0.00362, Value Loss: 0.04065, Entropy Loss: -0.17768
+Epoch 6 - Loss: -0.14250, Policy Loss: -0.00429, Value Loss: 0.03939, Entropy Loss: -0.17761
+Epoch 7 - Loss: -0.14395, Policy Loss: -0.00488, Value Loss: 0.03856, Entropy Loss: -0.17763
+Epoch 8 - Loss: -0.14715, Policy Loss: -0.00528, Value Loss: 0.03575, Entropy Loss: -0.17763
+Epoch 9 - Loss: -0.15005, Policy Loss: -0.00591, Value Loss: 0.03349, Entropy Loss: -0.17763
+Time to train 44.06
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.44                   |
+|    ep_rew_mean          | 0.82                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3866)  |
+|    proven_d_2_pos       | 0.509 +/- 0.50 (53)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5186)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1269)  |
+|    proven_neg           | 0.000 +/- 0.00 (5186)  |
+|    proven_pos           | 0.750 +/- 0.43 (5188)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3866)  |
+|    reward_d_2_pos       | 0.264 +/- 0.75 (53)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1269) |
+| time/                   |                        |
+|    fps                  | 183                    |
+|    iterations           | 26                     |
+|    total_timesteps      | 425984                 |
+| train/                  |                        |
+|    approx_kl            | 0.0015106616           |
+|    clip_fraction        | 0.00429                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.888                 |
+|    explained_variance   | 0.521                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.188                 |
+|    n_updates            | 260                    |
+|    policy_gradient_loss | -0.00327               |
+|    value_loss           | 0.0877                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 33.43
+Training model
+Epoch 0 - Loss: -0.11982, Policy Loss: 0.00014, Value Loss: 0.05718, Entropy Loss: -0.17714
+Epoch 1 - Loss: -0.12567, Policy Loss: -0.00049, Value Loss: 0.05202, Entropy Loss: -0.17720
+Epoch 2 - Loss: -0.13125, Policy Loss: -0.00121, Value Loss: 0.04730, Entropy Loss: -0.17734
+Epoch 3 - Loss: -0.13563, Policy Loss: -0.00193, Value Loss: 0.04369, Entropy Loss: -0.17740
+Epoch 4 - Loss: -0.13960, Policy Loss: -0.00254, Value Loss: 0.04042, Entropy Loss: -0.17748
+Epoch 5 - Loss: -0.14244, Policy Loss: -0.00333, Value Loss: 0.03835, Entropy Loss: -0.17747
+Epoch 6 - Loss: -0.14511, Policy Loss: -0.00389, Value Loss: 0.03621, Entropy Loss: -0.17743
+Epoch 7 - Loss: -0.14599, Policy Loss: -0.00419, Value Loss: 0.03554, Entropy Loss: -0.17733
+Epoch 8 - Loss: -0.14812, Policy Loss: -0.00486, Value Loss: 0.03411, Entropy Loss: -0.17737
+Epoch 9 - Loss: -0.15091, Policy Loss: -0.00540, Value Loss: 0.03182, Entropy Loss: -0.17734
+Time to train 45.43
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.47                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3859)  |
+|    proven_d_2_pos       | 0.429 +/- 0.49 (70)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5210)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1288)  |
+|    proven_neg           | 0.000 +/- 0.00 (5210)  |
+|    proven_pos           | 0.745 +/- 0.44 (5218)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3859)  |
+|    reward_d_2_pos       | 0.143 +/- 0.74 (70)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1288) |
+| time/                   |                        |
+|    fps                  | 184                    |
+|    iterations           | 27                     |
+|    total_timesteps      | 442368                 |
+| train/                  |                        |
+|    approx_kl            | 0.0015782102           |
+|    clip_fraction        | 0.0037                 |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.887                 |
+|    explained_variance   | 0.534                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.134                 |
+|    n_updates            | 270                    |
+|    policy_gradient_loss | -0.00277               |
+|    value_loss           | 0.0833                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+---------------evaluation started---------------
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.830                 |
+|    auc_pr               | 0.813                 |
+|    len_neg              | 1.926 +/- 0.96 (2000) |
+|    len_pos              | 1.282 +/- 0.69 (1000) |
+|    length mean +/- std  | 1.712 +/- 0.93 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.412 +/- 0.49 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.710 +/- 0.45 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | 0.118 +/- 0.74 (34)   |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.565 +/- 0.68 (1000) |
+|    reward_overall       | 0.855 +/- 0.44 (3000) |
+|    success_rate         | 0.237                 |
+|    total_timesteps      | 455296                |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 48.29 seconds
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 81.98
+Training model
+Epoch 0 - Loss: -0.12336, Policy Loss: -0.00037, Value Loss: 0.05849, Entropy Loss: -0.18148
+Epoch 1 - Loss: -0.13125, Policy Loss: -0.00196, Value Loss: 0.05190, Entropy Loss: -0.18119
+Epoch 2 - Loss: -0.13792, Policy Loss: -0.00321, Value Loss: 0.04641, Entropy Loss: -0.18113
+Epoch 3 - Loss: -0.14088, Policy Loss: -0.00354, Value Loss: 0.04395, Entropy Loss: -0.18129
+Epoch 4 - Loss: -0.14394, Policy Loss: -0.00446, Value Loss: 0.04176, Entropy Loss: -0.18124
+Epoch 5 - Loss: -0.14908, Policy Loss: -0.00520, Value Loss: 0.03738, Entropy Loss: -0.18127
+Epoch 6 - Loss: -0.15055, Policy Loss: -0.00571, Value Loss: 0.03641, Entropy Loss: -0.18126
+Epoch 7 - Loss: -0.15316, Policy Loss: -0.00618, Value Loss: 0.03427, Entropy Loss: -0.18126
+Epoch 8 - Loss: -0.15574, Policy Loss: -0.00689, Value Loss: 0.03246, Entropy Loss: -0.18131
+Epoch 9 - Loss: -0.15728, Policy Loss: -0.00737, Value Loss: 0.03133, Entropy Loss: -0.18125
+Time to train 44.75
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.52                   |
+|    ep_rew_mean          | 0.85                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3786)  |
+|    proven_d_2_pos       | 0.464 +/- 0.50 (56)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5089)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1245)  |
+|    proven_neg           | 0.000 +/- 0.00 (5089)  |
+|    proven_pos           | 0.749 +/- 0.43 (5088)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3786)  |
+|    reward_d_2_pos       | 0.196 +/- 0.75 (56)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1245) |
+| time/                   |                        |
+|    fps                  | 181                    |
+|    iterations           | 28                     |
+|    total_timesteps      | 458752                 |
+| train/                  |                        |
+|    approx_kl            | 0.0020677333           |
+|    clip_fraction        | 0.0103                 |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.906                 |
+|    explained_variance   | 0.517                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.188                 |
+|    n_updates            | 280                    |
+|    policy_gradient_loss | -0.00449               |
+|    value_loss           | 0.0829                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 32.12
+Training model
+Epoch 0 - Loss: -0.12893, Policy Loss: 0.00009, Value Loss: 0.05084, Entropy Loss: -0.17985
+Epoch 1 - Loss: -0.13505, Policy Loss: -0.00115, Value Loss: 0.04570, Entropy Loss: -0.17961
+Epoch 2 - Loss: -0.14006, Policy Loss: -0.00194, Value Loss: 0.04166, Entropy Loss: -0.17978
+Epoch 3 - Loss: -0.14604, Policy Loss: -0.00287, Value Loss: 0.03653, Entropy Loss: -0.17970
+Epoch 4 - Loss: -0.14808, Policy Loss: -0.00373, Value Loss: 0.03534, Entropy Loss: -0.17970
+Epoch 5 - Loss: -0.15112, Policy Loss: -0.00458, Value Loss: 0.03313, Entropy Loss: -0.17967
+Epoch 6 - Loss: -0.15259, Policy Loss: -0.00547, Value Loss: 0.03251, Entropy Loss: -0.17964
+Epoch 7 - Loss: -0.15593, Policy Loss: -0.00610, Value Loss: 0.02979, Entropy Loss: -0.17962
+Epoch 8 - Loss: -0.15823, Policy Loss: -0.00663, Value Loss: 0.02788, Entropy Loss: -0.17949
+Epoch 9 - Loss: -0.15922, Policy Loss: -0.00718, Value Loss: 0.02751, Entropy Loss: -0.17956
+Time to train 44.74
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.73                   |
+|    ep_rew_mean          | 0.88                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3937)  |
+|    proven_d_2_pos       | 0.344 +/- 0.47 (64)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5193)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1175)  |
+|    proven_neg           | 0.000 +/- 0.00 (5193)  |
+|    proven_pos           | 0.765 +/- 0.42 (5178)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3937)  |
+|    reward_d_2_pos       | 0.016 +/- 0.71 (64)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1175) |
+| time/                   |                        |
+|    fps                  | 182                    |
+|    iterations           | 29                     |
+|    total_timesteps      | 475136                 |
+| train/                  |                        |
+|    approx_kl            | 0.0017740265           |
+|    clip_fraction        | 0.00482                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.898                 |
+|    explained_variance   | 0.592                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.125                 |
+|    n_updates            | 290                    |
+|    policy_gradient_loss | -0.00395               |
+|    value_loss           | 0.0722                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 37.62
+Training model
+Epoch 0 - Loss: -0.12401, Policy Loss: 0.00003, Value Loss: 0.05549, Entropy Loss: -0.17953
+Epoch 1 - Loss: -0.12967, Policy Loss: -0.00080, Value Loss: 0.05077, Entropy Loss: -0.17965
+Epoch 2 - Loss: -0.13464, Policy Loss: -0.00171, Value Loss: 0.04674, Entropy Loss: -0.17967
+Epoch 3 - Loss: -0.14063, Policy Loss: -0.00242, Value Loss: 0.04160, Entropy Loss: -0.17981
+Epoch 4 - Loss: -0.14197, Policy Loss: -0.00333, Value Loss: 0.04112, Entropy Loss: -0.17976
+Epoch 5 - Loss: -0.14636, Policy Loss: -0.00409, Value Loss: 0.03746, Entropy Loss: -0.17973
+Epoch 6 - Loss: -0.14896, Policy Loss: -0.00467, Value Loss: 0.03548, Entropy Loss: -0.17977
+Epoch 7 - Loss: -0.15256, Policy Loss: -0.00523, Value Loss: 0.03246, Entropy Loss: -0.17978
+Epoch 8 - Loss: -0.15362, Policy Loss: -0.00559, Value Loss: 0.03182, Entropy Loss: -0.17985
+Epoch 9 - Loss: -0.15406, Policy Loss: -0.00621, Value Loss: 0.03194, Entropy Loss: -0.17979
+Time to train 43.36
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.81                   |
+|    ep_rew_mean          | 0.745                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3855)  |
+|    proven_d_2_pos       | 0.404 +/- 0.49 (57)    |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5175)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1256)  |
+|    proven_neg           | 0.000 +/- 0.00 (5175)  |
+|    proven_pos           | 0.750 +/- 0.43 (5169)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3855)  |
+|    reward_d_2_pos       | 0.105 +/- 0.74 (57)    |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)     |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1256) |
+| time/                   |                        |
+|    fps                  | 183                    |
+|    iterations           | 30                     |
+|    total_timesteps      | 491520                 |
+| train/                  |                        |
+|    approx_kl            | 0.0017496988           |
+|    clip_fraction        | 0.00591                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.899                 |
+|    explained_variance   | 0.545                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.168                 |
+|    n_updates            | 300                    |
+|    policy_gradient_loss | -0.0034                |
+|    value_loss           | 0.081                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 32.61
+Training model
+Epoch 0 - Loss: -0.12615, Policy Loss: -0.00003, Value Loss: 0.05064, Entropy Loss: -0.17676
+Epoch 1 - Loss: -0.13275, Policy Loss: -0.00117, Value Loss: 0.04523, Entropy Loss: -0.17681
+Epoch 2 - Loss: -0.13854, Policy Loss: -0.00238, Value Loss: 0.04067, Entropy Loss: -0.17683
+Epoch 3 - Loss: -0.14294, Policy Loss: -0.00348, Value Loss: 0.03731, Entropy Loss: -0.17676
+Epoch 4 - Loss: -0.14667, Policy Loss: -0.00410, Value Loss: 0.03419, Entropy Loss: -0.17675
+Epoch 5 - Loss: -0.14818, Policy Loss: -0.00486, Value Loss: 0.03345, Entropy Loss: -0.17676
+Epoch 6 - Loss: -0.15059, Policy Loss: -0.00534, Value Loss: 0.03156, Entropy Loss: -0.17681
+Epoch 7 - Loss: -0.15331, Policy Loss: -0.00600, Value Loss: 0.02947, Entropy Loss: -0.17679
+Epoch 8 - Loss: -0.15522, Policy Loss: -0.00638, Value Loss: 0.02792, Entropy Loss: -0.17676
+Epoch 9 - Loss: -0.15615, Policy Loss: -0.00654, Value Loss: 0.02719, Entropy Loss: -0.17679
+Time to train 44.02
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.53                   |
+|    ep_rew_mean          | 0.775                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3821)  |
+|    proven_d_2_pos       | 0.512 +/- 0.50 (80)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5169)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1277)  |
+|    proven_neg           | 0.000 +/- 0.00 (5169)  |
+|    proven_pos           | 0.746 +/- 0.44 (5179)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3821)  |
+|    reward_d_2_pos       | 0.269 +/- 0.75 (80)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1277) |
+| time/                   |                        |
+|    fps                  | 184                    |
+|    iterations           | 31                     |
+|    total_timesteps      | 507904                 |
+| train/                  |                        |
+|    approx_kl            | 0.0021526683           |
+|    clip_fraction        | 0.00862                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.884                 |
+|    explained_variance   | 0.614                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.183                 |
+|    n_updates            | 310                    |
+|    policy_gradient_loss | -0.00403               |
+|    value_loss           | 0.0715                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+---------------evaluation started---------------
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.832                 |
+|    auc_pr               | 0.811                 |
+|    len_neg              | 1.908 +/- 0.97 (2000) |
+|    len_pos              | 1.296 +/- 0.74 (1000) |
+|    length mean +/- std  | 1.704 +/- 0.95 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.235 +/- 0.42 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.704 +/- 0.46 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | -0.147 +/- 0.64 (34)  |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.556 +/- 0.68 (1000) |
+|    reward_overall       | 0.852 +/- 0.45 (3000) |
+|    success_rate         | 0.235                 |
+|    total_timesteps      | 520320                |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 55.15 seconds
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 85.18
+Training model
+Epoch 0 - Loss: -0.12300, Policy Loss: -0.00009, Value Loss: 0.04829, Entropy Loss: -0.17120
+Epoch 1 - Loss: -0.13058, Policy Loss: -0.00132, Value Loss: 0.04191, Entropy Loss: -0.17117
+Epoch 2 - Loss: -0.13547, Policy Loss: -0.00255, Value Loss: 0.03816, Entropy Loss: -0.17108
+Epoch 3 - Loss: -0.13971, Policy Loss: -0.00339, Value Loss: 0.03470, Entropy Loss: -0.17102
+Epoch 4 - Loss: -0.14294, Policy Loss: -0.00410, Value Loss: 0.03216, Entropy Loss: -0.17101
+Epoch 5 - Loss: -0.14620, Policy Loss: -0.00461, Value Loss: 0.02943, Entropy Loss: -0.17102
+Epoch 6 - Loss: -0.14831, Policy Loss: -0.00493, Value Loss: 0.02768, Entropy Loss: -0.17106
+Epoch 7 - Loss: -0.15083, Policy Loss: -0.00567, Value Loss: 0.02591, Entropy Loss: -0.17107
+Epoch 8 - Loss: -0.15210, Policy Loss: -0.00600, Value Loss: 0.02496, Entropy Loss: -0.17106
+Epoch 9 - Loss: -0.15269, Policy Loss: -0.00623, Value Loss: 0.02462, Entropy Loss: -0.17108
+Time to train 46.16
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.62                   |
+|    ep_rew_mean          | 0.85                   |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3949)  |
+|    proven_d_2_pos       | 0.471 +/- 0.50 (51)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5236)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1240)  |
+|    proven_neg           | 0.000 +/- 0.00 (5236)  |
+|    proven_pos           | 0.758 +/- 0.43 (5240)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3949)  |
+|    reward_d_2_pos       | 0.206 +/- 0.75 (51)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1240) |
+| time/                   |                        |
+|    fps                  | 181                    |
+|    iterations           | 32                     |
+|    total_timesteps      | 524288                 |
+| train/                  |                        |
+|    approx_kl            | 0.0017016379           |
+|    clip_fraction        | 0.00614                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.855                 |
+|    explained_variance   | 0.601                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.164                 |
+|    n_updates            | 320                    |
+|    policy_gradient_loss | -0.00389               |
+|    value_loss           | 0.0656                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 34.02
+Training model
+Epoch 0 - Loss: -0.12712, Policy Loss: -0.00045, Value Loss: 0.04809, Entropy Loss: -0.17476
+Epoch 1 - Loss: -0.13466, Policy Loss: -0.00171, Value Loss: 0.04180, Entropy Loss: -0.17475
+Epoch 2 - Loss: -0.13842, Policy Loss: -0.00269, Value Loss: 0.03905, Entropy Loss: -0.17477
+Epoch 3 - Loss: -0.14293, Policy Loss: -0.00317, Value Loss: 0.03516, Entropy Loss: -0.17493
+Epoch 4 - Loss: -0.14513, Policy Loss: -0.00369, Value Loss: 0.03354, Entropy Loss: -0.17498
+Epoch 5 - Loss: -0.14827, Policy Loss: -0.00405, Value Loss: 0.03073, Entropy Loss: -0.17496
+Epoch 6 - Loss: -0.14997, Policy Loss: -0.00453, Value Loss: 0.02955, Entropy Loss: -0.17498
+Epoch 7 - Loss: -0.15163, Policy Loss: -0.00523, Value Loss: 0.02855, Entropy Loss: -0.17495
+Epoch 8 - Loss: -0.15489, Policy Loss: -0.00585, Value Loss: 0.02587, Entropy Loss: -0.17492
+Epoch 9 - Loss: -0.15521, Policy Loss: -0.00595, Value Loss: 0.02565, Entropy Loss: -0.17491
+Time to train 42.46
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.51                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3925)  |
+|    proven_d_2_pos       | 0.471 +/- 0.50 (68)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5193)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1198)  |
+|    proven_neg           | 0.000 +/- 0.00 (5193)  |
+|    proven_pos           | 0.762 +/- 0.43 (5192)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3925)  |
+|    reward_d_2_pos       | 0.206 +/- 0.75 (68)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1198) |
+| time/                   |                        |
+|    fps                  | 182                    |
+|    iterations           | 33                     |
+|    total_timesteps      | 540672                 |
+| train/                  |                        |
+|    approx_kl            | 0.0020367554           |
+|    clip_fraction        | 0.016                  |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.874                 |
+|    explained_variance   | 0.594                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.11                  |
+|    n_updates            | 330                    |
+|    policy_gradient_loss | -0.00373               |
+|    value_loss           | 0.0676                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 31.99
+Training model
+Epoch 0 - Loss: -0.12887, Policy Loss: 0.00000, Value Loss: 0.04674, Entropy Loss: -0.17561
+Epoch 1 - Loss: -0.13537, Policy Loss: -0.00100, Value Loss: 0.04113, Entropy Loss: -0.17550
+Epoch 2 - Loss: -0.13904, Policy Loss: -0.00178, Value Loss: 0.03825, Entropy Loss: -0.17550
+Epoch 3 - Loss: -0.14379, Policy Loss: -0.00268, Value Loss: 0.03446, Entropy Loss: -0.17557
+Epoch 4 - Loss: -0.14804, Policy Loss: -0.00350, Value Loss: 0.03099, Entropy Loss: -0.17554
+Epoch 5 - Loss: -0.14957, Policy Loss: -0.00384, Value Loss: 0.02984, Entropy Loss: -0.17557
+Epoch 6 - Loss: -0.15201, Policy Loss: -0.00451, Value Loss: 0.02815, Entropy Loss: -0.17564
+Epoch 7 - Loss: -0.15516, Policy Loss: -0.00519, Value Loss: 0.02567, Entropy Loss: -0.17564
+Epoch 8 - Loss: -0.15612, Policy Loss: -0.00575, Value Loss: 0.02521, Entropy Loss: -0.17559
+Epoch 9 - Loss: -0.15829, Policy Loss: -0.00640, Value Loss: 0.02363, Entropy Loss: -0.17552
+Time to train 44.09
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.81                   |
+|    ep_rew_mean          | 0.805                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3910)  |
+|    proven_d_2_pos       | 0.292 +/- 0.45 (65)    |
+|    proven_d_3_pos       | 0.500 +/- 0.50 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5259)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1280)  |
+|    proven_neg           | 0.000 +/- 0.00 (5259)  |
+|    proven_pos           | 0.748 +/- 0.43 (5257)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3910)  |
+|    reward_d_2_pos       | -0.062 +/- 0.68 (65)   |
+|    reward_d_3_pos       | 0.250 +/- 0.75 (2)     |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1280) |
+| time/                   |                        |
+|    fps                  | 183                    |
+|    iterations           | 34                     |
+|    total_timesteps      | 557056                 |
+| train/                  |                        |
+|    approx_kl            | 0.001519528            |
+|    clip_fraction        | 0.00335                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.878                 |
+|    explained_variance   | 0.651                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.155                 |
+|    n_updates            | 340                    |
+|    policy_gradient_loss | -0.00346               |
+|    value_loss           | 0.0648                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 35.48
+Training model
+Epoch 0 - Loss: -0.13053, Policy Loss: 0.00019, Value Loss: 0.04592, Entropy Loss: -0.17665
+Epoch 1 - Loss: -0.13644, Policy Loss: -0.00088, Value Loss: 0.04117, Entropy Loss: -0.17673
+Epoch 2 - Loss: -0.14091, Policy Loss: -0.00181, Value Loss: 0.03767, Entropy Loss: -0.17676
+Epoch 3 - Loss: -0.14558, Policy Loss: -0.00269, Value Loss: 0.03383, Entropy Loss: -0.17672
+Epoch 4 - Loss: -0.14846, Policy Loss: -0.00344, Value Loss: 0.03176, Entropy Loss: -0.17678
+Epoch 5 - Loss: -0.15109, Policy Loss: -0.00411, Value Loss: 0.02978, Entropy Loss: -0.17676
+Epoch 6 - Loss: -0.15366, Policy Loss: -0.00478, Value Loss: 0.02783, Entropy Loss: -0.17671
+Epoch 7 - Loss: -0.15602, Policy Loss: -0.00564, Value Loss: 0.02633, Entropy Loss: -0.17671
+Epoch 8 - Loss: -0.15741, Policy Loss: -0.00594, Value Loss: 0.02522, Entropy Loss: -0.17669
+Epoch 9 - Loss: -0.15969, Policy Loss: -0.00645, Value Loss: 0.02343, Entropy Loss: -0.17667
+Time to train 45.3
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.8                    |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3922)  |
+|    proven_d_2_pos       | 0.385 +/- 0.49 (65)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5239)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1232)  |
+|    proven_neg           | 0.000 +/- 0.00 (5239)  |
+|    proven_pos           | 0.756 +/- 0.43 (5221)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3922)  |
+|    reward_d_2_pos       | 0.077 +/- 0.73 (65)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1232) |
+| time/                   |                        |
+|    fps                  | 183                    |
+|    iterations           | 35                     |
+|    total_timesteps      | 573440                 |
+| train/                  |                        |
+|    approx_kl            | 0.0017584175           |
+|    clip_fraction        | 0.00498                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.884                 |
+|    explained_variance   | 0.635                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.178                 |
+|    n_updates            | 350                    |
+|    policy_gradient_loss | -0.00355               |
+|    value_loss           | 0.0646                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+---------------evaluation started---------------
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.833                 |
+|    auc_pr               | 0.811                 |
+|    len_neg              | 1.942 +/- 1.00 (2000) |
+|    len_pos              | 1.294 +/- 0.70 (1000) |
+|    length mean +/- std  | 1.726 +/- 0.96 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.235 +/- 0.42 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.704 +/- 0.46 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | -0.147 +/- 0.64 (34)  |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.556 +/- 0.68 (1000) |
+|    reward_overall       | 0.852 +/- 0.45 (3000) |
+|    success_rate         | 0.235                 |
+|    total_timesteps      | 585344                |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 46.39 seconds
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 80.59
+Training model
+Epoch 0 - Loss: -0.12599, Policy Loss: -0.00014, Value Loss: 0.04967, Entropy Loss: -0.17552
+Epoch 1 - Loss: -0.13372, Policy Loss: -0.00127, Value Loss: 0.04303, Entropy Loss: -0.17548
+Epoch 2 - Loss: -0.13890, Policy Loss: -0.00236, Value Loss: 0.03906, Entropy Loss: -0.17560
+Epoch 3 - Loss: -0.14281, Policy Loss: -0.00345, Value Loss: 0.03623, Entropy Loss: -0.17559
+Epoch 4 - Loss: -0.14631, Policy Loss: -0.00416, Value Loss: 0.03340, Entropy Loss: -0.17556
+Epoch 5 - Loss: -0.14992, Policy Loss: -0.00511, Value Loss: 0.03074, Entropy Loss: -0.17555
+Epoch 6 - Loss: -0.15189, Policy Loss: -0.00571, Value Loss: 0.02938, Entropy Loss: -0.17556
+Epoch 7 - Loss: -0.15359, Policy Loss: -0.00619, Value Loss: 0.02813, Entropy Loss: -0.17553
+Epoch 8 - Loss: -0.15607, Policy Loss: -0.00685, Value Loss: 0.02625, Entropy Loss: -0.17546
+Epoch 9 - Loss: -0.15711, Policy Loss: -0.00742, Value Loss: 0.02583, Entropy Loss: -0.17552
+Time to train 44.22
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.5                    |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3892)  |
+|    proven_d_2_pos       | 0.510 +/- 0.50 (51)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5213)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1256)  |
+|    proven_neg           | 0.000 +/- 0.00 (5213)  |
+|    proven_pos           | 0.753 +/- 0.43 (5200)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3892)  |
+|    reward_d_2_pos       | 0.265 +/- 0.75 (51)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1256) |
+| time/                   |                        |
+|    fps                  | 181                    |
+|    iterations           | 36                     |
+|    total_timesteps      | 589824                 |
+| train/                  |                        |
+|    approx_kl            | 0.0017290721           |
+|    clip_fraction        | 0.00549                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.878                 |
+|    explained_variance   | 0.588                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.173                 |
+|    n_updates            | 360                    |
+|    policy_gradient_loss | -0.00427               |
+|    value_loss           | 0.0683                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 31.97
+Training model
+Epoch 0 - Loss: -0.13206, Policy Loss: 0.00012, Value Loss: 0.04616, Entropy Loss: -0.17834
+Epoch 1 - Loss: -0.13764, Policy Loss: -0.00101, Value Loss: 0.04178, Entropy Loss: -0.17840
+Epoch 2 - Loss: -0.14349, Policy Loss: -0.00204, Value Loss: 0.03696, Entropy Loss: -0.17842
+Epoch 3 - Loss: -0.14789, Policy Loss: -0.00310, Value Loss: 0.03359, Entropy Loss: -0.17838
+Epoch 4 - Loss: -0.15031, Policy Loss: -0.00385, Value Loss: 0.03194, Entropy Loss: -0.17841
+Epoch 5 - Loss: -0.15327, Policy Loss: -0.00488, Value Loss: 0.02997, Entropy Loss: -0.17836
+Epoch 6 - Loss: -0.15495, Policy Loss: -0.00552, Value Loss: 0.02888, Entropy Loss: -0.17832
+Epoch 7 - Loss: -0.15700, Policy Loss: -0.00622, Value Loss: 0.02752, Entropy Loss: -0.17831
+Epoch 8 - Loss: -0.15934, Policy Loss: -0.00692, Value Loss: 0.02588, Entropy Loss: -0.17829
+Epoch 9 - Loss: -0.16031, Policy Loss: -0.00738, Value Loss: 0.02536, Entropy Loss: -0.17828
+Time to train 44.7
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.61                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3852)  |
+|    proven_d_2_pos       | 0.472 +/- 0.50 (72)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5139)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1222)  |
+|    proven_neg           | 0.000 +/- 0.00 (5139)  |
+|    proven_pos           | 0.755 +/- 0.43 (5146)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3852)  |
+|    reward_d_2_pos       | 0.208 +/- 0.75 (72)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1222) |
+| time/                   |                        |
+|    fps                  | 182                    |
+|    iterations           | 37                     |
+|    total_timesteps      | 606208                 |
+| train/                  |                        |
+|    approx_kl            | 0.0018320105           |
+|    clip_fraction        | 0.00497                |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.892                 |
+|    explained_variance   | 0.639                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.169                 |
+|    n_updates            | 370                    |
+|    policy_gradient_loss | -0.00408               |
+|    value_loss           | 0.0656                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 36.49
+Training model
+Epoch 0 - Loss: -0.13307, Policy Loss: -0.00031, Value Loss: 0.04349, Entropy Loss: -0.17625
+Epoch 1 - Loss: -0.13904, Policy Loss: -0.00184, Value Loss: 0.03883, Entropy Loss: -0.17603
+Epoch 2 - Loss: -0.14461, Policy Loss: -0.00267, Value Loss: 0.03413, Entropy Loss: -0.17607
+Epoch 3 - Loss: -0.14772, Policy Loss: -0.00348, Value Loss: 0.03183, Entropy Loss: -0.17606
+Epoch 4 - Loss: -0.15058, Policy Loss: -0.00426, Value Loss: 0.02971, Entropy Loss: -0.17603
+Epoch 5 - Loss: -0.15341, Policy Loss: -0.00479, Value Loss: 0.02739, Entropy Loss: -0.17601
+Epoch 6 - Loss: -0.15467, Policy Loss: -0.00545, Value Loss: 0.02681, Entropy Loss: -0.17604
+Epoch 7 - Loss: -0.15619, Policy Loss: -0.00549, Value Loss: 0.02528, Entropy Loss: -0.17598
+Epoch 8 - Loss: -0.15822, Policy Loss: -0.00610, Value Loss: 0.02388, Entropy Loss: -0.17600
+Epoch 9 - Loss: -0.15943, Policy Loss: -0.00658, Value Loss: 0.02313, Entropy Loss: -0.17598
+Time to train 43.63
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.76                   |
+|    ep_rew_mean          | 0.715                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3890)  |
+|    proven_d_2_pos       | 0.545 +/- 0.50 (55)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5147)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1215)  |
+|    proven_neg           | 0.000 +/- 0.00 (5147)  |
+|    proven_pos           | 0.760 +/- 0.43 (5161)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3890)  |
+|    reward_d_2_pos       | 0.318 +/- 0.75 (55)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1215) |
+| time/                   |                        |
+|    fps                  | 182                    |
+|    iterations           | 38                     |
+|    total_timesteps      | 622592                 |
+| train/                  |                        |
+|    approx_kl            | 0.0021144086           |
+|    clip_fraction        | 0.0119                 |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.88                  |
+|    explained_variance   | 0.657                  |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.129                 |
+|    n_updates            | 380                    |
+|    policy_gradient_loss | -0.0041                |
+|    value_loss           | 0.0609                 |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 32.37
+Training model
+Epoch 0 - Loss: -0.12798, Policy Loss: 0.00009, Value Loss: 0.04829, Entropy Loss: -0.17635
+Epoch 1 - Loss: -0.13510, Policy Loss: -0.00074, Value Loss: 0.04210, Entropy Loss: -0.17645
+Epoch 2 - Loss: -0.14132, Policy Loss: -0.00169, Value Loss: 0.03682, Entropy Loss: -0.17645
+Epoch 3 - Loss: -0.14400, Policy Loss: -0.00265, Value Loss: 0.03504, Entropy Loss: -0.17638
+Epoch 4 - Loss: -0.14707, Policy Loss: -0.00355, Value Loss: 0.03280, Entropy Loss: -0.17632
+Epoch 5 - Loss: -0.14940, Policy Loss: -0.00430, Value Loss: 0.03124, Entropy Loss: -0.17635
+Epoch 6 - Loss: -0.15206, Policy Loss: -0.00486, Value Loss: 0.02916, Entropy Loss: -0.17637
+Epoch 7 - Loss: -0.15344, Policy Loss: -0.00565, Value Loss: 0.02853, Entropy Loss: -0.17632
+Epoch 8 - Loss: -0.15646, Policy Loss: -0.00608, Value Loss: 0.02609, Entropy Loss: -0.17646
+Epoch 9 - Loss: -0.15830, Policy Loss: -0.00660, Value Loss: 0.02487, Entropy Loss: -0.17657
+Time to train 44.24
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.6                    |
+|    ep_rew_mean          | 0.895                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3881)  |
+|    proven_d_2_pos       | 0.358 +/- 0.48 (67)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5241)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1298)  |
+|    proven_neg           | 0.000 +/- 0.00 (5241)  |
+|    proven_pos           | 0.744 +/- 0.44 (5247)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3881)  |
+|    reward_d_2_pos       | 0.037 +/- 0.72 (67)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1298) |
+| time/                   |                        |
+|    fps                  | 183                    |
+|    iterations           | 39                     |
+|    total_timesteps      | 638976                 |
+| train/                  |                        |
+|    approx_kl            | 0.0016032727           |
+|    clip_fraction        | 0.0031                 |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.882                 |
+|    explained_variance   | 0.64                   |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.166                 |
+|    n_updates            | 390                    |
+|    policy_gradient_loss | -0.0036                |
+|    value_loss           | 0.067                  |
+----------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+---------------evaluation started---------------
+---------------------------------------------------
+| eval/                   |                       |
+|    _mrr                 | 0.826                 |
+|    auc_pr               | 0.809                 |
+|    len_neg              | 1.821 +/- 0.89 (2000) |
+|    len_pos              | 1.238 +/- 0.57 (1000) |
+|    length mean +/- std  | 1.626 +/- 0.84 (3000) |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    proven_d_2_pos       | 0.294 +/- 0.46 (34)   |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (2)    |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (2000) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (268)  |
+|    proven_neg           | 0.000 +/- 0.00 (2000) |
+|    proven_pos           | 0.706 +/- 0.46 (1000) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (696)  |
+|    reward_d_2_pos       | -0.059 +/- 0.68 (34)  |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (2)   |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (268) |
+|    reward_label_neg     | 1.000 +/- 0.00 (2000) |
+|    reward_label_pos     | 0.559 +/- 0.68 (1000) |
+|    reward_overall       | 0.853 +/- 0.45 (3000) |
+|    success_rate         | 0.235                 |
+|    total_timesteps      | 650368                |
+---------------------------------------------------
+
+---------------evaluation finished---------------  took 51.43 seconds
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Saved final training model to models/family-transe-mean-256-6-130-False-False-True-True-True-20-0.2-0.2-python-rft-1-False-3-None-None-10-7-200000-10-0.0003-128/seed_0/last_epoch_2025_10_15_05_14_03.zip
+Time to collect_rollouts 82.44
+Training model
+Epoch 0 - Loss: -0.13050, Policy Loss: -0.00025, Value Loss: 0.04488, Entropy Loss: -0.17513
+Epoch 1 - Loss: -0.13607, Policy Loss: -0.00184, Value Loss: 0.04046, Entropy Loss: -0.17470
+Epoch 2 - Loss: -0.14150, Policy Loss: -0.00295, Value Loss: 0.03598, Entropy Loss: -0.17453
+Epoch 3 - Loss: -0.14420, Policy Loss: -0.00334, Value Loss: 0.03404, Entropy Loss: -0.17489
+Epoch 4 - Loss: -0.14866, Policy Loss: -0.00473, Value Loss: 0.03071, Entropy Loss: -0.17464
+Epoch 5 - Loss: -0.15029, Policy Loss: -0.00522, Value Loss: 0.02966, Entropy Loss: -0.17474
+Epoch 6 - Loss: -0.15300, Policy Loss: -0.00589, Value Loss: 0.02765, Entropy Loss: -0.17476
+Epoch 7 - Loss: -0.15590, Policy Loss: -0.00644, Value Loss: 0.02523, Entropy Loss: -0.17470
+Epoch 8 - Loss: -0.15744, Policy Loss: -0.00689, Value Loss: 0.02436, Entropy Loss: -0.17491
+Epoch 9 - Loss: -0.15955, Policy Loss: -0.00741, Value Loss: 0.02271, Entropy Loss: -0.17486
+Time to train 45.58
+----------------------------------------------------
+| rollout/                |                        |
+|    ep_len_mean          | 1.69                   |
+|    ep_rew_mean          | 0.835                  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (3895)  |
+|    proven_d_2_pos       | 0.500 +/- 0.50 (66)    |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)     |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (5257)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (1290)  |
+|    proven_neg           | 0.000 +/- 0.00 (5257)  |
+|    proven_pos           | 0.748 +/- 0.43 (5252)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (3895)  |
+|    reward_d_2_pos       | 0.250 +/- 0.75 (66)    |
+|    reward_d_3_pos       | -0.500 +/- 0.00 (1)    |
+|    reward_d_unknown_pos | -0.500 +/- 0.00 (1290) |
+| time/                   |                        |
+|    fps                  | 181                    |
+|    iterations           | 40                     |
+|    total_timesteps      | 655360                 |
+| train/                  |                        |
+|    approx_kl            | 0.002086091            |
+|    clip_fraction        | 0.0107                 |
+|    clip_range           | 0.2                    |
+|    entropy_loss         | -0.874                 |
+|    explained_variance   | 0.64                   |
+|    learning_rate        | 0.0003                 |
+|    loss                 | -0.188                 |
+|    n_updates            | 400                    |
+|    policy_gradient_loss | -0.00449               |
+|    value_loss           | 0.0631                 |
+----------------------------------------------------

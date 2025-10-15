@@ -475,8 +475,8 @@ def load_queries(dataset_name: str, set_file: str, data_path: str, root_dir: str
 
 if __name__ == "__main__":
     max_atoms = 5
-    max_depth_check = 3
-    dataset_name = 'family'
+    max_depth_check = 7
+    dataset_name = 'wn18rr'
     data_path = "./data/"
     root_dir = data_path + dataset_name + '/'
 

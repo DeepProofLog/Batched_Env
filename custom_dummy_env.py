@@ -16,11 +16,12 @@ from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from env import LogicEnv_gym
 
-def create_environments(args, data_handler, index_manager, detailed_eval_env=False):
+def create_environments(args, data_handler, index_manager, kge_engine=None, detailed_eval_env=False):
     """
     Creates and seeds the training, evaluation, and callback environments.
     """
     facts_set = set(data_handler.facts)
+    shaping_gamma = args.pbrs_gamma if args.pbrs_gamma is not None else args.gamma
 
     def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0):
         def _init():
@@ -47,6 +48,9 @@ def create_environments(args, data_handler, index_manager, detailed_eval_env=Fal
                 engine=args.engine,
                 use_kge_action=args.use_kge_action,
                 reward_type=args.reward_type,
+                shaping_beta=args.pbrs_beta,
+                shaping_gamma=shaping_gamma,
+                kge_inference_engine=kge_engine,
                 verbose=verbose,
                 prover_verbose=prover_verbose,
             )
@@ -139,6 +143,7 @@ class CustomDummyVecEnv(VecEnv):
         # track per-env episode counts/targets (to be set externally)
         self._episode_count = np.zeros(self.num_envs, dtype=np.int32)
         self._episode_target = np.full(self.num_envs, fill_value=np.inf, dtype=np.int32)
+        self._episode_step_id = np.zeros(self.num_envs, dtype=np.int32)
 
         # only step/reset active envs
         self.active_envs = np.ones(self.num_envs, dtype=bool)
@@ -148,24 +153,31 @@ class CustomDummyVecEnv(VecEnv):
         self.actions = actions
 
     def step_wait(self) -> VecEnvStepReturn:
+        infos_to_return: List[dict] = [{} for _ in range(self.num_envs)]
+
         for idx in np.nonzero(self.active_envs)[0]:
             obs, rew, terminated, truncated, info = self.envs[idx].step(self.actions[idx])
             done = terminated or truncated
             self.buf_rews[idx] = rew
             self.buf_dones[idx] = done
-            self.buf_infos[idx] = info
+            step_info = dict(info)
 
             if done:
                 # count this episode
                 self._episode_count[idx] += 1
+                self._episode_step_id[idx] += 1
                 # if reached its target, deactivate
                 if self._episode_count[idx] >= self._episode_target[idx]:
                     self.active_envs[idx] = False
                 # save final obs & reset
-                info["terminal_observation"] = obs
+                step_info["terminal_observation"] = obs
+                step_info["episode_idx"] = int(self._episode_step_id[idx])
                 obs, reset_info = self.envs[idx].reset()
-                # Update info with reset info
-                self.buf_infos[idx].update(reset_info)
+
+                # store reset info for next step (without lingering episode data)
+                self.buf_infos[idx] = dict(reset_info)
+            else:
+                self.buf_infos[idx] = info
 
             # store obs
             if isinstance(obs, dict):
@@ -175,11 +187,15 @@ class CustomDummyVecEnv(VecEnv):
                 # assume array
                 self.buf_obs[self.keys[0]][idx] = obs
 
+            infos_to_return[idx] = step_info
+
+        # Non-active envs retain previous info buffer without episode metadata
+        for idx in np.nonzero(~self.active_envs)[0]:
+            infos_to_return[idx] = {}
+
         # OPTIMIZATION: Use a shallow copy instead of a deepcopy.
         # This is much faster and safe for SB3's training loop.
-        infos = [info.copy() for info in self.buf_infos]
-        return self._obs_from_buf(), self.buf_rews.copy(), self.buf_dones.copy(), infos
-        # return self._obs_from_buf(), self.buf_rews.copy(), self.buf_dones.copy(), deepcopy(self.buf_infos)
+        return self._obs_from_buf(), self.buf_rews.copy(), self.buf_dones.copy(), infos_to_return
 
     def reset(self) -> Any:
         for idx in np.nonzero(self.active_envs)[0]:

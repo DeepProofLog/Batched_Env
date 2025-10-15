@@ -257,12 +257,12 @@ def load_queries(dataset_name: str, set_file: str, data_path: str) -> Tuple[List
 
 
 if __name__ == "__main__":
-    max_depth_check = 4
-    dataset_name = 'wn18rr'
+    max_depth_check = 5
+    dataset_name = 'countries_s3'
     data_path = './data/'
     designed_prover = True
 
-    for set_file in ['valid','test']:
+    for set_file in ['train', 'valid', 'test']:
         try:
             queries, prolog_kb_file = load_queries(dataset_name, set_file, data_path)
             is_train_data = 'train' in set_file

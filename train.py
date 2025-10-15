@@ -1,22 +1,25 @@
 from typing import Any, Optional, Tuple
-import numpy as np
-import os
-import random
 import torch
 from pathlib import Path
-import wandb
-from wandb.integration.sb3 import WandbCallback
-import torch.nn as nn
 
 from index_manager import IndexManager
-from utils import get_device, print_eval_info, profile_code
+from utils import (
+    get_device, 
+    print_eval_info, 
+    profile_code, 
+    _set_seeds,
+    _freeze_dropout_layernorm,
+    _warn_non_reproducible,
+    _maybe_enable_wandb,
+)
 from callbacks import (
     SB3TrainCheckpoint,
     CustomEvalCallbackMRR,
     CustomEvalCallback,
-    RewardBreakdownCallback,
     DepthProofStatsCallback,
     TopKCurriculumCallback,
+    KGELogitGainSchedulerCallback,
+    _EvalDepthRewardTracker
 )
 from custom_dummy_env import create_environments
 from dataset import DataHandler
@@ -32,30 +35,18 @@ from stable_baselines3.common.callbacks import (
 )
 
 
-def _freeze_dropout_layernorm(m: nn.Module):
-    if isinstance(m, (nn.Dropout, nn.LayerNorm)):
-        m.eval()          # freeze statistics
-        m.training = False
-
-def _set_seeds(seed: int) -> None:
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-
-def _warn_non_reproducible(args: Any) -> None:
-    if args.restore_best_val_model is False:
-        print(
-            "Warning: This setting is not reproducible when creating 2 models from scratch, "
-            "but it is when loading pretrained models. You can use\n"
-            "  export CUBLAS_WORKSPACE_CONFIG=:16:8; export PYTHONHASHSEED=0\n"
-            "to make runs reproducible."
-        )
+# ------------------------------
+# KGE helpers
+# ------------------------------
 
 def _init_kge_engine(args: Any) -> Optional[KGEInference]:
     """Create KGE inference engine when requested."""
-    if args.use_kge_action or args.kge_integration_strategy == "sum_eval":
+    needs_engine = (
+        args.use_kge_action
+        or args.kge_integration_strategy in {"sum_eval", "logit_shaping"}
+        or float(getattr(args, "pbrs_beta", 0.0)) != 0.0
+    )
+    if needs_engine:
         print("\nInitializing KGE Inference Engine...", flush=True)
         engine = KGEInference(
             dataset_name=args.dataset_name,
@@ -68,6 +59,40 @@ def _init_kge_engine(args: Any) -> Optional[KGEInference]:
         print("KGE Inference Engine Initialized.\n")
         return engine
     return None
+
+def _attach_kge_to_policy(
+    model: PPO,
+    im: IndexManager,
+    engine: Optional[KGEInference],
+    device: torch.device,
+    use_kge_action: bool,
+    integration_strategy: Optional[str],
+) -> None:
+    policy = model.policy
+    policy.kge_integration_strategy = integration_strategy
+    needs_kge_attachment = integration_strategy in {"train", "train_bias", "logit_shaping"}
+
+    if hasattr(policy, "kge_fusion_mlp") and policy.kge_fusion_mlp is not None:
+        policy.kge_fusion_mlp.to(device)
+
+    if not needs_kge_attachment or engine is None or im is None:
+        policy.kge_inference_engine = None
+        policy.index_manager = None
+        empty_indices = torch.empty(0, dtype=torch.int32, device=device)
+        policy.kge_indices_tensor = empty_indices
+        return
+
+    policy.kge_inference_engine = engine
+    policy.index_manager = im
+    if use_kge_action and integration_strategy in {"train", "train_bias"}:
+        kge_indices = [idx for pred, idx in im.predicate_str2idx.items() if pred.endswith("_kge")]
+        policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.int32)
+    else:
+        policy.kge_indices_tensor = torch.empty(0, dtype=torch.int32, device=device)
+
+# ------------------------------
+# Initialization helpers
+# ------------------------------
 
 def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler, IndexManager, Any, Any]:
     """Prepare DataHandler, IndexManager, sampler and embedder."""
@@ -226,7 +251,7 @@ def _build_callbacks(
             n_corruptions=args.eval_neg_samples,
             model_path=str(model_path) if args.save_model else None,
             log_path=log_filename,
-            eval_freq=max(int(args.eval_freq // args.n_envs), 1),
+            eval_freq=max(int(args.eval_freq // args.n_envs)*4, 1),
             n_eval_episodes=args.n_eval_queries - 1,
             deterministic=True,
             render=False,
@@ -235,6 +260,7 @@ def _build_callbacks(
                 reward_threshold_cb if args.restore_best_val_model and not args.use_kge_action else None
             ),
             corruption_scheme=args.corruption_scheme,
+            best_metric=args.eval_best_metric,
             # callback_after_eval=no_improvement_callback,
             verbose=0,
         )
@@ -261,40 +287,36 @@ def _build_callbacks(
         name=model_name,
     )
 
-    reward_breakdown_cb = RewardBreakdownCallback(prefix="rollout")
     depth_stats_cb = DepthProofStatsCallback(prefix="rollout", track_negative=True)
 
-    callbacks.extend([eval_cb, train_ckpt_cb, reward_breakdown_cb, depth_stats_cb])
-    
+    callbacks.extend([eval_cb, train_ckpt_cb, depth_stats_cb])
+
     # Add curriculum learning callback if enabled
-    print(f"TopK Curriculum Learning Enabled: {args.top_k_curriculum}")
+    print(f"TopK Curriculum Selection: {args.top_k_curriculum}")
     if args.top_k_curriculum:
         print("Enabling TopK Curriculum Learning Callback")
         curriculum_cb = TopKCurriculumCallback(
             initial_k=args.top_k_initial,
             final_k=args.top_k_final,
             total_timesteps=args.timesteps_train,
-            schedule=args.top_k_schedule,
+            schedule=args.top_k_curriculum,
             start_filter_timesteps=args.top_k_start_step,
             verbose=1,
         )
         callbacks.append(curriculum_cb)
-        print(f"TopK Curriculum enabled: {args.top_k_initial} -> {args.top_k_final} ({args.top_k_schedule} schedule)")
+        print(f"TopK Curriculum enabled: {args.top_k_initial} -> {args.top_k_final} ({args.top_k_curriculum} schedule)")
+
+    if args.kge_integration_strategy == "logit_shaping":
+        gain_cb = KGELogitGainSchedulerCallback(
+            initial_gain=args.kge_logit_gain_init,
+            final_gain=args.kge_logit_gain_final,
+            anneal_steps=args.kge_logit_gain_anneal_steps,
+            warmup_steps=args.kge_logit_gain_warmup_steps,
+            verbose=0,
+        )
+        callbacks.append(gain_cb)
     
     return CallbackList(callbacks), eval_cb, train_ckpt_cb
-
-
-def _maybe_enable_wandb(use_WB: bool, args: Any, WB_path: str, model_name: str):
-    if not use_WB:
-        return None
-    return wandb.init(
-        project="RL-NeSy",
-        group=args.run_signature,
-        name=model_name,
-        dir=WB_path,
-        sync_tensorboard=True,
-        config=vars(args),
-    )
 
 
 def _train_if_needed(
@@ -314,7 +336,7 @@ def _train_if_needed(
 
     training_fn = model.learn
     training_args = {"total_timesteps": args.timesteps_train, "callback": callbacks}
-    profile_code(False, training_fn, **training_args)  # cProfile
+    profile_code('False', training_fn, **training_args)  # cProfile
     # exit(0)
     # Restore desired checkpoint
     if args.restore_best_val_model:
@@ -327,42 +349,17 @@ def _train_if_needed(
     return model
 
 
-
-def _attach_kge_to_policy(
-    model: PPO,
-    im: IndexManager,
-    engine: Optional[KGEInference],
-    device: torch.device,
-    use_kge_action: bool,
-    integration_strategy: Optional[str],
-) -> None:
-    policy = model.policy
-    policy.kge_integration_strategy = integration_strategy if use_kge_action else None
-
-    if hasattr(policy, "kge_fusion_mlp") and policy.kge_fusion_mlp is not None:
-        policy.kge_fusion_mlp.to(device)
-
-    if not use_kge_action or engine is None or im is None:
-        policy.kge_inference_engine = None
-        policy.index_manager = None
-        empty_indices = torch.empty(0, dtype=torch.int32, device=device)
-        policy.kge_indices_tensor = empty_indices
-        return
-
-    policy.kge_inference_engine = engine
-    policy.index_manager = im
-    kge_indices = [idx for pred, idx in im.predicate_str2idx.items() if pred.endswith("_kge")]
-    policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.int32)
-
-
 def _eval_mode_from_args(args: Any) -> str:
     # For sum_eval, we fuse externally; otherwise model handles fusion
     return "hybrid" if args.kge_integration_strategy == "sum_eval" else "rl_only"
 
 
+
 def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler: DataHandler) -> Tuple[dict, dict, dict]:
     print("\nTest set evaluation...")
     eval_mode = _eval_mode_from_args(args)
+
+    depth_reward_tracker = _EvalDepthRewardTracker()
 
     eval_args = {
         "model": model,
@@ -376,8 +373,13 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
         "plot": args.plot,
         "corruption_scheme": args.corruption_scheme,
         "data_depths": data_handler.test_queries_depths,
+        "info_callback": depth_reward_tracker,
+        "hybrid_kge_weight": args.eval_hybrid_kge_weight,
+        "hybrid_rl_weight": args.eval_hybrid_rl_weight,
+        "hybrid_success_only": args.eval_hybrid_success_only,
     }
     metrics_test = profile_code(False, eval_corruptions, **eval_args)
+    metrics_test.update(depth_reward_tracker.metrics())
     print("results for:", args.run_signature)
     print_eval_info("Test", metrics_test)
 
@@ -394,6 +396,9 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
             kge_inference_engine=kge_engine,
             corruption_scheme=args.corruption_scheme,
             data_depths=data_handler.valid_queries_depths,
+            hybrid_kge_weight=args.eval_hybrid_kge_weight,
+            hybrid_rl_weight=args.eval_hybrid_rl_weight,
+            hybrid_success_only=args.eval_hybrid_success_only,
         )
         print_eval_info("Validation", metrics_valid)
 
@@ -407,6 +412,9 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
             kge_inference_engine=kge_engine,
             corruption_scheme=args.corruption_scheme,
             data_depths=data_handler.train_queries_depths,
+            hybrid_kge_weight=args.eval_hybrid_kge_weight,
+            hybrid_rl_weight=args.eval_hybrid_rl_weight,
+            hybrid_success_only=args.eval_hybrid_success_only,
         )
         print_eval_info("Train", metrics_train)
     else:
@@ -423,16 +431,12 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     _warn_non_reproducible(args)
     _set_seeds(args.seed_run_i)
 
-    if not hasattr(args, "top_k_actions"):
-        args.top_k_actions = None
     if not hasattr(args, "top_k_curriculum"):
-        args.top_k_curriculum = False
+        args.top_k_curriculum = None
     if not hasattr(args, "top_k_initial"):
         args.top_k_initial = None
     if not hasattr(args, "top_k_final"):
         args.top_k_final = 5
-    if not hasattr(args, "top_k_schedule"):
-        args.top_k_schedule = 'linear'
     if not hasattr(args, "top_k_start_step"):
         args.top_k_start_step = 0
 
@@ -443,31 +447,30 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     # Build pieces
     kge_engine = _init_kge_engine(args)
     dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
-    env, eval_env, callback_env = create_environments(args, dh, index_manager, detailed_eval_env=args.extended_eval_info)
+    env, eval_env, callback_env = create_environments(
+        args,
+        dh,
+        index_manager,
+        kge_engine=kge_engine,
+        detailed_eval_env=args.extended_eval_info,
+    )
 
     # --- INIT MODEL ---
     policy_kwargs = {
         'features_extractor_class': CustomCombinedExtractor,
         'features_extractor_kwargs': {'features_dim': embedder.embed_dim, 'embedder': embedder},
-        'top_k_actions': args.top_k_actions,
+        'top_k_actions': args.top_k_initial if args.top_k_curriculum else None,
         'top_k_curriculum': args.top_k_curriculum,
         'top_k_initial': args.top_k_initial,
         'top_k_final': args.top_k_final,
+        'kge_integration_strategy': args.kge_integration_strategy,
+        'kge_logit_gain_initial': args.kge_logit_gain_init,
+        'kge_logit_gain_final': args.kge_logit_gain_final,
+        'kge_logit_gain_anneal_steps': args.kge_logit_gain_anneal_steps,
+        'kge_logit_gain_warmup_steps': args.kge_logit_gain_warmup_steps,
+        'kge_logit_transform': args.kge_logit_transform,
+        'kge_logit_eps': args.kge_logit_eps,
     }
-
-    if args.kge_integration_strategy in {"train", "train_bias"}:
-        policy_kwargs.update(
-            {
-                "kge_integration_strategy": args.kge_integration_strategy,
-            }
-        )
-
-    # if args.kge_integration_strategy and args.kge_integration_strategy is not 'sum_eval':
-    #     policy_kwargs.update({
-    #         'kge_inference_engine': kge_inference_engine,
-    #         'index_manager': index_manager,
-    #         'kge_integration_strategy': args.kge_integration_strategy,
-    #     })
 
     model = PPO(
         CustomActorCriticPolicy,
@@ -480,6 +483,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         device=device,
         ent_coef=args.ent_coef,
         clip_range=args.clip_range,
+        gamma=args.gamma,
         policy_kwargs=policy_kwargs)
     
     # Optional policy KGE wiring

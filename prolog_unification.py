@@ -2,7 +2,7 @@ import re
 import janus_swi as janus
 from typing import List, Optional, Tuple
 from utils import Term, get_atom_from_string
-from python_unification import rename_vars, rename_vars_local
+from python_unification import rename_vars_local
 
 
 def get_next_unification_prolog(

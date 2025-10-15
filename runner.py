@@ -1,14 +1,21 @@
 import torch
-from train import main
 import argparse
-import ast
-from itertools import product
+import datetime
 import copy
 import os
+import sys
+from itertools import product
+
 import numpy as np
 from utils import FileLogger
-import datetime
-import sys
+from train import main
+from utils_config import (
+    load_experiment_configs,
+    parse_scalar,
+    coerce_config_value,
+    update_config_value,
+    parse_assignment,
+)
 torch.set_float32_matmul_precision('high')
 # import gc
 # gc.disable()  
@@ -17,437 +24,416 @@ torch.set_float32_matmul_precision('high')
 
 if __name__ == "__main__":
 
-    class Tee:
-        def __init__(self, file_path):
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            self.file = open(file_path, "w")
-            self.stdout = sys.stdout
+    DEFAULT_CONFIG = {
+        # General experiment configuration
 
-        def write(self, message):
-            self.file.write(message)
-            self.stdout.write(message)
+        # Dataset params
+        'dataset_name': 'family',
+        'eval_neg_samples': 3,
+        'test_neg_samples': 100,
+        'train_depth': None, # {-1,3}
+        'valid_depth': None,
+        'test_depth': None,
+        'n_train_queries': None,
+        'n_eval_queries': 500,
+        'n_test_queries': None,
 
-        def flush(self):
-            self.file.flush()
-            self.stdout.flush()
+        # Model params
+        'model_name': 'PPO',
+        'ent_coef': 0.2,
+        'clip_range': 0.2,
+        'n_epochs': 10,
+        'lr': 3e-4,
+        'gamma': 0.99,
 
-    # hpo: first ent_coef, try with reward type, 5 seeds, 300k steps
-    FALSE_RULES = [False] 
-    MEMORY_PRUNING = [True]
-    ENDT_ACTION = [False] # Append an action to stop the proof search in False
-    ENDF_ACTION = [True] # Append an action to stop the proof search in fail
-    SKIP_UNARY_ACTIONS = [True]
-    ENT_COEF = [0.2] # [0.5,0.8]
-    CLIP_RANGE = [0.2] # [0.2, 0.4]
-    ENGINE = ['python']
-    ENGINE_STRATEGY = ['rft'] # ['cmp','rft'] # complete (cmp) or rules_then_facts (rtf)
-    REWARD_TYPE = [2] # 0: initial, 1: avoiding neg proofs, 2: classification
+        # Training params
+        'seed': [0],
+        'timesteps_train': 700000,
+        'restore_best_val_model': True,
+        'load_model': True,
+        'save_model': True,
+        'n_envs': 128,
+        'n_steps': 128,
+        'n_eval_envs': 100,
+        'batch_size': 128,
 
-    TOP_K_ACTIONS = [None]  # Number of actions to keep based on value scores (None disables filtering)
-    TOP_K_CURRICULUM = [False]
-    TOP_K_INITIAL = [8]
-    TOP_K_FINAL = [8]
-    TOP_K_SCHEDULE = ['cte']
-    TOP_K_START_STEP = [200000]  # Delay (timesteps) before enabling curriculum filtering
- 
-    # Dataset settings 
-    DATASET_NAME =  ["family"] # ["countries_s2", "countries_s3", 'family', 'wn18rr']
-    TRAIN_DEPTH = [None] # [{-1,3,2}]
-    VALID_DEPTH = [None] # [{3,4}]
-    TEST_DEPTH = [None] # [{2,3,4}]
-    SEED = [[0]]
-    LEARN_EMBEDDINGS = [True]
-    ATOM_EMBEDDER = ['transe'] # ['complex','rotate','transe','attention','rnn']
-    STATE_EMBEDDER = ['mean']
-    PADDING_ATOMS = [6]
-    PADDING_STATES = [-1] # -1 sets the max padding size to a preset value (check below)
-    ATOM_EMBEDDING_SIZE = [256] # 256 for countries (automatically selected below)
-    CORRUPTION_MODE =  ['dynamic']
+        # Env params
+        'reward_type': 3,
+        'train_neg_ratio': 1,
+        'engine_strategy': 'rft',
+        'endf_action': True,
+        'endt_action': False,
+        'skip_unary_actions': True,
+        'engine': 'python',
+        'max_depth': 20,
+        'memory_pruning': True,
+        'corruption_mode': 'dynamic',
+        'false_rules': False,
 
-    # sum_eval sums the KGE scores during eval only
-    # train combines the KGE scores with problogs during training
-    # train_bias uses an MLP to learn a bias on the KGE scores
-    KGE_INTEGRATION_STRATEGY = [None] # [None, 'train', 'train_bias','sum_eval'] 
-    KGE_CHECKPOINT_DIR = ['./../../checkpoints/']
-    # KGE_SCORES_FILE = ['./../../kge_scores_'+DATASET_NAME[0]+'.txt']
-    KGE_SCORES_FILE = [None] # Whether to load precomputed KGE scores (not neccessarily all)
- 
-    RESTORE_BEST_VAL_MODEL = [True] # else restore the model from the last train epoch
-    load_model = False
-    save_model = True
+        # Top-K actions filtering: Curriculum learning params
+        'top_k_curriculum': None,
+        'top_k_initial': 10,
+        'top_k_final': 7,
+        'top_k_start_step': 200000,
 
-    # Loggin settings 
-    use_logger = True
-    use_WB = False
-    WB_path = "./../wandb/"
-    logger_path = "./runs/"
+        # KGE integration params
+        'kge_integration_strategy': None, # None, 'train', 'train_bias', 'logit_shaping', 'sum_eval'
+        'kge_checkpoint_dir': './../../checkpoints/',
+        'kge_run_signature': None,
+        'kge_scores_file': None,
+        'use_kge_action': None,  # Auto-computed from kge_integration_strategy unless overridden
 
-    # Paths    
-    data_path = "./data/"
-    models_path = "models/"
-    rules_file = "rules.txt"
-    facts_file = "train.txt"
+        # KGE logit shaping params
+        'kge_logit_gain_init': 1.0,
+        'kge_logit_gain_final': 0.2,
+        'kge_logit_gain_anneal_steps': 300000,
+        'kge_logit_gain_warmup_steps': 0,
+        'kge_logit_transform': 'log',
+        'kge_logit_eps': 1e-6,
 
-    # Training parameters
-    TIMESTEPS_TRAIN = [700000]
-    MODEL_NAME = ["PPO"]
-    MAX_DEPTH = [20]
-    TRAIN_NEG_RATIO = [1] # [1,4] Ratio of negative to positive queries during training.
-    EVAL_NEG_SAMPLES = [1]    # Number of negative samples per positive for validation. Use None for all. Only for callback with MRR.
-    TEST_NEG_SAMPLES = [100]  # Number of negative samples per positive for testing. Use None for all.
-    n_train_queries = None
-    n_eval_queries = 500
-    n_test_queries = None
-    extended_eval_info = True # Whether to compute detailed eval info (e.g., MRR). Slower and different eval env
-    plot = False # Whether to plot the policy behaviour during eval
-    # Rollout-> train. in rollout, each env does n_steps steps, and n_envs envs are run in parallel.
-    # The total number of steps in each rollout is n_steps*n_envs.
-    N_ENVS = [10] # [16,128]
-    n_steps = 128
-    BATCH_SIZE = [128] # [128,16] Ensure batch size is a factor of n_steps (for the buffer).
-    n_eval_envs = 100
-    # n_callback_eval_envs = 1 # Number of environments to use for evaluation in the callback # should be one in CustomEvalCallback
-    # eval_freq = n_steps*n_envs
-    N_EPOCHS = [10] # [10,30] number of epochs to train the model with the collected rollout
-    LR = [3e-4] # [3e-4, 1e-4]
+        # Potential-based shaping params
+        'pbrs_beta': 0.0, # Set it as the same value of PPO's gamma
+        'pbrs_gamma': None,
 
-    max_total_vars = 100
+        # Evaluation hybrid fusion
+        'eval_hybrid_kge_weight': 2.0,
+        'eval_hybrid_rl_weight': 1.0,
+        'eval_hybrid_success_only': True,
+
+        # Embedding params
+        'atom_embedder': 'transe',
+        'state_embedder': 'mean',
+        'atom_embedding_size': 256,
+        'learn_embeddings': True,
+        'padding_atoms': 6,
+        'padding_states': -1, # Auto-computed from dataset unless overridden
+        'max_total_vars': 100,
+
+        # Other params
+        'extended_eval_info': True,
+        'eval_best_metric': 'mrr',
+        'plot': False,
+        'data_path': './data/',
+        'models_path': 'models/',
+        'rules_file': 'rules.txt',
+        'facts_file': 'train.txt',
+        'use_logger': True,
+        'logger_path': './runs/',
+        'use_wb': False,
+        'wb_path': './../wandb/',
+    }
+
+    KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # If take inputs from the command line, overwrite the default values
-    """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='Experiment Runner')
-    parser.add_argument("--d", nargs='+', help="Datasets")
-    parser.add_argument("--s", help="Seeds")
-    parser.add_argument("--timesteps", help="Timesteps to train")
-    parser.add_argument("--engine", help="Engine to use")
-    parser.add_argument("--engine_strategy", help="Engine strategy to use")
-    parser.add_argument("--eval", default = None, action='store_const', const=True)
-    parser.add_argument("--test_depth", default = None, help="test_depth")
-    parser.add_argument("--n_test_queries", default = None, help="n_test_queries")
-    parser.add_argument("--n_envs", default = None, help="n_envs")
-    parser.add_argument("--n_eval_envs", default = None, help="n_eval_envs")
-    parser.add_argument("--train_neg_ratio", default=None, type=int, help="Ratio of negative to positive queries for training")
-    parser.add_argument("--eval_neg_samples", default=None, help="Number of negatives for validation set ('None' for all)")
-    parser.add_argument("--test_neg_samples", default=None, help="Number of negatives for test set ('None' for all)")
-    parser.add_argument("--use_kge_action", default=None, action='store_const', const=True, help="Use KGE action")
-    parser.add_argument("--reward_type", default=None, type=int, help="Reward scheme to use (0, 1, or 2)")
-    parser.add_argument("--endt_action", default=None, type=ast.literal_eval, help="Enable Endt action")
-    parser.add_argument("--endf_action", default=None, type=ast.literal_eval, help="Enable Endf action")
-    parser.add_argument("--kge_integration_strategy", type=str, choices=['train', 'train_bias', 'sum_eval', None], 
-                        default=None, help="KGE integration strategy (default: None)")
-    parser.add_argument("--top_k_actions", default=None, type=int,
-                        help="Keep only the top-k actions per state according to the value network (set <=0 to disable)")
-    parser.add_argument("--top_k_curriculum", action='store_true',
-                        help="Enable curriculum learning for top_k_actions")
-    parser.add_argument("--top_k_initial", default=None, type=int,
-                        help="Initial value for top_k in curriculum (None for no filtering)")
-    parser.add_argument("--top_k_final", default=5, type=int,
-                        help="Final value for top_k in curriculum (default: 5)")
-    parser.add_argument("--top_k_schedule", default='linear', choices=['linear', 'exponential', 'step'],
-                        help="Curriculum schedule type (default: linear)")
-    parser.add_argument("--top_k_start_step", default=None, type=int,
-                        help="Timesteps to wait before enabling top-k filtering (overrides default experiment setting)")
-
+    parser.add_argument("--config",type=str,
+        help="Path to YAML file describing a list of experiments (each as key/value overrides).",)
+    parser.add_argument("--set",action='append',default=[],metavar="KEY=VALUE",
+        help="Override a configuration value, e.g. --set reward_type=3 --set seed='[0,1]'.",)
+    parser.add_argument("--grid",action='append',default=[],metavar="KEY=V1,V2",
+        help="Grid search values for a parameter, e.g. --grid reward_type=2,3 --grid ent_coef=0.2,0.5.",)
+    parser.add_argument("--eval",action='store_true',
+        help="Shortcut: load model and skip training (timesteps=0).",)
 
     args = parser.parse_args()
 
-    # Update configuration with command line arguments
-    if args.d: DATASET_NAME = args.d
-    if args.s: SEED = [ast.literal_eval(args.s)]
-    if args.engine: ENGINE = [args.engine]
-    if args.engine_strategy: ENGINE_STRATEGY = [args.engine_strategy]
-    if args.eval: load_model = True; TIMESTEPS_TRAIN = [0]
-    if args.test_depth: TEST_DEPTH = [str(args.test_depth)]
-    if args.n_test_queries: n_test_queries = int(args.n_test_queries)
-    # if args.n_envs: n_envs = int(args.n_envs)
-    if args.n_eval_envs: n_eval_envs = int(args.n_eval_envs)
-    if args.timesteps: TIMESTEPS_TRAIN = [int(args.timesteps)]
-    if args.train_neg_ratio is not None: TRAIN_NEG_RATIO = [args.train_neg_ratio]
-    if args.eval_neg_samples is not None:
-        EVAL_NEG_SAMPLES = [None if args.eval_neg_samples.lower() in ['none', '-1'] else int(args.eval_neg_samples)]
-    if args.test_neg_samples is not None:
-        TEST_NEG_SAMPLES = [None if args.test_neg_samples.lower() in ['none', '-1'] else int(args.test_neg_samples)]
+    if args.config and args.grid:
+        raise ValueError("Use either --config or --grid, not both at the same time.")
 
-    if args.reward_type is not None: REWARD_TYPE = [args.reward_type]
-    if args.endt_action is not None: ENDT_ACTION = [args.endt_action]
-    if args.endf_action is not None: ENDF_ACTION = [args.endf_action]
+    base_config = copy.deepcopy(DEFAULT_CONFIG)
 
-    if args.top_k_actions is not None:
-        TOP_K_ACTIONS = [None if args.top_k_actions <= 0 else int(args.top_k_actions)]
+    # Apply command-line overrides
+    for assignment in args.set:
+        key, raw_value = parse_assignment(assignment)
+        parsed_value = parse_scalar(raw_value)
+        update_config_value(base_config, key, parsed_value, DEFAULT_CONFIG)
 
-    if args.top_k_curriculum:
-        TOP_K_CURRICULUM = [True]
+    if args.eval:
+        base_config['load_model'] = True
+        base_config['timesteps_train'] = 0
 
-    if args.top_k_initial is not None:
-        TOP_K_INITIAL = [args.top_k_initial]
+    # Prepare grid search specification (if any)
+    grid_spec = {}
+    if args.grid:
+        for entry in args.grid:
+            key, raw_values = parse_assignment(entry)
+            value_candidates = [v.strip() for v in raw_values.split(',') if v.strip()]
+            if not value_candidates:
+                raise ValueError(f"No values supplied for grid entry '{entry}'.")
+            parsed_values = [
+                coerce_config_value(key, parse_scalar(candidate), DEFAULT_CONFIG)
+                for candidate in value_candidates
+            ]
+            grid_spec[key] = parsed_values
 
-    if args.top_k_final is not None:
-        TOP_K_FINAL = [args.top_k_final]
+    # Load experiments from config file (if any)
+    experiments_from_file = []
+    if args.config:
+        overrides_list = load_experiment_configs(args.config)
+        for idx, overrides in enumerate(overrides_list):
+            unknown_keys = set(overrides) - KNOWN_CONFIG_KEYS
+            if unknown_keys:
+                unknown_list = ", ".join(sorted(unknown_keys))
+                raise ValueError(
+                    f"Unknown parameter(s) in experiment {idx}: {unknown_list}"
+                )
+            experiments_from_file.append(overrides)
+        print(f"\n\nLoaded {len(experiments_from_file)} experiment(s) from {args.config}")
 
-    if args.top_k_schedule is not None:
-        TOP_K_SCHEDULE = [args.top_k_schedule]
-
-    if args.top_k_start_step is not None:
-        TOP_K_START_STEP = [max(0, int(args.top_k_start_step))]
-
-    if args.kge_integration_strategy is not None:
-        KGE_INTEGRATION_STRATEGY = [args.kge_integration_strategy]
-
-    if KGE_INTEGRATION_STRATEGY == ['sum_eval'] or KGE_INTEGRATION_STRATEGY == [None]:
-        USE_KGE_ACTION = [False]
+    # Generate the list of experiment configurations to run
+    run_configs = []
+    if experiments_from_file:
+        for overrides in experiments_from_file:
+            config_copy = copy.deepcopy(base_config)
+            for key, value in overrides.items():
+                update_config_value(config_copy, key, value, DEFAULT_CONFIG)
+            run_configs.append(config_copy)
+    elif grid_spec:
+        grid_keys = sorted(grid_spec.keys())
+        for combo in product(*(grid_spec[key] for key in grid_keys)):
+            config_copy = copy.deepcopy(base_config)
+            for key, value in zip(grid_keys, combo):
+                update_config_value(
+                    config_copy,
+                    key,
+                    value,
+                    DEFAULT_CONFIG,
+                    prevalidated=True,
+                )
+            run_configs.append(config_copy)
+        print(
+            f"Prepared grid search over {len(grid_spec)} parameter(s), "
+            f"yielding {len(run_configs)} experiment(s)."
+        )
     else:
-        USE_KGE_ACTION = [True] # New parameter to enable KGE action    
+        run_configs = [base_config]
 
-    if DATASET_NAME[0] == "countries_s3" or DATASET_NAME[0] == "countries_s2" or DATASET_NAME[0] == "countries_s1":
-        KGE_RUN_SIGNATURE = [f'{DATASET_NAME[0]}-backward_0_1-no_reasoner-rotate-True-256-256-128-rules.txt']
-    elif DATASET_NAME[0] == "family":
-        KGE_RUN_SIGNATURE = ['kinship_family-backward_0_1-no_reasoner-rotate-True-256-256-4-rules.txt']
-    elif DATASET_NAME[0] == "wn18rr":
-        KGE_RUN_SIGNATURE = ['wn18rr-backward_0_1-no_reasoner-rotate-True-256-256-1-rules.txt']
 
-    if USE_KGE_ACTION == [True] and REWARD_TYPE == [0]:
-        # If using KGE action, we cannot restore the best val model, as it is not saved during training.
-        RESTORE_BEST_VAL_MODEL = [False]
+    def build_namespace(config):
+        """Given a config dict, build the argparse.Namespace by applying defaults and derived values."""
+        cfg = copy.deepcopy(config)
 
-    print('\n\nRunning experiments for the following parameters:','DATASET_NAME:'\
-          ,DATASET_NAME,'MODEL_NAME:',MODEL_NAME,'SEED:',SEED)
-    
-    # Create a dictionary of all parameters
-    param_dict = {
-        'dataset_name': DATASET_NAME,
-        'model_name': MODEL_NAME,
-        'learn_embeddings': LEARN_EMBEDDINGS,
-        'atom_embedder': ATOM_EMBEDDER,
-        'state_embedder': STATE_EMBEDDER,
-        'atom_embedding_size': ATOM_EMBEDDING_SIZE,
-        'seed': SEED,
-        'max_depth': MAX_DEPTH,
-        'timesteps_train': TIMESTEPS_TRAIN,
-        'restore_best_val_model': RESTORE_BEST_VAL_MODEL,
-        'memory_pruning': MEMORY_PRUNING,
-        'corruption_mode': CORRUPTION_MODE,
-        'train_neg_ratio': TRAIN_NEG_RATIO,
-        'eval_neg_samples': EVAL_NEG_SAMPLES,
-        'test_neg_samples': TEST_NEG_SAMPLES,
-        'false_rules': FALSE_RULES,
-        'endt_action': ENDT_ACTION,
-        'endf_action': ENDF_ACTION,
-        'skip_unary_actions': SKIP_UNARY_ACTIONS,
-        'ent_coef': ENT_COEF,
-        'clip_range': CLIP_RANGE,
-        'engine': ENGINE,
-        'engine_strategy': ENGINE_STRATEGY,
-        'train_depth': TRAIN_DEPTH,
-        'valid_depth': VALID_DEPTH,
-        'test_depth': TEST_DEPTH,
-        'padding_atoms': PADDING_ATOMS,
-        'padding_states': PADDING_STATES,
-        'use_kge_action': USE_KGE_ACTION,
-        'kge_checkpoint_dir': KGE_CHECKPOINT_DIR,
-        'kge_run_signature': KGE_RUN_SIGNATURE,
-        'kge_scores_file': KGE_SCORES_FILE,
-        'reward_type': REWARD_TYPE,
-        'kge_integration_strategy': KGE_INTEGRATION_STRATEGY,
-        'n_epochs': N_EPOCHS,
-        'lr': LR,
-        'n_envs': N_ENVS,
-        'batch_size': BATCH_SIZE,
-        'top_k_actions': TOP_K_ACTIONS,
-        'top_k_curriculum': TOP_K_CURRICULUM,
-        'top_k_initial': TOP_K_INITIAL,
-        'top_k_final': TOP_K_FINAL,
-        'top_k_schedule': TOP_K_SCHEDULE,
-        'top_k_start_step': TOP_K_START_STEP,
-    }
+        best_metric = cfg.get('eval_best_metric', 'auc_pr')
+        if not isinstance(best_metric, str):
+            raise ValueError("eval_best_metric must be provided as a string.")
+        metric_normalized = best_metric.strip().lower()
+        allowed_best_metrics = {'auc_pr', 'mrr'}
+        if metric_normalized not in allowed_best_metrics:
+            allowed = ", ".join(sorted(allowed_best_metrics))
+            raise ValueError(
+                f"Unsupported eval_best_metric '{best_metric}'. Allowed values: {allowed}."
+            )
+        cfg['eval_best_metric'] = metric_normalized
 
-    # Generate all combinations using product
-    param_combinations = list(product(*param_dict.values()))
-    param_names = param_dict.keys()
-    total_experiments = len(param_combinations)
+        if cfg.get('use_kge_action') is None:
+            cfg['use_kge_action'] = cfg.get('kge_integration_strategy') in {"train", "train_bias"}
 
-    # Iterate over combinations with named parameters
-    all_args = []
-    for exp_idx, params in enumerate(param_combinations):
-        args = argparse.Namespace(**dict(zip(param_names, params)))
-
-        if not save_model and args.restore_best_val_model:
-            print("\n\nERROR: restore_best_val_model is True and save_model is False.\
-                   To restore the best val model you need to save it\n\n")
-            continue
-        
-        if args.padding_states == -1:
-            if args.dataset_name in ["countries_s3", "countries_s2", "countries_s1"]:
-                args.padding_states = 20
-                args.atom_embedding_size = 256
-            elif args.dataset_name == "family": args.padding_states = 130
-            elif args.dataset_name == "wn18rr": args.padding_states = 262
-            elif args.dataset_name == "fb15k237": args.padding_states = 358
-            else: raise ValueError("Unknown dataset name")
-
-        constant_embedding_size = predicate_embedding_size = args.atom_embedding_size
-        if args.atom_embedder == "complex":
-            constant_embedding_size = 2*args.atom_embedding_size
-            predicate_embedding_size = 2*args.atom_embedding_size
-        if args.atom_embedder == "rotate":
-            constant_embedding_size = 2*args.atom_embedding_size
-
-        
-        args.corruption_scheme = ['head','tail']
-        if 'countries' in args.dataset_name or 'ablation' in args.dataset_name:
-            args.corruption_scheme = ['tail']
-        
-        if args.false_rules:
-            if args.engine == 'prolog':
-                args.janus_file = "countries_false_rules.pl"
+        curriculum = cfg.get('top_k_curriculum')
+        if isinstance(curriculum, str):
+            normalized = curriculum.strip()
+            if not normalized or normalized.lower() == 'none':
+                cfg['top_k_curriculum'] = None
             else:
-                raise ValueError("False rules not implemented for python engine")
-        elif args.engine == 'python':
-            args.janus_file = None
+                cfg['top_k_curriculum'] = normalized.lower()
+        elif isinstance(curriculum, bool):
+            cfg['top_k_curriculum'] = 'cte' if curriculum else None
+        elif curriculum is not None:
+            raise ValueError(
+                "top_k_curriculum must be a string or None. "
+                f"Received type {type(curriculum).__name__}."
+            )
+
+        allowed_curricula = {None, 'linear', 'exponential', 'step', 'cte'}
+        if cfg['top_k_curriculum'] not in allowed_curricula:
+            raise ValueError(
+                f"Unsupported top_k_curriculum '{cfg['top_k_curriculum']}'. "
+                "Allowed values: None, linear, exponential, step, cte."
+            )
+
+        if cfg.get('kge_run_signature') is None:
+            dataset = cfg['dataset_name']
+            if dataset in {"countries_s3", "countries_s2", "countries_s1"}:
+                cfg['kge_run_signature'] = f"{dataset}-backward_0_1-no_reasoner-rotate-True-256-256-128-rules.txt"
+            elif dataset == "family":
+                cfg['kge_run_signature'] = "kinship_family-backward_0_1-no_reasoner-rotate-True-256-256-4-rules.txt"
+            elif dataset == "wn18rr":
+                cfg['kge_run_signature'] = "wn18rr-backward_0_1-no_reasoner-rotate-True-256-256-1-rules.txt"
+            else:
+                raise ValueError(f"No default KGE run signature defined for dataset '{dataset}'. "
+                                 "Set 'kge_run_signature' manually or extend the defaults.")
+
+        namespace = argparse.Namespace(**cfg)
+
+        if namespace.padding_states == -1:
+            if namespace.dataset_name in {"countries_s3", "countries_s2", "countries_s1"}:
+                namespace.padding_states = 20
+                namespace.atom_embedding_size = 256
+            elif namespace.dataset_name == "family":
+                namespace.padding_states = 130
+            elif namespace.dataset_name == "wn18rr":
+                namespace.padding_states = 262
+            elif namespace.dataset_name == "fb15k237":
+                namespace.padding_states = 358
+            else:
+                raise ValueError("Unknown dataset name for automatic padding configuration.")
+
+        if namespace.dataset_name == "mnist_addition":
+            namespace.corruption_mode = None
+
+        namespace.corruption_scheme = ['head', 'tail']
+        if 'countries' in namespace.dataset_name or 'ablation' in namespace.dataset_name:
+            namespace.corruption_scheme = ['tail']
+
+        if namespace.false_rules:
+            if namespace.engine == 'prolog':
+                namespace.janus_file = "countries_false_rules.pl"
+            else:
+                raise ValueError("False rules are not implemented for the python engine.")
+        elif namespace.engine == 'python':
+            namespace.janus_file = None
         else:
-            args.janus_file = f"{args.dataset_name}.pl"
-            print("Using prolog file:", args.janus_file)
-
-
-        if args.dataset_name == "mnist_addition":
-            args.corruption_mode = None
+            namespace.janus_file = f"{namespace.dataset_name}.pl"
+            print("Using prolog file:", namespace.janus_file)
 
         train_file = "train.txt"
         valid_file = "valid.txt"
         test_file = "test.txt"
-        
-        if args.corruption_mode == "static":
+
+        if namespace.corruption_mode == "static":
             train_file = "train_label_corruptions.json"
             valid_file = "valid_label_corruptions.json"
-            test_file  = "test_label_corruptions.json"
+            test_file = "test_label_corruptions.json"
 
-        if args.train_depth is not None:
-            train_file = train_file.replace('.txt', f'_depths.txt')
-        if args.valid_depth is not None:
-            valid_file = valid_file.replace('.txt', f'_depths.txt')
-        if args.test_depth is not None:
-            test_file = test_file.replace('.txt', f'_depths.txt')
+        if namespace.train_depth is not None:
+            train_file = train_file.replace('.txt', '_depths.txt')
+        if namespace.valid_depth is not None:
+            valid_file = valid_file.replace('.txt', '_depths.txt')
+        if namespace.test_depth is not None:
+            test_file = test_file.replace('.txt', '_depths.txt')
 
-        args.data_path = data_path
-        args.train_file = train_file
-        args.valid_file = valid_file
-        args.test_file = test_file
-        args.rules_file = rules_file
-        args.facts_file = facts_file
-        args.extended_eval_info = extended_eval_info
-        args.plot = plot
-        
-        # if args.atom_embedder != "concat" else it is 
-        # (pred+c1+c2+...+cn)*atom_embedding_size = (1+max_arity)*atom_embedding_size
-        args.atom_embedding_size = args.atom_embedding_size
-        args.state_embedding_size = args.atom_embedding_size if args.state_embedder != "concat" \
-            else args.atom_embedding_size*args.padding_atoms
-        args.constant_embedding_size = constant_embedding_size
-        args.predicate_embedding_size = predicate_embedding_size
-        args.max_total_vars = max_total_vars
-        args.device = device
-        
-        if args.restore_best_val_model and load_model=='last_epoch':
-            print("\n\nWARNING: restore_best_val_model is True and load_model is 'last_epoch', \
-                  instead of best_eval. You may not get the same eval results\n\n")
-        args.load_model = load_model
-        args.save_model = save_model
-        args.models_path = models_path
-        args.n_train_queries = n_train_queries
-        args.n_eval_queries = n_eval_queries
-        args.n_test_queries = n_test_queries
-        # args.n_envs = n_envs
-        args.n_eval_envs = n_eval_envs
-        args.n_steps = n_steps
-        # args.eval_freq = eval_freq
-        args.eval_freq = n_steps*args.n_envs
-        # args.n_epochs = n_epochs
-        # args.batch_size = batch_size
-        # args.lr = lr
+        namespace.train_file = train_file
+        namespace.valid_file = valid_file
+        namespace.test_file = test_file
+
+        namespace.state_embedding_size = (
+            namespace.atom_embedding_size
+            if namespace.state_embedder != "concat"
+            else namespace.atom_embedding_size * namespace.padding_atoms
+        )
+        namespace.constant_embedding_size = namespace.atom_embedding_size
+        namespace.predicate_embedding_size = namespace.atom_embedding_size
+        if namespace.atom_embedder == "complex":
+            namespace.constant_embedding_size = 2 * namespace.atom_embedding_size
+            namespace.predicate_embedding_size = 2 * namespace.atom_embedding_size
+        if namespace.atom_embedder == "rotate":
+            namespace.constant_embedding_size = 2 * namespace.atom_embedding_size
+
+        namespace.device = device
+        namespace.eval_freq = namespace.n_steps * namespace.n_envs
+
+        return namespace
+
+    all_args = []
+    for config in run_configs:
+        args_namespace = build_namespace(config)
+        if not args_namespace.save_model and args_namespace.restore_best_val_model:
+            raise ValueError(
+                "restore_best_val_model=True but save_model=False. "
+                "Enable model saving or disable best-model restoration."
+            )
+
+        if args_namespace.restore_best_val_model and args_namespace.load_model == 'last_epoch':
+            print(
+                "\nWARNING: restore_best_val_model is True while load_model='last_epoch'. "
+                "You may not reproduce evaluation results.\n"
+            )
 
         run_vars = (
-            args.dataset_name,
-            args.atom_embedder,
-            args.state_embedder,
-            args.atom_embedding_size,
-            args.padding_atoms,
-            args.padding_states,
-            args.false_rules,
-            args.endt_action,
-            args.endf_action,
-            args.skip_unary_actions,
-            args.memory_pruning,
-            args.max_depth,
-            args.ent_coef,
-            args.clip_range,
-            args.engine,
-            args.engine_strategy,
-            args.train_neg_ratio,
-            args.use_kge_action,
-            args.reward_type,
-            args.kge_integration_strategy,
-            args.top_k_actions,
-            args.top_k_curriculum,
-            args.top_k_initial,
-            args.top_k_final,
-            args.top_k_schedule,
-            args.top_k_start_step,
-            args.n_epochs,
-            args.lr,
-            args.n_envs,
+            args_namespace.dataset_name,
+            args_namespace.atom_embedder,
+            args_namespace.state_embedder,
+            args_namespace.atom_embedding_size,
+            args_namespace.padding_atoms,
+            args_namespace.padding_states,
+            args_namespace.false_rules,
+            args_namespace.endt_action,
+            args_namespace.endf_action,
+            args_namespace.skip_unary_actions,
+            args_namespace.memory_pruning,
+            args_namespace.max_depth,
+            args_namespace.ent_coef,
+            args_namespace.clip_range,
+            args_namespace.engine,
+            args_namespace.engine_strategy,
+            args_namespace.train_neg_ratio,
+            args_namespace.use_kge_action,
+            args_namespace.reward_type,
+            args_namespace.kge_integration_strategy,
+            args_namespace.top_k_curriculum,
+            args_namespace.top_k_initial,
+            args_namespace.top_k_final,
+            args_namespace.top_k_start_step,
+            args_namespace.n_epochs,
+            args_namespace.lr,
+            args_namespace.n_envs,
         )
-
-        args.run_signature = '-'.join(f'{v}' for v in run_vars)
-        # # Redirect stdout to the Tee class
-        # if use_logger:
-        #     sys.stdout = Tee(f"output/output-{args.run_signature}.log")
-        all_args.append(copy.deepcopy(args)) # append a hard copy of the args to the list of all_args
+        args_namespace.run_signature = '-'.join(str(v) for v in run_vars)
+        all_args.append(args_namespace)
 
         
 
     def main_wrapper(args):
-
-        if use_logger:
-            logger = FileLogger(base_folder=logger_path)
-            # if logger.exists_experiment(args.__dict__):
-            #     return
+        logger = FileLogger(base_folder=args.logger_path) if args.use_logger else None
 
         for seed in args.seed:
-            date = str(datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
+            date = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
             args.seed_run_i = seed
-            print("Seed", seed, " in ", args.seed)
-            # order the args to have a consistent order
+            print(f"Seed {seed} in {args.seed}")
             dict_ordered = {k: args.__dict__[k] for k in sorted(args.__dict__.keys())}
-            print("\nRun vars:", args.run_signature, '\n',dict_ordered,'\n')
-            if use_logger:
-                log_filename_tmp = os.path.join(logger_path,'_tmp_log-{}-{}-seed_{}.csv'.format(args.run_signature,date,seed))
-                # if logger.exists_run(args.run_signature,seed):
-                #     continue
-                # else:
-                #     print("Seed number ", seed, " not done. Exit")
-                #     continue
-            else:   
+            print("\nRun vars:", args.run_signature, '\n', dict_ordered, '\n')
+
+            if args.use_logger:
+                log_filename_tmp = os.path.join(
+                    args.logger_path,
+                    f"_tmp_log-{args.run_signature}-{date}-seed_{seed}.csv",
+                )
+            else:
                 log_filename_tmp = None
 
-            train_metrics, valid_metrics, test_metrics = main(args,log_filename_tmp,use_logger,use_WB,WB_path,date)
+            train_metrics, valid_metrics, test_metrics = main(
+                args,
+                log_filename_tmp,
+                args.use_logger,
+                args.use_wb,
+                args.wb_path,
+                date,
+            )
 
-            if use_logger:
-                # Include the results in the logger
+            if args.use_logger and logger is not None:
                 logged_data = copy.deepcopy(args)
-                dicts_to_log = {'train':train_metrics,'valid':valid_metrics,'test':test_metrics}
-                # write the info about the results in the tmp file 
-                logger.log(log_filename_tmp,logged_data.__dict__,dicts_to_log)
-                # Rename to not be temporal anymore
-                rewards_pos_mean = np.round(np.mean(test_metrics['rewards_pos_mean']),3)
-                mrr = np.round(np.mean(test_metrics['mrr_mean']),3)
-                metrics = "{:.3f}_{:.3f}".format(rewards_pos_mean,mrr)
-                log_filename_run_name = os.path.join(logger_path,'indiv_runs', '_ind_log-{}-{}-{}-seed_{}.csv'.format(
-                                                            args.run_signature,date,metrics,seed))
-                logger.finalize_log_file(log_filename_tmp,log_filename_run_name)
+                dicts_to_log = {
+                    'train': train_metrics,
+                    'valid': valid_metrics,
+                    'test': test_metrics,
+                }
+                logger.log(log_filename_tmp, logged_data.__dict__, dicts_to_log)
 
-        # If we have done all the seeds in args.seed, we can get the average results
-        logger.log_avg_results(args.__dict__, args.run_signature,args.seed) if use_logger else None
+                rewards_pos_mean = np.round(np.mean(test_metrics['rewards_pos_mean']), 3)
+                mrr = np.round(np.mean(test_metrics['mrr_mean']), 3)
+                metrics = f"{rewards_pos_mean:.3f}_{mrr:.3f}"
+                log_filename_run_name = os.path.join(
+                    args.logger_path,
+                    'indiv_runs',
+                    f"_ind_log-{args.run_signature}-{date}-{metrics}-seed_{seed}.csv",
+                )
+                logger.finalize_log_file(log_filename_tmp, log_filename_run_name)
 
-    for args in all_args:
-        print('Experiment number ', all_args.index(args), ' out of ', len(all_args), ' experiments.')
-        main_wrapper(args)
+        if args.use_logger and logger is not None:
+            logger.log_avg_results(args.__dict__, args.run_signature, args.seed)
+
+    total_experiments = len(all_args)
+    for idx, experiment_args in enumerate(all_args, start=1):
+        print(f"Experiment {idx}/{total_experiments}")
+        main_wrapper(experiment_args)

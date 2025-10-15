@@ -2,6 +2,7 @@ import re
 from typing import Dict, Union, List, Any, Tuple, Iterable, Optional
 import datetime
 import os
+import random
 import numpy as np
 import ast
 from collections import defaultdict
@@ -18,6 +19,14 @@ import io
 import torch
 import torch.profiler
 from torch.profiler import ProfilerActivity
+import torch.nn as nn
+import wandb
+from wandb.integration.sb3 import WandbCallback
+
+
+# ----------------------
+# Logic utils       
+# ----------------------
 
 @dataclass(frozen=True, order=False, slots=True)
 class Term:
@@ -187,6 +196,9 @@ def extract_var(state: str) -> list:
     return list(dict.fromkeys(vars))
 
 
+# ----------------------
+# Environment utils       
+# ----------------------
 
 
 def simple_rollout(env, policy=None, batch_size: int=2, steps: int=10, tensordict: TensorDict = None, verbose: int=0) -> TensorDict:
@@ -231,16 +243,61 @@ def simple_rollout(env, policy=None, batch_size: int=2, steps: int=10, tensordic
     data = TensorDict.stack(data, dim=1)
     return data
 
-def print_eval_info(set: str, metrics: Dict[str, float]):
+def print_eval_info(split_name: str, metrics: Dict[str, float]):
     """
     Display evaluation metrics for a specified dataset split.
 
     Args:
-        set (str): Name of the dataset split (e.g. 'train', 'valid', 'test').
+        split_name (str): Name of the dataset split (e.g. 'train', 'valid', 'test').
         metrics (Dict[str, float]): Mapping of metric names to their values.
     """
-    print(f'\n\n{set} set metrics:')
-    print(*[f"{k}: {v:.3f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()], sep='\n')
+
+    def _format_stat(mean: Optional[float], std: Optional[float], count: Optional[int]) -> str:
+        if mean is None:
+            return "N/A"
+        if std is None and count is None:
+            return f"{mean:.3f}"
+        if std is None:
+            return f"{mean:.3f} (n={count})" if count is not None else f"{mean:.3f}"
+        if count is None:
+            return f"{mean:.3f} +/- {std:.2f}"
+        return f"{mean:.3f} +/- {std:.2f} ({count})"
+
+    print(f'\n\n{split_name} set metrics:')
+    grouped: Dict[str, Dict[str, Optional[float]]] = {}
+    grouped_order: List[str] = []
+    grouped_suffixes = {"mean", "std", "count"}
+    handled_keys: set[str] = set()
+
+    for key, value in metrics.items():
+        if not isinstance(value, (int, float, np.integer, np.floating)):
+            continue
+        for suffix in grouped_suffixes:
+            token = f"_{suffix}"
+            if key.endswith(token):
+                base = key[: -len(token)]
+                if base not in grouped:
+                    grouped[base] = {"mean": None, "std": None, "count": None}
+                    grouped_order.append(base)
+                grouped[base][suffix] = float(value)
+                handled_keys.add(key)
+                break
+
+    for base in grouped_order:
+        stats = grouped[base]
+        count_val = stats.get("count")
+        display = _format_stat(stats.get("mean"), stats.get("std"), int(count_val) if count_val is not None else None)
+        print(f"{base}: {display}")
+
+    for key, value in metrics.items():
+        if key in handled_keys:
+            continue
+        if isinstance(value, (float, np.floating)):
+            print(f"{key}: {value:.3f}")
+        elif isinstance(value, (int, np.integer)):
+            print(f"{key}: {value}")
+        else:
+            print(f"{key}: {value}")
 
 def print_state_transition(state, derived_states, reward, done, action=None, truncated=None, label=None):
     """
@@ -354,6 +411,13 @@ def get_device(device: Union[torch.device, str] = "auto") -> torch.device:
         return torch.device("cpu")
 
     return device
+
+
+
+
+# ----------------------
+# File logger
+# ----------------------
 
 
 class FileLogger:
@@ -514,13 +578,44 @@ class FileLogger:
         data = line.strip().split(';')[1:]
         data_dict = {}
         for el in data:
-            [d_key, d_value] = el.split(':')
-            try:  # Try to convert it to a list or a number, otherwise it is a string
-                d_value = ast.literal_eval(d_value)
-            except:
-                pass
-            data_dict[d_key] = d_value
+            if ':' not in el:
+                continue
+            d_key, raw_value = el.split(':', 1)
+            parsed_value = self._coerce_metric_value(raw_value)
+            if (
+                isinstance(parsed_value, dict)
+                and {'mean', 'std', 'count'} <= set(parsed_value.keys())
+            ):
+                for suffix, numeric_value in parsed_value.items():
+                    data_dict[f"{d_key}_{suffix}"] = numeric_value
+            else:
+                data_dict[d_key] = parsed_value
         return data_dict
+
+    @staticmethod
+    def _coerce_metric_value(raw_value: str) -> Any:
+        """Attempt to convert a raw string metric into a numeric type."""
+        value_str = raw_value.strip()
+        try:
+            return ast.literal_eval(value_str)
+        except Exception:
+            pass
+
+        metric_match = re.match(
+            r"^([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\+/-\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\((\d+)\)$",
+            value_str,
+        )
+        if metric_match:
+            return {
+                'mean': float(metric_match.group(1)),
+                'std': float(metric_match.group(2)),
+                'count': int(metric_match.group(3)),
+            }
+
+        try:
+            return float(value_str)
+        except ValueError:
+            return value_str
 
     def log_avg_results(self, args_dict: Dict[str, Any], run_signature: str, seeds: List[int]) -> None:
         """
@@ -602,6 +697,10 @@ class FileLogger:
 
 
 
+# ----------------------
+# Train utils       
+# ----------------------
+
 def profile_code(profiler_type, function_to_profile, *args, **kwargs):
     """
     Profiles a function using either cProfile or torch.profiler.
@@ -657,3 +756,39 @@ def profile_code(profiler_type, function_to_profile, *args, **kwargs):
     else:
         # print("No valid profiler specified, running function without profiling.")
         return function_to_profile(*args, **kwargs)
+
+def _set_seeds(seed: int) -> None:
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+
+
+def _freeze_dropout_layernorm(m: nn.Module):
+    if isinstance(m, (nn.Dropout, nn.LayerNorm)):
+        m.eval()          # freeze statistics
+        m.training = False
+
+
+
+def _warn_non_reproducible(args: Any) -> None:
+    if args.restore_best_val_model is False:
+        print(
+            "Warning: This setting is not reproducible when creating 2 models from scratch, "
+            "but it is when loading pretrained models. You can use\n"
+            "  export CUBLAS_WORKSPACE_CONFIG=:16:8; export PYTHONHASHSEED=0\n"
+            "to make runs reproducible."
+        )
+
+def _maybe_enable_wandb(use_WB: bool, args: Any, WB_path: str, model_name: str):
+    if not use_WB:
+        return None
+    return wandb.init(
+        project="RL-NeSy",
+        group=args.run_signature,
+        name=model_name,
+        dir=WB_path,
+        sync_tensorboard=True,
+        config=vars(args),
+    )

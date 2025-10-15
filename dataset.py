@@ -5,10 +5,8 @@ import re
 import ast
 from collections import defaultdict
 
-try:
-    import janus_swi as janus
-except ImportError:
-    janus = None  # type: ignore[assignment]
+# import janus_swi as janus
+janus = None 
 
 from utils import is_variable, Term, Rule, get_atom_from_string, get_rule_from_string
 

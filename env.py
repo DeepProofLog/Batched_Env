@@ -1,20 +1,21 @@
-from typing import List, Optional, Tuple, Set, Any, Dict
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import math
 import random
-from tensordict import TensorDict, NonTensorData
-import torch
+
 import gymnasium as gym
 import numpy as np
-import math
-# import janus_swi as janus
+import torch
+from tensordict import NonTensorData, TensorDict
 
 from dataset import DataHandler
 from index_manager import IndexManager
-from utils import Rule, Term, print_state_transition
 from python_unification import get_next_unification_python
-# from python_unification import get_next_unification_python_old as get_next_unification_python
-# from prolog_unification import get_next_unification_prolog
+from utils import Term, print_state_transition
 
-def _state_to_hashable(state: List[Term]) -> frozenset:
+State = List[Term]
+
+def _state_to_hashable(state: State) -> frozenset:
     """
     Hashable, order-independent key for a state using Term objects directly.
     Term is an immutable, hashable dataclass, so this is safe and cheap.
@@ -135,9 +136,9 @@ class LogicEnv_gym(gym.Env):
 
         if self.mode == 'train':
             self.train_neg_ratio = train_neg_ratio
-            assert self.sampler.num_negs_per_pos <3, f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
-
-        self.total_next_actions_positive_queries = 0
+            assert (
+                self.sampler.num_negs_per_pos < 3
+            ), f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment. If no seed is provided, generate a random one'''
@@ -169,6 +170,37 @@ class LogicEnv_gym(gym.Env):
         }
         self.observation_space = gym.spaces.Dict(obs_spaces)
         self.action_space = gym.spaces.Discrete(self.padding_states)
+
+    def _pad_sub_indices(self, sub_indices: List[torch.Tensor]) -> torch.Tensor:
+        """Stack sub-index tensors and pad them to the action-space size."""
+        if not sub_indices:
+            return torch.zeros(
+                self.padding_states,
+                self.padding_atoms,
+                self.max_arity + 1,
+                device=self.device,
+                dtype=self.pt_idx_dtype,
+            )
+
+        stacked = torch.stack(
+            [tensor.to(device=self.device, dtype=self.pt_idx_dtype) for tensor in sub_indices]
+        )
+        num_states = stacked.shape[0]
+        if num_states < self.padding_states:
+            padding = torch.zeros(
+                self.padding_states - num_states,
+                self.padding_atoms,
+                self.max_arity + 1,
+                device=self.device,
+                dtype=self.pt_idx_dtype,
+            )
+            stacked = torch.cat([stacked, padding], dim=0)
+        return stacked
+
+    def _pad_single_state(self, state: State) -> torch.Tensor:
+        """Helper to stack and pad a single state's sub-index tensor."""
+        state_tensor = self.index_manager.get_atom_sub_index(state)
+        return self._pad_sub_indices([state_tensor])
 
 
     def _normalize_state_obj(self, state: Any) -> List[Term]:
@@ -215,81 +247,86 @@ class LogicEnv_gym(gym.Env):
 
         return 0.0
 
-
-    def reset(self, seed: Optional[int]= None, options=None):
-        print('\n\nReset-----------------------------') if self.verbose or self.prover_verbose else None
-        '''Reset the environment and get a new query based on the environment configuration'''
-        if seed is not None:
-            self._set_seed(seed)
-        depth = None
-        if self.mode == 'eval':
-            '''When the number of episodes is reached, we set the eval mask to false
-            so that the other envs can finish the eval. After n_episodes, reset with a False state'''
+    def _select_query_for_reset(self) -> Tuple[Term, int, Optional[int]]:
+        """Pick the next query/label/depth triple based on the current mode."""
+        if self.mode == "eval":
             if self.eval_idx < self.n_episodes:
                 idx = self.eval_idx
                 state = self.queries[idx]
                 label = self.labels[idx]
                 depth = self.query_depths[idx] if idx < len(self.query_depths) else None
             else:
-                state = Term(predicate='False', args=())
+                state = Term(predicate="False", args=())
                 label = 0
                 depth = None
             self.eval_idx += 1
+            return state, label, depth
 
-        elif self.mode == 'eval_with_restart':
+        if self.mode == "eval_with_restart":
             if self.eval_idx == self.n_episodes:
-                self.eval_idx = 0 
-
-            assert self.eval_idx < self.n_episodes, f"Eval index: {self.eval_idx}, n_episodes: {self.n_episodes}. "\
-                    f"Adjust the number of episodes to evaluate in the callback."
+                self.eval_idx = 0
+            assert (
+                self.eval_idx < self.n_episodes
+            ), f"Eval index: {self.eval_idx}, n_episodes: {self.n_episodes}. Adjust the number of episodes to evaluate in the callback."
             idx = self.eval_idx
             state = self.queries[idx]
             label = self.labels[idx]
             depth = self.query_depths[idx] if idx < len(self.query_depths) else None
             self.eval_idx += 1
+            return state, label, depth
 
-        elif self.mode == 'train':
-            if self.corruption_mode:
-                state, _, depth = self.get_random_queries(
-                    self.queries,
-                    n=1,
-                    labels=self.labels,
-                    depths=self.query_depths,
-                    return_depth=True,
-                )
-                label = 1
-                if self.counter % (int(self.train_neg_ratio) + 1) != 0:
-                    # Determine the number of negatives to request from the sampler
-                    num_to_generate = len(self.corruption_scheme) if len(self.corruption_scheme) > 1 else 1
-                    
-                    negative_samples = self.sampler.get_negatives_from_states(state, self.device, num_negs=num_to_generate)
-                    if len(self.corruption_scheme) > 1:
-                        if not hasattr(self, 'negation_toggle'):
-                            self.negation_toggle = 0  # Initialize
-                        
-                        # Select head or tail corruption based on the toggle
-                        state = [negative_samples[self.negation_toggle]]
-                        self.negation_toggle = 1 - self.negation_toggle  # Flip for the next time
-                    else:
-                        state = negative_samples
-                    assert len(state) == 1, f"Length of negatives should be 1, but is {len(state)}"
-                    state = state[0] # In train there should be only one negative
-                    label = 0
-                    depth = None
-                self.counter += 1
+        if self.mode == "train":
+            return self._sample_train_query()
 
-            else: # Default case
-                state, _, depth = self.get_random_queries(
-                    self.queries,
-                    n=1,
-                    labels=self.labels,
-                    depths=self.query_depths,
-                    return_depth=True,
-                )
-                label = 1
-        else:
-            raise ValueError(f"Invalid mode: {self.mode}. Choose from 'train', 'eval', or 'eval_with_restart'.")
-                
+        raise ValueError(f"Invalid mode: {self.mode}. Choose from 'train', 'eval', or 'eval_with_restart'.")
+
+    def _sample_train_query(self) -> Tuple[Term, int, Optional[int]]:
+        """Sample a training query, optionally performing corruption sampling."""
+        state, _, depth = self.get_random_queries(
+            self.queries,
+            n=1,
+            labels=self.labels,
+            depths=self.query_depths,
+            return_depth=True,
+        )
+        label = 1
+
+        if not self.corruption_mode:
+            return state, label, depth
+
+        if self.counter % (int(self.train_neg_ratio) + 1) != 0:
+            num_to_generate = (
+                len(self.corruption_scheme) if len(self.corruption_scheme) > 1 else 1
+            )
+            negative_samples = self.sampler.get_negatives_from_states(
+                state, self.device, num_negs=num_to_generate
+            )
+            selected = negative_samples
+            if not isinstance(selected, list):
+                selected = [selected]
+            if len(self.corruption_scheme) > 1:
+                if not hasattr(self, "negation_toggle"):
+                    self.negation_toggle = 0
+                selected = [negative_samples[self.negation_toggle]]
+                self.negation_toggle = 1 - self.negation_toggle
+
+            assert len(selected) == 1, f"Length of negatives should be 1, but is {len(selected)}"
+            state = selected[0]
+            label = 0
+            depth = None
+        self.counter += 1
+        return state, label, depth
+
+
+    def reset(self, seed: Optional[int] = None, options=None):
+        """Reset the environment and sample the next query according to the mode."""
+        if self.verbose or self.prover_verbose:
+            print("\n\nReset-----------------------------")
+        if seed is not None:
+            self._set_seed(seed)
+
+        state, label, depth = self._select_query_for_reset()
+
         # if self.engine == 'prolog' and (self.mode == 'train' or self.consult_janus_eval == True) and label == 1:
         #     if state in self.facts:
         #         janus.query_once(f"retract({state.prolog_str()}).")
@@ -301,7 +338,7 @@ class LogicEnv_gym(gym.Env):
         return self._reset([state], label)
 
 
-    def _reset(self, query, label):
+    def _reset(self, query: State, label: int):
         '''Reset the environment to the initial state'''    
         print('Initial query:', query, label) if self.verbose else None
         self.current_depth = torch.tensor(0, device=self.device)
@@ -311,14 +348,15 @@ class LogicEnv_gym(gym.Env):
         filtered_query = [q for q in query if q.predicate not in self.terminal_predicates]
         self.memory.add(_state_to_hashable(filtered_query))
 
-        sub_index = self.index_manager.get_atom_sub_index(query).to(self.pt_idx_dtype)
+        sub_index = self.index_manager.get_atom_sub_index(query).to(
+            device=self.device, dtype=self.pt_idx_dtype
+        )
         derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
         valid = len(derived_states)
         action_mask = torch.zeros(self.padding_states, dtype=torch.uint8)
         action_mask[:valid] = 1
-        if truncated_flag: # end in false
-            size_sub_index = torch.Size([self.padding_states]) + sub_index.size()
-            derived_states, derived_sub_indices = self.end_in_false(size_sub_index)
+        if truncated_flag:  # end in false
+            derived_states, derived_sub_indices = self.end_in_false()
             valid = len(derived_states)
             action_mask.zero_()
             action_mask[:valid] = 1
@@ -359,9 +397,6 @@ class LogicEnv_gym(gym.Env):
         next_sub_index = derived_sub_indices[action]
 
         done_next, reward_next, successful = self.get_done_reward(next_state, self.tensordict['label'].item())
-        # if not bool(done_next):
-        #     reward_next = reward_next - torch.tensor(0.01, device=self.device)
-
         if self.kge_inference_engine is not None and self.shaping_beta != 0.0:
             phi_s = self._last_potential
             phi_sp_value = 0.0 if bool(done_next) else self._compute_state_potential(next_state)
@@ -417,7 +452,7 @@ class LogicEnv_gym(gym.Env):
 
 
     
-    def get_next_states(self,state: List[Term]) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
+    def get_next_states(self, state: State) -> Tuple[List[State], torch.Tensor, bool]:
         """Compute candidate next states from a given state.
 
         Returns
@@ -429,6 +464,7 @@ class LogicEnv_gym(gym.Env):
         truncated_flag : bool
             True if truncation enforced (e.g., explicit end).
         """
+        state = list(state)
         truncated_flag = False
 
         terminal_predicates = self.terminal_predicates
@@ -437,16 +473,8 @@ class LogicEnv_gym(gym.Env):
 
         # If the state is a single terminal atom, return it as the only option.
         if state and len(state) == 1 and state[0].predicate in terminal_predicates:
-            # As requested, return the state itself as the only possible next state.
-            # The training loop's handling of the 'done' flag is responsible for actual termination.
-            derived_states = [state]
-            
-            # Compute and pad the sub_indices tensor to the expected shape.
-            derived_sub_indices = self.index_manager.get_atom_sub_index(state).to(self.pt_idx_dtype).unsqueeze(0)
-            padding = torch.zeros(self.padding_states - 1, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=self.pt_idx_dtype)
-            derived_sub_indices = torch.cat([derived_sub_indices, padding])
-            
-            return derived_states, derived_sub_indices, False
+            # Return the terminal state as the only option; termination is handled by the caller.
+            return [state], self._pad_single_state(state), False
 
         # END ACTION MODULE
         if self.endt_action or self.endf_action:
@@ -456,10 +484,7 @@ class LogicEnv_gym(gym.Env):
             filtered_state = [term for term in state if not term.predicate.endswith('_kge')]
             state = [Term(predicate='True', args=())] if not filtered_state else filtered_state
             if len(state) == 1 and state[0].predicate in terminal_predicates:
-                derived_sub_indices = self.index_manager.get_atom_sub_index(state).to(self.pt_idx_dtype).unsqueeze(0)
-                padding = torch.zeros(self.padding_states - 1, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=self.pt_idx_dtype)
-                derived_sub_indices = torch.cat([derived_sub_indices, padding])
-                return [state], derived_sub_indices, False
+                return [state], self._pad_single_state(state), False
             # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
         # if self.engine == 'prolog':
@@ -476,13 +501,6 @@ class LogicEnv_gym(gym.Env):
                                                             next_var_index=self.next_var_index,
                                                             strategy= self.engine_strategy
                                                             )
-            # if self.current_label == 1:
-            #     if not (len(derived_states) == 1 and derived_states[0] and derived_states[0][0].predicate == 'False'):
-            #         self.total_next_actions_positive_queries += len(derived_states)
-            #         print(f"Total next actions for positive queries: {self.total_next_actions_positive_queries}")
-        # print(f"\nCurrent state after unification: {state} -> derived states: {derived_states}") if self.verbose else None
-
-
         if self.skip_unary_actions:
             current_state = state.copy() if isinstance(state, list) else [state]
             counter = 0
@@ -500,10 +518,6 @@ class LogicEnv_gym(gym.Env):
                     current_state = [Term(predicate='True', args=())] if not filtered_state else filtered_state
                     # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
-                # if self.engine == 'prolog':
-                #     derived_states, self.next_var_index = get_next_unification_prolog(state,
-                #                                 next_var_index=self.next_var_index, 
-                #                                 verbose=self.prover_verbose)
                 if self.engine == 'python':
                     derived_states, self.next_var_index = get_next_unification_python(
                         current_state,
@@ -515,13 +529,6 @@ class LogicEnv_gym(gym.Env):
                         next_var_index=self.next_var_index,
                         strategy= self.engine_strategy
                     )
-                # if self.current_label == 1:
-                #     if not (len(derived_states) == 1 and derived_states[0] and derived_states[0][0].predicate == 'False'):
-                #         self.total_next_actions_positive_queries += len(derived_states)
-                #         print(f"Total next actions for positive queries: {self.total_next_actions_positive_queries}")
-                # print(f"\nCurrent state after unification: {current_state} -> derived states: {derived_states}") if self.verbose else None
-
-
                 # MEMORY
                 if self.memory_pruning:
                     self.memory.add(_state_to_hashable([s for s in current_state if s.predicate not in self.terminal_predicates]))
@@ -546,8 +553,8 @@ class LogicEnv_gym(gym.Env):
                     truncated_flag = True
                     break
 
-        final_states = []
-        final_sub_indices = []
+        final_states: List[State] = []
+        final_sub_indices: List[torch.Tensor] = []
         # MEMORY MODULE
         if self.memory_pruning:
             self.memory.add(_state_to_hashable([s for s in state if s.predicate not in self.terminal_predicates]))
@@ -613,16 +620,9 @@ class LogicEnv_gym(gym.Env):
             final_sub_indices.append(self.index_manager.get_atom_sub_index(endt_state))
 
         if not derived_states:
-            derived_states = [[Term(predicate='False', args=())]]
-            derived_sub_indices = torch.stack([self.index_manager.get_atom_sub_index(s).to(self.pt_idx_dtype) for s in derived_states])
+            derived_states, derived_sub_indices = self.end_in_false()
         else:
-            derived_sub_indices = torch.stack(final_sub_indices).to(self.pt_idx_dtype)
-
-        # Pad derived_sub_indices
-        num_derived = len(derived_states)
-        if num_derived < self.padding_states:
-            padding = torch.zeros(self.padding_states - num_derived, self.padding_atoms, self.max_arity + 1, device=self.device, dtype=self.pt_idx_dtype)
-            derived_sub_indices = torch.cat([derived_sub_indices, padding])
+            derived_sub_indices = self._pad_sub_indices(final_sub_indices)
 
         return derived_states, derived_sub_indices, truncated_flag
     
@@ -729,13 +729,23 @@ class LogicEnv_gym(gym.Env):
         return sampled_queries, sampled_labels
 
 
-    def end_in_false(self, sub_indices_shape: torch.Size) -> Tuple[List[List[Term]], torch.Tensor, torch.Tensor]:
-        " Return a state that ends in False"
-        false_state = Term(predicate="False", args=())
+    def end_in_false(self) -> Tuple[List[State], torch.Tensor]:
+        """Return a single False state as the only available transition."""
+        false_term = Term(predicate="False", args=())
+        derived_states_next: List[State] = [[false_term]]
 
-        derived_states_next = [[false_state]]
-        derived_sub_indices_next = torch.zeros(sub_indices_shape, device=self.device, dtype=self.pt_idx_dtype)
-
-        false_sub_id = torch.tensor([self.predicate_false_idx, 0, 0], device=self.device, dtype=self.pt_idx_dtype)
-        derived_sub_indices_next[0, 0] = false_sub_id
+        derived_sub_indices_next = torch.zeros(
+            self.padding_states,
+            self.padding_atoms,
+            self.max_arity + 1,
+            device=self.device,
+            dtype=self.pt_idx_dtype,
+        )
+        false_row = torch.zeros(
+            self.max_arity + 1,
+            device=self.device,
+            dtype=self.pt_idx_dtype,
+        )
+        false_row[0] = self.predicate_false_idx
+        derived_sub_indices_next[0, 0] = false_row
         return derived_states_next, derived_sub_indices_next
