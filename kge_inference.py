@@ -139,6 +139,8 @@ class KGEInference:
         print("KGEInference engine initialized. Model will be built on first use.")
 
         self.atom_scores = {}
+        self._score_cache: Dict[str, float] = {}
+        self._tuple_cache: Dict[str, Tuple[str, ...]] = {}
         if scores_file_path:
             self._load_scores(scores_file_path)
 
@@ -360,6 +362,53 @@ class KGEInference:
             scores.append(self.predict(atom))
         return scores
 
+    def _normalize_atom_input(self, atom: Union[str, Tuple, Atom]) -> str:
+        """Convert supported atom representations into a canonical functional string."""
+        if isinstance(atom, str):
+            return atom
+        if isinstance(atom, Atom):
+            return repr(atom)
+        if isinstance(atom, tuple):
+            if not atom:
+                raise ValueError("Received an empty atom tuple.")
+            predicate, *args = atom
+            args_str = ",".join(map(str, args))
+            return f"{predicate}({args_str})"
+        raise TypeError(f"Unsupported atom representation: {type(atom)!r}")
+
+    def _atom_str_to_tuple(self, atom_str: str) -> Tuple:
+        """Convert an atom string into the tuple representation expected by the model."""
+        cached = self._tuple_cache.get(atom_str)
+        if cached is not None:
+            return cached
+        atom_tuple = Atom(s=atom_str, format="functional").toTuple()
+        self._tuple_cache[atom_str] = atom_tuple
+        return atom_tuple
+
+    def _score_atoms_via_model(self, atom_tuples: Sequence[Tuple]) -> List[float]:
+        """Score a batch of atom tuples using the underlying KGE model."""
+        if not atom_tuples:
+            return []
+
+        queries = [list(atom_tuples)]
+        labels = [[1.0] + [0.0] * (len(atom_tuples) - 1)]
+
+        x, _ = ns.dataset._from_strings_to_tensors(
+            fol=self.fol,
+            serializer=self.serializer,
+            queries=queries,
+            labels=labels,
+            engine=None,
+            ragged=False,
+        )
+
+        if self.model is None:
+            self.model = self._build_and_load_model()
+
+        predictions = self.model(x, training=False)
+        concept_scores = predictions["concept"]
+        return concept_scores.numpy()[0].tolist()
+
     def predict_batch(self, atoms_for_ranking: Sequence[Union[str, Tuple]]) -> List[float]:
         """
         Evaluates a batch of candidate atoms FOR A SINGLE RANKING TASK.
@@ -370,42 +419,45 @@ class KGEInference:
         if not atoms_for_ranking:
             return []
 
-        # Ensure all items are tuples
-        atom_tuples = []
-        for a in atoms_for_ranking:
-            if not isinstance(a, tuple):
-                a = Atom(s=a, format="functional").toTuple()
-            atom_tuples.append(a)
+        canonical_atoms = [self._normalize_atom_input(atom) for atom in atoms_for_ranking]
 
-        # --- THIS IS THE CRITICAL FIX ---
-        # We must structure the data as a single query (batch size = 1) that
-        # contains multiple candidate atoms. The shape is (1, num_candidates).
-        queries = [atom_tuples]
-        # The labels are not used in prediction, but this reflects the structure.
-        labels = [[1.0] + [0.0] * (len(atom_tuples) - 1)]
+        scores: List[Optional[float]] = [None] * len(canonical_atoms)
+        missing: List[str] = []
+        missing_indices: List[int] = []
 
-        # Use the library's internal function to convert this structure to tensors.
-        # The result 'x' will be a dictionary of tensors, each with a shape
-        # like (1, num_candidates, ...), which is what the model expects.
-        x, y_unused = ns.dataset._from_strings_to_tensors(
-            fol=self.fol, serializer=self.serializer, queries=queries,
-            labels=labels, engine=None, ragged=False
-        )
+        for idx, atom_str in enumerate(canonical_atoms):
+            cached_score = self.atom_scores.get(atom_str)
+            if cached_score is None:
+                cached_score = self._score_cache.get(atom_str)
+            if cached_score is not None:
+                scores[idx] = float(cached_score)
+            else:
+                missing.append(atom_str)
+                missing_indices.append(idx)
 
-        if self.model is None:
-            self.model = self._build_and_load_model()
+        if missing:
+            unique_missing = list(dict.fromkeys(missing))
+            atom_tuples = [self._atom_str_to_tuple(atom_str) for atom_str in unique_missing]
+            new_scores = self._score_atoms_via_model(atom_tuples)
 
-        # Call the main model (not the sub-module) as it handles the ranking logic.
-        predictions = self.model(x, training=False)
+            if len(unique_missing) != len(new_scores):
+                raise RuntimeError(
+                    f"KGE model returned {len(new_scores)} scores for {len(unique_missing)} atoms."
+                )
 
-        # The result is a dictionary; we need the 'concept' scores.
-        # The shape will be (1, num_candidates).
-        concept_scores = predictions['concept']
+            for atom_str, score in zip(unique_missing, new_scores):
+                score_float = float(score)
+                self._score_cache[atom_str] = score_float
+                if atom_str not in self.atom_scores:
+                    self.atom_scores[atom_str] = score_float
 
-        # Extract the scores for our single query and return as a flat list.
-        scores_list = concept_scores.numpy()[0].tolist()
+            for idx, atom_str in zip(missing_indices, missing):
+                scores[idx] = self._score_cache[atom_str]
 
-        return scores_list
+        if any(score is None for score in scores):
+            raise RuntimeError("Failed to compute KGE scores for one or more atoms.")
+
+        return [float(score) for score in scores]
 
 
 
