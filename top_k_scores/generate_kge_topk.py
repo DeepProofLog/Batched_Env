@@ -14,10 +14,8 @@ from kge_inference import KGEInference
 DEFAULT_RUN_SIGNATURES: Dict[str, str] = {
     "family": "kinship_family-backward_0_1-no_reasoner-rotate-True-256-256-4-rules.txt",
     "wn18rr": "wn18rr-backward_0_1-no_reasoner-rotate-True-256-256-1-rules.txt",
+    "countries_s3": "countries_s3-backward_0_1-no_reasoner-rotate-True-256-256-128-rules.txt",
 }
-
-COUNTRIES_DATASETS = {"countries_s1", "countries_s2", "countries_s3"}
-
 
 T = TypeVar("T")
 
@@ -48,10 +46,6 @@ def save_progress(path: str, state: ProgressState) -> None:
 def infer_run_signature(dataset_name: str, override: Optional[str]) -> str:
     if override:
         return override
-    if dataset_name in COUNTRIES_DATASETS:
-        return (
-            f"{dataset_name}-backward_0_1-no_reasoner-rotate-True-256-256-128-rules.txt"
-        )
     if dataset_name in DEFAULT_RUN_SIGNATURES:
         return DEFAULT_RUN_SIGNATURES[dataset_name]
     raise ValueError(
@@ -145,7 +139,7 @@ def load_facts(output_path: str, min_score: float = 0.0) -> List[Tuple[str, floa
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate top-k KGE facts for each constant and role.")
-    parser.add_argument("--dataset", default="family", help="Dataset name (e.g., family, wn18rr, countries_s3).")
+    parser.add_argument("--dataset", default="countries_s3", help="Dataset name (e.g., family, wn18rr, countries_s3).")
     parser.add_argument("--data-path", default="./data", help="Base path that holds dataset folders.")
     parser.add_argument(
         "--checkpoint-dir",
