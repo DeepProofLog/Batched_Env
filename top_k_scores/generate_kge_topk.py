@@ -110,8 +110,8 @@ def topk_scored_atoms(
     return [(atom, score) for score, atom in heap]
 
 
-def load_facts(output_path: str, min_score: float = 0.0) -> List[Tuple[str, float]]:
-    facts: List[Tuple[str, float]] = []
+def load_facts(output_path: str, min_score: float = 0.0) -> List[Tuple[str, float, int]]:
+    facts: List[Tuple[str, float, int]] = []
     if not os.path.exists(output_path):
         return facts
 
@@ -121,18 +121,19 @@ def load_facts(output_path: str, min_score: float = 0.0) -> List[Tuple[str, floa
             if not line or line.startswith("#"):
                 continue
 
-            parts = line.rsplit(" ", 1)
-            if len(parts) != 2:
+            parts = line.rsplit(" ", 2)
+            if len(parts) != 3:
                 continue
 
-            fact_text, score_text = parts
+            fact_text, score_text, rank_text = parts
             try:
                 score = float(score_text)
+                rank = int(rank_text)
             except ValueError:
                 continue
 
             if score >= min_score:
-                facts.append((fact_text, score))
+                facts.append((fact_text, score, rank))
 
     return facts
 
@@ -300,10 +301,10 @@ def main() -> None:
                         role_name=role_name,
                         top_k=args.k,
                     )
-                    for atom_tuple, score in scored_pairs:
+                    for rank, (atom_tuple, score) in enumerate(scored_pairs, start=1):
                         # print(f"    {atom_tuple} -> {score:.6f}")
                         fact_str = f"{atom_tuple[0]}({atom_tuple[1]},{atom_tuple[2]})"
-                        f.write(f"{fact_str} {score:.6f}\n")
+                        f.write(f"{fact_str} {score:.6f} {rank}\n")
                     f.flush()
                     current_state: ProgressState = {
                         "predicate_index": predicate_index,
