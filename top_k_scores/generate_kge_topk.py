@@ -140,7 +140,7 @@ def load_facts(output_path: str, min_score: float = 0.0) -> List[Tuple[str, floa
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate top-k KGE facts for each constant and role.")
-    parser.add_argument("--dataset", default="countries_s3", help="Dataset name (e.g., family, wn18rr, countries_s3).")
+    parser.add_argument("--dataset", default="wn18rr", help="Dataset name (e.g., family, wn18rr, countries_s3).")
     parser.add_argument("--data-path", default="./data", help="Base path that holds dataset folders.")
     parser.add_argument(
         "--checkpoint-dir",

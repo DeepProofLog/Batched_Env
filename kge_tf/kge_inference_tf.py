@@ -129,8 +129,8 @@ class KGEInference:
         self,
         dataset_name: str,
         base_path: str,
-        checkpoint_dir: str,
         run_signature: str,
+        checkpoint_dir: str = '/home/castellanoontiv/checkpoints/',
         seed: int = 0,
     scores_file_path: str = None,
     runtime_cache_max_entries: Optional[int] = None,
@@ -343,7 +343,7 @@ class KGEInference:
         
         # Load weights using the same approach as kge_eval_test.py
         name = f"{self.run_signature}_seed_{self.seed}"
-        self.checkpoint_dir = '/home/castellanoontiv/checkpoints/'
+        # self.checkpoint_dir = '/home/castellanoontiv/checkpoints/'
 
         ckpt_filepath = os.path.join(self.checkpoint_dir, name, f"{name}_kge_model")
         
