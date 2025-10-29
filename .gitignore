@@ -12,4 +12,4 @@ runs_info/
 runs_info_fam/
 data/kge_scores_wn18rr.txt
 kge_pytorch/models/*
-log_countries.txt
+logs_countries.txt
