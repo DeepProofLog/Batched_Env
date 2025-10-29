@@ -33,8 +33,8 @@ if __name__ == "__main__":
         # Dataset params
         'dataset_name': 'countries_s3',
 
-        'eval_neg_samples': 4,
-        'test_neg_samples': None, # 5
+        'eval_neg_samples': 3,
+        'test_neg_samples': 100, # 5
 
         'train_depth': None, # {-1,3}
         'valid_depth': None,
@@ -44,9 +44,9 @@ if __name__ == "__main__":
         'n_eval_queries': 500,
         'n_test_queries': None,
 
-        'prob_facts': True,
+        'prob_facts': False,
         'topk_facts': None,
-        'topk_facts_threshold': 0.3,
+        'topk_facts_threshold': 0.33,
 
         # Model params
         'model_name': 'PPO',
@@ -58,7 +58,7 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 700000,
+        'timesteps_train': 2000000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,

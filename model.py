@@ -336,8 +336,14 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
         obs_sub_indices = observations["sub_index"] # (batch_size=n_envs,1,pad_atoms,3) 2nd dim is to match the shape of derived_sub_indices 
         action_sub_indices = observations["derived_sub_indices"] # (batch_size=n_envs,pad_states,pad_atoms,3) 
         action_mask = observations["action_mask"]
-        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices.to(torch.int32)) # (batch_size=n_envs,n_states=1,embedding_dim)
-        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices.to(torch.int32)) # (batch_size=n_envs,pad_states,embedding_dim)
+
+        if obs_sub_indices.dtype != torch.int32:
+            obs_sub_indices = obs_sub_indices.to(torch.int32)
+        if action_sub_indices.dtype != torch.int32:
+            action_sub_indices = action_sub_indices.to(torch.int32)
+
+        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices) # (batch_size=n_envs,n_states=1,embedding_dim)
+        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices) # (batch_size=n_envs,pad_states,embedding_dim)
 
         return obs_embeddings, action_embeddings, action_mask #, valid_actions_mask
 

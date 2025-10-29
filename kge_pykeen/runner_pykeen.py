@@ -29,11 +29,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import os
 import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # ------------- Safe imports (fail with a nice message) -------------
 # Work around torchvision compatibility issue by preventing its import
@@ -55,6 +56,7 @@ try:
     from pykeen.triples import TriplesFactory
     from pykeen.evaluation import RankBasedEvaluator
     import pykeen.models as pk_models
+    from pykeen.training.callbacks import TrainingCallback
 except ImportError as e:
     print("This script requires PyKEEN. Please install it with `pip install pykeen` and retry.")
     raise
@@ -63,6 +65,8 @@ except RuntimeError as e:
         print("Warning: torchvision compatibility issue detected. Continuing without vision features...")
     else:
         raise
+
+logging.getLogger("pykeen").setLevel(logging.WARNING)
 
 # ------------- Utils -------------
 def now_ts() -> str:
@@ -192,7 +196,7 @@ class RunnerConfig:
     evaluator: str = "RankBasedEvaluator"
     use_amp: bool = True  # Enable mixed precision by default
     use_early_stopping: bool = False  # Disable early stopping for speed
-    eval_frequency: int = 5  # Evaluate every N epochs (if early stopping enabled)
+    eval_frequency: int = 5  # Evaluate validation set every N epochs (<=0 disables)
     eval_batch_size: Optional[int] = None  # Separate batch size for evaluation (default: 4x training)
 
     # Runtime
@@ -202,6 +206,63 @@ class RunnerConfig:
 
     # Output
     output_dir: str = "./pykeen_runs"
+
+
+class MRREvaluationCallback(TrainingCallback):
+    """Periodically evaluate on validation triples and print only MRR."""
+
+    def __init__(
+        self,
+        *,
+        evaluation_triples: torch.Tensor,
+        frequency: int,
+        evaluator_kwargs: Optional[Dict[str, Any]] = None,
+        batch_size: Optional[int] = None,
+        prefix: str = "validation",
+        additional_filter_triples: Optional[List[torch.Tensor]] = None,
+    ) -> None:
+        super().__init__()
+        self.frequency = max(1, frequency)
+        self.evaluation_triples = evaluation_triples
+        self.prefix = prefix
+        self.batch_size = batch_size
+        self.additional_filter_triples = additional_filter_triples or []
+        evaluator_kwargs = evaluator_kwargs or {}
+        if batch_size is not None:
+            evaluator_kwargs = dict(evaluator_kwargs)
+            evaluator_kwargs.setdefault("batch_size", batch_size)
+        self.evaluator = RankBasedEvaluator(**evaluator_kwargs)
+
+    def post_epoch(self, epoch: int, epoch_loss: float, **kwargs: Any) -> None:  # noqa: D401
+        if epoch % self.frequency:
+            return
+
+        result = self.evaluator.evaluate(
+            model=self.model,
+            mapped_triples=self.evaluation_triples,
+            device=self.training_loop.device,
+            batch_size=self.evaluator.batch_size or self.batch_size,
+            additional_filter_triples=self.additional_filter_triples,
+        )
+
+        metrics = result.to_flat_dict()
+        possible_keys = [
+            "both.realistic.mean_reciprocal_rank",
+            "both.realistic.inverse_harmonic_mean_rank",
+        ]
+        mrr = None
+        for key in possible_keys:
+            if key in metrics:
+                mrr = metrics[key]
+                break
+        if mrr is None:
+            for key, value in metrics.items():
+                if key.endswith("mean_reciprocal_rank") or key.endswith("inverse_harmonic_mean_rank"):
+                    mrr = value
+                    break
+
+        if mrr is not None:
+            print(f"[{self.prefix}] epoch={epoch} MRR={mrr:.4f}")
 
 # ------------- Data loading -------------
 def load_triples_factory_from_files(cfg: RunnerConfig) -> Tuple[TriplesFactory, TriplesFactory, TriplesFactory]:
@@ -318,6 +379,14 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
 
     # Model kwargs: align names for common models
     model_kwargs = {}
+    
+    # CRITICAL: ComplEx works better with BCEAfterSigmoid loss instead of default SoftplusLoss
+    # PyKeen's default SoftplusLoss doesn't work well for ComplEx on many datasets
+    # The PyTorch custom implementation uses logsigmoid loss which is equivalent to BCEAfterSigmoid
+    if model_name.lower() in {"complex"}:
+        model_kwargs["loss"] = "bceaftersigmoid"  # Use BCE loss instead of Softplus for ComplEx
+        print(f"Note: Using BCEAfterSigmoid loss for ComplEx (better than default SoftplusLoss)")
+    
     if model_name.lower() in {"rotate", "complex", "distmult", "transe", "pairre"}:
         model_kwargs["embedding_dim"] = cfg.embedding_dim
     elif model_name.lower() in {"tucker"}:
@@ -351,6 +420,7 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
     # Note: The initial evaluation delay (~50s) is from building filter masks for filtered evaluation.
     # This is unavoidable with PyKEEN's filtered protocol but only happens once.
     # The actual evaluation is much faster (~20-30s) once filters are built.
+    auto_mem_supported = True
     try:
         # Try with automatic_memory_optimization if available (newer PyKEEN versions)
         evaluator = RankBasedEvaluator(
@@ -359,6 +429,7 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
             automatic_memory_optimization=True
         )
     except TypeError:
+        auto_mem_supported = False
         # Fall back to just batch_size for older versions
         evaluator = RankBasedEvaluator(
             filtered=True,
@@ -382,6 +453,32 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
         label_smoothing=0.0,
         num_workers=cfg.num_workers,  # Add parallel data loading
     )
+
+    callback_instances: List[TrainingCallback] = []
+
+    if valid_tf is not None and cfg.eval_frequency and cfg.eval_frequency > 0:
+        print(f"Scheduling validation evaluation every {cfg.eval_frequency} epochs on {valid_tf.num_triples} triples")
+        validation_evaluator_kwargs: Dict[str, Any] = dict(
+            filtered=True,
+        )
+        if auto_mem_supported:
+            validation_evaluator_kwargs["automatic_memory_optimization"] = True
+        callback_instances.append(
+            MRREvaluationCallback(
+                evaluation_triples=valid_tf.mapped_triples,
+                frequency=cfg.eval_frequency,
+                evaluator_kwargs=validation_evaluator_kwargs,
+                batch_size=eval_batch,
+                prefix="validation",
+                additional_filter_triples=[train_tf.mapped_triples],
+            )
+        )
+
+    if callback_instances:
+        if len(callback_instances) == 1:
+            training_kwargs["callbacks"] = callback_instances[0]
+        else:
+            training_kwargs["callbacks"] = callback_instances
     
     pipeline_kwargs = dict(
         model=model_cls,
@@ -400,11 +497,11 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
             batch_size=eval_batch,  # Use larger batch size for evaluation
             slice_size=None,  # Let PyKEEN auto-determine to avoid OOM
             use_tqdm=True,
+            additional_filter_triples=[train_tf.mapped_triples],  # Critical: pass training triples for filtered evaluation
         ),
         random_seed=cfg.seed,
         device=actual_device,
     )
-    
     # Add early stopping only if requested (disabled by default for speed)
     if cfg.use_early_stopping:
         pipeline_kwargs["stopper"] = "early"
@@ -464,17 +561,11 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
             "hits@3": metrics_dict.get("hits_at_3"),
             "hits@10": metrics_dict.get("hits_at_10"),
         }
-        
-        # Print metrics to screen
-        print(f"\n{'='*60}")
-        print(f"📊 {model_name} - Test Set Results (Filtered)")
-        print(f"{'='*60}")
-        print(f"  MRR       : {mrr:.4f}" if mrr else "  MRR       : N/A")
-        print(f"  MR        : {metrics_dict.get('arithmetic_mean_rank'):.2f}" if metrics_dict.get('arithmetic_mean_rank') else "  MR        : N/A")
-        print(f"  Hits@1    : {metrics_dict.get('hits_at_1'):.4f}" if metrics_dict.get('hits_at_1') else "  Hits@1    : N/A")
-        print(f"  Hits@3    : {metrics_dict.get('hits_at_3'):.4f}" if metrics_dict.get('hits_at_3') else "  Hits@3    : N/A")
-        print(f"  Hits@10   : {metrics_dict.get('hits_at_10'):.4f}" if metrics_dict.get('hits_at_10') else "  Hits@10   : N/A")
-        print(f"{'='*60}\n")
+
+        if mrr is not None:
+            print(f"Test MRR ({model_name}): {mrr:.4f}")
+        else:
+            print(f"Test MRR ({model_name}): N/A")
     except Exception as e:
         out["metrics_error"] = str(e)
         print(f"\n[warn] Could not extract metrics: {e}\n")
@@ -492,26 +583,26 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     # Data
-    p.add_argument("--dataset", default='countries_s3', help="Name of dataset (e.g., family, countries_s3, FB15k237, WN18RR). Will auto-detect paths in ./data/<dataset>/")
+    p.add_argument("--dataset", default='family', help="Name of dataset (e.g., family, countries_s3, FB15k237, WN18RR). Will auto-detect paths in ./data/<dataset>/")
     p.add_argument("--train_path", default=None, help="Override: path to train.txt")
     p.add_argument("--valid_path", default=None, help="Override: path to valid.txt")
     p.add_argument("--test_path", default=None, help="Override: path to test.txt")
     p.add_argument("--delimiter", choices=["tab","comma","space"], default="tab", help="Delimiter for TSV/CSV files (ignored for Prolog format)")
     p.add_argument("--create_inverse_triples", action="store_true", help="Create inverse triples for relations")
     # Models:  RotatE,ComplEx,TuckER,DistMult,TransE,PairRE,ConvE,QuatE,AutoSF
-    p.add_argument("--models", default="tucker", help="Comma-separated list of model names (e.g., RotatE,ComplEx,TuckER)")
+    p.add_argument("--models", default="complex", help="Comma-separated list of model names (e.g., RotatE,ComplEx)")
     p.add_argument("--embedding_dim", type=int, default=500, help="Embedding dimension")
-    p.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    p.add_argument("--epochs", type=int, default=1000, help="Number of training epochs")
     p.add_argument("--batch_size", type=int, default=4096, help="Batch size")
     p.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
     p.add_argument("--negative_sample_rate", type=int, default=1, help="Number of negative samples per positive")
     p.add_argument("--training_loop", choices=["sLCWA","LCWA"], default="sLCWA", help="Training loop type")
     p.add_argument("--use_amp", action="store_true", default=False, help="Use automatic mixed precision if available")
     p.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping (slows down training)")
-    p.add_argument("--eval_frequency", type=int, default=5, help="Evaluate every N epochs (if early stopping enabled)")
+    p.add_argument("--eval_frequency", type=int, default=5, help="Evaluate validation set every N epochs (<=0 disables)")
     p.add_argument("--eval_batch_size", type=int, default=512, help="Batch size for evaluation (default: 4x training batch size)")
     # Runtime
-    p.add_argument("--device", default="cuda:1", choices=["cpu", "cuda:1", "cuda:all"], 
+    p.add_argument("--device", default="cuda:all", choices=["cpu", "cuda:1", "cuda:all"], 
                    help="Device: 'cpu' (use CPU), 'cuda:1' (auto-select best GPU), 'cuda:all' (use all available GPUs)")
     p.add_argument("--min_gpu_memory_gb", type=float, default=2.0, help="Minimum free GPU memory in GB to consider a GPU available")
     p.add_argument("--seed", type=int, default=3)

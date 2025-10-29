@@ -141,6 +141,13 @@ class LogicEnv_gym(gym.Env):
                 self.sampler.num_negs_per_pos < 3
             ), f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
 
+        self._one  = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+        self._zero = torch.zeros((), device=self.device, dtype=self.reward_dtype)
+        self._n15  = torch.tensor(-1.5, device=self.device, dtype=self.reward_dtype)
+        self._n05  = torch.tensor(-0.5, device=self.device, dtype=self.reward_dtype)
+
+        self._n1 = torch.tensor(-1.0, device=self.device, dtype=self.reward_dtype)
+
     def set_shaping_beta(self, beta: float) -> None:
         """Update the shaping weight used for potential-based reward shaping."""
         self.shaping_beta = float(beta)
@@ -447,7 +454,7 @@ class LogicEnv_gym(gym.Env):
         done_next = done_next | exceeded_max_depth | truncate_flag
         truncated = bool(exceeded_max_depth) or bool(truncate_flag)
         
-        label_value = int(self.tensordict["label"].item())
+        label_value = int(self.current_label) 
         info = {
             "label": label_value,
             "query_type": "positive" if label_value == 1 else "negative",
@@ -686,53 +693,53 @@ class LogicEnv_gym(gym.Env):
         done = torch.tensor(done, device=self.device)
 
         if self.reward_type == 0:
-            reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype) if (done and successful and label == 1) else torch.zeros((), device=self.device, dtype=self.reward_dtype)
+            reward = self._one if (done and successful and label == 1) else self._zero
         elif self.reward_type == 1:
             if done and successful and label == 1:
-                reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+                reward = self._one
             elif done and successful and label == 0:
-                reward = torch.tensor(-1.0, device=self.device, dtype=self.reward_dtype)
+                reward = self._n1
                 # print(f"Done with success but label is 0: {state}")
             else:
-                reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
+                reward = self._zero
         elif self.reward_type == 2:
             if done and successful and label == 1:
-                reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+                reward = self._one
             elif done and not successful and label == 0:
-                reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+                reward = self._one
             else:
-                reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
+                reward = self._zero
         elif self.reward_type == 3:
             if label == 1:
                 if done and successful:
-                    reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+                    reward = self._one
                 elif done and not successful:
-                    reward = torch.tensor(-0.5, device=self.device, dtype=self.reward_dtype)
+                    reward = self._n05
                 else:
-                    reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
+                    reward = self._zero
             if label == 0:
                 if done and successful:
                     # The asymmetric −1.5 on false positives makes the policy aggressively lower the log‑probabilities of spurious negative proofs
-                    reward = torch.tensor(-1.5, device=self.device, dtype=self.reward_dtype)
+                    reward = self._n15
                 elif done and not successful:
-                    reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+                    reward = self._one
                 else:
-                    reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
+                    reward = self._zero
         elif self.reward_type == 4:
             if label == 1:
                 if done and successful:
-                    reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+                    reward = self._one
                 elif done and not successful:
-                    reward = torch.tensor(-1.0, device=self.device, dtype=self.reward_dtype)
+                    reward = self._n1
                 else:
-                    reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
+                    reward = self._zero
             if label == 0:
                 if done and successful:
-                    reward = torch.tensor(-1.0, device=self.device, dtype=self.reward_dtype)
+                    reward = self._n1
                 elif done and not successful:
-                    reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+                    reward = self._one
                 else:
-                    reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
+                    reward = self._zero
         else: 
             raise ValueError(f"Invalid reward type: {self.reward_type}. Choose from 0-4.")
 

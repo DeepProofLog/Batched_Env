@@ -1,5 +1,13 @@
 # Example experiments configuration for runner.py
 experiments:
+  - dataset_name: 'family'
+    prob_facts: True
+    topk_facts: 3
+    topk_facts_threshold: 0.9
+  - dataset_name: 'family'
+    prob_facts: False
+
+
   # - dataset_name: 'family'
   #   reward_type: 3
   # - dataset_name: 'family'
@@ -13,10 +21,10 @@ experiments:
   # - dataset_name: 'wn18rr'
   #   reward_type: 4
   #   timesteps_train: 8000000
-  - dataset_name: 'wn18rr'
-    reward_type: 4
-    timesteps_train: 8000000
-    pbrs: True
+  # - dataset_name: 'wn18rr'
+  #   reward_type: 4
+  #   timesteps_train: 8000000
+  #   pbrs: True
 
 
   # - kge_action: False
