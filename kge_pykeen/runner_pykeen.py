@@ -71,6 +71,88 @@ def now_ts() -> str:
 def makedirs(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
+def select_best_gpu(min_free_gb: float = 1.0) -> Optional[int]:
+    """
+    Automatically select the GPU with the most free memory.
+    
+    Args:
+        min_free_gb: Minimum free memory in GB required to consider a GPU
+    
+    Returns:
+        GPU index with most free memory, or None if no suitable GPU found
+    """
+    if not torch.cuda.is_available():
+        return None
+    
+    num_gpus = torch.cuda.device_count()
+    if num_gpus == 0:
+        return None
+    
+    # Get free memory for each GPU
+    max_free_memory = 0
+    best_gpu = None
+    min_free_bytes = min_free_gb * 1e9
+    
+    for gpu_id in range(num_gpus):
+        try:
+            # Query memory without setting device (to avoid OOM on full GPUs)
+            free_memory, total_memory = torch.cuda.mem_get_info(gpu_id)
+            used_memory = total_memory - free_memory
+            
+            print(f"GPU {gpu_id}: {free_memory / 1e9:.2f} GB free / {total_memory / 1e9:.2f} GB total "
+                  f"({used_memory / 1e9:.2f} GB used, {100 * used_memory / total_memory:.1f}% utilized)")
+            
+            # Only consider GPUs with sufficient free memory
+            if free_memory >= min_free_bytes and free_memory > max_free_memory:
+                max_free_memory = free_memory
+                best_gpu = gpu_id
+        except Exception as e:
+            print(f"Warning: Could not query GPU {gpu_id}: {e}")
+            continue
+    
+    if best_gpu is not None:
+        print(f"Selected GPU {best_gpu} with {max_free_memory / 1e9:.2f} GB free memory")
+    else:
+        print(f"No GPU found with at least {min_free_gb:.1f} GB free memory")
+    
+    return best_gpu
+
+def get_available_gpus(min_free_gb: float = 1.0) -> List[int]:
+    """
+    Get list of all GPUs with sufficient free memory.
+    
+    Args:
+        min_free_gb: Minimum free memory in GB required
+    
+    Returns:
+        List of GPU indices with sufficient free memory
+    """
+    if not torch.cuda.is_available():
+        return []
+    
+    num_gpus = torch.cuda.device_count()
+    if num_gpus == 0:
+        return []
+    
+    available_gpus = []
+    min_free_bytes = min_free_gb * 1e9
+    
+    for gpu_id in range(num_gpus):
+        try:
+            free_memory, total_memory = torch.cuda.mem_get_info(gpu_id)
+            used_memory = total_memory - free_memory
+            
+            print(f"GPU {gpu_id}: {free_memory / 1e9:.2f} GB free / {total_memory / 1e9:.2f} GB total "
+                  f"({used_memory / 1e9:.2f} GB used, {100 * used_memory / total_memory:.1f}% utilized)")
+            
+            if free_memory >= min_free_bytes:
+                available_gpus.append(gpu_id)
+        except Exception as e:
+            print(f"Warning: Could not query GPU {gpu_id}: {e}")
+            continue
+    
+    return available_gpus
+
 def resolve_model_cls(name: str):
     # Try to resolve a model class by string name.
     # Works for RotatE, ComplEx, TuckER, DistMult, TransE, PairRE, etc.
@@ -241,7 +323,22 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
     elif model_name.lower() in {"tucker"}:
         model_kwargs["embedding_dim"] = cfg.embedding_dim  # entity dim
         model_kwargs["relation_dim"] = cfg.embedding_dim // 2
-        model_kwargs["dropout"] = 0.1
+        # Tucker uses three separate dropout parameters for different components
+        model_kwargs["dropout_0"] = 0.3  # dropout after first core tensor multiplication
+        model_kwargs["dropout_1"] = 0.4  # dropout after batch normalization
+        model_kwargs["dropout_2"] = 0.5  # dropout after second core tensor multiplication
+        # Disable batch normalization for small datasets to avoid batch size issues
+        # Batch norm requires drop_last=True but that can fail with small datasets
+        if train_tf.num_triples < cfg.batch_size:
+            model_kwargs["apply_batch_normalization"] = False
+            print(f"Note: Disabled batch normalization for Tucker (dataset size {train_tf.num_triples} < batch size {cfg.batch_size})")
+    elif model_name.lower() in {"conve"}:
+        model_kwargs["embedding_dim"] = cfg.embedding_dim
+        # ConvE also uses batch normalization by default, which causes issues with small datasets
+        # Disable it for small datasets to avoid batch size issues
+        if train_tf.num_triples < cfg.batch_size:
+            model_kwargs["apply_batch_normalization"] = False
+            print(f"Note: Disabled batch normalization for ConvE (dataset size {train_tf.num_triples} < batch size {cfg.batch_size})")
     else:
         # Generic fallback
         model_kwargs["embedding_dim"] = cfg.embedding_dim
@@ -270,19 +367,29 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
     
     print(f"Note: Evaluation will build filter masks (one-time ~50s delay), then evaluate quickly.")
     
+    # Handle multi-GPU setup
+    actual_device = cfg.device
+    if cfg.device == "cuda:all":
+        # Use all available GPUs via DataParallel
+        actual_device = "cuda:0"  # Primary device
+        print(f"Using DataParallel across all {torch.cuda.device_count()} GPUs")
+    
+    # Tucker uses batch normalization, which requires drop_last=False for small datasets
+    training_kwargs = dict(
+        num_epochs=cfg.epochs,
+        use_tqdm_batch=True,
+        batch_size=cfg.batch_size,
+        label_smoothing=0.0,
+        num_workers=cfg.num_workers,  # Add parallel data loading
+    )
+    
     pipeline_kwargs = dict(
         model=model_cls,
         model_kwargs=model_kwargs,
         training=train_tf,
         validation=valid_tf,
         testing=test_tf,
-        training_kwargs=dict(
-            num_epochs=cfg.epochs,
-            use_tqdm_batch=True,
-            batch_size=cfg.batch_size,
-            label_smoothing=0.0,
-            num_workers=cfg.num_workers,  # Add parallel data loading
-        ),
+        training_kwargs=training_kwargs,
         optimizer="adam",
         optimizer_kwargs=dict(lr=cfg.learning_rate),
         training_loop=cfg.training_loop,
@@ -295,7 +402,7 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
             use_tqdm=True,
         ),
         random_seed=cfg.seed,
-        device=cfg.device,
+        device=actual_device,
     )
     
     # Add early stopping only if requested (disabled by default for speed)
@@ -322,6 +429,11 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
             pass
     
     results = pipeline(**pipeline_kwargs)
+    
+    # Wrap model with DataParallel if using multiple GPUs
+    if cfg.device == "cuda:all" and torch.cuda.device_count() > 1:
+        print(f"Wrapping model with DataParallel for {torch.cuda.device_count()} GPUs")
+        results.model = torch.nn.DataParallel(results.model)
 
     # Save artifacts
     try:
@@ -380,16 +492,16 @@ def run_one_model(cfg: RunnerConfig, model_name: str, train_tf: TriplesFactory, 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     # Data
-    p.add_argument("--dataset", default='family', help="Name of dataset (e.g., family, countries_s3, FB15k237, WN18RR). Will auto-detect paths in ./data/<dataset>/")
+    p.add_argument("--dataset", default='countries_s3', help="Name of dataset (e.g., family, countries_s3, FB15k237, WN18RR). Will auto-detect paths in ./data/<dataset>/")
     p.add_argument("--train_path", default=None, help="Override: path to train.txt")
     p.add_argument("--valid_path", default=None, help="Override: path to valid.txt")
     p.add_argument("--test_path", default=None, help="Override: path to test.txt")
     p.add_argument("--delimiter", choices=["tab","comma","space"], default="tab", help="Delimiter for TSV/CSV files (ignored for Prolog format)")
     p.add_argument("--create_inverse_triples", action="store_true", help="Create inverse triples for relations")
-    # Models
-    p.add_argument("--models", default="rotate", help="Comma-separated list of model names (e.g., RotatE,ComplEx,TuckER)")
-    p.add_argument("--embedding_dim", type=int, default=1000, help="Embedding dimension")
-    p.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
+    # Models:  RotatE,ComplEx,TuckER,DistMult,TransE,PairRE,ConvE,QuatE,AutoSF
+    p.add_argument("--models", default="tucker", help="Comma-separated list of model names (e.g., RotatE,ComplEx,TuckER)")
+    p.add_argument("--embedding_dim", type=int, default=500, help="Embedding dimension")
+    p.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
     p.add_argument("--batch_size", type=int, default=4096, help="Batch size")
     p.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
     p.add_argument("--negative_sample_rate", type=int, default=1, help="Number of negative samples per positive")
@@ -399,7 +511,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--eval_frequency", type=int, default=5, help="Evaluate every N epochs (if early stopping enabled)")
     p.add_argument("--eval_batch_size", type=int, default=512, help="Batch size for evaluation (default: 4x training batch size)")
     # Runtime
-    p.add_argument("--device", default="cuda")
+    p.add_argument("--device", default="cuda:1", choices=["cpu", "cuda:1", "cuda:all"], 
+                   help="Device: 'cpu' (use CPU), 'cuda:1' (auto-select best GPU), 'cuda:all' (use all available GPUs)")
+    p.add_argument("--min_gpu_memory_gb", type=float, default=2.0, help="Minimum free GPU memory in GB to consider a GPU available")
     p.add_argument("--seed", type=int, default=3)
     p.add_argument("--num_workers", type=int, default=4)
     # Output
@@ -408,6 +522,51 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    
+    # Handle device selection based on user choice
+    device = args.device
+    min_memory_gb = args.min_gpu_memory_gb
+    
+    if device == "cpu":
+        print("\n=== Using CPU ===")
+        print("Training will run on CPU (slower but always available)\n")
+    
+    elif device == "cuda:1":
+        print("\n=== Auto-selecting best GPU ===")
+        best_gpu = select_best_gpu(min_free_gb=min_memory_gb)
+        if best_gpu is not None:
+            device = f"cuda:{best_gpu}"
+            # Set CUDA_VISIBLE_DEVICES to use only the selected GPU
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
+            print(f"Using device: cuda:{best_gpu}\n")
+        else:
+            device = "cpu"
+            print(f"No GPU with at least {min_memory_gb} GB free memory found.")
+            print("Falling back to CPU\n")
+    
+    elif device == "cuda:all":
+        print("\n=== Using all available GPUs ===")
+        available_gpus = get_available_gpus(min_free_gb=min_memory_gb)
+        
+        if len(available_gpus) == 0:
+            device = "cpu"
+            print(f"No GPUs with at least {min_memory_gb} GB free memory found.")
+            print("Falling back to CPU\n")
+        elif len(available_gpus) == 1:
+            device = f"cuda:{available_gpus[0]}"
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(available_gpus[0])
+            print(f"Only 1 GPU available with sufficient memory: GPU {available_gpus[0]}")
+            print(f"Using device: cuda:{available_gpus[0]}\n")
+        else:
+            # Multiple GPUs available - use DataParallel
+            print(f"Found {len(available_gpus)} GPUs with sufficient memory: {available_gpus}")
+            print("Will use DataParallel for multi-GPU training")
+            # Set CUDA_VISIBLE_DEVICES to only the available GPUs
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, available_gpus))
+            # After setting CUDA_VISIBLE_DEVICES, the first visible GPU becomes cuda:0
+            device = "cuda:all"
+            print(f"GPUs will be mapped as: {', '.join([f'GPU {i}->cuda:{idx}' for idx, i in enumerate(available_gpus)])}\n")
+    
     cfg = RunnerConfig(
         dataset=args.dataset,
         train_path=args.train_path,
@@ -426,7 +585,7 @@ def main(argv=None):
         use_early_stopping=args.use_early_stopping,
         eval_frequency=args.eval_frequency,
         eval_batch_size=args.eval_batch_size,
-        device=args.device,
+        device=device,
         seed=args.seed,
         num_workers=args.num_workers,
         output_dir=args.output_dir,

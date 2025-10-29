@@ -2,6 +2,91 @@ import ast
 import copy
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
+from typing import Optional, List
+import torch
+
+def select_best_gpu(min_free_gb: float = 1.0) -> Optional[int]:
+    """
+    Automatically select the GPU with the most free memory.
+    
+    Args:
+        min_free_gb: Minimum free memory in GB required to consider a GPU
+    
+    Returns:
+        GPU index with most free memory, or None if no suitable GPU found
+    """
+    if not torch.cuda.is_available():
+        return None
+    
+    num_gpus = torch.cuda.device_count()
+    if num_gpus == 0:
+        return None
+    
+    # Get free memory for each GPU
+    max_free_memory = 0
+    best_gpu = None
+    min_free_bytes = min_free_gb * 1e9
+    
+    for gpu_id in range(num_gpus):
+        try:
+            # Query memory without setting device (to avoid OOM on full GPUs)
+            free_memory, total_memory = torch.cuda.mem_get_info(gpu_id)
+            used_memory = total_memory - free_memory
+            
+            print(f"GPU {gpu_id}: {free_memory / 1e9:.2f} GB free / {total_memory / 1e9:.2f} GB total "
+                  f"({used_memory / 1e9:.2f} GB used, {100 * used_memory / total_memory:.1f}% utilized)")
+            
+            # Only consider GPUs with sufficient free memory
+            if free_memory >= min_free_bytes and free_memory > max_free_memory:
+                max_free_memory = free_memory
+                best_gpu = gpu_id
+        except Exception as e:
+            print(f"Warning: Could not query GPU {gpu_id}: {e}")
+            continue
+    
+    if best_gpu is not None:
+        print(f"Selected GPU {best_gpu} with {max_free_memory / 1e9:.2f} GB free memory")
+    else:
+        print(f"No GPU found with at least {min_free_gb:.1f} GB free memory")
+    
+    return best_gpu
+
+
+def get_available_gpus(min_free_gb: float = 1.0) -> List[int]:
+    """
+    Get list of all GPUs with sufficient free memory.
+    
+    Args:
+        min_free_gb: Minimum free memory in GB required
+    
+    Returns:
+        List of GPU indices with sufficient free memory
+    """
+    if not torch.cuda.is_available():
+        return []
+    
+    num_gpus = torch.cuda.device_count()
+    if num_gpus == 0:
+        return []
+    
+    available_gpus = []
+    min_free_bytes = min_free_gb * 1e9
+    
+    for gpu_id in range(num_gpus):
+        try:
+            free_memory, total_memory = torch.cuda.mem_get_info(gpu_id)
+            used_memory = total_memory - free_memory
+            
+            print(f"GPU {gpu_id}: {free_memory / 1e9:.2f} GB free / {total_memory / 1e9:.2f} GB total "
+                  f"({used_memory / 1e9:.2f} GB used, {100 * used_memory / total_memory:.1f}% utilized)")
+            
+            if free_memory >= min_free_bytes:
+                available_gpus.append(gpu_id)
+        except Exception as e:
+            print(f"Warning: Could not query GPU {gpu_id}: {e}")
+            continue
+    
+    return available_gpus
 
 
 BOOLEAN_TRUE = {'true', 't', 'yes', 'y', 'on', '1'}

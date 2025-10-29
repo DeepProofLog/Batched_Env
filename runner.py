@@ -6,6 +6,7 @@ import os
 import sys
 import warnings
 from itertools import product
+from typing import Optional, List
 
 import numpy as np
 from utils import FileLogger
@@ -16,12 +17,13 @@ from utils_config import (
     coerce_config_value,
     update_config_value,
     parse_assignment,
+    get_available_gpus,
+    select_best_gpu,
 )
 torch.set_float32_matmul_precision('high')
 # import gc
 # gc.disable()  
 # torch.cuda.set_allocator_config(garbage_collection_threshold=0.9)
-
 
 if __name__ == "__main__":
 
@@ -124,6 +126,8 @@ if __name__ == "__main__":
         'max_total_vars': 100,
 
         # Other params
+        'device': 'cuda:1',  # Device: 'cpu', 'cuda:1' (auto-select best GPU), or 'cuda:all' (use all available GPUs)
+        'min_gpu_memory_gb': 2.0,  # Minimum free GPU memory in GB to consider a GPU available
         'extended_eval_info': True,
         'eval_best_metric': 'mrr',
         'plot': False,
@@ -138,8 +142,6 @@ if __name__ == "__main__":
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     parser = argparse.ArgumentParser(description='Experiment Runner')
     parser.add_argument("--config",type=str,
@@ -167,6 +169,54 @@ if __name__ == "__main__":
     if args.eval:
         base_config['load_model'] = True
         base_config['timesteps_train'] = 0
+
+    # Handle device selection based on user choice
+    device_choice = base_config.get('device', 'cuda:1')
+    min_memory_gb = base_config.get('min_gpu_memory_gb', 2.0)
+    
+    if device_choice == "cpu":
+        print("\n=== Using CPU ===")
+        print("Training will run on CPU (slower but always available)\n")
+        device = "cpu"
+    
+    elif device_choice == "cuda:1":
+        print("\n=== Auto-selecting best GPU ===")
+        best_gpu = select_best_gpu(min_free_gb=min_memory_gb)
+        if best_gpu is not None:
+            device = f"cuda:{best_gpu}"
+            # Set CUDA_VISIBLE_DEVICES to use only the selected GPU
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
+            print(f"Using device: cuda:{best_gpu}\n")
+        else:
+            device = "cpu"
+            print(f"No GPU with at least {min_memory_gb} GB free memory found.")
+            print("Falling back to CPU\n")
+    
+    elif device_choice == "cuda:all":
+        print("\n=== Using all available GPUs ===")
+        available_gpus = get_available_gpus(min_free_gb=min_memory_gb)
+        
+        if len(available_gpus) == 0:
+            device = "cpu"
+            print(f"No GPUs with at least {min_memory_gb} GB free memory found.")
+            print("Falling back to CPU\n")
+        elif len(available_gpus) == 1:
+            device = f"cuda:{available_gpus[0]}"
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(available_gpus[0])
+            print(f"Only 1 GPU available with sufficient memory: GPU {available_gpus[0]}")
+            print(f"Using device: cuda:{available_gpus[0]}\n")
+        else:
+            # Multiple GPUs available
+            print(f"Found {len(available_gpus)} GPUs with sufficient memory: {available_gpus}")
+            print("Note: Multi-GPU training requires additional setup. Using first available GPU.")
+            # Set CUDA_VISIBLE_DEVICES to only the available GPUs
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, available_gpus))
+            device = f"cuda:0"  # First GPU in the visible list
+            print(f"Using device: cuda:0 (mapped from GPU {available_gpus[0]})\n")
+    else:
+        # Fallback to default behavior
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Using device: {device}\n")
 
     # Prepare grid search specification (if any)
     grid_spec = {}

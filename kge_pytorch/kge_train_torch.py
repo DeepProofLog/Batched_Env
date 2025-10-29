@@ -96,6 +96,7 @@ class TrainConfig:
     amp: bool = False
     compile: bool = False
     cpu: bool = False
+    multi_gpu: bool = False
     seed: int = 3
     eval_chunk_size: int = 2048
     eval_limit: int = 0
@@ -393,6 +394,13 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
     if cfg.compile and hasattr(torch, "compile"):
         model = torch.compile(model)
     model.to(device)
+    
+    # Wrap model in DataParallel for multi-GPU training
+    if cfg.multi_gpu and device.type == "cuda" and torch.cuda.device_count() > 1:
+        print(f"Wrapping model in DataParallel to use {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+    elif cfg.multi_gpu:
+        print("Warning: multi_gpu=True but multiple GPUs not available. Using single GPU/CPU.")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scaler = torch.amp.GradScaler('cuda', enabled=cfg.amp)
@@ -461,8 +469,10 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
             scaler.update()
             if scheduler is not None:
                 scheduler.step()
-            if hasattr(model, "project_entity_modulus_"):
-                model.project_entity_modulus_()
+            # Access the underlying model if wrapped in DataParallel
+            actual_model = model.module if isinstance(model, torch.nn.DataParallel) else model
+            if hasattr(actual_model, "project_entity_modulus_"):
+                actual_model.project_entity_modulus_()
             running += loss.item()
             global_step += 1
         epoch_time = time.perf_counter() - epoch_start
@@ -545,7 +555,9 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
 
     os.makedirs(cfg.save_dir, exist_ok=True)
     weights_path = os.path.join(cfg.save_dir, "weights.pth")
-    torch.save(model.state_dict(), weights_path)
+    # Save the underlying model if wrapped in DataParallel
+    model_to_save = model.module if isinstance(model, torch.nn.DataParallel) else model
+    torch.save(model_to_save.state_dict(), weights_path)
     config_path = os.path.join(cfg.save_dir, "config.json")
     config_payload = {
         "model": cfg.model,

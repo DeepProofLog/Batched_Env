@@ -472,6 +472,8 @@ class DataHandler:
             if normalized_filter is not None:
                 source_path = depth_path if depth_path else path
                 queries, depth_values = get_filtered_queries(source_path, normalized_filter, name, return_depths=True)
+            elif depth_path:
+                queries, depth_values = get_filtered_queries(depth_path, None, name, return_depths=True)
             else:
                 queries = get_queries(path)
                 depth_values = [None] * len(queries)

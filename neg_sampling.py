@@ -742,8 +742,29 @@ def get_sampler(data_handler: DataHandler,
     mapped_triples_cpu = triples_factory.mapped_triples.cpu()
 
     if 'countries' in data_handler.dataset_name or 'ablation' in data_handler.dataset_name:
-        domain2idx = {domain: [index_manager.constant_str2idx[e] for e in entities] for domain, entities in data_handler.domain2entity.items()}
-        entity2domain: Dict[int, str] = {index_manager.constant_str2idx[e]: domain for domain, entities in data_handler.domain2entity.items() for e in entities}
+        # Build domain2idx, skipping entities that aren't in the index
+        domain2idx = {}
+        skipped_entities = []
+        for domain, entities in data_handler.domain2entity.items():
+            indexed_entities = []
+            for e in entities:
+                if e in index_manager.constant_str2idx:
+                    indexed_entities.append(index_manager.constant_str2idx[e])
+                else:
+                    skipped_entities.append(e)
+            if indexed_entities:
+                domain2idx[domain] = indexed_entities
+        
+        if skipped_entities:
+            print(f"Note: Skipped {len(skipped_entities)} entities not in index: {skipped_entities[:10]}{'...' if len(skipped_entities) > 10 else ''}")
+        
+        # Build entity2domain only for indexed entities
+        entity2domain: Dict[int, str] = {}
+        for domain, entities in data_handler.domain2entity.items():
+            for e in entities:
+                if e in index_manager.constant_str2idx:
+                    entity2domain[index_manager.constant_str2idx[e]] = domain
+        
         sampler = BasicNegativeSamplerDomain(
                                             mapped_triples=mapped_triples_cpu,
                                             domain2idx=domain2idx,
