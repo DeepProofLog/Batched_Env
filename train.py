@@ -1,4 +1,4 @@
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 import torch
 from pathlib import Path
 
@@ -17,8 +17,8 @@ from callbacks import (
     CustomEvalCallbackMRR,
     CustomEvalCallback,
     DepthProofStatsCallback,
-    TopKCurriculumCallback,
-    KGELogitGainSchedulerCallback,
+    ScalarAnnealingCallback,
+    AnnealingTarget,
     _EvalDepthRewardTracker
 )
 from custom_dummy_env import create_environments
@@ -41,13 +41,16 @@ from stable_baselines3.common.callbacks import (
 
 def _init_kge_engine(args: Any) -> Optional[KGEInference]:
     """Create KGE inference engine when requested."""
-    needs_engine = (
-        args.use_kge_action
-        or args.kge_integration_strategy in {"sum_eval", "logit_shaping"}
-        or float(getattr(args, "pbrs_beta", 0.0)) != 0.0
-    )
+    kge_action = bool(getattr(args, "kge_action", False))
+    logit_fusion = bool(getattr(args, "logit_fusion", False))
+    inference_fusion = bool(getattr(args, "inference_fusion", False))
+    pbrs = float(getattr(args, "pbrs_beta", 0.0)) != 0.0
+    
+    needs_engine = kge_action or logit_fusion or inference_fusion or pbrs
+    
     if needs_engine:
         print("\nInitializing KGE Inference Engine...", flush=True)
+        kge_engine_backend = getattr(args, "kge_engine", "tf")
         engine = KGEInference(
             dataset_name=args.dataset_name,
             base_path=args.data_path,
@@ -55,6 +58,7 @@ def _init_kge_engine(args: Any) -> Optional[KGEInference]:
             run_signature=args.kge_run_signature,
             seed=0,
             scores_file_path=args.kge_scores_file,
+            backend=kge_engine_backend,
         )
         print("KGE Inference Engine Initialized.\n")
         return engine
@@ -65,26 +69,32 @@ def _attach_kge_to_policy(
     im: IndexManager,
     engine: Optional[KGEInference],
     device: torch.device,
-    use_kge_action: bool,
-    integration_strategy: Optional[str],
+    args: Any,
 ) -> None:
+    """Attach KGE engine and index manager to policy when needed."""
     policy = model.policy
-    policy.kge_integration_strategy = integration_strategy
-    needs_kge_attachment = integration_strategy in {"train", "train_bias", "logit_shaping"}
+    kge_action = bool(getattr(args, "kge_action", False))
+    logit_fusion = bool(getattr(args, "logit_fusion", False))
+    inference_fusion = bool(getattr(args, "inference_fusion", False))
+
+    policy.enable_kge_action = kge_action
+    policy.enable_logit_fusion = logit_fusion
+
+    needs_kge = kge_action or logit_fusion or inference_fusion
 
     if hasattr(policy, "kge_fusion_mlp") and policy.kge_fusion_mlp is not None:
         policy.kge_fusion_mlp.to(device)
 
-    if not needs_kge_attachment or engine is None or im is None:
+    if not needs_kge or engine is None or im is None:
         policy.kge_inference_engine = None
         policy.index_manager = None
-        empty_indices = torch.empty(0, dtype=torch.int32, device=device)
-        policy.kge_indices_tensor = empty_indices
+        policy.kge_indices_tensor = torch.empty(0, dtype=torch.int32, device=device)
         return
 
     policy.kge_inference_engine = engine
     policy.index_manager = im
-    if use_kge_action and integration_strategy in {"train", "train_bias"}:
+    
+    if kge_action:
         kge_indices = [idx for pred, idx in im.predicate_str2idx.items() if pred.endswith("_kge")]
         policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.int32)
     else:
@@ -257,7 +267,7 @@ def _build_callbacks(
             render=False,
             name=model_name,
             callback_on_new_best=(
-                reward_threshold_cb if args.restore_best_val_model and not args.use_kge_action else None
+                reward_threshold_cb if args.restore_best_val_model and not args.kge_action else None
             ),
             corruption_scheme=args.corruption_scheme,
             best_metric=args.eval_best_metric,
@@ -275,7 +285,7 @@ def _build_callbacks(
             render=False,
             name=model_name,
             # callback_on_new_best=reward_threshold_callback if args.restore_best_val_model \
-            #                                        and not args.use_kge_action else None,
+            #                                        and not args.kge_action else None,
             # callback_after_eval=no_improvement_callback,
         )
 
@@ -291,30 +301,73 @@ def _build_callbacks(
 
     callbacks.extend([eval_cb, train_ckpt_cb, depth_stats_cb])
 
-    # Add curriculum learning callback if enabled
-    print(f"TopK Curriculum Selection: {args.top_k_curriculum}")
-    if args.top_k_curriculum:
-        print("Enabling TopK Curriculum Learning Callback")
-        curriculum_cb = TopKCurriculumCallback(
-            initial_k=args.top_k_initial,
-            final_k=args.top_k_final,
-            total_timesteps=args.timesteps_train,
-            schedule=args.top_k_curriculum,
-            start_filter_timesteps=args.top_k_start_step,
-            verbose=1,
-        )
-        callbacks.append(curriculum_cb)
-        print(f"TopK Curriculum enabled: {args.top_k_initial} -> {args.top_k_final} ({args.top_k_curriculum} schedule)")
+    # Add annealing callbacks if configured
+    annealing_specs = getattr(args, "annealing_specs", {}) or {}
+    if not isinstance(annealing_specs, dict):
+        annealing_specs = {}
 
-    if args.kge_integration_strategy == "logit_shaping":
-        gain_cb = KGELogitGainSchedulerCallback(
-            initial_gain=args.kge_logit_gain_init,
-            final_gain=args.kge_logit_gain_final,
-            anneal_steps=args.kge_logit_gain_anneal_steps,
-            warmup_steps=args.kge_logit_gain_warmup_steps,
-            verbose=0,
+    annealing_targets: List[AnnealingTarget] = []
+    total_timesteps = max(int(args.timesteps_train or 0), 1)
+    policy = model.policy
+
+    top_k_spec = annealing_specs.get('top_k_value')
+    if policy is not None and isinstance(top_k_spec, dict) and args.enable_top_k:
+        top_k_initial = top_k_spec.get('initial')
+        top_k_final = top_k_spec.get('final')
+        if top_k_initial is not None and top_k_final is not None:
+            def _set_top_k_value(value: float) -> None:
+                if value is None or int(value) <= 0:
+                    policy.top_k_value = None
+                else:
+                    policy.top_k_value = int(value)
+
+            annealing_targets.append(
+                AnnealingTarget(
+                    name='top_k_value',
+                    setter=_set_top_k_value,
+                    initial=float(top_k_initial),
+                    final=float(top_k_final),
+                    start_point=float(top_k_spec.get('start_point', 0.0)),
+                    end_point=float(top_k_spec.get('end_point', 1.0)),
+                    transform=str(top_k_spec.get('transform', 'linear')),
+                    value_type='int',
+                )
+            )
+            print(
+                f"Top-K annealing configured: {top_k_initial} -> {top_k_final} "
+                f"({top_k_spec.get('transform', 'linear')})"
+            )
+
+    logit_spec = annealing_specs.get('kge_logit_gain')
+    if isinstance(logit_spec, dict) and (args.logit_fusion or args.kge_action):
+        def _set_kge_gain(value: float) -> None:
+            if hasattr(policy, 'set_kge_logit_gain'):
+                policy.set_kge_logit_gain(float(value))
+
+        annealing_targets.append(
+            AnnealingTarget(
+                name='kge_logit_gain',
+                setter=_set_kge_gain,
+                initial=float(logit_spec.get('initial', args.kge_logit_init_value)),
+                final=float(logit_spec.get('final', args.kge_logit_final_value)),
+                start_point=float(logit_spec.get('start_point', 0.0)),
+                end_point=float(logit_spec.get('end_point', 1.0)),
+                transform=str(logit_spec.get('transform', 'linear')),
+                value_type='float',
+            )
         )
-        callbacks.append(gain_cb)
+
+    if annealing_targets and args.timesteps_train > 0:
+        # Ensure environments reflect initial values before training starts.
+        for target in annealing_targets:
+            target.setter(target.initial)
+        callbacks.append(
+            ScalarAnnealingCallback(
+                total_timesteps=total_timesteps,
+                targets=annealing_targets,
+                verbose=0,
+            )
+        )
     
     return CallbackList(callbacks), eval_cb, train_ckpt_cb
 
@@ -349,15 +402,9 @@ def _train_if_needed(
     return model
 
 
-def _eval_mode_from_args(args: Any) -> str:
-    # For sum_eval, we fuse externally; otherwise model handles fusion
-    return "hybrid" if args.kge_integration_strategy == "sum_eval" else "rl_only"
-
-
-
 def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler: DataHandler) -> Tuple[dict, dict, dict]:
     print("\nTest set evaluation...")
-    eval_mode = _eval_mode_from_args(args)
+    eval_mode = "hybrid" if bool(getattr(args, "inference_fusion", False)) else "rl_only"
 
     depth_reward_tracker = _EvalDepthRewardTracker()
 
@@ -431,18 +478,16 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     _warn_non_reproducible(args)
     _set_seeds(args.seed_run_i)
 
-    if not hasattr(args, "top_k_curriculum"):
-        args.top_k_curriculum = None
-    if not hasattr(args, "top_k_initial"):
-        args.top_k_initial = None
-    if not hasattr(args, "top_k_final"):
-        args.top_k_final = 5
-    if not hasattr(args, "top_k_start_step"):
-        args.top_k_start_step = 0
+    # Normalize KGE flags
+    args.kge_action = bool(getattr(args, "kge_action", False))
+    args.logit_fusion = bool(getattr(args, "logit_fusion", False))
+    args.inference_fusion = bool(getattr(args, "inference_fusion", False))
+    args.inference_success_only = bool(getattr(args, "inference_success_only", True))
+    args.pbrs = bool(getattr(args, "pbrs", False)) or float(getattr(args, "pbrs_beta", 0.0)) != 0.0
+    args.enable_top_k = bool(getattr(args, "enable_top_k", False))
 
     device = get_device(args.device)
-    print(f"Device: {device}. CUDA available: {torch.cuda.is_available()},\
-                            Device count: {torch.cuda.device_count()}")
+    print(f"Device: {device}. CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
 
     # Build pieces
     kge_engine = _init_kge_engine(args)
@@ -456,20 +501,19 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     )
 
     # --- INIT MODEL ---
+    enable_top_k = getattr(args, 'enable_top_k', False)
+    top_k_value = getattr(args, 'top_k_value', None) if enable_top_k else None
+    
     policy_kwargs = {
         'features_extractor_class': CustomCombinedExtractor,
         'features_extractor_kwargs': {'features_dim': embedder.embed_dim, 'embedder': embedder},
-        'top_k_actions': args.top_k_initial if args.top_k_curriculum else None,
-        'top_k_curriculum': args.top_k_curriculum,
-        'top_k_initial': args.top_k_initial,
-        'top_k_final': args.top_k_final,
-        'kge_integration_strategy': args.kge_integration_strategy,
-        'kge_logit_gain_initial': args.kge_logit_gain_init,
-        'kge_logit_gain_final': args.kge_logit_gain_final,
-        'kge_logit_gain_anneal_steps': args.kge_logit_gain_anneal_steps,
-        'kge_logit_gain_warmup_steps': args.kge_logit_gain_warmup_steps,
-        'kge_logit_transform': args.kge_logit_transform,
-        'kge_logit_eps': args.kge_logit_eps,
+        'enable_top_k': enable_top_k,
+        'top_k_value': top_k_value,
+        'enable_kge_action': args.kge_action,
+        'enable_logit_fusion': args.logit_fusion,
+        'kge_logit_gain_initial': getattr(args, 'kge_logit_init_value', 1.0),
+        'kge_logit_transform': getattr(args, 'kge_logit_transform', 'log'),
+        'kge_logit_eps': getattr(args, 'kge_logit_eps', 1e-6),
     }
 
     model = PPO(
@@ -492,8 +536,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         index_manager,
         kge_engine,
         device,
-        args.use_kge_action,
-        args.kge_integration_strategy,
+        args,
     )
 
 
@@ -534,8 +577,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         index_manager,
         kge_engine,
         device,
-        args.use_kge_action,
-        args.kge_integration_strategy,
+        args,
     )
 
     model.policy = torch.compile(model.policy, mode="reduce-overhead", fullgraph=False)

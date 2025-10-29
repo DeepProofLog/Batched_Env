@@ -1,10 +1,13 @@
-import numpy as np
-import os
 import json
-from typing import Optional, Union, Any, List, Dict, Tuple
-import time
+import math
+import os
 import sys
+import time
 from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import numpy as np
 
 # from model_eval import evaluate_policy as evaluate_policy_mrr
 from model_eval import eval_corruptions as eval_corruptions_mrr
@@ -835,203 +838,117 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             raise ValueError("No best model found to restore.")
         return self.model
 
+@dataclass
+class AnnealingTarget:
+    """Configuration for a single scalar annealing schedule."""
+
+    name: str
+    setter: Callable[[float], None]
+    initial: float
+    final: float
+    start_point: float = 0.0
+    end_point: float = 1.0
+    transform: str = "linear"
+    value_type: str = "float"
 
 
+class ScalarAnnealingCallback(BaseCallback):
+    """General-purpose callback for annealing scalar hyperparameters.
 
-class KGELogitGainSchedulerCallback(BaseCallback):
-    """logit-level KGE shaping during training: Anneals the gain used.
-    Gain is the multiplicative factor applied to the KGE logits before adding
-    them to the policy logits. Higher gain increases the influence of KGE shaping.
-    The gain is annealed from an initial value to a final value over a specified
-    number of training steps, optionally after a warmup period.
-    :param warmup_steps: amount of steps to wait before starting the annealing.
-    :param anneal_steps: number of steps over which to gradually change (anneal) the gain."""
+    Each ``AnnealingTarget`` defines how a scalar value should change between
+    ``initial`` and ``final`` as training progresses. The schedule is expressed
+    as ratios of the total training timesteps to keep the configuration
+    independent from the absolute horizon.
+    """
 
     def __init__(
         self,
-        initial_gain: float = 1.0,
-        final_gain: float = 0.2,
-        anneal_steps: int = 300000,
-        warmup_steps: int = 0,
+        total_timesteps: int,
+        targets: List[AnnealingTarget],
         verbose: int = 0,
-    ):
+    ) -> None:
         super().__init__(verbose)
-        self.initial_gain = float(initial_gain)
-        self.final_gain = float(final_gain)
-        self.anneal_steps = max(0, int(anneal_steps))
-        self.warmup_steps = max(0, int(warmup_steps))
-        self._last_logged_gain: Optional[float] = None
+        self.total_timesteps = max(1, int(total_timesteps))
+        self.targets = list(targets)
+        self._last_values: Dict[str, float] = {}
 
     def _init_callback(self) -> None:
-        policy = getattr(self.model, "policy", None)
-        if hasattr(policy, "set_kge_logit_gain"):
-            policy.set_kge_logit_gain(self.initial_gain)
-            self._last_logged_gain = self.initial_gain
-            if self.verbose > 0:
-                print(f"[KGEGain] Initialized gain to {self.initial_gain:.4f}")
+        for target in self.targets:
+            coerced = self._coerce_value(target, target.initial)
+            target.setter(coerced)
+            self._last_values[target.name] = float(coerced)
+            if self.verbose > 1:
+                print(f"[Anneal] {target.name}: init -> {coerced}")
 
     def _on_step(self) -> bool:
-        policy = getattr(self.model, "policy", None)
-        if not hasattr(policy, "update_kge_logit_gain"):
-            return True
-
-        policy.update_kge_logit_gain(self.num_timesteps)
-
-        if self.verbose > 0:
-            current_gain = getattr(policy, "kge_logit_gain", None)
-            if current_gain is not None and self._last_logged_gain != current_gain:
-                print(f"[KGEGain] Step {self.num_timesteps}: gain -> {float(current_gain):.4f}")
-                self._last_logged_gain = float(current_gain)
-        return True
-
-
-class TopKCurriculumCallback(BaseCallback):
-    """
-    Callback for curriculum learning of top_k_actions parameter.
-    Gradually reduces the number of actions from initial to final value based on training progress.
-    
-    :param initial_k: Initial value for top_k_actions (None for no filtering, or integer)
-    :param final_k: Final value for top_k_actions
-    :param total_timesteps: Total training timesteps (to calculate progress)
-    :param schedule: Schedule type - 'linear', 'exponential', or 'step'
-    :param step_thresholds: For 'step' schedule, list of (progress, k_value) tuples
-    :param start_filter_timesteps: Number of timesteps to wait before enabling filtering
-    :param verbose: Verbosity level
-    """
-    
-    def __init__(
-        self,
-        initial_k: Optional[int] = None,
-        final_k: int = 5,
-        total_timesteps: int = 1000000,
-        schedule: str = 'linear',
-        step_thresholds: Optional[List[Tuple[float, int]]] = None,
-        start_filter_timesteps: int = 0,
-        verbose: int = 1,
-    ):
-        super(TopKCurriculumCallback, self).__init__(verbose)
-        self.initial_k = initial_k
-        self.final_k = final_k
-        self.total_timesteps = total_timesteps
-        self.schedule = schedule
-        self.step_thresholds = step_thresholds or [(0.0, initial_k), (0.5, 10), (1.0, final_k)]
-        self.start_filter_timesteps = max(0, int(start_filter_timesteps))
-        self.current_k = None if self.start_filter_timesteps > 0 else initial_k
-        self._last_progress = 0.0
-        
-        # Validate inputs
-        if self.schedule == 'step' and not self.step_thresholds:
-            raise ValueError("step_thresholds must be provided when using 'step' schedule")
-        
-        if self.schedule not in ['linear', 'exponential', 'step','cte']:
-            raise ValueError(f"Unknown schedule type: {self.schedule}")
-    
-    def _init_callback(self) -> None:
-        """Initialize callback."""
-        # Set initial k value
-        if hasattr(self.model.policy, 'top_k_actions'):
-            initial_value = None if self.start_filter_timesteps > 0 else self.initial_k
-            self.model.policy.top_k_actions = initial_value
-            if self.verbose > 0:
-                start_msg = (
-                    f"delayed start ({self.start_filter_timesteps} timesteps)"
-                    if self.start_filter_timesteps > 0
-                    else "immediate start"
-                )
-                print(
-                    "TopK Curriculum: Starting with top_k_actions = "
-                    f"{initial_value if initial_value is not None else 'None (no filtering)'}"
-                    f" [{start_msg}]",
-                    flush=True,
-                )
-    
-    def _compute_k_value(self, progress: float) -> Optional[int]:
-        """
-        Compute the current k value based on training progress.
-        
-        :param progress: Training progress from 0.0 to 1.0
-        :return: Current k value (None for no filtering, or integer)
-        """
-        if self.schedule == 'linear':
-            # Linear interpolation between initial and final
-            if self.initial_k is None:
-                # If starting with None, switch to large value then reduce
-                effective_initial = 100  # Large value to simulate "no filtering"
-                k = effective_initial - progress * (effective_initial - self.final_k)
-                return None if progress < 0.1 else int(k)
-            else:
-                k = self.initial_k - progress * (self.initial_k - self.final_k)
-                return max(int(k), self.final_k)
-        
-        elif self.schedule == 'exponential':
-            # Exponential decay
-            if self.initial_k is None:
-                effective_initial = 20
-                k = effective_initial * (self.final_k / effective_initial) ** progress
-                return None if progress < 0.1 else int(k)
-            else:
-                k = self.initial_k * (self.final_k / self.initial_k) ** progress
-                return max(int(k), self.final_k)
-        
-        elif self.schedule == 'step':
-            # Step-based schedule
-            for i in range(len(self.step_thresholds) - 1):
-                if progress >= self.step_thresholds[i][0] and progress < self.step_thresholds[i + 1][0]:
-                    return self.step_thresholds[i][1]
-            # Return final value if progress >= last threshold
-            return self.step_thresholds[-1][1]
-        elif self.schedule == 'cte':
-            return self.final_k
-
-    def _on_step(self) -> bool:
-        """
-        This method is called after every environment step.
-        Update top_k_actions based on training progress.
-        """
-        # Warmup phase without filtering
-        if self.start_filter_timesteps > 0 and self.num_timesteps < self.start_filter_timesteps:
-            progress = 0.0
-            self._last_progress = progress
-            new_k = None
-        else:
-            # Calculate training progress after warmup
-            effective_total = max(self.total_timesteps - self.start_filter_timesteps, 1)
-            progressed_timesteps = max(self.num_timesteps - self.start_filter_timesteps, 0)
-            progress = min(progressed_timesteps / effective_total, 1.0)
-            self._last_progress = progress
-
-            # Compute new k value
-            new_k = self._compute_k_value(progress)
-        
-        # Update if changed
-        if new_k != self.current_k:
-            self.current_k = new_k
-            if hasattr(self.model.policy, 'top_k_actions'):
-                self.model.policy.top_k_actions = new_k
-                
+        progress = min(max(self.num_timesteps / self.total_timesteps, 0.0), 1.0)
+        for target in self.targets:
+            value = self._compute_value(target, progress)
+            coerced = self._coerce_value(target, value)
+            if self._value_changed(target.name, coerced):
+                target.setter(coerced)
+                self._last_values[target.name] = float(coerced)
                 if self.verbose > 0:
-                    k_display = "None (no filtering)" if new_k is None else str(new_k)
                     print(
-                        "TopK Curriculum update -> "
-                        f"progress: {progress:.2%}, top_k_actions: {k_display}",
+                        f"[Anneal] step {self.num_timesteps:,} -> {target.name}: {coerced}",
                         flush=True,
                     )
-                
-        # Periodic status even if k didn't change
-        elif self.verbose > 1 and self.num_timesteps % 10000 == 0:
-            k_display = "None" if self.current_k is None else str(self.current_k)
-            print(f"TopK Curriculum status -> progress: {progress:.2%}, top_k_actions: {k_display}", flush=True)
-        
         return True
 
-    def _on_rollout_end(self) -> None:
-        k_display = "None" if self.current_k is None else self.current_k
-        print(
-            f"TopK Curriculum status -> timesteps: {self.num_timesteps:,}"
-            f", progress: {self._last_progress:.2%}, top_k_actions: {k_display}",
-            flush=True,
-        )
+    def _value_changed(self, name: str, new_value: float) -> bool:
+        previous = self._last_values.get(name)
+        if previous is None:
+            return True
+        if isinstance(new_value, int):
+            return int(previous) != int(new_value)
+        return not math.isclose(float(previous), float(new_value), rel_tol=1e-6, abs_tol=1e-8)
 
+    @staticmethod
+    def _coerce_value(target: AnnealingTarget, value: float) -> Union[float, int]:
+        if target.value_type.lower() == "int":
+            return int(round(value))
+        return float(value)
+
+    def _compute_value(self, target: AnnealingTarget, progress: float) -> float:
+        start = min(max(float(target.start_point), 0.0), 1.0)
+        end = min(max(float(target.end_point), start), 1.0)
+
+        if progress <= start:
+            return float(target.initial)
+        if progress >= end or math.isclose(start, end):
+            return float(target.final)
+
+        normalized = (progress - start) / max(end - start, 1e-12)
+        return self._apply_transform(target, normalized)
+
+    @staticmethod
+    def _apply_transform(target: AnnealingTarget, normalized: float) -> float:
+        initial = float(target.initial)
+        final = float(target.final)
+        schedule = target.transform.lower() if target.transform else "linear"
+
+        if schedule in {"cte", "constant", "none"}:
+            return final
+        if schedule in {"linear", "lin"}:
+            return initial + normalized * (final - initial)
+        if schedule in {"cos", "cosine"}:
+            cosine = 0.5 * (1.0 + math.cos(math.pi * normalized))
+            return final + (initial - final) * cosine
+        if schedule in {"exp", "exponential"}:
+            safe_initial = initial if abs(initial) > 1e-12 else math.copysign(1e-12, final or 1.0)
+            safe_final = final if abs(final) > 1e-12 else math.copysign(1e-12, final or 1.0)
+            if safe_initial == 0:
+                return final
+            ratio = safe_final / safe_initial
+            return safe_initial * (ratio ** normalized)
+        if schedule == "step":
+            return final if normalized >= 1.0 else initial
+        if schedule == "log":
+            # Smooth transition using log scaling between the bounds.
+            return initial + (final - initial) * math.log1p(9.0 * normalized) / math.log(10.0)
+
+        # Fallback to linear interpolation for unknown transforms.
+        return initial + normalized * (final - initial)
 
 class DepthProofStatsCallback(BaseCallback):
     """Track episode rewards per query depth during training rollouts."""

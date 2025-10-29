@@ -4,6 +4,7 @@ import datetime
 import copy
 import os
 import sys
+import warnings
 from itertools import product
 
 import numpy as np
@@ -40,7 +41,7 @@ if __name__ == "__main__":
 
         # Model params
         'model_name': 'PPO',
-        'ent_coef': 0.2,
+        'ent_coef': 0.5,
         'clip_range': 0.2,
         'n_epochs': 10,
         'lr': 3e-4,
@@ -58,47 +59,53 @@ if __name__ == "__main__":
         'batch_size': 128,
 
         # Env params
-        'reward_type': 3,
+        'reward_type': 4,
         'train_neg_ratio': 1,
-        'engine_strategy': 'rft',
+        'engine': 'python',
+        'engine_strategy': 'cmp', # 'cmp', 'rft'
         'endf_action': True,
         'endt_action': False,
         'skip_unary_actions': True,
-        'engine': 'python',
         'max_depth': 20,
         'memory_pruning': True,
         'corruption_mode': 'dynamic',
         'false_rules': False,
 
-        # Top-K actions filtering: Curriculum learning params
-        'top_k_curriculum': None,
-        'top_k_initial': 10,
-        'top_k_final': 7,
-        'top_k_start_step': 200000,
-
         # KGE integration params
-        'kge_integration_strategy': None, # None, 'train', 'train_bias', 'logit_shaping', 'sum_eval'
+        'kge_action': False,        # Add an action which is a new predicate with '_kge', whose logits are from KGE
+        'logit_fusion': False,      # Combine KGE logits with RL logits during training and evaluation
+        'inference_fusion': False,  # Enable KGE inference fusion at evaluation time (True/False)
+        'inference_success_only': False,  # When inference_fusion=True, only use KGE on RL success
+        'pbrs': False,              # Enable potential-based reward shaping
+        'enable_top_k': False,      # Enable Top-K actions filtering with the value function
+        'kge_engine': 'tf',         # KGE backend: 'tf', 'pytorch', or 'pykeen'
         'kge_checkpoint_dir': './../../checkpoints/',
         'kge_run_signature': None,
         'kge_scores_file': None,
-        'use_kge_action': None,  # Auto-computed from kge_integration_strategy unless overridden
 
-        # KGE logit shaping params
-        'kge_logit_gain_init': 1.0,
-        'kge_logit_gain_final': 0.2,
-        'kge_logit_gain_anneal_steps': 300000,
-        'kge_logit_gain_warmup_steps': 0,
+        # Top-K actions filtering: Curriculum learning params
+        'top_k_init_value': 10,
+        'top_k_final_value': 7,
+        'top_k_start': 0.3,
+        'top_k_end': 1,
+        'top_k_transform': 'linear',
+
+        # KGE logit shaping params for logit_fusion
+        'kge_logit_init_value': 1.0,
+        'kge_logit_final_value': 0.2,
+        'kge_logit_start': 0.2, # at what fraction of training timesteps the annealing starts
+        'kge_logit_end': 1, # at what fraction of training timesteps the annealing ends
         'kge_logit_transform': 'log',
         'kge_logit_eps': 1e-6,
 
         # Potential-based shaping params
-        'pbrs_beta': 0.0, # Set it as the same value of PPO's gamma
-        'pbrs_gamma': None,
+        'pbrs_beta': 0.5, 
+        'pbrs_gamma': 0.99, # Set it as the same value of PPO's gamma
 
         # Evaluation hybrid fusion
+        'eval_hybrid_success_only': True,
         'eval_hybrid_kge_weight': 2.0,
         'eval_hybrid_rl_weight': 1.0,
-        'eval_hybrid_success_only': True,
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -215,6 +222,7 @@ if __name__ == "__main__":
         """Given a config dict, build the argparse.Namespace by applying defaults and derived values."""
         cfg = copy.deepcopy(config)
 
+        # Best metric for model selection
         best_metric = cfg.get('eval_best_metric', 'auc_pr')
         if not isinstance(best_metric, str):
             raise ValueError("eval_best_metric must be provided as a string.")
@@ -227,47 +235,136 @@ if __name__ == "__main__":
             )
         cfg['eval_best_metric'] = metric_normalized
 
-        if cfg.get('use_kge_action') is None:
-            cfg['use_kge_action'] = cfg.get('kge_integration_strategy') in {"train", "train_bias"}
+        cfg['kge_action'] = bool(cfg.get('kge_action', False))
+        cfg['logit_fusion'] = bool(cfg.get('logit_fusion', False))
+        cfg['inference_fusion'] = bool(cfg.get('inference_fusion', False))
+        cfg['inference_success_only'] = bool(cfg.get('inference_success_only', True))
+        cfg['pbrs'] = bool(cfg.get('pbrs', False))
+        cfg['enable_top_k'] = bool(cfg.get('enable_top_k', False))
 
-        curriculum = cfg.get('top_k_curriculum')
-        if isinstance(curriculum, str):
-            normalized = curriculum.strip()
-            if not normalized or normalized.lower() == 'none':
-                cfg['top_k_curriculum'] = None
+        # Set eval_hybrid_success_only based on inference_success_only
+        if cfg['inference_fusion']:
+            cfg['eval_hybrid_success_only'] = cfg['inference_success_only']
+        else:
+            cfg['eval_hybrid_success_only'] = True  # Default when not using inference_fusion
+
+        # Align potential-based shaping parameters with toggle
+        if not cfg['pbrs']:
+            cfg['pbrs_beta'] = 0.0
+            cfg['pbrs_gamma'] = None
+        else:
+            if float(cfg.get('pbrs_beta', 0.0)) == 0.0:
+                raise ValueError("pbrs is True but pbrs_beta is 0. Set a positive value for pbrs_beta.")
+            if cfg.get('pbrs_gamma') is None:
+                raise ValueError("pbrs is True but pbrs_gamma is None. Set a value for pbrs_gamma.")
+
+        annealing_specs = {}
+
+        # --- Top-K schedule ---
+        if cfg['enable_top_k']:
+            top_k_init = cfg.get('top_k_init_value')
+            top_k_final = cfg.get('top_k_final_value', top_k_init)
+            if top_k_init is not None:
+                top_k_init = int(top_k_init)
+                top_k_final = int(top_k_final)
+                top_k_start = float(cfg.get('top_k_start', 0.0))
+                top_k_end = float(cfg.get('top_k_end', 1.0))
+                annealing_specs['top_k_value'] = {
+                    'initial': top_k_init,
+                    'final': top_k_final,
+                    'start_point': max(0.0, min(1.0, top_k_start)),
+                    'end_point': max(0.0, min(1.0, top_k_end)),
+                    'transform': cfg.get('top_k_transform', 'linear'),
+                    'value_type': 'int',
+                }
+                cfg['top_k_value'] = top_k_init
             else:
-                cfg['top_k_curriculum'] = normalized.lower()
-        elif isinstance(curriculum, bool):
-            cfg['top_k_curriculum'] = 'cte' if curriculum else None
-        elif curriculum is not None:
-            raise ValueError(
-                "top_k_curriculum must be a string or None. "
-                f"Received type {type(curriculum).__name__}."
-            )
+                cfg['top_k_value'] = 10  # Default value
+        else:
+            cfg['top_k_value'] = None
 
-        allowed_curricula = {None, 'linear', 'exponential', 'step', 'cte'}
-        if cfg['top_k_curriculum'] not in allowed_curricula:
-            raise ValueError(
-                f"Unsupported top_k_curriculum '{cfg['top_k_curriculum']}'. "
-                "Allowed values: None, linear, exponential, step, cte."
-            )
+        # --- KGE logit gain schedule ---
+        kge_logit_init = cfg.get('kge_logit_init_value')
+        kge_logit_final = cfg.get('kge_logit_final_value', kge_logit_init)
+        if kge_logit_init is not None:
+            kge_logit_init = float(kge_logit_init)
+            kge_logit_final = float(kge_logit_final)
+            kge_logit_start = float(cfg.get('kge_logit_start', 0.0))
+            kge_logit_end = float(cfg.get('kge_logit_end', 1.0))
+            annealing_specs['kge_logit_gain'] = {
+                'initial': kge_logit_init,
+                'final': kge_logit_final,
+                'start_point': max(0.0, min(1.0, kge_logit_start)),
+                'end_point': max(0.0, min(1.0, kge_logit_end)),
+                'transform': cfg.get('kge_logit_transform', 'linear'),
+                'value_type': 'float',
+            }
 
+        cfg['annealing_specs'] = annealing_specs
+        cfg['annealing'] = annealing_specs
+
+        # Validate KGE engine parameter
+        kge_engine = cfg.get('kge_engine', 'tf').strip().lower()
+        if kge_engine not in {'tf', 'tensorflow', 'pytorch', 'torch', 'pykeen'}:
+            raise ValueError(f"Invalid kge_engine '{kge_engine}'. Must be one of: 'tf', 'pytorch', or 'pykeen'.")
+        
+        # Normalize engine name
+        if kge_engine in {'tensorflow'}:
+            kge_engine = 'tf'
+        elif kge_engine in {'torch'}:
+            kge_engine = 'pytorch'
+        cfg['kge_engine'] = kge_engine
+
+        # Default KGE run signatures per dataset and backend
         if cfg.get('kge_run_signature') is None:
             dataset = cfg['dataset_name']
-            if dataset in {"countries_s3", "countries_s2", "countries_s1"}:
-                cfg['kge_run_signature'] = f"{dataset}-backward_0_1-no_reasoner-rotate-True-256-256-128-rules.txt"
-            elif dataset == "family":
-                cfg['kge_run_signature'] = "kinship_family-backward_0_1-no_reasoner-rotate-True-256-256-4-rules.txt"
-            elif dataset == "wn18rr":
-                cfg['kge_run_signature'] = "wn18rr-backward_0_1-no_reasoner-rotate-True-256-256-1-rules.txt"
+            backend = cfg['kge_engine']
+            
+            # TensorFlow backend uses the original signatures
+            if backend == 'tf':
+                if dataset in {"countries_s3", "countries_s2", "countries_s1"}:
+                    cfg['kge_run_signature'] = f"{dataset}-backward_0_1-no_reasoner-rotate-True-256-256-128-rules.txt"
+                elif dataset == "family":
+                    cfg['kge_run_signature'] = "kinship_family-backward_0_1-no_reasoner-rotate-True-256-256-4-rules.txt"
+                elif dataset == "wn18rr":
+                    cfg['kge_run_signature'] = "wn18rr-backward_0_1-no_reasoner-rotate-True-256-256-1-rules.txt"
+                else:
+                    raise ValueError(f"No default KGE run signature defined for dataset '{dataset}' with backend 'tf'. "
+                                     "Set 'kge_run_signature' manually or extend the defaults.")
+            
+            # PyTorch backend - adapt signatures as needed
+            elif backend == 'pytorch':
+                if dataset in {"countries_s3", "countries_s2", "countries_s1"}:
+                    cfg['kge_run_signature'] = f"{dataset}_pytorch_rotate_256"
+                elif dataset == "family":
+                    cfg['kge_run_signature'] = "family_pytorch_rotate_256"
+                elif dataset == "wn18rr":
+                    cfg['kge_run_signature'] = "wn18rr_pytorch_rotate_256"
+                else:
+                    raise ValueError(f"No default KGE run signature defined for dataset '{dataset}' with backend 'pytorch'. "
+                                     "Set 'kge_run_signature' manually or extend the defaults.")
+            
+            # PyKEEN backend - adapt signatures as needed
+            elif backend == 'pykeen':
+                if dataset in {"countries_s3", "countries_s2", "countries_s1"}:
+                    cfg['kge_run_signature'] = f"{dataset}_pykeen_rotate"
+                elif dataset == "family":
+                    cfg['kge_run_signature'] = "family_pykeen_rotate"
+                elif dataset == "wn18rr":
+                    cfg['kge_run_signature'] = "wn18rr_pykeen_rotate"
+                else:
+                    raise ValueError(f"No default KGE run signature defined for dataset '{dataset}' with backend 'pykeen'. "
+                                     "Set 'kge_run_signature' manually or extend the defaults.")
             else:
-                raise ValueError(f"No default KGE run signature defined for dataset '{dataset}'. "
-                                 "Set 'kge_run_signature' manually or extend the defaults.")
+                raise ValueError(f"Unsupported KGE backend: {backend}")
+
 
         namespace = argparse.Namespace(**cfg)
 
         if namespace.padding_states == -1:
             if namespace.dataset_name in {"countries_s3", "countries_s2", "countries_s1"}:
+                if namespace.test_neg_samples != None: print("Overriding test_neg_samples.")
+                namespace.test_neg_samples = None
                 namespace.padding_states = 20
                 namespace.atom_embedding_size = 256
             elif namespace.dataset_name == "family":
@@ -369,10 +466,12 @@ if __name__ == "__main__":
             # args_namespace.engine,
             args_namespace.engine_strategy,
             args_namespace.train_neg_ratio,
-            args_namespace.use_kge_action,
             args_namespace.reward_type,
-            args_namespace.kge_integration_strategy,
-            args_namespace.top_k_curriculum,
+            args_namespace.kge_action,
+            args_namespace.logit_fusion,
+            args_namespace.inference_fusion,
+            args_namespace.pbrs,
+            args_namespace.enable_top_k,
             # args_namespace.top_k_initial,
             # args_namespace.top_k_final,
             # args_namespace.top_k_start_step,

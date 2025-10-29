@@ -83,33 +83,35 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
         self.domain_int2str = {i: name for i, name in enumerate(self.domain_names)}
 
         # ---- Build per-domain pools as a single padded 2-D tensor ----
+        storage_dtype = torch.int32
         domain_lists: List[torch.Tensor] = []
         for name in self.domain_names:
-            ents = torch.tensor(self.domain2idx[name], dtype=torch.int64, device=device)
+            ents = torch.tensor(self.domain2idx[name], dtype=storage_dtype, device=device)
             domain_lists.append(ents)
 
         self.num_domains = len(domain_lists)
         self.max_pool_len = max((t.numel() for t in domain_lists), default=0)
         # (D, Lmax) padded with 0 (padding id); entities start at 1 so 0 is safe
-        self.domain_padded = torch.zeros((self.num_domains, self.max_pool_len), dtype=torch.int64, device=device)
-        self.domain_len = torch.zeros((self.num_domains,), dtype=torch.int64, device=device)
+        self.domain_padded = torch.zeros((self.num_domains, self.max_pool_len), dtype=storage_dtype, device=device)
+        self.domain_len = torch.zeros((self.num_domains,), dtype=storage_dtype, device=device)
         for i, t in enumerate(domain_lists):
             self.domain_padded[i, :t.numel()] = t
             self.domain_len[i] = t.numel()
 
         # ---- Fast maps: entity -> domain_id   and   entity -> position within its domain ----
         max_ent_id = max(entity2domain.keys(), default=0)
-        ent2dom = torch.full((max_ent_id + 1,), -1, dtype=torch.int64, device=device)
-        pos_in_dom = torch.zeros((max_ent_id + 1,), dtype=torch.int64, device=device)
+        ent2dom = torch.full((max_ent_id + 1,), -1, dtype=storage_dtype, device=device)
+        pos_in_dom = torch.zeros((max_ent_id + 1,), dtype=storage_dtype, device=device)
         # We iterate once over our padded pools to fill both maps
         for d, name in enumerate(self.domain_names):
             row = self.domain_padded[d, : self.domain_len[d]]
             # guard: row can be empty for corner cases
             if row.numel() == 0:
                 continue
-            ent2dom[row] = d
+            row_long = row.to(torch.int64)
+            ent2dom[row_long] = d
             # position of each entity in its domain
-            pos_in_dom[row] = torch.arange(row.numel(), device=device, dtype=torch.int64)
+            pos_in_dom[row_long] = torch.arange(row.numel(), device=device, dtype=storage_dtype)
 
         self.ent2dom = ent2dom
         self.pos_in_dom = pos_in_dom
@@ -162,9 +164,15 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
             valid = orig > 0  # ignore padding rows defensively
             if not valid.any():
                 continue
-            d_ids = self.ent2dom[orig[valid]]                     # (N,)
-            pool_len = self.domain_len[d_ids]                     # (N,)
-            pos = self.pos_in_dom[orig[valid]]                    # (N,)
+            orig_valid = orig[valid]
+            if orig_valid.numel() == 0:
+                continue
+
+            orig_valid_long = orig_valid.to(torch.int64)
+            d_ids = self.ent2dom[orig_valid_long]                 # (N,)
+            d_ids_long = d_ids.to(torch.int64)
+            pool_len = self.domain_len[d_ids_long]                # (N,)
+            pos = self.pos_in_dom[orig_valid_long].to(torch.int64)  # (N,)
 
             # rows where the domain only has one entity cannot be corrupted
             can = pool_len > 1
@@ -175,12 +183,15 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
             # Implement per-row high via rand()* (L-1)
             Lm1 = (pool_len[can] - 1).to(torch.float32)
             rnd = torch.floor(torch.rand(Lm1.shape, device=neg.device) * Lm1).to(torch.int64)
-            adj = rnd + (rnd >= pos[can])
-            repl = self.domain_padded[d_ids[can], adj]
+            adj = rnd + (rnd >= pos[can].to(torch.int64))
+            repl = self.domain_padded[d_ids_long[can], adj].to(orig.dtype)  # ensure dtype matches target tensor
 
             # write back only for rows that can be corrupted
-            orig[can] = repl
-            neg[sel, col] = orig
+            if can.any():
+                orig_valid = orig_valid.clone()
+                orig_valid[can] = repl
+                orig[valid] = orig_valid
+                neg[sel, col] = orig
 
         return neg.view(*batch_shape, num_negs_per_pos, 3)
 
@@ -197,12 +208,16 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
                     # enumerate all relations except the current one
                     if self.num_relations <= 1:
                         continue
-                    rels = torch.arange(self.num_relations, device=triple.device, dtype=torch.int64)
+                    rels = torch.arange(
+                        self.num_relations,
+                        device=triple.device,
+                        dtype=triple.dtype,
+                    )
                     rels = rels[rels != triple[1]]
                     if rels.numel() == 0:
                         continue
                     t = triple.repeat(rels.numel(), 1)
-                    t[:, 1] = rels
+                    t[:, 1] = rels.to(t.dtype)
                     parts.append(t)
                 else:
                     e = triple[col].item()
@@ -282,20 +297,22 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
             return
 
         orig = batch[selection, index]
+        orig_long = orig.to(torch.int64)
 
         if pad_idx == 0:
             # very fast path (unchanged)
-            rng = torch.randint(1, max_index, (size,), device=batch.device)
-            shift = (rng >= orig) & (orig > 0)
-            batch[selection, index] = rng + shift.to(torch.int64)
+            rng = torch.randint(1, max_index, (size,), device=batch.device, dtype=torch.int64)
+            shift = (rng >= orig_long) & (orig_long > 0)
+            replacement = (rng + shift.to(rng.dtype)).to(batch.dtype)
+            batch[selection, index] = replacement
         else:
             # rare path – rejection sample until ok
-            cand = torch.randint(0, max_index, (size,), device=batch.device)
-            bad  = (cand == orig) | (cand == pad_idx)
+            cand = torch.randint(0, max_index, (size,), device=batch.device, dtype=torch.int64)
+            bad  = (cand == orig_long) | (cand == pad_idx)
             while bad.any():
-                cand[bad] = torch.randint(0, max_index, (bad.sum(),), device=batch.device)
-                bad = (cand == orig) | (cand == pad_idx)
-            batch[selection, index] = cand
+                cand[bad] = torch.randint(0, max_index, (bad.sum(),), device=batch.device, dtype=torch.int64)
+                bad = (cand == orig_long) | (cand == pad_idx)
+            batch[selection, index] = cand.to(batch.dtype)
 
 
     def corrupt_batch(self, positive_batch: torch.Tensor, num_negs_per_pos: int) -> torch.Tensor:
@@ -363,11 +380,12 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
         negatives: List[torch.Tensor] = []
 
         # pre-compute pools
-        ent_pool = torch.arange(1, self.num_entities + 1, device=device)
+        pool_dtype = positive_batch.dtype
+        ent_pool = torch.arange(1, self.num_entities + 1, device=device, dtype=pool_dtype)
         if self.pad_idx is not None:
             ent_pool = ent_pool[ent_pool != self.pad_idx]
 
-        rel_pool = torch.arange(self.num_relations, device=device)
+        rel_pool = torch.arange(self.num_relations, device=device, dtype=pool_dtype)
 
         for triple in positive_batch:              # loop over batch (B is usually small)
             triple_negs = []
@@ -379,7 +397,7 @@ class BasicNegativeSamplerCustom(BasicNegativeSampler):
                     continue
                 # broadcast-replace
                 reps = triple.repeat(cand.numel(), 1)
-                reps[:, col] = cand
+                reps[:, col] = cand.to(reps.dtype)
                 triple_negs.append(reps)
             if triple_negs:
                 negatives.append(torch.cat(triple_negs, dim=0))
@@ -417,9 +435,16 @@ def get_negatives(
         all corruptions.  Unused slots are padded with `self.index_manager.padding_idx`.
     """    
     
+    expected_dtype = getattr(getattr(self, "index_manager", None), "idx_dtype", torch.int32)
+    if sub_indices.dtype != expected_dtype:
+        raise TypeError(
+            f"sub_indices dtype {sub_indices.dtype} does not match expected {expected_dtype}. "
+            "Ensure environment/index manager emit int32 tensors prior to negative sampling."
+        )
+
     if self.filterer._hashes_sorted.device != sub_indices.device:
         self.filterer = self.filterer.to(sub_indices.device)
-    
+
     B = sub_indices.size(0)
 
     # -------------------------------------------------------
@@ -444,13 +469,13 @@ def get_negatives(
             neg_subs = torch.full(
                 (B, 0, padding_atoms, max_arity + 1),
                 fill_value=self.index_manager.padding_idx,
-                dtype=torch.int32,
+                dtype=expected_dtype,
                 device=device,
             )
             return neg_subs
 
         # ➋  run the filter ONCE on the flattened tensor
-        flat  = torch.cat(neg_batches, dim=0)              # (total_rows, 3)
+        flat  = torch.cat(neg_batches, dim=0).to(expected_dtype)  # (total_rows, 3)
         mask  = self.filterer(flat)                        # True ⇒ keep
 
         # ➌  slice the single mask back into per-batch tensors
@@ -470,7 +495,7 @@ def get_negatives(
         neg_subs = torch.full(
             (B, max_M, padding_atoms, max_arity + 1),
             fill_value=self.index_manager.padding_idx,
-            dtype=torch.int32,
+            dtype=expected_dtype,
             device=device,
         )
         for i, nb in enumerate(filtered_batches):
@@ -488,7 +513,7 @@ def get_negatives(
     cand = self.corrupt_batch(
         pos_batch,
         num_negs_per_pos=overshoot * num_negs
-    ).view(-1, 3)                              # (B·overshoot·num_negs, 3)
+    ).view(-1, 3).to(expected_dtype)           # (B·overshoot·num_negs, 3)
     cand = cand[self.filterer(cand)]
 
     # Drop duplicates & true triples (if filtered=True in the sampler)
@@ -502,7 +527,7 @@ def get_negatives(
     neg_subs = torch.full(
         (B, num_negs, padding_atoms, max_arity + 1),
         fill_value=self.index_manager.padding_idx,
-        dtype=torch.int32,
+        dtype=expected_dtype,
         device=device,
     )
     neg_subs[:, :, 0, 1] = chosen[:, :, 0]
@@ -592,6 +617,7 @@ def get_negatives_from_states_separate(
     original_indices = self._corruption_indices
     
     # Generate head corruptions (corrupt position 0 - head/subject)
+    expected_dtype = getattr(getattr(self, "index_manager", None), "idx_dtype", torch.int32)
     if 'head' in original_scheme:
         self.corruption_scheme = ['head']
         self._corruption_indices = [0]  # head is at position 0 in (h,r,t)
@@ -600,7 +626,12 @@ def get_negatives_from_states_separate(
             device=target_device, num_negs=num_negs,
         )
     else:
-        head_neg_subs = torch.full((B, 0, P, A), fill_value=self.index_manager.padding_idx, dtype=torch.int32, device=target_device)
+        head_neg_subs = torch.full(
+            (B, 0, P, A),
+            fill_value=self.index_manager.padding_idx,
+            dtype=expected_dtype,
+            device=target_device,
+        )
     
     # --- Generate Tail Corruptions ---
     if 'tail' in original_scheme:
@@ -611,7 +642,12 @@ def get_negatives_from_states_separate(
             device=target_device, num_negs=num_negs,
         )
     else:
-        tail_neg_subs = torch.full((B, 0, P, A), fill_value=self.index_manager.padding_idx, dtype=torch.int32, device=target_device)
+        tail_neg_subs = torch.full(
+            (B, 0, P, A),
+            fill_value=self.index_manager.padding_idx,
+            dtype=expected_dtype,
+            device=target_device,
+        )
 
     # Restore original corruption scheme
     self.corruption_scheme = original_scheme

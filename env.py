@@ -49,7 +49,7 @@ class LogicEnv_gym(gym.Env):
                 device: torch.device = torch.device("cpu"),
                 engine: str = 'python',
                 engine_strategy: str = 'rtf', # 'cmp' (complete) or 'rtf' (rules_then_facts)
-                use_kge_action: bool = False,
+                kge_action: bool = False,
                 reward_type: int = 2,
                 shaping_beta: float = 0.0,
                 shaping_gamma: Optional[float] = None,
@@ -82,7 +82,7 @@ class LogicEnv_gym(gym.Env):
         self.facts = facts
 
         self.corruption_mode = corruption_mode
-        self.use_kge_action = use_kge_action
+        self.kge_action = kge_action
 
         if self.corruption_mode:
             self.counter = 0  # Determine whether to sample from positive or negative queries in KGE settings
@@ -139,6 +139,11 @@ class LogicEnv_gym(gym.Env):
             assert (
                 self.sampler.num_negs_per_pos < 3
             ), f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
+
+    def set_shaping_beta(self, beta: float) -> None:
+        """Update the shaping weight used for potential-based reward shaping."""
+        self.shaping_beta = float(beta)
+        self._potential_cache.clear()
 
     def _set_seed(self, seed:int):
         '''Set the seed for the environment. If no seed is provided, generate a random one'''
@@ -480,7 +485,7 @@ class LogicEnv_gym(gym.Env):
         if self.endt_action or self.endf_action:
             state = [atom for atom in state if atom.predicate not in self.end_predicates]
 
-        if self.use_kge_action and state:
+        if self.kge_action and state:
             filtered_state = [term for term in state if not term.predicate.endswith('_kge')]
             state = [Term(predicate='True', args=())] if not filtered_state else filtered_state
             if len(state) == 1 and state[0].predicate in terminal_predicates:
@@ -513,7 +518,7 @@ class LogicEnv_gym(gym.Env):
                 counter += 1
                 current_state = derived_states[0].copy()    
 
-                if self.use_kge_action and current_state:
+                if self.kge_action and current_state:
                     filtered_state = [term for term in current_state if not term.predicate.endswith('_kge')]
                     current_state = [Term(predicate='True', args=())] if not filtered_state else filtered_state
                     # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
@@ -578,7 +583,7 @@ class LogicEnv_gym(gym.Env):
 
         # KGE ACTION MODULE
         # It uses the original `state` variable to ensure alignment.
-        if self.use_kge_action and state and state[0].predicate not in terminal_predicates:
+        if self.kge_action and state and state[0].predicate not in terminal_predicates:
             kge_pred_name = f"{state[0].predicate}_kge"
             kge_action_term = Term(predicate=kge_pred_name, args=state[0].args)
             
@@ -688,8 +693,23 @@ class LogicEnv_gym(gym.Env):
                     reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
                 else:
                     reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
+        elif self.reward_type == 4:
+            if label == 1:
+                if done and successful:
+                    reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+                elif done and not successful:
+                    reward = torch.tensor(-1.0, device=self.device, dtype=self.reward_dtype)
+                else:
+                    reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
+            if label == 0:
+                if done and successful:
+                    reward = torch.tensor(-1.0, device=self.device, dtype=self.reward_dtype)
+                elif done and not successful:
+                    reward = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
+                else:
+                    reward = torch.zeros((), device=self.device, dtype=self.reward_dtype)
         else: 
-            raise ValueError(f"Invalid reward type: {self.reward_type}. Choose from 0, 1, or 2.")
+            raise ValueError(f"Invalid reward type: {self.reward_type}. Choose from 0-4.")
 
         return done, reward, successful
     

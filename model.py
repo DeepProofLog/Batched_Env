@@ -198,19 +198,25 @@ class PolicyNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, embed_dim)
         )
-    
-    def forward(self, obs_embeddings, action_embeddings, action_mask):
-        # Process observation embeddings through initial transformation
-        x = self.obs_transform(obs_embeddings)
-        # Pass through a series of residual blocks to deepen the representation
+
+    def _encode_embeddings(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """Apply shared residual stack to observation or action embeddings."""
+        original_shape = embeddings.shape
+        flat_embeddings = embeddings.reshape(-1, original_shape[-1])
+        x = self.obs_transform(flat_embeddings)
         for block in self.res_blocks:
             residual = x
             x = block(x)
-            x = x + residual  # Residual connection for improved gradient flow
-        # Project back to the original embedding space
-        x = self.out_transform(x)
+            x = x + residual
+        encoded = self.out_transform(x)
+        return encoded.view(*original_shape[:-1], -1)
+    
+    def forward(self, obs_embeddings, action_embeddings, action_mask):
+        # Process observation embeddings through initial transformation
+        encoded_obs = self._encode_embeddings(obs_embeddings)
+        encoded_actions = self._encode_embeddings(action_embeddings)
         # Compute similarity (dot product) between observation and action embeddings
-        logits = torch.matmul(x, action_embeddings.transpose(-2, -1)).squeeze(-2)
+        logits = torch.matmul(encoded_obs, encoded_actions.transpose(-2, -1)).squeeze(-2)
         # logits = F.cosine_similarity(x, action_embeddings, dim=-1) # Compare along the embedding dimension
 
         # action_mask: (batch, pad_states) with 1 for valid slots
@@ -380,45 +386,34 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
 
     def _init_kge_settings(self, kwargs: Dict[str, object]) -> None:
         """Extract and document kwargs related to KGE-assisted policies."""
-        # Core integration knobs shared by all KGE strategies
-        self.kge_integration_strategy = kwargs.pop("kge_integration_strategy", None)
+        self.enable_kge_action = bool(kwargs.pop("enable_kge_action", False))
+        self.enable_logit_fusion = bool(kwargs.pop("enable_logit_fusion", False))
         self.kge_inference_engine = kwargs.pop("kge_inference_engine", None)
         self.index_manager = kwargs.pop("index_manager", None)
         self.debug_scores = kwargs.pop("debug_scores", False)
 
-        # Parameters used when the strategy is 'train_bias' (trainable fusion MLP)
+        # Parameters for trainable fusion MLP
         self.kge_bias_hidden_dim = kwargs.pop("kge_bias_hidden_dim", 32)
 
-        # Parameters used when the strategy is 'logit_shaping' (biasing policy logits)
+        # KGE logit gain parameters
         self.kge_logit_gain_initial = float(kwargs.pop("kge_logit_gain_initial", 0.0))
-        self.kge_logit_gain_final = float(kwargs.pop("kge_logit_gain_final", self.kge_logit_gain_initial))
-        self.kge_logit_gain_anneal_steps = int(kwargs.pop("kge_logit_gain_anneal_steps", 1))
-        self.kge_logit_gain_warmup_steps = int(kwargs.pop("kge_logit_gain_warmup_steps", 0))
         self.kge_logit_transform = kwargs.pop("kge_logit_transform", "log")
         self.kge_logit_eps = float(kwargs.pop("kge_logit_eps", 1e-9))
 
-        # Derived state for gain scheduling
-        self.kge_logit_gain_anneal_steps = max(0, self.kge_logit_gain_anneal_steps)
-        self.kge_logit_gain_warmup_steps = max(0, self.kge_logit_gain_warmup_steps)
+        # Current gain value
         self.kge_logit_gain = self.kge_logit_gain_initial
-        self._last_kge_gain_step = -1
 
     def _init_top_k_settings(self, kwargs: Dict[str, object]) -> None:
         """Extract and store kwargs related to top-k action pruning."""
-        self.top_k_actions = kwargs.pop("top_k_actions", None)
+        self.enable_top_k = bool(kwargs.pop("enable_top_k", False))
+        self.top_k_value = kwargs.pop("top_k_value", None)
         self.top_k_preserve_special_predicates = kwargs.pop("top_k_preserve_special_predicates", True)
         self.debug_top_k_pruning = kwargs.pop("debug_top_k_pruning", False)
         self.top_k_debug_freq = kwargs.pop("top_k_debug_freq", 200)
         self.top_k_debug_max_envs = kwargs.pop("top_k_debug_max_envs", 3)
         self.debug_log_prob_anomalies = kwargs.pop("debug_log_prob_anomalies", True)
-        if isinstance(self.top_k_actions, int) and self.top_k_actions <= 0:
-            self.top_k_actions = None
-
-        self.top_k_curriculum = kwargs.pop("top_k_curriculum", None)
-        self.top_k_initial = kwargs.pop("top_k_initial", None)
-        self.top_k_final = kwargs.pop("top_k_final", None)
-        if self.top_k_curriculum:
-            self.top_k_actions = self.top_k_initial
+        if isinstance(self.top_k_value, int) and self.top_k_value <= 0:
+            self.top_k_value = None
 
     def _extract_action_context(self, features: torch.Tensor | Tuple[torch.Tensor, ...]) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """Unpack observation, action embeddings, and mask from features if available."""
@@ -433,11 +428,23 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
                     return obs_embeddings, action_embeddings, action_mask
         return None
 
+    def _setup_kge_bias_module(self) -> None:
+        """Build the KGE bias fusion module when training it jointly with the policy.
+        Used by train_bias strategy."""
+        self.kge_fusion_mlp: Optional[nn.Module] = None
+        if not self.enable_kge_action:
+            return
 
+        self.kge_fusion_mlp = nn.Sequential(
+            nn.Linear(1, self.kge_bias_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.kge_bias_hidden_dim, 1),
+        )
+        self.kge_fusion_mlp.to(self.device)
+        
+        if hasattr(self, "optimizer") and self.optimizer is not None:
+            self.optimizer.add_param_group({"params": self.kge_fusion_mlp.parameters()})
 
-    # -------------------------------------
-    # KGE TOK-K FILTERING HELPERS
-    # -------------------------------------
 
     def _register_special_predicates(self) -> None:
         """Cache indices of special predicates so they can be preserved in top-k pruning.
@@ -456,6 +463,10 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             special_tensor = torch.empty(0, dtype=torch.int64)
         self.register_buffer("special_predicate_indices", special_tensor, persistent=False)
 
+
+    # -------------------------------------
+    # KGE TOP-K FILTERING HELPERS
+    # -------------------------------------
 
 
     def _build_special_action_mask(
@@ -497,8 +508,9 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         """Restrict logits to the top-k actions ranked by the value network.
         Used by top_k_filtering strategy."""
         if (
-            self.top_k_actions is None
-            or self.top_k_actions <= 0
+            not self.enable_top_k
+            or self.top_k_value is None
+            or self.top_k_value <= 0
             or action_context is None
         ):
             return action_logits
@@ -509,7 +521,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         action_values = self.mlp_extractor.value_network(action_embeddings).detach()
         action_values = action_values.masked_fill(~mask_bool, float("-inf"))
 
-        k = min(self.top_k_actions, action_values.shape[1])
+        k = min(self.top_k_value, action_values.shape[1])
         _, topk_indices = torch.topk(action_values, k=k, dim=1)
         selection_mask = torch.zeros_like(action_values, dtype=torch.bool)
         selection_mask.scatter_(1, topk_indices, True)
@@ -635,7 +647,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
                 valid_count = int(mask_bool[env_idx].sum().item())
                 sel_count = int(selection_mask[env_idx].sum().item())
                 top_indices = topk_indices[env_idx][:sel_count].cpu().tolist()
-                _ = action_values[env_idx, top_indices].detach().cpu().tolist() if top_indices else []
+                top_values = action_values[env_idx, top_indices].detach().cpu().tolist() if top_indices else []
                 print(f"[TopK][env {env_idx}] valid={valid_count} selected={sel_count} top_indices={top_indices} top_values={top_values}")
 
         self._top_k_debug_counter = counter + 1
@@ -646,41 +658,8 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
     # -------------------------------------
 
     def set_kge_logit_gain(self, gain: float) -> None:
-        """Manually set the gain applied to KGE-based logit shaping.
-        Used by kge logit_shaping strategy."""
+        """Directly set the KGE logit gain scalar. Called by annealing callback."""
         self.kge_logit_gain = float(gain)
-
-    def update_kge_logit_gain(self, num_timesteps: int) -> None:
-        """Anneal the logit shaping gain based on global training timesteps.
-        Used by kge logit_shaping strategy in the callback.
-        Ex: if initial=1.0, final=0.1, warmup=1000, anneal=300k:
-        - steps 0-1000: gain=1.0
-        - steps 1000-301k: gain linearly annealed from 1.0 to 0.1
-        - steps 301k+: gain=0.1"""
-        if self.kge_integration_strategy != "logit_shaping":
-            return
-        if num_timesteps == self._last_kge_gain_step:
-            return
-        self._last_kge_gain_step = num_timesteps
-
-        if self.kge_logit_gain_initial == self.kge_logit_gain_final:
-            self.kge_logit_gain = self.kge_logit_gain_final
-            return
-
-        if num_timesteps <= self.kge_logit_gain_warmup_steps:
-            self.kge_logit_gain = self.kge_logit_gain_initial
-            return
-
-        if self.kge_logit_gain_anneal_steps <= 0:
-            self.kge_logit_gain = self.kge_logit_gain_final
-            return
-        # Formula: 
-        # progress = max((t - warmup) / anneal, 0.0), clamped to [0,1]
-        # gain = initial + progress * (final_gain - initial_gain)
-        progressed = num_timesteps - self.kge_logit_gain_warmup_steps
-        progress = min(max(progressed / float(self.kge_logit_gain_anneal_steps), 0.0), 1.0)
-        delta = self.kge_logit_gain_final - self.kge_logit_gain_initial
-        self.kge_logit_gain = self.kge_logit_gain_initial + progress * delta
 
     def _apply_kge_logit_shaping(
         self,
@@ -713,19 +692,15 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         obs: PyTorchObs,
         action_context: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
     ) -> bool:
-        """Sanity checks before attempting to bias logits with KGE scores.
-        Used by kge logit_shaping strategy."""
-        if getattr(self, "kge_integration_strategy", None) != "logit_shaping":
-            return False
-        if self.kge_inference_engine is None or self.index_manager is None:
-            return False
-        if not isinstance(obs, dict):
-            return False
-        if action_context is None:
-            return False
-        if abs(self.kge_logit_gain) <= 1e-12:
-            return False
-        return True
+        """Check if KGE logit shaping should be applied."""
+        return (
+            self.enable_logit_fusion
+            and self.kge_inference_engine is not None
+            and self.index_manager is not None
+            and isinstance(obs, dict)
+            and action_context is not None
+            and abs(self.kge_logit_gain) > 1e-12
+        )
 
     def _gather_kge_candidates(
         self,
@@ -745,24 +720,24 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         candidates: Dict[str, List[Tuple[int, int]]] = {}
         for b_idx, a_idx in valid_positions.tolist():
             atom_tensor = first_atoms[b_idx, a_idx]
+            
             if padding_idx is not None and int(atom_tensor[0].item()) == padding_idx:
                 continue
-            atom_tensor_cpu = atom_tensor.detach().to("cpu")
-            atom_str = self.index_manager.subindex_to_str(atom_tensor_cpu)
+            
+            atom_str = self.index_manager.subindex_to_str(atom_tensor.detach().to("cpu"))
             if not atom_str:
                 continue
+            
             predicate_name = atom_str.split("(", 1)[0]
-            if (
-                predicate_name in {"True", "False"}
+            if (predicate_name in {"True", "False"}
                 or predicate_name in special_predicates
                 or predicate_name.lower().startswith("end")
-                or predicate_name.endswith("_kge")
-            ):
+                or predicate_name.endswith("_kge")):
                 continue
+            
             candidates.setdefault(atom_str, []).append((b_idx, a_idx))
 
-        atom_list = list(candidates.keys())
-        return candidates, atom_list
+        return candidates, list(candidates.keys())
 
     def _transform_kge_scores(
         self,
@@ -773,13 +748,13 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         """Apply the selected transform to raw KGE scores.
         Used by kge logit_shaping strategy."""
         score_tensor = torch.as_tensor(scores, device=device, dtype=dtype)
-        transform = (self.kge_logit_transform or "log").lower()
-        if transform in {"identity", "none"}:
-            transformed_scores = score_tensor
-        else:
-            clamped_scores = torch.clamp(score_tensor, min=self.kge_logit_eps)
-            transformed_scores = torch.log(clamped_scores)
-        return torch.nan_to_num(transformed_scores, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        if (self.kge_logit_transform or "log").lower() in {"identity", "none"}:
+            return torch.nan_to_num(score_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        clamped_scores = torch.clamp(score_tensor, min=self.kge_logit_eps)
+        transformed = torch.log(clamped_scores)
+        return torch.nan_to_num(transformed, nan=0.0, posinf=0.0, neginf=0.0)
 
     @staticmethod
     def _scatter_kge_bias(
@@ -803,7 +778,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         """
         self.mlp_extractor = CustomNetwork(
             last_layer_dim_pi=self.features_extractor._features_dim,
-            last_layer_dim_vf= 1, # self.features_extractor._features_dim,
+            last_layer_dim_vf=1,
             embed_dim=self.features_extractor_kwargs['features_dim']
         )
 
@@ -812,26 +787,10 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
     # KGE_ACTION BIAS 
     # -------------------------------------
 
-    def _setup_kge_bias_module(self) -> None:
-        """Build the KGE bias fusion module when training it jointly with the policy.
-        Used by train_bias strategy."""
-        self.kge_fusion_mlp: Optional[nn.Module] = None
-        if self.kge_integration_strategy != "train_bias":
-            return
-
-        self.kge_fusion_mlp = nn.Sequential(
-            nn.Linear(1, self.kge_bias_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.kge_bias_hidden_dim, 1),
-        )
-        self.kge_fusion_mlp.to(self.device)
-        if hasattr(self, "optimizer") and self.optimizer is not None:
-            self.optimizer.add_param_group({"params": self.kge_fusion_mlp.parameters()})
-
     def get_kge_log_probs(self, obs: PyTorchObs, actions: torch.Tensor, log_prob: torch.Tensor) -> torch.Tensor:
-        """Replace or adjust the log_prob of chosen actions using KGE scores.
-        Used by kge train_bias strategy."""
-
+        """Replace or adjust log_prob of KGE actions using KGE scores."""
+        if not self.enable_kge_action:
+            return log_prob
         # Squeeze the actions tensor if needed and get the predicate indices of chosen actions
         actions_squeezed = actions.squeeze(1) if actions.ndim > 1 else actions
         batch_indices = torch.arange(actions_squeezed.shape[0], device=actions_squeezed.device)
@@ -842,35 +801,32 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         # Identify which chosen actions correspond to KGE-specific predicates
         # (avoid predictates like True/False/Endf and special ones)
         kge_indices_tensor = getattr(self, "kge_indices_tensor", None)
-        kge_mask = torch.isin(
-            chosen_action_pred_indices,
-            kge_indices_tensor.to(chosen_action_pred_indices.device),
-        )
+        kge_mask = torch.isin(chosen_action_pred_indices, kge_indices_tensor.to(chosen_action_pred_indices.device))
         kge_batch_indices = kge_mask.nonzero(as_tuple=False).squeeze(-1)
-        atoms_to_predict, original_indices = self._prepare_kge_atoms(
-            kge_batch_indices,
-            chosen_action_sub_indices,
-        )
+        
+        if kge_batch_indices.numel() == 0:
+            return log_prob
 
-        # Get KGE scores and adjust log_prob accordingly
-        predict_batch = getattr(self.kge_inference_engine, "predict_batch", None)
-        scores = predict_batch(atoms_to_predict)
+        atoms_to_predict, original_indices = self._prepare_kge_atoms(kge_batch_indices, chosen_action_sub_indices)
+        if not atoms_to_predict:
+            return log_prob
+
+        scores = self.kge_inference_engine.predict_batch(atoms_to_predict)
         kge_log_probs = torch.log(torch.as_tensor(scores, device=log_prob.device, dtype=log_prob.dtype) + 1e-9)
 
-        # View as flat tensor for easy indexing
-        idx_tensor = torch.tensor(original_indices, device=log_prob.device, dtype=torch.int32)
-        flat_lp = log_prob.view(-1)
-
-        if getattr(self, "debug_scores", False):
+        if self.debug_scores:
             for atom, score_value, log_value in zip(atoms_to_predict, scores, kge_log_probs.tolist()):
                 print(f"KGE atom {atom}: score={score_value} -> logprob={log_value}")
 
-        strategy = getattr(self, "kge_integration_strategy", None)
-        if strategy == "train_bias":
+        idx_tensor = torch.tensor(original_indices, device=log_prob.device, dtype=torch.int32)
+        flat_lp = log_prob.view(-1)
+
+        if self.kge_fusion_mlp is not None:
             kge_bias = self.kge_fusion_mlp(kge_log_probs.unsqueeze(-1)).squeeze(-1)
             flat_lp[idx_tensor] = flat_lp[idx_tensor] + kge_bias
         else:
             flat_lp[idx_tensor] = kge_log_probs
+        
         return flat_lp.view_as(log_prob)
 
     def _prepare_kge_atoms(
@@ -884,13 +840,17 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         original_indices: List[int] = []
 
         predicate_lookup = getattr(self.index_manager, "predicate_idx2str", {})
+        
         for batch_idx in kge_batch_indices.tolist():
             kge_action_sub_index = chosen_action_sub_indices[batch_idx, 0, :]
             kge_action_str = self.index_manager.subindex_to_str(kge_action_sub_index)
             pred_idx = int(kge_action_sub_index[0].item())
             kge_pred_str = predicate_lookup.get(pred_idx)
+            
             if not (kge_action_str and kge_pred_str):
                 continue
+            
+            # Remove '_kge' suffix to get original predicate
             original_pred_str = kge_pred_str.removesuffix("_kge")
             original_atom_str = f"{original_pred_str}{kge_action_str[len(kge_pred_str):]}"
             atoms_to_predict.append(original_atom_str)
@@ -990,16 +950,11 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             print(f"{prefix} Actions for bad batch entries:", actions[idx_tensor])
 
     def forward(self, obs: torch.Tensor, deterministic: bool = False, verbose: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Forward pass in all the networks (actor and critic)
-
-        :param obs: Observation
-        :param deterministic: Whether to sample or use deterministic actions
-        :return: action, value and log probability of the action
-        """
-        del verbose  # preserved for backwards compatibility
+        """Forward pass in actor and critic networks."""
+        del verbose
         features = self.extract_features(obs)
         action_context = self._extract_action_context(features)
+        
         if self.share_features_extractor:
             latent_pi, latent_vf = self.mlp_extractor(features)
         else:
@@ -1036,28 +991,20 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             show_actions=True,
         )
 
-        # If a KGE action was taken, overwrite its log_prob with the KGE score
-        if self.kge_inference_engine is not None:
+        if self.enable_kge_action:
             log_prob = self.get_kge_log_probs(obs, actions, log_prob)
-        # print(f"Actions: {actions}, Values: {values}, Score: {log_prob.exp()}->logprob:{log_prob}")
+        
         if self.inference_second_action:
             log_prob = self._get_second_best_log_prob(obs, actions, action_logits, distribution, log_prob)
+        
         return actions, values, log_prob
 
 
     def evaluate_actions(self, obs: PyTorchObs, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Evaluate actions according to the current policy,
-        given the observations.
-
-        :param obs: Observation
-        :param actions: Actions
-        :return: estimated value, log likelihood of taking those actions
-            and entropy of the action distribution.
-        """
-        # Preprocess the observation if needed
+        """Evaluate actions according to current policy."""
         features = self.extract_features(obs)
         action_context = self._extract_action_context(features)
+        
         if self.share_features_extractor:
             latent_pi, latent_vf = self.mlp_extractor(features)
         else:
@@ -1091,8 +1038,7 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             logits_heading="Action logits summary for affected rows:",
         )
 
-        # If a KGE action was taken, overwrite its log_prob with the KGE score
-        if self.kge_inference_engine is not None:
+        if self.enable_kge_action:
             log_prob = self.get_kge_log_probs(obs, actions, log_prob)
 
         if self.inference_second_action:
@@ -1101,24 +1047,13 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         return values, log_prob, entropy
 
     def predict_values(self, obs: PyTorchObs) -> torch.Tensor:
-        """
-        Get the estimated values according to the current policy given the observations.
-
-        :param obs: Observation
-        :return: the estimated values.
-        """
+        """Get estimated values according to current policy."""
         features = self.extract_features(obs)
         latent_vf = self.mlp_extractor.forward_critic(features)
-        values = latent_vf
-        return values
+        return latent_vf
 
     def get_distribution(self, obs: PyTorchObs) -> Distribution:
-        """
-        Get the current policy distribution given the observations.
-
-        :param obs:
-        :return: the action distribution.
-        """
+        """Get current policy distribution given observations."""
         features = super().extract_features(obs, self.pi_features_extractor)
         action_context = self._extract_action_context(features)
         latent_pi = self.mlp_extractor.forward_actor(features)

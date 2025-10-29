@@ -5,3 +5,8 @@ plots/*
 runs/*
 profiler_traces/
 __pycache__/
+train_new.py
+runner_new.py
+model_new.py
+runs_info/
+runs_info_fam/
