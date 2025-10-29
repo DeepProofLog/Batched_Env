@@ -29,15 +29,22 @@ if __name__ == "__main__":
         # General experiment configuration
 
         # Dataset params
-        'dataset_name': 'family',
-        'eval_neg_samples': 3,
-        'test_neg_samples': 100,
+        'dataset_name': 'countries_s3',
+
+        'eval_neg_samples': 4,
+        'test_neg_samples': None, # 5
+
         'train_depth': None, # {-1,3}
         'valid_depth': None,
         'test_depth': None,
+
         'n_train_queries': None,
         'n_eval_queries': 500,
         'n_test_queries': None,
+
+        'prob_facts': True,
+        'topk_facts': None,
+        'topk_facts_threshold': 0.3,
 
         # Model params
         'model_name': 'PPO',
@@ -51,7 +58,7 @@ if __name__ == "__main__":
         'seed': [0],
         'timesteps_train': 700000,
         'restore_best_val_model': True,
-        'load_model': True,
+        'load_model': False,
         'save_model': True,
         'n_envs': 128,
         'n_steps': 128,
@@ -241,6 +248,25 @@ if __name__ == "__main__":
         cfg['inference_success_only'] = bool(cfg.get('inference_success_only', True))
         cfg['pbrs'] = bool(cfg.get('pbrs', False))
         cfg['enable_top_k'] = bool(cfg.get('enable_top_k', False))
+        cfg['prob_facts'] = bool(cfg.get('prob_facts', False))
+
+        topk_facts = cfg.get('topk_facts')
+        if topk_facts is None:
+            cfg['topk_facts'] = None
+        elif isinstance(topk_facts, str) and topk_facts.strip().lower() in {'none', ''}:
+            cfg['topk_facts'] = None
+        elif isinstance(topk_facts, bool):
+            cfg['topk_facts'] = None if not topk_facts else int(topk_facts)
+        else:
+            cfg['topk_facts'] = int(topk_facts)
+
+        topk_threshold = cfg.get('topk_facts_threshold')
+        if topk_threshold is None:
+            cfg['topk_facts_threshold'] = None
+        elif isinstance(topk_threshold, str) and topk_threshold.strip().lower() in {'none', ''}:
+            cfg['topk_facts_threshold'] = None
+        else:
+            cfg['topk_facts_threshold'] = float(topk_threshold)
 
         # Set eval_hybrid_success_only based on inference_success_only
         if cfg['inference_fusion']:
@@ -472,6 +498,9 @@ if __name__ == "__main__":
             args_namespace.inference_fusion,
             args_namespace.pbrs,
             args_namespace.enable_top_k,
+            args_namespace.prob_facts,
+            args_namespace.topk_facts,
+            args_namespace.topk_facts_threshold,
             # args_namespace.top_k_initial,
             # args_namespace.top_k_final,
             # args_namespace.top_k_start_step,

@@ -1,3 +1,0 @@
-locatedInCR(eritrea,africa)
-locatedInCR(timor_leste,asia)
-locatedInCR(ghana,africa)

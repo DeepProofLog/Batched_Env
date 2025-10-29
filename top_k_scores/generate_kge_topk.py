@@ -84,6 +84,7 @@ def topk_scored_atoms(
     role_name: str,
     top_k: int,
     batch_size: int = 256,
+    existing_facts: Optional[set] = None,
 ) -> List[Tuple[Tuple[str, str, str], float]]:
     if top_k <= 0:
         return []
@@ -91,9 +92,31 @@ def topk_scored_atoms(
     heap: List[Tuple[float, Tuple[str, str, str]]] = []
     for constants_batch in batched(other_constants, batch_size):
         if role_name == "head":
-            atoms = [(predicate_name, anchor_constant, other) for other in constants_batch]
+            atoms = [(predicate_name, anchor_constant, other) for other in constants_batch if other != anchor_constant]
         else:
-            atoms = [(predicate_name, other, anchor_constant) for other in constants_batch]
+            atoms = [(predicate_name, other, anchor_constant) for other in constants_batch if other != anchor_constant]
+
+        if not atoms:
+            continue
+
+        # For locatedInCR predicate with role "head", filter out candidates 
+        # where a fact with the same predicate and first constant (head) already exists
+        # When role_name == "head", atoms are (predicate, anchor_constant, other)
+        # where anchor_constant is the country (head/first arg) and we're varying continents (tail/second arg)
+        if predicate_name == "locatedInCR" and role_name == "head" and existing_facts is not None:
+            filtered_atoms = []
+            for atom in atoms:
+                # atom is (predicate, head, tail) where head = anchor_constant (the country)
+                # Check if there's any existing fact with same predicate and head (first constant)
+                head_constant = atom[1]
+                # Look for any fact matching the pattern: locatedInCR(head_constant, *)
+                has_existing_fact = any(
+                    fact.startswith(f"{predicate_name}({head_constant},") 
+                    for fact in existing_facts
+                )
+                if not has_existing_fact:
+                    filtered_atoms.append(atom)
+            atoms = filtered_atoms
 
         if not atoms:
             continue
@@ -110,37 +133,63 @@ def topk_scored_atoms(
     return [(atom, score) for score, atom in heap]
 
 
-def load_facts(output_path: str, min_score: float = 0.0) -> List[Tuple[str, float, int]]:
-    facts: List[Tuple[str, float, int]] = []
-    if not os.path.exists(output_path):
-        return facts
-
-    with open(output_path, "r", encoding="ascii") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            parts = line.rsplit(" ", 2)
-            if len(parts) != 3:
-                continue
-
-            fact_text, score_text, rank_text = parts
-            try:
-                score = float(score_text)
-                rank = int(rank_text)
-            except ValueError:
-                continue
-
-            if score >= min_score:
-                facts.append((fact_text, score, rank))
-
-    return facts
+def load_existing_facts(dataset_name: str, data_path: str) -> set:
+    """Load training, validation, and test facts to filter them out from predictions."""
+    existing_facts = set()
+    
+    # Load training facts
+    train_file = os.path.join(data_path, dataset_name, "train.txt")
+    if os.path.exists(train_file):
+        with open(train_file, "r", encoding="ascii") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                fact = line.rstrip(".")
+                existing_facts.add(fact)
+        print(f"Loaded {len(existing_facts)} training facts from {train_file}")
+    else:
+        print(f"Warning: Training file not found at {train_file}")
+    
+    # Load validation facts
+    val_file = os.path.join(data_path, dataset_name, "valid.txt")
+    initial_count = len(existing_facts)
+    if os.path.exists(val_file):
+        with open(val_file, "r", encoding="ascii") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                fact = line.rstrip(".")
+                existing_facts.add(fact)
+        val_count = len(existing_facts) - initial_count
+        print(f"Loaded {val_count} validation facts from {val_file}")
+    else:
+        print(f"Warning: Validation file not found at {val_file}")
+    
+    # Load test facts
+    test_file = os.path.join(data_path, dataset_name, "test.txt")
+    initial_count = len(existing_facts)
+    if os.path.exists(test_file):
+        with open(test_file, "r", encoding="ascii") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                fact = line.rstrip(".")
+                existing_facts.add(fact)
+        test_count = len(existing_facts) - initial_count
+        print(f"Loaded {test_count} test facts from {test_file}")
+    else:
+        print(f"Warning: Test file not found at {test_file}")
+    
+    print(f"Total facts to filter out: {len(existing_facts)}")
+    return existing_facts
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate top-k KGE facts for each constant and role.")
-    parser.add_argument("--dataset", default="wn18rr", help="Dataset name (e.g., family, wn18rr, countries_s3).")
+    parser.add_argument("--dataset", default="countries_s3", help="Dataset name (e.g., family, wn18rr, countries_s3).")
     parser.add_argument("--data-path", default="./data", help="Base path that holds dataset folders.")
     parser.add_argument(
         "--checkpoint-dir",
@@ -149,7 +198,7 @@ def main() -> None:
     )
     parser.add_argument("--run-signature", default=None, help="Override run signature for the KGE checkpoint.")
     parser.add_argument("--output", default=None, help="Output txt file. Defaults to runs/top{k}_<dataset>_facts.txt")
-    parser.add_argument("--k", type=int, default=2, help="Number of top predictions to keep per constant and role.")
+    parser.add_argument("--k", type=int, default=10, help="Number of top predictions to keep per constant and role.")
     parser.add_argument("--seed", type=int, default=0, help="Seed for the KGE inference engine.")
     parser.add_argument(
         "--runtime-cache-size",
@@ -173,6 +222,9 @@ def main() -> None:
     output_path = resolve_output_path(args.output, args.dataset, args.k)
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Load training and test facts to filter them out
+    existing_facts = load_existing_facts(args.dataset, args.data_path)
 
     engine = KGEInference(
         dataset_name=args.dataset,
@@ -267,6 +319,18 @@ def main() -> None:
                 if not constants or not other_constants:
                     continue
 
+                # Skip relations locatedInCS and locatedInSR entirely
+                if predicate.name in ["locatedInCS", "locatedInSR"]:
+                    continue
+
+                # For locatedInCR, only process when role is "head" (varying continent for fixed country)
+                # Skip when role is "tail" (varying country for fixed continent)
+                if predicate.name == "locatedInCR" and role_name == "tail":
+                    continue
+
+                # For locatedInCR, use top_k=1, otherwise use args.k
+                current_k = 1 if predicate.name == "locatedInCR" else args.k
+
                 start_constant_index = 0
                 if resuming:
                     if predicate_index < resume_predicate_idx:
@@ -299,12 +363,15 @@ def main() -> None:
                         anchor_constant=constant,
                         other_constants=other_constants,
                         role_name=role_name,
-                        top_k=args.k,
+                        top_k=current_k,
+                        existing_facts=existing_facts,
                     )
                     for rank, (atom_tuple, score) in enumerate(scored_pairs, start=1):
                         # print(f"    {atom_tuple} -> {score:.6f}")
                         fact_str = f"{atom_tuple[0]}({atom_tuple[1]},{atom_tuple[2]})"
-                        f.write(f"{fact_str} {score:.6f} {rank}\n")
+                        # Filter out facts that are already in training or test data
+                        if fact_str not in existing_facts:
+                            f.write(f"{fact_str} {score:.6f} {rank}\n")
                     f.flush()
                     current_state: ProgressState = {
                         "predicate_index": predicate_index,

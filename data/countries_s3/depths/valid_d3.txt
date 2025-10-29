@@ -1,2 +1,0 @@
-locatedInCR(denmark,europe)
-locatedInCR(panama,americas)

@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import math
 import random
+import warnings
 
 import gymnasium as gym
 import numpy as np
@@ -303,22 +304,46 @@ class LogicEnv_gym(gym.Env):
             num_to_generate = (
                 len(self.corruption_scheme) if len(self.corruption_scheme) > 1 else 1
             )
-            negative_samples = self.sampler.get_negatives_from_states(
-                state, self.device, num_negs=num_to_generate
-            )
-            selected = negative_samples
-            if not isinstance(selected, list):
-                selected = [selected]
-            if len(self.corruption_scheme) > 1:
-                if not hasattr(self, "negation_toggle"):
-                    self.negation_toggle = 0
-                selected = [negative_samples[self.negation_toggle]]
-                self.negation_toggle = 1 - self.negation_toggle
+            
+            # Retry sampling if negative generation fails
+            max_retries = 5
+            for attempt in range(max_retries):
+                negative_samples = self.sampler.get_negatives_from_states(
+                    state, self.device, num_negs=num_to_generate
+                )
+                selected = negative_samples
+                if not isinstance(selected, list):
+                    selected = [selected]
+                if len(self.corruption_scheme) > 1:
+                    if not hasattr(self, "negation_toggle"):
+                        self.negation_toggle = 0
+                    selected = [negative_samples[self.negation_toggle]]
+                    self.negation_toggle = 1 - self.negation_toggle
 
-            assert len(selected) == 1, f"Length of negatives should be 1, but is {len(selected)}"
-            state = selected[0]
-            label = 0
-            depth = None
+                # Check if we successfully generated a negative sample
+                if len(selected) > 0 and (len(selected) != 1 or selected[0]):
+                    break
+                    
+                # If this is not the last attempt, sample a new positive query to try again
+                if attempt < max_retries - 1:
+                    state, _, depth = self.get_random_queries(
+                        self.queries,
+                        n=1,
+                        labels=self.labels,
+                        depths=self.query_depths,
+                        return_depth=True,
+                    )
+            
+            # After retries, check if we have a valid negative
+            if len(selected) == 0 or (len(selected) == 1 and not selected[0]):
+                # All retries failed, fall back to positive sample
+                pass  # Keep original state and label=1
+                warnings.warn("Negative sampling produced fewer candidates than requested: got 0, expected 1", RuntimeWarning)
+            else:
+                assert len(selected) == 1, f"Length of negatives should be 1, but is {len(selected)}"
+                state = selected[0]
+                label = 0
+                depth = None
         self.counter += 1
         return state, label, depth
 

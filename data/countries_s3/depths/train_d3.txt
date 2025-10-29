@@ -1,3 +1,0 @@
-locatedInCR(estonia,europe)
-locatedInCR(moldova,europe)
-locatedInCR(panama,americas)

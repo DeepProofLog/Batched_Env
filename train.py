@@ -123,6 +123,9 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         train_depth=args.train_depth,
         valid_depth=args.valid_depth,
         test_depth=args.test_depth,
+        prob_facts=args.prob_facts,
+        topk_facts=args.topk_facts,
+        topk_facts_threshold=args.topk_facts_threshold,
     )
 
     # Respect caps from args while ensuring >1 eval query for callbacks
@@ -261,7 +264,7 @@ def _build_callbacks(
             n_corruptions=args.eval_neg_samples,
             model_path=str(model_path) if args.save_model else None,
             log_path=log_filename,
-            eval_freq=max(int(args.eval_freq // args.n_envs)*4, 1),
+            eval_freq=max(int(args.eval_freq // args.n_envs)*1, 1),
             n_eval_episodes=args.n_eval_queries - 1,
             deterministic=True,
             render=False,

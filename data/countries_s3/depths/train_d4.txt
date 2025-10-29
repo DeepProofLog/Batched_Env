@@ -1,2 +1,0 @@
-locatedInCR(albania,europe)
-locatedInCR(brunei,asia)

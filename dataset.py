@@ -311,7 +311,10 @@ class DataHandler:
                 corruption_mode: Optional[str] = None,
                 train_depth: Optional[Set[int]] = None,
                 valid_depth: Optional[Set[int]] = None,
-                test_depth: Optional[Set[int]] = None):
+                test_depth: Optional[Set[int]] = None,
+                prob_facts: bool = False,
+                topk_facts: Optional[int] = None,
+                topk_facts_threshold: Optional[float] = None):
         """
         Initialize dataset handler: consult Janus, read rules/facts, load and filter queries.
 
@@ -353,6 +356,82 @@ class DataHandler:
         facts_file = join(base_path, facts_file) if facts_file else None
 
         self.facts = get_queries(facts_file)
+        self._probabilistic_facts: List[Term] = []
+
+        def _resolve_prob_facts_path(ds_name: str) -> Optional[str]:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            candidate = os.path.join(base_dir, "top_k_scores", f"kge_top_{ds_name}.txt")
+            return candidate if os.path.exists(candidate) else None
+
+        def _load_probabilistic_facts(file_path: str,
+                                       topk_limit: Optional[int],
+                                       score_threshold: Optional[float]) -> List[Term]:
+            loaded: List[Term] = []
+            seen: Set[Term] = set()
+            with open(file_path, "r", encoding="ascii") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+
+                    parts = line.split()
+                    if len(parts) < 2:
+                        continue
+
+                    fact_repr = parts[0]
+                    try:
+                        score = float(parts[1])
+                    except ValueError:
+                        continue
+
+                    rank: Optional[int] = None
+                    if len(parts) >= 3:
+                        try:
+                            rank = int(parts[2])
+                        except ValueError:
+                            rank = None
+
+                    if topk_limit is not None and topk_limit >= 0 and rank is not None and rank > topk_limit:
+                        continue
+                    if score_threshold is not None and score < score_threshold:
+                        continue
+
+                    try:
+                        fact = get_atom_from_string(fact_repr)
+                    except ValueError:
+                        continue
+
+                    if fact in seen:
+                        continue
+                    seen.add(fact)
+                    loaded.append(fact)
+            print(f"Loaded {len(loaded)} probabilistic facts (topk={topk_limit}, threshold={score_threshold}).")
+            return loaded
+
+        if prob_facts:
+            prob_facts_path = _resolve_prob_facts_path(self.dataset_name)
+            if prob_facts_path is None:
+                print(
+                    f"Warning: Requested probabilistic facts but file kge_top_{self.dataset_name}.txt was not found.")
+            else:
+                self._probabilistic_facts = _load_probabilistic_facts(
+                    prob_facts_path,
+                    topk_limit=topk_facts,
+                    score_threshold=topk_facts_threshold,
+                )
+                if self._probabilistic_facts:
+                    existing_facts = set(self.facts)
+                    new_fact_terms = [fact for fact in self._probabilistic_facts if fact not in existing_facts]
+                    if new_fact_terms:
+                        self.facts.extend(new_fact_terms)
+                        print(
+                            f"Loaded {len(new_fact_terms)} probabilistic facts from {prob_facts_path} "
+                            f"(topk={topk_facts}, threshold={topk_facts_threshold})."
+                            f" Facts augmented from {len(existing_facts)} to {len(self.facts)}."
+                        )
+                else:
+                    print(
+                        f"Warning: Probabilistic facts file {prob_facts_path} produced no usable entries after filtering.")
         self.rules = get_rules_from_rules_file(rules_file)
         self.train_corruptions = self.valid_corruptions = self.test_corruptions = self.neg_train_queries = None
 
@@ -390,22 +469,23 @@ class DataHandler:
                 candidate = path.replace(".txt", "_depths.txt")
                 if os.path.exists(candidate):
                     depth_path = candidate
-
             if normalized_filter is not None:
                 source_path = depth_path if depth_path else path
                 queries, depth_values = get_filtered_queries(source_path, normalized_filter, name, return_depths=True)
-            elif depth_path:
-                queries, depth_values = get_filtered_queries(depth_path, None, name, return_depths=True)
             else:
                 queries = get_queries(path)
                 depth_values = [None] * len(queries)
             return queries, depth_values
 
         self.train_queries, self.train_queries_depths = load_queries_with_depth(train_path, train_depth, "train")
+        if self._probabilistic_facts:
+            train_existing = set(self.train_queries)
+            to_append = [fact for fact in self._probabilistic_facts if fact not in train_existing]
+            if to_append:
+                self.train_queries.extend(to_append)
+                self.train_queries_depths.extend([None] * len(to_append))
         self.valid_queries, self.valid_queries_depths = load_queries_with_depth(valid_path, valid_depth, "valid")
         self.test_queries, self.test_queries_depths = load_queries_with_depth(test_path, test_depth, "test")
-
-        self.all_known_triples = self.train_queries + self.valid_queries + self.test_queries
 
                
         # Filter queries with predicates not in the rules
@@ -438,7 +518,16 @@ class DataHandler:
         self.valid_queries_depths = self.valid_queries_depths[:n_eval_queries]
         self.test_queries = self.test_queries[:n_test_queries]
         self.test_queries_depths = self.test_queries_depths[:n_test_queries]
+
+        self.all_known_triples = self.train_queries + self.valid_queries + self.test_queries
         # self.valid_queries = self.test_queries.copy() # Use test queries as valid queries
+
+        print(f"Dataset {dataset_name} loaded:")
+        print(f"  Rules: {len(self.rules)}")
+        print(f"  Facts: {len(self.facts)}")
+        print(f"  Train queries: {len(self.train_queries)}")
+        print(f"  Valid queries: {len(self.valid_queries)}")
+        print(f"  Test queries: {len(self.test_queries)}")
 
         # # Load Janus facts
         # if janus_file:
