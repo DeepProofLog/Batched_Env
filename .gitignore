@@ -14,3 +14,4 @@ runner_new.py
 model_new.py
 data/kge_scores_wn18rr.txt
 logs_countries.txt
+top_k_scores/files/
