@@ -1,203 +1,304 @@
-#!/usr/bin/env python3
-"""Batch-score triples with a trained KGE model."""
-from __future__ import annotations
-
-import argparse
-import csv
+"""KGE Inference for PyTorch models - simplified for RL integration."""
 import json
 import os
-from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple
+import subprocess
+from collections import OrderedDict
+from typing import Dict, List, Optional, Tuple, Union, Sequence
+import time
 
+import pandas as pd
 import torch
+import numpy as np
+import random
 
-from kge_pytorch.data_utils import detect_triple_format, load_dataset_split, load_triples
-from kge_pytorch.kge_model_torch import build_model
-
-
-@dataclass
-class PredictConfig:
-    model_dir: str
-    output_path: str
-    input_path: Optional[str] = None
-    dataset: Optional[str] = None
-    data_root: str = "./data"
-    input_split: str = "valid.txt"
-    batch_size: int = 65536
-    amp: bool = False
-    cpu: bool = False
+from kge_pytorch.model_torch import build_model
 
 
-@dataclass
-class PredictArtifacts:
-    output_path: str
-    num_scored: int
-    skipped: int
+def get_available_gpus(memory_threshold: float = 0.1, utilization_threshold: float = 0.3) -> List[int]:
+    """Get list of GPU indices that are not busy."""
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=index,memory.used,memory.total,utilization.gpu', 
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5
+        )
+        
+        if result.returncode != 0:
+            return list(range(torch.cuda.device_count()))
+        
+        available_gpus = []
+        for line in result.stdout.strip().split('\n'):
+            if not line.strip():
+                continue
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) >= 4:
+                gpu_id = int(parts[0])
+                mem_used, mem_total, utilization = float(parts[1]), float(parts[2]), float(parts[3])
+                mem_fraction = mem_used / mem_total if mem_total > 0 else 1.0
+                util_fraction = utilization / 100.0
+                
+                if mem_fraction <= memory_threshold and util_fraction <= utilization_threshold:
+                    available_gpus.append(gpu_id)
+        
+        return available_gpus
+    except Exception:
+        return list(range(torch.cuda.device_count()))
 
 
-def resolve_input_path(cfg: PredictConfig) -> str:
-    if cfg.input_path:
-        return cfg.input_path
-    if cfg.dataset:
-        return load_dataset_split(cfg.data_root, cfg.dataset, cfg.input_split)
-    raise ValueError("Provide either input_path or dataset")
-
-
-def load_model(model_dir: str, device: torch.device) -> Tuple[torch.nn.Module, dict, dict, dict]:
-    with open(os.path.join(model_dir, "config.json"), "r", encoding="utf-8") as handle:
-        cfg = json.load(handle)
-    with open(os.path.join(model_dir, "entity2id.json"), "r", encoding="utf-8") as handle:
-        entity2id = json.load(handle)
-    with open(os.path.join(model_dir, "relation2id.json"), "r", encoding="utf-8") as handle:
-        relation2id = json.load(handle)
-
-    model_name = cfg.get("model", "RotatE")
-    model = build_model(
-        model_name,
-        cfg["num_entities"],
-        cfg["num_relations"],
-        dim=cfg.get("dim") or cfg.get("entity_dim"),
-        gamma=cfg.get("gamma", 12.0),
-        p_norm=cfg.get("p", 1),
-        relation_dim=cfg.get("relation_dim"),
-        dropout=cfg.get("dropout", 0.0),
-    )
-    state = torch.load(os.path.join(model_dir, "weights.pth"), map_location="cpu")
+class Atom:
+    """Atom parser for functional notation."""
+    def __init__(self, s: str):
+        import re
+        a = re.sub(r'\b([(),\.])', r'\1', s.strip())
+        if a.endswith("."):
+            a = a[:-1]
+        tokens = a.replace('(', ' ').replace(')', ' ').replace(',', ' ').split()
+        self.r = tokens[0]
+        self.args = tokens[1:]
     
-    # Handle models saved with torch.compile() wrapper (_orig_mod. prefix)
-    if any(k.startswith("_orig_mod.") for k in state.keys()):
-        state = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+    def toTuple(self) -> Tuple:
+        return (self.r,) + tuple(self.args)
+
+
+class KGEInference:
+    """PyTorch KGE inference engine for RL integration."""
+
+    def __init__(
+        self,
+        dataset_name: str,
+        base_path: str,
+        run_signature: str,
+        checkpoint_dir: str = './checkpoints/',
+        seed: int = 0,
+        scores_file_path: Optional[str] = None,
+        runtime_cache_max_entries: Optional[int] = None,
+        persist_runtime_scores: bool = True,
+        device: str = None,
+    ):
+        self.seed = seed
+        self.set_seeds(self.seed)
+        self.run_signature = run_signature
+        self.checkpoint_dir = checkpoint_dir
+        
+        # Multi-GPU setup
+        self.use_multi_gpu = False
+        self.device = None
+        self.available_gpu_ids = None
+        
+        if device == "cuda:all":
+            if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+                available_gpu_indices = get_available_gpus()
+                if len(available_gpu_indices) > 1:
+                    self.device = torch.device(f"cuda:{available_gpu_indices[0]}")
+                    self.available_gpu_ids = available_gpu_indices
+                    self.use_multi_gpu = True
+                    print(f"PyTorch DataParallel with {len(available_gpu_indices)} GPUs: {available_gpu_indices}")
+                else:
+                    self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            else:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif device == "cpu":
+            self.device = torch.device("cpu")
+        else:
+            self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        
+        # Model loaded lazily
+        self.model_dir = os.path.join(checkpoint_dir, f"{run_signature}_seed_{seed}")
+        self.model = None
+        self.config = None
+        self.entity2id = None
+        self.relation2id = None
+        
+        # Caching
+        self.atom_scores: Dict[str, float] = {}
+        self.persist_runtime_scores = persist_runtime_scores
+        self._tuple_cache: Dict[str, Tuple[str, ...]] = {}
+        
+        if runtime_cache_max_entries == 0:
+            self._runtime_cache_enabled = False
+            self._score_cache = None
+        else:
+            self._runtime_cache_enabled = True
+            self._runtime_cache_max_entries = runtime_cache_max_entries
+            self._score_cache = OrderedDict()
+        
+        if scores_file_path:
+            self._load_scores(scores_file_path)
     
-    model.load_state_dict(state, strict=True)
-    model.to(device)
-    model.eval()
+    def set_seeds(self, seed: int):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
     
-    # Test that the model works with a dummy forward pass
-    with torch.no_grad():
+    def _load_scores(self, filepath: str):
+        """Load pre-computed scores from TSV file."""
+        if not os.path.exists(filepath) or os.path.isdir(filepath):
+            print(f"Warning: Scores file not found at {filepath}. KGE will perform live inference.")
+            return
+
+        print(f"Loading pre-computed scores from {filepath}...")
+        start_time = time.time()
         try:
-            dummy_h = torch.zeros(1, dtype=torch.long, device=device)
-            dummy_r = torch.zeros(1, dtype=torch.long, device=device)
-            dummy_t = torch.zeros(1, dtype=torch.long, device=device)
-            _ = model.score_triples(dummy_h, dummy_r, dummy_t)
+            df = pd.read_csv(filepath, sep='\t', header=None, names=['atom', 'score'], 
+                           dtype={'atom': str, 'score': float}, engine='c')
+            self.atom_scores = pd.Series(df.score.values, index=df.atom).to_dict()
+            print(f"Loaded {len(self.atom_scores)} scores in {time.time() - start_time:.2f}s.")
         except Exception as e:
-            print(f"Warning: Model test forward pass failed: {e}")
+            print(f"Error loading scores: {e}")
     
-    return model, entity2id, relation2id, cfg
+    def _get_runtime_cached_score(self, atom_str: str) -> Optional[float]:
+        if not self._runtime_cache_enabled or self._score_cache is None:
+            return None
+        if atom_str in self._score_cache:
+            score = self._score_cache[atom_str]
+            self._score_cache.move_to_end(atom_str)
+            return score
+        return None
 
+    def _store_runtime_score(self, atom_str: str, score: float) -> None:
+        if self._runtime_cache_enabled and self._score_cache is not None:
+            self._score_cache[atom_str] = score
+            self._score_cache.move_to_end(atom_str)
+            if self._runtime_cache_max_entries and len(self._score_cache) > self._runtime_cache_max_entries:
+                self._score_cache.popitem(last=False)
+        if self.persist_runtime_scores:
+            self.atom_scores[atom_str] = score
+    
+    def _build_and_load_model(self) -> torch.nn.Module:
+        """Build and load the PyTorch KGE model."""
+        print("Building model and loading weights...")
+        
+        # Load config
+        config_path = os.path.join(self.model_dir, "config.json")
+        with open(config_path, "r") as f:
+            self.config = json.load(f)
+        
+        # Load mappings
+        with open(os.path.join(self.model_dir, "entity2id.json"), "r") as f:
+            self.entity2id = json.load(f)
+        with open(os.path.join(self.model_dir, "relation2id.json"), "r") as f:
+            self.relation2id = json.load(f)
+        
+        # Build model
+        model = build_model(
+            self.config.get("model", "RotatE"),
+            self.config["num_entities"],
+            self.config["num_relations"],
+            dim=self.config.get("dim") or self.config.get("entity_dim"),
+            gamma=self.config.get("gamma", 12.0),
+            p_norm=self.config.get("p", 1),
+            relation_dim=self.config.get("relation_dim"),
+            dropout=self.config.get("dropout", 0.0),
+        )
+        
+        # Load weights
+        weights_path = os.path.join(self.model_dir, "weights.pth")
+        state = torch.load(weights_path, map_location="cpu")
+        if any(k.startswith("_orig_mod.") for k in state.keys()):
+            state = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+        
+        model.load_state_dict(state, strict=True)
+        model.to(self.device)
+        model.eval()
+        
+        # Multi-GPU wrapper
+        if self.use_multi_gpu and self.available_gpu_ids:
+            model = torch.nn.DataParallel(model, device_ids=self.available_gpu_ids)
+        
+        print("Weights loaded successfully.")
+        return model
+    
+    def _normalize_atom_input(self, atom: Union[str, Tuple]) -> str:
+        """Convert atom to canonical string."""
+        if isinstance(atom, str):
+            return atom
+        if isinstance(atom, tuple):
+            predicate, *args = atom
+            return f"{predicate}({','.join(map(str, args))})"
+        raise TypeError(f"Unsupported atom type: {type(atom)}")
 
-def _filter_known(
-    triples: Iterable[Tuple[str, str, str]],
-    entity2id: dict,
-    relation2id: dict,
-) -> Tuple[torch.Tensor, List[int]]:
-    ids = []
-    keep = []
-    for idx, (h, r, t) in enumerate(triples):
-        if h in entity2id and r in relation2id and t in entity2id:
-            ids.append((entity2id[h], relation2id[r], entity2id[t]))
-            keep.append(idx)
-    if not ids:
-        return torch.empty(0, 3, dtype=torch.long), keep
-    return torch.tensor(ids, dtype=torch.long), keep
+    def _atom_str_to_tuple(self, atom_str: str) -> Tuple:
+        """Convert atom string to tuple."""
+        cached = self._tuple_cache.get(atom_str)
+        if cached:
+            return cached
+        atom_tuple = Atom(atom_str).toTuple()
+        self._tuple_cache[atom_str] = atom_tuple
+        return atom_tuple
+    
+    def _prepare_triple_ids(self, atom_tuples: List[Tuple]) -> torch.Tensor:
+        """Convert atom tuples to ID tensor."""
+        ids = []
+        for atom_tuple in atom_tuples:
+            predicate, *args = atom_tuple
+            if len(args) != 2:
+                raise ValueError(f"Expected binary predicate, got {len(args)} arguments")
+            head, tail = args
+            if head not in self.entity2id or tail not in self.entity2id or predicate not in self.relation2id:
+                raise ValueError(f"Unknown entity or relation in {atom_tuple}")
+            ids.append([self.entity2id[head], self.relation2id[predicate], self.entity2id[tail]])
+        return torch.tensor(ids, dtype=torch.long)
+    
+    def _score_atoms_via_model(self, atom_tuples: Sequence[Tuple]) -> List[float]:
+        """Score atoms using KGE model."""
+        if not atom_tuples:
+            return []
+        
+        if self.model is None:
+            self.model = self._build_and_load_model()
+        
+        try:
+            triple_ids = self._prepare_triple_ids(list(atom_tuples))
+        except ValueError:
+            return [0.0] * len(atom_tuples)
+        
+        scores = []
+        batch_size = 2048
+        
+        with torch.no_grad():
+            for start in range(0, triple_ids.size(0), batch_size):
+                batch = triple_ids[start : start + batch_size].to(self.device)
+                batch_scores = self.model.score_triples(batch[:, 0], batch[:, 1], batch[:, 2])
+                scores.append(batch_scores.float().cpu())
+        
+        if scores:
+            return torch.cat(scores, dim=0).tolist()
+        return []
+    
+    def predict_batch(self, atoms_for_ranking: Sequence[Union[str, Tuple]]) -> List[float]:
+        """
+        Score a batch of atoms. First atom is assumed to be the positive sample.
+        Returns list of scores in same order as input.
+        """
+        if not atoms_for_ranking:
+            return []
 
+        canonical_atoms = [self._normalize_atom_input(atom) for atom in atoms_for_ranking]
+        scores: List[Optional[float]] = [None] * len(canonical_atoms)
+        missing, missing_indices = [], []
 
-def _write_scores(
-    path: str,
-    triples: List[Tuple[str, str, str]],
-    scores: List[float],
-    input_format: str,
-) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    if input_format in {"tsv", "csv"}:
-        delimiter = "\t" if input_format == "tsv" else ","
-        header = ["head", "relation", "tail", "score"]
-        rows = [list(triple) + [f"{score:.6f}"] for triple, score in zip(triples, scores)]
-    else:
-        delimiter = ","
-        header = ["fact", "score"]
-        rows = [
-            [f"{rel}({head},{tail})", f"{score:.6f}"]
-            for (head, rel, tail), score in zip(triples, scores)
-        ]
-    with open(path, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, delimiter=delimiter)
-        writer.writerow(header)
-        writer.writerows(rows)
+        # Check caches
+        for idx, atom_str in enumerate(canonical_atoms):
+            cached = self.atom_scores.get(atom_str) or self._get_runtime_cached_score(atom_str)
+            if cached is not None:
+                scores[idx] = float(cached)
+            else:
+                missing.append(atom_str)
+                missing_indices.append(idx)
 
+        # Score missing atoms
+        if missing:
+            unique_missing = list(dict.fromkeys(missing))
+            atom_tuples = [self._atom_str_to_tuple(a) for a in unique_missing]
+            new_scores = self._score_atoms_via_model(atom_tuples)
 
-def predict(cfg: PredictConfig) -> PredictArtifacts:
-    device = torch.device("cuda" if torch.cuda.is_available() and not cfg.cpu else "cpu")
-    input_file = resolve_input_path(cfg)
-    triples_raw = load_triples(input_file)
-    if not triples_raw:
-        raise ValueError("No triples found to score")
+            newly_scored = {a: float(s) for a, s in zip(unique_missing, new_scores)}
+            for a, s in newly_scored.items():
+                self._store_runtime_score(a, s)
 
-    first_line = ""
-    with open(input_file, "r", encoding="utf-8") as handle:
-        for line in handle:
-            if line.strip():
-                first_line = line
-                break
-    input_format = detect_triple_format(first_line)
+            for idx, atom_str in zip(missing_indices, missing):
+                scores[idx] = newly_scored[atom_str]
 
-    model, entity2id, relation2id, _ = load_model(cfg.model_dir, device)
-    triples_strings = [(t.head, t.relation, t.tail) for t in triples_raw]
-    triples_ids, keep_idx = _filter_known(triples_strings, entity2id, relation2id)
-    triples_kept = [triples_strings[i] for i in keep_idx]
-    skipped = len(triples_strings) - len(triples_kept)
-    if not triples_kept:
-        print("[warn] No triples matched the model vocabulary; nothing to score")
-        _write_scores(cfg.output_path, [], [], input_format)
-        return PredictArtifacts(output_path=cfg.output_path, num_scored=0, skipped=skipped)
-
-    scores = []
-    with torch.no_grad(), torch.cuda.amp.autocast(enabled=cfg.amp and device.type == "cuda"):
-        for start in range(0, triples_ids.size(0), cfg.batch_size):
-            batch = triples_ids[start : start + cfg.batch_size].to(device)
-            batch_scores = model.score_triples(batch[:, 0], batch[:, 1], batch[:, 2]).float().cpu()
-            scores.append(batch_scores)
-    if scores:
-        flat_scores = torch.cat(scores, dim=0).tolist()
-    else:
-        flat_scores = []
-
-    _write_scores(cfg.output_path, triples_kept, flat_scores, input_format)
-    print(f"Wrote {len(flat_scores)} scored triples to {cfg.output_path}")
-    if skipped:
-        print(f"[warn] Skipped {skipped} triples due to unknown entities/relations")
-    return PredictArtifacts(output_path=cfg.output_path, num_scored=len(flat_scores), skipped=skipped)
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_dir", required=True)
-    parser.add_argument("--output", dest="output_path", required=True)
-    parser.add_argument("--input", dest="input_path")
-    parser.add_argument("--dataset", help="Dataset name under data_root")
-    parser.add_argument("--data_root", default="./data")
-    parser.add_argument("--input_split", default="valid.txt")
-    parser.add_argument("--batch_size", type=int, default=65536)
-    parser.add_argument("--amp", action="store_true")
-    parser.add_argument("--cpu", action="store_true")
-    return parser
-
-
-def main(argv: List[str] | None = None) -> PredictArtifacts:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    cfg = PredictConfig(
-        model_dir=args.model_dir,
-        output_path=args.output_path,
-        input_path=args.input_path,
-        dataset=args.dataset,
-        data_root=args.data_root,
-        input_split=args.input_split,
-        batch_size=args.batch_size,
-        amp=args.amp,
-        cpu=args.cpu,
-    )
-    return predict(cfg)
-
-
-if __name__ == "__main__":
-    main()
+        return [float(s) for s in scores]

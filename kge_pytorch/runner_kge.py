@@ -145,13 +145,14 @@ def setup_device(device_choice: str, min_memory_gb: float) -> tuple[bool, bool]:
     return False, False
 
 
-# PRESET_CHOICES = ("mrr_boost", "baseline", "complex", "tucker")
-PRESET_CHOICES = ("rotate")
-
+PRESET_CHOICES = ("mrr_boost", "rotate", "complex", "tucker", "transe", "distmult", "conve")
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
-    p.add_argument("--preset", choices=PRESET_CHOICES, default="baseline")
+    p.add_argument("--preset", choices=PRESET_CHOICES, default="rotate",
+                   help="Single model preset to run (ignored if --models is provided)")
+    p.add_argument("--models", type=str, default=None,
+                   help="Comma-separated list of models to run sequentially (e.g., 'transe,distmult,conve'). Overrides --preset.")
     # Common IO
     p.add_argument("--save_dir", default="./kge_pytorch/models")
     p.add_argument("--train", dest="train_path")
@@ -163,16 +164,132 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--valid_split", default="valid.txt")
     p.add_argument("--test_split", default="test.txt")
     # Hardware
-    p.add_argument("--device", default="cuda:1", choices=["cpu", "cuda:1", "cuda:all"], 
+    p.add_argument("--device", default="cuda:all", choices=["cpu", "cuda:1", "cuda:all"], 
                    help="Device: 'cpu' (use CPU), 'cuda:1' (auto-select best GPU), 'cuda:all' (use all available GPUs)")
     p.add_argument("--min_gpu_memory_gb", type=float, default=2.0, help="Minimum free GPU memory in GB to consider a GPU available")
     p.add_argument("--amp", default=True)
     p.add_argument("--compile", default=True)
     # Overrides
-    p.add_argument("--epochs", type=int, default=50)
+    p.add_argument("--epochs", type=int, default=700)
     p.add_argument("--batch_size", type=int, default=4096)
     p.add_argument("--seed", type=int, default=3)
     return p
+
+def get_preset_kwargs(preset: str) -> dict:
+    """Get hyperparameters for a given preset."""
+    if preset == "rotate":
+        return dict(
+            model="RotatE",
+            dim=1024,
+            gamma=12.0,
+            p=1,
+            lr=1e-3,
+            neg_ratio=1,
+            report_train_mrr=False,
+            use_reciprocal=False,
+            adv_temp=0.0,
+            weight_decay=0.0,
+            grad_clip=0.0,
+            warmup_ratio=0.0,
+            scheduler="none",
+        )
+    elif preset == "complex":
+        return dict(
+            model="ComplEx",
+            dim=1024,
+            lr=5e-4,
+            neg_ratio=1,
+            report_train_mrr=False,
+            use_reciprocal=False,
+            adv_temp=0.0,
+            weight_decay=1e-6,
+            grad_clip=0.0,
+            warmup_ratio=0.0,
+            scheduler="none",
+        )
+    elif preset == "tucker":
+        return dict(
+            model="TuckER",
+            dim=512,
+            relation_dim=256,
+            dropout=0.3,
+            lr=5e-4,
+            neg_ratio=1,
+            report_train_mrr=False,
+            use_reciprocal=False,
+            adv_temp=0.0,
+            weight_decay=1e-6,
+            grad_clip=1.0,
+            warmup_ratio=0.0,
+            scheduler="none",
+        )
+    elif preset == "mrr_boost":
+        return dict(
+            model="RotatE",
+            dim=1024,
+            gamma=12.0,
+            p=1,
+            lr=1e-3,
+            neg_ratio=1,
+            report_train_mrr=False,
+            use_reciprocal=True,
+            adv_temp=0.0,
+            weight_decay=1e-6,
+            grad_clip=2.0,
+            warmup_ratio=0.1,
+            scheduler="cosine",
+        )
+    elif preset == "transe":
+        return dict(
+            model="TransE",
+            dim=512,
+            p=1,
+            lr=1e-3,
+            neg_ratio=1,
+            report_train_mrr=False,
+            use_reciprocal=False,
+            adv_temp=0.0,
+            weight_decay=0.0,
+            grad_clip=0.0,
+            warmup_ratio=0.0,
+            scheduler="none",
+        )
+    elif preset == "distmult":
+        return dict(
+            model="DistMult",
+            dim=512,
+            lr=5e-4,
+            neg_ratio=1,
+            report_train_mrr=False,
+            use_reciprocal=False,
+            adv_temp=0.0,
+            weight_decay=1e-6,
+            grad_clip=0.0,
+            warmup_ratio=0.0,
+            scheduler="none",
+        )
+    elif preset == "conve":
+        return dict(
+            model="ConvE",
+            dim=200,  # 10 * 20 = 200
+            embedding_height=10,
+            embedding_width=20,
+            input_dropout=0.2,
+            feature_map_dropout=0.2,
+            hidden_dropout=0.3,
+            lr=1e-3,
+            neg_ratio=1,
+            report_train_mrr=False,
+            use_reciprocal=False,
+            adv_temp=0.0,
+            weight_decay=1e-6,
+            grad_clip=1.0,
+            warmup_ratio=0.0,
+            scheduler="none",
+        )
+    else:
+        raise ValueError(f"Unknown preset: {preset}")
+
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
@@ -182,7 +299,7 @@ def main(argv=None):
     use_cpu, use_multi_gpu = setup_device(args.device, args.min_gpu_memory_gb)
     
     # NOW import the training module after device is configured
-    from kge_train_torch import TrainConfig, train_model
+    from train_torch import TrainConfig, train_model
 
     shared_kwargs = dict(
         save_dir=args.save_dir,
@@ -203,76 +320,50 @@ def main(argv=None):
         seed=args.seed,
     )
 
-    preset = args.preset
-    if preset == "baseline":
-        preset_kwargs = dict(
-            model="RotatE",
-            dim=1024,
-            gamma=12.0,
-            p=1,
-            lr=1e-3,
-            neg_ratio=1,
-            report_train_mrr=False,
-            use_reciprocal=False,
-            adv_temp=0.0,
-            weight_decay=0.0,
-            grad_clip=0.0,
-            warmup_ratio=0.0,
-            scheduler="none",
-        )
-    elif preset == "complex":
-        preset_kwargs = dict(
-            model="ComplEx",
-            dim=1024,
-            lr=5e-4,
-            neg_ratio=1,
-            report_train_mrr=False,
-            use_reciprocal=False,
-            adv_temp=0.0,
-            weight_decay=1e-6,
-            grad_clip=0.0,
-            warmup_ratio=0.0,
-            scheduler="none",
-        )
-    elif preset == "tucker":
-        preset_kwargs = dict(
-            model="TuckER",
-            dim=512,
-            relation_dim=256,
-            dropout=0.3,
-            lr=5e-4,
-            neg_ratio=1,
-            report_train_mrr=False,
-            use_reciprocal=False,
-            adv_temp=0.0,
-            weight_decay=1e-6,
-            grad_clip=1.0,
-            warmup_ratio=0.0,
-            scheduler="none",
-        )
-    elif preset == "mrr_boost":
-        preset_kwargs = dict(
-            model="RotatE",
-            dim=1024,
-            gamma=12.0,
-            p=1,
-            lr=1e-3,
-            neg_ratio=1,
-            report_train_mrr=False,
-            use_reciprocal=True,
-            adv_temp=0.0,
-            weight_decay=1e-6,
-            grad_clip=2.0,
-            warmup_ratio=0.1,
-            scheduler="cosine",
-        )
+    # Determine which models to run
+    if args.models:
+        # Multiple models specified
+        model_list = [m.strip().lower() for m in args.models.split(',')]
+        print(f"\n{'='*70}")
+        print(f"Running {len(model_list)} models: {', '.join(model_list)}")
+        print(f"Dataset: {args.dataset}")
+        print(f"Epochs: {args.epochs}")
+        print(f"{'='*70}\n")
+        
+        # Validate all models before starting
+        invalid_models = [m for m in model_list if m not in PRESET_CHOICES]
+        if invalid_models:
+            raise ValueError(f"Invalid model(s): {', '.join(invalid_models)}. "
+                           f"Valid choices: {', '.join(PRESET_CHOICES)}")
+        
+        # Train each model sequentially
+        for i, preset in enumerate(model_list, 1):
+            print(f"\n{'='*70}")
+            print(f"Training model {i}/{len(model_list)}: {preset.upper()}")
+            print(f"{'='*70}\n")
+            
+            preset_kwargs = get_preset_kwargs(preset)
+            cfg = TrainConfig(**shared_kwargs, **preset_kwargs)
+            
+            print("Config:\n", cfg)
+            train_model(cfg)
+            
+            print(f"\n✓ {preset.upper()} completed successfully!")
+            
+            if i < len(model_list):
+                print(f"\nProceeding to next model...\n")
+        
+        print(f"\n{'='*70}")
+        print(f"All {len(model_list)} models completed successfully!")
+        print(f"{'='*70}\n")
     else:
-        raise ValueError(f"Unknown preset: {preset}")
+        # Single model
+        preset = args.preset
+        preset_kwargs = get_preset_kwargs(preset)
+        cfg = TrainConfig(**shared_kwargs, **preset_kwargs)
 
-    cfg = TrainConfig(**shared_kwargs, **preset_kwargs)
-
-    print("Launching training with config:\n", cfg)
-    train_model(cfg)
+        print("Launching training with config:\n", cfg)
+        train_model(cfg)
 
 if __name__ == "__main__":
     main()

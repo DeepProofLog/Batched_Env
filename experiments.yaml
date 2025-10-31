@@ -2,11 +2,18 @@
 experiments:
   - dataset_name: 'family'
     prob_facts: True
-    topk_facts: 3
+    topk_facts: 5
     topk_facts_threshold: 0.9
   - dataset_name: 'family'
     prob_facts: False
-
+  - dataset_name: 'wn18rr'
+    prob_facts: True
+    topk_facts: 5
+    topk_facts_threshold: 0.9
+    timesteps_train: 2000000
+  - dataset_name: 'wn18rr'
+    prob_facts: False
+    timesteps_train: 2000000
 
   # - dataset_name: 'family'
   #   reward_type: 3

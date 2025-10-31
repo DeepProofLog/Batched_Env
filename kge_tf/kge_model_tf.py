@@ -367,10 +367,11 @@ class CollectiveModel(Model):
         )
 
         diff = concept_output_ - task_output_
+        squared_diff = diff * diff
         loss = tf.where(
             non_empty,
-            diff * diff,
-            tf.constant(0.0)
+            squared_diff,
+            tf.constant(0.0, dtype=squared_diff.dtype)
         )
 
         self.add_loss(loss)

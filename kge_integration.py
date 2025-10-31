@@ -8,14 +8,16 @@ from kge_inference import KGEInference
 from index_manager import IndexManager
 from model import CustomActorCriticPolicy
 
+
 def _init_kge_engine(args: Any) -> Optional[KGEInference]:
     """Create KGE inference engine when requested."""
-    needs_engine = (
-        args.use_kge_action
-        or args.kge_integration_strategy in {"sum_eval", "logit_shaping", "kickstart"}
-        or float(getattr(args, "pbrs_beta", 0.0)) != 0.0
-        or getattr(args, "policy_init", "none") in {"warm_start", "kl_reg"}
-    )
+    kge_action = bool(getattr(args, "kge_action", False))
+    logit_fusion = bool(getattr(args, "logit_fusion", False))
+    inference_fusion = bool(getattr(args, "inference_fusion", False))
+    pbrs = float(getattr(args, "pbrs_beta", 0.0)) != 0.0
+    
+    needs_engine = kge_action or logit_fusion or inference_fusion or pbrs
+    
     if needs_engine:
         print("\nInitializing KGE Inference Engine...", flush=True)
         kge_engine_backend = getattr(args, "kge_engine", "tf")
@@ -38,30 +40,32 @@ def _attach_kge_to_policy(
     im: IndexManager,
     engine: Optional[KGEInference],
     device: torch.device,
-    use_kge_action: bool,
-    integration_strategy: Optional[str],
-    policy_init: str,
+    args: Any,
 ) -> None:
+    """Attach KGE engine and index manager to policy when needed."""
     policy = model.policy
-    policy.kge_integration_strategy = integration_strategy
-    needs_kge_attachment = (
-        integration_strategy in {"train", "train_bias", "logit_shaping", "kickstart"}
-        or policy_init in {"warm_start", "kl_reg"}
-    )
+    kge_action = bool(getattr(args, "kge_action", False))
+    logit_fusion = bool(getattr(args, "logit_fusion", False))
+    inference_fusion = bool(getattr(args, "inference_fusion", False))
+
+    policy.enable_kge_action = kge_action
+    policy.enable_logit_fusion = logit_fusion
+
+    needs_kge = kge_action or logit_fusion or inference_fusion
 
     if hasattr(policy, "kge_fusion_mlp") and policy.kge_fusion_mlp is not None:
         policy.kge_fusion_mlp.to(device)
 
-    if not needs_kge_attachment or engine is None or im is None:
+    if not needs_kge or engine is None or im is None:
         policy.kge_inference_engine = None
         policy.index_manager = None
-        empty_indices = torch.empty(0, dtype=torch.int32, device=device)
-        policy.kge_indices_tensor = empty_indices
+        policy.kge_indices_tensor = torch.empty(0, dtype=torch.int32, device=device)
         return
 
     policy.kge_inference_engine = engine
     policy.index_manager = im
-    if use_kge_action and integration_strategy in {"train", "train_bias"}:
+    
+    if kge_action:
         kge_indices = [idx for pred, idx in im.predicate_str2idx.items() if pred.endswith("_kge")]
         policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.int32)
     else:

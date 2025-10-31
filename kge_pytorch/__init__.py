@@ -1,6 +1,6 @@
 """Utilities for training and running RotatE KGE models within the project."""
 
-from .kge_model_torch import RotatE
+from .model_torch import RotatE
 from .data_utils import (
     load_triples_with_mappings,
     load_dataset_split,

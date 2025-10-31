@@ -1,3 +1,4 @@
+import json
 from typing import Any, Callable, List, Optional, Tuple
 import torch
 from pathlib import Path
@@ -27,78 +28,15 @@ from model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom a
 from embeddings import get_embedder
 from neg_sampling import get_sampler
 from model_eval import eval_corruptions
-from kge_inference import KGEInference
 from stable_baselines3.common.callbacks import (
     StopTrainingOnRewardThreshold,
     CallbackList,
     StopTrainingOnNoModelImprovement,
 )
-
-
-# ------------------------------
-# KGE helpers
-# ------------------------------
-
-def _init_kge_engine(args: Any) -> Optional[KGEInference]:
-    """Create KGE inference engine when requested."""
-    kge_action = bool(getattr(args, "kge_action", False))
-    logit_fusion = bool(getattr(args, "logit_fusion", False))
-    inference_fusion = bool(getattr(args, "inference_fusion", False))
-    pbrs = float(getattr(args, "pbrs_beta", 0.0)) != 0.0
-    
-    needs_engine = kge_action or logit_fusion or inference_fusion or pbrs
-    
-    if needs_engine:
-        print("\nInitializing KGE Inference Engine...", flush=True)
-        kge_engine_backend = getattr(args, "kge_engine", "tf")
-        engine = KGEInference(
-            dataset_name=args.dataset_name,
-            base_path=args.data_path,
-            checkpoint_dir=args.kge_checkpoint_dir,
-            run_signature=args.kge_run_signature,
-            seed=0,
-            scores_file_path=args.kge_scores_file,
-            backend=kge_engine_backend,
-        )
-        print("KGE Inference Engine Initialized.\n")
-        return engine
-    return None
-
-def _attach_kge_to_policy(
-    model: PPO,
-    im: IndexManager,
-    engine: Optional[KGEInference],
-    device: torch.device,
-    args: Any,
-) -> None:
-    """Attach KGE engine and index manager to policy when needed."""
-    policy = model.policy
-    kge_action = bool(getattr(args, "kge_action", False))
-    logit_fusion = bool(getattr(args, "logit_fusion", False))
-    inference_fusion = bool(getattr(args, "inference_fusion", False))
-
-    policy.enable_kge_action = kge_action
-    policy.enable_logit_fusion = logit_fusion
-
-    needs_kge = kge_action or logit_fusion or inference_fusion
-
-    if hasattr(policy, "kge_fusion_mlp") and policy.kge_fusion_mlp is not None:
-        policy.kge_fusion_mlp.to(device)
-
-    if not needs_kge or engine is None or im is None:
-        policy.kge_inference_engine = None
-        policy.index_manager = None
-        policy.kge_indices_tensor = torch.empty(0, dtype=torch.int32, device=device)
-        return
-
-    policy.kge_inference_engine = engine
-    policy.index_manager = im
-    
-    if kge_action:
-        kge_indices = [idx for pred, idx in im.predicate_str2idx.items() if pred.endswith("_kge")]
-        policy.kge_indices_tensor = torch.tensor(kge_indices, device=device, dtype=torch.int32)
-    else:
-        policy.kge_indices_tensor = torch.empty(0, dtype=torch.int32, device=device)
+from kge_integration import (
+    _init_kge_engine,
+    _attach_kge_to_policy,
+)
 
 # ------------------------------
 # Initialization helpers
@@ -217,9 +155,21 @@ def _maybe_load_model(args: Any, device: torch.device, eval_env, date: str, mode
         if ckpt is None:
             raise FileNotFoundError(
                 f"No suitable '{'best_eval' if args.restore_best_val_model else 'last_epoch'}' model found in {ckpt_dir}"
-            )
+        )
         print(f"Loading model from {ckpt}")
         loaded = PPO.load(str(ckpt), env=eval_env, device=device)
+        info_path = ckpt.with_name(f"info_{ckpt.stem}.json")
+        checkpoint_info = None
+        if info_path.exists():
+            try:
+                with info_path.open("r", encoding="utf-8") as info_file:
+                    checkpoint_info = json.load(info_file)
+                print(f"Loaded checkpoint metadata from {info_path}")
+            except json.JSONDecodeError as exc:
+                print(f"Warning: Failed to parse checkpoint metadata at {info_path}: {exc}")
+        if checkpoint_info is not None:
+            setattr(loaded, "checkpoint_info", checkpoint_info)
+            setattr(args, "loaded_model_info", checkpoint_info)
         return True, loaded
     except (FileNotFoundError, NotADirectoryError) as e:
         if args.timesteps_train > 0:

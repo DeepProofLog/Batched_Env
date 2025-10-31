@@ -346,7 +346,7 @@ def main():
     
     # Model paths
     parser.add_argument("--tf_checkpoint_dir", 
-                       default="/home/castellanoontiv/checkpoints/",
+                       default="./../checkpoints/",
                        help="TensorFlow checkpoint directory")
     parser.add_argument("--tf_run_signature",
                        default="kinship_family-backward_0_1-no_reasoner-complex-True-256-256-4-rules.txt",
@@ -355,6 +355,7 @@ def main():
                        default="./kge_pytorch/models",
                        help="PyTorch model directory")
     parser.add_argument("--pykeen_model_dir",
+                       default="./kge_pykeen/models",
                        help="PyKEEN model directory (if not provided, will skip PyKEEN test)")
     
     # Options to skip specific tests

@@ -1,245 +1,308 @@
-#!/usr/bin/env python3
-"""Batch-score triples with a trained PyKEEN model."""
-from __future__ import annotations
-
-import argparse
-import csv
+"""KGE Inference for PyKEEN models - simplified for RL integration."""
 import json
 import os
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+import subprocess
+import sys
+import types
+import gzip
+from collections import OrderedDict
+from typing import Dict, List, Optional, Tuple, Union, Sequence
+import time
+import warnings
 
+import pandas as pd
 import torch
 import numpy as np
-from pykeen.triples import TriplesFactory
+import random
 
-# Suppress the harmless PyKEEN IterableDataset warning about batch counts
-import warnings
 warnings.filterwarnings('ignore', message='.*Length of IterableDataset.*', category=UserWarning)
 
 
-@dataclass
-class PredictConfig:
-    model_dir: str
-    output_path: str
-    input_path: Optional[str] = None
-    batch_size: int = 2048
-    cpu: bool = False
-
-
-@dataclass
-class PredictArtifacts:
-    output_path: str
-    num_scored: int
-    skipped: int
-
-
-def load_triples_from_file(path: str) -> List[Tuple[str, str, str]]:
-    """Load triples from file. Supports both TSV and Prolog-style formats."""
-    triples = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            
-            # Check if it's Prolog-style format: relation(entity1,entity2).
-            if '(' in line and ')' in line and line.endswith('.'):
-                # Parse Prolog format: relation(entity1,entity2).
-                try:
-                    rel_start = line.index('(')
-                    rel_end = line.rindex(')')
-                    relation = line[:rel_start].strip()
-                    args = line[rel_start+1:rel_end].strip()
-                    entities = [e.strip() for e in args.split(',')]
-                    if len(entities) == 2:
-                        head, tail = entities
-                        triples.append((head, relation, tail))
-                    else:
-                        print(f"Warning: Skipping malformed line: {line}")
-                except Exception as e:
-                    print(f"Warning: Could not parse line '{line}': {e}")
-            else:
-                # Try TSV/CSV format
-                parts = line.replace('\t', ' ').replace(',', ' ').split()
-                if len(parts) >= 3:
-                    triples.append((parts[0], parts[1], parts[2]))
-                else:
-                    print(f"Warning: Skipping line with insufficient columns: {line}")
-    
-    return triples
-
-
-def load_model(model_dir: str, device: torch.device):
-    """Load a PyKEEN model from directory."""
-    # Load model using PyKEEN's model loading
-    model_path = os.path.join(model_dir, "trained_model.pkl")
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model file not found: {model_path}")
-    
-    # Workaround for torchvision compatibility issues
-    # Disable torchvision imports in PyKEEN by mocking the vision module
-    import sys
-    import types
-    
-    # Create a dummy torchvision module to prevent import errors
-    if 'torchvision' not in sys.modules:
-        sys.modules['torchvision'] = types.ModuleType('torchvision')
-        sys.modules['torchvision.models'] = types.ModuleType('torchvision.models')
-        sys.modules['torchvision._meta_registrations'] = types.ModuleType('torchvision._meta_registrations')
-    
-    # Now import pykeen and load model
-    import pykeen
-    model = torch.load(model_path, map_location=device, weights_only=False)
-    model.to(device)
-    model.eval()
-    
-    # Get entity and relation mappings from the triples factory
-    training_path = os.path.join(model_dir, "training_triples")
-    if os.path.exists(training_path):
-        # Check if it's a directory (newer PyKEEN format)
-        if os.path.isdir(training_path):
-            # Load from TSV files
-            import gzip
-            entity_tsv = os.path.join(training_path, "entity_to_id.tsv.gz")
-            relation_tsv = os.path.join(training_path, "relation_to_id.tsv.gz")
-            
-            entity_to_id = {}
-            with gzip.open(entity_tsv, 'rt') as f:
-                next(f)  # Skip header
-                for line in f:
-                    idx, entity = line.strip().split('\t')
-                    entity_to_id[entity] = int(idx)
-            
-            relation_to_id = {}
-            with gzip.open(relation_tsv, 'rt') as f:
-                next(f)  # Skip header
-                for line in f:
-                    idx, relation = line.strip().split('\t')
-                    relation_to_id[relation] = int(idx)
-        else:
-            # Old format - single file
-            training_factory = torch.load(training_path, weights_only=False)
-            entity_to_id = training_factory.entity_to_id
-            relation_to_id = training_factory.relation_to_id
-    else:
-        # Try loading from JSON files if available
-        entity_path = os.path.join(model_dir, "entity_to_id.json")
-        relation_path = os.path.join(model_dir, "relation_to_id.json")
+def get_available_gpus(memory_threshold: float = 0.1, utilization_threshold: float = 0.3) -> List[int]:
+    """Get list of GPU indices that are not busy."""
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=index,memory.used,memory.total,utilization.gpu', 
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5
+        )
         
-        if os.path.exists(entity_path) and os.path.exists(relation_path):
-            with open(entity_path, "r") as f:
-                entity_to_id = json.load(f)
-            with open(relation_path, "r") as f:
-                relation_to_id = json.load(f)
+        if result.returncode != 0:
+            return list(range(torch.cuda.device_count()))
+        
+        available_gpus = []
+        for line in result.stdout.strip().split('\n'):
+            if not line.strip():
+                continue
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) >= 4:
+                gpu_id = int(parts[0])
+                mem_used, mem_total, utilization = float(parts[1]), float(parts[2]), float(parts[3])
+                mem_fraction = mem_used / mem_total if mem_total > 0 else 1.0
+                util_fraction = utilization / 100.0
+                
+                if mem_fraction <= memory_threshold and util_fraction <= utilization_threshold:
+                    available_gpus.append(gpu_id)
+        
+        return available_gpus
+    except Exception:
+        return list(range(torch.cuda.device_count()))
+
+
+class Atom:
+    """Atom parser for functional notation."""
+    def __init__(self, s: str):
+        import re
+        a = re.sub(r'\b([(),\.])', r'\1', s.strip())
+        if a.endswith("."):
+            a = a[:-1]
+        tokens = a.replace('(', ' ').replace(')', ' ').replace(',', ' ').split()
+        self.r = tokens[0]
+        self.args = tokens[1:]
+    
+    def toTuple(self) -> Tuple:
+        return (self.r,) + tuple(self.args)
+
+
+class KGEInference:
+    """PyKEEN KGE inference engine for RL integration."""
+
+    def __init__(
+        self,
+        dataset_name: str,
+        base_path: str,
+        run_signature: str,
+        checkpoint_dir: str = './checkpoints/',
+        seed: int = 0,
+        scores_file_path: Optional[str] = None,
+        runtime_cache_max_entries: Optional[int] = None,
+        persist_runtime_scores: bool = True,
+        device: str = None,
+    ):
+        self.seed = seed
+        self.set_seeds(self.seed)
+        self.run_signature = run_signature
+        self.checkpoint_dir = checkpoint_dir
+        
+        # # Mock torchvision (PyKEEN compatibility)
+        # self._setup_torchvision_mock()
+        
+        # Multi-GPU setup
+        self.use_multi_gpu = False
+        self.device = None
+        self.available_gpu_ids = None
+        
+        if device == "cuda:all":
+            if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+                available_gpu_indices = get_available_gpus()
+                if len(available_gpu_indices) > 1:
+                    self.device = torch.device(f"cuda:{available_gpu_indices[0]}")
+                    self.available_gpu_ids = available_gpu_indices
+                    self.use_multi_gpu = True
+                    print(f"PyTorch DataParallel with {len(available_gpu_indices)} GPUs: {available_gpu_indices}")
+                else:
+                    self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            else:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif device == "cpu":
+            self.device = torch.device("cpu")
         else:
-            raise FileNotFoundError("Could not find entity/relation mappings")
+            self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        
+        # Model loaded lazily
+        self.model_dir = os.path.join(checkpoint_dir, f"{run_signature}_seed_{seed}")
+        self.model = None
+        self.entity2id = None
+        self.relation2id = None
+        
+        # Caching
+        self.atom_scores: Dict[str, float] = {}
+        self.persist_runtime_scores = persist_runtime_scores
+        self._tuple_cache: Dict[str, Tuple[str, ...]] = {}
+        
+        if runtime_cache_max_entries == 0:
+            self._runtime_cache_enabled = False
+            self._score_cache = None
+        else:
+            self._runtime_cache_enabled = True
+            self._runtime_cache_max_entries = runtime_cache_max_entries
+            self._score_cache = OrderedDict()
+        
+        if scores_file_path:
+            self._load_scores(scores_file_path)
     
-    return model, entity_to_id, relation_to_id
-
-
-def _filter_known(
-    triples: List[Tuple[str, str, str]],
-    entity_to_id: dict,
-    relation_to_id: dict,
-) -> Tuple[torch.Tensor, List[int]]:
-    """Filter triples to only those with known entities/relations."""
-    ids = []
-    keep = []
-    for idx, (h, r, t) in enumerate(triples):
-        if h in entity_to_id and r in relation_to_id and t in entity_to_id:
-            ids.append((entity_to_id[h], relation_to_id[r], entity_to_id[t]))
-            keep.append(idx)
-    if not ids:
-        return torch.empty(0, 3, dtype=torch.long), keep
-    return torch.tensor(ids, dtype=torch.long), keep
-
-
-def _write_scores(
-    path: str,
-    triples: List[Tuple[str, str, str]],
-    scores: List[float],
-) -> None:
-    """Write scores to output file in functional format."""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="") as handle:
-        for (head, rel, tail), score in zip(triples, scores):
-            handle.write(f"{rel}({head},{tail})\t{score:.6f}\n")
-
-
-def predict(cfg: PredictConfig) -> PredictArtifacts:
-    """Run inference on triples and return scores."""
-    device = torch.device("cuda" if torch.cuda.is_available() and not cfg.cpu else "cpu")
+    def set_seeds(self, seed: int):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
     
-    if not cfg.input_path:
-        raise ValueError("input_path is required")
-    
-    triples_raw = load_triples_from_file(cfg.input_path)
-    if not triples_raw:
-        raise ValueError("No triples found to score")
-    
-    model, entity_to_id, relation_to_id = load_model(cfg.model_dir, device)
-    triples_ids, keep_idx = _filter_known(triples_raw, entity_to_id, relation_to_id)
-    triples_kept = [triples_raw[i] for i in keep_idx]
-    skipped = len(triples_raw) - len(triples_kept)
-    
-    if not triples_kept:
-        print("[warn] No triples matched the model vocabulary; nothing to score")
-        _write_scores(cfg.output_path, [], [])
-        return PredictArtifacts(output_path=cfg.output_path, num_scored=0, skipped=skipped)
-    
-    scores = []
-    with torch.no_grad():
-        for start in range(0, triples_ids.size(0), cfg.batch_size):
-            batch = triples_ids[start : start + cfg.batch_size].to(device)
-            # PyKEEN models expect batch of shape (batch_size, 3) with columns [head, relation, tail]
-            batch_scores = model.score_hrt(batch).float().cpu()
-            # Ensure scores are 1D
-            if batch_scores.dim() > 1:
-                batch_scores = batch_scores.squeeze()
-            scores.append(batch_scores)
-    
-    if scores:
-        flat_scores = torch.cat(scores, dim=0)
-        # Ensure it's 1D and convert to list
-        if flat_scores.dim() > 1:
-            flat_scores = flat_scores.squeeze()
-        flat_scores = flat_scores.tolist()
-        # Handle case where single value becomes a scalar
-        if not isinstance(flat_scores, list):
-            flat_scores = [flat_scores]
-    else:
-        flat_scores = []
-    
-    _write_scores(cfg.output_path, triples_kept, flat_scores)
-    print(f"Wrote {len(flat_scores)} scored triples to {cfg.output_path}")
-    if skipped:
-        print(f"[warn] Skipped {skipped} triples due to unknown entities/relations")
-    return PredictArtifacts(output_path=cfg.output_path, num_scored=len(flat_scores), skipped=skipped)
+    def _load_scores(self, filepath: str):
+        """Load pre-computed scores from TSV file."""
+        if not os.path.exists(filepath) or os.path.isdir(filepath):
+            print(f"Warning: Scores file not found at {filepath}. KGE will perform live inference.")
+            return
 
+        print(f"Loading pre-computed scores from {filepath}...")
+        start_time = time.time()
+        try:
+            df = pd.read_csv(filepath, sep='\t', header=None, names=['atom', 'score'], 
+                           dtype={'atom': str, 'score': float}, engine='c')
+            self.atom_scores = pd.Series(df.score.values, index=df.atom).to_dict()
+            print(f"Loaded {len(self.atom_scores)} scores in {time.time() - start_time:.2f}s.")
+        except Exception as e:
+            print(f"Error loading scores: {e}")
+    
+    def _get_runtime_cached_score(self, atom_str: str) -> Optional[float]:
+        if not self._runtime_cache_enabled or self._score_cache is None:
+            return None
+        if atom_str in self._score_cache:
+            score = self._score_cache[atom_str]
+            self._score_cache.move_to_end(atom_str)
+            return score
+        return None
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_dir", required=True, help="Directory containing trained PyKEEN model")
-    parser.add_argument("--output", dest="output_path", required=True, help="Output file path for scores")
-    parser.add_argument("--input", dest="input_path", required=True, help="Input file with triples to score")
-    parser.add_argument("--batch_size", type=int, default=2048, help="Batch size for inference")
-    parser.add_argument("--cpu", action="store_true", help="Force CPU usage")
-    return parser
+    def _store_runtime_score(self, atom_str: str, score: float) -> None:
+        if self._runtime_cache_enabled and self._score_cache is not None:
+            self._score_cache[atom_str] = score
+            self._score_cache.move_to_end(atom_str)
+            if self._runtime_cache_max_entries and len(self._score_cache) > self._runtime_cache_max_entries:
+                self._score_cache.popitem(last=False)
+        if self.persist_runtime_scores:
+            self.atom_scores[atom_str] = score
+    
+    def _build_and_load_model(self) -> torch.nn.Module:
+        """Build and load the PyKEEN KGE model."""
+        print("Loading PyKEEN model and mappings...")
+        
+        # Load model
+        model_path = os.path.join(self.model_dir, "trained_model.pkl")
+        model = torch.load(model_path, map_location=self.device, weights_only=False)
+        model.to(self.device)
+        model.eval()
+        
+        # Load entity/relation mappings
+        training_path = os.path.join(self.model_dir, "training_triples")
+        
+        if os.path.exists(training_path) and os.path.isdir(training_path):
+            # Load from TSV files
+            with gzip.open(os.path.join(training_path, "entity_to_id.tsv.gz"), 'rt') as f:
+                next(f)  # Skip header
+                self.entity2id = {entity: int(idx) for idx, entity in (line.strip().split('\t') for line in f)}
+            
+            with gzip.open(os.path.join(training_path, "relation_to_id.tsv.gz"), 'rt') as f:
+                next(f)  # Skip header
+                self.relation2id = {relation: int(idx) for idx, relation in (line.strip().split('\t') for line in f)}
+        else:
+            # Try JSON files
+            with open(os.path.join(self.model_dir, "entity2id.json"), "r") as f:
+                self.entity2id = json.load(f)
+            with open(os.path.join(self.model_dir, "relation2id.json"), "r") as f:
+                self.relation2id = json.load(f)
+        
+        # Multi-GPU wrapper
+        if self.use_multi_gpu and self.available_gpu_ids:
+            model = torch.nn.DataParallel(model, device_ids=self.available_gpu_ids)
+        
+        print("Model loaded successfully.")
+        return model
+    
+    def _normalize_atom_input(self, atom: Union[str, Tuple]) -> str:
+        """Convert atom to canonical string."""
+        if isinstance(atom, str):
+            return atom
+        if isinstance(atom, tuple):
+            predicate, *args = atom
+            return f"{predicate}({','.join(map(str, args))})"
+        raise TypeError(f"Unsupported atom type: {type(atom)}")
 
+    def _atom_str_to_tuple(self, atom_str: str) -> Tuple:
+        """Convert atom string to tuple."""
+        cached = self._tuple_cache.get(atom_str)
+        if cached:
+            return cached
+        atom_tuple = Atom(atom_str).toTuple()
+        self._tuple_cache[atom_str] = atom_tuple
+        return atom_tuple
+    
+    def _prepare_triple_ids(self, atom_tuples: List[Tuple]) -> torch.Tensor:
+        """Convert atom tuples to ID tensor."""
+        ids = []
+        for atom_tuple in atom_tuples:
+            predicate, *args = atom_tuple
+            if len(args) != 2:
+                raise ValueError(f"Expected binary predicate, got {len(args)} arguments")
+            head, tail = args
+            if head not in self.entity2id or tail not in self.entity2id or predicate not in self.relation2id:
+                raise ValueError(f"Unknown entity or relation in {atom_tuple}")
+            ids.append([self.entity2id[head], self.relation2id[predicate], self.entity2id[tail]])
+        return torch.tensor(ids, dtype=torch.long)
+    
+    def _score_atoms_via_model(self, atom_tuples: Sequence[Tuple]) -> List[float]:
+        """Score atoms using KGE model."""
+        if not atom_tuples:
+            return []
+        
+        if self.model is None:
+            self.model = self._build_and_load_model()
+        
+        try:
+            triple_ids = self._prepare_triple_ids(list(atom_tuples))
+        except ValueError:
+            return [0.0] * len(atom_tuples)
+        
+        scores = []
+        batch_size = 2048
+        
+        with torch.no_grad():
+            for start in range(0, triple_ids.size(0), batch_size):
+                batch = triple_ids[start : start + batch_size].to(self.device)
+                batch_scores = self.model.score_hrt(batch)
+                if batch_scores.dim() > 1:
+                    batch_scores = batch_scores.squeeze()
+                scores.append(batch_scores.float().cpu())
+        
+        if scores:
+            flat_scores = torch.cat(scores, dim=0)
+            if flat_scores.dim() > 1:
+                flat_scores = flat_scores.squeeze()
+            result = flat_scores.tolist()
+            return result if isinstance(result, list) else [result]
+        return []
+    
+    def predict_batch(self, atoms_for_ranking: Sequence[Union[str, Tuple]]) -> List[float]:
+        """
+        Score a batch of atoms. First atom is assumed to be the positive sample.
+        Returns list of scores in same order as input.
+        """
+        if not atoms_for_ranking:
+            return []
 
-def main(argv: List[str] | None = None) -> PredictArtifacts:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    cfg = PredictConfig(
-        model_dir=args.model_dir,
-        output_path=args.output_path,
-        input_path=args.input_path,
-        batch_size=args.batch_size,
-        cpu=args.cpu,
-    )
-    return predict(cfg)
+        canonical_atoms = [self._normalize_atom_input(atom) for atom in atoms_for_ranking]
+        scores: List[Optional[float]] = [None] * len(canonical_atoms)
+        missing, missing_indices = [], []
 
+        # Check caches
+        for idx, atom_str in enumerate(canonical_atoms):
+            cached = self.atom_scores.get(atom_str) or self._get_runtime_cached_score(atom_str)
+            if cached is not None:
+                scores[idx] = float(cached)
+            else:
+                missing.append(atom_str)
+                missing_indices.append(idx)
 
-if __name__ == "__main__":
-    main()
+        # Score missing atoms
+        if missing:
+            unique_missing = list(dict.fromkeys(missing))
+            atom_tuples = [self._atom_str_to_tuple(a) for a in unique_missing]
+            new_scores = self._score_atoms_via_model(atom_tuples)
+
+            newly_scored = {a: float(s) for a, s in zip(unique_missing, new_scores)}
+            for a, s in newly_scored.items():
+                self._store_runtime_score(a, s)
+
+            for idx, atom_str in zip(missing_indices, missing):
+                scores[idx] = newly_scored[atom_str]
+
+        return [float(s) for s in scores]

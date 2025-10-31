@@ -386,7 +386,7 @@ class RotatE(KGELayer, tf.keras.layers.Layer):
         condition = tf.logical_or(tf.equal(head_batch, 0), tf.equal(tail_batch, 0))
 
         def zero_embeddings():
-            return tf.zeros([0, 1])
+            return tf.zeros([0, 1], dtype=head.dtype)
 
         def compute_embeddings():
             # Split head and tail into real and imaginary parts.
@@ -403,8 +403,9 @@ class RotatE(KGELayer, tf.keras.layers.Layer):
             diff_real = rotated_head_real - re_tail
             diff_imag = rotated_head_imag - im_tail
             # Compute the L2 norm over the complex components.
+            squared_diff = diff_real * diff_real + diff_imag * diff_imag
             norm = tf.sqrt(
-                tf.reduce_sum(tf.maximum(1e-9, diff_real * diff_real + diff_imag * diff_imag),
+                tf.reduce_sum(tf.maximum(tf.constant(1e-9, dtype=squared_diff.dtype), squared_diff),
                               axis=-1, keepdims=True)
             )
             return norm

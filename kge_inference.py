@@ -21,8 +21,8 @@ def _get_backend_class(backend: str):
         return BackendKGEInference, "tensorflow"
     elif backend in {"torch", "pytorch"}:
         try:
-            from kge_pytorch.kge_inference_wrapper import KGEInferencePyTorch
-            return KGEInferencePyTorch, "pytorch"
+            from kge_pytorch.kge_inference_torch import KGEInference as BackendKGEInference
+            return BackendKGEInference, "pytorch"
         except ImportError as e:
             warnings.warn(
                 f"PyTorch KGE backend could not be imported: {e}. Falling back to TensorFlow.",
@@ -33,8 +33,8 @@ def _get_backend_class(backend: str):
             return BackendKGEInference, "tensorflow"
     elif backend in {"pykeen"}:
         try:
-            from kge_pykeen.kge_inference_wrapper import KGEInferencePyKEEN
-            return KGEInferencePyKEEN, "pykeen"
+            from kge_pykeen.kge_inference_pykeen import KGEInference as BackendKGEInference
+            return BackendKGEInference, "pykeen"
         except ImportError as e:
             warnings.warn(
                 f"PyKEEN KGE backend could not be imported: {e}. Falling back to TensorFlow.",

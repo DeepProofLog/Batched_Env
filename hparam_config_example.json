@@ -1,0 +1,8 @@
+{
+  "models": ["TransE", "ComplEx", "RotatE"],
+  "datasets": ["family", "countries_s1"],
+  "lr": [0.001, 0.0005, 0.0001],
+  "embedding_dim": [256, 512],
+  "batch_size": [2048, 4096],
+  "weight_decay": [0.0, 1e-6]
+}
