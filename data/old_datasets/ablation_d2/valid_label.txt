@@ -1,6 +1,0 @@
-locatedInCR(armenia,asia).	True
-locatedInCR(azerbaijan,asia).	True
-locatedInCR(malaysia,asia).	True
-locatedInCR(romania,europe).	True
-locatedInCR(costa_rica,americas).	True
-locatedInCR(suriname,americas).	True

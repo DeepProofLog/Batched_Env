@@ -1,1 +1,0 @@
-test_predicate(hello).
