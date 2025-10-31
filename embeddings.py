@@ -1044,6 +1044,9 @@ class HybridConstantEmbedder(nn.Module):
         self.register_buffer('image_data', image_data)
 
     def forward(self, indices):
+        # Ensure indices are on the correct device
+        indices = indices.to(self.regular_embedder.weight.device)
+        
         # Initialize output tensor
         embeddings = torch.zeros(*indices.shape, self.embedding_dim, 
                                device=indices.device)
@@ -1085,6 +1088,8 @@ class ConstantEmbeddings(nn.Module):
         self.device = device
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
+        # Ensure indices are on the correct device
+        indices = indices.to(self.embedder.weight.device)
         embeddings = self.embedder(indices)
         if self.regularization > 0:
             self.add_loss(self.regularization * embeddings.norm(p=2))
@@ -1100,6 +1105,8 @@ class PredicateEmbeddings(nn.Module):
         self.device = device
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
+        # Ensure indices are on the correct device
+        indices = indices.to(self.embedder.weight.device)
         embeddings = self.embedder(indices)
         if self.regularization > 0:
             self.add_loss(self.regularization * embeddings.norm(p=2))

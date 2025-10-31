@@ -13,7 +13,7 @@ from utils import (
     _warn_non_reproducible,
     _maybe_enable_wandb,
 )
-from callbacks import (
+from sb3_callbacks import (
     SB3TrainCheckpoint,
     CustomEvalCallbackMRR,
     CustomEvalCallback,
@@ -22,12 +22,12 @@ from callbacks import (
     AnnealingTarget,
     _EvalDepthRewardTracker
 )
-from custom_dummy_env import create_environments
+from torchrl_custom_env import create_environments
 from dataset import DataHandler
-from model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
+from sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
 from embeddings import get_embedder
 from neg_sampling import get_sampler
-from model_eval import eval_corruptions
+from sb3_model_eval import eval_corruptions
 from stable_baselines3.common.callbacks import (
     StopTrainingOnRewardThreshold,
     CallbackList,

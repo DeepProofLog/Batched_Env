@@ -10,7 +10,7 @@ from typing import Optional, List
 
 import numpy as np
 from utils import FileLogger
-from train import main
+from sb3_train import main
 from utils_config import (
     load_experiment_configs,
     parse_scalar,
@@ -20,7 +20,12 @@ from utils_config import (
     get_available_gpus,
     select_best_gpu,
 )
-torch.set_float32_matmul_precision('high')
+# Use new API for TF32 settings to avoid deprecation warnings
+# Valid precision values: 'ieee', 'tf32', None (for default)
+if hasattr(torch.backends.cuda.matmul, 'fp32_precision'):
+    torch.backends.cuda.matmul.fp32_precision = 'tf32'
+if hasattr(torch.backends.cudnn.conv, 'fp32_precision'):
+    torch.backends.cudnn.conv.fp32_precision = 'tf32'
 # import gc
 # gc.disable()  
 # torch.cuda.set_allocator_config(garbage_collection_threshold=0.9)

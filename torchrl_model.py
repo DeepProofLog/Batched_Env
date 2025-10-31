@@ -80,6 +80,8 @@ class PolicyNetwork(nn.Module):
         logits = torch.matmul(encoded_obs, encoded_actions.transpose(-2, -1)).squeeze(-2)
         
         # Mask invalid actions with -inf
+        # Ensure action_mask is on the same device as logits
+        action_mask = action_mask.to(logits.device)
         logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
         
         return logits

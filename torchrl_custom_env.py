@@ -9,7 +9,7 @@ import torch
 from tensordict import TensorDict
 from torchrl.envs import EnvBase, ParallelEnv, SerialEnv
 
-from env import LogicEnv_gym
+from torchrl_env import LogicEnv_gym
 
 
 def create_environments(args, data_handler, index_manager, kge_engine=None, detailed_eval_env=False):
@@ -168,6 +168,11 @@ class CustomBatchedEnv(EnvBase):
         self.type_ = "custom_batched"
         self._seeds = [None] * num_envs
         self._current_tds = [None] * num_envs
+        
+        # Store NonTensorData separately to avoid stacking issues
+        # These are for debugging only and not needed by the policy
+        self._debug_states = [None] * num_envs
+        self._debug_derived_states = [None] * num_envs
 
     def _reset(self, tensordict: Optional[TensorDict] = None, **kwargs) -> TensorDict:
         """Reset all active environments and return batched TensorDict."""
@@ -182,10 +187,28 @@ class CustomBatchedEnv(EnvBase):
                 # For inactive envs, use the last known state
                 td = self._current_tds[idx] if self._current_tds[idx] is not None else self.envs[idx].reset()
             
-            batch_td_list.append(td)
+            # Extract and store NonTensorData separately (for debugging)
+            if "state" in td.keys():
+                self._debug_states[idx] = td.get("state")
+            if "derived_states" in td.keys():
+                self._debug_derived_states[idx] = td.get("derived_states")
+            
+            # Remove NonTensorData from TensorDict before stacking
+            # This prevents stacking errors when NonTensorData types are inconsistent
+            td_clean = td.select(
+                "sub_index", "derived_sub_indices", "action_mask", 
+                "label", "done", "terminated",
+                strict=False  # Don't fail if some keys are missing
+            )
+            
+            batch_td_list.append(td_clean)
         
-        # Stack all TensorDicts into a batch
+        # Stack all TensorDicts into a batch (now safe without NonTensorData)
         batched_td = torch.stack(batch_td_list, dim=0)
+        
+        # Debug: verify NonTensorData was removed
+        if "state" in batched_td.keys() or "derived_states" in batched_td.keys():
+            print(f"WARNING: NonTensorData still in batched TensorDict! Keys: {list(batched_td.keys())}")
         
         # Reset seeds after use
         self._seeds = [None] * self.num_envs
@@ -215,6 +238,11 @@ class CustomBatchedEnv(EnvBase):
                 # Step the environment
                 next_td = self.envs[idx]._step(action_td)
                 
+                # Ensure consistent keys across all TensorDicts
+                # Add is_success if missing (defaulting to False)
+                if "is_success" not in next_td.keys():
+                    next_td["is_success"] = torch.tensor([False], dtype=torch.bool, device=self.device)
+                
                 # Check if episode is done
                 if next_td["done"]:
                     # Increment episode count
@@ -222,7 +250,7 @@ class CustomBatchedEnv(EnvBase):
                     self._episode_step_id[idx] += 1
                     
                     # Add episode metadata
-                    next_td["episode_idx"] = self._episode_step_id[idx]
+                    next_td["episode_idx"] = torch.tensor([self._episode_step_id[idx].item()], dtype=torch.int32, device=self.device)
                     
                     # If reached target, deactivate
                     if self._episode_count[idx] >= self._episode_target[idx]:
@@ -233,17 +261,91 @@ class CustomBatchedEnv(EnvBase):
                     self._current_tds[idx] = reset_td
                 else:
                     self._current_tds[idx] = next_td
+                    # Add episode_idx even when not done, for consistency
+                    if "episode_idx" not in next_td.keys():
+                        next_td["episode_idx"] = torch.tensor([0], dtype=torch.int32, device=self.device)
                 
                 batch_td_list.append(next_td)
             else:
                 # Inactive env: return last state with zero reward
                 td = self._current_tds[idx].clone()
-                td["reward"] = torch.zeros_like(td["reward"])
-                td["done"] = torch.tensor(True, dtype=torch.bool, device=self.device)
+                # Add zero reward and set done=True for inactive envs
+                td["reward"] = torch.tensor([0.0], dtype=torch.float32, device=self.device)
+                td["done"] = torch.tensor([True], dtype=torch.bool, device=self.device)
+                # Ensure episode_idx and is_success exist for consistency
+                if "episode_idx" not in td.keys():
+                    td["episode_idx"] = torch.tensor([0], dtype=torch.int32, device=self.device)
+                if "is_success" not in td.keys():
+                    td["is_success"] = torch.tensor([False], dtype=torch.bool, device=self.device)
                 batch_td_list.append(td)
         
         # Stack into batched TensorDict
-        batched_td = torch.stack(batch_td_list, dim=0)
+        # First, extract and store NonTensorData separately
+        for idx, td in enumerate(batch_td_list):
+            if "state" in td.keys():
+                self._debug_states[idx] = td.get("state")
+            if "derived_states" in td.keys():
+                self._debug_derived_states[idx] = td.get("derived_states")
+        
+        # Remove NonTensorData from all TensorDicts before stacking
+        batch_td_clean = []
+        
+        # Define required keys that must be present in all TensorDicts
+        required_keys = {
+            "sub_index", "derived_sub_indices", "action_mask",
+            "label", "done", "terminated", "reward",
+            "episode_idx", "is_success"
+        }
+        
+        # Define optional keys that might not be present in all TensorDicts
+        optional_keys = {"query_type", "query_depth", "max_depth_reached", "truncated"}
+        
+        # Define scalar keys that need to be unsqueezed
+        scalar_keys = {'label', 'done', 'terminated', 'truncated', 'reward', 
+                      'max_depth_reached', 'query_depth', 'query_type', 'episode_idx', 'is_success'}
+        
+        # First pass: determine which optional keys are present and normalize all tensor shapes
+        keys_to_include = set(required_keys)
+        for td in batch_td_list:
+            # Ensure all tensors have consistent shapes first
+            for key in list(td.keys()):
+                value = td[key]
+                # Only process torch tensors, skip lists and other types (Non TensorData)
+                if not isinstance(value, torch.Tensor):
+                    continue
+                
+                # For scalar tensors in scalar_keys, reshape to [1] for consistency
+                if value.ndim == 0 and key in scalar_keys:
+                    td.set(key, value.unsqueeze(0))
+            
+            # Check which optional keys are present
+            for key in optional_keys:
+                if key in td.keys():
+                    keys_to_include.add(key)
+        
+        # Second pass: add missing keys with proper shapes and select
+        for td in batch_td_list:
+            # Add missing optional keys with default values (all with shape [1])
+            for key in keys_to_include:
+                if key not in td.keys():
+                    if key == "query_type":
+                        td.set(key, torch.tensor([0], dtype=torch.long))
+                    elif key == "query_depth":
+                        td.set(key, torch.tensor([0], dtype=torch.long))
+                    elif key == "max_depth_reached":
+                        td.set(key, torch.tensor([False], dtype=torch.bool))
+                    elif key == "truncated":
+                        td.set(key, torch.tensor([False], dtype=torch.bool))
+            
+            # Select only the keys we want to include (all TensorDicts now have the same keys and shapes)
+            td_clean = td.select(*keys_to_include, strict=True)
+            batch_td_clean.append(td_clean)
+        
+        batched_td = torch.stack(batch_td_clean, dim=0)
+        
+        # Debug: verify NonTensorData was removed  
+        if "state" in batched_td.keys() or "derived_states" in batched_td.keys():
+            print(f"WARNING: NonTensorData still in batched TensorDict after step! Keys: {list(batched_td.keys())}")
         
         return batched_td
 
@@ -299,3 +401,24 @@ class CustomBatchedEnv(EnvBase):
         
         return [getattr(self.envs[idx], method_name)(*method_args, **method_kwargs) 
                 for idx in indices]
+    
+    def get_debug_states(self, idx: Optional[int] = None):
+        """
+        Retrieve debug state information (NonTensorData).
+        
+        Args:
+            idx: Environment index. If None, returns all.
+            
+        Returns:
+            Dict with 'state' and 'derived_states' for the specified environment(s).
+        """
+        if idx is not None:
+            return {
+                "state": self._debug_states[idx],
+                "derived_states": self._debug_derived_states[idx]
+            }
+        else:
+            return {
+                "states": self._debug_states,
+                "derived_states": self._debug_derived_states
+            }

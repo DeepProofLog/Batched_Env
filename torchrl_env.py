@@ -9,11 +9,11 @@ import torch
 from tensordict import NonTensorData, TensorDict
 from torchrl.envs import EnvBase
 from torchrl.data.tensor_specs import (
-    CompositeSpec,
-    BoundedTensorSpec,
-    UnboundedContinuousTensorSpec,
-    DiscreteTensorSpec,
-    BinaryDiscreteTensorSpec,
+    Composite,
+    Bounded,
+    Unbounded,
+    Categorical,
+    Binary,
 )
 
 from dataset import DataHandler
@@ -179,22 +179,22 @@ class LogicEnv_gym(EnvBase):
         max_vocab_size = self.index_manager.total_vocab_size if hasattr(self.index_manager, 'total_vocab_size') else 100000
         
         # Observation spec - defines the structure of observations
-        self.observation_spec = CompositeSpec(
-            sub_index=BoundedTensorSpec(
+        self.observation_spec = Composite(
+            sub_index=Bounded(
                 low=-1,  # -1 for padding
                 high=max_vocab_size,
                 shape=torch.Size([1, self.padding_atoms, self.max_arity + 1]),
                 dtype=torch.int32,
                 device=self.device,
             ),
-            derived_sub_indices=BoundedTensorSpec(
+            derived_sub_indices=Bounded(
                 low=-1,  # -1 for padding
                 high=max_vocab_size,
                 shape=torch.Size([self.padding_states, self.padding_atoms, self.max_arity + 1]),
                 dtype=torch.int32,
                 device=self.device,
             ),
-            action_mask=BinaryDiscreteTensorSpec(
+            action_mask=Binary(
                 n=self.padding_states,
                 shape=torch.Size([self.padding_states]),
                 dtype=torch.bool,
@@ -204,7 +204,7 @@ class LogicEnv_gym(EnvBase):
         )
         
         # Action spec - discrete action space
-        self.action_spec = DiscreteTensorSpec(
+        self.action_spec = Categorical(
             n=self.padding_states,
             shape=torch.Size([]),
             dtype=torch.int64,
@@ -212,7 +212,7 @@ class LogicEnv_gym(EnvBase):
         )
         
         # Reward spec - scalar reward
-        self.reward_spec = UnboundedContinuousTensorSpec(
+        self.reward_spec = Unbounded(
             shape=torch.Size([1]),
             dtype=torch.float32,
             device=self.device,
@@ -220,14 +220,14 @@ class LogicEnv_gym(EnvBase):
         
         # Done spec - boolean termination signal
         # TorchRL requires at least a 1D shape for done_spec and both "done" and "terminated" keys
-        self.done_spec = CompositeSpec(
-            done=DiscreteTensorSpec(
+        self.done_spec = Composite(
+            done=Categorical(
                 n=2,
                 shape=torch.Size([1]),
                 dtype=torch.bool,
                 device=self.device,
             ),
-            terminated=DiscreteTensorSpec(
+            terminated=Categorical(
                 n=2,
                 shape=torch.Size([1]),
                 dtype=torch.bool,
@@ -509,16 +509,37 @@ class LogicEnv_gym(EnvBase):
         Returns:
             TensorDict with next state, reward, done signal, and metadata
         '''
-        action = tensordict["action"].item()
+        # Extract action - handle both scalar and tensor inputs
+        action_tensor = tensordict["action"]
+        if action_tensor.numel() == 1:
+            action = action_tensor.item()
+        else:
+            # If batched, take first element (SerialEnv should unbatch but sometimes doesn't)
+            action = action_tensor.flatten()[0].item()
         
         derived_states = self.tensordict["derived_states"]
         derived_sub_indices = self.tensordict["derived_sub_indices"]
+        action_mask_td = self.tensordict.get("action_mask", None)
 
-        if action >= self.padding_states or action >= len(derived_states):
+        # Extract actual list from NonTensorData if needed
+        if hasattr(derived_states, 'data'):
+            derived_states_list = derived_states.data
+        else:
+            derived_states_list = derived_states
+
+        if action >= self.padding_states or action >= len(derived_states_list):
+            # Provide detailed error information for debugging
+            action_mask = self.tensordict.get("action_mask", None)
+            valid_actions = torch.where(action_mask)[0].tolist() if action_mask is not None else "N/A"
             raise ValueError(
-                f"Invalid action ({action}). Derived states: {derived_states}.")
+                f"Invalid action ({action}). "
+                f"Derived states length: {len(derived_states_list)}, "
+                f"Padding states: {self.padding_states}, "
+                f"Valid actions: {valid_actions}, "
+                f"Current state: {self.tensordict.get('state', 'N/A')}"
+            )
         
-        next_state = derived_states[action]
+        next_state = derived_states_list[action]
         next_sub_index = derived_sub_indices[action]
 
         done_next, reward_next, successful = self.get_done_reward(next_state, self.tensordict['label'].item())
@@ -538,6 +559,16 @@ class LogicEnv_gym(EnvBase):
         action_mask = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
         action_mask[:valid] = True
         
+        # DEBUG: Check for empty action masks
+        if valid == 0:
+            print(f"\n{'='*80}")
+            print(f"WARNING: No valid next states!")
+            print(f"Current state: {next_state}")
+            print(f"Derived states: {derived_states_next}")
+            print(f"Done: {done_next}, Truncate: {truncate_flag}")
+            print(f"Action mask: {action_mask}")
+            print(f"{'='*80}\n")
+        
         self.current_depth += 1
         exceeded_max_depth = (self.current_depth >= self.max_depth)
         if exceeded_max_depth: 
@@ -547,6 +578,7 @@ class LogicEnv_gym(EnvBase):
         truncated = bool(exceeded_max_depth) or bool(truncate_flag)
         terminated = bool(done_next)
         
+        # Use the stored label from reset (self.current_label is set in reset())
         label_value = int(self.current_label)
         
         # Build next TensorDict
@@ -561,21 +593,28 @@ class LogicEnv_gym(EnvBase):
                 "terminated": torch.tensor([terminated], dtype=torch.bool, device=self.device),  # Required by TorchRL
                 "reward": reward_next.unsqueeze(0),  # TorchRL expects [1] shape for reward
                 "derived_states": NonTensorData(data=derived_states_next),
-                # Additional info
-                "query_type": "positive" if label_value == 1 else "negative",
-                "query_depth": self.current_query_depth_value if self.current_query_depth_value is not None else -1,
-                "max_depth_reached": exceeded_max_depth,
-                "truncated": torch.tensor(truncated, dtype=torch.bool, device=self.device),
+                # Additional info (all as 1D tensors for consistent stacking)
+                "query_type": torch.tensor([1 if label_value == 1 else 0], dtype=torch.long, device=self.device),
+                "query_depth": torch.tensor([self.current_query_depth_value if self.current_query_depth_value is not None else -1], dtype=torch.long, device=self.device),
+                "max_depth_reached": torch.tensor([exceeded_max_depth], dtype=torch.bool, device=self.device),
+                "truncated": torch.tensor([truncated], dtype=torch.bool, device=self.device),
             },
             batch_size=torch.Size([]),
         )
         
         # Add success flag when done
         if done_next:
-            next_td["is_success"] = torch.tensor(successful and not truncated, dtype=torch.bool, device=self.device)
+            next_td["is_success"] = torch.tensor([successful and not truncated], dtype=torch.bool, device=self.device)
             # if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
             #     janus.query_once(f"asserta({self.current_query.prolog_str()}).")
-            self.current_query, self.current_label = None, None
+            
+            # Auto-reset: When episode is done, automatically reset for next episode
+            # This matches TorchRL's expected behavior for environments
+            reset_td = self._reset(tensordict=None)
+            # Copy the reset state to next_td but keep the reward/done from this step
+            for key in reset_td.keys():
+                if key not in ["reward", "done", "terminated", "truncated"]:
+                    next_td[key] = reset_td[key]
 
         # Update internal state
         self.tensordict = next_td
@@ -757,6 +796,7 @@ class LogicEnv_gym(EnvBase):
             final_sub_indices.append(self.index_manager.get_atom_sub_index(endt_state))
 
         if not derived_states:
+            print(f"\n[DEBUG] get_next_states returning end_in_false() for state: {state}")
             derived_states, derived_sub_indices = self.end_in_false()
         else:
             derived_sub_indices = self._pad_sub_indices(final_sub_indices)
