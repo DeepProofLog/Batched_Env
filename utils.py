@@ -265,6 +265,51 @@ def print_eval_info(split_name: str, metrics: Dict[str, float]):
             return f"{mean:.3f} +/- {std:.2f}"
         return f"{mean:.3f} +/- {std:.2f} ({count})"
 
+    def _sort_key(base: str) -> Tuple[int, int, Union[int, float]]:
+        """Sort key for metric ordering."""
+        # Priority: proven_d_ > proven_ > reward_d_ > reward_ > others
+        if base.startswith("proven_d_"):
+            priority = 0
+            parts = base.split('_')
+            label = parts[-1]  # 'pos' or 'neg'
+            label_order = 0 if label == 'pos' else 1
+            depth_str = parts[2] if len(parts) > 2 else "unknown"
+            if depth_str == "unknown":
+                depth_order: Union[int, float] = float("inf")
+            else:
+                try:
+                    depth_order = int(depth_str)
+                except (TypeError, ValueError):
+                    depth_order = float("inf")
+            return (priority, label_order, depth_order)
+        elif base.startswith("proven_"):
+            priority = 1
+            label = base.split('_')[-1]
+            label_order = 0 if label == 'pos' else 1
+            return (priority, label_order, 0)
+        elif base.startswith("reward_d_"):
+            priority = 2
+            parts = base.split('_')
+            label = parts[-1]  # 'pos' or 'neg'
+            label_order = 0 if label == 'pos' else 1
+            depth_str = parts[2] if len(parts) > 2 else "unknown"
+            if depth_str == "unknown":
+                depth_order = float("inf")
+            else:
+                try:
+                    depth_order = int(depth_str)
+                except (TypeError, ValueError):
+                    depth_order = float("inf")
+            return (priority, label_order, depth_order)
+        elif "reward" in base.lower():
+            priority = 3
+            label_order = 0 if "pos" in base else 1 if "neg" in base else 2
+            return (priority, label_order, 0)
+        else:
+            # Other metrics come last
+            priority = 4
+            return (priority, 0, 0)
+
     print(f'\n\n{split_name} set metrics:')
     grouped: Dict[str, Dict[str, Optional[float]]] = {}
     grouped_order: List[str] = []
@@ -284,6 +329,9 @@ def print_eval_info(split_name: str, metrics: Dict[str, float]):
                 grouped[base][suffix] = float(value)
                 handled_keys.add(key)
                 break
+
+    # Sort the grouped metrics by priority
+    grouped_order.sort(key=_sort_key)
 
     for base in grouped_order:
         stats = grouped[base]

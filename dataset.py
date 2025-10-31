@@ -524,6 +524,18 @@ class DataHandler:
         self.all_known_triples = self.train_queries + self.valid_queries + self.test_queries
         # self.valid_queries = self.test_queries.copy() # Use test queries as valid queries
 
+        # Debug: Check actual depth values loaded
+        if self.train_queries_depths:
+            depth_counts = {}
+            for d in self.train_queries_depths:
+                depth_counts[d] = depth_counts.get(d, 0) + 1
+            print(f"Train depth distribution: {depth_counts}")
+        if self.valid_queries_depths:
+            depth_counts = {}
+            for d in self.valid_queries_depths:
+                depth_counts[d] = depth_counts.get(d, 0) + 1
+            print(f"Valid depth distribution: {depth_counts}")
+        
         print(f"Dataset {dataset_name} loaded:")
         print(f"  Rules: {len(self.rules)}")
         print(f"  Facts: {len(self.facts)}")

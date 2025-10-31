@@ -85,12 +85,19 @@ class TorchRLEnvWrapper(VecEnv):
         self._episode_target = torchrl_env._episode_target.numpy()
         self.active_envs = torchrl_env.active_envs.numpy()
         
+        # Track episode statistics for info callback
+        self._episode_rewards = np.zeros(self.num_envs, dtype=np.float32)
+        self._episode_lengths = np.zeros(self.num_envs, dtype=np.int32)
+        
         # Access to underlying envs
         self.envs = [type('EnvWrapper', (), {'env': env})() for env in torchrl_env.envs]
         
     def reset(self):
         """Reset the environment and return observations."""
         td = self.torchrl_env.reset()
+        # Reset episode tracking
+        self._episode_rewards[:] = 0.0
+        self._episode_lengths[:] = 0
         return self._tensordict_to_obs(td)
     
     def _get_last_valid_obs(self):
@@ -162,6 +169,10 @@ class TorchRLEnvWrapper(VecEnv):
         rewards = reward_tensor.cpu().numpy().flatten()[:self.num_envs]
         dones = done_tensor.cpu().numpy().flatten()[:self.num_envs].astype(bool)
         
+        # Accumulate episode statistics
+        self._episode_rewards += rewards
+        self._episode_lengths += 1
+        
         # Build info dicts
         infos = []
         for i in range(self.num_envs):
@@ -177,10 +188,38 @@ class TorchRLEnvWrapper(VecEnv):
                 # Add success flag if available
                 if "is_success" in td.keys():
                     info["is_success"] = bool(td["is_success"][i].item())
-                elif hasattr(self.torchrl_env.envs[i], '_last_success'):
-                    info["is_success"] = self.torchrl_env.envs[i]._last_success
+                elif "next" in td.keys() and "is_success" in td["next"].keys():
+                    info["is_success"] = bool(td["next"]["is_success"][i].item())
                 else:
                     info["is_success"] = False
+                
+                # Add episode statistics for depth tracking
+                info["episode"] = {
+                    "r": float(self._episode_rewards[i]),  # Total episode reward
+                    "l": int(self._episode_lengths[i]),    # Total episode length
+                }
+                
+                # Extract label from TensorDict
+                if "label" in td.keys():
+                    info["label"] = int(td["label"][i].item())
+                elif "next" in td.keys() and "label" in td["next"].keys():
+                    info["label"] = int(td["next"]["label"][i].item())
+                
+                # Extract query_depth from TensorDict
+                if "query_depth" in td.keys():
+                    info["query_depth"] = int(td["query_depth"][i].item())
+                elif "next" in td.keys() and "query_depth" in td["next"].keys():
+                    info["query_depth"] = int(td["next"]["query_depth"][i].item())
+                
+                # Add episode index for deduplication
+                if "episode_idx" in td.keys():
+                    info["episode_idx"] = int(td["episode_idx"][i].item())
+                elif "next" in td.keys() and "episode_idx" in td["next"].keys():
+                    info["episode_idx"] = int(td["next"]["episode_idx"][i].item())
+                
+                # Reset episode statistics for this environment
+                self._episode_rewards[i] = 0.0
+                self._episode_lengths[i] = 0
             infos.append(info)
         
     # Update episode tracking

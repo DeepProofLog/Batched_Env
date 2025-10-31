@@ -93,7 +93,7 @@ if __name__ == "__main__":
         'pbrs': False,              # Enable potential-based reward shaping
         'enable_top_k': False,      # Enable Top-K actions filtering with the value function
         'kge_engine': 'tf',         # KGE backend: 'tf', 'pytorch', or 'pykeen'
-        'kge_checkpoint_dir': './../../checkpoints/',
+        'kge_checkpoint_dir': './../checkpoints/',
         'kge_run_signature': None,
         'kge_scores_file': None,
 

@@ -103,14 +103,14 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
     ) for i in range(1)]
 
     # Create TorchRL batched environments
-    # Use SerialEnv for sequential execution (like DummyVecEnv)
-    env = SerialEnv(args.n_envs, env_fns)
+    # Use CustomBatchedEnv for all environments to preserve metadata like query_depth, label, etc.
+    env = CustomBatchedEnv(args.n_envs, env_fns)
     eval_env = CustomBatchedEnv(args.n_eval_envs, eval_env_fns)
     
     if detailed_eval_env:
         callback_env = CustomBatchedEnv(1, callback_env_fns)
     else:
-        callback_env = SerialEnv(1, callback_env_fns)
+        callback_env = CustomBatchedEnv(1, callback_env_fns)
 
     # Mark the environment type for compatibility
     env.type_ = "torchrl_batched"

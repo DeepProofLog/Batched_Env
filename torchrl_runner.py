@@ -69,12 +69,12 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 5000,
+        'timesteps_train': 400000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
         'n_envs': 128,
-        'n_steps': 32,
+        'n_steps':128,
         'n_eval_envs': 100,
         'batch_size': 128,
 
@@ -99,7 +99,7 @@ if __name__ == "__main__":
         'pbrs': False,
         'enable_top_k': False,
         'kge_engine': 'tf',
-        'kge_checkpoint_dir': './../../checkpoints/',
+        'kge_checkpoint_dir': './../checkpoints/',
         'kge_run_signature': None,
         'kge_scores_file': None,
 
@@ -363,11 +363,17 @@ if __name__ == "__main__":
             valid_file = "valid_label_corruptions.json"
             test_file = "test_label_corruptions.json"
 
-        if namespace.train_depth is not None:
+        # Always use depth files if they exist (depth filter is applied in DataHandler)
+        # Check if depth files exist and use them
+        import os
+        from os.path import join
+        dataset_path = join(namespace.data_path, namespace.dataset_name)
+        
+        if os.path.exists(join(dataset_path, train_file.replace('.txt', '_depths.txt'))):
             train_file = train_file.replace('.txt', '_depths.txt')
-        if namespace.valid_depth is not None:
+        if os.path.exists(join(dataset_path, valid_file.replace('.txt', '_depths.txt'))):
             valid_file = valid_file.replace('.txt', '_depths.txt')
-        if namespace.test_depth is not None:
+        if os.path.exists(join(dataset_path, test_file.replace('.txt', '_depths.txt'))):
             test_file = test_file.replace('.txt', '_depths.txt')
 
         namespace.train_file = train_file

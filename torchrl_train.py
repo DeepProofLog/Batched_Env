@@ -8,7 +8,7 @@ migrated from the original Stable-Baselines3 version.
 import json
 import time
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -35,6 +35,12 @@ from torchrl_model import create_torchrl_modules
 from embeddings import get_embedder
 from neg_sampling import get_sampler
 from torchrl_model_eval import eval_corruptions_torchrl, TorchRLPolicyWrapper
+from torchrl_callbacks import (
+    RolloutProgressCallback,
+    EvaluationCallback,
+    TrainingMetricsCallback,
+    TorchRLCallbackManager,
+)
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -384,6 +390,44 @@ def _train(
         use_wandb=False,
     )
     
+    # Initialize callbacks
+    rollout_callback = RolloutProgressCallback(
+        total_steps=steps_per_epoch,
+        n_envs=args.n_envs,
+        update_interval=25,
+        verbose=True,
+    )
+    
+    eval_callback = EvaluationCallback(
+        eval_env=eval_env,
+        sampler=sampler,
+        eval_data=data_handler.valid_queries[:args.n_eval_queries],
+        eval_data_depths=(
+            data_handler.valid_depths[:args.n_eval_queries]
+            if hasattr(data_handler, 'valid_depths') and data_handler.valid_depths is not None
+            else None
+        ),
+        n_corruptions=args.eval_neg_samples,
+        eval_freq=1,  # Evaluate every iteration
+        best_metric=args.eval_best_metric if hasattr(args, 'eval_best_metric') else "mrr_mean",
+        save_path=model_path,
+        verbose=True,
+    )
+    
+    metrics_callback = TrainingMetricsCallback(
+        log_interval=1,
+        verbose=True,
+    )
+    
+    callback_manager = TorchRLCallbackManager(
+        rollout_callback=rollout_callback,
+        eval_callback=eval_callback,
+        metrics_callback=metrics_callback,
+    )
+    
+    # Notify callbacks of training start
+    callback_manager.on_training_start()
+    
     # Tracking variables
     global_step = 0
     best_eval_metric = float('-inf')
@@ -395,12 +439,24 @@ def _train(
         
         # ==================== Data Collection ====================
         print(f"\nIteration {iteration + 1}/{n_iterations}")
-        print(f"  Collecting {steps_per_epoch} steps...")
+        
+        # Start rollout
+        callback_manager.on_rollout_start()
         
         experiences = []
+        episode_rewards = []  # Track all episode rewards during rollout
+        episode_lengths = []  # Track all episode lengths during rollout
+        episode_info = []  # Track episode-level info
         td = train_env.reset()
         
+        # Track per-environment step counts and rewards
+        env_episode_rewards = [0.0] * args.n_envs
+        env_episode_lengths = [0] * args.n_envs
+        
         for step in range(n_steps):
+            # Update rollout progress
+            callback_manager.on_rollout_step(step)
+            
             # Get actions from policy
             with torch.no_grad():
                 # Get the underlying actor-critic model
@@ -472,6 +528,97 @@ def _train(
             
             experiences.append(experience)
             
+            # Track episode statistics from the step
+            for env_idx in range(args.n_envs):
+                reward = next_td["next"]["reward"][env_idx].item() if next_td["next"]["reward"].dim() > 0 else next_td["next"]["reward"].item()
+                done = next_td["next"]["done"][env_idx].item() if next_td["next"]["done"].dim() > 0 else next_td["next"]["done"].item()
+                
+                env_episode_rewards[env_idx] += reward
+                env_episode_lengths[env_idx] += 1
+                
+                if done:
+                    # Episode finished, record info
+                    episode_rewards.append(env_episode_rewards[env_idx])
+                    episode_lengths.append(env_episode_lengths[env_idx])
+                    
+                    # Extract episode info for callbacks
+                    episode_data = {
+                        "r": env_episode_rewards[env_idx],
+                        "l": env_episode_lengths[env_idx],
+                    }
+                    
+                    # Extract metadata from tensordict
+                    # Metadata is in next_td["next"] when using CustomBatchedEnv
+                    try:
+                        # Label is at root level
+                        label = 1  # Default
+                        if "label" in next_td.keys():
+                            label_tensor = next_td["label"]
+                            if label_tensor.dim() > 0:
+                                label = label_tensor[env_idx].item()
+                            else:
+                                label = label_tensor.item()
+                        
+                        # query_depth is in next_td["next"]
+                        query_depth = None
+                        if "next" in next_td.keys() and "query_depth" in next_td["next"].keys():
+                            depth_tensor = next_td["next"]["query_depth"]
+                            if depth_tensor.dim() > 1:
+                                # Shape is [batch, 1]
+                                depth_val = depth_tensor[env_idx, 0].item()
+                            elif depth_tensor.dim() > 0:
+                                depth_val = depth_tensor[env_idx].item()
+                            else:
+                                depth_val = depth_tensor.item()
+                            # Convert 0 or -1 to None (unknown depth)
+                            query_depth = depth_val if depth_val not in (0, -1) else None
+                        elif "query_depth" in next_td.keys():
+                            # Fallback: check root level
+                            depth_tensor = next_td["query_depth"]
+                            if depth_tensor.dim() > 0:
+                                depth_val = depth_tensor[env_idx].item()
+                            else:
+                                depth_val = depth_tensor.item()
+                            # Convert 0 or -1 to None (unknown depth)
+                            query_depth = depth_val if depth_val not in (0, -1) else None
+                        
+                        # is_success is in next_td["next"]
+                        is_success = False
+                        if "next" in next_td.keys() and "is_success" in next_td["next"].keys():
+                            success_tensor = next_td["next"]["is_success"]
+                            if success_tensor.dim() > 1:
+                                # Shape is [batch, 1]
+                                is_success = bool(success_tensor[env_idx, 0].item())
+                            elif success_tensor.dim() > 0:
+                                is_success = bool(success_tensor[env_idx].item())
+                            else:
+                                is_success = bool(success_tensor.item())
+                        elif "is_success" in next_td.keys():
+                            # Fallback: check root level
+                            success_tensor = next_td["is_success"]
+                            if success_tensor.dim() > 0:
+                                is_success = bool(success_tensor[env_idx].item())
+                            else:
+                                is_success = bool(success_tensor.item())
+                    except Exception as e:
+                        # Fallback to defaults if extraction fails
+                        print(f"Warning: Failed to extract episode metadata for env {env_idx}: {e}")
+                        label = 1
+                        query_depth = None
+                        is_success = False
+                    
+                    info = {
+                        "episode": episode_data,
+                        "label": label,
+                        "query_depth": query_depth,
+                        "is_success": is_success,
+                    }
+                    episode_info.append(info)
+                    
+                    # Reset counters
+                    env_episode_rewards[env_idx] = 0.0
+                    env_episode_lengths[env_idx] = 0
+            
             # Update state for next iteration
             # Extract the next state from the nested structure
             td = TensorDict({
@@ -480,6 +627,15 @@ def _train(
                 "action_mask": next_td["next"]["action_mask"],
             }, batch_size=torch.Size([args.n_envs]))
             global_step += args.n_envs
+        
+        # End of rollout collection
+        callback_manager.on_rollout_end()
+        
+        # Accumulate episode stats for metrics callback
+        if episode_info:
+            for info in episode_info:
+                # Convert to list of infos as expected by callback
+                callback_manager.accumulate_episode_stats([info], mode="train")
         
         # Stack experiences
         # Shape: (n_steps, n_envs, ...)
@@ -532,7 +688,8 @@ def _train(
         print(f"  Advantage mean: {advantages_flat.mean().item():.4f}, std: {advantages_flat.std().item():.4f}")
         
         # ==================== Policy Optimization ====================
-        print(f"  Optimizing policy for {n_epochs} epochs...")
+        print(f"Training model")
+        training_start_time = time.time()
         
         # Flatten batch for training
         obs_flat = torch.cat([batch[i]["sub_index"] for i in range(n_steps)], dim=0).to(device)
@@ -551,6 +708,10 @@ def _train(
         total_entropy = 0
         
         for epoch in range(n_epochs):
+            epoch_policy_loss = 0
+            epoch_value_loss = 0
+            epoch_entropy = 0
+            
             for i in range(num_batches):
                 batch_indices = indices[i * batch_size:(i + 1) * batch_size]
                 
@@ -570,11 +731,27 @@ def _train(
                     "action_mask": mb_masks,
                 }, batch_size=torch.Size([batch_size]))
                 
-                td_with_action = actor(mb_td)
-                td_with_value = critic(mb_td)
+                # Get the underlying actor-critic model to compute logits directly
+                critic_inner = critic._module if hasattr(critic, '_module') else critic.module
+                actor_critic_model = critic_inner.actor_critic_model
                 
-                new_log_probs = td_with_action.get("sample_log_prob", torch.zeros(batch_size, device=device)).to(device)
-                new_values = td_with_value["state_value"].to(device)
+                # Get logits from current policy
+                logits = actor_critic_model.forward_actor(mb_td)
+                new_values = actor_critic_model.forward_critic(mb_td)
+                
+                # Create distribution from logits
+                probs = torch.softmax(logits, dim=-1)
+                dist = torch.distributions.Categorical(probs=probs)
+                
+                # Get the action indices from the one-hot encoded old actions
+                # mb_old_actions is shape (batch, num_actions) one-hot encoded
+                old_action_indices = torch.argmax(mb_old_actions, dim=-1)
+                
+                # Evaluate log probability of the old actions under current policy
+                new_log_probs = dist.log_prob(old_action_indices)
+                
+                # Compute entropy of the distribution (proper entropy calculation)
+                entropy = dist.entropy().mean()
                 
                 # Policy loss (PPO clip)
                 ratio = torch.exp(new_log_probs - mb_old_log_probs)
@@ -584,9 +761,6 @@ def _train(
                 
                 # Value loss
                 value_loss = 0.5 * ((new_values.squeeze() - mb_returns) ** 2).mean()
-                
-                # Entropy bonus (approximate)
-                entropy = -new_log_probs.mean()
                 
                 # Total loss
                 loss = policy_loss + 0.5 * value_loss - args.ent_coef * entropy
@@ -600,18 +774,52 @@ def _train(
                 )
                 optimizer.step()
                 
-                total_policy_loss += policy_loss.item()
-                total_value_loss += value_loss.item()
-                total_entropy += entropy.item()
+                epoch_policy_loss += policy_loss.item()
+                epoch_value_loss += value_loss.item()
+                epoch_entropy += entropy.item()
+            
+            # Average losses for this epoch
+            avg_epoch_policy_loss = epoch_policy_loss / num_batches
+            avg_epoch_value_loss = epoch_value_loss / num_batches
+            avg_epoch_entropy = epoch_entropy / num_batches
+            
+            # Accumulate for overall average
+            total_policy_loss += epoch_policy_loss
+            total_value_loss += epoch_value_loss
+            total_entropy += epoch_entropy
+            
+            # Report epoch progress
+            callback_manager.metrics_callback.on_training_epoch(
+                epoch=epoch + 1,
+                n_epochs=n_epochs,
+                policy_loss=avg_epoch_policy_loss,
+                value_loss=avg_epoch_value_loss,
+                entropy=avg_epoch_entropy,
+            )
         
         avg_policy_loss = total_policy_loss / (n_epochs * num_batches)
         avg_value_loss = total_value_loss / (n_epochs * num_batches)
         avg_entropy = total_entropy / (n_epochs * num_batches)
         
+        training_time = time.time() - training_start_time
         iteration_time = time.time() - iteration_start_time
         
         # Compute mean reward from collected experiences
         mean_reward = rewards.mean().item()
+        
+        # Prepare training metrics for callbacks
+        train_metrics = {
+            "approx_kl": f"{0.0:.4f}",  # Placeholder - can compute if needed
+            "clip_fraction": f"{0.0:.3f}",  # Placeholder
+            "clip_range": f"{args.clip_range:.1f}",
+            "entropy_loss": f"{-avg_entropy:.5f}",
+            "explained_variance": f"{0.0:.2f}",  # Placeholder
+            "learning_rate": f"{args.lr:.4f}",
+            "loss": f"{avg_policy_loss + avg_value_loss:.3f}",
+            "n_updates": str(n_epochs * num_batches),
+            "policy_gradient_loss": f"{avg_policy_loss:.3f}",
+            "value_loss": f"{avg_value_loss:.2f}",
+        }
         
         # Log training metrics
         logger.log_training_step(
@@ -623,15 +831,19 @@ def _train(
             mean_reward=mean_reward,
         )
         
-        print(f"  Mean reward: {mean_reward:.4f}")
-        print(f"  Iteration time: {iteration_time:.2f}s")
+        print(f"Time to train {training_time:.2f}")
         
         # ==================== Evaluation ====================
-        if (iteration + 1) % 5 == 0 or (iteration + 1) == n_iterations:
-            print(f"\n  Running corruption-based evaluation...")
+        if callback_manager.should_evaluate(iteration + 1):
+            callback_manager.on_evaluation_start(iteration + 1, global_step)
+            
             eval_metrics = _evaluate_during_training(
-                args, actor, eval_env, sampler, data_handler, verbose=1
+                args, actor, eval_env, sampler, data_handler, verbose=0,
+                info_callback=lambda infos: callback_manager.accumulate_episode_stats(infos, mode="eval")
             )
+            
+            # Notify callback of evaluation end (with metrics from eval_corruptions_torchrl)
+            is_new_best = callback_manager.on_evaluation_end(iteration + 1, global_step, eval_metrics)
             
             # Log evaluation metrics
             logger.log_evaluation(
@@ -643,9 +855,14 @@ def _train(
             
             # Check if this is the best model
             eval_metric = eval_metrics.get(args.eval_best_metric, 0)
-            print(f"  Eval {args.eval_best_metric}: {eval_metric:.4f} (best: {best_eval_metric:.4f})")
+            if isinstance(eval_metric, str):
+                # Extract numerical value if formatted
+                try:
+                    eval_metric = float(eval_metric.split()[0])
+                except:
+                    eval_metric = 0.0
             
-            if eval_metric > best_eval_metric:
+            if is_new_best:
                 best_eval_metric = eval_metric
                 best_model_path = _save_checkpoint(
                     actor, critic, optimizer,
@@ -656,6 +873,15 @@ def _train(
                     prefix="best_eval",
                 )
                 print(f"  ★ New best model saved!")
+        
+        # ==================== End of Iteration ====================
+        # Report training metrics
+        callback_manager.on_iteration_end(
+            iteration=iteration + 1,
+            global_step=global_step,
+            train_metrics=train_metrics,
+            n_envs=args.n_envs,
+        )
         
         # ==================== Periodic Checkpoint ====================
         if (iteration + 1) % 10 == 0:
@@ -690,6 +916,7 @@ def _evaluate_during_training(
     sampler,
     data_handler: DataHandler,
     verbose: int = 0,
+    info_callback: Optional[Callable] = None,
 ) -> dict:
     """
     Run corruption-based evaluation during training.
@@ -721,7 +948,7 @@ def _evaluate_during_training(
             kge_inference_engine=None,
             evaluation_mode='rl_only',
             corruption_scheme=['head', 'tail'],
-            info_callback=None,
+            info_callback=info_callback,
             data_depths=eval_depths,
         )
     except Exception as e:
@@ -755,6 +982,8 @@ def _evaluate(
     Returns:
         Tuple of (train_metrics, valid_metrics, test_metrics)
     """
+    from sb3_callbacks import _EvalDepthRewardTracker
+    
     print("\n" + "="*60)
     print("Running Final Evaluation with Corruption-based Metrics")
     print("="*60)
@@ -791,6 +1020,9 @@ def _evaluate(
     if len(train_data) > 0:
         print("\n--- Evaluating on TRAIN set ---")
         try:
+            # Create depth tracker for this evaluation
+            depth_tracker = _EvalDepthRewardTracker()
+            
             metrics_train = eval_corruptions_torchrl(
                 actor=actor,
                 env=eval_env,
@@ -802,8 +1034,14 @@ def _evaluate(
                 plot=False,
                 evaluation_mode='rl_only',
                 corruption_scheme=['head', 'tail'],
+                info_callback=depth_tracker,
                 data_depths=train_depths[:min(100, len(train_data))] if train_depths else None,
             )
+            
+            # Merge depth-based metrics into results
+            depth_metrics = depth_tracker.metrics()
+            metrics_train.update(depth_metrics)
+            
             print_eval_info("TRAIN", metrics_train)
         except Exception as e:
             print(f"Warning: Train evaluation failed: {e}")
@@ -815,6 +1053,9 @@ def _evaluate(
     if len(valid_data) > 0:
         print("\n--- Evaluating on VALID set ---")
         try:
+            # Create depth tracker for this evaluation
+            depth_tracker = _EvalDepthRewardTracker()
+            
             metrics_valid = eval_corruptions_torchrl(
                 actor=actor,
                 env=eval_env,
@@ -826,8 +1067,14 @@ def _evaluate(
                 plot=False,
                 evaluation_mode='rl_only',
                 corruption_scheme=['head', 'tail'],
+                info_callback=depth_tracker,
                 data_depths=valid_depths,
             )
+            
+            # Merge depth-based metrics into results
+            depth_metrics = depth_tracker.metrics()
+            metrics_valid.update(depth_metrics)
+            
             print_eval_info("VALID", metrics_valid)
         except Exception as e:
             print(f"Warning: Valid evaluation failed: {e}")
@@ -837,6 +1084,9 @@ def _evaluate(
     if len(test_data) > 0:
         print("\n--- Evaluating on TEST set ---")
         try:
+            # Create depth tracker for this evaluation
+            depth_tracker = _EvalDepthRewardTracker()
+            
             metrics_test = eval_corruptions_torchrl(
                 actor=actor,
                 env=eval_env,
@@ -848,8 +1098,14 @@ def _evaluate(
                 plot=args.plot_trajectories if hasattr(args, 'plot_trajectories') else False,
                 evaluation_mode='rl_only',
                 corruption_scheme=['head', 'tail'],
+                info_callback=depth_tracker,
                 data_depths=test_depths,
             )
+            
+            # Merge depth-based metrics into results
+            depth_metrics = depth_tracker.metrics()
+            metrics_test.update(depth_metrics)
+            
             print_eval_info("TEST", metrics_test)
         except Exception as e:
             print(f"Warning: Test evaluation failed: {e}")

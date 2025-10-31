@@ -608,13 +608,26 @@ class LogicEnv_gym(EnvBase):
             # if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
             #     janus.query_once(f"asserta({self.current_query.prolog_str()}).")
             
+            # Preserve episode metadata BEFORE auto-reset overwrites it
+            completed_episode_label = next_td["label"].clone()
+            completed_episode_depth = next_td["query_depth"].clone()
+            completed_episode_success = next_td["is_success"].clone()
+            completed_episode_type = next_td["query_type"].clone()
+            
             # Auto-reset: When episode is done, automatically reset for next episode
             # This matches TorchRL's expected behavior for environments
             reset_td = self._reset(tensordict=None)
             # Copy the reset state to next_td but keep the reward/done from this step
+            # AND preserve the completed episode's metadata
             for key in reset_td.keys():
-                if key not in ["reward", "done", "terminated", "truncated"]:
+                if key not in ["reward", "done", "terminated", "truncated", "label", "query_depth", "is_success", "query_type"]:
                     next_td[key] = reset_td[key]
+            
+            # Restore the completed episode's metadata so callbacks can access it
+            next_td["label"] = completed_episode_label
+            next_td["query_depth"] = completed_episode_depth
+            next_td["is_success"] = completed_episode_success
+            next_td["query_type"] = completed_episode_type
 
         # Update internal state
         self.tensordict = next_td
