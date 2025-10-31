@@ -75,8 +75,9 @@ class PolicyNetwork(nn.Module):
         # Process observation embeddings through initial transformation
         encoded_obs = self._encode_embeddings(obs_embeddings)
         encoded_actions = self._encode_embeddings(action_embeddings)
-        
+
         # Compute similarity (dot product) between observation and action embeddings
+        encoded_obs = encoded_obs.unsqueeze(-2)
         logits = torch.matmul(encoded_obs, encoded_actions.transpose(-2, -1)).squeeze(-2)
         
         # Mask invalid actions with -inf

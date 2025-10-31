@@ -17,7 +17,7 @@ from typing import Optional, List
 
 import numpy as np
 from utils import FileLogger
-from torchrl_train import main
+from train import main
 from utils_config import (
     load_experiment_configs,
     parse_scalar,
@@ -273,7 +273,12 @@ if __name__ == "__main__":
             raise ValueError(
                 f"Unsupported eval_best_metric '{best_metric}'. Allowed: {allowed}."
             )
-        cfg['eval_best_metric'] = metric_normalized
+        # Map to actual metric names returned by evaluation
+        metric_name_map = {
+            'mrr': 'mrr_mean',
+            'auc_pr': 'auc_pr',
+        }
+        cfg['eval_best_metric'] = metric_name_map.get(metric_normalized, metric_normalized)
 
         # Force KGE integration to False (not yet supported in TorchRL version)
         cfg['kge_action'] = False

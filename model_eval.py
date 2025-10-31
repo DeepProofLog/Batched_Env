@@ -25,20 +25,8 @@ from tensordict import TensorDict
 from stable_baselines3.common.vec_env import VecEnv, DummyVecEnv
 
 # Import all the helper functions and utilities from model_eval
-from sb3_model_eval import (
-    _BATCH_METRIC_KEYS,
-    _GLOBAL_METRICS_TEMPLATE,
-    _ensure_vec_env,
-    _init_batch_metrics,
-    _init_global_metrics,
-    _compute_targets_and_mask,
-    _configure_env_batch,
-    _combine_hybrid_scores,
+from sb3_code.sb3_model_eval import (
     kge_eval,
-    _extract_and_accumulate_metrics,
-    _report_batch_metrics,
-    _finalize_and_get_results,
-    prepare_batch_data,
     plot_logprob_heatmap,
 )
 

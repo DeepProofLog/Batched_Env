@@ -29,13 +29,13 @@ from utils import (
     _maybe_enable_wandb,
     FileLogger,
 )
-from torchrl_custom_env import create_environments
+from custom_env import create_environments
 from dataset import DataHandler
-from torchrl_model import create_torchrl_modules
+from model import create_torchrl_modules
 from embeddings import get_embedder
 from neg_sampling import get_sampler
-from torchrl_model_eval import eval_corruptions_torchrl, TorchRLPolicyWrapper
-from torchrl_callbacks import (
+from model_eval import eval_corruptions_torchrl, TorchRLPolicyWrapper
+from callbacks import (
     RolloutProgressCallback,
     EvaluationCallback,
     TrainingMetricsCallback,
@@ -469,16 +469,13 @@ def _train(
                 logits = actor_critic_model.forward_actor(td.clone())
                 values = actor_critic_model.forward_critic(td.clone())
                 
-                # Remove extra dimensions if present
-                if logits.dim() == 3 and logits.shape[0] == logits.shape[1]:
-                    # Shape is [batch, batch, actions] - squeeze first dim
-                    logits = logits[:,0,:]  # Take first slice
-                if values.dim() == 2 and values.shape[0] == values.shape[1]:
-                    values = values[:,0] if values.shape[1] == 1 else values[0,:]
-                
-                # Sample actions from logits
-                probs = torch.softmax(logits, dim=-1)
-                dist = torch.distributions.Categorical(probs=probs)
+                # Reapply the mask defensively in case upstream modules ever skip it
+                action_mask = td["action_mask"].to(logits.device)
+                masked_logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
+                masked_logits = torch.nan_to_num(masked_logits, nan=float("-inf"))
+
+                # Sample actions directly from masked logits so invalid moves keep zero probability
+                dist = torch.distributions.Categorical(logits=masked_logits)
                 action_indices = dist.sample()  # Should be shape (n_envs,)
                 log_probs = dist.log_prob(action_indices)
                 
@@ -497,41 +494,42 @@ def _train(
                     "sample_log_prob": log_probs,
                     "state_value": values,
                 }, batch_size=torch.Size([args.n_envs]))
-                
-                # Ensure actions are valid by checking mask
-                action_mask = td["action_mask"]
-                for env_idx in range(args.n_envs):
-                    action_idx = action_indices[env_idx].item()
-                    if not action_mask[env_idx, action_idx].item():
-                        # If chosen action is invalid, pick first valid action
-                        valid_actions = torch.where(action_mask[env_idx])[0]
-                        if len(valid_actions) > 0:
-                            action_indices[env_idx] = valid_actions[0]
-                        else:
-                            # No valid actions, use 0 (will likely fail but avoid crash)
-                            action_indices[env_idx] = 0
             
             # Step environment
             # Update the td with actions for stepping
             td["action"] = action_indices
             next_td = train_env.step(td)
             
+            # TorchRL nests the next state under "next" key
+            # Extract reward and done from the nested structure
+            if "next" in next_td.keys():
+                next_obs = next_td["next"]
+                reward = next_td["next"]["reward"] if "reward" in next_td["next"].keys() else next_td.get("reward")
+                done = next_td["next"]["done"] if "done" in next_td["next"].keys() else next_td.get("done")
+            else:
+                next_obs = next_td
+                reward = next_td["reward"]
+                done = next_td["done"]
+            
             # Add next state info to experience
-            # TorchRL's step() puts reward/done in ("next", "reward") structure
+            # Record next observation, reward, and done at the root level returned by the env
             experience["next"] = TensorDict({
-                "sub_index": next_td["next"]["sub_index"],
-                "derived_sub_indices": next_td["next"]["derived_sub_indices"],
-                "action_mask": next_td["next"]["action_mask"],
-                "reward": next_td["next", "reward"],
-                "done": next_td["next", "done"],
+                "sub_index": next_obs["sub_index"].clone(),
+                "derived_sub_indices": next_obs["derived_sub_indices"].clone(),
+                "action_mask": next_obs["action_mask"].clone(),
+                "reward": reward.clone(),
+                "done": done.clone(),
             }, batch_size=torch.Size([args.n_envs]))
             
             experiences.append(experience)
             
             # Track episode statistics from the step
+            reward_tensor = reward.reshape(args.n_envs, -1)
+            done_tensor = done.reshape(args.n_envs, -1)
+
             for env_idx in range(args.n_envs):
-                reward = next_td["next"]["reward"][env_idx].item() if next_td["next"]["reward"].dim() > 0 else next_td["next"]["reward"].item()
-                done = next_td["next"]["done"][env_idx].item() if next_td["next"]["done"].dim() > 0 else next_td["next"]["done"].item()
+                reward = reward_tensor[env_idx, 0].item()
+                done = bool(done_tensor[env_idx, 0].item())
                 
                 env_episode_rewards[env_idx] += reward
                 env_episode_lengths[env_idx] += 1
@@ -548,9 +546,12 @@ def _train(
                     }
                     
                     # Extract metadata from tensordict
-                    # Metadata is in next_td["next"] when using CustomBatchedEnv
+                    # Metadata may be at root level or in "next" subdictionary
                     try:
-                        # Label is at root level
+                        # Check both root and next for metadata
+                        metadata_source = next_td.get("next", next_td)
+                        
+                        # Label
                         label = 1  # Default
                         if "label" in next_td.keys():
                             label_tensor = next_td["label"]
@@ -558,46 +559,31 @@ def _train(
                                 label = label_tensor[env_idx].item()
                             else:
                                 label = label_tensor.item()
+                        elif "label" in metadata_source.keys():
+                            label_tensor = metadata_source["label"]
+                            if label_tensor.dim() > 0:
+                                label = label_tensor[env_idx].item() if label_tensor.shape[0] > env_idx else label_tensor[0].item()
+                            else:
+                                label = label_tensor.item()
                         
-                        # query_depth is in next_td["next"]
+                        # query_depth
                         query_depth = None
-                        if "next" in next_td.keys() and "query_depth" in next_td["next"].keys():
-                            depth_tensor = next_td["next"]["query_depth"]
-                            if depth_tensor.dim() > 1:
-                                # Shape is [batch, 1]
-                                depth_val = depth_tensor[env_idx, 0].item()
-                            elif depth_tensor.dim() > 0:
-                                depth_val = depth_tensor[env_idx].item()
-                            else:
-                                depth_val = depth_tensor.item()
-                            # Convert 0 or -1 to None (unknown depth)
-                            query_depth = depth_val if depth_val not in (0, -1) else None
-                        elif "query_depth" in next_td.keys():
-                            # Fallback: check root level
-                            depth_tensor = next_td["query_depth"]
+                        if "query_depth" in metadata_source.keys():
+                            depth_tensor = metadata_source["query_depth"]
                             if depth_tensor.dim() > 0:
-                                depth_val = depth_tensor[env_idx].item()
+                                depth_tensor_reshaped = depth_tensor.reshape(args.n_envs, -1)
+                                depth_val = depth_tensor_reshaped[env_idx, 0].item()
                             else:
                                 depth_val = depth_tensor.item()
-                            # Convert 0 or -1 to None (unknown depth)
                             query_depth = depth_val if depth_val not in (0, -1) else None
                         
-                        # is_success is in next_td["next"]
+                        # is_success
                         is_success = False
-                        if "next" in next_td.keys() and "is_success" in next_td["next"].keys():
-                            success_tensor = next_td["next"]["is_success"]
-                            if success_tensor.dim() > 1:
-                                # Shape is [batch, 1]
-                                is_success = bool(success_tensor[env_idx, 0].item())
-                            elif success_tensor.dim() > 0:
-                                is_success = bool(success_tensor[env_idx].item())
-                            else:
-                                is_success = bool(success_tensor.item())
-                        elif "is_success" in next_td.keys():
-                            # Fallback: check root level
-                            success_tensor = next_td["is_success"]
+                        if "is_success" in metadata_source.keys():
+                            success_tensor = metadata_source["is_success"]
                             if success_tensor.dim() > 0:
-                                is_success = bool(success_tensor[env_idx].item())
+                                success_tensor_reshaped = success_tensor.reshape(args.n_envs, -1)
+                                is_success = bool(success_tensor_reshaped[env_idx, 0].item())
                             else:
                                 is_success = bool(success_tensor.item())
                     except Exception as e:
@@ -620,11 +606,16 @@ def _train(
                     env_episode_lengths[env_idx] = 0
             
             # Update state for next iteration
-            # Extract the next state from the nested structure
+            # Extract the next state from the nested structure if present
+            if "next" in next_td.keys():
+                next_obs = next_td["next"]
+            else:
+                next_obs = next_td
+                
             td = TensorDict({
-                "sub_index": next_td["next"]["sub_index"],
-                "derived_sub_indices": next_td["next"]["derived_sub_indices"],
-                "action_mask": next_td["next"]["action_mask"],
+                "sub_index": next_obs["sub_index"].clone(),
+                "derived_sub_indices": next_obs["derived_sub_indices"].clone(),
+                "action_mask": next_obs["action_mask"].clone(),
             }, batch_size=torch.Size([args.n_envs]))
             global_step += args.n_envs
         
@@ -706,11 +697,15 @@ def _train(
         total_policy_loss = 0
         total_value_loss = 0
         total_entropy = 0
+        total_approx_kl = 0
+        total_clip_fraction = 0
         
         for epoch in range(n_epochs):
             epoch_policy_loss = 0
             epoch_value_loss = 0
             epoch_entropy = 0
+            epoch_approx_kl = 0
+            epoch_clip_fraction = 0
             
             for i in range(num_batches):
                 batch_indices = indices[i * batch_size:(i + 1) * batch_size]
@@ -739,9 +734,12 @@ def _train(
                 logits = actor_critic_model.forward_actor(mb_td)
                 new_values = actor_critic_model.forward_critic(mb_td)
                 
-                # Create distribution from logits
-                probs = torch.softmax(logits, dim=-1)
-                dist = torch.distributions.Categorical(probs=probs)
+                mb_action_mask = mb_td["action_mask"].to(logits.device)
+                masked_logits = logits.masked_fill(~mb_action_mask.bool(), float("-inf"))
+                masked_logits = torch.nan_to_num(masked_logits, nan=float("-inf"))
+
+                # Create distribution directly from masked logits to preserve invalid-action filtering
+                dist = torch.distributions.Categorical(logits=masked_logits)
                 
                 # Get the action indices from the one-hot encoded old actions
                 # mb_old_actions is shape (batch, num_actions) one-hot encoded
@@ -762,6 +760,15 @@ def _train(
                 # Value loss
                 value_loss = 0.5 * ((new_values.squeeze() - mb_returns) ** 2).mean()
                 
+                # PPO metrics
+                with torch.no_grad():
+                    # Approximate KL divergence
+                    log_ratio = new_log_probs - mb_old_log_probs
+                    approx_kl = ((ratio - 1) - log_ratio).mean()
+                    
+                    # Clip fraction: fraction of ratios that were clipped
+                    clip_fraction = ((ratio - 1.0).abs() > args.clip_range).float().mean()
+                
                 # Total loss
                 loss = policy_loss + 0.5 * value_loss - args.ent_coef * entropy
                 
@@ -777,6 +784,8 @@ def _train(
                 epoch_policy_loss += policy_loss.item()
                 epoch_value_loss += value_loss.item()
                 epoch_entropy += entropy.item()
+                epoch_approx_kl += approx_kl.item()
+                epoch_clip_fraction += clip_fraction.item()
             
             # Average losses for this epoch
             avg_epoch_policy_loss = epoch_policy_loss / num_batches
@@ -787,6 +796,8 @@ def _train(
             total_policy_loss += epoch_policy_loss
             total_value_loss += epoch_value_loss
             total_entropy += epoch_entropy
+            total_approx_kl += epoch_approx_kl
+            total_clip_fraction += epoch_clip_fraction
             
             # Report epoch progress
             callback_manager.metrics_callback.on_training_epoch(
@@ -800,6 +811,20 @@ def _train(
         avg_policy_loss = total_policy_loss / (n_epochs * num_batches)
         avg_value_loss = total_value_loss / (n_epochs * num_batches)
         avg_entropy = total_entropy / (n_epochs * num_batches)
+        avg_approx_kl = total_approx_kl / (n_epochs * num_batches)
+        avg_clip_fraction = total_clip_fraction / (n_epochs * num_batches)
+        
+        # Compute explained variance
+        with torch.no_grad():
+            values_all = torch.stack([batch[i]["state_value"] for i in range(n_steps)]).squeeze(-1).to(device)
+            if values_all.dim() == 3 and values_all.shape[-1] == 1:
+                values_all = values_all.squeeze(-1)
+            values_flat = values_all.reshape(-1)
+            
+            var_returns = torch.var(returns_flat)
+            var_residual = torch.var(returns_flat - values_flat)
+            explained_var = 1 - (var_residual / (var_returns + 1e-8))
+            explained_var = explained_var.item()
         
         training_time = time.time() - training_start_time
         iteration_time = time.time() - iteration_start_time
@@ -809,11 +834,11 @@ def _train(
         
         # Prepare training metrics for callbacks
         train_metrics = {
-            "approx_kl": f"{0.0:.4f}",  # Placeholder - can compute if needed
-            "clip_fraction": f"{0.0:.3f}",  # Placeholder
+            "approx_kl": f"{avg_approx_kl:.4f}",
+            "clip_fraction": f"{avg_clip_fraction:.3f}",
             "clip_range": f"{args.clip_range:.1f}",
             "entropy_loss": f"{-avg_entropy:.5f}",
-            "explained_variance": f"{0.0:.2f}",  # Placeholder
+            "explained_variance": f"{explained_var:.2f}",
             "learning_rate": f"{args.lr:.4f}",
             "loss": f"{avg_policy_loss + avg_value_loss:.3f}",
             "n_updates": str(n_epochs * num_batches),
@@ -982,7 +1007,7 @@ def _evaluate(
     Returns:
         Tuple of (train_metrics, valid_metrics, test_metrics)
     """
-    from sb3_callbacks import _EvalDepthRewardTracker
+    from sb3_code.sb3_callbacks import _EvalDepthRewardTracker
     
     print("\n" + "="*60)
     print("Running Final Evaluation with Corruption-based Metrics")

@@ -22,7 +22,7 @@ from sb3_callbacks import (
     AnnealingTarget,
     _EvalDepthRewardTracker
 )
-from torchrl_custom_env import create_environments
+from custom_env import create_environments
 from dataset import DataHandler
 from sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
 from embeddings import get_embedder
