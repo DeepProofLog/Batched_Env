@@ -490,7 +490,7 @@ def evaluate_policy_torchrl(
         or with histories if track_logprobs=True
     """
     # Import here to avoid circular dependency
-    from sb3_model_eval import evaluate_policy
+    from sb3_code.sb3_model_eval import evaluate_policy
     
     # Get device from actor parameters
     device = next(actor.parameters()).device
@@ -562,7 +562,7 @@ def eval_corruptions_torchrl(
         Dict of evaluation metrics (MRR, Hits@K, etc.)
     """
     # Import here to avoid circular dependency
-    from sb3_model_eval import eval_corruptions
+    from sb3_code.sb3_model_eval import eval_corruptions
     
     # Get device from actor parameters
     device = next(actor.parameters()).device
