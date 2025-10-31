@@ -228,7 +228,7 @@ def get_next_unification_python(state: List[Term],
                          rules: List[Rule],
                          excluded_fact: Optional[Term] = None,
                          next_var_index: Optional[int] = None,
-                         strategy: str = 'rules_then_facts', # 'complete' or 'rules_then_facts'
+                         strategy: str = 'complete', # 'complete' or 'rules_then_facts'
                          verbose: int = 0) -> Tuple[List[List[Term]], Optional[int]]:
     """
     Processes a state and returns all possible next states based on a chosen strategy.

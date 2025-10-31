@@ -315,7 +315,9 @@ def print_state_transition(state, derived_states, reward, done, action=None, tru
         label: Additional label for display (optional).
     """
     if action is not None:
-        print('\nState', state, '( action', action.item(), ')')
+        # Handle both tensor and int actions
+        action_value = action.item() if hasattr(action, 'item') else action
+        print('\nState', state, '( action', action_value, ')')
         print('Reward', reward.item(), 'Done', done.item())
         if truncated is not None or truncated!=False: print(f" Truncated {truncated}")
         print('     Derived states:', *derived_states[:100])

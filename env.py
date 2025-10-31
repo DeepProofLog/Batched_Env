@@ -61,7 +61,7 @@ class LogicEnv_gym(EnvBase):
                 prover_verbose: int = 1,
                 device: torch.device = torch.device("cpu"),
                 engine: str = 'python',
-                engine_strategy: str = 'rtf', # 'cmp' (complete) or 'rtf' (rules_then_facts)
+                engine_strategy: str = 'cmp', # 'cmp' (complete) or 'rtf' (rules_then_facts)
                 kge_action: bool = False,
                 reward_type: int = 2,
                 shaping_beta: float = 0.0,

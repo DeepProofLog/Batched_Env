@@ -55,6 +55,9 @@ try:
         padding_atoms=10,
     )
     
+    # Build fact index for efficient unification (done once, shared across all envs)
+    index_manager.build_fact_index(data_handler.facts)
+    
     print("✓ DataHandler and IndexManager created successfully")
     print(f"  - Dataset: {data_handler.dataset_name}")
     print(f"  - Train queries: {len(data_handler.train_queries)}")

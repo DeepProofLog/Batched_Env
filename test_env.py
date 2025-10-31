@@ -77,6 +77,9 @@ try:
         padding_atoms=10,
     )
     
+    # Build fact index for efficient unification (done once, shared across all envs)
+    index_manager.build_fact_index(data_handler.facts)
+    
     print("✓ IndexManager created successfully")
     print(f"  - Total constants: {len(data_handler.constants)}")
     print(f"  - Total predicates: {len(data_handler.predicates)}")
