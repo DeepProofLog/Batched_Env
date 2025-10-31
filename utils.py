@@ -94,6 +94,7 @@ def get_atom_from_string(atom_str: str) -> Term:
     """
     Optimized version using string methods instead of regex.
     Handles optional trailing '.' and atoms with no arguments.
+    Strips quotes from arguments for consistency.
     """
     # --- Basic String Cleaning ---
     s = atom_str.strip().removesuffix('.')
@@ -112,7 +113,8 @@ def get_atom_from_string(atom_str: str) -> Term:
              args_tuple = tuple()
         else:
              # Split, strip, and filter empty strings in one go
-             args_tuple = tuple(stripped
+             # Also strip quotes from each argument for consistency
+             args_tuple = tuple(stripped.strip('"\'')
                                 for arg in args_content.split(',')
                                 if (stripped := arg.strip())) 
     except ValueError: # Handles cases where '(' is not found, e.g., "fact"

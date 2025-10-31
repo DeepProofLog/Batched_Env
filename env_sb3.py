@@ -4,17 +4,10 @@ import math
 import random
 import warnings
 
+import gymnasium as gym
 import numpy as np
 import torch
 from tensordict import NonTensorData, TensorDict
-from torchrl.envs import EnvBase
-from torchrl.data.tensor_specs import (
-    CompositeSpec,
-    BoundedTensorSpec,
-    UnboundedContinuousTensorSpec,
-    DiscreteTensorSpec,
-    BinaryDiscreteTensorSpec,
-)
 
 from dataset import DataHandler
 from index_manager import IndexManager
@@ -30,12 +23,7 @@ def _state_to_hashable(state: State) -> frozenset:
     """
     return frozenset(state) if state else frozenset()
 
-class LogicEnv_gym(EnvBase):
-    """TorchRL-based Logic Environment for neural-guided grounding.
-    
-    This environment handles logical reasoning with reinforcement learning,
-    converting queries into proof trees through action selection.
-    """
+class LogicEnv_gym(gym.Env):
     batch_locked = False
     
     def __init__(self,
@@ -70,18 +58,14 @@ class LogicEnv_gym(EnvBase):
                 ):
 
         '''Initialize the environment'''
-        # TorchRL requires device to be set before calling super().__init__()
-        self.device = device
-        
-        # Call parent constructor
-        super().__init__(device=device, batch_size=torch.Size([]))
+        super().__init__()
 
         self.engine = engine
         self.engine_strategy = 'rules_then_facts' if engine_strategy=='rtf' else 'complete'
         self.reward_type = reward_type
         self.verbose = verbose
         self.prover_verbose = prover_verbose
-        # device already set before super().__init__()
+        self.device = device
         self.pt_idx_dtype = torch.int32
         self.np_idx_dtype = np.int32
         self.reward_dtype = torch.float32
@@ -153,11 +137,9 @@ class LogicEnv_gym(EnvBase):
 
         if self.mode == 'train':
             self.train_neg_ratio = train_neg_ratio
-            # Only check sampler if corruption_mode is enabled
-            if self.corruption_mode:
-                assert (
-                    self.sampler.num_negs_per_pos < 3
-                ), f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
+            assert (
+                self.sampler.num_negs_per_pos < 3
+            ), f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
 
         self._one  = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
         self._zero = torch.zeros((), device=self.device, dtype=self.reward_dtype)
@@ -171,70 +153,36 @@ class LogicEnv_gym(EnvBase):
         self.shaping_beta = float(beta)
         self._potential_cache.clear()
 
+    def _set_seed(self, seed:int):
+        '''Set the seed for the environment. If no seed is provided, generate a random one'''
+        if seed is None:
+            seed = torch.empty((), dtype=self.pt_idx_dtype).random_().item()
+        self.seed = int(seed)
+        rng = torch.manual_seed(self.seed)
+        self.rng = rng
+        self.seed_gen = random.Random(self.seed)
+
 
     def _make_spec(self):
-        '''Create the observation and action specs using TorchRL's spec system'''
-        # For integer indices, use the maximum possible index value
-        # Indices can range from negative (for padding) to positive vocabulary size
-        max_vocab_size = self.index_manager.total_vocab_size if hasattr(self.index_manager, 'total_vocab_size') else 100000
-        
-        # Observation spec - defines the structure of observations
-        self.observation_spec = CompositeSpec(
-            sub_index=BoundedTensorSpec(
-                low=-1,  # -1 for padding
-                high=max_vocab_size,
-                shape=torch.Size([1, self.padding_atoms, self.max_arity + 1]),
-                dtype=torch.int32,
-                device=self.device,
+        '''Create the observation and action specs'''
+        obs_spaces = {
+            'sub_index': gym.spaces.Box(
+                low=float('-inf'),
+                high=float('inf'),
+                shape = torch.Size([1])+ torch.Size([self.padding_atoms])+ torch.Size([self.max_arity+1]),
+                dtype=self.np_idx_dtype,
             ),
-            derived_sub_indices=BoundedTensorSpec(
-                low=-1,  # -1 for padding
-                high=max_vocab_size,
-                shape=torch.Size([self.padding_states, self.padding_atoms, self.max_arity + 1]),
-                dtype=torch.int32,
-                device=self.device,
-            ),
-            action_mask=BinaryDiscreteTensorSpec(
-                n=self.padding_states,
-                shape=torch.Size([self.padding_states]),
-                dtype=torch.bool,
-                device=self.device,
-            ),
-            shape=torch.Size([]),  # Single environment (no batch dimension yet)
-        )
-        
-        # Action spec - discrete action space
-        self.action_spec = DiscreteTensorSpec(
-            n=self.padding_states,
-            shape=torch.Size([]),
-            dtype=torch.int64,
-            device=self.device,
-        )
-        
-        # Reward spec - scalar reward
-        self.reward_spec = UnboundedContinuousTensorSpec(
-            shape=torch.Size([1]),
-            dtype=torch.float32,
-            device=self.device,
-        )
-        
-        # Done spec - boolean termination signal
-        # TorchRL requires at least a 1D shape for done_spec and both "done" and "terminated" keys
-        self.done_spec = CompositeSpec(
-            done=DiscreteTensorSpec(
-                n=2,
-                shape=torch.Size([1]),
-                dtype=torch.bool,
-                device=self.device,
-            ),
-            terminated=DiscreteTensorSpec(
-                n=2,
-                shape=torch.Size([1]),
-                dtype=torch.bool,
-                device=self.device,
-            ),
-            shape=torch.Size([]),
-        )
+
+            'derived_sub_indices': gym.spaces.Box(
+                low=float('-inf'),
+                high=float('inf'),
+                shape=torch.Size([self.padding_states])+torch.Size([self.padding_atoms])+torch.Size([self.max_arity+1]),
+                dtype=self.np_idx_dtype,
+            ),  
+            'action_mask': gym.spaces.MultiBinary(self.padding_states),
+        }
+        self.observation_space = gym.spaces.Dict(obs_spaces)
+        self.action_space = gym.spaces.Discrete(self.padding_states)
 
     def _pad_sub_indices(self, sub_indices: List[torch.Tensor]) -> torch.Tensor:
         """Stack sub-index tensors and pad them to the action-space size."""
@@ -407,21 +355,10 @@ class LogicEnv_gym(EnvBase):
         return state, label, depth
 
 
-    def reset(self, tensordict: Optional[TensorDict] = None, **kwargs) -> TensorDict:
-        """Reset the environment and sample the next query according to the mode.
-        
-        Args:
-            tensordict: Optional TensorDict (not used in this implementation)
-            **kwargs: Additional arguments (can include 'seed')
-            
-        Returns:
-            TensorDict containing the initial observation and state
-        """
+    def reset(self, seed: Optional[int] = None, options=None):
+        """Reset the environment and sample the next query according to the mode."""
         if self.verbose or self.prover_verbose:
             print("\n\nReset-----------------------------")
-        
-        # Handle seed if provided
-        seed = kwargs.get('seed', None)
         if seed is not None:
             self._set_seed(seed)
 
@@ -435,18 +372,11 @@ class LogicEnv_gym(EnvBase):
         self.current_query = state
         self.current_label = label
         self.current_query_depth_value = depth if label == 1 else None
-        return self._reset(tensordict, **kwargs)
+        return self._reset([state], label)
 
 
-    def _reset(self, tensordict: Optional[TensorDict] = None, **kwargs) -> TensorDict:
-        '''Reset the environment to the initial state.
-        
-        In TorchRL, reset returns a TensorDict containing the initial observation.
-        '''
-        # Get query from internal state (already set in reset())
-        query = [self.current_query] if not isinstance(self.current_query, list) else self.current_query
-        label = self.current_label
-        
+    def _reset(self, query: State, label: int):
+        '''Reset the environment to the initial state'''    
         print('Initial query:', query, label) if self.verbose else None
         self.current_depth = torch.tensor(0, device=self.device)
         self.next_var_index = self.index_manager.variable_start_index
@@ -460,61 +390,43 @@ class LogicEnv_gym(EnvBase):
         )
         derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
         valid = len(derived_states)
-        action_mask = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
-        action_mask[:valid] = True
+        action_mask = torch.zeros(self.padding_states, dtype=torch.uint8)
+        action_mask[:valid] = 1
         if truncated_flag:  # end in false
             derived_states, derived_sub_indices = self.end_in_false()
             valid = len(derived_states)
             action_mask.zero_()
-            action_mask[:valid] = True
+            action_mask[:valid] = 1
 
-        # Create TensorDict with all necessary information
-        td = TensorDict(
+        self.tensordict = TensorDict(
             {
-                "sub_index": sub_index.unsqueeze(0),  # to match the shape of derived_sub_indices
-                "derived_sub_indices": derived_sub_indices,
-                "action_mask": action_mask,
-                # Non-tensor data and internal state
+                "sub_index": sub_index.unsqueeze(0), # to match the shape of derived_sub_indices
                 "state": NonTensorData(data=query),
                 "label": torch.tensor(label, device=self.device),
-                "done": torch.tensor([False], dtype=torch.bool, device=self.device),  # Match done_spec shape [1]
-                "terminated": torch.tensor([False], dtype=torch.bool, device=self.device),  # Required by TorchRL
+                "done": torch.tensor(0, dtype=torch.bool, device=self.device),
+                "reward": torch.zeros((), dtype=self.reward_dtype, device=self.device),
                 "derived_states": NonTensorData(data=derived_states),
+                "derived_sub_indices": derived_sub_indices,
             },
-            batch_size=torch.Size([]),  # Single environment
         )
-        
-        initial_potential_value = self._compute_state_potential(td["state"])
+        initial_potential_value = self._compute_state_potential(self.tensordict["state"])
         self._last_potential = torch.tensor(initial_potential_value, dtype=self.reward_dtype, device=self.device)
-        
-        # Store for step function
-        self.tensordict = td
-        
+        obs = {'sub_index': self.tensordict['sub_index'].cpu().numpy(),
+               'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy(),
+               'action_mask': action_mask.cpu().numpy(),}
         if self.verbose:
-            print_state_transition(td['state'], td['derived_states'], 
-                                 torch.zeros((), dtype=self.reward_dtype, device=self.device), 
-                                 td['done'], label=label)
-        
-        return td
+            print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'],label=label)
+        return obs, {}
 
-    def _step(self, tensordict: TensorDict) -> TensorDict:
-        '''Execute one step in the environment.
-        
-        In TorchRL, step takes a TensorDict containing the action and returns
-        a TensorDict with next observation, reward, done, and other info.
-        
-        Args:
-            tensordict: TensorDict containing at minimum the "action" key
-            
-        Returns:
-            TensorDict with next state, reward, done signal, and metadata
+    def step(self, action):
         '''
-        action = tensordict["action"].item()
-        
+        Given the current state, possible next states, an action, and return the next state.
+        (It should be: given the current state, and an action, return the next state, but we need to modify it for our case)
+        '''
         derived_states = self.tensordict["derived_states"]
         derived_sub_indices = self.tensordict["derived_sub_indices"]
 
-        if action >= self.padding_states or action >= len(derived_states):
+        if action >= self.padding_states or action > len(derived_states):
             raise ValueError(
                 f"Invalid action ({action}). Derived states: {derived_states}.")
         
@@ -522,8 +434,6 @@ class LogicEnv_gym(EnvBase):
         next_sub_index = derived_sub_indices[action]
 
         done_next, reward_next, successful = self.get_done_reward(next_state, self.tensordict['label'].item())
-        
-        # Apply potential-based reward shaping if enabled
         if self.kge_inference_engine is not None and self.shaping_beta != 0.0:
             phi_s = self._last_potential
             phi_sp_value = 0.0 if bool(done_next) else self._compute_state_potential(next_state)
@@ -535,57 +445,47 @@ class LogicEnv_gym(EnvBase):
 
         derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
         valid = len(derived_states_next)
-        action_mask = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
-        action_mask[:valid] = True
-        
+        action_mask = torch.zeros(self.padding_states, dtype=torch.uint8)
+        action_mask[:valid] = 1
         self.current_depth += 1
         exceeded_max_depth = (self.current_depth >= self.max_depth)
-        if exceeded_max_depth: 
-            print('\nMax depth reached', self.current_depth.item()) if self.verbose else None
+        if exceeded_max_depth: print('\nMax depth reached', self.current_depth.item()) if self.verbose else None
 
         done_next = done_next | exceeded_max_depth | truncate_flag
         truncated = bool(exceeded_max_depth) or bool(truncate_flag)
-        terminated = bool(done_next)
         
-        label_value = int(self.current_label)
-        
-        # Build next TensorDict
-        next_td = TensorDict(
-            {
-                "sub_index": next_sub_index.unsqueeze(0),  # to match the shape of derived_sub_indices
-                "derived_sub_indices": derived_sub_indices_next,
-                "action_mask": action_mask,
-                "state": NonTensorData(data=next_state),
-                "label": self.tensordict['label'],
-                "done": done_next.unsqueeze(0),  # Must match done_spec shape [1]
-                "terminated": torch.tensor([terminated], dtype=torch.bool, device=self.device),  # Required by TorchRL
-                "reward": reward_next.unsqueeze(0),  # TorchRL expects [1] shape for reward
-                "derived_states": NonTensorData(data=derived_states_next),
-                # Additional info
-                "query_type": "positive" if label_value == 1 else "negative",
-                "query_depth": self.current_query_depth_value if self.current_query_depth_value is not None else -1,
-                "max_depth_reached": exceeded_max_depth,
-                "truncated": torch.tensor(truncated, dtype=torch.bool, device=self.device),
-            },
-            batch_size=torch.Size([]),
-        )
-        
-        # Add success flag when done
+        label_value = int(self.current_label) 
+        info = {
+            "label": label_value,
+            "query_type": "positive" if label_value == 1 else "negative",
+        }
+        info["query_depth"] = self.current_query_depth_value
+        info["max_depth_reached"] = bool(exceeded_max_depth)
         if done_next:
-            next_td["is_success"] = torch.tensor(successful and not truncated, dtype=torch.bool, device=self.device)
+            info["is_success"] = successful and not truncated
             # if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
             #     janus.query_once(f"asserta({self.current_query.prolog_str()}).")
+            #     # janus.query_once(f"asserta({self.current_query}).")
             self.current_query, self.current_label = None, None
 
-        # Update internal state
-        self.tensordict = next_td
+        self.tensordict.update(TensorDict({
+                "sub_index": next_sub_index.unsqueeze(0), # to match the shape of derived_sub_indices
+                "state": NonTensorData(data=next_state),
+                "label": self.tensordict['label'],
+                "done": done_next,
+                "reward": reward_next,
+                "derived_states": NonTensorData(data=derived_states_next),
+                "derived_sub_indices": derived_sub_indices_next,
+        }))
 
+        obs = {'sub_index': self.tensordict['sub_index'].cpu().numpy(),
+               'derived_sub_indices': self.tensordict['derived_sub_indices'].cpu().numpy(),
+               'action_mask': action_mask.cpu().numpy(),}
+        reward = self.tensordict['reward'].cpu().numpy()
+        done = self.tensordict['done'].cpu().numpy()
         if self.verbose:
-            print_state_transition(next_td['state'], next_td['derived_states'],
-                                 next_td['reward'], next_td['done'], 
-                                 action=action, truncated=truncated)
-        
-        return next_td
+            print_state_transition(self.tensordict['state'], self.tensordict['derived_states'],self.tensordict['reward'], self.tensordict['done'], action=action,truncated=truncated)
+        return obs, reward, done, truncated, info
 
 
     
@@ -901,20 +801,3 @@ class LogicEnv_gym(EnvBase):
         false_row[0] = self.predicate_false_idx
         derived_sub_indices_next[0, 0] = false_row
         return derived_states_next, derived_sub_indices_next
-
-    # ============================================================================
-    # TorchRL-specific interface methods
-    # ============================================================================
-    
-    def _set_seed(self, seed: Optional[int] = None) -> Optional[int]:
-        """Set the seed for the environment (TorchRL interface).
-        
-        This overrides the internal _set_seed to match TorchRL's expected signature.
-        """
-        if seed is None:
-            seed = torch.empty((), dtype=self.pt_idx_dtype).random_().item()
-        self.seed = int(seed)
-        rng = torch.manual_seed(self.seed)
-        self.rng = rng
-        self.seed_gen = random.Random(self.seed)
-        return seed

@@ -4,26 +4,26 @@ from collections.abc import Sequence
 from copy import deepcopy
 from typing import Any, Callable, Optional, List
 
-import gymnasium as gym
 import numpy as np
+import torch
+from tensordict import TensorDict
+from torchrl.envs import EnvBase, ParallelEnv, SerialEnv
 
-from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvIndices, VecEnvObs, VecEnvStepReturn
-from stable_baselines3.common.vec_env.patch_gym import _patch_env
-from stable_baselines3.common.vec_env.util import dict_to_obs, obs_space_info
-
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
-from stable_baselines3.common.monitor import Monitor
 from env import LogicEnv_gym
+
 
 def create_environments(args, data_handler, index_manager, kge_engine=None, detailed_eval_env=False):
     """
-    Creates and seeds the training, evaluation, and callback environments.
+    Creates and seeds the training, evaluation, and callback environments for TorchRL.
+    
+    Returns TorchRL-compatible batched environments.
     """
     facts_set = set(data_handler.facts)
     shaping_gamma = args.pbrs_gamma if args.pbrs_gamma is not None else args.gamma
 
-    def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0):
+    def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, 
+                 facts=None, verbose=0, prover_verbose=0):
+        """Factory function to create a single environment instance."""
         def _init():
             env = LogicEnv_gym(
                 index_manager=index_manager,
@@ -44,7 +44,7 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
                 skip_unary_actions=args.skip_unary_actions,
                 padding_atoms=args.padding_atoms,
                 padding_states=args.padding_states,
-                device='cpu',
+                device='cpu',  # Individual envs on CPU, batching handles device placement
                 engine=args.engine,
                 kge_action=args.kge_action,
                 reward_type=args.reward_type,
@@ -54,10 +54,10 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
                 verbose=verbose,
                 prover_verbose=prover_verbose,
             )
-            env = Monitor(env)
             return env
         return _init
 
+    # Generate seeds for different environment sets
     ss = np.random.SeedSequence(args.seed_run_i)
     child_seeds = ss.spawn(3)
     rng_env = np.random.Generator(np.random.PCG64(child_seeds[0]))
@@ -68,6 +68,7 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
     eval_env_seeds = rng_eval.integers(0, 2**10, size=args.n_eval_envs)
     callback_env_seeds = rng_callback.integers(0, 2**10, size=1)
 
+    # Create environment factory functions for each set
     env_fns = [make_env(
         mode='train',
         seed=int(env_seeds[i]),
@@ -101,178 +102,200 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         prover_verbose=0,
     ) for i in range(1)]
 
-
-    env = DummyVecEnv(env_fns)
-    eval_env = CustomDummyVecEnv(eval_env_fns)
+    # Create TorchRL batched environments
+    # Use SerialEnv for sequential execution (like DummyVecEnv)
+    env = SerialEnv(args.n_envs, env_fns)
+    eval_env = CustomBatchedEnv(args.n_eval_envs, eval_env_fns)
+    
     if detailed_eval_env:
-        callback_env = CustomDummyVecEnv(callback_env_fns)
+        callback_env = CustomBatchedEnv(1, callback_env_fns)
     else:
-        callback_env = DummyVecEnv(callback_env_fns)
+        callback_env = SerialEnv(1, callback_env_fns)
 
-    # use SubprocVecEnv if you want to use multiple processes
-    # env = SubprocVecEnv(env_fns)
-    # eval_env = SubprocVecEnv(eval_env_fns)
-    # callback_env = SubprocVecEnv(callback_env_fns)
+    # Mark the environment type for compatibility
+    env.type_ = "torchrl_batched"
+    eval_env.type_ = "custom_batched"
+    callback_env.type_ = "custom_batched" if detailed_eval_env else "torchrl_batched"
 
     return env, eval_env, callback_env
 
-class CustomDummyVecEnv(VecEnv):
+
+class CustomBatchedEnv(EnvBase):
     """
-    A lightweight vectorized env wrapper that stops stepping envs once they
-   ’ve done their allotted episodes.
+    TorchRL-compatible batched environment that manages multiple environments.
+    
+    This replaces the SB3's CustomDummyVecEnv with TorchRL's batching paradigm.
+    Supports episode counting and selective environment activation.
     """
 
-    def __init__(self, env_fns: List[Callable[[], gym.Env]]):
-        self.envs = [_patch_env(fn()) for fn in env_fns]
-        if len({id(env.unwrapped) for env in self.envs}) != len(self.envs):
+    def __init__(self, num_envs: int, env_fns: List[Callable[[], LogicEnv_gym]]):
+        """
+        Initialize batched environment.
+        
+        Args:
+            num_envs: Number of parallel environments
+            env_fns: List of callables that create environment instances
+        """
+        self.num_envs = num_envs
+        self.envs = [fn() for fn in env_fns]
+        
+        if len({id(env) for env in self.envs}) != len(self.envs):
             raise ValueError("Each env_fn must return a fresh env instance")
+        
+        # Get specs from first environment
         env0 = self.envs[0]
-        super().__init__(len(env_fns), env0.observation_space, env0.action_space)
+        device = env0.device
+        
+        # Initialize parent with batched specs
+        super().__init__(device=device, batch_size=torch.Size([num_envs]))
+        
+        # Copy specs from base environment but with batch dimension
+        self.observation_spec = env0.observation_spec.expand(num_envs)
+        self.action_spec = env0.action_spec.expand(num_envs)
+        self.reward_spec = env0.reward_spec.expand(num_envs)
+        self.done_spec = env0.done_spec.expand(num_envs)
+        
+        # Track per-env episode counts/targets (to be set externally)
+        self._episode_count = torch.zeros(num_envs, dtype=torch.int32)
+        # Use maximum int32 value instead of infinity for integer tensor
+        self._episode_target = torch.full((num_envs,), fill_value=2147483647, dtype=torch.int32)
+        self._episode_step_id = torch.zeros(num_envs, dtype=torch.int32)
+        
+        # Only step/reset active envs
+        self.active_envs = torch.ones(num_envs, dtype=torch.bool)
+        
+        # Metadata
+        self.type_ = "custom_batched"
+        self._seeds = [None] * num_envs
+        self._current_tds = [None] * num_envs
 
-        # buffers
-        self.keys, shapes, dtypes = obs_space_info(env0.observation_space)
-        self.buf_obs = OrderedDict(
-            (k, np.zeros((self.num_envs, *shapes[k]), dtype=dtypes[k]))
-            for k in self.keys
-        )
-        self.buf_rews = np.zeros(self.num_envs, dtype=np.float32)
-        self.buf_dones = np.zeros(self.num_envs, dtype=bool)
-        self.buf_infos = [{} for _ in range(self.num_envs)]
-        self.metadata = env0.metadata
-
-        # track per-env episode counts/targets (to be set externally)
-        self._episode_count = np.zeros(self.num_envs, dtype=np.int32)
-        self._episode_target = np.full(self.num_envs, fill_value=np.inf, dtype=np.int32)
-        self._episode_step_id = np.zeros(self.num_envs, dtype=np.int32)
-
-        # only step/reset active envs
-        self.active_envs = np.ones(self.num_envs, dtype=bool)
-        self.type_ = "custom_dummy"
-
-    def step_async(self, actions: np.ndarray) -> None:
-        self.actions = actions
-
-    def step_wait(self) -> VecEnvStepReturn:
-        infos_to_return: List[dict] = [{} for _ in range(self.num_envs)]
-
-        for idx in np.nonzero(self.active_envs)[0]:
-            obs, rew, terminated, truncated, info = self.envs[idx].step(self.actions[idx])
-            done = terminated or truncated
-            self.buf_rews[idx] = rew
-            self.buf_dones[idx] = done
-            step_info = dict(info)
-
-            if done:
-                # count this episode
-                self._episode_count[idx] += 1
-                self._episode_step_id[idx] += 1
-                # if reached its target, deactivate
-                if self._episode_count[idx] >= self._episode_target[idx]:
-                    self.active_envs[idx] = False
-                # save final obs & reset
-                step_info["terminal_observation"] = obs
-                step_info["episode_idx"] = int(self._episode_step_id[idx])
-                obs, reset_info = self.envs[idx].reset()
-
-                # store reset info for next step (without lingering episode data)
-                self.buf_infos[idx] = dict(reset_info)
+    def _reset(self, tensordict: Optional[TensorDict] = None, **kwargs) -> TensorDict:
+        """Reset all active environments and return batched TensorDict."""
+        batch_td_list = []
+        
+        for idx in range(self.num_envs):
+            if self.active_envs[idx]:
+                seed = self._seeds[idx] if self._seeds else None
+                td = self.envs[idx].reset(seed=seed)
+                self._current_tds[idx] = td
             else:
-                self.buf_infos[idx] = info
+                # For inactive envs, use the last known state
+                td = self._current_tds[idx] if self._current_tds[idx] is not None else self.envs[idx].reset()
+            
+            batch_td_list.append(td)
+        
+        # Stack all TensorDicts into a batch
+        batched_td = torch.stack(batch_td_list, dim=0)
+        
+        # Reset seeds after use
+        self._seeds = [None] * self.num_envs
+        
+        return batched_td
 
-            # store obs
-            if isinstance(obs, dict):
-                for k in self.keys:
-                    self.buf_obs[k][idx] = obs[k]
-            else:
-                # assume array
-                self.buf_obs[self.keys[0]][idx] = obs
-
-            infos_to_return[idx] = step_info
-
-        # Non-active envs retain previous info buffer without episode metadata
-        for idx in np.nonzero(~self.active_envs)[0]:
-            infos_to_return[idx] = {}
-
-        # OPTIMIZATION: Use a shallow copy instead of a deepcopy.
-        # This is much faster and safe for SB3's training loop.
-        return self._obs_from_buf(), self.buf_rews.copy(), self.buf_dones.copy(), infos_to_return
-
-    def reset(self) -> Any:
-        for idx in np.nonzero(self.active_envs)[0]:
-            maybe_opts = {"options": self._options[idx]} if self._options[idx] else {}
-            obs, info = self.envs[idx].reset(seed=self._seeds[idx], **maybe_opts)
-            self.buf_infos[idx] = info
-            if isinstance(obs, dict):
-                for k in self.keys:
-                    self.buf_obs[k][idx] = obs[k]
-            else:
-                self.buf_obs[self.keys[0]][idx] = obs
-
-        # once reset, clear seeds/options
-        self._reset_seeds()
-        self._reset_options()
-        return self._obs_from_buf()
-
-
-    def close(self) -> None:
-        for env in self.envs:
-            env.close()
-
-    def get_images(self) -> Sequence[Optional[np.ndarray]]:
-        if self.render_mode != "rgb_array":
-            warnings.warn(
-                f"The render mode is {self.render_mode}, but this method assumes it is `rgb_array` to obtain images."
-            )
-            return [None for _ in self.envs]
-        return [env.render() for env in self.envs]  # type: ignore[misc]
-
-    def render(self, mode: Optional[str] = None) -> Optional[np.ndarray]:
+    def _step(self, tensordict: TensorDict) -> TensorDict:
         """
-        Gym environment rendering. If there are multiple environments then
-        they are tiled together in one image via ``BaseVecEnv.render()``.
-
-        :param mode: The rendering type.
+        Step all active environments with their respective actions.
+        
+        Args:
+            tensordict: Batched TensorDict containing actions for each environment
+            
+        Returns:
+            Batched TensorDict with next observations, rewards, dones, etc.
         """
-        return super().render(mode=mode)
-
-    def _save_obs(self, env_idx: int, obs: VecEnvObs) -> None:
-        for key in self.keys:
-            if key is None:
-                self.buf_obs[key][env_idx] = obs
+        batch_td_list = []
+        
+        for idx in range(self.num_envs):
+            if self.active_envs[idx]:
+                # Extract action for this environment
+                action_td = TensorDict(
+                    {"action": tensordict["action"][idx]},
+                    batch_size=torch.Size([])
+                )
+                
+                # Step the environment
+                next_td = self.envs[idx]._step(action_td)
+                
+                # Check if episode is done
+                if next_td["done"]:
+                    # Increment episode count
+                    self._episode_count[idx] += 1
+                    self._episode_step_id[idx] += 1
+                    
+                    # Add episode metadata
+                    next_td["episode_idx"] = self._episode_step_id[idx]
+                    
+                    # If reached target, deactivate
+                    if self._episode_count[idx] >= self._episode_target[idx]:
+                        self.active_envs[idx] = False
+                    
+                    # Auto-reset for next step
+                    reset_td = self.envs[idx].reset()
+                    self._current_tds[idx] = reset_td
+                else:
+                    self._current_tds[idx] = next_td
+                
+                batch_td_list.append(next_td)
             else:
-                self.buf_obs[key][env_idx] = obs[key]  # type: ignore[call-overload]
+                # Inactive env: return last state with zero reward
+                td = self._current_tds[idx].clone()
+                td["reward"] = torch.zeros_like(td["reward"])
+                td["done"] = torch.tensor(True, dtype=torch.bool, device=self.device)
+                batch_td_list.append(td)
+        
+        # Stack into batched TensorDict
+        batched_td = torch.stack(batch_td_list, dim=0)
+        
+        return batched_td
 
-    def _obs_from_buf(self) -> VecEnvObs:
-        # return dict_to_obs(self.observation_space, deepcopy(self.buf_obs))
-        return dict_to_obs(
-            self.observation_space,
-            {k: v.copy() for k, v in self.buf_obs.items()}
-        )
-
-    def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> list[Any]:
-        """Return attribute from vectorized environment (see base class)."""
-        target_envs = self._get_target_envs(indices)
-        return [env_i.get_wrapper_attr(attr_name) for env_i in target_envs]
-
-    def set_attr(self, attr_name: str, value: Any, indices: VecEnvIndices = None) -> None:
-        """Set attribute inside vectorized environments (see base class)."""
-        target_envs = self._get_target_envs(indices)
-        for env_i in target_envs:
-            setattr(env_i, attr_name, value)
-
-    def env_method(self, method_name: str, *method_args, indices: VecEnvIndices = None, **method_kwargs) -> list[Any]:
-        """Call instance methods of vectorized environments."""
-        target_envs = self._get_target_envs(indices)
-        return [env_i.get_wrapper_attr(method_name)(*method_args, **method_kwargs) for env_i in target_envs]
-
-    def env_is_wrapped(self, wrapper_class: type[gym.Wrapper], indices: VecEnvIndices = None) -> list[bool]:
-        """Check if worker environments are wrapped with a given wrapper"""
-        target_envs = self._get_target_envs(indices)
-        # Import here to avoid a circular import
-        from stable_baselines3.common import env_util
-
-        return [env_util.is_wrapped(env_i, wrapper_class) for env_i in target_envs]
-
-    def _get_target_envs(self, indices: VecEnvIndices) -> list[gym.Env]:
-        indices = self._get_indices(indices)
-        return [self.envs[i] for i in indices]
+    def _set_seed(self, seed: Optional[int] = None) -> Optional[int]:
+        """Set seed for all environments."""
+        if seed is None:
+            seed = torch.randint(0, 2**31, (1,)).item()
+        
+        # Set different seeds for each environment
+        torch.manual_seed(seed)
+        seeds = torch.randint(0, 2**31, (self.num_envs,)).tolist()
+        
+        for idx, env in enumerate(self.envs):
+            env.set_seed(seeds[idx])
+        
+        return seed
+    
+    def set_episode_targets(self, targets: List[int]):
+        """Set the number of episodes each environment should run."""
+        assert len(targets) == self.num_envs
+        self._episode_target = torch.tensor(targets, dtype=torch.int32)
+    
+    def get_episode_counts(self) -> torch.Tensor:
+        """Get the current episode count for each environment."""
+        return self._episode_count.clone()
+    
+    def reset_episode_counts(self):
+        """Reset episode counters and reactivate all environments."""
+        self._episode_count.zero_()
+        self._episode_step_id.zero_()
+        self.active_envs.fill_(True)
+    
+    def set_attr(self, attr_name: str, value: Any, indices: Optional[List[int]] = None) -> None:
+        """Set attribute in specified environments."""
+        if indices is None:
+            indices = list(range(self.num_envs))
+        
+        for idx in indices:
+            setattr(self.envs[idx], attr_name, value)
+    
+    def get_attr(self, attr_name: str, indices: Optional[List[int]] = None) -> List[Any]:
+        """Get attribute from specified environments."""
+        if indices is None:
+            indices = list(range(self.num_envs))
+        
+        return [getattr(self.envs[idx], attr_name) for idx in indices]
+    
+    def env_method(self, method_name: str, *method_args, 
+                   indices: Optional[List[int]] = None, **method_kwargs) -> List[Any]:
+        """Call method on specified environments."""
+        if indices is None:
+            indices = list(range(self.num_envs))
+        
+        return [getattr(self.envs[idx], method_name)(*method_args, **method_kwargs) 
+                for idx in indices]
