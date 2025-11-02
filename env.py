@@ -102,7 +102,9 @@ class LogicEnv_gym(EnvBase):
         self.kge_action = kge_action
 
         if self.corruption_mode:
-            self.counter = 0  # Determine whether to sample from positive or negative queries in KGE settings
+            # Counter to determine whether to sample positive or negative queries
+            # With train_neg_ratio=1: even counters → positive, odd counters → negative
+            self.counter = 0
             
         if self.corruption_mode:
             self.sampler = data_handler.sampler
@@ -480,6 +482,7 @@ class LogicEnv_gym(EnvBase):
                 "done": torch.tensor([False], dtype=torch.bool, device=self.device),  # Match done_spec shape [1]
                 "terminated": torch.tensor([False], dtype=torch.bool, device=self.device),  # Required by TorchRL
                 "derived_states": NonTensorData(data=derived_states),
+                "query_depth": torch.tensor([self.current_query_depth_value if self.current_query_depth_value is not None else -1], dtype=torch.long, device=self.device),
             },
             batch_size=torch.Size([]),  # Single environment
         )
@@ -609,25 +612,28 @@ class LogicEnv_gym(EnvBase):
             #     janus.query_once(f"asserta({self.current_query.prolog_str()}).")
             
             # Preserve episode metadata BEFORE auto-reset overwrites it
+            # NOTE: We preserve label, is_success, query_type, AND query_depth from the COMPLETED episode
+            # so callbacks can properly log statistics for that episode.
             completed_episode_label = next_td["label"].clone()
-            completed_episode_depth = next_td["query_depth"].clone()
             completed_episode_success = next_td["is_success"].clone()
             completed_episode_type = next_td["query_type"].clone()
+            completed_episode_depth = next_td["query_depth"].clone()
             
             # Auto-reset: When episode is done, automatically reset for next episode
             # This matches TorchRL's expected behavior for environments
-            reset_td = self._reset(tensordict=None)
+            # IMPORTANT: Call reset() not _reset() to properly update current_label and current_query_depth_value
+            reset_td = self.reset(tensordict=None)
             # Copy the reset state to next_td but keep the reward/done from this step
             # AND preserve the completed episode's metadata
             for key in reset_td.keys():
-                if key not in ["reward", "done", "terminated", "truncated", "label", "query_depth", "is_success", "query_type"]:
+                if key not in ["reward", "done", "terminated", "truncated", "label", "is_success", "query_type", "query_depth"]:
                     next_td[key] = reset_td[key]
             
             # Restore the completed episode's metadata so callbacks can access it
             next_td["label"] = completed_episode_label
-            next_td["query_depth"] = completed_episode_depth
             next_td["is_success"] = completed_episode_success
             next_td["query_type"] = completed_episode_type
+            next_td["query_depth"] = completed_episode_depth
 
         # Update internal state
         self.tensordict = next_td

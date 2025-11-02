@@ -283,14 +283,11 @@ class CustomBatchedEnv(EnvBase):
                     if self._episode_count[idx] >= self._episode_target[idx]:
                         self.active_envs[idx] = False
                     
-                    # Auto-reset for next step
-                    reset_td = self.envs[idx].reset()
-                    if "next" in reset_td.keys():
-                        next_branch = reset_td.get("next")
-                        for key in next_branch.keys():
-                            reset_td.set(key, next_branch.get(key))
-                        reset_td = reset_td.exclude("next")
-                    self._current_tds[idx] = reset_td
+                    # NOTE: The individual environment already auto-resets in its _step method
+                    # when done=True. The next_td already contains the reset state with the
+                    # completed episode's metadata preserved. We don't need to reset again here.
+                    # Just update our cached state.
+                    self._current_tds[idx] = next_td
                 else:
                     self._current_tds[idx] = next_td
                     # Add episode_idx even when not done, for consistency

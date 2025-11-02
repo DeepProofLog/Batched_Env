@@ -93,8 +93,10 @@ class RolloutCollector:
             label = self._extract_scalar(metadata_source, "label", env_idx, default=1)
             
             # Extract query_depth
+            # Note: -1 is used as a sentinel for "no depth" in the environment, so convert it to None
+            # But 0 is a valid depth value and should be preserved
             query_depth_val = self._extract_scalar(metadata_source, "query_depth", env_idx, default=None)
-            query_depth = query_depth_val if query_depth_val not in (0, -1, None) else None
+            query_depth = query_depth_val if query_depth_val not in (-1, None) else None
             
             # Extract is_success
             is_success = bool(self._extract_scalar(metadata_source, "is_success", env_idx, default=False))
