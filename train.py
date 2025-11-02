@@ -394,6 +394,7 @@ def _train(
         best_metric=args.eval_best_metric if hasattr(args, 'eval_best_metric') else "mrr_mean",
         save_path=model_path,
         verbose=True,
+        collect_detailed=True,  # Explicitly enable detailed depth breakdown
     )
     
     metrics_callback = TrainingMetricsCallback(

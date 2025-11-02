@@ -25,7 +25,13 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 # Import shared utilities
-from callback_utils import DetailedMetricsCollector, _format_depth_key, _format_stat_string
+from callback_utils import (
+    DetailedMetricsCollector,
+    _format_depth_key,
+    _format_stat_string,
+    _sort_metric_key,
+    print_formatted_metrics,
+)
 
 
 # ============================================================================
@@ -166,11 +172,22 @@ class EvaluationCallback:
         """Called when evaluation is complete."""
         elapsed = time.time() - self.eval_start_time
         
-        # Convert episode_len_* metrics from mean/std pairs to formatted strings
+        # Get global statistics from DetailedMetricsCollector
+        # These include: ep_len, ep_rew, len_pos, len_neg, proven_pos, proven_neg, rwd_pos, rwd_neg
+        rollout_metrics = self.compute_metrics()
+        
+        # Convert episode_len_* metrics from eval_metrics (the breakdown stats)
+        # from mean/std pairs to formatted strings
         self._convert_episode_len_metrics(eval_metrics)
         
+        # Merge: rollout_metrics take priority for display, then eval_metrics
+        # This ensures we show both global stats AND the detailed breakdown
+        merged_metrics = {}
+        merged_metrics.update(eval_metrics)  # Start with eval metrics
+        merged_metrics.update(rollout_metrics)  # Override with global stats
+        
         # Check if this is a new best
-        metric_value = eval_metrics.get(self.best_metric, float('-inf'))
+        metric_value = merged_metrics.get(self.best_metric, float('-inf'))
         if isinstance(metric_value, str):
             # Try to extract numerical value if it's a formatted string
             try:
@@ -185,9 +202,25 @@ class EvaluationCallback:
             if self.verbose:
                 print(f"New best {metric_display} in eval: {metric_value:.4f}!")
         
-        # Print formatted metrics
+        # Print formatted metrics using the common function
         if self.verbose:
-            self._print_formatted_metrics(eval_metrics, global_step)
+            # Only include priority evaluation metrics (MRR, hits, AUC, etc.)
+            # Exclude the detailed breakdown metrics that are already captured in rollout_metrics
+            priority_eval_keys = [
+                "mrr_mean", "hits1_mean", "hits3_mean", "hits10_mean", 
+                "average_precision", "auc_pr", "auc_pr_mean", "success_rate",
+                "head_mrr_mean", "tail_mrr_mean"
+            ]
+            extra_metrics = {k: v for k, v in merged_metrics.items() 
+                           if k not in rollout_metrics and k in priority_eval_keys}
+            
+            # Use the common print function
+            print_formatted_metrics(
+                metrics=rollout_metrics,
+                prefix="eval",
+                extra_metrics=extra_metrics,
+                global_step=global_step,
+            )
             print(f'---------------evaluation finished---------------  took {elapsed:.2f} seconds')
         
         return is_new_best
@@ -220,118 +253,6 @@ class EvaluationCallback:
                 # Remove the old _mean and _std keys
                 del metrics[mean_key]
                 del metrics[std_key]
-    
-    def _print_formatted_metrics(self, metrics: Dict[str, Any], global_step: int):
-        """Print metrics in SB3-style formatted table."""
-        # Build ordered list of metrics to display
-        # First, metrics that should appear at the top
-        priority_metrics = []
-        
-        # Check for different metric name patterns
-        if "_mrr" in metrics:
-            priority_metrics.append("_mrr")
-        elif "mrr_mean" in metrics:
-            priority_metrics.append("mrr_mean")
-        
-        if "auc_pr" in metrics:
-            priority_metrics.append("auc_pr")
-        elif "auc_pr_mean" in metrics:
-            priority_metrics.append("auc_pr_mean")
-            
-        if "success_rate" in metrics:
-            priority_metrics.append("success_rate")
-        
-        # Episode length and reward stats (in specific order)
-        ep_stats = []
-        for key in ["ep_len", "ep_rew", "ep_len_pos", "ep_len_neg", 
-                    "ep_len_pos_true", "ep_len_pos_false", 
-                    "ep_len_neg_true", "ep_len_neg_false"]:
-            if key in metrics:
-                ep_stats.append(key)
-        
-        # Length and reward metrics by label (aggregate)
-        label_metrics = []
-        for k in ["len_pos", "len_neg", "proven_pos", "proven_neg", "rwd_pos", "rwd_neg"]:
-            if k in metrics:
-                label_metrics.append(k)
-        
-        # Depth-based metrics (sorted by depth then metric type)
-        depth_len_keys = sorted(
-            [k for k in metrics.keys() if k.startswith("len_d_")],
-            key=lambda x: self._sort_depth_key(x)
-        )
-        depth_proven_keys = sorted(
-            [k for k in metrics.keys() if k.startswith("proven_d_")],
-            key=lambda x: self._sort_depth_key(x)
-        )
-        depth_rwd_keys = sorted(
-            [k for k in metrics.keys() if k.startswith("rwd_d_")],
-            key=lambda x: self._sort_depth_key(x)
-        )
-        
-        # Legacy reward metrics (keep for backward compatibility)
-        legacy_reward = [k for k in metrics.keys() if "reward_label" in k or "reward_depth" in k]
-        
-        # Other length metrics
-        other_length = [k for k in metrics.keys() if k == "length mean +/- std"]
-        
-        # Combine all in desired order
-        display_order = (
-            priority_metrics + 
-            ep_stats +
-            label_metrics +
-            depth_len_keys +
-            depth_proven_keys +
-            depth_rwd_keys +
-            legacy_reward +
-            other_length
-        )
-        
-        # Remove duplicates while preserving order
-        seen = set()
-        display_order = [x for x in display_order if not (x in seen or seen.add(x))]
-        
-        # Print table
-        print("-" * 52)
-        print(f"| {'eval/':<23} | {'':<24} |")
-        
-        for key in display_order:
-            if key in metrics:
-                value = metrics[key]
-                # Format the value
-                if isinstance(value, (int, float)):
-                    if isinstance(value, float):
-                        value_str = f"{value:.3f}"
-                    else:
-                        value_str = str(value)
-                else:
-                    value_str = str(value)
-                
-                print(f"|    {key:<20} | {value_str:<24} |")
-        
-        # Add timesteps
-        print(f"|    {'total_timesteps':<20} | {global_step:<24} |")
-        print("-" * 52)
-        print()
-    
-    def _sort_depth_key(self, key: str) -> Tuple[int, Union[int, float]]:
-        """Sort key for depth-based metrics."""
-        # Extract depth number and label
-        parts = key.split('_')
-        label = parts[-1]  # 'pos' or 'neg'
-        label_order = 0 if label == 'pos' else 1
-        
-        # Extract depth - should be parts[2] for format like "len_d_0_pos"
-        depth_str = parts[2] if len(parts) > 2 else "unknown"
-        if depth_str == "unknown":
-            depth_order = float("inf")
-        else:
-            try:
-                depth_order = int(depth_str)
-            except (TypeError, ValueError):
-                depth_order = float("inf")
-        
-        return (label_order, depth_order)
 
 
 # ============================================================================
@@ -417,8 +338,16 @@ class TrainingMetricsCallback:
         # Compute timing metrics
         time_metrics = self._compute_time_metrics(iteration, global_step, n_envs)
         
-        # Print formatted output
-        self._print_training_metrics(rollout_metrics, train_metrics, time_metrics)
+        # Combine time and train metrics for extra_metrics
+        extra_metrics = {**time_metrics, **train_metrics}
+        
+        # Use the common print function
+        print_formatted_metrics(
+            metrics=rollout_metrics,
+            prefix="rollout",
+            extra_metrics=extra_metrics,
+            global_step=None,  # Already in extra_metrics as total_timesteps
+        )
         
         # Reset stats for next iteration
         self.metrics_collector.reset()
@@ -437,84 +366,6 @@ class TrainingMetricsCallback:
         metrics["total_timesteps"] = str(global_step)
         
         return metrics
-    
-    def _print_training_metrics(
-        self,
-        rollout_metrics: Dict[str, str],
-        train_metrics: Dict[str, str],
-        time_metrics: Dict[str, str],
-    ):
-        """Print formatted training metrics table."""
-        print("-" * 52)
-        
-        # Rollout metrics - organize by priority
-        if rollout_metrics:
-            print(f"| {'rollout/':<23} | {'':<24} |")
-            
-            # First: overall episode stats
-            for key in ["ep_len", "ep_rew"]:
-                if key in rollout_metrics:
-                    print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
-            
-            # Second: aggregate by label
-            for key in ["len_pos", "len_neg", "proven_pos", "proven_neg", "rwd_pos", "rwd_neg"]:
-                if key in rollout_metrics:
-                    print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
-            
-            # Third: detailed breakdown by depth (if collected)
-            # Group by metric type for cleaner display
-            len_depth_keys = sorted(
-                [k for k in rollout_metrics.keys() if k.startswith("len_d_")],
-                key=lambda x: self._sort_metric_key(x)
-            )
-            proven_depth_keys = sorted(
-                [k for k in rollout_metrics.keys() if k.startswith("proven_d_")],
-                key=lambda x: self._sort_metric_key(x)
-            )
-            rwd_depth_keys = sorted(
-                [k for k in rollout_metrics.keys() if k.startswith("rwd_d_")],
-                key=lambda x: self._sort_metric_key(x)
-            )
-            
-            for key in len_depth_keys:
-                print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
-            for key in proven_depth_keys:
-                print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
-            for key in rwd_depth_keys:
-                print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
-        
-        # Time metrics
-        if time_metrics:
-            print(f"| {'time/':<23} | {'':<24} |")
-            for key, value in time_metrics.items():
-                print(f"|    {key:<20} | {value:<24} |")
-        
-        # Training metrics
-        if train_metrics:
-            print(f"| {'train/':<23} | {'':<24} |")
-            for key, value in train_metrics.items():
-                print(f"|    {key:<20} | {value:<24} |")
-        
-        print("-" * 52)
-    
-    def _sort_metric_key(self, key: str) -> Tuple[int, Union[int, float]]:
-        """Sort key for depth-based metrics."""
-        # Extract label (pos/neg) and depth
-        parts = key.split('_')
-        label = parts[-1]  # 'pos' or 'neg'
-        label_order = 0 if label == 'pos' else 1
-        
-        # Extract depth number - should be parts[2] for format like "len_d_0_pos"
-        depth_str = parts[2] if len(parts) > 2 else "unknown"
-        if depth_str == "unknown":
-            depth_order = float("inf")
-        else:
-            try:
-                depth_order = int(depth_str)
-            except (TypeError, ValueError):
-                depth_order = float("inf")
-        
-        return (label_order, depth_order)
 
 
 # ============================================================================

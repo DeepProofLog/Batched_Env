@@ -316,7 +316,7 @@ class PPOAgent:
         if self.args and hasattr(self.args, 'eval_neg_samples'):
             n_corruptions = self.args.eval_neg_samples
         
-        # Run corruption-based evaluation
+        # Run evaluation to get metrics
         try:
             metrics = eval_corruptions_torchrl(
                 actor=actor,
@@ -325,13 +325,13 @@ class PPOAgent:
                 sampler=sampler,
                 n_corruptions=n_corruptions,
                 deterministic=True,
-                verbose=1,  # Increase verbosity to see what's happening
+                verbose=1,
                 plot=False,
                 kge_inference_engine=None,
                 evaluation_mode='rl_only',
                 corruption_scheme=['head', 'tail'],
                 info_callback=(
-                    lambda infos: callback.accumulate_episode_stats(infos)
+                    lambda infos: callback.accumulate_episode_stats(infos, mode="eval")
                     if callback is not None else None
                 ),
                 data_depths=eval_depths,

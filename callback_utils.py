@@ -46,6 +46,143 @@ def _format_stat_string(mean: Optional[float], std: Optional[float], count: int)
     return f"{mean:.3f} +/- {std:.2f} ({count})"
 
 
+def _sort_metric_key(key: str) -> Tuple[int, Union[int, float]]:
+    """
+    Generate sort key for depth-based metrics.
+    
+    Sorts metrics by:
+    1. Label (pos before neg)
+    2. Depth (0, 1, 2, ..., unknown last)
+    
+    Args:
+        key: Metric name like "len_d_0_pos" or "proven_d_1_neg"
+        
+    Returns:
+        Tuple of (label_order, depth_order) for sorting
+    """
+    parts = key.split('_')
+    label = parts[-1]  # 'pos' or 'neg'
+    label_order = 0 if label == 'pos' else 1
+    
+    # Extract depth number - should be parts[2] for format like "len_d_0_pos"
+    depth_str = parts[2] if len(parts) > 2 else "unknown"
+    if depth_str == "unknown":
+        depth_order: Union[int, float] = float("inf")
+    else:
+        try:
+            depth_order = int(depth_str)
+        except (TypeError, ValueError):
+            depth_order = float("inf")
+    
+    return (label_order, depth_order)
+
+
+def print_formatted_metrics(
+    metrics: Dict[str, Any],
+    prefix: str = "rollout",
+    extra_metrics: Optional[Dict[str, Any]] = None,
+    global_step: Optional[int] = None,
+) -> None:
+    """
+    Print metrics in a formatted table.
+    
+    This is a common function used by both training and evaluation callbacks
+    to ensure consistent formatting.
+    
+    Args:
+        metrics: Dictionary of rollout/episode metrics from DetailedMetricsCollector
+        prefix: Prefix for the metrics section (e.g., "rollout", "eval")
+        extra_metrics: Optional additional metrics to display (e.g., MRR, AUC, train losses)
+        global_step: Optional global step/timestep to display
+    """
+    print("-" * 52)
+    
+    # Priority metrics (MRR, AUC, etc.) if provided in extra_metrics
+    if extra_metrics:
+        priority_keys = []
+        for key in ["mrr_mean", "_mrr", "auc_pr", "auc_pr_mean", "success_rate"]:
+            if key in extra_metrics:
+                priority_keys.append(key)
+        
+        if priority_keys:
+            print(f"| {prefix + '/':<23} | {'':<24} |")
+            for key in priority_keys:
+                value = extra_metrics[key]
+                value_str = f"{value:.3f}" if isinstance(value, (int, float)) else str(value)
+                print(f"|    {key:<20} | {value_str:<24} |")
+    
+    # Rollout/episode metrics from DetailedMetricsCollector
+    if metrics:
+        if not extra_metrics or not any(k in extra_metrics for k in ["mrr_mean", "_mrr", "auc_pr"]):
+            print(f"| {prefix + '/':<23} | {'':<24} |")
+        
+        # 1. Overall episode stats
+        for key in ["ep_len", "ep_rew"]:
+            if key in metrics:
+                print(f"|    {key:<20} | {metrics[key]:<24} |")
+        
+        # 2. Aggregate by label
+        for key in ["len_pos", "len_neg", "proven_pos", "proven_neg", "rwd_pos", "rwd_neg"]:
+            if key in metrics:
+                print(f"|    {key:<20} | {metrics[key]:<24} |")
+        
+        # 3. Detailed breakdown by depth (if present)
+        # Group by metric type for cleaner display
+        len_depth_keys = sorted(
+            [k for k in metrics.keys() if k.startswith("len_d_")],
+            key=_sort_metric_key
+        )
+        proven_depth_keys = sorted(
+            [k for k in metrics.keys() if k.startswith("proven_d_")],
+            key=_sort_metric_key
+        )
+        rwd_depth_keys = sorted(
+            [k for k in metrics.keys() if k.startswith("rwd_d_")],
+            key=_sort_metric_key
+        )
+        
+        for key in len_depth_keys:
+            print(f"|    {key:<20} | {metrics[key]:<24} |")
+        for key in proven_depth_keys:
+            print(f"|    {key:<20} | {metrics[key]:<24} |")
+        for key in rwd_depth_keys:
+            print(f"|    {key:<20} | {metrics[key]:<24} |")
+    
+    # Additional metrics (time, train losses, etc.)
+    if extra_metrics:
+        # Time metrics
+        time_keys = [k for k in extra_metrics.keys() if k in ["fps", "iterations", "total_timesteps"]]
+        if time_keys:
+            print(f"| {'time/':<23} | {'':<24} |")
+            for key in time_keys:
+                value = extra_metrics[key]
+                value_str = str(value)
+                print(f"|    {key:<20} | {value_str:<24} |")
+        
+        # Other metrics (losses, entropy, etc. for training; hits, episode breakdown for evaluation)
+        # Only show under "train/" prefix if we're actually in training context (prefix != "eval")
+        other_keys = [k for k in extra_metrics.keys() 
+                     if k not in time_keys and k not in ["mrr_mean", "_mrr", "auc_pr", "auc_pr_mean", "success_rate"]]
+        if other_keys:
+            # Don't add "train/" prefix during evaluation
+            if prefix == "eval":
+                print(f"| {prefix + '/':<23} | {'':<24} |")
+            else:
+                print(f"| {'train/':<23} | {'':<24} |")
+            for key in other_keys:
+                value = extra_metrics[key]
+                value_str = str(value)
+                print(f"|    {key:<20} | {value_str:<24} |")
+    
+    # Global step if provided
+    if global_step is not None:
+        if not extra_metrics or "total_timesteps" not in extra_metrics:
+            print(f"|    {'total_timesteps':<20} | {global_step:<24} |")
+    
+    print("-" * 52)
+    print()
+
+
 class DetailedMetricsCollector:
     """
     Common module for collecting detailed episode metrics by label and depth.

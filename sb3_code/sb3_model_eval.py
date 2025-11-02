@@ -220,9 +220,6 @@ def evaluate_policy(
         full_actions[active_np] = acts_tensor.detach().cpu().numpy()
         new_obs, rews_np, dones_np, infos = env.step(full_actions)
 
-        if info_callback is not None:
-            info_callback(infos)
-
         rews_t  = torch.as_tensor(rews_np, device=device, dtype=torch.float32)
         dones_t = torch.as_tensor(dones_np, device=device, dtype=torch.bool)
 
@@ -246,6 +243,14 @@ def evaluate_policy(
 
             succ_list = [infos[int(i)].get("is_success", False) for i in done_idx.cpu().tolist()]
             proof_successful[done_idx, slots] = torch.as_tensor(succ_list, device=device)
+            
+            # Add episode statistics to info dicts for callback tracking
+            for env_i in done_idx.cpu().tolist():
+                if env_i < len(infos):
+                    infos[env_i]["episode"] = {
+                        "r": float(current_rew[env_i].item()),  # Total episode reward
+                        "l": int(current_len[env_i].item()),    # Total episode length
+                    }
 
             if track_logprobs:
                 # finalize per done env
@@ -282,10 +287,13 @@ def evaluate_policy(
                     current_choices_histories[env_i].clear()
                     current_state_histories[env_i].clear()
 
-
             counts[done_idx]     += 1
             current_rew[done_idx], current_len[done_idx], current_lp[done_idx] = 0, 0, 0
-
+        
+        # Call info_callback AFTER episode stats are added to infos
+        # This ensures the callback receives complete episode information
+        if info_callback is not None:
+            info_callback(infos)
 
         observations = new_obs
         if verbose: print(f"\rEpisodes done: {int(counts.sum())}/{total}", end="", flush=True)
