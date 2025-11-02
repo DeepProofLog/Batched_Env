@@ -13,10 +13,6 @@ from typing import Any, Callable, Optional, Tuple
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
-from torchrl.collectors import SyncDataCollector
-from torchrl.data import TensorDictReplayBuffer, LazyTensorStorage
-from torchrl.objectives import ClipPPOLoss
-from torchrl.objectives.value import GAE
 
 from index_manager import IndexManager
 from utils import (
@@ -31,7 +27,7 @@ from utils import (
 )
 from custom_env import create_environments
 from dataset import DataHandler
-from model import create_torchrl_modules
+from ppo import create_torchrl_modules, PPOAgent
 from embeddings import get_embedder
 from neg_sampling import get_sampler
 from model_eval import eval_corruptions_torchrl, TorchRLPolicyWrapper
@@ -347,8 +343,6 @@ def _train(
     actor: nn.Module,
     critic: nn.Module,
     optimizer: torch.optim.Optimizer,
-    loss_module: ClipPPOLoss,
-    advantage_module: GAE,
     train_env,
     eval_env,
     sampler,
@@ -358,6 +352,8 @@ def _train(
 ) -> Tuple[nn.Module, nn.Module]:
     """
     Main TorchRL training loop with full metrics and logging.
+    
+    This function uses the modular PPOAgent class to handle training.
     """
     if args.timesteps_train <= 0:
         print("No training steps requested (timesteps_train <= 0)")
@@ -369,20 +365,6 @@ def _train(
     n_epochs = args.n_epochs
     total_timesteps = args.timesteps_train
     
-    # Calculate training parameters
-    steps_per_epoch = n_steps * args.n_envs
-    n_iterations = total_timesteps // steps_per_epoch
-    
-    print(f"\n{'='*60}")
-    print(f"Starting TorchRL PPO Training")
-    print(f"{'='*60}")
-    print(f"Total timesteps: {total_timesteps:,}")
-    print(f"Steps per iteration: {steps_per_epoch}")
-    print(f"Number of iterations: {n_iterations}")
-    print(f"Mini-batch size: {batch_size}")
-    print(f"Optimization epochs per iteration: {n_epochs}")
-    print(f"{'='*60}\n")
-    
     # Initialize logger
     logger = TrainingLogger(
         log_dir=model_path,
@@ -392,7 +374,7 @@ def _train(
     
     # Initialize callbacks
     rollout_callback = RolloutProgressCallback(
-        total_steps=steps_per_epoch,
+        total_steps=n_steps * args.n_envs,
         n_envs=args.n_envs,
         update_interval=25,
         verbose=True,
@@ -428,508 +410,47 @@ def _train(
     # Notify callbacks of training start
     callback_manager.on_training_start()
     
-    # Tracking variables
-    global_step = 0
-    best_eval_metric = float('-inf')
-    best_model_path = None
+    # Create PPO agent
+    ppo_agent = PPOAgent(
+        actor=actor,
+        critic=critic,
+        optimizer=optimizer,
+        train_env=train_env,
+        eval_env=eval_env,
+        sampler=sampler,
+        data_handler=data_handler,
+        args=args,
+        n_envs=args.n_envs,
+        n_steps=n_steps,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        gamma=args.gamma,
+        gae_lambda=0.95,
+        clip_range=args.clip_range,
+        ent_coef=args.ent_coef,
+        value_coef=0.5,
+        max_grad_norm=0.5,
+        device=device,
+        model_save_path=model_path,
+        eval_best_metric=args.eval_best_metric if hasattr(args, 'eval_best_metric') else "mrr_mean",
+    )
     
-    # Training loop
-    for iteration in range(n_iterations):
-        iteration_start_time = time.time()
-        
-        # ==================== Data Collection ====================
-        print(f"\nIteration {iteration + 1}/{n_iterations}")
-        
-        # Start rollout
-        callback_manager.on_rollout_start()
-        
-        experiences = []
-        episode_rewards = []  # Track all episode rewards during rollout
-        episode_lengths = []  # Track all episode lengths during rollout
-        episode_info = []  # Track episode-level info
-        td = train_env.reset()
-        
-        # Track per-environment step counts and rewards
-        env_episode_rewards = [0.0] * args.n_envs
-        env_episode_lengths = [0] * args.n_envs
-        
-        for step in range(n_steps):
-            # Update rollout progress
-            callback_manager.on_rollout_step(step)
-            
-            # Get actions from policy
-            with torch.no_grad():
-                # Get the underlying actor-critic model
-                # The critic is simpler: TensorDictModule(TorchRLValueModule(actor_critic_model))
-                # Access it from the critic module
-                critic_inner = critic._module if hasattr(critic, '_module') else critic.module
-                actor_critic_model = critic_inner.actor_critic_model
-                
-                # Get logits and values directly from the model
-                logits = actor_critic_model.forward_actor(td.clone())
-                values = actor_critic_model.forward_critic(td.clone())
-                
-                # Reapply the mask defensively in case upstream modules ever skip it
-                action_mask = td["action_mask"].to(logits.device)
-                masked_logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
-                masked_logits = torch.nan_to_num(masked_logits, nan=float("-inf"))
-
-                # Sample actions directly from masked logits so invalid moves keep zero probability
-                dist = torch.distributions.Categorical(logits=masked_logits)
-                action_indices = dist.sample()  # Should be shape (n_envs,)
-                log_probs = dist.log_prob(action_indices)
-                
-                # DEBUG
-                # print(f"DEBUG: logits.shape={logits.shape}, action_indices.shape={action_indices.shape}, n_envs={args.n_envs}")
-                
-                # Convert to one-hot for storage
-                action_one_hot = torch.nn.functional.one_hot(action_indices, num_classes=logits.shape[-1]).float()
-                
-                # Store current state with action and value
-                experience = TensorDict({
-                    "sub_index": td["sub_index"],
-                    "derived_sub_indices": td["derived_sub_indices"],
-                    "action_mask": td["action_mask"],
-                    "action": action_one_hot,
-                    "sample_log_prob": log_probs,
-                    "state_value": values,
-                }, batch_size=torch.Size([args.n_envs]))
-            
-            # Step environment
-            # Update the td with actions for stepping
-            td["action"] = action_indices
-            next_td = train_env.step(td)
-            
-            # TorchRL nests the next state under "next" key
-            # Extract reward and done from the nested structure
-            if "next" in next_td.keys():
-                next_obs = next_td["next"]
-                reward = next_td["next"]["reward"] if "reward" in next_td["next"].keys() else next_td.get("reward")
-                done = next_td["next"]["done"] if "done" in next_td["next"].keys() else next_td.get("done")
-            else:
-                next_obs = next_td
-                reward = next_td["reward"]
-                done = next_td["done"]
-            
-            # Add next state info to experience
-            # Record next observation, reward, and done at the root level returned by the env
-            experience["next"] = TensorDict({
-                "sub_index": next_obs["sub_index"].clone(),
-                "derived_sub_indices": next_obs["derived_sub_indices"].clone(),
-                "action_mask": next_obs["action_mask"].clone(),
-                "reward": reward.clone(),
-                "done": done.clone(),
-            }, batch_size=torch.Size([args.n_envs]))
-            
-            experiences.append(experience)
-            
-            # Track episode statistics from the step
-            reward_tensor = reward.reshape(args.n_envs, -1)
-            done_tensor = done.reshape(args.n_envs, -1)
-
-            for env_idx in range(args.n_envs):
-                reward = reward_tensor[env_idx, 0].item()
-                done = bool(done_tensor[env_idx, 0].item())
-                
-                env_episode_rewards[env_idx] += reward
-                env_episode_lengths[env_idx] += 1
-                
-                if done:
-                    # Episode finished, record info
-                    episode_rewards.append(env_episode_rewards[env_idx])
-                    episode_lengths.append(env_episode_lengths[env_idx])
-                    
-                    # Extract episode info for callbacks
-                    episode_data = {
-                        "r": env_episode_rewards[env_idx],
-                        "l": env_episode_lengths[env_idx],
-                    }
-                    
-                    # Extract metadata from tensordict
-                    # Metadata may be at root level or in "next" subdictionary
-                    try:
-                        # Check both root and next for metadata
-                        metadata_source = next_td.get("next", next_td)
-                        
-                        # Label
-                        label = 1  # Default
-                        if "label" in next_td.keys():
-                            label_tensor = next_td["label"]
-                            if label_tensor.dim() > 0:
-                                label = label_tensor[env_idx].item()
-                            else:
-                                label = label_tensor.item()
-                        elif "label" in metadata_source.keys():
-                            label_tensor = metadata_source["label"]
-                            if label_tensor.dim() > 0:
-                                label = label_tensor[env_idx].item() if label_tensor.shape[0] > env_idx else label_tensor[0].item()
-                            else:
-                                label = label_tensor.item()
-                        
-                        # query_depth
-                        query_depth = None
-                        if "query_depth" in metadata_source.keys():
-                            depth_tensor = metadata_source["query_depth"]
-                            if depth_tensor.dim() > 0:
-                                depth_tensor_reshaped = depth_tensor.reshape(args.n_envs, -1)
-                                depth_val = depth_tensor_reshaped[env_idx, 0].item()
-                            else:
-                                depth_val = depth_tensor.item()
-                            query_depth = depth_val if depth_val not in (0, -1) else None
-                        
-                        # is_success
-                        is_success = False
-                        if "is_success" in metadata_source.keys():
-                            success_tensor = metadata_source["is_success"]
-                            if success_tensor.dim() > 0:
-                                success_tensor_reshaped = success_tensor.reshape(args.n_envs, -1)
-                                is_success = bool(success_tensor_reshaped[env_idx, 0].item())
-                            else:
-                                is_success = bool(success_tensor.item())
-                    except Exception as e:
-                        # Fallback to defaults if extraction fails
-                        print(f"Warning: Failed to extract episode metadata for env {env_idx}: {e}")
-                        label = 1
-                        query_depth = None
-                        is_success = False
-                    
-                    info = {
-                        "episode": episode_data,
-                        "label": label,
-                        "query_depth": query_depth,
-                        "is_success": is_success,
-                    }
-                    episode_info.append(info)
-                    
-                    # Reset counters
-                    env_episode_rewards[env_idx] = 0.0
-                    env_episode_lengths[env_idx] = 0
-            
-            # Update state for next iteration
-            # Extract the next state from the nested structure if present
-            if "next" in next_td.keys():
-                next_obs = next_td["next"]
-            else:
-                next_obs = next_td
-                
-            td = TensorDict({
-                "sub_index": next_obs["sub_index"].clone(),
-                "derived_sub_indices": next_obs["derived_sub_indices"].clone(),
-                "action_mask": next_obs["action_mask"].clone(),
-            }, batch_size=torch.Size([args.n_envs]))
-            global_step += args.n_envs
-        
-        # End of rollout collection
-        callback_manager.on_rollout_end()
-        
-        # Accumulate episode stats for metrics callback
-        if episode_info:
-            for info in episode_info:
-                # Convert to list of infos as expected by callback
-                callback_manager.accumulate_episode_stats([info], mode="train")
-        
-        # Stack experiences
-        # Shape: (n_steps, n_envs, ...)
-        batch = torch.stack(experiences, dim=0)
-        
-        # Flatten batch for training: (n_steps * n_envs, ...)
-        flat_batch_size = n_steps * args.n_envs
-        
-        print(f"  Collected {flat_batch_size} transitions")
-        
-        # ==================== Compute Advantages ====================
-        with torch.no_grad():
-            # Extract values, rewards, dones
-            # Shape: (n_steps, n_envs)
-            rewards = torch.stack([batch[i]["next"]["reward"] for i in range(n_steps)]).to(device)
-            values = torch.stack([batch[i]["state_value"] for i in range(n_steps)]).squeeze(-1).to(device)
-            dones = torch.stack([batch[i]["next"]["done"] for i in range(n_steps)]).float().to(device)
-            
-            # Squeeze extra dimensions if present
-            if rewards.dim() == 3 and rewards.shape[-1] == 1:
-                rewards = rewards.squeeze(-1)
-            if values.dim() == 3 and values.shape[-1] == 1:
-                values = values.squeeze(-1)
-            if dones.dim() == 3 and dones.shape[-1] == 1:
-                dones = dones.squeeze(-1)
-            
-            # Compute GAE
-            advantages = torch.zeros_like(rewards, device=device)
-            returns = torch.zeros_like(rewards, device=device)
-            gae = torch.zeros(args.n_envs, device=device)
-            next_value = torch.zeros(args.n_envs, device=device)  # Assume 0 for terminal states
-            
-            for t in reversed(range(n_steps)):
-                if t == n_steps - 1:
-                    next_non_terminal = 1.0 - dones[t]
-                    next_value_t = next_value
-                else:
-                    next_non_terminal = 1.0 - dones[t]
-                    next_value_t = values[t + 1]
-                
-                delta = rewards[t] + args.gamma * next_value_t * next_non_terminal - values[t]
-                gae = delta + args.gamma * 0.95 * next_non_terminal * gae  # lambda = 0.95
-                advantages[t] = gae
-                returns[t] = gae + values[t]
-        
-        # Normalize advantages
-        advantages_flat = advantages.reshape(-1)
-        advantages_normalized = (advantages_flat - advantages_flat.mean()) / (advantages_flat.std() + 1e-8)
-        
-        print(f"  Advantage mean: {advantages_flat.mean().item():.4f}, std: {advantages_flat.std().item():.4f}")
-        
-        # ==================== Policy Optimization ====================
-        print(f"Training model")
-        training_start_time = time.time()
-        
-        # Flatten batch for training
-        obs_flat = torch.cat([batch[i]["sub_index"] for i in range(n_steps)], dim=0).to(device)
-        actions_flat = torch.cat([batch[i]["derived_sub_indices"] for i in range(n_steps)], dim=0).to(device)
-        masks_flat = torch.cat([batch[i]["action_mask"] for i in range(n_steps)], dim=0).to(device)
-        old_actions_flat = torch.cat([batch[i]["action"] for i in range(n_steps)], dim=0).to(device)
-        old_log_probs_flat = torch.cat([batch[i]["sample_log_prob"] for i in range(n_steps)], dim=0).to(device)
-        returns_flat = returns.reshape(-1)
-        
-        # Create mini-batches
-        indices = torch.randperm(flat_batch_size, device=device)
-        num_batches = flat_batch_size // batch_size
-        
-        total_policy_loss = 0
-        total_value_loss = 0
-        total_entropy = 0
-        total_approx_kl = 0
-        total_clip_fraction = 0
-        
-        for epoch in range(n_epochs):
-            epoch_policy_loss = 0
-            epoch_value_loss = 0
-            epoch_entropy = 0
-            epoch_approx_kl = 0
-            epoch_clip_fraction = 0
-            
-            for i in range(num_batches):
-                batch_indices = indices[i * batch_size:(i + 1) * batch_size]
-                
-                # Get mini-batch (ensure all on device)
-                mb_obs = obs_flat[batch_indices].to(device)
-                mb_actions = actions_flat[batch_indices].to(device)
-                mb_masks = masks_flat[batch_indices].to(device)
-                mb_old_actions = old_actions_flat[batch_indices].to(device)
-                mb_old_log_probs = old_log_probs_flat[batch_indices].to(device)
-                mb_advantages = advantages_normalized[batch_indices].to(device)
-                mb_returns = returns_flat[batch_indices].to(device)
-                
-                # Forward pass
-                mb_td = TensorDict({
-                    "sub_index": mb_obs,
-                    "derived_sub_indices": mb_actions,
-                    "action_mask": mb_masks,
-                }, batch_size=torch.Size([batch_size]))
-                
-                # Get the underlying actor-critic model to compute logits directly
-                critic_inner = critic._module if hasattr(critic, '_module') else critic.module
-                actor_critic_model = critic_inner.actor_critic_model
-                
-                # Get logits from current policy
-                logits = actor_critic_model.forward_actor(mb_td)
-                new_values = actor_critic_model.forward_critic(mb_td)
-                
-                mb_action_mask = mb_td["action_mask"].to(logits.device)
-                masked_logits = logits.masked_fill(~mb_action_mask.bool(), float("-inf"))
-                masked_logits = torch.nan_to_num(masked_logits, nan=float("-inf"))
-
-                # Create distribution directly from masked logits to preserve invalid-action filtering
-                dist = torch.distributions.Categorical(logits=masked_logits)
-                
-                # Get the action indices from the one-hot encoded old actions
-                # mb_old_actions is shape (batch, num_actions) one-hot encoded
-                old_action_indices = torch.argmax(mb_old_actions, dim=-1)
-                
-                # Evaluate log probability of the old actions under current policy
-                new_log_probs = dist.log_prob(old_action_indices)
-                
-                # Compute entropy of the distribution (proper entropy calculation)
-                entropy = dist.entropy().mean()
-                
-                # Policy loss (PPO clip)
-                ratio = torch.exp(new_log_probs - mb_old_log_probs)
-                surr1 = ratio * mb_advantages
-                surr2 = torch.clamp(ratio, 1.0 - args.clip_range, 1.0 + args.clip_range) * mb_advantages
-                policy_loss = -torch.min(surr1, surr2).mean()
-                
-                # Value loss
-                value_loss = 0.5 * ((new_values.squeeze() - mb_returns) ** 2).mean()
-                
-                # PPO metrics
-                with torch.no_grad():
-                    # Approximate KL divergence
-                    log_ratio = new_log_probs - mb_old_log_probs
-                    approx_kl = ((ratio - 1) - log_ratio).mean()
-                    
-                    # Clip fraction: fraction of ratios that were clipped
-                    clip_fraction = ((ratio - 1.0).abs() > args.clip_range).float().mean()
-                
-                # Total loss
-                loss = policy_loss + 0.5 * value_loss - args.ent_coef * entropy
-                
-                # Optimization step
-                optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    list(actor.parameters()) + list(critic.parameters()),
-                    max_norm=0.5
-                )
-                optimizer.step()
-                
-                epoch_policy_loss += policy_loss.item()
-                epoch_value_loss += value_loss.item()
-                epoch_entropy += entropy.item()
-                epoch_approx_kl += approx_kl.item()
-                epoch_clip_fraction += clip_fraction.item()
-            
-            # Average losses for this epoch
-            avg_epoch_policy_loss = epoch_policy_loss / num_batches
-            avg_epoch_value_loss = epoch_value_loss / num_batches
-            avg_epoch_entropy = epoch_entropy / num_batches
-            
-            # Accumulate for overall average
-            total_policy_loss += epoch_policy_loss
-            total_value_loss += epoch_value_loss
-            total_entropy += epoch_entropy
-            total_approx_kl += epoch_approx_kl
-            total_clip_fraction += epoch_clip_fraction
-            
-            # Report epoch progress
-            callback_manager.metrics_callback.on_training_epoch(
-                epoch=epoch + 1,
-                n_epochs=n_epochs,
-                policy_loss=avg_epoch_policy_loss,
-                value_loss=avg_epoch_value_loss,
-                entropy=avg_epoch_entropy,
-            )
-        
-        avg_policy_loss = total_policy_loss / (n_epochs * num_batches)
-        avg_value_loss = total_value_loss / (n_epochs * num_batches)
-        avg_entropy = total_entropy / (n_epochs * num_batches)
-        avg_approx_kl = total_approx_kl / (n_epochs * num_batches)
-        avg_clip_fraction = total_clip_fraction / (n_epochs * num_batches)
-        
-        # Compute explained variance
-        with torch.no_grad():
-            values_all = torch.stack([batch[i]["state_value"] for i in range(n_steps)]).squeeze(-1).to(device)
-            if values_all.dim() == 3 and values_all.shape[-1] == 1:
-                values_all = values_all.squeeze(-1)
-            values_flat = values_all.reshape(-1)
-            
-            var_returns = torch.var(returns_flat)
-            var_residual = torch.var(returns_flat - values_flat)
-            explained_var = 1 - (var_residual / (var_returns + 1e-8))
-            explained_var = explained_var.item()
-        
-        training_time = time.time() - training_start_time
-        iteration_time = time.time() - iteration_start_time
-        
-        # Compute mean reward from collected experiences
-        mean_reward = rewards.mean().item()
-        
-        # Prepare training metrics for callbacks
-        train_metrics = {
-            "approx_kl": f"{avg_approx_kl:.4f}",
-            "clip_fraction": f"{avg_clip_fraction:.3f}",
-            "clip_range": f"{args.clip_range:.1f}",
-            "entropy_loss": f"{-avg_entropy:.5f}",
-            "explained_variance": f"{explained_var:.2f}",
-            "learning_rate": f"{args.lr:.4f}",
-            "loss": f"{avg_policy_loss + avg_value_loss:.3f}",
-            "n_updates": str(n_epochs * num_batches),
-            "policy_gradient_loss": f"{avg_policy_loss:.3f}",
-            "value_loss": f"{avg_value_loss:.2f}",
-        }
-        
-        # Log training metrics
-        logger.log_training_step(
-            iteration=iteration + 1,
-            global_step=global_step,
-            policy_loss=avg_policy_loss,
-            value_loss=avg_value_loss,
-            entropy=avg_entropy,
-            mean_reward=mean_reward,
-        )
-        
-        print(f"Time to train {training_time:.2f}")
-        
-        # ==================== Evaluation ====================
-        if callback_manager.should_evaluate(iteration + 1):
-            callback_manager.on_evaluation_start(iteration + 1, global_step)
-            
-            eval_metrics = _evaluate_during_training(
-                args, actor, eval_env, sampler, data_handler, verbose=0,
-                info_callback=lambda infos: callback_manager.accumulate_episode_stats(infos, mode="eval")
-            )
-            
-            # Notify callback of evaluation end (with metrics from eval_corruptions_torchrl)
-            is_new_best = callback_manager.on_evaluation_end(iteration + 1, global_step, eval_metrics)
-            
-            # Log evaluation metrics
-            logger.log_evaluation(
-                iteration=iteration + 1,
-                global_step=global_step,
-                metrics=eval_metrics,
-                prefix="valid",
-            )
-            
-            # Check if this is the best model
-            eval_metric = eval_metrics.get(args.eval_best_metric, 0)
-            if isinstance(eval_metric, str):
-                # Extract numerical value if formatted
-                try:
-                    eval_metric = float(eval_metric.split()[0])
-                except:
-                    eval_metric = 0.0
-            
-            if is_new_best:
-                best_eval_metric = eval_metric
-                best_model_path = _save_checkpoint(
-                    actor, critic, optimizer,
-                    epoch=iteration + 1,
-                    timestep=global_step,
-                    metrics=eval_metrics,
-                    save_path=model_path,
-                    prefix="best_eval",
-                )
-                print(f"  ★ New best model saved!")
-        
-        # ==================== End of Iteration ====================
-        # Report training metrics
-        callback_manager.on_iteration_end(
-            iteration=iteration + 1,
-            global_step=global_step,
-            train_metrics=train_metrics,
-            n_envs=args.n_envs,
-        )
-        
-        # ==================== Periodic Checkpoint ====================
-        if (iteration + 1) % 10 == 0:
-            _save_checkpoint(
-                actor, critic, optimizer,
-                epoch=iteration + 1,
-                timestep=global_step,
-                metrics={'policy_loss': avg_policy_loss, 'value_loss': avg_value_loss, 'entropy': avg_entropy},
-                save_path=model_path,
-                prefix="last_epoch",
-            )
-    
-    print(f"\n{'='*60}")
-    print(f"Training completed!")
-    print(f"{'='*60}\n")
+    # Train the agent
+    actor, critic = ppo_agent.train(
+        total_timesteps=total_timesteps,
+        eval_callback=callback_manager,
+        rollout_callback=callback_manager.rollout_callback,
+        callback_manager=callback_manager,
+        logger=logger,
+    )
     
     # Close logger
     logger.close()
     
     # Restore best model if requested
-    if args.restore_best_val_model and best_model_path is not None:
-        print(f"Restoring best model from {best_model_path}")
-        _load_checkpoint(actor, critic, optimizer, best_model_path, device)
+    if args.restore_best_val_model and ppo_agent.best_model_path is not None:
+        print(f"Restoring best model from {ppo_agent.best_model_path}")
+        ppo_agent.load_checkpoint(ppo_agent.best_model_path)
     
     return actor, critic
 
@@ -1214,23 +735,6 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     params_dict = {id(p): p for p in list(actor.parameters()) + list(critic.parameters())}
     optimizer = torch.optim.Adam(params_dict.values(), lr=args.lr)
     
-    # --- CREATE LOSS MODULES ---
-    advantage_module = GAE(
-        gamma=args.gamma,
-        lmbda=0.95,
-        value_network=critic,
-        average_gae=True,
-    )
-    
-    loss_module = ClipPPOLoss(
-        actor_network=actor,
-        critic_network=critic,
-        clip_epsilon=args.clip_range,
-        entropy_coeff=args.ent_coef,
-        critic_coeff=0.5,
-        loss_critic_type="smooth_l1",
-    )
-    
     # --- LOAD MODEL IF REQUESTED ---
     model_path = _model_dir(args, date)
     start_epoch = 0
@@ -1254,8 +758,6 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
             actor,
             critic,
             optimizer,
-            loss_module,
-            advantage_module,
             env,
             eval_env,
             sampler,

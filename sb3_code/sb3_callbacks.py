@@ -18,22 +18,11 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.callbacks import EvalCallback
 
-
-def _format_depth_key(depth_value: Any) -> str:
-    """Normalize depth IDs so metrics share consistent naming."""
-    if depth_value in (None, -1):
-        return "unknown"
-    try:
-        return str(int(depth_value))
-    except (TypeError, ValueError):
-        return "unknown"
-
-
-def _format_stat_string(mean: Optional[float], std: Optional[float], count: int) -> str:
-    """Return metric display as 'mean +/- std (count)' with fixed precision."""
-    if mean is None or std is None or count == 0:
-        return "N/A"
-    return f"{mean:.3f} +/- {std:.2f} ({count})"
+# Import shared utilities from parent directory
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from callback_utils import DetailedMetricsCollector, _format_depth_key, _format_stat_string
 
 
 class CustomEvalCallback(EvalCallback):
@@ -1290,111 +1279,58 @@ class LogToFileCallback(BaseCallback):
 
 
 class _EvalDepthRewardTracker:
-    """Accumulates reward and success breakdowns grouped by label and depth."""
+    """
+    Accumulates reward, success, and episode length breakdowns grouped by label and depth.
+    
+    This is a wrapper around DetailedMetricsCollector to maintain backward compatibility
+    with the SB3 callback interface while using the shared implementation.
+    """
 
-    def __init__(self) -> None:
-        self._rewards_by_depth: Dict[str, List[float]] = defaultdict(list)
-        self._success_values_by_depth: defaultdict[Tuple[int, str], List[float]] = defaultdict(list)
-        self._success_values_by_label: defaultdict[int, List[float]] = defaultdict(list)
-        self._last_episode_id: Dict[int, int] = {}
+    def __init__(self, collect_detailed: bool = True) -> None:
+        """
+        Args:
+            collect_detailed: If True, collect detailed breakdown by depth.
+                            If False, only collect aggregate stats by label.
+        """
+        # Use the shared DetailedMetricsCollector
+        self._collector = DetailedMetricsCollector(collect_detailed=collect_detailed)
 
     def __call__(self, infos: List[Dict[str, Any]]) -> None:
-        for env_idx, info in enumerate(infos):
-            if not info or "episode" not in info:
-                continue
-            label = info.get("label")
-            if label is None:
-                continue
-            try:
-                label_value = int(label)
-            except (TypeError, ValueError):
-                continue
-
-            depth_key = _format_depth_key(info.get("query_depth"))
-            success_flag = bool(info.get("is_success", False))
-            episode_data = info.get("episode")
-            if not isinstance(episode_data, dict):
-                continue
-            episode_idx = info.get("episode_idx")
-            if episode_idx is not None:
-                if self._last_episode_id.get(env_idx) == episode_idx:
-                    continue
-                self._last_episode_id[env_idx] = episode_idx
-            else:
-                episode_id = id(episode_data)
-                if self._last_episode_id.get(env_idx) == episode_id:
-                    continue
-                self._last_episode_id[env_idx] = episode_id
-            self._success_values_by_depth[(label_value, depth_key)].append(1.0 if success_flag else 0.0)
-            self._success_values_by_label[label_value].append(1.0 if success_flag else 0.0)
-
-            if label_value != 1:
-                continue
-            reward = episode_data.get("r")
-            if reward is None:
-                continue
-            self._rewards_by_depth[depth_key].append(float(reward))
+        """Accumulate episode statistics from info dicts."""
+        self._collector.accumulate(infos)
 
     def metrics(self) -> Dict[str, Union[float, int, str]]:
-        def reward_sort_key(item: Tuple[str, List[float]]) -> Tuple[float, str]:
-            depth_str = item[0]
-            if depth_str == "unknown":
-                return (float("inf"), depth_str)
-            try:
-                return (float(int(depth_str)), depth_str)
-            except ValueError:
-                return (float("inf"), depth_str)
-
-        def success_sort_key(item: Tuple[Tuple[int, str], List[float]]) -> Tuple[int, Union[int, float]]:
-            (label, depth_str), _ = item
-            label_order = 0 if label == 1 else 1 if label == 0 else 2
-            if depth_str == "unknown":
-                depth_order: Union[int, float] = float("inf")
-            else:
-                try:
-                    depth_order = int(depth_str)
-                except (TypeError, ValueError):
-                    depth_order = float("inf")
-            return (label_order, depth_order)
-
+        """
+        Compute and return metrics in the format expected by SB3 callbacks.
+        
+        Returns metrics with _mean, _std, and _count suffixes for compatibility
+        with existing SB3 evaluation code.
+        """
+        # Get formatted metrics from the collector
+        formatted_metrics = self._collector.compute_metrics()
+        
+        # Convert formatted strings back to individual _mean, _std, _count values
+        # for backward compatibility with SB3 code that expects those keys
         metrics: Dict[str, Union[float, int]] = {}
-        for depth_key, rewards in sorted(self._rewards_by_depth.items(), key=reward_sort_key):
-            if not rewards:
-                continue
-            rewards_arr = np.asarray(rewards, dtype=np.float32)
-            count = rewards_arr.size
-            mean_reward = float(rewards_arr.mean())
-            std_reward = float(rewards_arr.std()) if count > 1 else 0.0
-            base = f"reward_d_{depth_key}_pos"
-            metrics[f"{base}_mean"] = mean_reward
-            metrics[f"{base}_std"] = std_reward
-            metrics[f"{base}_count"] = int(count)
-
-        for (label, depth_key), values in sorted(self._success_values_by_depth.items(), key=success_sort_key):
-            if not values:
-                continue
-            values_arr = np.asarray(values, dtype=np.float32)
-            count = values_arr.size
-            mean_success = float(values_arr.mean())
-            std_success = float(values_arr.std()) if count > 1 else 0.0
-            label_str = "pos" if label == 1 else "neg" if label == 0 else f"label{label}"
-            base = f"proven_d_{depth_key}_{label_str}"
-            metrics[f"{base}_mean"] = mean_success
-            metrics[f"{base}_std"] = std_success
-            metrics[f"{base}_count"] = int(count)
-
-        for label in (1, 0):
-            values = self._success_values_by_label.get(label, [])
-            if not values:
-                continue
-            values_arr = np.asarray(values, dtype=np.float32)
-            count = values_arr.size
-            mean_success = float(values_arr.mean())
-            std_success = float(values_arr.std()) if count > 1 else 0.0
-            label_str = "pos" if label == 1 else "neg"
-            base = f"proven_{label_str}"
-            metrics[f"{base}_mean"] = mean_success
-            metrics[f"{base}_std"] = std_success
-            metrics[f"{base}_count"] = int(count)
+        
+        for key, value_str in formatted_metrics.items():
+            if isinstance(value_str, str) and "+/-" in value_str:
+                # Parse "mean +/- std (count)" format
+                try:
+                    parts = value_str.split("+/-")
+                    mean_val = float(parts[0].strip())
+                    std_count = parts[1].strip().split("(")
+                    std_val = float(std_count[0].strip())
+                    count_val = int(std_count[1].rstrip(")").strip())
+                    
+                    metrics[f"{key}_mean"] = mean_val
+                    metrics[f"{key}_std"] = std_val
+                    metrics[f"{key}_count"] = count_val
+                except (ValueError, IndexError):
+                    # If parsing fails, just store the formatted string
+                    metrics[key] = value_str
+            else:
+                # For ep_rew and ep_len which are single values
+                metrics[key] = value_str
 
         return metrics

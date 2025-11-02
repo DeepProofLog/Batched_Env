@@ -6,6 +6,7 @@ Provides comprehensive training callbacks similar to Stable-Baselines3:
 - Evaluation metrics with depth/label breakdowns
 - Training metrics formatting and logging
 - Timing information
+- Detailed metrics collection module for both training and evaluation
 """
 
 import json
@@ -23,22 +24,13 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-
-def _format_depth_key(depth_value: Any) -> str:
-    """Normalize depth IDs so metrics share consistent naming."""
-    if depth_value in (None, -1):
-        return "unknown"
-    try:
-        return str(int(depth_value))
-    except (TypeError, ValueError):
-        return "unknown"
+# Import shared utilities
+from callback_utils import DetailedMetricsCollector, _format_depth_key, _format_stat_string
 
 
-def _format_stat_string(mean: Optional[float], std: Optional[float], count: int) -> str:
-    """Return metric display as 'mean +/- std (count)' with fixed precision."""
-    if mean is None or std is None or count == 0:
-        return "N/A"
-    return f"{mean:.3f} +/- {std:.2f} ({count})"
+# ============================================================================
+# Rollout Progress Callback
+# ============================================================================
 
 
 class RolloutProgressCallback:
@@ -93,11 +85,17 @@ class RolloutProgressCallback:
                 print(f"Time to collect_rollouts {elapsed:.2f}")
 
 
+# ============================================================================
+# Evaluation Callback
+# ============================================================================
+
+
 class EvaluationCallback:
     """
     Callback for comprehensive evaluation with depth and label breakdowns.
     
     Provides detailed metrics similar to SB3's CustomEvalCallbackMRR.
+    Uses DetailedMetricsCollector for optional detailed breakdown by depth.
     """
     
     def __init__(
@@ -111,6 +109,7 @@ class EvaluationCallback:
         best_metric: str = "mrr_mean",
         save_path: Optional[Path] = None,
         verbose: bool = True,
+        collect_detailed: bool = True,  # NEW: Enable detailed depth breakdown
     ):
         """
         Args:
@@ -123,6 +122,8 @@ class EvaluationCallback:
             best_metric: Metric to track for best model (e.g., 'mrr_mean', 'auc_pr')
             save_path: Path to save best model
             verbose: Whether to print detailed evaluation info
+            collect_detailed: If True, collect detailed breakdown by depth.
+                            If False, only collect aggregate stats.
         """
         self.eval_env = eval_env
         self.sampler = sampler
@@ -134,11 +135,12 @@ class EvaluationCallback:
         self.save_path = Path(save_path) if save_path else None
         self.verbose = verbose
         
+        # Use the common detailed metrics collector
+        self.metrics_collector = DetailedMetricsCollector(collect_detailed=collect_detailed)
+        
         # Tracking
         self.best_metric_value = float('-inf')
         self.current_iteration = 0
-        self._episode_stats: defaultdict[tuple[int, str], List[Dict[str, float]]] = defaultdict(list)
-        self._last_episode_id: Dict[int, int] = {}
     
     def should_evaluate(self, iteration: int) -> bool:
         """Check if we should run evaluation at this iteration."""
@@ -149,141 +151,16 @@ class EvaluationCallback:
         self.current_iteration = iteration
         if self.verbose:
             print('---------------evaluation started---------------')
-        self._reset_eval_stats()
+        self.metrics_collector.reset()
         self.eval_start_time = time.time()
     
-    def _reset_eval_stats(self):
-        """Reset episode tracking."""
-        self._episode_stats = defaultdict(list)
-        self._last_episode_id = {}
-    
     def accumulate_episode_stats(self, infos: List[Dict[str, Any]]):
-        """Accumulate episode stats by label and depth."""
-        for env_idx, info in enumerate(infos):
-            if not info or "episode" not in info:
-                continue
-            label = info.get("label")
-            if label is None:
-                continue
-            episode_data = info.get("episode")
-            if not isinstance(episode_data, dict):
-                continue
-            
-            # Check for duplicate episodes
-            episode_idx = info.get("episode_idx")
-            if episode_idx is not None:
-                if self._last_episode_id.get(env_idx) == episode_idx:
-                    continue
-                self._last_episode_id[env_idx] = episode_idx
-            else:
-                episode_id = id(episode_data)
-                if self._last_episode_id.get(env_idx) == episode_id:
-                    continue
-                self._last_episode_id[env_idx] = episode_id
-            
-            # Extract stats
-            reward = episode_data.get("r")
-            length = episode_data.get("l")
-            depth_value = info.get("query_depth")
-            success_flag = bool(info.get("is_success", False))
-            
-            try:
-                label_value = int(label)
-            except (TypeError, ValueError):
-                continue
-            
-            # Store in consolidated structure
-            depth_key = _format_depth_key(depth_value)
-            stats = {
-                "reward": float(reward) if reward is not None else None,
-                "length": float(length) if length is not None else None,
-                "success": 1.0 if success_flag else 0.0,
-                "depth_raw": depth_value,
-            }
-            self._episode_stats[(label_value, depth_key)].append(stats)
+        """Accumulate episode stats by label and depth using the common collector."""
+        self.metrics_collector.accumulate(infos)
     
     def compute_metrics(self) -> Dict[str, Any]:
         """Compute evaluation metrics from collected stats."""
-        metrics = {}
-        
-        # Compute overall episode mean/std (like in training)
-        all_rewards = []
-        all_lengths = []
-        for episodes in self._episode_stats.values():
-            all_rewards.extend([ep["reward"] for ep in episodes if ep.get("reward") is not None])
-            all_lengths.extend([ep["length"] for ep in episodes if ep.get("length") is not None])
-        
-        if all_rewards:
-            metrics["ep_rew"] = f"{np.mean(all_rewards):.2f}"
-        if all_lengths:
-            metrics["ep_len"] = f"{np.mean(all_lengths):.1f}"
-        
-        # Compute label-based metrics (pos/neg)
-        for label in (1, 0):
-            label_str = "pos" if label == 1 else "neg"
-            rewards = []
-            lengths = []
-            successes = []
-            
-            for (lbl, depth_key), episodes in self._episode_stats.items():
-                if lbl == label:
-                    for ep in episodes:
-                        if ep.get("reward") is not None:
-                            rewards.append(ep["reward"])
-                        if ep.get("length") is not None:
-                            lengths.append(ep["length"])
-                        successes.append(ep.get("success", 0.0))
-            
-            if rewards:
-                metrics[f"reward_label_{label_str}"] = _format_stat_string(
-                    np.mean(rewards), np.std(rewards), len(rewards)
-                )
-            if lengths:
-                metrics[f"len_{label_str}"] = _format_stat_string(
-                    np.mean(lengths), np.std(lengths), len(lengths)
-                )
-            if successes:
-                metrics[f"proven_{label_str}"] = _format_stat_string(
-                    np.mean(successes), np.std(successes), len(successes)
-                )
-        
-        # Compute depth-based metrics
-        def _order_key(item: Tuple[Tuple[int, str], List[Dict]]) -> Tuple[int, Union[int, float]]:
-            (label, depth_key), _ = item
-            label_order = 0 if label == 1 else 1 if label == 0 else 2
-            if depth_key == "unknown":
-                depth_order: Union[int, float] = float("inf")
-            else:
-                try:
-                    depth_order = int(depth_key)
-                except (TypeError, ValueError):
-                    depth_order = float("inf")
-            return (label_order, depth_order)
-        
-        for (label, depth_key), episodes in sorted(self._episode_stats.items(), key=_order_key):
-            label_str = "pos" if label == 1 else "neg" if label == 0 else f"label{label}"
-            
-            # Reward by depth
-            rewards = [ep["reward"] for ep in episodes if ep.get("reward") is not None]
-            if rewards and label_str != "neg":  # Don't show depth for negatives
-                metrics[f"reward_d_{depth_key}_{label_str}"] = _format_stat_string(
-                    np.mean(rewards), np.std(rewards), len(rewards)
-                )
-            
-            # Success by depth
-            successes = [ep["success"] for ep in episodes if "success" in ep]
-            if successes:
-                metrics[f"proven_d_{depth_key}_{label_str}"] = _format_stat_string(
-                    np.mean(successes), np.std(successes), len(successes)
-                )
-        
-        # Overall length statistics
-        if all_lengths:
-            metrics["length mean +/- std"] = _format_stat_string(
-                np.mean(all_lengths), np.std(all_lengths), len(all_lengths)
-            )
-        
-        return metrics
+        return self.metrics_collector.compute_metrics()
     
     def on_evaluation_end(self, iteration: int, global_step: int, eval_metrics: Dict[str, Any]):
         """Called when evaluation is complete."""
@@ -316,49 +193,29 @@ class EvaluationCallback:
         return is_new_best
     
     def _convert_episode_len_metrics(self, metrics: Dict[str, Any]):
-        """Convert episode_len_* mean/std pairs to formatted strings and compute count."""
-        # We need to count episodes from our accumulated stats
-        pos_count = 0
-        neg_count = 0
-        pos_true_count = 0
-        pos_false_count = 0
-        neg_true_count = 0
-        neg_false_count = 0
-        
-        for (label, depth_key), episodes in self._episode_stats.items():
-            for ep in episodes:
-                if label == 1:  # positive
-                    pos_count += 1
-                    if ep.get("success", 0.0) > 0.5:
-                        pos_true_count += 1
-                    else:
-                        pos_false_count += 1
-                elif label == 0:  # negative
-                    neg_count += 1
-                    if ep.get("success", 0.0) > 0.5:
-                        neg_true_count += 1
-                    else:
-                        neg_false_count += 1
-        
+        """Convert episode_len_* mean/std pairs to formatted strings."""
         # Convert episode_len metrics to formatted strings
-        metric_conversions = [
-            ('episode_len_pos', pos_count),
-            ('episode_len_neg', neg_count),
-            ('episode_len_pos_true', pos_true_count),
-            ('episode_len_pos_false', pos_false_count),
-            ('episode_len_neg_true', neg_true_count),
-            ('episode_len_neg_false', neg_false_count),
+        # We don't always have count information from _episode_stats (e.g., when info_callback
+        # doesn't populate it), so we'll show metrics without counts
+        
+        metric_prefixes = [
+            'episode_len_pos',
+            'episode_len_neg',
+            'episode_len_pos_true',
+            'episode_len_pos_false',
+            'episode_len_neg_true',
+            'episode_len_neg_false',
         ]
         
-        for metric_base, count in metric_conversions:
+        for metric_base in metric_prefixes:
             mean_key = f'{metric_base}_mean'
             std_key = f'{metric_base}_std'
             
             if mean_key in metrics and std_key in metrics:
                 mean_val = metrics[mean_key]
                 std_val = metrics[std_key]
-                # Create formatted string and replace both keys with single key
-                formatted = _format_stat_string(mean_val, std_val, count)
+                # Format as "mean +/- std" without count
+                formatted = f"{mean_val:.3f} +/- {std_val:.2f}"
                 metrics[f'ep_len_{metric_base.replace("episode_len_", "")}'] = formatted
                 # Remove the old _mean and _std keys
                 del metrics[mean_key]
@@ -392,35 +249,42 @@ class EvaluationCallback:
             if key in metrics:
                 ep_stats.append(key)
         
-        # Other length metrics (len_pos, len_neg, length mean +/- std)
-        other_length_metrics = []
-        for k in ["len_pos", "len_neg", "length mean +/- std"]:
+        # Length and reward metrics by label (aggregate)
+        label_metrics = []
+        for k in ["len_pos", "len_neg", "proven_pos", "proven_neg", "rwd_pos", "rwd_neg"]:
             if k in metrics:
-                other_length_metrics.append(k)
+                label_metrics.append(k)
         
-        # Depth-based proven metrics
-        depth_proven = [k for k in metrics.keys() if k.startswith("proven_d_")]
-        depth_proven.sort(key=lambda x: self._sort_depth_key(x))
+        # Depth-based metrics (sorted by depth then metric type)
+        depth_len_keys = sorted(
+            [k for k in metrics.keys() if k.startswith("len_d_")],
+            key=lambda x: self._sort_depth_key(x)
+        )
+        depth_proven_keys = sorted(
+            [k for k in metrics.keys() if k.startswith("proven_d_")],
+            key=lambda x: self._sort_depth_key(x)
+        )
+        depth_rwd_keys = sorted(
+            [k for k in metrics.keys() if k.startswith("rwd_d_")],
+            key=lambda x: self._sort_depth_key(x)
+        )
         
-        # Label-based proven metrics
-        label_proven = [k for k in metrics.keys() if k.startswith("proven_") and not k.startswith("proven_d_")]
+        # Legacy reward metrics (keep for backward compatibility)
+        legacy_reward = [k for k in metrics.keys() if "reward_label" in k or "reward_depth" in k]
         
-        # Depth-based reward metrics
-        depth_reward = [k for k in metrics.keys() if k.startswith("reward_d_") or "reward_depth" in k]
-        depth_reward.sort(key=lambda x: self._sort_depth_key(x))
-        
-        # Label-based reward metrics
-        label_reward = [k for k in metrics.keys() if "reward_label" in k or (k.startswith("reward_") and not k.startswith("reward_d_"))]
+        # Other length metrics
+        other_length = [k for k in metrics.keys() if k == "length mean +/- std"]
         
         # Combine all in desired order
         display_order = (
             priority_metrics + 
             ep_stats +
-            other_length_metrics + 
-            depth_proven + 
-            label_proven + 
-            depth_reward + 
-            label_reward
+            label_metrics +
+            depth_len_keys +
+            depth_proven_keys +
+            depth_rwd_keys +
+            legacy_reward +
+            other_length
         )
         
         # Remove duplicates while preserving order
@@ -457,7 +321,7 @@ class EvaluationCallback:
         label = parts[-1]  # 'pos' or 'neg'
         label_order = 0 if label == 'pos' else 1
         
-        # Extract depth
+        # Extract depth - should be parts[2] for format like "len_d_0_pos"
         depth_str = parts[2] if len(parts) > 2 else "unknown"
         if depth_str == "unknown":
             depth_order = float("inf")
@@ -470,23 +334,38 @@ class EvaluationCallback:
         return (label_order, depth_order)
 
 
+# ============================================================================
+# Training Metrics Callback
+# ============================================================================
+
+
 class TrainingMetricsCallback:
     """
     Callback to format and display training metrics.
     
     Provides formatted output similar to SB3's logger.dump().
+    Uses DetailedMetricsCollector for optional detailed breakdown by depth.
     """
     
-    def __init__(self, log_interval: int = 1, verbose: bool = True):
+    def __init__(
+        self,
+        log_interval: int = 1,
+        verbose: bool = True,
+        collect_detailed: bool = True,  # NEW: Enable detailed depth breakdown
+    ):
         """
         Args:
             log_interval: Print metrics every N iterations
             verbose: Whether to print metrics
+            collect_detailed: If True, collect detailed breakdown by depth.
+                            If False, only collect aggregate stats.
         """
         self.log_interval = log_interval
         self.verbose = verbose
-        self._episode_stats: defaultdict[tuple[int, str], List[Dict[str, float]]] = defaultdict(list)
-        self._last_episode_id: Dict[int, int] = {}
+        
+        # Use the common detailed metrics collector
+        self.metrics_collector = DetailedMetricsCollector(collect_detailed=collect_detailed)
+        
         self.train_start_time = None
         self.training_epoch_losses = []  # Track losses per epoch
     
@@ -517,47 +396,8 @@ class TrainingMetricsCallback:
                   f"pg_loss={policy_loss:.4f}, v_loss={value_loss:.4f}, entropy={entropy:.4f}")
     
     def accumulate_episode_stats(self, infos: List[Dict[str, Any]]):
-        """Accumulate episode stats during training."""
-        for env_idx, info in enumerate(infos):
-            if not info or "episode" not in info:
-                continue
-            label = info.get("label")
-            if label is None:
-                continue
-            episode_data = info.get("episode")
-            if not isinstance(episode_data, dict):
-                continue
-            
-            # Check for duplicate episodes
-            episode_idx = info.get("episode_idx")
-            if episode_idx is not None:
-                if self._last_episode_id.get(env_idx) == episode_idx:
-                    continue
-                self._last_episode_id[env_idx] = episode_idx
-            else:
-                episode_id = id(episode_data)
-                if self._last_episode_id.get(env_idx) == episode_id:
-                    continue
-                self._last_episode_id[env_idx] = episode_id
-            
-            # Extract stats
-            reward = episode_data.get("r")
-            length = episode_data.get("l")
-            depth_value = info.get("query_depth")
-            success_flag = bool(info.get("is_success", False))
-            
-            try:
-                label_value = int(label)
-            except (TypeError, ValueError):
-                continue
-            
-            depth_key = _format_depth_key(depth_value)
-            stats = {
-                "reward": float(reward) if reward is not None else None,
-                "length": float(length) if length is not None else None,
-                "success": 1.0 if success_flag else 0.0,
-            }
-            self._episode_stats[(label_value, depth_key)].append(stats)
+        """Accumulate episode stats during training using the common collector."""
+        self.metrics_collector.accumulate(infos)
     
     def on_iteration_end(
         self,
@@ -568,11 +408,11 @@ class TrainingMetricsCallback:
     ):
         """Called at the end of a training iteration."""
         if not self.verbose or iteration % self.log_interval != 0:
-            self._reset_stats()
+            self.metrics_collector.reset()
             return
         
-        # Compute rollout metrics
-        rollout_metrics = self._compute_rollout_metrics()
+        # Compute rollout metrics using the common collector
+        rollout_metrics = self.metrics_collector.compute_metrics()
         
         # Compute timing metrics
         time_metrics = self._compute_time_metrics(iteration, global_step, n_envs)
@@ -581,73 +421,7 @@ class TrainingMetricsCallback:
         self._print_training_metrics(rollout_metrics, train_metrics, time_metrics)
         
         # Reset stats for next iteration
-        self._reset_stats()
-    
-    def _reset_stats(self):
-        """Reset accumulated stats."""
-        self._episode_stats = defaultdict(list)
-        self._last_episode_id = {}
-    
-    def _compute_rollout_metrics(self) -> Dict[str, str]:
-        """Compute rollout metrics from accumulated stats."""
-        metrics = {}
-        
-        # Overall episode statistics
-        all_rewards = []
-        all_lengths = []
-        for episodes in self._episode_stats.values():
-            all_rewards.extend([ep["reward"] for ep in episodes if ep.get("reward") is not None])
-            all_lengths.extend([ep["length"] for ep in episodes if ep.get("length") is not None])
-        
-        if all_rewards:
-            metrics["ep_rew"] = f"{np.mean(all_rewards):.2f}"
-        if all_lengths:
-            metrics["ep_len"] = f"{np.mean(all_lengths):.1f}"
-        
-        # Depth-based proven metrics (positives only)
-        def _order_key(item: Tuple[Tuple[int, str], List[Dict]]) -> Tuple[int, Union[int, float]]:
-            (label, depth_key), _ = item
-            label_order = 0 if label == 1 else 1 if label == 0 else 2
-            if depth_key == "unknown":
-                depth_order: Union[int, float] = float("inf")
-            else:
-                try:
-                    depth_order = int(depth_key)
-                except (TypeError, ValueError):
-                    depth_order = float("inf")
-            return (label_order, depth_order)
-        
-        for (label, depth_key), episodes in sorted(self._episode_stats.items(), key=_order_key):
-            label_str = "pos" if label == 1 else "neg" if label == 0 else f"label{label}"
-            
-            # Success by depth
-            successes = [ep["success"] for ep in episodes if "success" in ep]
-            if successes:
-                metrics[f"proven_d_{depth_key}_{label_str}"] = _format_stat_string(
-                    np.mean(successes), np.std(successes), len(successes)
-                )
-            
-            # Reward by depth - only for positives (negatives don't have meaningful depth info)
-            if label_str != "neg":
-                rewards = [ep["reward"] for ep in episodes if ep.get("reward") is not None]
-                if rewards:
-                    metrics[f"reward_d_{depth_key}_{label_str}"] = _format_stat_string(
-                        np.mean(rewards), np.std(rewards), len(rewards)
-                    )
-        
-        # Overall proven stats by label
-        for label in (1, 0):
-            label_str = "pos" if label == 1 else "neg"
-            successes = []
-            for (lbl, _), episodes in self._episode_stats.items():
-                if lbl == label:
-                    successes.extend([ep["success"] for ep in episodes if "success" in ep])
-            if successes:
-                metrics[f"proven_{label_str}"] = _format_stat_string(
-                    np.mean(successes), np.std(successes), len(successes)
-                )
-        
-        return metrics
+        self.metrics_collector.reset()
     
     def _compute_time_metrics(self, iteration: int, global_step: int, n_envs: int) -> Dict[str, str]:
         """Compute timing metrics."""
@@ -682,25 +456,31 @@ class TrainingMetricsCallback:
                 if key in rollout_metrics:
                     print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
             
-            # Second: depth-based proven metrics (sorted)
+            # Second: aggregate by label
+            for key in ["len_pos", "len_neg", "proven_pos", "proven_neg", "rwd_pos", "rwd_neg"]:
+                if key in rollout_metrics:
+                    print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
+            
+            # Third: detailed breakdown by depth (if collected)
+            # Group by metric type for cleaner display
+            len_depth_keys = sorted(
+                [k for k in rollout_metrics.keys() if k.startswith("len_d_")],
+                key=lambda x: self._sort_metric_key(x)
+            )
             proven_depth_keys = sorted(
                 [k for k in rollout_metrics.keys() if k.startswith("proven_d_")],
                 key=lambda x: self._sort_metric_key(x)
             )
-            for key in proven_depth_keys:
-                print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
-            
-            # Third: overall proven metrics
-            for key in ["proven_pos", "proven_neg"]:
-                if key in rollout_metrics:
-                    print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
-            
-            # Fourth: depth-based reward metrics (sorted)
-            reward_depth_keys = sorted(
-                [k for k in rollout_metrics.keys() if k.startswith("reward_d_")],
+            rwd_depth_keys = sorted(
+                [k for k in rollout_metrics.keys() if k.startswith("rwd_d_")],
                 key=lambda x: self._sort_metric_key(x)
             )
-            for key in reward_depth_keys:
+            
+            for key in len_depth_keys:
+                print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
+            for key in proven_depth_keys:
+                print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
+            for key in rwd_depth_keys:
                 print(f"|    {key:<20} | {rollout_metrics[key]:<24} |")
         
         # Time metrics
@@ -724,7 +504,7 @@ class TrainingMetricsCallback:
         label = parts[-1]  # 'pos' or 'neg'
         label_order = 0 if label == 'pos' else 1
         
-        # Extract depth number
+        # Extract depth number - should be parts[2] for format like "len_d_0_pos"
         depth_str = parts[2] if len(parts) > 2 else "unknown"
         if depth_str == "unknown":
             depth_order = float("inf")
@@ -735,6 +515,11 @@ class TrainingMetricsCallback:
                 depth_order = float("inf")
         
         return (label_order, depth_order)
+
+
+# ============================================================================
+# Callback Manager
+# ============================================================================
 
 
 class TorchRLCallbackManager:

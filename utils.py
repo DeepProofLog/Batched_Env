@@ -265,9 +265,11 @@ def print_eval_info(split_name: str, metrics: Dict[str, float]):
             return f"{mean:.3f} +/- {std:.2f}"
         return f"{mean:.3f} +/- {std:.2f} ({count})"
 
-    def _sort_key(base: str) -> Tuple[int, int, Union[int, float]]:
+    def _sort_key(base: str) -> Tuple[int, int, Union[int, float], int]:
         """Sort key for metric ordering."""
-        # Priority: proven_d_ > proven_ > reward_d_ > reward_ > others
+        # Priority: proven_d_ > proven_ > ep_len_d_ > ep_len_ > reward_d_ > reward_ > others
+        # Within each category, sort by: label (pos before neg), then depth, then success (true before false)
+        
         if base.startswith("proven_d_"):
             priority = 0
             parts = base.split('_')
@@ -281,14 +283,47 @@ def print_eval_info(split_name: str, metrics: Dict[str, float]):
                     depth_order = int(depth_str)
                 except (TypeError, ValueError):
                     depth_order = float("inf")
-            return (priority, label_order, depth_order)
+            return (priority, label_order, depth_order, 0)
         elif base.startswith("proven_"):
             priority = 1
             label = base.split('_')[-1]
             label_order = 0 if label == 'pos' else 1
-            return (priority, label_order, 0)
-        elif base.startswith("reward_d_"):
+            return (priority, label_order, 0, 0)
+        elif base.startswith("ep_len_d_"):
             priority = 2
+            parts = base.split('_')
+            # ep_len_d_{depth}_{label}_{success} or ep_len_d_{depth}_{label}
+            label_idx = -1
+            success_order = 0
+            # Check if we have a success suffix
+            if len(parts) > 4 and parts[-1] in ('true', 'false'):
+                label_idx = -2
+                success_order = 0 if parts[-1] == 'true' else 1
+            label = parts[label_idx]  # 'pos' or 'neg'
+            label_order = 0 if label == 'pos' else 1
+            depth_str = parts[3] if len(parts) > 3 else "unknown"
+            if depth_str == "unknown":
+                depth_order: Union[int, float] = float("inf")
+            else:
+                try:
+                    depth_order = int(depth_str)
+                except (TypeError, ValueError):
+                    depth_order = float("inf")
+            return (priority, label_order, depth_order, success_order)
+        elif base.startswith("ep_len_"):
+            # ep_len_{label}_{success} or ep_len_{label}
+            priority = 3
+            parts = base.split('_')
+            success_order = 0
+            label_idx = -1
+            if len(parts) > 3 and parts[-1] in ('true', 'false'):
+                label_idx = -2
+                success_order = 0 if parts[-1] == 'true' else 1
+            label = parts[label_idx]
+            label_order = 0 if label == 'pos' else 1
+            return (priority, label_order, 0, success_order)
+        elif base.startswith("reward_d_"):
+            priority = 4
             parts = base.split('_')
             label = parts[-1]  # 'pos' or 'neg'
             label_order = 0 if label == 'pos' else 1
@@ -300,15 +335,15 @@ def print_eval_info(split_name: str, metrics: Dict[str, float]):
                     depth_order = int(depth_str)
                 except (TypeError, ValueError):
                     depth_order = float("inf")
-            return (priority, label_order, depth_order)
+            return (priority, label_order, depth_order, 0)
         elif "reward" in base.lower():
-            priority = 3
+            priority = 5
             label_order = 0 if "pos" in base else 1 if "neg" in base else 2
-            return (priority, label_order, 0)
+            return (priority, label_order, 0, 0)
         else:
             # Other metrics come last
-            priority = 4
-            return (priority, 0, 0)
+            priority = 6
+            return (priority, 0, 0, 0)
 
     print(f'\n\n{split_name} set metrics:')
     grouped: Dict[str, Dict[str, Optional[float]]] = {}
