@@ -363,6 +363,7 @@ def eval_corruptions_torchrl(
     hybrid_kge_weight: float = 2.0,  # unused in pure RL
     hybrid_rl_weight: float = 1.0,   # unused in pure RL
     hybrid_success_only: bool = True,# unused in pure RL
+    index_manager: Optional[Any] = None,  # NEW: pass index_manager directly
 ) -> Dict[str, Any]:
     """
     Pure TorchRL corruption-based evaluator.
@@ -372,11 +373,21 @@ def eval_corruptions_torchrl(
     """
     device = _device_of(actor)
 
-    # Try to access IndexManager from the base env
-    base_env0 = getattr(env, "envs", [env])[0]
-    im = getattr(base_env0, "index_manager", None)
+    # Try to get IndexManager from parameter, base env, or sampler
+    im = index_manager
     if im is None:
-        raise RuntimeError("IndexManager not found in base eval env.")
+        # Try to access from sampler
+        if hasattr(sampler, "index_manager"):
+            im = sampler.index_manager
+        elif hasattr(env, "index_manager"):
+            im = env.index_manager
+        # For ParallelEnv, we might need to get it from a different location
+        elif hasattr(env, "_workers") and len(env._workers) > 0:
+            # Try to get from first worker (this might not work with multiprocessing)
+            pass
+    
+    if im is None:
+        raise RuntimeError("IndexManager not found. Please pass index_manager parameter or ensure it's available in sampler/env.")
 
     MRRs, H1s, H3s, H10s = [], [], [], []
     success_flags = []

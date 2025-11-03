@@ -320,6 +320,7 @@ def _train(
     eval_env,
     sampler,
     data_handler: DataHandler,
+    index_manager: IndexManager,  # Add index_manager parameter
     model_path: Path,
     device: torch.device,
 ) -> Tuple[nn.Module, nn.Module]:
@@ -396,6 +397,7 @@ def _train(
         eval_env=eval_env,
         sampler=sampler,
         data_handler=data_handler,
+        index_manager=index_manager,  # Pass index_manager
         args=args,
         n_envs=args.n_envs,
         n_steps=n_steps,
@@ -618,6 +620,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
             callback_env,
             sampler,
             dh,
+            index_manager,  # Add index_manager
             model_path,
             device,
         )

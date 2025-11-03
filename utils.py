@@ -20,8 +20,12 @@ import torch
 import torch.profiler
 from torch.profiler import ProfilerActivity
 import torch.nn as nn
-import wandb
-from wandb.integration.sb3 import WandbCallback
+
+# Lazy import to avoid loading TensorFlow in worker processes
+def _get_wandb():
+    """Lazy import of wandb to avoid TensorFlow loading in workers"""
+    import wandb
+    return wandb
 
 
 # ----------------------
@@ -871,6 +875,7 @@ def _warn_non_reproducible(args: Any) -> None:
 def _maybe_enable_wandb(use_WB: bool, args: Any, WB_path: str, model_name: str):
     if not use_WB:
         return None
+    wandb = _get_wandb()  # Lazy import
     return wandb.init(
         project="RL-NeSy",
         group=args.run_signature,

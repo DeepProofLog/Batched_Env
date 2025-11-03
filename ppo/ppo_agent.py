@@ -32,6 +32,7 @@ class PPOAgent:
         eval_env: Any,
         sampler: Any,
         data_handler: Any,
+        index_manager: Any = None,  # Add index_manager parameter
         args: Any = None,
         n_envs: int = 128,
         n_steps: int = 128,
@@ -82,6 +83,7 @@ class PPOAgent:
         self.eval_env = eval_env
         self.sampler = sampler
         self.data_handler = data_handler
+        self.index_manager = index_manager  # Store index_manager
         self.args = args
         self.verbose_cb = verbose_cb
         
@@ -122,6 +124,9 @@ class PPOAgent:
         """
         # Stack to [T, B]
         batch_td_time = torch.stack(experiences, dim=0)
+        
+        # Move to device for computation
+        batch_td_time = batch_td_time.to(self.device)
 
         # Ensure value predictions exist for both current and next observations
         with torch.no_grad():
@@ -132,6 +137,29 @@ class PPOAgent:
             nxt = batch_td_time.get("next")
             if "state_value" not in nxt.keys():
                 self.critic(nxt)
+            
+            # Ensure all tensors have consistent shapes (squeeze extra dimensions from reward/done)
+            # GAE expects reward and done to have the same shape as state_value
+            if "reward" in nxt.keys():
+                reward = nxt["reward"]
+                if reward.ndim > 2:  # Should be [T, B] but might be [T, B, 1]
+                    nxt.set("reward", reward.squeeze(-1))
+            
+            if "done" in nxt.keys():
+                done = nxt["done"]
+                if done.ndim > 2:  # Should be [T, B] but might be [T, B, 1]
+                    nxt.set("done", done.squeeze(-1))
+            
+            # Also ensure state_value has the right shape
+            if "state_value" in batch_td_time.keys():
+                state_value = batch_td_time["state_value"]
+                if state_value.ndim > 2:
+                    batch_td_time.set("state_value", state_value.squeeze(-1))
+            
+            if "state_value" in nxt.keys():
+                next_value = nxt["state_value"]
+                if next_value.ndim > 2:
+                    nxt.set("state_value", next_value.squeeze(-1))
 
             # TorchRL's GAE writes 'advantage' and 'value_target' in-place
             try:
@@ -140,12 +168,12 @@ class PPOAgent:
                 # Fallback API path for older versions
                 from torchrl.objectives.advantages import GAE  # type: ignore
 
+            # Initialize GAE - value_network=None means we already computed values
+            # Uses default keys: "state_value", "advantage", "value_target"
             gae = GAE(
                 gamma=self.gamma,
                 lmbda=self.gae_lambda,
-                value_key="state_value",
-                reward_key=("next", "reward"),
-                done_key=("next", "done"),
+                value_network=None,
             )
             batch_td_time = gae(batch_td_time)
 
@@ -181,6 +209,22 @@ class PPOAgent:
         batch_td_time.set("advantage", advantages)
         batch_td_time.set("value_target", value_targets)
         flat_td = batch_td_time.reshape(n_steps * n_envs)
+        
+        # Move to device for optimization (data might be on CPU from collector)
+        flat_td = flat_td.to(self.device)
+        
+        # IMPORTANT: Add feature dimension to tensors for TorchRL PPO loss
+        # TorchRL's PPOLoss expects tensors to have a feature dimension for certain operations
+        # For discrete actions with Categorical distribution, we add this manually
+        if "sample_log_prob" in flat_td.keys():
+            log_prob = flat_td.get("sample_log_prob")
+            if log_prob.dim() == 1:  # Shape: [batch]
+                flat_td.set("sample_log_prob", log_prob.unsqueeze(-1))  # Shape: [batch, 1]
+        
+        if "action" in flat_td.keys():
+            action = flat_td.get("action")
+            if action.dim() == 1:  # Shape: [batch]
+                flat_td.set("action", action.unsqueeze(-1))  # Shape: [batch, 1]
 
         # Advantage normalization (PPOLoss can also normalize internally; we do it here for stability)
         adv = flat_td.get("advantage")
@@ -197,15 +241,12 @@ class PPOAgent:
                 from torchrl.objectives.ppo import ClipPPOLoss as PPOLossCls  # very old fallback
 
         loss_module = PPOLossCls(
-            actor=self.actor,
-            value_network=self.critic,
+            actor_network=self.actor,
+            critic_network=self.critic,
             clip_epsilon=self.clip_range,
             entropy_coef=self.ent_coef,
             normalize_advantage=False,  # we normalized above
-            value_coef=self.value_coef,
-            advantage_key="advantage",
-            value_target_key="value_target",
-            value_key="state_value",
+            critic_coef=self.value_coef,
         )
         # Key mapping for compatibility across TorchRL versions
         if hasattr(loss_module, "set_keys"):
@@ -217,9 +258,12 @@ class PPOAgent:
                     advantage="advantage",
                     value_target="value_target",
                 )
-            except TypeError:
+            except (TypeError, KeyError):
                 # Some versions only accept a subset (action, sample_log_prob)
-                loss_module.set_keys(action="action", sample_log_prob="sample_log_prob")
+                try:
+                    loss_module.set_keys(action="action", sample_log_prob="sample_log_prob")
+                except (TypeError, KeyError):
+                    pass  # Use defaults
 
         # Optimization
         flat_bs = n_steps * n_envs
@@ -239,7 +283,7 @@ class PPOAgent:
                 mb_idx = perm[mb * int(self.batch_size):(mb + 1) * int(self.batch_size)]
                 mb_td = flat_td[mb_idx]
 
-                # Compute PPO loss terms
+                # Compute PPO loss terms using TorchRL's ClipPPOLoss
                 loss_out = loss_module(mb_td)
 
                 # Robust extraction across TorchRL versions
@@ -281,18 +325,30 @@ class PPOAgent:
                         mb_logits_td = mb_td.clone(False)
                         # Run the actor's underlying net without resampling
                         try:
-                            self.actor.module(mb_logits_td)  # writes 'logits'
-                            from torchrl.modules.distributions import OneHotCategorical
-                            dist = OneHotCategorical(logits=mb_logits_td.get("logits"))
-                        except Exception:
+                            # Get the underlying TensorDictModule that computes logits
+                            # ProbabilisticActor wraps a TensorDictModule in self.module[0]
+                            if hasattr(self.actor, 'module') and len(self.actor.module) > 0:
+                                self.actor.module[0](mb_logits_td)  # writes 'logits'
+                            else:
+                                # Fallback: extract logits key if already present
+                                pass
+                            
+                            from torch.distributions import Categorical
+                            logits = mb_logits_td.get("logits")
+                            dist = Categorical(logits=logits)
+                        except Exception as e:
                             # Fallback: compute logits/value via the shared model, if exposed
                             # This branch is rarely needed.
                             from torch.distributions import Categorical
                             # assume logits already in td (collector path)
-                            dist = Categorical(logits=mb_logits_td.get("logits"))
+                            logits = mb_logits_td.get("logits")
+                            # Make sure it's a plain tensor without distribution metadata
+                            if hasattr(logits, '_unimplemented'):
+                                logits = logits.clone()
+                            dist = Categorical(logits=logits)
 
-                        new_log_prob = dist.log_prob(mb_td.get("action"))
-                        old_log_prob = mb_td.get("sample_log_prob")
+                        new_log_prob = dist.log_prob(mb_td.get("action").squeeze(-1))  # Remove feature dim for log_prob
+                        old_log_prob = mb_td.get("sample_log_prob").squeeze(-1)  # Remove feature dim
                         log_ratio = new_log_prob - old_log_prob
                         ratio = torch.exp(log_ratio)
                         approx_kl = ((ratio - 1) - log_ratio).mean()
@@ -575,6 +631,7 @@ class PPOAgent:
                 corruption_scheme=['head', 'tail'],
                 info_callback=info_callback_with_verbose,
                 data_depths=eval_depths,
+                index_manager=self.index_manager,  # Pass index_manager explicitly
             )
             
         except Exception as e:

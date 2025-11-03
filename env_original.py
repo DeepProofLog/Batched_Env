@@ -14,6 +14,7 @@ from torchrl.data.tensor_specs import (
     Unbounded,
     Categorical,
     Binary,
+    DiscreteTensorSpec,
 )
 
 from dataset import DataHandler
@@ -204,10 +205,11 @@ class LogicEnv_gym(EnvBase):
             shape=torch.Size([]),  # Single environment (no batch dimension yet)
         )
         
-        # Action spec - discrete action space
+        # Action spec - scalar integer action (not one-hot)
+        # This matches the output of ProbabilisticActor with Categorical distribution
         self.action_spec = Categorical(
-            n=self.padding_states,
-            shape=torch.Size([]),
+            n=self.padding_states,  # Number of possible actions
+            shape=torch.Size([]),  # Scalar action
             dtype=torch.int64,
             device=self.device,
         )
@@ -459,7 +461,7 @@ class LogicEnv_gym(EnvBase):
                 "action_mask": action_mask,
                 # Non-tensor data and internal state
                 "state": NonTensorData(data=query),
-                "label": torch.tensor(label, device=self.device),
+                "label": torch.tensor([label], dtype=torch.long, device=self.device),
                 "done": torch.tensor([False], dtype=torch.bool, device=self.device),  # Match done_spec shape [1]
                 "terminated": torch.tensor([False], dtype=torch.bool, device=self.device),  # Required by TorchRL
                 "derived_states": NonTensorData(data=derived_states),
@@ -493,12 +495,23 @@ class LogicEnv_gym(EnvBase):
         Returns:
             TensorDict with next state, reward, done signal, and metadata
         '''
-        # Extract action - handle both scalar and tensor inputs
+        # Extract action - handle both one-hot encoded and integer actions
         action_tensor = tensordict["action"]
-        if action_tensor.numel() == 1:
+        
+        # Convert one-hot encoded action to integer index
+        if action_tensor.dtype == torch.bool and action_tensor.numel() > 1:
+            # One-hot encoded: find the index of the True value
+            action_indices = torch.nonzero(action_tensor, as_tuple=True)[0]
+            if len(action_indices) > 0:
+                action = action_indices[0].item()
+            else:
+                # No action selected, default to 0
+                action = 0
+        elif action_tensor.numel() == 1:
+            # Single scalar action
             action = action_tensor.item()
         else:
-            # If batched, take first element (SerialEnv should unbatch but sometimes doesn't)
+            # If batched integer, take first element
             action = action_tensor.flatten()[0].item()
         
         derived_states = self.tensordict["derived_states"]
@@ -510,6 +523,26 @@ class LogicEnv_gym(EnvBase):
             derived_states_list = derived_states.data
         else:
             derived_states_list = derived_states
+
+        # Safety check and clamp action to valid range
+        num_derived = len(derived_states_list)
+        if action >= num_derived:
+            # Get valid actions from action mask
+            action_mask = self.tensordict.get("action_mask", None)
+            if action_mask is not None:
+                valid_indices = torch.where(action_mask)[0]
+                if len(valid_indices) > 0:
+                    # Select first valid action
+                    action = valid_indices[0].item()
+                    if self.verbose > 0:
+                        print(f"Warning: Clamped invalid action to first valid action: {action}")
+                else:
+                    action = 0
+            else:
+                action = min(action, num_derived - 1)
+            
+            if self.verbose > 0:
+                print(f"Warning: Action {action_tensor} out of range (num_derived={num_derived}), clamped to {action}")
 
         if action >= self.padding_states or action >= len(derived_states_list):
             # Provide detailed error information for debugging

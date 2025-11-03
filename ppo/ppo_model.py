@@ -14,6 +14,8 @@ from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from torchrl.modules import ProbabilisticActor, ValueOperator
 from torchrl.modules.distributions import OneHotCategorical
+from tensordict.nn import TensorDictSequential
+from torch.distributions import Categorical
 
 
 class PolicyNetwork(nn.Module):
@@ -377,6 +379,29 @@ class TorchRLValueModule(nn.Module):
         return values
 
 
+class AddFeatureDimension(TensorDictModule):
+    """
+    Module that adds a feature dimension to scalar tensors.
+    This is needed for TorchRL's PPO loss which expects all tensors to have a feature dimension.
+    """
+    def __init__(self):
+        # Create a simple passthrough module
+        super().__init__(
+            module=nn.Identity(),
+            in_keys=["sample_log_prob"],
+            out_keys=["sample_log_prob"],
+        )
+    
+    def forward(self, tensordict: TensorDict) -> TensorDict:
+        """Add feature dimension if needed."""
+        if "sample_log_prob" in tensordict.keys():
+            log_prob = tensordict.get("sample_log_prob")
+            if log_prob.dim() == 1:
+                # Add feature dimension: [batch] -> [batch, 1]
+                tensordict.set("sample_log_prob", log_prob.unsqueeze(-1))
+        return tensordict
+
+
 def create_torchrl_modules(
     embedder: Any,
     num_actions: int,
@@ -431,12 +456,16 @@ def create_torchrl_modules(
     )
     
     # Wrap in ProbabilisticActor
+    # Use Categorical (not OneHotCategorical) for discrete action spaces
+    # For TorchRL's PPO loss to work with discrete actions, we need to use
+    # a spec that doesn't require feature dimension summing
     actor_module = ProbabilisticActor(
         module=actor_td_module,
         in_keys=["logits"],
         out_keys=["action"],
-        distribution_class=OneHotCategorical,
+        distribution_class=Categorical,
         return_log_prob=True,
+        log_prob_key="sample_log_prob",
     )
     
     # Create value module

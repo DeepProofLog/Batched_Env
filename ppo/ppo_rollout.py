@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import torch
 from tensordict import TensorDict
 from torchrl.collectors import SyncDataCollector
+from torchrl.envs import ParallelEnv
 
 
 def _reshape_time_env(td: TensorDict, n_steps: int, n_envs: int) -> TensorDict:
@@ -27,9 +28,9 @@ def _extract_episode_infos(batch_td: TensorDict, n_steps: int, n_envs: int, devi
     done = done.reshape(n_steps, n_envs).squeeze(-1).to(torch.bool)
     reward = reward.reshape(n_steps, n_envs).squeeze(-1)
 
-    # For each env, accumulate until done
-    ep_ret = torch.zeros(n_envs, device=device, dtype=reward.dtype)
-    ep_len = torch.zeros(n_envs, device=device, dtype=torch.long)
+    # For each env, accumulate until done (use the same device as reward)
+    ep_ret = torch.zeros(n_envs, device=reward.device, dtype=reward.dtype)
+    ep_len = torch.zeros(n_envs, device=reward.device, dtype=torch.long)
     for t in range(n_steps):
         ep_ret += reward[t]
         ep_len += 1
@@ -76,18 +77,35 @@ def collect_rollouts(
     """
     frames_per_batch = int(n_envs) * int(n_steps)
 
-    # The actor is already a ProbabilisticActor that consumes obs and returns action+log_prob.
-    collector = SyncDataCollector(
-        env=env,
-        policy=actor,
-        frames_per_batch=frames_per_batch,
-        total_frames=frames_per_batch,
-        device=device,
-        storing_device='cpu',
-        split_trajs=False,
-        pin_memory=True,
-        prefetch=2,
-    )
+    # SyncDataCollector can accept either an env factory or an existing env.
+    # If `env` is already a ParallelEnv, pass it directly to avoid double-batching
+    # (returning a ParallelEnv from a create_env_fn would cause nested batching and shape mismatches).
+    if isinstance(env, ParallelEnv):
+        def create_env_fn():
+            return env
+        collector = SyncDataCollector(
+            create_env_fn=create_env_fn,
+            policy=actor,
+            frames_per_batch=frames_per_batch,
+            total_frames=frames_per_batch,
+            device=device,
+            storing_device='cpu',
+            split_trajs=False,
+        )
+    else:
+        # SyncDataCollector requires a create_env_fn callable for single-worker envs
+        def create_env_fn():
+            return env
+
+        collector = SyncDataCollector(
+            create_env_fn=create_env_fn,
+            policy=actor,
+            frames_per_batch=frames_per_batch,
+            total_frames=frames_per_batch,
+            device=device,
+            storing_device='cpu',
+            split_trajs=False,
+        )
 
     batch_td = next(iter(collector))  # single batch
     collector.shutdown()
