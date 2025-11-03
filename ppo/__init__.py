@@ -5,7 +5,7 @@ This module provides a modular implementation of PPO for Neural-guided Grounding
 using TorchRL as the underlying RL framework.
 """
 
-from .model import (
+from .ppo_model import (
     PolicyNetwork,
     ValueNetwork,
     EmbeddingExtractor,
@@ -13,9 +13,9 @@ from .model import (
     create_torchrl_modules,
 )
 
-from .rollout import RolloutCollector, collect_rollouts
+from .ppo_rollout import RolloutCollector, collect_rollouts
 
-from .learner import PPOLearner
+from .ppo_learner import PPOLearner
 
 from .ppo_agent import PPOAgent
 

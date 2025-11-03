@@ -74,8 +74,8 @@ if __name__ == "__main__":
         'load_model': False,
         'save_model': True,
         'n_envs': 32,
-        'n_steps':128,
-        'n_eval_envs': 100,
+        'n_steps':32,
+        'n_eval_envs': 32,
         'batch_size': 128,
 
         # Env params

@@ -9,7 +9,7 @@ For backward compatibility, all classes and functions are re-exported here.
 """
 
 # Import everything from the new modular implementation
-from ppo.model import (
+from ppo.ppo_model import (
     PolicyNetwork,
     ValueNetwork,
     EmbeddingExtractor,

@@ -210,13 +210,19 @@ def collect_rollouts(
             logits = actor_critic_model.forward_actor(td.clone())
             values = actor_critic_model.forward_critic(td.clone())
             
-            # Reapply the mask defensively
+            # # Reapply the mask defensively
+            # action_mask = td["action_mask"].to(logits.device)
+            # masked_logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
+            # masked_logits = torch.nan_to_num(masked_logits, nan=float("-inf"))
+            # dist = torch.distributions.Categorical(logits=masked_logits)
+
+            # raise an error if the mask doesnt agree with logits
             action_mask = td["action_mask"].to(logits.device)
-            masked_logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
-            masked_logits = torch.nan_to_num(masked_logits, nan=float("-inf"))
+            if not torch.all((action_mask.sum(dim=-1) > 0) | torch.isinf(logits).all(dim=-1)):
+                raise ValueError("Action mask is inconsistent with logits: some valid actions have -inf logits.")
 
             # Sample actions directly from masked logits
-            dist = torch.distributions.Categorical(logits=masked_logits)
+            dist = torch.distributions.Categorical(logits=logits)
             action_indices = dist.sample()
             log_probs = dist.log_prob(action_indices)
             
@@ -245,9 +251,10 @@ def collect_rollouts(
             reward = next_td["next"]["reward"] if "reward" in next_td["next"].keys() else next_td.get("reward")
             done = next_td["next"]["done"] if "done" in next_td["next"].keys() else next_td.get("done")
         else:
-            next_obs = next_td
-            reward = next_td["reward"]
-            done = next_td["done"]
+            raise NotImplementedError("Expected 'next' key in next_td for reward and done extraction.")
+            # next_obs = next_td
+            # reward = next_td["reward"]
+            # done = next_td["done"]
         
         # Add next state info to experience
         experience["next"] = TensorDict({
@@ -279,7 +286,8 @@ def collect_rollouts(
         if "next" in next_td.keys():
             next_obs = next_td["next"]
         else:
-            next_obs = next_td
+            raise NotImplementedError("Expected 'next' key in next_td for next_obs extraction.")
+            # next_obs = next_td
             
         td = TensorDict({
             "sub_index": next_obs["sub_index"].clone(),

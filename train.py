@@ -153,33 +153,6 @@ def _resolve_ckpt_to_load(root: Path, restore_best: bool) -> Optional[Path]:
     return candidates[-1] if candidates else None
 
 
-def _save_checkpoint(
-    actor: nn.Module,
-    critic: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    epoch: int,
-    timestep: int,
-    metrics: dict,
-    save_path: Path,
-    prefix: str = "checkpoint",
-):
-    """Save model checkpoint."""
-    save_path.mkdir(parents=True, exist_ok=True)
-    
-    checkpoint = {
-        'actor_state_dict': actor.state_dict(),
-        'critic_state_dict': critic.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'epoch': epoch,
-        'timestep': timestep,
-        'metrics': metrics,
-    }
-    
-    filename = save_path / f"{prefix}_epoch_{epoch}_step_{timestep}.pt"
-    torch.save(checkpoint, filename)
-    print(f"Saved checkpoint to {filename}")
-    return filename
-
 
 def _load_checkpoint(
     actor: nn.Module,
@@ -397,7 +370,7 @@ def _train(
         collect_detailed=True,  # Explicitly enable detailed depth breakdown
     )
     
-    metrics_callback = TrainingMetricsCallback(
+    train_callback = TrainingMetricsCallback(
         log_interval=1,
         verbose=True,
     )
@@ -405,7 +378,7 @@ def _train(
     callback_manager = TorchRLCallbackManager(
         rollout_callback=rollout_callback,
         eval_callback=eval_callback,
-        metrics_callback=metrics_callback,
+        train_callback=train_callback,
     )
     
     # Notify callbacks of training start
@@ -456,65 +429,6 @@ def _train(
     return actor, critic
 
 
-def _evaluate_during_training(
-    args: Any,
-    actor: nn.Module,
-    eval_env,
-    sampler,
-    data_handler: DataHandler,
-    verbose: int = 0,
-    info_callback: Optional[Callable] = None,
-) -> dict:
-    """
-    Run corruption-based evaluation during training.
-    
-    This function uses the full eval_corruptions_torchrl pipeline to compute
-    MRR, Hits@K, and other ranking metrics on the validation set.
-    """
-    actor.eval()
-    
-    # Prepare evaluation data
-    eval_data = data_handler.valid_queries[:args.n_eval_queries]
-    eval_depths = (
-        data_handler.valid_depths[:args.n_eval_queries]
-        if hasattr(data_handler, 'valid_depths') and data_handler.valid_depths is not None
-        else None
-    )
-    
-    # Run corruption-based evaluation
-    try:
-        metrics = eval_corruptions_torchrl(
-            actor=actor,
-            env=eval_env,
-            data=eval_data,
-            sampler=sampler,
-            n_corruptions=args.eval_neg_samples,
-            deterministic=True,
-            verbose=verbose,
-            plot=False,
-            kge_inference_engine=None,
-            evaluation_mode='rl_only',
-            corruption_scheme=['head', 'tail'],
-            info_callback=info_callback,
-            data_depths=eval_depths,
-        )
-    except Exception as e:
-        print(f"Warning: Evaluation failed with error: {e}")
-        print("Returning dummy metrics.")
-        metrics = {
-            'mrr_mean': 0.0,
-            'hits1_mean': 0.0,
-            'hits3_mean': 0.0,
-            'hits10_mean': 0.0,
-            'rewards_pos_mean': 0.0,
-            'success_rate': 0.0,
-        }
-    
-    actor.train()
-    
-    return metrics
-
-
 def _evaluate(
     args: Any,
     actor: nn.Module,
@@ -563,39 +477,6 @@ def _evaluate(
     metrics_valid = {}
     metrics_test = {}
     
-    # Train set (quick check, fewer corruptions)
-    if len(train_data) > 0:
-        print("\n--- Evaluating on TRAIN set ---")
-        try:
-            # Create depth tracker for this evaluation
-            depth_tracker = _EvalDepthRewardTracker()
-            
-            metrics_train = eval_corruptions_torchrl(
-                actor=actor,
-                env=eval_env,
-                data=train_data[:min(100, len(train_data))],  # Sample for speed
-                sampler=sampler,
-                n_corruptions=args.eval_neg_samples,
-                deterministic=True,
-                verbose=1,
-                plot=False,
-                evaluation_mode='rl_only',
-                corruption_scheme=['head', 'tail'],
-                info_callback=depth_tracker,
-                data_depths=train_depths[:min(100, len(train_data))] if train_depths else None,
-            )
-            
-            # Merge depth-based metrics into results
-            depth_metrics = depth_tracker.metrics()
-            metrics_train.update(depth_metrics)
-            
-            print_eval_info("TRAIN", metrics_train)
-        except Exception as e:
-            print(f"Warning: Train evaluation failed: {e}")
-            import traceback
-            traceback.print_exc()
-            metrics_train = _get_dummy_metrics()
-    
     # Valid set
     if len(valid_data) > 0:
         print("\n--- Evaluating on VALID set ---")
@@ -625,7 +506,6 @@ def _evaluate(
             print_eval_info("VALID", metrics_valid)
         except Exception as e:
             print(f"Warning: Valid evaluation failed: {e}")
-            metrics_valid = _get_dummy_metrics()
     
     # Test set (full evaluation)
     if len(test_data) > 0:
@@ -656,27 +536,12 @@ def _evaluate(
             print_eval_info("TEST", metrics_test)
         except Exception as e:
             print(f"Warning: Test evaluation failed: {e}")
-            metrics_test = _get_dummy_metrics()
     
     print("\n" + "="*60)
     print("Final Evaluation Complete")
     print("="*60 + "\n")
     
     return metrics_train, metrics_valid, metrics_test
-
-
-def _get_dummy_metrics() -> dict:
-    """Return dummy metrics in case of evaluation failure."""
-    return {
-        'mrr_mean': 0.0,
-        'hits1_mean': 0.0,
-        'hits3_mean': 0.0,
-        'hits10_mean': 0.0,
-        'rewards_pos_mean': 0.0,
-        'rewards_neg_mean': 0.0,
-        'episode_len_pos_mean': 0.0,
-        'episode_len_neg_mean': 0.0,
-    }
 
 
 # ------------------------------

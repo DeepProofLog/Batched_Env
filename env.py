@@ -103,7 +103,6 @@ class LogicEnv_gym(EnvBase):
 
         if self.corruption_mode:
             # Counter to determine whether to sample positive or negative queries
-            # With train_neg_ratio=1: even counters → positive, odd counters → negative
             self.counter = 0
             
         if self.corruption_mode:

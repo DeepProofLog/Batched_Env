@@ -11,8 +11,8 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from .rollout import collect_rollouts
-from .learner import PPOLearner
+from .ppo_rollout import collect_rollouts
+from .ppo_learner import PPOLearner
 
 
 class PPOAgent:
@@ -151,7 +151,6 @@ class PPOAgent:
         # Training loop
         for iteration in range(n_iterations):
             iteration_start_time = time.time()
-            
             print(f"\nIteration {iteration + 1}/{n_iterations}")
             
             # ==================== Data Collection ====================
@@ -182,7 +181,7 @@ class PPOAgent:
             if callback_manager is not None and stats["episode_info"]:
                 for info in stats["episode_info"]:
                     callback_manager.accumulate_episode_stats([info], mode="train")
-            
+            print(f"  Rollout time: {time.time() - iteration_start_time:.2f}s")
             # ==================== Policy Optimization ====================
             print(f"Training model")
             training_start_time = time.time()
@@ -191,11 +190,8 @@ class PPOAgent:
                 experiences=experiences,
                 n_steps=self.n_steps,
                 n_envs=self.n_envs,
-                metrics_callback=callback_manager.metrics_callback if callback_manager else None,
+                metrics_callback=callback_manager.train_callback if callback_manager else None,
             )
-            
-            training_time = time.time() - training_start_time
-            print(f"Time to train {training_time:.2f}s")
             
             # Log training metrics
             if logger is not None:
@@ -221,8 +217,10 @@ class PPOAgent:
                 "policy_gradient_loss": f"{train_metrics['policy_loss']:.3f}",
                 "value_loss": f"{train_metrics['value_loss']:.2f}",
             }
-            
+            training_time = time.time() - training_start_time
+            print(f"Time to train {training_time:.2f}s")
             # ==================== Evaluation ====================
+            eval_start_time = time.time()
             if eval_callback is not None and eval_callback.should_evaluate(iteration + 1):
                 eval_callback.on_evaluation_start(iteration + 1, self.global_step)
                 
@@ -248,7 +246,7 @@ class PPOAgent:
                         prefix="best_eval",
                     )
                     print(f"  ★ New best model saved!")
-            
+            print(f"Evaluation time: {time.time() - eval_start_time:.2f}s")
             # ==================== End of Iteration ====================
             if callback_manager is not None:
                 callback_manager.on_iteration_end(
@@ -312,10 +310,11 @@ class PPOAgent:
         )
         
         # Determine n_corruptions from args
-        n_corruptions = 3  # default
         if self.args and hasattr(self.args, 'eval_neg_samples'):
             n_corruptions = self.args.eval_neg_samples
-        
+        else:
+            raise ValueError("n_corruptions not specified in args")
+                
         # Run evaluation to get metrics
         try:
             metrics = eval_corruptions_torchrl(
@@ -341,14 +340,7 @@ class PPOAgent:
             print(f"Warning: Evaluation failed with error: {e}")
             import traceback
             traceback.print_exc()
-            metrics = {
-                'mrr_mean': 0.0,
-                'hits1_mean': 0.0,
-                'hits3_mean': 0.0,
-                'hits10_mean': 0.0,
-                'rewards_pos_mean': 0.0,
-                'success_rate': 0.0,
-            }
+            raise e
         
         actor.train()
         
