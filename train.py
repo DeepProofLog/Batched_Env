@@ -25,7 +25,7 @@ from utils import (
     _maybe_enable_wandb,
     FileLogger,
 )
-from custom_env import create_environments
+from env_factory import create_environments
 from dataset import DataHandler
 from ppo import create_torchrl_modules, PPOAgent
 from embeddings import get_embedder
@@ -561,14 +561,12 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
     
     # Create environments
-    env, eval_env, callback_env = create_environments(
-        args,
-        dh,
-        index_manager,
-        kge_engine=kge_engine,
-        detailed_eval_env=args.extended_eval_info,
-    )
-    
+    train_env, eval_env, callback_env = create_environments(
+        args, 
+        dh, 
+        index_manager, 
+        kge_engine=None)
+
     # --- CREATE MODEL ---
     print("\nCreating TorchRL actor-critic model...")
     
@@ -616,8 +614,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
             actor,
             critic,
             optimizer,
-            env,
-            eval_env,
+            train_env,
+            callback_env,
             sampler,
             dh,
             model_path,

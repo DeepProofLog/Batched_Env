@@ -6,13 +6,13 @@ This module provides the main PPO agent class that coordinates training.
 
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, List
+from tensordict import TensorDict
 
 import torch
 import torch.nn as nn
 
 from .ppo_rollout import collect_rollouts
-from .ppo_learner import PPOLearner
 
 
 class PPOAgent:
@@ -90,191 +90,423 @@ class PPOAgent:
         self.device = device
         self.model_save_path = model_save_path
         self.eval_best_metric = eval_best_metric
-        
-        # Create learner
-        self.learner = PPOLearner(
-            actor=actor,
-            critic=critic,
-            optimizer=optimizer,
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-            clip_range=clip_range,
-            ent_coef=ent_coef,
-            value_coef=value_coef,
-            max_grad_norm=max_grad_norm,
-            n_epochs=n_epochs,
-            batch_size=batch_size,
-            device=device,
-        )
+
+        self.gamma = gamma
+        self.gae_lambda = gae_lambda
+        self.clip_range = clip_range
+        self.ent_coef = ent_coef
+        self.value_coef = value_coef
+        self.max_grad_norm = max_grad_norm
+        self.n_epochs = n_epochs
+        self.batch_size = batch_size
         
         # Tracking
         self.best_eval_metric = float('-inf')
         self.best_model_path = None
         self.global_step = 0
+
     
-    def train(
+    
+    def compute_advantages(
         self,
-        total_timesteps: int,
-        eval_callback: Optional[Callable] = None,
-        rollout_callback: Optional[Callable] = None,
-        callback_manager: Optional[Any] = None,
-        logger: Optional[Any] = None,
-    ) -> Tuple[nn.Module, nn.Module]:
+        experiences: List[TensorDict],
+        n_steps: int,
+        n_envs: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute GAE(γ, λ) using **TorchRL's GAE** on a single stacked TensorDict.
+
+        Returns
+        -------
+        advantages : Tensor shaped [n_steps, n_envs]
+        returns    : Tensor shaped [n_steps, n_envs] (a.k.a. value targets)
         """
-        Train the PPO agent.
-        
-        Args:
-            total_timesteps: Total timesteps to train
-            eval_callback: Optional evaluation callback
-            rollout_callback: Optional rollout callback
-            callback_manager: Optional callback manager for stats accumulation
-            logger: Optional logger
-            
-        Returns:
-            Tuple of (trained_actor, trained_critic)
-        """
-        if total_timesteps <= 0:
-            print("No training steps requested (total_timesteps <= 0)")
-            return self.actor, self.critic
-        
-        # Calculate training parameters
-        steps_per_iteration = self.n_steps * self.n_envs
-        n_iterations = total_timesteps // steps_per_iteration
-        
-        print(f"\n{'='*60}")
-        print(f"Starting TorchRL PPO Training")
-        print(f"{'='*60}")
-        print(f"Total timesteps: {total_timesteps:,}")
-        print(f"Steps per iteration: {steps_per_iteration}")
-        print(f"Number of iterations: {n_iterations}")
-        print(f"Mini-batch size: {self.learner.batch_size}")
-        print(f"Optimization epochs per iteration: {self.learner.n_epochs}")
-        print(f"{'='*60}\n")
-        
-        # Training loop
-        for iteration in range(n_iterations):
-            iteration_start_time = time.time()
-            print(f"\nIteration {iteration + 1}/{n_iterations}")
-            
-            # ==================== Data Collection ====================
-            if rollout_callback is not None:
-                rollout_callback.on_rollout_start()
-            
-            experiences, stats = collect_rollouts(
-                env=self.train_env,
-                actor=self.actor,
-                critic=self.critic,
-                n_envs=self.n_envs,
-                n_steps=self.n_steps,
-                device=self.device,
-                rollout_callback=(
-                    rollout_callback.on_step if rollout_callback is not None else None
-                ),
+        # Stack to [T, B]
+        batch_td_time = torch.stack(experiences, dim=0)
+
+        # Ensure value predictions exist for both current and next observations
+        with torch.no_grad():
+            # value at current state
+            if "state_value" not in batch_td_time.keys():
+                self.critic(batch_td_time)
+            # value at next state
+            nxt = batch_td_time.get("next")
+            if "state_value" not in nxt.keys():
+                self.critic(nxt)
+
+            # TorchRL's GAE writes 'advantage' and 'value_target' in-place
+            try:
+                from torchrl.objectives.value import GAE
+            except Exception:
+                # Fallback API path for older versions
+                from torchrl.objectives.advantages import GAE  # type: ignore
+
+            gae = GAE(
+                gamma=self.gamma,
+                lmbda=self.gae_lambda,
+                value_key="state_value",
+                reward_key=("next", "reward"),
+                done_key=("next", "done"),
             )
-            
-            if rollout_callback is not None:
-                rollout_callback.on_rollout_end()
-            
-            # Update global step counter
-            self.global_step += steps_per_iteration
-            
-            print(f"  Collected {steps_per_iteration} transitions")
-            
-            # Accumulate episode stats
-            if callback_manager is not None and stats["episode_info"]:
-                if self.verbose_cb:
-                    print(f"[PPOAgent] Accumulating {len(stats['episode_info'])} episode stats for training")
-                callback_manager.accumulate_episode_stats(stats["episode_info"], mode="train")
-            print(f"  Rollout time: {time.time() - iteration_start_time:.2f}s\n")
-            # ==================== Policy Optimization ====================
-            print(f"Training model")
-            training_start_time = time.time()
-            
-            train_metrics = self.learner.learn(
-                experiences=experiences,
-                n_steps=self.n_steps,
-                n_envs=self.n_envs,
-                metrics_callback=callback_manager.train_callback if callback_manager else None,
-            )
-            
-            # Log training metrics
-            if logger is not None:
-                logger.log_training_step(
-                    iteration=iteration + 1,
-                    global_step=self.global_step,
-                    policy_loss=train_metrics["policy_loss"],
-                    value_loss=train_metrics["value_loss"],
-                    entropy=train_metrics["entropy"],
-                    mean_reward=None,
+            batch_td_time = gae(batch_td_time)
+
+        advantages = batch_td_time.get("advantage")
+        value_targets = batch_td_time.get("value_target")
+
+        # Reshape to [T, B] if they came out flattened
+        if advantages.dim() == 1:
+            advantages = advantages.view(n_steps, n_envs)
+        if value_targets.dim() == 1:
+            value_targets = value_targets.view(n_steps, n_envs)
+
+        return advantages, value_targets
+
+    def learn(
+        self,
+        experiences: List[TensorDict],
+        n_steps: int,
+        n_envs: int,
+        metrics_callback: Optional[Any] = None,
+    ) -> Dict[str, float]:
+        """Optimize with **TorchRL's PPOLoss** on in-place TensorDict minibatches."""
+        import math
+        from copy import deepcopy
+
+        # Stack to [T, B]
+        batch_td_time = torch.stack(experiences, dim=0)
+
+        # Compute advantages (and value targets) with TorchRL GAE
+        advantages, value_targets = self.compute_advantages(experiences, n_steps, n_envs)
+
+        # Attach to the stacked TD then flatten to [T*B]
+        batch_td_time.set("advantage", advantages)
+        batch_td_time.set("value_target", value_targets)
+        flat_td = batch_td_time.reshape(n_steps * n_envs)
+
+        # Advantage normalization (PPOLoss can also normalize internally; we do it here for stability)
+        adv = flat_td.get("advantage")
+        adv_norm = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
+        flat_td.set("advantage", adv_norm)
+
+        # Build loss module
+        try:
+            from torchrl.objectives import ClipPPOLoss as PPOLossCls
+        except Exception:
+            try:
+                from torchrl.objectives import PPOLoss as PPOLossCls  # older alias
+            except Exception:
+                from torchrl.objectives.ppo import ClipPPOLoss as PPOLossCls  # very old fallback
+
+        loss_module = PPOLossCls(
+            actor=self.actor,
+            value_network=self.critic,
+            clip_epsilon=self.clip_range,
+            entropy_coef=self.ent_coef,
+            normalize_advantage=False,  # we normalized above
+            value_coef=self.value_coef,
+            advantage_key="advantage",
+            value_target_key="value_target",
+            value_key="state_value",
+        )
+        # Key mapping for compatibility across TorchRL versions
+        if hasattr(loss_module, "set_keys"):
+            try:
+                loss_module.set_keys(
+                    action="action",
+                    sample_log_prob="sample_log_prob",
+                    value="state_value",
+                    advantage="advantage",
+                    value_target="value_target",
                 )
+            except TypeError:
+                # Some versions only accept a subset (action, sample_log_prob)
+                loss_module.set_keys(action="action", sample_log_prob="sample_log_prob")
+
+        # Optimization
+        flat_bs = n_steps * n_envs
+        num_minibatches = max(1, flat_bs // int(self.batch_size))
+        indices = torch.arange(flat_bs, device=self.device)
+
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        total_entropy = 0.0
+        total_approx_kl = 0.0
+        total_clip_fraction = 0.0
+        num_updates = 0
+
+        for epoch in range(self.n_epochs):
+            perm = indices[torch.randperm(flat_bs, device=self.device)]
+            for mb in range(num_minibatches):
+                mb_idx = perm[mb * int(self.batch_size):(mb + 1) * int(self.batch_size)]
+                mb_td = flat_td[mb_idx]
+
+                # Compute PPO loss terms
+                loss_out = loss_module(mb_td)
+
+                # Robust extraction across TorchRL versions
+                policy_loss = (
+                    loss_out.get("loss_objective", None)
+                    or loss_out.get("loss_policy", None)
+                    or loss_out.get("loss_actor", None)
+                    or loss_out.get("loss", None)
+                )
+                if policy_loss is None:
+                    # fall back to 0 to avoid crashing; shouldn't happen on recent versions
+                    policy_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+
+                value_loss = loss_out.get("loss_critic", torch.tensor(0.0, device=self.device))
+                entropy = loss_out.get("entropy", None)
+                if entropy is None:
+                    # if module returns loss_entropy instead
+                    entropy = -loss_out.get("loss_entropy", torch.tensor(0.0, device=self.device))
+
+                # Build total loss (value and entropy terms already scaled in some versions;
+                # we scale explicitly here for consistency).
+                loss = policy_loss + self.value_coef * value_loss - self.ent_coef * entropy
+
+                self.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    list(self.actor.parameters()) + list(self.critic.parameters()),
+                    max_norm=self.max_grad_norm
+                )
+                self.optimizer.step()
+
+                # ----- Metrics (approx_kl & clip_fraction) -----
+                approx_kl = loss_out.get("approx_kl", None)
+                clip_fraction = loss_out.get("clip_fraction", None)
+
+                if (approx_kl is None) or (clip_fraction is None):
+                    # recompute cheaply from logits to keep metrics informative
+                    with torch.no_grad():
+                        mb_logits_td = mb_td.clone(False)
+                        # Run the actor's underlying net without resampling
+                        try:
+                            self.actor.module(mb_logits_td)  # writes 'logits'
+                            from torchrl.modules.distributions import OneHotCategorical
+                            dist = OneHotCategorical(logits=mb_logits_td.get("logits"))
+                        except Exception:
+                            # Fallback: compute logits/value via the shared model, if exposed
+                            # This branch is rarely needed.
+                            from torch.distributions import Categorical
+                            # assume logits already in td (collector path)
+                            dist = Categorical(logits=mb_logits_td.get("logits"))
+
+                        new_log_prob = dist.log_prob(mb_td.get("action"))
+                        old_log_prob = mb_td.get("sample_log_prob")
+                        log_ratio = new_log_prob - old_log_prob
+                        ratio = torch.exp(log_ratio)
+                        approx_kl = ((ratio - 1) - log_ratio).mean()
+                        clip_fraction = (ratio.sub(1).abs() > self.clip_range).float().mean()
+                        if not torch.isfinite(approx_kl):
+                            approx_kl = torch.tensor(0.0, device=self.device)
+                        if not torch.isfinite(clip_fraction):
+                            clip_fraction = torch.tensor(0.0, device=self.device)
+
+                # Accumulate
+                total_policy_loss += float(policy_loss.detach().cpu().item())
+                total_value_loss += float(value_loss.detach().cpu().item())
+                total_entropy += float(entropy.detach().cpu().item())
+                total_approx_kl += float(approx_kl.detach().cpu().item())
+                total_clip_fraction += float(clip_fraction.detach().cpu().item())
+                num_updates += 1
+
+            # Per-epoch callback
+            if metrics_callback is not None and num_minibatches > 0:
+                metrics_callback.on_training_epoch(
+                    epoch=epoch + 1,
+                    n_epochs=self.n_epochs,
+                    policy_loss=total_policy_loss / max(1, num_updates),
+                    value_loss=total_value_loss / max(1, num_updates),
+                    entropy=total_entropy / max(1, num_updates),
+                )
+
+        # Aggregate metrics
+        avg_policy_loss = total_policy_loss / max(1, num_updates)
+        avg_value_loss = total_value_loss / max(1, num_updates)
+        avg_entropy = total_entropy / max(1, num_updates)
+        avg_approx_kl = total_approx_kl / max(1, num_updates)
+        avg_clip_fraction = total_clip_fraction / max(1, num_updates)
+
+        # Explained variance
+        with torch.no_grad():
+            vpred = flat_td.get("state_value").flatten()
+            vtarget = flat_td.get("value_target").flatten()
+            var_vtarget = torch.var(vtarget)
+            var_residual = torch.var(vtarget - vpred)
+            explained_var = (1 - (var_residual / (var_vtarget + 1e-8))).item()
+
+        return {
+            "policy_loss": avg_policy_loss,
+            "value_loss": avg_value_loss,
+            "entropy": avg_entropy,
+            "approx_kl": avg_approx_kl,
+            "clip_fraction": avg_clip_fraction,
+            "explained_variance": explained_var,
+            "n_updates": int(num_updates),
+        }
+    def train(
+            self,
+            total_timesteps: int,
+            eval_callback: Optional[Callable] = None,
+            rollout_callback: Optional[Callable] = None,
+            callback_manager: Optional[Any] = None,
+            logger: Optional[Any] = None,
+        ) -> Tuple[nn.Module, nn.Module]:
+            """
+            Train the PPO agent.
             
-            # Prepare metrics for callback
-            formatted_metrics = {
-                "approx_kl": f"{train_metrics['approx_kl']:.4f}",
-                "clip_fraction": f"{train_metrics['clip_fraction']:.3f}",
-                "clip_range": f"{self.learner.clip_range:.1f}",
-                "entropy_loss": f"{-train_metrics['entropy']:.5f}",
-                "explained_variance": f"{train_metrics['explained_variance']:.2f}",
-                "learning_rate": f"{self.optimizer.param_groups[0]['lr']:.4f}",
-                "loss": f"{train_metrics['policy_loss'] + train_metrics['value_loss']:.3f}",
-                "n_updates": str(train_metrics["n_updates"]),
-                "policy_gradient_loss": f"{train_metrics['policy_loss']:.3f}",
-                "value_loss": f"{train_metrics['value_loss']:.2f}",
-            }
-            training_time = time.time() - training_start_time
-            print(f"Time to train {training_time:.2f}s\n")
-            # ==================== Evaluation ====================
-            eval_start_time = time.time()
-            print('---------------evaluation started---------------')
-            if eval_callback is not None and eval_callback.should_evaluate(iteration + 1):
-                eval_callback.on_evaluation_start(iteration + 1, self.global_step)
+            Args:
+                total_timesteps: Total timesteps to train
+                eval_callback: Optional evaluation callback
+                rollout_callback: Optional rollout callback
+                callback_manager: Optional callback manager for stats accumulation
+                logger: Optional logger
                 
-                # Run evaluation to get metrics
-                eval_metrics = self._run_evaluation(
+            Returns:
+                Tuple of (trained_actor, trained_critic)
+            """
+            if total_timesteps <= 0:
+                print("No training steps requested (total_timesteps <= 0)")
+                return self.actor, self.critic
+            
+            # Calculate training parameters
+            steps_per_iteration = self.n_steps * self.n_envs
+            n_iterations = total_timesteps // steps_per_iteration
+            
+            print(f"\n{'='*60}")
+            print(f"Starting TorchRL PPO Training")
+            print(f"{'='*60}")
+            print(f"Total timesteps: {total_timesteps:,}")
+            print(f"Steps per iteration: {steps_per_iteration}")
+            print(f"Number of iterations: {n_iterations}")
+            print(f"Mini-batch size: {self.batch_size}")
+            print(f"Optimization epochs per iteration: {self.n_epochs}")
+            print(f"{'='*60}\n")
+            
+            # Training loop
+            for iteration in range(n_iterations):
+                iteration_start_time = time.time()
+                print(f"\nIteration {iteration + 1}/{n_iterations}")
+                
+                # ==================== Data Collection ====================
+                if rollout_callback is not None:
+                    rollout_callback.on_rollout_start()
+                
+                experiences, stats = collect_rollouts(
+                    env=self.train_env,
                     actor=self.actor,
-                    eval_env=self.eval_env,
-                    sampler=self.sampler,
-                    data_handler=self.data_handler,
-                    callback=eval_callback,
+                    critic=self.critic,
+                    n_envs=self.n_envs,
+                    n_steps=self.n_steps,
+                    device=self.device,
+                    rollout_callback=(
+                        rollout_callback.on_step if rollout_callback is not None else None
+                    ),
                 )
                 
-                # Notify callback of evaluation end with actual metrics
-                is_new_best = eval_callback.on_evaluation_end(
-                    iteration + 1, self.global_step, eval_metrics
+                if rollout_callback is not None:
+                    rollout_callback.on_rollout_end()
+                
+                # Update global step counter
+                self.global_step += steps_per_iteration
+                
+                print(f"  Collected {steps_per_iteration} transitions")
+                
+                # Accumulate episode stats
+                if callback_manager is not None and stats["episode_info"]:
+                    if self.verbose_cb:
+                        print(f"[PPOAgent] Accumulating {len(stats['episode_info'])} episode stats for training")
+                    callback_manager.accumulate_episode_stats(stats["episode_info"], mode="train")
+                print(f"  Rollout time: {time.time() - iteration_start_time:.2f}s\n")
+                # ==================== Policy Optimization ====================
+                print(f"Training model")
+                training_start_time = time.time()
+                
+                train_metrics = self.learn(
+                    experiences=experiences,
+                    n_steps=self.n_steps,
+                    n_envs=self.n_envs,
+                    metrics_callback=callback_manager.train_callback if callback_manager else None,
                 )
                 
-                if is_new_best and self.model_save_path is not None:
-                    self.best_model_path = self._save_checkpoint(
+                # Log training metrics
+                if logger is not None:
+                    logger.log_training_step(
+                        iteration=iteration + 1,
+                        global_step=self.global_step,
+                        policy_loss=train_metrics["policy_loss"],
+                        value_loss=train_metrics["value_loss"],
+                        entropy=train_metrics["entropy"],
+                        mean_reward=None,
+                    )
+                
+                # Prepare metrics for callback
+                formatted_metrics = {
+                    "approx_kl": f"{train_metrics['approx_kl']:.4f}",
+                    "clip_fraction": f"{train_metrics['clip_fraction']:.3f}",
+                    "clip_range": f"{self.clip_range:.1f}",
+                    "entropy_loss": f"{-train_metrics['entropy']:.5f}",
+                    "explained_variance": f"{train_metrics['explained_variance']:.2f}",
+                    "learning_rate": f"{self.optimizer.param_groups[0]['lr']:.4f}",
+                    "loss": f"{train_metrics['policy_loss'] + train_metrics['value_loss']:.3f}",
+                    "n_updates": str(train_metrics["n_updates"]),
+                    "policy_gradient_loss": f"{train_metrics['policy_loss']:.3f}",
+                    "value_loss": f"{train_metrics['value_loss']:.2f}",
+                }
+                training_time = time.time() - training_start_time
+                print(f"Time to train {training_time:.2f}s\n")
+                # ==================== Evaluation ====================
+                eval_start_time = time.time()
+                print('---------------evaluation started---------------')
+                if eval_callback is not None and eval_callback.should_evaluate(iteration + 1):
+                    eval_callback.on_evaluation_start(iteration + 1, self.global_step)
+                    
+                    # Run evaluation to get metrics
+                    eval_metrics = self._run_evaluation(
+                        actor=self.actor,
+                        eval_env=self.eval_env,
+                        sampler=self.sampler,
+                        data_handler=self.data_handler,
+                        callback=eval_callback,
+                    )
+                    
+                    # Notify callback of evaluation end with actual metrics
+                    is_new_best = eval_callback.on_evaluation_end(
+                        iteration + 1, self.global_step, eval_metrics
+                    )
+                    
+                    if is_new_best and self.model_save_path is not None:
+                        self.best_model_path = self._save_checkpoint(
+                            epoch=iteration + 1,
+                            timestep=self.global_step,
+                            metrics=eval_metrics,
+                            prefix="best_eval",
+                        )
+                        print(f"  ★ New best model saved!")
+                print(f'---------------evaluation finished---------------  took {time.time() - eval_start_time:.2f} seconds')
+                # ==================== End of Iteration ====================
+                if callback_manager is not None:
+                    callback_manager.on_iteration_end(
+                        iteration=iteration + 1,
+                        global_step=self.global_step,
+                        train_metrics=formatted_metrics,
+                        n_envs=self.n_envs,
+                    )
+                
+                # ==================== Periodic Checkpoint ====================
+                if (iteration + 1) % 10 == 0 and self.model_save_path is not None:
+                    self._save_checkpoint(
                         epoch=iteration + 1,
                         timestep=self.global_step,
-                        metrics=eval_metrics,
-                        prefix="best_eval",
+                        metrics=train_metrics,
+                        prefix="last_epoch",
                     )
-                    print(f"  ★ New best model saved!")
-            print(f'---------------evaluation finished---------------  took {time.time() - eval_start_time:.2f} seconds')
-            # ==================== End of Iteration ====================
-            if callback_manager is not None:
-                callback_manager.on_iteration_end(
-                    iteration=iteration + 1,
-                    global_step=self.global_step,
-                    train_metrics=formatted_metrics,
-                    n_envs=self.n_envs,
-                )
             
-            # ==================== Periodic Checkpoint ====================
-            if (iteration + 1) % 10 == 0 and self.model_save_path is not None:
-                self._save_checkpoint(
-                    epoch=iteration + 1,
-                    timestep=self.global_step,
-                    metrics=train_metrics,
-                    prefix="last_epoch",
-                )
-        
-        print(f"\n{'='*60}")
-        print(f"Training completed!")
-        print(f"{'='*60}\n")
-        
-        return self.actor, self.critic
+            print(f"\n{'='*60}")
+            print(f"Training completed!")
+            print(f"{'='*60}\n")
+            
+            return self.actor, self.critic
     
     def _run_evaluation(
         self,

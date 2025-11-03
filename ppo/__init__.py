@@ -13,9 +13,7 @@ from .ppo_model import (
     create_torchrl_modules,
 )
 
-from .ppo_rollout import RolloutCollector, collect_rollouts
-
-from .ppo_learner import PPOLearner
+from .ppo_rollout import collect_rollouts
 
 from .ppo_agent import PPOAgent
 
@@ -27,6 +25,5 @@ __all__ = [
     "create_torchrl_modules",
     "RolloutCollector",
     "collect_rollouts",
-    "PPOLearner",
     "PPOAgent",
 ]
