@@ -184,8 +184,7 @@ class PPOAgent:
             if callback_manager is not None and stats["episode_info"]:
                 if self.verbose_cb:
                     print(f"[PPOAgent] Accumulating {len(stats['episode_info'])} episode stats for training")
-                for info in stats["episode_info"]:
-                    callback_manager.accumulate_episode_stats([info], mode="train")
+                callback_manager.accumulate_episode_stats(stats["episode_info"], mode="train")
             print(f"  Rollout time: {time.time() - iteration_start_time:.2f}s\n")
             # ==================== Policy Optimization ====================
             print(f"Training model")

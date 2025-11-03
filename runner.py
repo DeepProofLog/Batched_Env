@@ -73,9 +73,9 @@ if __name__ == "__main__":
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 1,
+        'n_envs': 128,
         'n_steps': 128,
-        'n_eval_envs': 1,
+        'n_eval_envs': 128,
         'batch_size': 128,
 
         # Env params

@@ -456,94 +456,82 @@ def _evaluate(
     actor.eval()
     
     # Prepare datasets
-    train_data = data_handler.train_queries[:args.n_train_queries]
     valid_data = data_handler.valid_queries[:args.n_eval_queries]
     test_data = data_handler.test_queries[:args.n_test_queries]
     
-    train_depths = (
-        data_handler.train_depths[:args.n_train_queries]
-        if hasattr(data_handler, 'train_depths') and data_handler.train_depths is not None
-        else None
-    )
     valid_depths = (
-        data_handler.valid_depths[:args.n_eval_queries]
-        if hasattr(data_handler, 'valid_depths') and data_handler.valid_depths is not None
+        data_handler.valid_queries_depths[:args.n_eval_queries]
+        if hasattr(data_handler, 'valid_queries_depths') and data_handler.valid_queries_depths is not None
         else None
     )
     test_depths = (
-        data_handler.test_depths[:args.n_test_queries]
-        if hasattr(data_handler, 'test_depths') and data_handler.test_depths is not None
+        data_handler.test_queries_depths[:args.n_test_queries]
+        if hasattr(data_handler, 'test_queries_depths') and data_handler.test_queries_depths is not None
         else None
     )
     
     # Evaluate on each split
-    metrics_train = {}
     metrics_valid = {}
     metrics_test = {}
     
     # Valid set
     if len(valid_data) > 0:
         print("\n--- Evaluating on VALID set ---")
-        try:
-            # Create depth tracker for this evaluation
-            depth_tracker = _EvalDepthRewardTracker()
-            
-            metrics_valid = eval_corruptions_torchrl(
-                actor=actor,
-                env=eval_env,
-                data=valid_data,
-                sampler=sampler,
-                n_corruptions=args.eval_neg_samples,
-                deterministic=True,
-                verbose=1,
-                plot=False,
-                evaluation_mode='rl_only',
-                corruption_scheme=['head', 'tail'],
-                info_callback=depth_tracker,
-                data_depths=valid_depths,
-            )
-            
-            # Merge depth-based metrics into results
-            depth_metrics = depth_tracker.metrics()
-            metrics_valid.update(depth_metrics)
-            
-            print_eval_info("VALID", metrics_valid)
-        except Exception as e:
-            print(f"Warning: Valid evaluation failed: {e}")
+        # Create depth tracker for this evaluation
+        depth_tracker = _EvalDepthRewardTracker()
+        
+        metrics_valid = eval_corruptions_torchrl(
+            actor=actor,
+            env=eval_env,
+            data=valid_data,
+            sampler=sampler,
+            n_corruptions=args.eval_neg_samples,
+            deterministic=True,
+            verbose=1,
+            plot=False,
+            evaluation_mode='rl_only',
+            corruption_scheme=['head', 'tail'],
+            info_callback=depth_tracker,
+            data_depths=valid_depths,
+        )
+        
+        # Merge depth-based metrics into results
+        depth_metrics = depth_tracker.metrics()
+        metrics_valid.update(depth_metrics)
+        print_eval_info("VALID", metrics_valid)
     
     # Test set (full evaluation)
     if len(test_data) > 0:
         print("\n--- Evaluating on TEST set ---")
-        try:
-            # Create depth tracker for this evaluation
-            depth_tracker = _EvalDepthRewardTracker()
-            
-            metrics_test = eval_corruptions_torchrl(
-                actor=actor,
-                env=eval_env,
-                data=test_data,
-                sampler=sampler,
-                n_corruptions=args.test_neg_samples,
-                deterministic=True,
-                verbose=1,
-                plot=args.plot_trajectories if hasattr(args, 'plot_trajectories') else False,
-                evaluation_mode='rl_only',
-                corruption_scheme=['head', 'tail'],
-                info_callback=depth_tracker,
-                data_depths=test_depths,
-            )
-            
-            # Merge depth-based metrics into results
-            depth_metrics = depth_tracker.metrics()
-            metrics_test.update(depth_metrics)
-            
-            print_eval_info("TEST", metrics_test)
-        except Exception as e:
-            print(f"Warning: Test evaluation failed: {e}")
+        # Create depth tracker for this evaluation
+        depth_tracker = _EvalDepthRewardTracker()
+        
+        metrics_test = eval_corruptions_torchrl(
+            actor=actor,
+            env=eval_env,
+            data=test_data,
+            sampler=sampler,
+            n_corruptions=args.test_neg_samples,
+            deterministic=True,
+            verbose=1,
+            plot=args.plot_trajectories if hasattr(args, 'plot_trajectories') else False,
+            evaluation_mode='rl_only',
+            corruption_scheme=['head', 'tail'],
+            info_callback=depth_tracker,
+            data_depths=test_depths,
+        )
+        
+        # Merge depth-based metrics into results
+        depth_metrics = depth_tracker.metrics()
+        metrics_test.update(depth_metrics)
+        print_eval_info("TEST", metrics_test)
     
     print("\n" + "="*60)
     print("Final Evaluation Complete")
     print("="*60 + "\n")
+
+    # set metrics train as metrics valid with all 0s
+    metrics_train = {key: 0.0 for key in metrics_valid.keys()}
     
     return metrics_train, metrics_valid, metrics_test
 

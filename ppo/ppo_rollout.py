@@ -37,8 +37,8 @@ class RolloutCollector:
         self.device = device
         
         # Episode tracking
-        self.env_episode_rewards = [0.0] * n_envs
-        self.env_episode_lengths = [0] * n_envs
+        self.env_episode_rewards = torch.zeros(n_envs, device=device)
+        self.env_episode_lengths = torch.zeros(n_envs, dtype=torch.int, device=device)
         
         # Statistics
         self.episode_rewards = []
@@ -47,8 +47,8 @@ class RolloutCollector:
     
     def reset_episode_stats(self) -> None:
         """Reset episode statistics for a new rollout."""
-        self.env_episode_rewards = [0.0] * self.n_envs
-        self.env_episode_lengths = [0] * self.n_envs
+        self.env_episode_rewards.zero_()
+        self.env_episode_lengths.zero_()
         self.episode_rewards = []
         self.episode_lengths = []
         self.episode_info = []
@@ -93,10 +93,9 @@ class RolloutCollector:
             label = self._extract_scalar(metadata_source, "label", env_idx, default=1)
             
             # Extract query_depth
-            # Note: -1 is used as a sentinel for "no depth" in the environment, so convert it to None
-            # But 0 is a valid depth value and should be preserved
-            query_depth_val = self._extract_scalar(metadata_source, "query_depth", env_idx, default=None)
-            query_depth = query_depth_val if query_depth_val not in (-1, None) else None
+            # Note: -1 is used as a sentinel for "no depth" in the environment
+            # The metrics collector will handle -1 as "unknown" depth
+            query_depth = self._extract_scalar(metadata_source, "query_depth", env_idx, default=-1)
             
             # Extract is_success
             is_success = bool(self._extract_scalar(metadata_source, "is_success", env_idx, default=False))
@@ -116,39 +115,123 @@ class RolloutCollector:
         
         return None
     
-    def _extract_scalar(
+    def update_episode_stats_batched(
+        self,
+        rewards: torch.Tensor,
+        dones: torch.Tensor,
+        next_td: TensorDict,
+    ) -> List[Dict[str, Any]]:
+        """
+        Update episode statistics for all environments in batch.
+        
+        Args:
+            rewards: Batch of rewards received (n_envs,)
+            dones: Batch of done flags (n_envs,)
+            next_td: Next state TensorDict
+            
+        Returns:
+            List of episode info dicts for finished episodes
+        """
+        self.env_episode_rewards += rewards
+        self.env_episode_lengths += 1
+        
+        finished_infos = []
+        finished_mask = dones.bool()
+        
+        if finished_mask.any():
+            # Record finished episodes
+            finished_rewards = self.env_episode_rewards[finished_mask]
+            finished_lengths = self.env_episode_lengths[finished_mask]
+            
+            self.episode_rewards.extend(finished_rewards.tolist())
+            self.episode_lengths.extend(finished_lengths.tolist())
+            
+            # Extract metadata for finished episodes
+            metadata_source = next_td.get("next", next_td)
+            
+            # Extract all metadata in batch, handling missing keys
+            labels_all = torch.full((self.n_envs,), 1, device=self.device)  # Default to 1
+            if "label" in metadata_source.keys():
+                labels_all = self._extract_scalars_batched(metadata_source, "label")
+            
+            query_depths_all = torch.full((self.n_envs,), -1, device=self.device)  # Default to -1 (no depth)
+            if "query_depth" in metadata_source.keys():
+                query_depths_all = self._extract_scalars_batched(metadata_source, "query_depth")
+            
+            is_success_all = torch.zeros(self.n_envs, dtype=torch.bool, device=self.device)  # Default to False
+            if "is_success" in metadata_source.keys():
+                is_success_all = self._extract_scalars_batched(metadata_source, "is_success").bool()
+            
+            # Filter for finished episodes
+            labels_finished = labels_all[finished_mask]
+            query_depths_finished = query_depths_all[finished_mask]
+            is_success_finished = is_success_all[finished_mask]
+            
+            # Create episode info dicts using list comprehension
+            finished_rewards_list = finished_rewards.tolist()
+            finished_lengths_list = finished_lengths.tolist()
+            labels_list = labels_finished.tolist()
+            query_depths_list = query_depths_finished.tolist()
+            is_success_list = is_success_finished.tolist()
+            
+            finished_infos = [
+                {
+                    "episode": {
+                        "r": r,
+                        "l": l,
+                    },
+                    "label": int(label),
+                    "query_depth": qd,
+                    "is_success": bool(success),
+                }
+                for r, l, label, qd, success in zip(
+                    finished_rewards_list,
+                    finished_lengths_list,
+                    labels_list,
+                    query_depths_list,
+                    is_success_list
+                )
+            ]
+            
+            # Reset counters for finished environments
+            self.env_episode_rewards[finished_mask] = 0.0
+            self.env_episode_lengths[finished_mask] = 0
+        
+        return finished_infos
+    
+    def _extract_scalars_batched(
         self,
         tensordict: TensorDict,
         key: str,
-        env_idx: int,
-        default: Any = None,
-    ) -> Any:
+    ) -> torch.Tensor:
         """
-        Extract a scalar value from a TensorDict.
+        Extract scalar values from a TensorDict for all environments.
         
         Args:
             tensordict: TensorDict to extract from
             key: Key to extract
-            env_idx: Environment index
-            default: Default value if key not found
             
         Returns:
-            Extracted scalar value or default
-        """
-        try:
-            if key not in tensordict.keys():
-                return default
+            Tensor of extracted scalar values (n_envs,) on self.device
             
+        Raises:
+            KeyError: If the key is not found in the tensordict
+            RuntimeError: If extraction fails for any other reason
+        """
+        if key not in tensordict.keys():
+            raise KeyError(f"Key '{key}' not found in tensordict")
+        
+        try:
             tensor = tensordict[key]
             if tensor.dim() > 0:
                 tensor_reshaped = tensor.reshape(self.n_envs, -1)
-                value = tensor_reshaped[env_idx, 0].item()
+                values = tensor_reshaped[:, 0].to(self.device)
             else:
-                value = tensor.item()
+                values = torch.full((self.n_envs,), tensor.item(), device=self.device)
             
-            return value
+            return values
         except Exception as e:
-            return default
+            raise RuntimeError(f"Failed to extract scalar values for key '{key}': {e}")
     
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -268,19 +351,13 @@ def collect_rollouts(
         experiences.append(experience)
         
         # Track episode statistics
-        reward_tensor = reward.reshape(n_envs, -1)
-        done_tensor = done.reshape(n_envs, -1)
+        reward_tensor = reward.reshape(n_envs, -1).squeeze(-1).to(device)
+        done_tensor = done.reshape(n_envs, -1).squeeze(-1).to(device)
 
-        for env_idx in range(n_envs):
-            env_reward = reward_tensor[env_idx, 0].item()
-            env_done = bool(done_tensor[env_idx, 0].item())
-            
-            episode_info = collector.update_episode_stats(
-                env_idx, env_reward, env_done, next_td
-            )
-            
-            if episode_info is not None:
-                collector.episode_info.append(episode_info)
+        finished_infos = collector.update_episode_stats_batched(
+            reward_tensor, done_tensor, next_td
+        )
+        collector.episode_info.extend(finished_infos)
         
         # Update state for next iteration
         if "next" in next_td.keys():

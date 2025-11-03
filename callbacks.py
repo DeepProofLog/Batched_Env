@@ -32,10 +32,12 @@ def _format_depth_key(depth_value: Any) -> str:
         depth_value: Raw depth value (int, None, -1, etc.)
         
     Returns:
-        Normalized depth string ("0", "1", "2", ..., or "unknown")
+        Normalized depth string ("0", "1", "2", ..., "unknown", or "none")
     """
-    if depth_value in (None, -1):
+    if depth_value == -1:
         return "unknown"
+    if depth_value is None:
+        return "none"
     try:
         return str(int(depth_value))
     except (TypeError, ValueError):
