@@ -184,7 +184,14 @@ def print_formatted_metrics(
                 print(f"| {'train/':<23} | {'':<24} |")
             for key in other_keys:
                 value = extra_metrics[key]
-                value_str = str(value)
+                try:
+                    num_val = float(value)
+                    if num_val.is_integer():
+                        value_str = str(int(num_val))
+                    else:
+                        value_str = f"{num_val:.3f}"
+                except (ValueError, TypeError):
+                    value_str = str(value)
                 print(f"|    {key:<20} | {value_str:<24} |")
     
     # Global step if provided
@@ -221,13 +228,15 @@ class DetailedMetricsCollector:
         - rwd_d_0_neg, rwd_d_1_neg, ..., rwd_unknown_neg
     """
     
-    def __init__(self, collect_detailed: bool = True):
+    def __init__(self, collect_detailed: bool = True, verbose: bool = False):
         """
         Args:
             collect_detailed: If True, collect detailed breakdown by depth.
                             If False, only collect aggregate stats by label.
+            verbose: If True, print debug information during collection.
         """
         self.collect_detailed = collect_detailed
+        self.verbose = verbose
         self.reset()
     
     def reset(self):
@@ -236,6 +245,8 @@ class DetailedMetricsCollector:
         self._episode_stats: defaultdict[Tuple[int, str], List[Dict[str, float]]] = defaultdict(list)
         # Track last episode ID to avoid duplicates
         self._last_episode_id: Dict[int, int] = {}
+        if self.verbose:
+            print("[DetailedMetricsCollector] Stats reset")
     
     def accumulate(self, infos: List[Dict[str, Any]]):
         """
@@ -250,28 +261,42 @@ class DetailedMetricsCollector:
                    - "is_success": optional bool
                    - "episode_idx": optional int for duplicate detection
         """
+        if self.verbose:
+            print(f"[DetailedMetricsCollector] Accumulating stats from {len(infos)} infos")
+        
+        episodes_added = 0
         for env_idx, info in enumerate(infos):
             if not info or "episode" not in info:
+                if self.verbose and info:
+                    print(f"[DetailedMetricsCollector] Info {env_idx}: No episode data")
                 continue
             
             label = info.get("label")
             if label is None:
+                if self.verbose:
+                    print(f"[DetailedMetricsCollector] Info {env_idx}: No label")
                 continue
             
             episode_data = info.get("episode")
             if not isinstance(episode_data, dict):
+                if self.verbose:
+                    print(f"[DetailedMetricsCollector] Info {env_idx}: Episode data not a dict")
                 continue
             
             # Check for duplicate episodes (same episode reported multiple times)
             episode_idx = info.get("episode_idx")
             if episode_idx is not None:
                 if self._last_episode_id.get(env_idx) == episode_idx:
+                    if self.verbose:
+                        print(f"[DetailedMetricsCollector] Info {env_idx}: Duplicate episode_idx {episode_idx}")
                     continue
                 self._last_episode_id[env_idx] = episode_idx
             else:
                 # Fallback: use object id if episode_idx not available
                 episode_id = id(episode_data)
                 if self._last_episode_id.get(env_idx) == episode_id:
+                    if self.verbose:
+                        print(f"[DetailedMetricsCollector] Info {env_idx}: Duplicate episode_id {episode_id}")
                     continue
                 self._last_episode_id[env_idx] = episode_id
             
@@ -284,6 +309,8 @@ class DetailedMetricsCollector:
             try:
                 label_value = int(label)
             except (TypeError, ValueError):
+                if self.verbose:
+                    print(f"[DetailedMetricsCollector] Info {env_idx}: Invalid label {label}")
                 continue
             
             # Format depth for consistent naming
@@ -297,6 +324,15 @@ class DetailedMetricsCollector:
                 "depth_raw": depth_value,
             }
             self._episode_stats[(label_value, depth_key)].append(stats)
+            episodes_added += 1
+            
+            if self.verbose:
+                print(f"[DetailedMetricsCollector] Info {env_idx}: Added episode - "
+                      f"label={label_value}, depth={depth_key}, reward={reward}, length={length}, success={success_flag}")
+        
+        if self.verbose:
+            print(f"[DetailedMetricsCollector] Accumulated {episodes_added} new episodes, "
+                  f"total {sum(len(eps) for eps in self._episode_stats.values())} episodes")
     
     def compute_metrics(self) -> Dict[str, str]:
         """
@@ -310,9 +346,15 @@ class DetailedMetricsCollector:
             - By label: len_pos, len_neg, proven_pos, proven_neg, rwd_pos, rwd_neg
             - By depth (if detailed): len_d_X_pos/neg, proven_d_X_pos/neg, rwd_d_X_pos/neg
         """
+        if self.verbose:
+            total_episodes = sum(len(eps) for eps in self._episode_stats.values())
+            print(f"[DetailedMetricsCollector] Computing metrics from {total_episodes} episodes")
+        
         metrics = {}
         
         if not self._episode_stats:
+            if self.verbose:
+                print("[DetailedMetricsCollector] No episode stats to compute")
             return metrics
         
         # ----------------------------------------------------------------
@@ -437,6 +479,7 @@ class EvaluationCallback:
         save_path: Optional[Path] = None,
         verbose: bool = True,
         collect_detailed: bool = True,  # NEW: Enable detailed depth breakdown
+        verbose_cb: bool = False,  # NEW: Verbose callback debugging
     ):
         """
         Args:
@@ -451,6 +494,7 @@ class EvaluationCallback:
             verbose: Whether to print detailed evaluation info
             collect_detailed: If True, collect detailed breakdown by depth.
                             If False, only collect aggregate stats.
+            verbose_cb: If True, print debug information during callback collection.
         """
         self.eval_env = eval_env
         self.sampler = sampler
@@ -461,9 +505,13 @@ class EvaluationCallback:
         self.best_metric = best_metric
         self.save_path = Path(save_path) if save_path else None
         self.verbose = verbose
+        self.verbose_cb = verbose_cb
         
         # Use the common detailed metrics collector
-        self.metrics_collector = DetailedMetricsCollector(collect_detailed=collect_detailed)
+        self.metrics_collector = DetailedMetricsCollector(
+            collect_detailed=collect_detailed,
+            verbose=verbose_cb
+        )
         
         # Tracking
         self.best_metric_value = float('-inf')
@@ -476,23 +524,25 @@ class EvaluationCallback:
     def on_evaluation_start(self, iteration: int, global_step: int):
         """Called at the start of evaluation."""
         self.current_iteration = iteration
-        if self.verbose:
-            print('---------------evaluation started---------------')
+        if self.verbose_cb:
+            print(f"[EvaluationCallback] Starting evaluation at iteration {iteration}, step {global_step}")
         self.metrics_collector.reset()
         self.eval_start_time = time.time()
     
     def accumulate_episode_stats(self, infos: List[Dict[str, Any]]):
         """Accumulate episode stats by label and depth using the common collector."""
+        if self.verbose_cb:
+            print(f"[EvaluationCallback] Accumulating episode stats from {len(infos)} infos")
         self.metrics_collector.accumulate(infos)
     
     def compute_metrics(self) -> Dict[str, Any]:
         """Compute evaluation metrics from collected stats."""
+        if self.verbose_cb:
+            print("[EvaluationCallback] Computing metrics")
         return self.metrics_collector.compute_metrics()
     
     def on_evaluation_end(self, iteration: int, global_step: int, eval_metrics: Dict[str, Any]):
-        """Called when evaluation is complete."""
-        elapsed = time.time() - self.eval_start_time
-        
+        """Called when evaluation is complete."""        
         # Get global statistics from DetailedMetricsCollector
         # These include: ep_len, ep_rew, len_pos, len_neg, proven_pos, proven_neg, rwd_pos, rwd_neg
         rollout_metrics = self.compute_metrics()
@@ -542,8 +592,6 @@ class EvaluationCallback:
                 extra_metrics=extra_metrics,
                 global_step=global_step,
             )
-            print(f'---------------evaluation finished---------------  took {elapsed:.2f} seconds')
-        
         return is_new_best
     
     def _convert_episode_len_metrics(self, metrics: Dict[str, Any]):
@@ -594,6 +642,7 @@ class TrainingMetricsCallback:
         log_interval: int = 1,
         verbose: bool = True,
         collect_detailed: bool = True,
+        verbose_cb: bool = False,  # NEW: Verbose callback debugging
     ):
         """
         Args:
@@ -601,18 +650,25 @@ class TrainingMetricsCallback:
             verbose: Whether to print metrics
             collect_detailed: If True, collect detailed breakdown by depth.
                             If False, only collect aggregate stats.
+            verbose_cb: If True, print debug information during callback collection.
         """
         self.log_interval = log_interval
         self.verbose = verbose
+        self.verbose_cb = verbose_cb
         
         # Use the common detailed metrics collector
-        self.metrics_collector = DetailedMetricsCollector(collect_detailed=collect_detailed)
+        self.metrics_collector = DetailedMetricsCollector(
+            collect_detailed=collect_detailed,
+            verbose=verbose_cb
+        )
         
         self.train_start_time = None
         self.training_epoch_losses = []  # Track losses per epoch
     
     def on_training_start(self):
         """Called at the start of training."""
+        if self.verbose_cb:
+            print("[TrainingMetricsCallback] Training started")
         self.train_start_time = time.time()
     
     def on_training_epoch(self, epoch: int, n_epochs: int, policy_loss: float, value_loss: float, entropy: float):
@@ -639,6 +695,8 @@ class TrainingMetricsCallback:
     
     def accumulate_episode_stats(self, infos: List[Dict[str, Any]]):
         """Accumulate episode stats during training using the common collector."""
+        if self.verbose_cb:
+            print(f"[TrainingMetricsCallback] Accumulating episode stats from {len(infos)} infos")
         self.metrics_collector.accumulate(infos)
     
     def on_iteration_end(
@@ -649,9 +707,15 @@ class TrainingMetricsCallback:
         n_envs: int = 1,
     ):
         """Called at the end of a training iteration."""
+        if self.verbose_cb:
+            print(f"[TrainingMetricsCallback] Iteration {iteration} ended at step {global_step}")
+        
         if not self.verbose or iteration % self.log_interval != 0:
             self.metrics_collector.reset()
             return
+        
+        if self.verbose_cb:
+            print("[TrainingMetricsCallback] Computing and printing metrics")
         
         # Compute rollout metrics using the common collector
         rollout_metrics = self.metrics_collector.compute_metrics()
@@ -719,7 +783,7 @@ class RolloutProgressCallback:
     def on_rollout_start(self):
         """Called at the start of rollout collection."""
         self.current_steps = 0
-        self.start_time = time.time()
+        # self.start_time = time.time()
         if self.verbose:
             print("Collecting rollouts")
     
@@ -740,10 +804,11 @@ class RolloutProgressCallback:
     
     def on_rollout_end(self):
         """Called when rollout collection is complete."""
-        if self.start_time is not None:
-            elapsed = time.time() - self.start_time
-            if self.verbose:
-                print(f"Time to collect_rollouts {elapsed:.2f}")
+        pass
+        # if self.start_time is not None:
+        #     elapsed = time.time() - self.start_time
+        #     if self.verbose:
+        #         print(f"Time to collect_rollouts {elapsed:.2f}")
 
 
 # ============================================================================
@@ -804,8 +869,12 @@ class TorchRLCallbackManager:
             mode: 'train' or 'eval'
         """
         if mode == "eval" and self.eval_callback:
+            if hasattr(self.eval_callback, 'verbose_cb') and self.eval_callback.verbose_cb:
+                print(f"[CallbackManager] Forwarding {len(infos)} infos to eval callback")
             self.eval_callback.accumulate_episode_stats(infos)
         elif mode == "train" and self.train_callback:
+            if hasattr(self.train_callback, 'verbose_cb') and self.train_callback.verbose_cb:
+                print(f"[CallbackManager] Forwarding {len(infos)} infos to train callback")
             self.train_callback.accumulate_episode_stats(infos)
     
     def should_evaluate(self, iteration: int) -> bool:

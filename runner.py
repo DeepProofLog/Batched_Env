@@ -73,9 +73,9 @@ if __name__ == "__main__":
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 32,
-        'n_steps':32,
-        'n_eval_envs': 32,
+        'n_envs': 1,
+        'n_steps': 128,
+        'n_eval_envs': 1,
         'batch_size': 128,
 
         # Env params
@@ -124,6 +124,10 @@ if __name__ == "__main__":
         'eval_best_metric': 'mrr',
         'plot_trajectories': False,
         'plot': False,
+        'depth_info': False,
+        'verbose_cb': False,  # Verbose callback debugging
+        'verbose_env': 0,  # Environment verbosity level (0=quiet, 1=verbose)
+        'verbose_prover': 0,  # Prover verbosity level (0=quiet, 1=verbose)
         'data_path': './data/',
         'models_path': 'models/',
         'rules_file': 'rules.txt',

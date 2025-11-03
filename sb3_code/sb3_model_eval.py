@@ -408,12 +408,9 @@ def _configure_env_batch(
         sequence = [query] + negatives
         inner_env = env.envs[i].env
         batch_idx = batch_start_idx + i
-        pos_depth = (
-            data_depths[batch_idx]
-            if data_depths is not None and batch_idx < len(data_depths)
-            else None
-        )
-        depths = [pos_depth] + [None] * len(negatives)
+        # for the pos retrieve the depth, and for the negatives set -1
+        pos_depth = data_depths[batch_idx] if data_depths is not None else None
+        depths = [pos_depth] + [-1] * len(negatives)
         inner_env.mode = "eval"
         inner_env.queries = sequence
         inner_env.labels = [1] + [0] * len(negatives)

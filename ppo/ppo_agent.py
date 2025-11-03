@@ -46,6 +46,7 @@ class PPOAgent:
         device: torch.device = torch.device('cpu'),
         model_save_path: Optional[Path] = None,
         eval_best_metric: str = "mrr_mean",
+        verbose_cb: bool = False,  # NEW: Verbose callback debugging
     ):
         """
         Initialize the PPO agent.
@@ -72,6 +73,7 @@ class PPOAgent:
             device: Device to use
             model_save_path: Path to save models
             eval_best_metric: Metric to use for best model selection
+            verbose_cb: If True, print debug information during callback collection
         """
         self.actor = actor
         self.critic = critic
@@ -81,6 +83,7 @@ class PPOAgent:
         self.sampler = sampler
         self.data_handler = data_handler
         self.args = args
+        self.verbose_cb = verbose_cb
         
         self.n_envs = n_envs
         self.n_steps = n_steps
@@ -179,9 +182,11 @@ class PPOAgent:
             
             # Accumulate episode stats
             if callback_manager is not None and stats["episode_info"]:
+                if self.verbose_cb:
+                    print(f"[PPOAgent] Accumulating {len(stats['episode_info'])} episode stats for training")
                 for info in stats["episode_info"]:
                     callback_manager.accumulate_episode_stats([info], mode="train")
-            print(f"  Rollout time: {time.time() - iteration_start_time:.2f}s")
+            print(f"  Rollout time: {time.time() - iteration_start_time:.2f}s\n")
             # ==================== Policy Optimization ====================
             print(f"Training model")
             training_start_time = time.time()
@@ -218,9 +223,10 @@ class PPOAgent:
                 "value_loss": f"{train_metrics['value_loss']:.2f}",
             }
             training_time = time.time() - training_start_time
-            print(f"Time to train {training_time:.2f}s")
+            print(f"Time to train {training_time:.2f}s\n")
             # ==================== Evaluation ====================
             eval_start_time = time.time()
+            print('---------------evaluation started---------------')
             if eval_callback is not None and eval_callback.should_evaluate(iteration + 1):
                 eval_callback.on_evaluation_start(iteration + 1, self.global_step)
                 
@@ -246,7 +252,7 @@ class PPOAgent:
                         prefix="best_eval",
                     )
                     print(f"  ★ New best model saved!")
-            print(f"Evaluation time: {time.time() - eval_start_time:.2f}s")
+            print(f'---------------evaluation finished---------------  took {time.time() - eval_start_time:.2f} seconds')
             # ==================== End of Iteration ====================
             if callback_manager is not None:
                 callback_manager.on_iteration_end(
@@ -304,8 +310,8 @@ class PPOAgent:
         
         eval_data = data_handler.valid_queries[:n_eval_queries]
         eval_depths = (
-            data_handler.valid_depths[:n_eval_queries]
-            if hasattr(data_handler, 'valid_depths') and data_handler.valid_depths is not None
+            data_handler.valid_queries_depths[:n_eval_queries]
+            if hasattr(data_handler, 'valid_queries_depths') and data_handler.valid_queries_depths is not None
             else None
         )
         
@@ -317,6 +323,13 @@ class PPOAgent:
                 
         # Run evaluation to get metrics
         try:
+            # Create info callback with verbose logging
+            def info_callback_with_verbose(infos):
+                if callback is not None:
+                    if self.verbose_cb:
+                        print(f"[PPOAgent._run_evaluation] Callback receiving {len(infos)} infos")
+                    callback.accumulate_episode_stats(infos, mode="eval")
+            
             metrics = eval_corruptions_torchrl(
                 actor=actor,
                 env=eval_env,
@@ -324,15 +337,12 @@ class PPOAgent:
                 sampler=sampler,
                 n_corruptions=n_corruptions,
                 deterministic=True,
-                verbose=1,
+                verbose=0,
                 plot=False,
                 kge_inference_engine=None,
                 evaluation_mode='rl_only',
                 corruption_scheme=['head', 'tail'],
-                info_callback=(
-                    lambda infos: callback.accumulate_episode_stats(infos, mode="eval")
-                    if callback is not None else None
-                ),
+                info_callback=info_callback_with_verbose,
                 data_depths=eval_depths,
             )
             

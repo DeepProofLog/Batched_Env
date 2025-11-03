@@ -76,8 +76,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.train_queries),
         query_depths=data_handler.train_queries_depths,
         facts=facts_set,
-        verbose=0,
-        prover_verbose=0,
+        verbose=getattr(args, 'verbose_env', 0),
+        prover_verbose=getattr(args, 'verbose_prover', 0),
     ) for i in range(args.n_envs)]
 
     eval_env_fns = [make_env(
@@ -87,8 +87,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.valid_queries),
         query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
-        verbose=0,
-        prover_verbose=0,
+        verbose=getattr(args, 'verbose_env', 0),
+        prover_verbose=getattr(args, 'verbose_prover', 0),
     ) for i in range(args.n_eval_envs)]
     
     callback_env_fns = [make_env(
@@ -98,8 +98,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.valid_queries),
         query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
-        verbose=0,
-        prover_verbose=0,
+        verbose=getattr(args, 'verbose_env', 0),
+        prover_verbose=getattr(args, 'verbose_prover', 0),
     ) for i in range(1)]
 
     # Create TorchRL batched environments
@@ -252,11 +252,33 @@ class CustomBatchedEnv(EnvBase):
                 next_td = self.envs[idx]._step(action_td)
 
                 # Flatten TorchRL-style ("next", key) entries to root level for downstream code
+                # IMPORTANT: Preserve episode metadata (label, query_depth, etc.) from completed episodes
+                # These are set at the root level by the env when done=True for callback tracking
                 if "next" in next_td.keys():
+                    # First, check if this is a completed episode and preserve its metadata
+                    metadata_keys = ["label", "query_depth", "is_success", "query_type"]
+                    preserved_metadata = {}
+                    
+                    # Check if episode is done (metadata is only relevant when done=True)
+                    is_done = next_td.get("done", torch.tensor([False]))
+                    is_done_scalar = bool(is_done.reshape(-1)[0].item())
+                    
+                    if is_done_scalar:
+                        # Preserve metadata from the COMPLETED episode (stored at root level)
+                        for key in metadata_keys:
+                            if key in next_td.keys():
+                                preserved_metadata[key] = next_td[key].clone()
+                    
+                    # Now flatten the "next" branch (which contains the new episode's observation)
                     next_branch = next_td.get("next")
                     for key in next_branch.keys():
                         next_td.set(key, next_branch.get(key))
                     next_td = next_td.exclude("next")
+                    
+                    # Restore the completed episode's metadata so callbacks can access it
+                    if is_done_scalar:
+                        for key, value in preserved_metadata.items():
+                            next_td[key] = value
                 
                 # Ensure consistent keys across all TensorDicts
                 # Add is_success if missing (defaulting to False)

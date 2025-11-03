@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import math
 import random
@@ -320,11 +320,11 @@ class LogicEnv_gym(EnvBase):
                 idx = self.eval_idx
                 state = self.queries[idx]
                 label = self.labels[idx]
-                depth = self.query_depths[idx] if idx < len(self.query_depths) else None
+                depth = self.query_depths[idx]
             else:
                 state = Term(predicate="False", args=())
                 label = 0
-                depth = None
+                depth = -1
             self.eval_idx += 1
             return state, label, depth
 
@@ -337,7 +337,7 @@ class LogicEnv_gym(EnvBase):
             idx = self.eval_idx
             state = self.queries[idx]
             label = self.labels[idx]
-            depth = self.query_depths[idx] if idx < len(self.query_depths) else None
+            depth = self.query_depths[idx]
             self.eval_idx += 1
             return state, label, depth
 
@@ -348,14 +348,14 @@ class LogicEnv_gym(EnvBase):
 
     def _sample_train_query(self) -> Tuple[Term, int, Optional[int]]:
         """Sample a training query, optionally performing corruption sampling."""
-        state, _, depth = self.get_random_queries(
+        state, label, depth = self.get_random_queries(
             self.queries,
             n=1,
             labels=self.labels,
             depths=self.query_depths,
             return_depth=True,
         )
-        label = 1
+        assert label== 1, f"Sampled training query should be positive, but got label {label}"
 
         if not self.corruption_mode:
             return state, label, depth
@@ -365,45 +365,26 @@ class LogicEnv_gym(EnvBase):
                 len(self.corruption_scheme) if len(self.corruption_scheme) > 1 else 1
             )
             
-            # Retry sampling if negative generation fails
-            max_retries = 5
-            for attempt in range(max_retries):
-                negative_samples = self.sampler.get_negatives_from_states(
-                    state, self.device, num_negs=num_to_generate
-                )
-                selected = negative_samples
-                if not isinstance(selected, list):
-                    selected = [selected]
-                if len(self.corruption_scheme) > 1:
-                    if not hasattr(self, "negation_toggle"):
-                        self.negation_toggle = 0
-                    selected = [negative_samples[self.negation_toggle]]
-                    self.negation_toggle = 1 - self.negation_toggle
+            negative_samples = self.sampler.get_negatives_from_states(
+                state, self.device, num_negs=num_to_generate
+            )
+            selected = negative_samples
+            if not isinstance(selected, list):
+                selected = [selected]
+            if len(self.corruption_scheme) > 1:
+                if not hasattr(self, "negation_toggle"):
+                    self.negation_toggle = 0
+                selected = [negative_samples[self.negation_toggle]]
+                self.negation_toggle = 1 - self.negation_toggle
 
-                # Check if we successfully generated a negative sample
-                if len(selected) > 0 and (len(selected) != 1 or selected[0]):
-                    break
-                    
-                # If this is not the last attempt, sample a new positive query to try again
-                if attempt < max_retries - 1:
-                    state, _, depth = self.get_random_queries(
-                        self.queries,
-                        n=1,
-                        labels=self.labels,
-                        depths=self.query_depths,
-                        return_depth=True,
-                    )
-            
-            # After retries, check if we have a valid negative
+            # Check if we successfully generated a negative sample
             if len(selected) == 0 or (len(selected) == 1 and not selected[0]):
-                # All retries failed, fall back to positive sample
-                pass  # Keep original state and label=1
-                warnings.warn("Negative sampling produced fewer candidates than requested: got 0, expected 1", RuntimeWarning)
-            else:
-                assert len(selected) == 1, f"Length of negatives should be 1, but is {len(selected)}"
-                state = selected[0]
-                label = 0
-                depth = None
+                raise ValueError("Failed to generate valid negative samples.")
+            
+            assert len(selected) == 1, f"Length of negatives should be 1, but is {len(selected)}"
+            state = selected[0]
+            label = 0
+            depth = -1
         self.counter += 1
         return state, label, depth
 
@@ -435,7 +416,7 @@ class LogicEnv_gym(EnvBase):
 
         self.current_query = state
         self.current_label = label
-        self.current_query_depth_value = depth if label == 1 else None
+        self.current_query_depth_value = depth
         return self._reset(tensordict, **kwargs)
 
 
@@ -447,8 +428,9 @@ class LogicEnv_gym(EnvBase):
         # Get query from internal state (already set in reset())
         query = [self.current_query] if not isinstance(self.current_query, list) else self.current_query
         label = self.current_label
+        depth = self.current_query_depth_value
         
-        print('Initial query:', query, label) if self.verbose else None
+        print('Initial query, label, depth:', query, label, depth) if self.verbose else None
         self.current_depth = torch.tensor(0, device=self.device)
         self.next_var_index = self.index_manager.variable_start_index
 
@@ -459,7 +441,7 @@ class LogicEnv_gym(EnvBase):
         sub_index = self.index_manager.get_atom_sub_index(query).to(
             device=self.device, dtype=self.pt_idx_dtype
         )
-        derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
+        derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query, verbose=self.verbose)
         valid = len(derived_states)
         action_mask = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
         action_mask[:valid] = True
@@ -481,7 +463,7 @@ class LogicEnv_gym(EnvBase):
                 "done": torch.tensor([False], dtype=torch.bool, device=self.device),  # Match done_spec shape [1]
                 "terminated": torch.tensor([False], dtype=torch.bool, device=self.device),  # Required by TorchRL
                 "derived_states": NonTensorData(data=derived_states),
-                "query_depth": torch.tensor([self.current_query_depth_value if self.current_query_depth_value is not None else -1], dtype=torch.long, device=self.device),
+                "query_depth": torch.tensor([self.current_query_depth_value], dtype=torch.long, device=self.device),
             },
             batch_size=torch.Size([]),  # Single environment
         )
@@ -556,7 +538,7 @@ class LogicEnv_gym(EnvBase):
         else:
             self._last_potential = torch.zeros((), dtype=self.reward_dtype, device=self.device)
 
-        derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state)
+        derived_states_next, derived_sub_indices_next, truncate_flag = self.get_next_states(next_state, verbose=self.verbose)
         valid = len(derived_states_next)
         action_mask = torch.zeros(self.padding_states, dtype=torch.bool, device=self.device)
         action_mask[:valid] = True
@@ -590,14 +572,14 @@ class LogicEnv_gym(EnvBase):
                 "derived_sub_indices": derived_sub_indices_next,
                 "action_mask": action_mask,
                 "state": NonTensorData(data=next_state),
-                "label": self.tensordict['label'],
+                "label": self.tensordict['label'].clone(),  # Clone to avoid reference issues when auto-resetting
                 "done": done_next.unsqueeze(0),  # Must match done_spec shape [1]
                 "terminated": torch.tensor([terminated], dtype=torch.bool, device=self.device),  # Required by TorchRL
                 "reward": reward_next.unsqueeze(0),  # TorchRL expects [1] shape for reward
                 "derived_states": NonTensorData(data=derived_states_next),
                 # Additional info (all as 1D tensors for consistent stacking)
-                "query_type": torch.tensor([1 if label_value == 1 else 0], dtype=torch.long, device=self.device),
-                "query_depth": torch.tensor([self.current_query_depth_value if self.current_query_depth_value is not None else -1], dtype=torch.long, device=self.device),
+                "query_type": torch.tensor([label_value], dtype=torch.long, device=self.device),
+                "query_depth": torch.tensor([self.current_query_depth_value], dtype=torch.long, device=self.device),
                 "max_depth_reached": torch.tensor([exceeded_max_depth], dtype=torch.bool, device=self.device),
                 "truncated": torch.tensor([truncated], dtype=torch.bool, device=self.device),
             },
@@ -635,7 +617,10 @@ class LogicEnv_gym(EnvBase):
             next_td["query_depth"] = completed_episode_depth
 
         # Update internal state
-        self.tensordict = next_td
+        # IMPORTANT: Only update self.tensordict if we didn't auto-reset
+        # If we auto-reset, self.tensordict was already updated by reset() and contains the NEW episode's state
+        if not done_next:
+            self.tensordict = next_td
 
         if self.verbose:
             print_state_transition(next_td['state'], next_td['derived_states'],
@@ -645,8 +630,8 @@ class LogicEnv_gym(EnvBase):
         return next_td
 
 
-    
-    def get_next_states(self, state: State) -> Tuple[List[State], torch.Tensor, bool]:
+
+    def get_next_states(self, state: State, verbose: bool=False) -> Tuple[List[State], torch.Tensor, bool]:
         """Compute candidate next states from a given state.
 
         Returns
@@ -701,9 +686,9 @@ class LogicEnv_gym(EnvBase):
             while (len(derived_states) == 1 and 
                 derived_states[0] and
                 derived_states[0][0].predicate not in terminal_predicates):
-                print('\n*********') if self.verbose else None
-                print(f"Skipping unary action: current state: {current_state} -> derived states: {derived_states}") if self.verbose else None
-                print('\n') if self.verbose else None
+                print('\n*********') if verbose else None
+                print(f"Skipping unary action: current state: {current_state} -> derived states: {derived_states}") if verbose else None
+                print('\n') if verbose else None
                 counter += 1
                 current_state = derived_states[0].copy()    
 
@@ -728,21 +713,21 @@ class LogicEnv_gym(EnvBase):
                     self.memory.add(_state_to_hashable([s for s in current_state if s.predicate not in self.terminal_predicates]))
                     visited_mask = [_state_to_hashable(state) in self.memory for state in derived_states]
                     if any(visited_mask):
-                        print(f"Memory: {self.memory}") if self.verbose else None
-                        print(f"Visited mask: {visited_mask}. Current state: {current_state} -> Derived states: {derived_states}") if self.verbose else None
+                        print(f"Memory: {self.memory}") if verbose else None
+                        print(f"Visited mask: {visited_mask}. Current state: {current_state} -> Derived states: {derived_states}") if verbose else None
                         derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
                     
                 # TRUNCATE MAX ATOMS
                 mask_exceeded_max_atoms = [len(state) >= self.padding_atoms for state in derived_states]
-                print(f" Exceeded max atoms: {[len(state) for state in derived_states]}") if self.verbose and any(mask_exceeded_max_atoms) else None
+                print(f" Exceeded max atoms: {[len(state) for state in derived_states]}") if verbose and any(mask_exceeded_max_atoms) else None
                 derived_states = [state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if not is_exceeded]
                 
-                print('\n') if self.verbose else None
-                print(f"Updated Next States: Current state: {current_state} -> Derived states: {derived_states}") if self.verbose else None
-                print('*********\n') if self.verbose else None
+                print('\n') if verbose else None
+                print(f"Updated Next States: Current state: {current_state} -> Derived states: {derived_states}") if verbose else None
+                print('*********\n') if verbose else None
 
                 if counter > 20:
-                    print('Max iterations reached') if self.verbose else None
+                    print('Max iterations reached') if verbose else None
                     derived_states = [[Term(predicate='False', args=())]]
                     truncated_flag = True
                     break
@@ -760,7 +745,7 @@ class LogicEnv_gym(EnvBase):
 
             # 2. Max Atoms Check
             if len(d_state) >= self.padding_atoms:
-                if self.verbose:
+                if verbose:
                     print(f"Exceeded max atoms in next states: {len(d_state)}")
                 continue
 
@@ -789,7 +774,7 @@ class LogicEnv_gym(EnvBase):
             max_num_states -= 1
 
         if len(derived_states) > max_num_states:
-            print(f"Exceeded max next states: {len(derived_states)}") if self.verbose else None
+            print(f"Exceeded max next states: {len(derived_states)}") if verbose else None
             indices = sorted(range(len(derived_states)), key=lambda k: len(derived_states[k]))
             derived_states = [derived_states[i] for i in indices[:max_num_states]]
             final_sub_indices = [final_sub_indices[i] for i in indices[:max_num_states]]
@@ -908,7 +893,7 @@ class LogicEnv_gym(EnvBase):
                            n: int = 1, 
                            labels: List[int] = None,
                            depths: Optional[List[Optional[int]]] = None,
-                           return_depth: bool = False):
+                           return_depth: bool = False) -> Union[Tuple[Term, int, Optional[int]], Tuple[List[Term], List[int], List[Optional[int]]], Tuple[Term, int], Tuple[List[Term], List[int]]]:
         """Sample queries (and labels) from a pool.
 
         Parameters

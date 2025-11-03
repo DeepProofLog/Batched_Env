@@ -367,12 +367,15 @@ def _train(
         best_metric=args.eval_best_metric if hasattr(args, 'eval_best_metric') else "mrr_mean",
         save_path=model_path,
         verbose=True,
-        collect_detailed=True,  # Explicitly enable detailed depth breakdown
+        collect_detailed=args.depth_info,
+        verbose_cb=getattr(args, 'verbose_cb', False),  # Enable verbose callback debugging
     )
     
     train_callback = TrainingMetricsCallback(
         log_interval=1,
         verbose=True,
+        verbose_cb=getattr(args, 'verbose_cb', False),  # Enable verbose callback debugging
+        collect_detailed=args.depth_info 
     )
     
     callback_manager = TorchRLCallbackManager(
@@ -407,6 +410,7 @@ def _train(
         device=device,
         model_save_path=model_path,
         eval_best_metric=args.eval_best_metric if hasattr(args, 'eval_best_metric') else "mrr_mean",
+        verbose_cb=getattr(args, 'verbose_cb', False),  # Enable verbose callback debugging
     )
     
     # Train the agent

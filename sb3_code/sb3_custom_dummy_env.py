@@ -75,8 +75,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.train_queries),
         query_depths=data_handler.train_queries_depths,
         facts=facts_set,
-        verbose=0,
-        prover_verbose=0,
+        verbose=getattr(args, 'verbose_env', 0),
+        prover_verbose=getattr(args, 'verbose_prover', 0),
     ) for i in range(args.n_envs)]
 
     eval_env_fns = [make_env(
@@ -86,8 +86,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.valid_queries),
         query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
-        verbose=0,
-        prover_verbose=0,
+        verbose=getattr(args, 'verbose_env', 0),
+        prover_verbose=getattr(args, 'verbose_prover', 0),
     ) for i in range(args.n_eval_envs)]
     
     callback_env_fns = [make_env(
@@ -97,8 +97,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.valid_queries),
         query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
-        verbose=0,
-        prover_verbose=0,
+        verbose=getattr(args, 'verbose_env', 0),
+        prover_verbose=getattr(args, 'verbose_prover', 0),
     ) for i in range(1)]
 
 
