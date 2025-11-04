@@ -607,6 +607,9 @@ class PPOAgent:
             n_corruptions = self.args.eval_neg_samples
         else:
             raise ValueError("n_corruptions not specified in args")
+        
+        # Determine group_size from args (default to 1 to avoid OOM)
+        group_size = getattr(self.args, 'eval_group_size', 1) if self.args else 1
                 
         # Run evaluation to get metrics
         try:
@@ -632,6 +635,8 @@ class PPOAgent:
                 info_callback=info_callback_with_verbose,
                 data_depths=eval_depths,
                 index_manager=self.index_manager,  # Pass index_manager explicitly
+                data_handler=self.data_handler,  # Pass data_handler explicitly
+                group_size=group_size,  # Pass group_size to control memory usage
             )
             
         except Exception as e:

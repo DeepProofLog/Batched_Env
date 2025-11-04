@@ -16,9 +16,14 @@ def _reshape_time_env(td: TensorDict, n_steps: int, n_envs: int) -> TensorDict:
     return td.reshape(n_steps, n_envs)
 
 
-def _extract_episode_infos(batch_td: TensorDict, n_steps: int, n_envs: int, device: torch.device) -> List[Dict[str, Any]]:
+def _extract_episode_infos(batch_td: TensorDict, n_steps: int, n_envs: int, device: torch.device, verbose: bool = False) -> List[Dict[str, Any]]:
     """Lightweight episode stats extraction compatible with your callbacks."""
     infos: List[Dict[str, Any]] = []
+    
+    if verbose:
+        print(f"[_extract_episode_infos] Batch TensorDict keys: {list(batch_td.keys())}")
+        print(f"[_extract_episode_infos] Next keys: {list(batch_td.get('next', TensorDict({})).keys())}")
+    
     done = batch_td.get(('next', 'done'))
     reward = batch_td.get(('next', 'reward'))
     label = batch_td.get(('next', 'label'), None)
@@ -27,29 +32,49 @@ def _extract_episode_infos(batch_td: TensorDict, n_steps: int, n_envs: int, devi
 
     done = done.reshape(n_steps, n_envs).squeeze(-1).to(torch.bool)
     reward = reward.reshape(n_steps, n_envs).squeeze(-1)
+    
+    # Reshape label, depth, and success tensors if they exist
+    if label is not None:
+        label = label.reshape(n_steps, n_envs).squeeze(-1)
+    if depth is not None:
+        depth = depth.reshape(n_steps, n_envs).squeeze(-1)
+    if success is not None:
+        success = success.reshape(n_steps, n_envs).squeeze(-1)
 
     # For each env, accumulate until done (use the same device as reward)
     ep_ret = torch.zeros(n_envs, device=reward.device, dtype=reward.dtype)
     ep_len = torch.zeros(n_envs, device=reward.device, dtype=torch.long)
+    
+    if verbose:
+        print(f"[_extract_episode_infos] Extracting from {n_steps} steps, {n_envs} envs")
+        print(f"  label: {label is not None}, depth: {depth is not None}, success: {success is not None}")
+    
     for t in range(n_steps):
         ep_ret += reward[t]
         ep_len += 1
         finished = done[t]
         if finished.any():
             idxs = torch.nonzero(finished, as_tuple=False).reshape(-1)
+            if verbose:
+                print(f"  Step {t}: {len(idxs)} episodes finished")
             for i in idxs.tolist():
                 info = {
                     "episode": {"r": float(ep_ret[i].item()), "l": int(ep_len[i].item())}
                 }
                 if label is not None:
-                    info["label"] = int(label[t * n_envs + i].item())
+                    info["label"] = int(label[t, i].item())
                 if depth is not None:
-                    info["query_depth"] = int(depth[t * n_envs + i].item())
+                    info["query_depth"] = int(depth[t, i].item())
                 if success is not None:
-                    info["is_success"] = bool(success[t * n_envs + i].item())
+                    info["is_success"] = bool(success[t, i].item())
                 infos.append(info)
+                if verbose:
+                    print(f"    Env {i}: r={info['episode']['r']:.3f}, l={info['episode']['l']}, label={info.get('label', 'N/A')}")
                 ep_ret[i] = 0.0
                 ep_len[i] = 0
+    
+    if verbose:
+        print(f"[_extract_episode_infos] Extracted {len(infos)} episode infos")
     return infos
 
 
@@ -138,7 +163,7 @@ def collect_rollouts(
             rollout_callback(t)
 
     # Stats for callbacks
-    episode_info = _extract_episode_infos(batch_td, n_steps=n_steps, n_envs=n_envs, device=device)
+    episode_info = _extract_episode_infos(batch_td, n_steps=n_steps, n_envs=n_envs, device=device, verbose=False)
     stats = {
         "episode_info": episode_info,
     }

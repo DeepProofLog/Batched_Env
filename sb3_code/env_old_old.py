@@ -832,7 +832,6 @@ class LogicEnv_gym(EnvBase):
             final_sub_indices.append(self.index_manager.get_atom_sub_index(endt_state))
 
         if not derived_states:
-            print(f"\n[DEBUG] get_next_states returning end_in_false() for state: {state}")
             derived_states, derived_sub_indices = self.end_in_false()
         else:
             derived_sub_indices = self._pad_sub_indices(final_sub_indices)

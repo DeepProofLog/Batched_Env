@@ -29,7 +29,7 @@ from env_factory import create_environments
 from dataset import DataHandler
 from ppo import create_torchrl_modules, PPOAgent
 from embeddings import get_embedder
-from neg_sampling import get_sampler
+# Lazy import: from neg_sampling import get_sampler  # Moved to avoid loading PyKEEN/TensorFlow
 from model_eval import eval_corruptions_torchrl, TorchRLPolicyWrapper
 from callbacks import (
     RolloutProgressCallback,
@@ -38,12 +38,21 @@ from callbacks import (
     TorchRLCallbackManager,
 )
 
-try:
-    from torch.utils.tensorboard import SummaryWriter
-    TENSORBOARD_AVAILABLE = True
-except ImportError:
-    TENSORBOARD_AVAILABLE = False
-    print("Warning: TensorBoard not available. Install tensorboard for advanced logging.")
+# Lazy import for TensorBoard to avoid loading TensorFlow in worker processes
+# The actual import is done when creating the TrainingLogger
+TENSORBOARD_AVAILABLE = None  # Will be set on first use
+
+def _check_tensorboard_available():
+    """Lazy check for TensorBoard availability."""
+    global TENSORBOARD_AVAILABLE
+    if TENSORBOARD_AVAILABLE is None:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            TENSORBOARD_AVAILABLE = True
+        except ImportError:
+            TENSORBOARD_AVAILABLE = False
+            print("Warning: TensorBoard not available. Install tensorboard for advanced logging.")
+    return TENSORBOARD_AVAILABLE
 
 
 # ------------------------------
@@ -109,6 +118,10 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     im.build_fact_index(dh.facts)
 
     # Negative sampler
+    # Sampler
+    # Lazy import to avoid loading PyKEEN/TensorFlow in worker processes
+    from neg_sampling import get_sampler
+    
     dh.sampler = get_sampler(
         data_handler=dh,
         index_manager=im,
@@ -201,9 +214,10 @@ class TrainingLogger:
         self.log_file = self.log_dir / "training_log.txt"
         
         # TensorBoard
-        self.use_tensorboard = use_tensorboard and TENSORBOARD_AVAILABLE
+        self.use_tensorboard = use_tensorboard and _check_tensorboard_available()
         self.tb_writer = None
         if self.use_tensorboard:
+            from torch.utils.tensorboard import SummaryWriter
             tb_dir = self.log_dir / "tensorboard"
             tb_dir.mkdir(exist_ok=True)
             self.tb_writer = SummaryWriter(log_dir=str(tb_dir))
@@ -441,7 +455,8 @@ def _evaluate(
     eval_env,
     kge_engine,
     sampler,
-    data_handler: DataHandler
+    data_handler: DataHandler,
+    index_manager
 ) -> Tuple[dict, dict, dict]:
     """
     Final evaluation on train/valid/test sets with full corruption-based metrics.
@@ -482,6 +497,9 @@ def _evaluate(
         # Create depth tracker for this evaluation
         depth_tracker = _EvalDepthRewardTracker()
         
+        # Get group_size from args (default to 1 to avoid OOM)
+        group_size = getattr(args, 'eval_group_size', 1)
+        
         metrics_valid = eval_corruptions_torchrl(
             actor=actor,
             env=eval_env,
@@ -495,6 +513,9 @@ def _evaluate(
             corruption_scheme=['head', 'tail'],
             info_callback=depth_tracker,
             data_depths=valid_depths,
+            group_size=group_size,
+            index_manager=index_manager,
+            data_handler=data_handler,
         )
         
         # Merge depth-based metrics into results
@@ -507,6 +528,9 @@ def _evaluate(
         print("\n--- Evaluating on TEST set ---")
         # Create depth tracker for this evaluation
         depth_tracker = _EvalDepthRewardTracker()
+        
+        # Get group_size from args (default to 1 to avoid OOM)
+        group_size = getattr(args, 'eval_group_size', 1)
         
         metrics_test = eval_corruptions_torchrl(
             actor=actor,
@@ -521,6 +545,9 @@ def _evaluate(
             corruption_scheme=['head', 'tail'],
             info_callback=depth_tracker,
             data_depths=test_depths,
+            group_size=group_size,
+            index_manager=index_manager,
+            data_handler=data_handler,
         )
         
         # Merge depth-based metrics into results
@@ -635,7 +662,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     
     # Evaluate
     metrics_train, metrics_valid, metrics_test = _evaluate(
-        args, actor, eval_env, kge_engine, sampler, dh
+        args, actor, eval_env, kge_engine, sampler, dh, index_manager
     )
     
     return metrics_train, metrics_valid, metrics_test

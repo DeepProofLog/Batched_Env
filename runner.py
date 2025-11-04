@@ -69,13 +69,13 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 4000,
+        'timesteps_train': 2000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 8,
+        'n_envs': 2,
         'n_steps': 128,
-        'n_eval_envs': 128,
+        'n_eval_envs': 2,
         'batch_size': 128,
 
         # Env params
@@ -107,6 +107,7 @@ if __name__ == "__main__":
         'eval_hybrid_success_only': True,
         'eval_hybrid_kge_weight': 2.0,
         'eval_hybrid_rl_weight': 1.0,
+        'eval_group_size': 1,  # Number of queries to batch during evaluation (higher = faster but more memory)
 
         # Embedding params
         'atom_embedder': 'transe',
