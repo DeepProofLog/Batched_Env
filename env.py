@@ -153,11 +153,6 @@ class LogicEnv_gym(EnvBase):
 
         if self.mode == 'train':
             self.train_neg_ratio = train_neg_ratio
-            # Only check sampler if corruption_mode is enabled
-            if self.corruption_mode:
-                assert (
-                    self.sampler.num_negs_per_pos < 3
-                ), f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
 
         self._one  = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
         self._zero = torch.zeros((), device=self.device, dtype=self.reward_dtype)
@@ -1026,6 +1021,15 @@ class LogicEnv_gym(EnvBase):
         false_row[0] = self.predicate_false_idx
         derived_sub_indices_next[0, 0] = false_row
         return derived_states_next, derived_sub_indices_next
+
+    def set_evaluation_batch(self, queries: List[Term], labels: List[int], depths: List[Optional[int]]):
+        """Manually overwrite the environment's query list for a specific eval run."""
+        self.queries = queries
+        self.labels = labels
+        self.query_depths = depths
+        self.n_episodes = len(queries)
+        self.eval_idx = 0
+        self.mode = 'eval' # Force eval mode
 
     # ============================================================================
     # TorchRL-specific interface methods

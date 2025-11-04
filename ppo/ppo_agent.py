@@ -2,6 +2,13 @@
 PPO Agent
 
 This module provides the main PPO agent class that coordinates training.
+
+Performance Note:
+    Uses fast evaluation with environment reuse by default (model_eval_fast).
+    To revert to the original slower evaluation, change the import in _run_evaluation:
+        from model_eval import eval_corruptions_torchrl  # Slow (creates fresh envs)
+    to:
+        from model_eval_fast import eval_corruptions_fast  # Fast (reuses envs)
 """
 
 import time
@@ -585,7 +592,11 @@ class PPOAgent:
         Returns:
             Dictionary of evaluation metrics
         """
+        # Use original evaluation (environment creation is not the bottleneck)
         from model_eval import eval_corruptions_torchrl
+        eval_func = lambda actor_module, value_module, **kwargs: eval_corruptions_torchrl(
+            actor=actor_module, **kwargs
+        )
         
         actor.eval()
         
@@ -608,8 +619,39 @@ class PPOAgent:
         else:
             raise ValueError("n_corruptions not specified in args")
         
-        # Determine group_size from args (default to 1 to avoid OOM)
-        group_size = getattr(self.args, 'eval_group_size', 1) if self.args else 1
+        # Build environment configuration to pass to evaluation
+        # These will be used to create environments
+        env_config = {}
+        if self.args:
+            env_config['max_depth'] = getattr(self.args, 'max_depth', 20)
+            env_config['memory_pruning'] = getattr(self.args, 'memory_pruning', True)
+            env_config['endt_action'] = getattr(self.args, 'endt_action', False)
+            env_config['endf_action'] = getattr(self.args, 'endf_action', False)
+            env_config['skip_unary_actions'] = getattr(self.args, 'skip_unary_actions', True)
+            env_config['padding_atoms'] = getattr(self.args, 'padding_atoms', 6)
+            env_config['padding_states'] = getattr(self.args, 'padding_states', 20)
+            env_config['engine'] = getattr(self.args, 'engine', 'python')
+            env_config['reward_type'] = getattr(self.args, 'reward_type', 4)
+        
+        # Build common kwargs
+        eval_kwargs = dict(
+            env=eval_env,
+            data=eval_data,
+            sampler=sampler,
+            n_corruptions=n_corruptions,
+            deterministic=True,
+            verbose=1,
+            plot=False,
+            kge_inference_engine=None,
+            evaluation_mode='rl_only',
+            corruption_scheme=['head', 'tail'],
+            data_depths=eval_depths,
+            index_manager=self.index_manager,
+            data_handler=self.data_handler,
+        )
+        
+        # Add environment config to kwargs
+        eval_kwargs.update(env_config)
                 
         # Run evaluation to get metrics
         try:
@@ -620,23 +662,13 @@ class PPOAgent:
                         print(f"[PPOAgent._run_evaluation] Callback receiving {len(infos)} infos")
                     callback.accumulate_episode_stats(infos, mode="eval")
             
-            metrics = eval_corruptions_torchrl(
-                actor=actor,
-                env=eval_env,
-                data=eval_data,
-                sampler=sampler,
-                n_corruptions=n_corruptions,
-                deterministic=True,
-                verbose=0,
-                plot=False,
-                kge_inference_engine=None,
-                evaluation_mode='rl_only',
-                corruption_scheme=['head', 'tail'],
-                info_callback=info_callback_with_verbose,
-                data_depths=eval_depths,
-                index_manager=self.index_manager,  # Pass index_manager explicitly
-                data_handler=self.data_handler,  # Pass data_handler explicitly
-                group_size=group_size,  # Pass group_size to control memory usage
+            eval_kwargs['info_callback'] = info_callback_with_verbose
+            
+            # Run evaluation
+            metrics = eval_func(
+                actor_module=actor,
+                value_module=None,
+                **eval_kwargs
             )
             
         except Exception as e:

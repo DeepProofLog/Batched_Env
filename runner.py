@@ -69,14 +69,16 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 200000,
+        'timesteps_train': 2000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs_train': 4,
-        'n_steps': 4096, #128
-        'n_envs_eval': 4,
-        'n_envs_cb': 4,  # Number of environments for callback evaluation
+        'n_steps': 1024, #128
+        'n_envs_train': 1,
+        'n_envs_eval': 1,
+        'n_envs_cb': 1,  # Number of environments for callback evaluation
+        'parallel_env_start_method': 'auto',
+        'use_parallel_envs': True,
         'batch_size': 128,
 
         # Env params
@@ -108,7 +110,9 @@ if __name__ == "__main__":
         'eval_hybrid_success_only': True,
         'eval_hybrid_kge_weight': 2.0,
         'eval_hybrid_rl_weight': 1.0,
-        'eval_group_size': 1,  # Number of queries to batch during evaluation (higher = faster but more memory)
+        'eval_group_size': 1,  # DEPRECATED: Number of queries to batch during evaluation (use eval_pool_size instead)
+        'eval_pool_size': 1,  # NEW: Environment pool size for fast evaluation (1-4 recommended, higher = more memory but potentially faster)
+        'use_fast_eval': False,  # NEW: Use fast evaluation with environment reuse (True=fast, False=slow original method)
 
         # Embedding params
         'atom_embedder': 'transe',

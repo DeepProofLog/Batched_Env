@@ -29,8 +29,8 @@ from env_factory import create_environments
 from dataset import DataHandler
 from ppo import create_torchrl_modules, PPOAgent
 from embeddings import get_embedder
-# Lazy import: from neg_sampling import get_sampler  # Moved to avoid loading PyKEEN/TensorFlow
-from model_eval import eval_corruptions_torchrl, TorchRLPolicyWrapper
+# from model_eval import eval_corruptions_torchrl
+from model_eval_backup import eval_corruptions_torchrl
 from callbacks import (
     RolloutProgressCallback,
     EvaluationCallback,
@@ -117,18 +117,21 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     )
     im.build_fact_index(dh.facts)
 
-    # Negative sampler
-    # Sampler
-    # Lazy import to avoid loading PyKEEN/TensorFlow in worker processes
-    from neg_sampling import get_sampler
+    # Negative sampler (now uses optimized version by default)
+    from neg_sampling import get_sampler, share_sampler_storage
     
+    sampler_device = torch.device("cpu")
+    
+    print("Creating negative sampler (optimized)...")
     dh.sampler = get_sampler(
         data_handler=dh,
         index_manager=im,
         corruption_scheme=args.corruption_scheme,
-        device=device,
+        device=sampler_device,
     )
+    
     sampler = dh.sampler
+    share_sampler_storage(sampler)
 
     # Embedder
     embedder_getter = get_embedder(args, dh, im, device)
@@ -356,7 +359,7 @@ def _train(
     # Initialize logger
     logger = TrainingLogger(
         log_dir=model_path,
-        use_tensorboard=True,
+        use_tensorboard=False,
         use_wandb=False,
     )
     
@@ -516,6 +519,16 @@ def _evaluate(
             group_size=group_size,
             index_manager=index_manager,
             data_handler=data_handler,
+            # Pass environment configuration args
+            max_depth=args.max_depth,
+            memory_pruning=args.memory_pruning,
+            endt_action=args.endt_action,
+            endf_action=args.endf_action,
+            skip_unary_actions=args.skip_unary_actions,
+            padding_atoms=args.padding_atoms,
+            padding_states=args.padding_states,
+            engine=args.engine,
+            reward_type=args.reward_type,
         )
         
         # Merge depth-based metrics into results

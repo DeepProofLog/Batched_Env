@@ -543,6 +543,9 @@ class DataHandler:
         print(f"  Valid queries: {len(self.valid_queries)}")
         print(f"  Test queries: {len(self.test_queries)}")
 
+        # Cache an immutable facts set once to let multiple env workers reuse it via copy-on-write
+        self.facts_set = frozenset(self.facts)
+
         # # Load Janus facts
         # if janus_file:
         #     self.janus_facts = []
