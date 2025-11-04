@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from torchrl.envs import ParallelEnv, EnvBase
 
-from env import LogicEnv
+from env import LogicEnv_gym as LogicEnv
 
 
 def _seed_stream(n: int, base_seed: int) -> List[int]:
@@ -52,59 +52,78 @@ def _make_single_env(index_manager, data_handler, *, queries, labels, query_dept
     return _init
 
 
+def _create_parallel_env(queries, labels, query_depths, mode, n_workers, seeds, args, index_manager, data_handler, kge_engine):
+    """Helper function to create a parallel environment with given configuration."""
+    facts_set = set(data_handler.facts)
+    env_fns = [
+        _make_single_env(
+            index_manager, data_handler,
+            queries=queries,
+            labels=labels,
+            query_depths=query_depths,
+            facts=facts_set,
+            mode=mode, seed=int(seeds[i]), args=args, kge_engine=kge_engine,
+        )
+        for i in range(n_workers)
+    ]
+    return ParallelEnv(num_workers=n_workers, create_env_fn=env_fns, shared_memory=True)
+
+
 def create_environments(args: Any, data_handler, index_manager, kge_engine=None, detailed_eval_env: bool = False):
     """Create parallel TorchRL environments for training/validation/callback.
 
     Returns
     -------
     (train_env, valid_env, callback_env)
-        train_env: ParallelEnv with args.n_envs workers over TRAIN split.
-        valid_env: ParallelEnv with args.n_eval_envs workers over VALID split.
-        callback_env: ParallelEnv with 1 worker over VALID (restart) for detailed metrics.
+        train_env: ParallelEnv with args.n_envs_train workers over TRAIN split.
+        valid_env: ParallelEnv with args.n_envs_eval workers over VALID split.
+        callback_env: ParallelEnv with args.n_envs_cb workers over VALID (restart) for detailed metrics.
     """
-    facts_set = set(data_handler.facts)
+    # Generate seeds for different environment types
+    seeds_train = _seed_stream(args.n_envs_train, args.seed_run_i)
+    seeds_eval = _seed_stream(args.n_envs_eval, args.seed_run_i + 10_000)
+    seeds_cb = _seed_stream(args.n_envs_cb, args.seed_run_i + 20_000)
 
-    seeds_train = _seed_stream(args.n_envs, args.seed_run_i)
-    seeds_eval = _seed_stream(args.n_eval_envs, args.seed_run_i + 10_000)
-    seeds_cb = _seed_stream(1, args.seed_run_i + 20_000)
+    # Create training environment
+    train_env = _create_parallel_env(
+        queries=data_handler.train_queries,
+        labels=[1] * len(data_handler.train_queries),
+        query_depths=data_handler.train_queries_depths,
+        mode='train',
+        n_workers=args.n_envs_train,
+        seeds=seeds_train,
+        args=args,
+        index_manager=index_manager,
+        data_handler=data_handler,
+        kge_engine=kge_engine
+    )
 
-    # TRAIN — Parallel
-    train_fns = [
-        _make_single_env(
-            index_manager, data_handler,
-            queries=data_handler.train_queries,
-            labels=[1] * len(data_handler.train_queries),
-            query_depths=data_handler.train_queries_depths,
-            facts=facts_set,
-            mode='train', seed=int(seeds_train[i]), args=args, kge_engine=kge_engine,
-        )
-        for i in range(int(args.n_envs))
-    ]
-    train_env = ParallelEnv(num_workers=int(args.n_envs), create_env_fn=train_fns, shared_memory=True)
-
-    # VALIDATION (mid-training eval) — Parallel
-    eval_fns = [
-        _make_single_env(
-            index_manager, data_handler,
-            queries=data_handler.valid_queries,
-            labels=[1] * len(data_handler.valid_queries),
-            query_depths=data_handler.valid_queries_depths,
-            facts=facts_set,
-            mode='eval', seed=int(seeds_eval[i]), args=args, kge_engine=kge_engine,
-        )
-        for i in range(int(args.n_eval_envs))
-    ]
-    eval_env = ParallelEnv(num_workers=int(args.n_eval_envs), create_env_fn=eval_fns, shared_memory=True)
-
-    # CALLBACK (per-iter detailed eval with restart) — Parallel (1 worker)
-    cb_fn = _make_single_env(
-        index_manager, data_handler,
+    # Create evaluation environment
+    eval_env = _create_parallel_env(
         queries=data_handler.valid_queries,
         labels=[1] * len(data_handler.valid_queries),
         query_depths=data_handler.valid_queries_depths,
-        facts=facts_set,
-        mode='eval_with_restart', seed=int(seeds_cb[0]), args=args, kge_engine=kge_engine,
+        mode='eval',
+        n_workers=args.n_envs_eval,
+        seeds=seeds_eval,
+        args=args,
+        index_manager=index_manager,
+        data_handler=data_handler,
+        kge_engine=kge_engine
     )
-    callback_env = ParallelEnv(num_workers=1, create_env_fn=[cb_fn], shared_memory=True)
+
+    # Create callback environment
+    callback_env = _create_parallel_env(
+        queries=data_handler.valid_queries,
+        labels=[1] * len(data_handler.valid_queries),
+        query_depths=data_handler.valid_queries_depths,
+        mode='eval_with_restart',
+        n_workers=args.n_envs_cb,
+        seeds=seeds_cb,
+        args=args,
+        index_manager=index_manager,
+        data_handler=data_handler,
+        kge_engine=kge_engine
+    )
 
     return train_env, eval_env, callback_env

@@ -1,14 +1,7 @@
 from __future__ import annotations
-from typing import Optional
-import torch
-from tensordict import TensorDict
-
-
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-
 import math
 import random
-
 import numpy as np
 import torch
 from tensordict import NonTensorData, TensorDict
@@ -490,6 +483,7 @@ class LogicEnv_gym(EnvBase):
                 "label": torch.tensor([label], dtype=torch.long, device=self.device),
                 "done": torch.tensor([False], dtype=torch.bool, device=self.device),  # Match done_spec shape [1]
                 "terminated": torch.tensor([False], dtype=torch.bool, device=self.device),  # Required by TorchRL
+                "truncated": torch.tensor([False], dtype=torch.bool, device=self.device),  # Required by TorchRL
                 "derived_states": NonTensorData(data=derived_states),
                 "query_depth": torch.tensor([self.current_query_depth_value if self.current_query_depth_value is not None else -1], dtype=torch.long, device=self.device),
                 "is_success": torch.tensor([False], dtype=torch.bool, device=self.device),  # Initialize as False
@@ -688,7 +682,35 @@ class LogicEnv_gym(EnvBase):
                                  next_td['reward'], next_td['done'], 
                                  action=action, truncated=truncated)
         
-        return next_td
+        # Restructure for TorchRL compatibility: put observations under 'next'
+        reward = next_td.get('reward', torch.zeros(1, dtype=torch.float32, device=self.device))
+        terminated = next_td.get('terminated', torch.zeros(1, dtype=torch.bool, device=self.device))
+        truncated = next_td.get('truncated', torch.zeros(1, dtype=torch.bool, device=self.device))
+        done = next_td.get('done', (terminated | truncated).to(torch.bool))
+
+        out = TensorDict({}, batch_size=torch.Size([]), device=self.device)
+        out.set('reward', reward)
+        out.set('terminated', terminated)
+        out.set('truncated', truncated)
+        out.set('done', done)
+
+        # Build 'next' observation from the new state's fields the policy needs.
+        nxt = TensorDict({}, batch_size=torch.Size([]), device=self.device)
+        for k in ('sub_index', 'derived_sub_indices', 'action_mask'):
+            if k in next_td.keys():
+                nxt.set(k, next_td.get(k))
+
+        # Mirror reward/done under 'next' for downstream code that expects next/*.
+        nxt.set('reward', reward)
+        nxt.set('done', done)
+
+        # Episode metadata for callbacks / metrics (kept under 'next')
+        for k in ('label', 'query_depth', 'is_success', 'episode_idx', 'query_type', 'max_depth_reached'):
+            if k in next_td.keys():
+                nxt.set(k, next_td.get(k))
+
+        out.set('next', nxt)
+        return out
 
 
 
@@ -1025,48 +1047,3 @@ class LogicEnv_gym(EnvBase):
 
 
 
-class LogicEnv(LogicEnv_gym):
-    """Fast, contract-correct environment for TorchRL collectors."""
-
-    def _reset(self, tensordict: Optional[TensorDict] = None, **kwargs) -> TensorDict:
-        # Use the core reset (already returns obs at ROOT). Keep only tensors the policy/metrics need.
-        td = super()._reset(tensordict, **kwargs)
-        # Ensure termination keys exist and have correct shapes
-        td.setdefault('terminated', torch.zeros(1, dtype=torch.bool, device=self.device))
-        td.setdefault('truncated', torch.zeros(1, dtype=torch.bool, device=self.device))
-        td.setdefault('done', (td['terminated'] | td['truncated']).to(torch.bool))
-        return td
-
-    def _step(self, tensordict: TensorDict) -> TensorDict:
-        # Run core transition (returns new obs at ROOT in the original implementation)
-        base_td = super()._step(tensordict)
-
-        # Root keys
-        reward = base_td.get('reward', torch.zeros(1, dtype=torch.float32, device=self.device))
-        terminated = base_td.get('terminated', torch.zeros(1, dtype=torch.bool, device=self.device))
-        truncated = base_td.get('truncated', torch.zeros(1, dtype=torch.bool, device=self.device))
-        done = (terminated | truncated).to(torch.bool)
-
-        out = TensorDict({}, batch_size=torch.Size([]), device=self.device)
-        out.set('reward', reward)
-        out.set('terminated', terminated)
-        out.set('truncated', truncated)
-        out.set('done', done)
-
-        # Build 'next' observation from the new state's fields the policy needs.
-        nxt = TensorDict({}, batch_size=torch.Size([]), device=self.device)
-        for k in ('sub_index', 'derived_sub_indices', 'action_mask'):
-            if k in base_td.keys():
-                nxt.set(k, base_td.get(k))
-
-        # Mirror reward/done under 'next' for downstream code that expects next/*.
-        nxt.set('reward', reward)
-        nxt.set('done', done)
-
-        # Episode metadata for callbacks / metrics (kept under 'next')
-        for k in ('label', 'query_depth', 'is_success', 'episode_idx'):
-            if k in base_td.keys():
-                nxt.set(k, base_td.get(k))
-
-        out.set('next', nxt)
-        return out

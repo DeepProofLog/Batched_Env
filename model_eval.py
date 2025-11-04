@@ -392,7 +392,7 @@ def _make_eval_envs_like(
     data_handler: Optional[Any] = None,
 ) -> ParallelEnv | SerialEnv:
     """Build a temporary batched TorchRL env (ParallelEnv) with given (q,label,depth)."""
-    from env import LogicEnv  # local import; same class used elsewhere
+    from env import LogicEnv_gym as LogicEnv  # local import; same class used elsewhere
     base_kwargs = _extract_base_env_kwargs(base_env)
     
     # Override index_manager and data_handler if explicitly provided

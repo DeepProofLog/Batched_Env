@@ -362,8 +362,8 @@ def _train(
     
     # Initialize callbacks
     rollout_callback = RolloutProgressCallback(
-        total_steps=n_steps * args.n_envs,
-        n_envs=args.n_envs,
+        total_steps=n_steps * args.n_envs_train,
+        n_envs=args.n_envs_train,
         update_interval=25,
         verbose=True,
     )
@@ -413,7 +413,7 @@ def _train(
         data_handler=data_handler,
         index_manager=index_manager,  # Pass index_manager
         args=args,
-        n_envs=args.n_envs,
+        n_envs=args.n_envs_train,
         n_steps=n_steps,
         n_epochs=n_epochs,
         batch_size=batch_size,

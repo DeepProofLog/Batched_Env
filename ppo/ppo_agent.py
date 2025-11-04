@@ -244,9 +244,9 @@ class PPOAgent:
             actor_network=self.actor,
             critic_network=self.critic,
             clip_epsilon=self.clip_range,
-            entropy_coef=self.ent_coef,
+            entropy_coeff=self.ent_coef,
             normalize_advantage=False,  # we normalized above
-            critic_coef=self.value_coef,
+            critic_coeff=self.value_coef,
         )
         # Key mapping for compatibility across TorchRL versions
         if hasattr(loss_module, "set_keys"):

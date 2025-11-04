@@ -69,13 +69,14 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 2000,
+        'timesteps_train': 200000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 2,
-        'n_steps': 128,
-        'n_eval_envs': 2,
+        'n_envs_train': 4,
+        'n_steps': 4096, #128
+        'n_envs_eval': 4,
+        'n_envs_cb': 4,  # Number of environments for callback evaluation
         'batch_size': 128,
 
         # Env params
@@ -406,7 +407,7 @@ if __name__ == "__main__":
             namespace.constant_embedding_size = 2 * namespace.atom_embedding_size
 
         namespace.device = device
-        namespace.eval_freq = namespace.n_steps * namespace.n_envs
+        namespace.eval_freq = namespace.n_steps * namespace.n_envs_train
 
         return namespace
 
@@ -438,7 +439,7 @@ if __name__ == "__main__":
             args_namespace.reward_type,
             args_namespace.n_epochs,
             args_namespace.lr,
-            args_namespace.n_envs,
+            args_namespace.n_envs_train,
             'torchrl',  # Mark as TorchRL version
         )
         args_namespace.run_signature = '-'.join(str(v) for v in run_vars)

@@ -413,7 +413,7 @@ def get_negatives(
     max_arity: int,
     device: torch.device,
     num_negs: Optional[int] = None,        # ← None ⇒ enumerate *all* corruptions
-    debug: bool = True,                   # ← NEW: debug mode
+    debug: bool = False,                   # ← NEW: debug mode
 ) -> torch.Tensor:
     """
     Generate negative samples for a batch of query states.
