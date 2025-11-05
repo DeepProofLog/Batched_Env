@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 
 from .ppo_rollout import collect_rollouts
+# from .ppo_rollout_backup import collect_rollouts
 
 
 class PPOAgent:
@@ -220,18 +221,21 @@ class PPOAgent:
         # Move to device for optimization (data might be on CPU from collector)
         flat_td = flat_td.to(self.device)
         
-        # IMPORTANT: Add feature dimension to tensors for TorchRL PPO loss
-        # TorchRL's PPOLoss expects tensors to have a feature dimension for certain operations
-        # For discrete actions with Categorical distribution, we add this manually
+        # Ensure log-prob and action keys have shapes expected by TorchRL.
         if "sample_log_prob" in flat_td.keys():
             log_prob = flat_td.get("sample_log_prob")
-            if log_prob.dim() == 1:  # Shape: [batch]
-                flat_td.set("sample_log_prob", log_prob.unsqueeze(-1))  # Shape: [batch, 1]
+            if log_prob.dim() > 1:
+                log_prob = log_prob.squeeze(-1)
+            flat_td.set("sample_log_prob", log_prob)
         
         if "action" in flat_td.keys():
             action = flat_td.get("action")
-            if action.dim() == 1:  # Shape: [batch]
-                flat_td.set("action", action.unsqueeze(-1))  # Shape: [batch, 1]
+            if action.dim() > 1:
+                if action.shape[-1] == 1:
+                    action = action.squeeze(-1)
+                else:
+                    action = action.argmax(dim=-1)
+            flat_td.set("action", action.to(torch.long))
 
         # Advantage normalization (PPOLoss can also normalize internally; we do it here for stability)
         adv = flat_td.get("advantage")
@@ -354,8 +358,14 @@ class PPOAgent:
                                 logits = logits.clone()
                             dist = Categorical(logits=logits)
 
-                        new_log_prob = dist.log_prob(mb_td.get("action").squeeze(-1))  # Remove feature dim for log_prob
-                        old_log_prob = mb_td.get("sample_log_prob").squeeze(-1)  # Remove feature dim
+                        approx_action = mb_td.get("action")
+                        if approx_action.dim() > 1:
+                            approx_action = approx_action.squeeze(-1)
+                        approx_action = approx_action.to(torch.long)
+                        new_log_prob = dist.log_prob(approx_action)
+                        old_log_prob = mb_td.get("sample_log_prob")
+                        if old_log_prob.dim() > 1:
+                            old_log_prob = old_log_prob.squeeze(-1)
                         log_ratio = new_log_prob - old_log_prob
                         ratio = torch.exp(log_ratio)
                         approx_kl = ((ratio - 1) - log_ratio).mean()
@@ -592,11 +602,7 @@ class PPOAgent:
         Returns:
             Dictionary of evaluation metrics
         """
-        # Use original evaluation (environment creation is not the bottleneck)
         from model_eval import eval_corruptions_torchrl
-        eval_func = lambda actor_module, value_module, **kwargs: eval_corruptions_torchrl(
-            actor=actor_module, **kwargs
-        )
         
         actor.eval()
         
@@ -618,41 +624,7 @@ class PPOAgent:
             n_corruptions = self.args.eval_neg_samples
         else:
             raise ValueError("n_corruptions not specified in args")
-        
-        # Build environment configuration to pass to evaluation
-        # These will be used to create environments
-        env_config = {}
-        if self.args:
-            env_config['max_depth'] = getattr(self.args, 'max_depth', 20)
-            env_config['memory_pruning'] = getattr(self.args, 'memory_pruning', True)
-            env_config['endt_action'] = getattr(self.args, 'endt_action', False)
-            env_config['endf_action'] = getattr(self.args, 'endf_action', False)
-            env_config['skip_unary_actions'] = getattr(self.args, 'skip_unary_actions', True)
-            env_config['padding_atoms'] = getattr(self.args, 'padding_atoms', 6)
-            env_config['padding_states'] = getattr(self.args, 'padding_states', 20)
-            env_config['engine'] = getattr(self.args, 'engine', 'python')
-            env_config['reward_type'] = getattr(self.args, 'reward_type', 4)
-        
-        # Build common kwargs
-        eval_kwargs = dict(
-            env=eval_env,
-            data=eval_data,
-            sampler=sampler,
-            n_corruptions=n_corruptions,
-            deterministic=True,
-            verbose=1,
-            plot=False,
-            kge_inference_engine=None,
-            evaluation_mode='rl_only',
-            corruption_scheme=['head', 'tail'],
-            data_depths=eval_depths,
-            index_manager=self.index_manager,
-            data_handler=self.data_handler,
-        )
-        
-        # Add environment config to kwargs
-        eval_kwargs.update(env_config)
-                
+               
         # Run evaluation to get metrics
         try:
             # Create info callback with verbose logging
@@ -662,13 +634,20 @@ class PPOAgent:
                         print(f"[PPOAgent._run_evaluation] Callback receiving {len(infos)} infos")
                     callback.accumulate_episode_stats(infos, mode="eval")
             
-            eval_kwargs['info_callback'] = info_callback_with_verbose
-            
-            # Run evaluation
-            metrics = eval_func(
-                actor_module=actor,
-                value_module=None,
-                **eval_kwargs
+            metrics = eval_corruptions_torchrl(
+                actor=actor,
+                env=eval_env,
+                data=eval_data,
+                sampler=sampler,
+                n_corruptions=n_corruptions,
+                deterministic=True,
+                verbose=0,
+                plot=False,
+                kge_inference_engine=None,
+                evaluation_mode='rl_only',
+                corruption_scheme=['head', 'tail'],
+                info_callback=info_callback_with_verbose,
+                data_depths=eval_depths,
             )
             
         except Exception as e:

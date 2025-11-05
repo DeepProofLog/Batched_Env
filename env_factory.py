@@ -2,7 +2,7 @@
 # Returns (train_env, valid_env, callback_env) — ParallelEnv or single EnvBase based on use_parallel_envs.
 
 from __future__ import annotations
-from typing import Any, Callable, Optional, List
+from typing import Any, Callable, Optional, List, Tuple
 import sys
 import numpy as np
 import torch
@@ -93,7 +93,9 @@ def _create_single_env(queries, labels, query_depths, mode, seed, args, index_ma
     return env_fn()  # Call the function to get the actual environment
 
 
-def create_environments(args: Any, data_handler, index_manager, kge_engine=None, detailed_eval_env: bool = False):
+def create_environments(args: Any, data_handler, index_manager, kge_engine=None, 
+                        detailed_eval_env: bool = False,
+                        device: torch.device = torch.device('cpu')) -> Tuple[EnvBase, EnvBase, EnvBase]:
     """Create TorchRL environments for training/validation/callback.
 
     Returns
@@ -104,9 +106,9 @@ def create_environments(args: Any, data_handler, index_manager, kge_engine=None,
         callback_env: ParallelEnv or single EnvBase with args.n_envs_cb workers over VALID (restart) for detailed metrics.
     """
     # Generate seeds for different environment types
-    seeds_train = _seed_stream(args.n_envs_train, args.seed_run_i)
-    seeds_eval = _seed_stream(args.n_envs_eval, args.seed_run_i + 10_000)
-    seeds_cb = _seed_stream(args.n_envs_cb, args.seed_run_i + 20_000)
+    seeds_train = _seed_stream(1, args.seed_run_i)
+    seeds_eval = _seed_stream(1, args.seed_run_i + 10_000)
+    seeds_cb = _seed_stream(1, args.seed_run_i + 20_000)
 
     use_parallel = getattr(args, 'use_parallel_envs', True)
 
@@ -123,7 +125,7 @@ def create_environments(args: Any, data_handler, index_manager, kge_engine=None,
             labels=[1] * len(data_handler.train_queries),
             query_depths=data_handler.train_queries_depths,
             mode='train',
-            n_workers=args.n_envs_train,
+            n_workers=1,
             seeds=seeds_train,
             args=args,
             index_manager=index_manager,
@@ -138,7 +140,7 @@ def create_environments(args: Any, data_handler, index_manager, kge_engine=None,
             labels=[1] * len(data_handler.valid_queries),
             query_depths=data_handler.valid_queries_depths,
             mode='eval',
-            n_workers=args.n_envs_eval,
+            n_workers=1,
             seeds=seeds_eval,
             args=args,
             index_manager=index_manager,
@@ -153,7 +155,7 @@ def create_environments(args: Any, data_handler, index_manager, kge_engine=None,
             labels=[1] * len(data_handler.valid_queries),
             query_depths=data_handler.valid_queries_depths,
             mode='eval_with_restart',
-            n_workers=args.n_envs_cb,
+            n_workers=1,
             seeds=seeds_cb,
             args=args,
             index_manager=index_manager,

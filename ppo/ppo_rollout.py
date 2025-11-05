@@ -1,14 +1,275 @@
 
-# ppo_rollout.py — fast rollout via TorchRL SyncDataCollector
-# This file REPLACES the previous Python-loop rollout.
+# ppo_rollout.py — fast rollout via TorchRL MultiaSyncDataCollector
+# This file uses a masked policy wrapper to ensure action_mask is always respected.
 
 from __future__ import annotations
+
+import sys
+print("="*80, flush=True)
+print("DEBUG: ppo_rollout.py MODULE IS BEING IMPORTED/RELOADED", flush=True)
+print("="*80, flush=True)
+sys.stdout.flush()
+
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 from tensordict import TensorDict
-from torchrl.collectors import SyncDataCollector
+from torchrl.collectors import MultiaSyncDataCollector
 from torchrl.envs import ParallelEnv
+
+
+class MaskedPolicyWrapper:
+    """
+    Serializable policy wrapper that re-applies action_mask before sampling.
+    
+    This ensures that the MultiaSyncDataCollector never samples invalid (padded) actions,
+    even if the actor's internal distribution doesn't properly handle -inf masking.
+    
+    This class can be pickled for multiprocessing, unlike nested functions.
+    """
+    
+    def __init__(self, actor):
+        """Initialize the wrapper with an actor module.
+        
+        Args:
+            actor: The ProbabilisticActor module
+        """
+        self.actor = actor
+        self.call_count = 0
+        self.previous_td_id = None
+        self.previous_masks = {}
+    
+    @torch.no_grad()
+    def __call__(self, td: TensorDict) -> TensorDict:
+        """Apply the masked policy to the given tensordict.
+        
+        Args:
+            td: Input tensordict from environment
+            
+        Returns:
+            Updated tensordict with action and sample_log_prob
+        """
+        self.call_count += 1
+        log_this = False  # Always log for deep debugging
+        
+        td_id = id(td)
+        is_same_td = td_id == self.previous_td_id
+        self.previous_td_id = td_id
+        
+        if log_this:
+            print(f"\n{'='*80}")
+            print(f"[MaskedPolicyWrapper call {self.call_count}] TD object id: {td_id} {'(SAME AS PREVIOUS!)' if is_same_td else '(new)'}")
+            print(f"  Input TD keys: {list(td.keys())}")
+            print(f"  Batch size: {td.batch_size}")
+            print(f"  TD device: {td.device if hasattr(td, 'device') else 'N/A'}")
+            
+            # Check if this is a view or shared data
+            if 'action_mask' in td.keys():
+                mask_tensor = td.get('action_mask')
+                print(f"  action_mask tensor id: {id(mask_tensor)}")
+                print(f"  action_mask is_contiguous: {mask_tensor.is_contiguous()}")
+                print(f"  action_mask storage id: {id(mask_tensor.storage()) if hasattr(mask_tensor, 'storage') else 'N/A'}")
+        
+        # CRITICAL: Check for stale/cached action_mask
+        action_mask_input = td.get("action_mask", None)
+        if action_mask_input is not None and log_this:
+            print(f"\n  [INITIAL ACTION_MASK CHECK]")
+            print(f"  Action mask shape: {action_mask_input.shape}")
+            
+            # Handle both batched [batch, actions] and unbatched [actions] masks
+            if action_mask_input.dim() == 1:
+                # Single environment, unbatched
+                valid_count = action_mask_input.sum().item()
+                valid_indices = torch.where(action_mask_input)[0].tolist()
+                
+                prev_mask = self.previous_masks.get(0)
+                mask_changed = "NEW" if prev_mask is None else ("CHANGED" if not torch.equal(prev_mask, action_mask_input) else "SAME")
+                self.previous_masks[0] = action_mask_input.clone()
+                
+                print(f"    Single env: {valid_count} valid actions {valid_indices} [{mask_changed}]")
+            else:
+                # Multiple environments, batched
+                for env_idx in range(min(action_mask_input.shape[0], 4)):  # Only show first 4 envs
+                    valid_count = action_mask_input[env_idx].sum().item()
+                    valid_indices = torch.where(action_mask_input[env_idx])[0].tolist()
+                    
+                    prev_mask = self.previous_masks.get(env_idx)
+                    mask_changed = "NEW" if prev_mask is None else ("CHANGED" if not torch.equal(prev_mask, action_mask_input[env_idx]) else "SAME")
+                    self.previous_masks[env_idx] = action_mask_input[env_idx].clone()
+                    
+                    print(f"    Env {env_idx}: {valid_count} valid actions {valid_indices} [{mask_changed}]")
+        
+        # Remove any existing action/logits keys to force recomputation
+        keys_to_remove = []
+        for key in ['logits', 'action', 'sample_log_prob']:
+            if key in td.keys():
+                keys_to_remove.append(key)
+                if log_this:
+                    print(f"  Removing existing key: {key}")
+        
+        if keys_to_remove:
+            # Create a new TD without these keys
+            td_clean = td.exclude(*keys_to_remove)
+        else:
+            td_clean = td
+        
+        # 1) Run the actor's logits-producing module without sampling
+        #    ProbabilisticActor usually wraps a TensorDictModule in .module[0]
+        
+        if log_this:
+            print(f"\n  [ACTOR STRUCTURE]")
+            print(f"  Actor type: {type(self.actor)}")
+            print(f"  Has 'module': {hasattr(self.actor, 'module')}")
+        
+        # Check actor structure
+        if hasattr(self.actor, "module"):
+            # actor.module is a TensorDictSequential containing the logits module
+            if len(self.actor.module) > 0:
+                if log_this:
+                    print(f"  Actor module length: {len(self.actor.module)}")
+                    print(f"  Actor module[0] type: {type(self.actor.module[0])}")
+                # Call just the first module (the logits producer)
+                self.actor.module[0](td_clean)
+            else:
+                raise ValueError("Actor module is empty")
+        else:
+            raise ValueError(f"Actor has no 'module' attribute. Actor type: {type(self.actor)}")
+        
+        # 2) Get logits and action_mask from the tensordict
+        logits = td_clean.get("logits")
+        if logits is None:
+            raise ValueError(f"Actor module did not produce 'logits' key. Available keys: {list(td_clean.keys())}")
+        
+        action_mask = td_clean.get("action_mask")
+        if action_mask is None:
+            raise ValueError(f"TensorDict missing 'action_mask' key. Available keys: {list(td_clean.keys())}")
+        
+        # CRITICAL FIX: Clone the action_mask to prevent it from being modified
+        # by MultiaSyncDataCollector's parallel workers between sampling and stepping.
+        # This is the root cause of invalid actions - the mask changes after we sample!
+        action_mask_snapshot = action_mask.clone()
+        
+        if log_this:
+            print(f"\n  [AFTER ACTOR FORWARD]")
+            print(f"  Logits shape: {logits.shape}")
+            print(f"  Logits device: {logits.device}")
+            print(f"  Action mask shape: {action_mask.shape}")
+            print(f"  Action mask device: {action_mask.device}")
+            print(f"  Action mask tensor id: {id(action_mask)} -> cloned to {id(action_mask_snapshot)}")
+            
+            # CRITICAL: Check if action_mask changed after actor forward
+            if action_mask_input is not None and not torch.equal(action_mask, action_mask_input):
+                print(f"  WARNING: action_mask CHANGED after actor forward!")
+                for env_idx in range(min(action_mask.shape[0], 3)):
+                    if not torch.equal(action_mask[env_idx], action_mask_input[env_idx]):
+                        print(f"    Env {env_idx} BEFORE: {torch.where(action_mask_input[env_idx])[0].tolist()}")
+                        print(f"    Env {env_idx} AFTER:  {torch.where(action_mask[env_idx])[0].tolist()}")
+        
+        # 3) Re-apply the mask to ensure -inf for invalid actions
+        # Use the cloned snapshot to ensure consistency
+        # Handle both batched [batch, actions] and unbatched [actions] masks
+        mask = action_mask_snapshot.to(logits.device).bool()
+        
+        # Ensure mask has the same shape as logits
+        if mask.dim() == 1 and logits.dim() == 2:
+            # Unbatched mask [actions] -> broadcast to [1, actions]
+            mask = mask.unsqueeze(0)
+        elif mask.dim() == 2 and logits.dim() == 2:
+            # Already batched [batch, actions]
+            pass
+        else:
+            raise ValueError(f"Unexpected shapes: mask {mask.shape}, logits {logits.shape}")
+        
+        masked_logits = logits.masked_fill(~mask, float("-inf"))
+        
+        if log_this:
+            print(f"\n  [MASKING VERIFICATION]")
+            # Verify masking worked
+            batch_size = masked_logits.shape[0]
+            for env_idx in range(min(batch_size, 3)):  # Only check actual batch elements
+                finite_count = torch.isfinite(masked_logits[env_idx]).sum().item()
+                expected_count = mask[env_idx].sum().item()
+                finite_indices = torch.where(torch.isfinite(masked_logits[env_idx]))[0].tolist()
+                
+                if finite_count != expected_count:
+                    print(f"    Env {env_idx}: MASKING FAILED! {finite_count} finite but {expected_count} expected")
+                    print(f"      Valid logit values: {masked_logits[env_idx][torch.isfinite(masked_logits[env_idx])].tolist()}")
+                else:
+                    print(f"    Env {env_idx}: OK - {finite_count} finite logits at {finite_indices}")
+        
+        # 4) Create distribution and sample action
+        if log_this:
+            print(f"\n  [SAMPLING]")
+        
+        dist = torch.distributions.Categorical(logits=masked_logits)
+        action = dist.sample()
+        log_prob = dist.log_prob(action)
+        
+        if log_this:
+            print(f"  Sampled actions shape: {action.shape}")
+            print(f"  Sampled actions: {action.tolist() if action.dim() > 0 else [action.item()]}")
+            
+            # Verify ALL actions are valid ACCORDING TO THE SNAPSHOT
+            print(f"\n  [ACTION VALIDATION]")
+            batch_size = action.shape[0] if action.dim() > 0 else 1
+            for i in range(min(batch_size, 3)):  # Only show first 3
+                act_idx = action[i].item() if action.dim() > 0 else action.item()
+                
+                # Handle both batched and unbatched masks
+                if mask.dim() == 1:
+                    # Unbatched: mask shape [actions]
+                    is_valid = mask[act_idx].item()
+                    valid_indices = torch.where(mask)[0].tolist()
+                else:
+                    # Batched: mask shape [batch, actions]
+                    is_valid = mask[i][act_idx].item()
+                    valid_indices = torch.where(mask[i])[0].tolist()
+                
+                status = "✓ VALID" if is_valid else "✗ INVALID"
+                print(f"    Env {i}: action={act_idx} {status} (valid: {valid_indices})")
+                
+                if not is_valid:
+                    print(f"    !! CRITICAL ERROR !!")
+                    print(f"      Env {i} masked logits: {masked_logits[i].tolist()}")
+                    print(f"      Env {i} action_mask_snapshot: {action_mask_snapshot[i].tolist()}")
+                    print(f"      Env {i} finite logits at: {torch.where(torch.isfinite(masked_logits[i]))[0].tolist()}")
+                    print(f"      Distribution probs: {dist.probs[i].tolist()}")
+                    
+                    # This should NEVER happen - raise error immediately
+                    raise RuntimeError(
+                        f"Masked policy sampled INVALID action {act_idx} for env {i}! "
+                        f"Valid actions: {valid_indices}. This indicates a fundamental "
+                        f"issue with the masking or sampling logic."
+                    )
+        
+        # 5) Write action and log_prob back to tensordict
+        # Also store the action_mask_snapshot so we can verify it wasn't modified
+        td.set("action", action)
+        td.set("sample_log_prob", log_prob)
+        td.set("_action_mask_at_sample_time", action_mask_snapshot)  # For debugging
+        
+        if log_this:
+            print(f"\n  [FINAL STATE]")
+            print(f"  TD keys after policy: {list(td.keys())}")
+            print(f"{'='*80}\n")
+        
+        return td
+
+
+def _masked_policy_factory(actor):
+    """
+    Create a serializable masked policy wrapper.
+    
+    This factory function creates a MaskedPolicyWrapper instance that can be pickled
+    for use with multiprocessing collectors like MultiaSyncDataCollector.
+    
+    Args:
+        actor: The ProbabilisticActor module
+        
+    Returns:
+        A MaskedPolicyWrapper instance that always respects the action_mask
+    """
+    return MaskedPolicyWrapper(actor)
 
 
 def _reshape_time_env(td: TensorDict, n_steps: int, n_envs: int) -> TensorDict:
@@ -88,7 +349,7 @@ def collect_rollouts(
     device: torch.device,
     rollout_callback: Optional[Callable] = None,
 ) -> Tuple[List[TensorDict], Dict[str, Any]]:
-    """Collect one batch (n_envs * n_steps) using SyncDataCollector.
+    """Collect one batch (n_envs * n_steps) using MultiaSyncDataCollector.
 
     Returns
     -------
@@ -100,40 +361,92 @@ def collect_rollouts(
     stats : Dict[str, Any]
         Contains 'episode_info' list for callbacks.
     """
+    from torchrl.envs import set_exploration_type, ExplorationType
+    debug=False
+    if debug:
+        print(f"\n{'='*80}")
+        print(f"[collect_rollouts] Starting collection")
+        print(f"  n_envs: {n_envs}, n_steps: {n_steps}")
+        print(f"  frames_per_batch: {n_envs * n_steps}")
+        print(f"  Environment type: {type(env)}")
+        print(f"  Environment batch_size: {env.batch_size if hasattr(env, 'batch_size') else 'N/A'}")
+        print(f"  Is ParallelEnv: {isinstance(env, ParallelEnv)}")
+    
     frames_per_batch = int(n_envs) * int(n_steps)
 
-    # SyncDataCollector can accept either an env factory or an existing env.
-    # If `env` is already a ParallelEnv, pass it directly to avoid double-batching
-    # (returning a ParallelEnv from a create_env_fn would cause nested batching and shape mismatches).
-    if isinstance(env, ParallelEnv):
-        def create_env_fn():
-            return env
-        collector = SyncDataCollector(
-            create_env_fn=create_env_fn,
-            policy=actor,
-            frames_per_batch=frames_per_batch,
-            total_frames=frames_per_batch,
-            device=device,
-            storing_device='cpu',
-            split_trajs=False,
-        )
+    # Create a masked policy wrapper that ensures action_mask is always respected
+    masked_policy = _masked_policy_factory(actor)
+    if debug:
+        print(f"\n[collect_rollouts] Created masked policy wrapper")
+        print(f"  Policy type: {type(masked_policy)}")
+
+    # MultiaSyncDataCollector requires environment factories (list of callables)
+    # Extract individual env factories from the batched environment
+    if hasattr(env, 'env_fns'):
+        # CustomBatchedEnv has env_fns attribute
+        env_factories = env.env_fns
+        if debug:
+            print(f"\n[collect_rollouts] Using CustomBatchedEnv's env_fns")
+            print(f"  Number of env factories available: {len(env_factories)}")
     else:
-        # SyncDataCollector requires a create_env_fn callable for single-worker envs
+        # Fallback: wrap the batched env in a single factory
+        if debug:
+            print(f"\n[collect_rollouts] Warning: Environment doesn't have env_fns, using as single factory")
         def create_env_fn():
             return env
+        env_factories = [create_env_fn]
+    
+    # Use fewer workers to reduce overhead - typically 2-4 workers is optimal
+    # You can adjust this based on your CPU cores and performance needs
+    num_workers = min(4, len(env_factories))  # Use max 4 workers
 
-        collector = SyncDataCollector(
-            create_env_fn=create_env_fn,
-            policy=actor,
-            frames_per_batch=frames_per_batch,
-            total_frames=frames_per_batch,
-            device=device,
-            storing_device='cpu',
-            split_trajs=False,
-        )
+    if debug:
+        print(f"\n[collect_rollouts] Setting up MultiaSyncDataCollector")
+        print(f"  Total environments: {n_envs}")
+        print(f"  Number of workers: {num_workers}")
+        print(f"  Frames per batch: {frames_per_batch}")
 
-    batch_td = next(iter(collector))  # single batch
-    collector.shutdown()
+    collector = MultiaSyncDataCollector(
+        create_env_fn=env_factories,
+        policy=masked_policy,  # Use masked policy instead of raw actor
+        frames_per_batch=frames_per_batch,
+        total_frames=frames_per_batch,
+        device=device,
+        storing_device='cpu',
+        split_trajs=False,
+        exploration_type=ExplorationType.RANDOM,
+        num_workers=num_workers,  # Control number of parallel workers
+    )
+
+    if debug:
+        print(f"\n[collect_rollouts] Collector created, starting rollout...")
+        print(f"  Collector type: {type(collector)}")
+        if hasattr(collector, 'device'):
+            print(f"  Collector device: {collector.device}")
+        print("=" * 80 + "\n")
+
+    # Wrap the rollout in RANDOM exploration mode context to ensure stochastic sampling
+    try:
+        with set_exploration_type(ExplorationType.RANDOM):
+            if debug:
+                print("[collect_rollouts] Starting batch collection...")
+            batch_td = next(iter(collector))  # single batch
+            if debug:
+                print(f"[collect_rollouts] Batch collected successfully!")
+                print(f"  Batch shape: {batch_td.batch_size}")
+                print(f"  Batch keys: {list(batch_td.keys())}")
+    except Exception as e:
+        print(f"\n{'!'*80}")
+        print(f"[collect_rollouts] ERROR during collection:")
+        print(f"  Exception type: {type(e).__name__}")
+        print(f"  Exception message: {str(e)}")
+        print(f"{'!'*80}\n")
+        raise
+    finally:
+        collector.shutdown()
+        if debug:
+            print("[collect_rollouts] Collector shutdown complete")
+
 
     # Add value estimates using the critic (operates on the observation at ROOT)
     critic(batch_td)  # adds 'state_value'

@@ -25,12 +25,14 @@ from utils import (
     _maybe_enable_wandb,
     FileLogger,
 )
-from env_factory import create_environments
+from custom_env import create_environments
+# from env_factory import create_environments
 from dataset import DataHandler
-from ppo import create_torchrl_modules, PPOAgent
+from ppo.ppo_model import create_torchrl_modules
+from ppo.ppo_agent import PPOAgent
 from embeddings import get_embedder
-# from model_eval import eval_corruptions_torchrl
-from model_eval_backup import eval_corruptions_torchrl
+from neg_sampling import get_sampler
+from model_eval import eval_corruptions_torchrl, TorchRLPolicyWrapper
 from callbacks import (
     RolloutProgressCallback,
     EvaluationCallback,
@@ -53,6 +55,7 @@ def _check_tensorboard_available():
             TENSORBOARD_AVAILABLE = False
             print("Warning: TensorBoard not available. Install tensorboard for advanced logging.")
     return TENSORBOARD_AVAILABLE
+
 
 
 # ------------------------------
@@ -337,7 +340,6 @@ def _train(
     eval_env,
     sampler,
     data_handler: DataHandler,
-    index_manager: IndexManager,  # Add index_manager parameter
     model_path: Path,
     device: torch.device,
 ) -> Tuple[nn.Module, nn.Module]:
@@ -365,8 +367,8 @@ def _train(
     
     # Initialize callbacks
     rollout_callback = RolloutProgressCallback(
-        total_steps=n_steps * args.n_envs_train,
-        n_envs=args.n_envs_train,
+        total_steps=n_steps * args.n_envs,
+        n_envs=args.n_envs,
         update_interval=25,
         verbose=True,
     )
@@ -414,9 +416,8 @@ def _train(
         eval_env=eval_env,
         sampler=sampler,
         data_handler=data_handler,
-        index_manager=index_manager,  # Pass index_manager
         args=args,
-        n_envs=args.n_envs_train,
+        n_envs=args.n_envs,
         n_steps=n_steps,
         n_epochs=n_epochs,
         batch_size=batch_size,
@@ -458,8 +459,7 @@ def _evaluate(
     eval_env,
     kge_engine,
     sampler,
-    data_handler: DataHandler,
-    index_manager
+    data_handler: DataHandler
 ) -> Tuple[dict, dict, dict]:
     """
     Final evaluation on train/valid/test sets with full corruption-based metrics.
@@ -500,9 +500,6 @@ def _evaluate(
         # Create depth tracker for this evaluation
         depth_tracker = _EvalDepthRewardTracker()
         
-        # Get group_size from args (default to 1 to avoid OOM)
-        group_size = getattr(args, 'eval_group_size', 1)
-        
         metrics_valid = eval_corruptions_torchrl(
             actor=actor,
             env=eval_env,
@@ -516,19 +513,6 @@ def _evaluate(
             corruption_scheme=['head', 'tail'],
             info_callback=depth_tracker,
             data_depths=valid_depths,
-            group_size=group_size,
-            index_manager=index_manager,
-            data_handler=data_handler,
-            # Pass environment configuration args
-            max_depth=args.max_depth,
-            memory_pruning=args.memory_pruning,
-            endt_action=args.endt_action,
-            endf_action=args.endf_action,
-            skip_unary_actions=args.skip_unary_actions,
-            padding_atoms=args.padding_atoms,
-            padding_states=args.padding_states,
-            engine=args.engine,
-            reward_type=args.reward_type,
         )
         
         # Merge depth-based metrics into results
@@ -541,9 +525,6 @@ def _evaluate(
         print("\n--- Evaluating on TEST set ---")
         # Create depth tracker for this evaluation
         depth_tracker = _EvalDepthRewardTracker()
-        
-        # Get group_size from args (default to 1 to avoid OOM)
-        group_size = getattr(args, 'eval_group_size', 1)
         
         metrics_test = eval_corruptions_torchrl(
             actor=actor,
@@ -558,9 +539,6 @@ def _evaluate(
             corruption_scheme=['head', 'tail'],
             info_callback=depth_tracker,
             data_depths=test_depths,
-            group_size=group_size,
-            index_manager=index_manager,
-            data_handler=data_handler,
         )
         
         # Merge depth-based metrics into results
@@ -603,12 +581,15 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
     
     # Create environments
-    train_env, eval_env, callback_env = create_environments(
-        args, 
-        dh, 
-        index_manager, 
-        kge_engine=None)
-
+    env, eval_env, callback_env = create_environments(
+        args,
+        dh,
+        index_manager,
+        kge_engine=kge_engine,
+        detailed_eval_env=args.extended_eval_info,
+        device='cpu',
+    )
+    
     # --- CREATE MODEL ---
     print("\nCreating TorchRL actor-critic model...")
     
@@ -656,11 +637,10 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
             actor,
             critic,
             optimizer,
-            train_env,
-            callback_env,
+            env,
+            eval_env,
             sampler,
             dh,
-            index_manager,  # Add index_manager
             model_path,
             device,
         )
@@ -675,7 +655,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     
     # Evaluate
     metrics_train, metrics_valid, metrics_test = _evaluate(
-        args, actor, eval_env, kge_engine, sampler, dh, index_manager
+        args, actor, eval_env, kge_engine, sampler, dh
     )
     
     return metrics_train, metrics_valid, metrics_test

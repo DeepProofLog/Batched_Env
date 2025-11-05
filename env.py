@@ -543,22 +543,11 @@ class LogicEnv_gym(EnvBase):
         # Safety check and clamp action to valid range
         num_derived = len(derived_states_list)
         if action >= num_derived:
-            # Get valid actions from action mask
-            action_mask = self.tensordict.get("action_mask", None)
-            if action_mask is not None:
-                valid_indices = torch.where(action_mask)[0]
-                if len(valid_indices) > 0:
-                    # Select first valid action
-                    action = valid_indices[0].item()
-                    if self.verbose > 0:
-                        print(f"Warning: Clamped invalid action to first valid action: {action}")
-                else:
-                    action = 0
-            else:
-                action = min(action, num_derived - 1)
-            
-            if self.verbose > 0:
-                print(f"Warning: Action {action_tensor} out of range (num_derived={num_derived}), clamped to {action}")
+            raise ValueError(
+                f"Action index ({action}) out of bounds. "
+                f"Number of derived states: {num_derived}. "
+                f"Current state: {self.tensordict.get('state', 'N/A')}"
+            )
 
         if action >= self.padding_states or action >= len(derived_states_list):
             # Provide detailed error information for debugging
@@ -1047,7 +1036,6 @@ class LogicEnv_gym(EnvBase):
         self.rng = rng
         self.seed_gen = random.Random(self.seed)
         return seed
-
 
 
 

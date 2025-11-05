@@ -69,16 +69,13 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 2000,
+        'timesteps_train': 400000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_steps': 1024, #128
-        'n_envs_train': 1,
-        'n_envs_eval': 1,
-        'n_envs_cb': 1,  # Number of environments for callback evaluation
-        'parallel_env_start_method': 'auto',
-        'use_parallel_envs': True,
+        'n_envs': 2,
+        'n_steps': 128,
+        'n_eval_envs': 2,
         'batch_size': 128,
 
         # Env params
@@ -110,9 +107,6 @@ if __name__ == "__main__":
         'eval_hybrid_success_only': True,
         'eval_hybrid_kge_weight': 2.0,
         'eval_hybrid_rl_weight': 1.0,
-        'eval_group_size': 1,  # DEPRECATED: Number of queries to batch during evaluation (use eval_pool_size instead)
-        'eval_pool_size': 1,  # NEW: Environment pool size for fast evaluation (1-4 recommended, higher = more memory but potentially faster)
-        'use_fast_eval': False,  # NEW: Use fast evaluation with environment reuse (True=fast, False=slow original method)
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -411,7 +405,7 @@ if __name__ == "__main__":
             namespace.constant_embedding_size = 2 * namespace.atom_embedding_size
 
         namespace.device = device
-        namespace.eval_freq = namespace.n_steps * namespace.n_envs_train
+        namespace.eval_freq = namespace.n_steps * namespace.n_envs
 
         return namespace
 
@@ -443,7 +437,7 @@ if __name__ == "__main__":
             args_namespace.reward_type,
             args_namespace.n_epochs,
             args_namespace.lr,
-            args_namespace.n_envs_train,
+            args_namespace.n_envs,
             'torchrl',  # Mark as TorchRL version
         )
         args_namespace.run_signature = '-'.join(str(v) for v in run_vars)
