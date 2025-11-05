@@ -33,7 +33,7 @@ from ppo.ppo_agent import PPOAgent
 from embeddings import get_embedder
 from neg_sampling import get_sampler
 # from model_eval import eval_corruptions_torchrl
-from model_eval_torchrl import eval_corruptions_torchrl
+from model_eval import eval_corruptions_torchrl
 from callbacks import (
     RolloutProgressCallback,
     EvaluationCallback,

@@ -19,7 +19,7 @@ from neg_sampling import get_sampler
 from embeddings import get_embedder
 
 # Import the new pure TorchRL evaluation module
-from model_eval_torchrl import evaluate_policy_torchrl, eval_corruptions_torchrl
+from model_eval import evaluate_policy_torchrl, eval_corruptions_torchrl
 
 
 def create_data_handler(args):
