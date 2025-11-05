@@ -42,7 +42,7 @@ if __name__ == "__main__":
         # General experiment configuration
 
         # Dataset params
-        'dataset_name': 'family',
+        'dataset_name': 'countries_s3',
 
         'eval_neg_samples': 3,
         'test_neg_samples': 100,
@@ -52,7 +52,7 @@ if __name__ == "__main__":
         'test_depth': None,
 
         'n_train_queries': None,
-        'n_eval_queries': 5,
+        'n_eval_queries': 500,
         'n_test_queries': None,
 
         'prob_facts': False,
@@ -73,9 +73,9 @@ if __name__ == "__main__":
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 4,
-        'n_steps': 4096, #8192,
-        'n_eval_envs': 4,
+        'n_envs': 2,
+        'n_steps': 8192, #8192, 16384
+        'n_eval_envs': 2,
         'batch_size': 128,
         'use_parallel_envs': True,
         'parallel_env_start_method': 'spawn',  # Use spawn to avoid CUDA fork issues

@@ -1,5 +1,15 @@
 """
 Deep profiling of rollout collection to identify actual bottlenecks.
+
+This script can profile different collector implementations:
+- SyncDataCollector (TorchRL's single-collector implementation)
+- MultiSyncDataCollector (TorchRL's multi-collector implementation)
+- CustomRolloutCollector (Pure Python implementation without TorchRL collectors)
+
+Usage:
+    python test_rollout_profile.py [collector_type]
+    
+    collector_type: 'sync' (default), 'multisync', or 'custom'
 """
 
 import torch
@@ -36,9 +46,9 @@ def create_test_args():
             self.model_emb_size = 256
             self.gamma = 0.99
             self.seed_run_i = 0
-            self.n_envs = 4
-            self.n_steps = 256
-            self.n_eval_envs = 4
+            self.n_steps = 2048
+            self.n_envs = 8
+            self.n_eval_envs = 8
             self.reward_type = 4
             self.train_neg_ratio = 1
             self.engine = 'python'
@@ -151,49 +161,76 @@ def setup_test_environment():
     return args, train_env, eval_env, callback_env, actor, critic, device
 
 
-def profile_rollout():
-    """Profile a single rollout collection."""
-    # from ppo.ppo_rollout import RolloutCollector
-    from ppo.ppo_rollout_multisync import MultiSyncRolloutCollector as RolloutCollector
-    import time
+def profile_rollout(collector_type: str = 'sync'):
+    """Profile a single rollout collection.
+    
+    Args:
+        collector_type: Type of collector to profile ('sync', 'multisync', or 'custom')
+    
+    Returns:
+        float: Time taken for the rollout collection
+    """
+    if collector_type == 'sync':
+        from ppo.ppo_rollout_sync import RolloutCollector
+        print(f"\n{'='*80}")
+        print(f"PROFILING: TorchRL SyncDataCollector")
+        print(f"{'='*80}\n")
+    elif collector_type == 'multisync':
+        from ppo.ppo_rollout_multisync import MultiSyncRolloutCollector as RolloutCollector
+        print(f"\n{'='*80}")
+        print(f"PROFILING: TorchRL MultiSyncDataCollector")
+        print(f"{'='*80}\n")
+    elif collector_type == 'custom':
+        from ppo.ppo_rollout_custom import CustomRolloutCollector as RolloutCollector
+        print(f"\n{'='*80}")
+        print(f"PROFILING: Custom Python Collector (No TorchRL)")
+        print(f"{'='*80}\n")
+    else:
+        raise ValueError(f"Unknown collector type: {collector_type}. Use 'sync', 'multisync', or 'custom'")
     
     args, train_env, eval_env, callback_env, actor, critic, device = setup_test_environment()
     
-    # Move actor to CPU for multiprocessing compatibility
-    actor_cpu = actor.to('cpu')
-    
-    # Extract env_fns and shutdown original ParallelEnv to avoid conflicts
-    if hasattr(train_env, 'env_fns'):
-        env_fns = train_env.env_fns
-        try:
-            train_env.shutdown()
-            time.sleep(0.5)  # Give it time to fully shutdown
-        except Exception as e:
-            print(f"Warning during env shutdown: {e}")
-        env_to_use = env_fns
+    # For custom collector, we can pass the ParallelEnv directly
+    # For MultiSync, we need to extract env_fns and move actor to CPU
+    if collector_type == 'multisync':
+        actor_cpu = actor.to('cpu')
+        if hasattr(train_env, 'env_fns'):
+            env_fns = train_env.env_fns
+            try:
+                train_env.shutdown()
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"Warning during env shutdown: {e}")
+            env_to_use = env_fns
+        else:
+            env_to_use = train_env
+        actor_to_use = actor_cpu
+        device_to_use = torch.device('cpu')
     else:
         env_to_use = train_env
+        actor_to_use = actor
+        device_to_use = torch.device('cpu')
     
     # Create persistent collector ONCE
     print("Creating persistent collector...")
-    print(f"Device: {device}, Actor device: CPU (moved from {device})")
+    print(f"Device: {device}, Collector device: {device_to_use}")
     collector = RolloutCollector(
         env=env_to_use,
-        actor=actor_cpu,  # Use CPU version of actor
+        actor=actor_to_use,
         n_envs=args.n_envs,
         n_steps=args.n_steps,
-        device=torch.device('cpu'),  # Collector runs on CPU
+        device=device_to_use,
         debug=False,
     )
     print("Collector created!\n")
     
-    # Warm up
-    print("Warming up...")
-    for _ in range(2):
-        collector.collect(
-            critic=critic,
-            rollout_callback=None,
-        )
+    # # Warm up
+    # print("Warming up...")
+    # for _ in range(2):
+    #     collector.collect(
+    #         critic=critic,
+    #         rollout_callback=None,
+    #     )
     
     print("Running profiled rollout collection...")
     
@@ -201,10 +238,13 @@ def profile_rollout():
     profiler = cProfile.Profile()
     profiler.enable()
     
+    start_time = time.time()
     experiences, stats = collector.collect(
         critic=critic,
         rollout_callback=None,
     )
+    end_time = time.time()
+    rollout_time = end_time - start_time
     
     profiler.disable()
     
@@ -231,10 +271,30 @@ def profile_rollout():
     ps.print_stats(30)
     print(s.getvalue())
     
+    print(f"\nRollout collection time: {rollout_time:.3f} seconds")
+    print(f"Throughput: {args.n_envs * args.n_steps / rollout_time:.1f} steps/sec")
+    
     # Cleanup
     collector.shutdown()
     # Don't shutdown train_env - already shutdown before creating collector
+    
+    return rollout_time
 
 
 if __name__ == "__main__":
-    profile_rollout()
+    import sys
+    
+    # Check if specific collector type is requested
+    if len(sys.argv) > 1:
+        collector_type = sys.argv[1].lower()
+        if collector_type not in ['sync', 'multisync', 'custom']:
+            print(f"Error: Unknown collector type '{sys.argv[1]}'")
+            print("Usage: python test_rollout_profile.py [sync|multisync|custom]")
+            print("Or run without arguments to profile the sync collector")
+            sys.exit(1)
+        
+        # Profile single collector
+        profile_rollout(collector_type)
+    else:
+        # Default to profiling sync collector
+        profile_rollout('sync')

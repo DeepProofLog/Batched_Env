@@ -22,7 +22,6 @@ from utils import (
     _warn_non_reproducible,
 )
 from env_factory import create_environments
-# from env_factory_backup import create_environments
 from dataset import DataHandler
 from ppo.ppo_model import create_torchrl_modules
 from ppo.ppo_agent import PPOAgent

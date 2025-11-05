@@ -18,8 +18,9 @@ from index_manager import IndexManager
 from embeddings import EmbedderLearnable
 from ppo.ppo_model import create_torchrl_modules
 from neg_sampling import get_sampler
-from ppo.ppo_rollout import MaskedPolicyWrapper, _reshape_time_env, _extract_episode_infos
+from ppo.ppo_rollout_sync import MaskedPolicyWrapper, _reshape_time_env, _extract_episode_infos
 from ppo.ppo_rollout_multisync import MultiSyncRolloutCollector
+from ppo.ppo_rollout_custom import CustomRolloutCollector
 from torchrl.collectors import SyncDataCollector
 from torchrl.envs import ExplorationType, set_exploration_type
 from tensordict import TensorDict
@@ -43,9 +44,9 @@ def create_test_setup():
             self.model_emb_size = 100
             self.gamma = 0.99
             self.seed_run_i = 0
-            self.n_envs = 4  # Use 4 envs for better MultiSync comparison
-            self.n_steps = 256
-            self.n_eval_envs = 4
+            self.n_steps = 2048
+            self.n_envs = 8  
+            self.n_eval_envs = 8
             self.reward_type = 4
             self.train_neg_ratio = 1
             self.engine = 'python'
@@ -277,6 +278,31 @@ class MultiSyncCollectorWrapper:
                 print(f"Warning: Error shutting down MultiSync collector: {e}")
 
 
+class CustomCollectorWrapper:
+    """Wrapper for CustomRolloutCollector to match RolloutCollector interface."""
+    
+    def __init__(self, env, actor, n_envs, n_steps, device):
+        self.n_envs = n_envs
+        self.n_steps = n_steps
+        self.device = device
+        
+        self.collector = CustomRolloutCollector(
+            env=env,
+            actor=actor,
+            n_envs=n_envs,
+            n_steps=n_steps,
+            device=device,
+            debug=False,
+        )
+    
+    def collect(self, critic):
+        return self.collector.collect(critic=critic, rollout_callback=None)
+    
+    def shutdown(self):
+        # Custom collector doesn't need explicit shutdown
+        pass
+
+
 def benchmark_collector(collector_class, name, n_rollouts=5, **collector_kwargs):
     """Benchmark a specific collector implementation."""
     args, train_env, actor, critic, device = setup_environment()
@@ -298,8 +324,8 @@ def benchmark_collector(collector_class, name, n_rollouts=5, **collector_kwargs)
     print("Collector created!\n")
 
     # Warmup
-    print("Warming up...")
-    collector.collect(critic=critic)
+    # print("Warming up...")
+    # collector.collect(critic=critic)
     
     # Benchmark
     print(f"Running {n_rollouts} rollouts...")
@@ -344,17 +370,6 @@ if __name__ == "__main__":
     
     results = {}
 
-    
-    # Benchmark MultiSyncDataCollector with 4 sub-collectors
-    multi4_time = benchmark_collector(
-        MultiSyncCollectorWrapper,
-        "MultiSyncDataCollector (4 sub-collectors)",
-        n_rollouts=5,
-        num_collectors=4
-    )
-    if multi4_time:
-        results['MultiSync-4'] = multi4_time
-    
     # Benchmark SyncDataCollector
     sync_time = benchmark_collector(
         SyncCollectorWrapper,
@@ -364,30 +379,47 @@ if __name__ == "__main__":
     if sync_time:
         results['SyncDataCollector'] = sync_time
 
+    # # Benchmark CustomRolloutCollector
+    # custom_time = benchmark_collector(
+    #     CustomCollectorWrapper,
+    #     "CustomRolloutCollector (Pure Python implementation)",
+    #     n_rollouts=5
+    # )
+    # if custom_time:
+    #     results['CustomRolloutCollector'] = custom_time
 
+    # # Benchmark MultiSyncDataCollector with 4 sub-collectors
+    # multi4_time = benchmark_collector(
+    #     MultiSyncCollectorWrapper,
+    #     "MultiSyncDataCollector (4 sub-collectors)",
+    #     n_rollouts=5,
+    #     num_collectors=4
+    # )
+    # if multi4_time:
+    #     results['MultiSync-4'] = multi4_time
     
-    # Summary
-    print(f"\n{'='*80}")
-    print("SUMMARY")
-    print(f"{'='*80}")
+    # # Summary
+    # print(f"\n{'='*80}")
+    # print("SUMMARY")
+    # print(f"{'='*80}")
     
-    if results:
-        for name, avg_time in results.items():
-            print(f"{name:40s}: {avg_time:.3f}s per rollout")
+    # if results:
+    #     for name, avg_time in results.items():
+    #         print(f"{name:40s}: {avg_time:.3f}s per rollout")
         
-        if 'SyncDataCollector' in results:
-            baseline = results['SyncDataCollector']
-            print(f"\n{'='*80}")
-            print("SPEEDUP vs SyncDataCollector:")
-            print(f"{'='*80}")
-            for name, avg_time in results.items():
-                if name != 'SyncDataCollector':
-                    speedup = baseline / avg_time
-                    if speedup > 1:
-                        print(f"{name:40s}: {speedup:.2f}x FASTER")
-                    else:
-                        print(f"{name:40s}: {1/speedup:.2f}x SLOWER")
-    else:
-        print("No successful benchmarks!")
+    #     if 'SyncDataCollector' in results:
+    #         baseline = results['SyncDataCollector']
+    #         print(f"\n{'='*80}")
+    #         print("SPEEDUP vs SyncDataCollector:")
+    #         print(f"{'='*80}")
+    #         for name, avg_time in results.items():
+    #             if name != 'SyncDataCollector':
+    #                 speedup = baseline / avg_time
+    #                 if speedup > 1:
+    #                     print(f"{name:40s}: {speedup:.2f}x FASTER")
+    #                 else:
+    #                     print(f"{name:40s}: {1/speedup:.2f}x SLOWER")
+    # else:
+    #     print("No successful benchmarks!")
     
-    print(f"{'='*80}\n")
+    # print(f"{'='*80}\n")
