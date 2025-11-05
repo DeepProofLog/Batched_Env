@@ -19,8 +19,67 @@ from tensordict import TensorDict
 import torch
 import torch.nn as nn
 
-from .ppo_rollout import RolloutCollector
-# from .ppo_rollout_multisync import MultiSyncRolloutCollector as RolloutCollector
+from .ppo_rollout import collect_rollouts
+# from .ppo_rollout_backup import collect_rollouts
+
+
+def _chunked_critic_eval(critic: nn.Module, batch_td: TensorDict, device: torch.device, chunk_size: int = 64):
+    """
+    Evaluate critic on large batches using chunking to avoid OOM.
+    
+    Args:
+        critic: The critic network
+        batch_td: TensorDict with shape [T, B] or [T*B]
+        device: Device to use for computation
+        chunk_size: Number of timesteps to process at once
+    
+    Returns:
+        The batch_td with 'state_value' added
+    """
+    # Flatten batch to [T*B] if needed
+    original_shape = batch_td.batch_size
+    if len(original_shape) == 2:
+        batch_td_flat = batch_td.reshape(-1)
+        needs_reshape = True
+    else:
+        batch_td_flat = batch_td
+        needs_reshape = False
+    
+    total_size = batch_td_flat.batch_size[0]
+    state_values_list = []
+    
+    for start_idx in range(0, total_size, chunk_size):
+        end_idx = min(start_idx + chunk_size, total_size)
+        
+        # Extract only the keys needed for critic forward pass
+        chunk_dict = {
+            'sub_index': batch_td_flat['sub_index'][start_idx:end_idx],
+            'derived_sub_indices': batch_td_flat['derived_sub_indices'][start_idx:end_idx],
+            'action_mask': batch_td_flat['action_mask'][start_idx:end_idx],
+        }
+        chunk_td = TensorDict(chunk_dict, batch_size=[end_idx - start_idx]).to(device)
+        
+        # Compute state values on GPU
+        critic(chunk_td)  # adds 'state_value' in-place to chunk_td
+        
+        # Move only state_value back to CPU and store
+        state_values_list.append(chunk_td["state_value"].cpu())
+        
+        # Explicitly delete chunk and clear cache
+        del chunk_td
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+    
+    # Concatenate all state values and add to flattened batch
+    batch_td_flat["state_value"] = torch.cat(state_values_list, dim=0)
+    
+    # Reshape back to original shape if needed
+    if needs_reshape:
+        batch_td = batch_td_flat.reshape(*original_shape)
+    else:
+        batch_td = batch_td_flat
+    
+    return batch_td
 
 
 class PPOAgent:
@@ -114,9 +173,6 @@ class PPOAgent:
         self.best_eval_metric = float('-inf')
         self.best_model_path = None
         self.global_step = 0
-        
-        # Persistent rollout collector (created on first use)
-        self._rollout_collector: Optional[RolloutCollector] = None
 
     
     
@@ -141,14 +197,30 @@ class PPOAgent:
 
         # Ensure value predictions exist for both current and next observations
         with torch.no_grad():
-            # value at current state
-            if "state_value" not in batch_td_time.keys():
-                self.critic(batch_td_time)
-            # value at next state
-            nxt = batch_td_time.get("next")
-            if "state_value" not in nxt.keys():
-                self.critic(nxt)
-            
+            batch_critic = False
+            if batch_critic:
+                # value at current state
+                if "state_value" not in batch_td_time.keys():
+                    # Use chunked evaluation to avoid OOM with large n_steps
+                    batch_td_time = _chunked_critic_eval(self.critic, batch_td_time, self.device, chunk_size=64)
+                
+                # value at next state
+                nxt = batch_td_time.get("next")
+                if "state_value" not in nxt.keys():
+                    # Use chunked evaluation to avoid OOM with large n_steps
+                    nxt_with_values = _chunked_critic_eval(self.critic, nxt, self.device, chunk_size=64)
+                    # Update the 'next' sub-dict in batch_td_time
+                    batch_td_time.set("next", nxt_with_values)
+                    nxt = nxt_with_values
+            else:
+                # Original (inefficient) way: process entire batch at once
+                if "state_value" not in batch_td_time.keys():
+                    self.critic(batch_td_time)  # adds 'state_value' in-place
+                
+                nxt = batch_td_time.get("next")
+                if "state_value" not in nxt.keys():
+                    self.critic(nxt)  # adds 'state_value' in-place
+
             # Ensure all tensors have consistent shapes (squeeze extra dimensions from reward/done)
             # GAE expects reward and done to have the same shape as state_value
             if "reward" in nxt.keys():
@@ -468,22 +540,13 @@ class PPOAgent:
                 if rollout_callback is not None:
                     rollout_callback.on_rollout_start()
                 
-                # Create persistent collector on first iteration
-                if self._rollout_collector is None:
-                    print("  Creating persistent rollout collector (one-time setup)...")
-                    self._rollout_collector = RolloutCollector(
-                        env=self.train_env,
-                        actor=self.actor,
-                        n_envs=self.n_envs,
-                        n_steps=self.n_steps,
-                        device=self.device,
-                        debug=False,
-                    )
-                    print("  Collector ready!\n")
-                
-                # Use the persistent collector
-                experiences, stats = self._rollout_collector.collect(
+                experiences, stats = collect_rollouts(
+                    env=self.train_env,
+                    actor=self.actor,
                     critic=self.critic,
+                    n_envs=self.n_envs,
+                    n_steps=self.n_steps,
+                    device=self.device,
                     rollout_callback=(
                         rollout_callback.on_step if rollout_callback is not None else None
                     ),
@@ -540,6 +603,9 @@ class PPOAgent:
                 }
                 training_time = time.time() - training_start_time
                 print(f"Time to train {training_time:.2f}s\n")
+                # Exit mentioning that we want to test up to here
+                # import sys
+                # sys.exit("Testing exit")
                 # ==================== Evaluation ====================
                 eval_start_time = time.time()
                 print('---------------evaluation started---------------')
@@ -730,22 +796,11 @@ class PPOAgent:
         self.critic.load_state_dict(checkpoint['critic_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
-        epoch = checkpoint['epoch']
-        timestep = checkpoint['timestep']
+        epoch = checkpoint.get('epoch', 0)
+        timestep = checkpoint.get('timestep', 0)
         metrics = checkpoint.get('metrics', {})
         
         print(f"Loaded checkpoint from {checkpoint_path}")
         print(f"  Epoch: {epoch}, Timestep: {timestep}")
         
         return epoch, timestep, metrics
-    
-    def cleanup(self):
-        """Clean up resources, especially the persistent collector."""
-        if self._rollout_collector is not None:
-            print("Shutting down persistent rollout collector...")
-            self._rollout_collector.shutdown()
-            self._rollout_collector = None
-    
-    def __del__(self):
-        """Ensure cleanup on deletion."""
-        self.cleanup()

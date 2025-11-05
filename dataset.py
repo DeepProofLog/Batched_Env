@@ -584,6 +584,21 @@ class DataHandler:
                 except FileNotFoundError:
                     print(f"Warning: Domain file {domain_file} not found")
 
+    def __getstate__(self):
+        """Custom pickle support - exclude unpicklable sampler."""
+        state = self.__dict__.copy()
+        # Remove the sampler as it's not picklable and can be reconstructed
+        if 'sampler' in state:
+            del state['sampler']
+        return state
+    
+    def __setstate__(self, state):
+        """Custom unpickle support - sampler will be None and must be reconstructed if needed."""
+        self.__dict__.update(state)
+        # Sampler will need to be reconstructed by calling code if needed
+        if not hasattr(self, 'sampler'):
+            self.sampler = None
+
 
  
 

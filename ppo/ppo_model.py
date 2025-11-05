@@ -193,6 +193,10 @@ class EmbeddingExtractor(nn.Module):
         
         return obs_embeddings, action_embeddings, action_mask
 
+    def forward_obs(self, obs_sub_indices: torch.Tensor) -> torch.Tensor:
+        if obs_sub_indices.dtype != torch.int32:  # (optionally prefer .long)
+            obs_sub_indices = obs_sub_indices.to(torch.int32)
+        return self.embedder.get_embeddings_batch(obs_sub_indices).squeeze(1)
 
 class ActorCriticModel(nn.Module):
     """
@@ -271,20 +275,24 @@ class ActorCriticModel(nn.Module):
         logits = self.policy_network(obs_embeddings, action_embeddings, action_mask)
         return logits
     
-    def forward_critic(self, observations: TensorDict) -> torch.Tensor:
-        """
-        Forward pass for the critic (value) network.
+    # def forward_critic(self, observations: TensorDict) -> torch.Tensor:
+    #     """
+    #     Forward pass for the critic (value) network.
         
-        Args:
-            observations: TensorDict containing observation data
+    #     Args:
+    #         observations: TensorDict containing observation data
             
-        Returns:
-            Value estimates tensor
-        """
-        obs_embeddings, _, _ = self.feature_extractor(observations)
-        values = self.value_network(obs_embeddings)
-        return values
-    
+    #     Returns:
+    #         Value estimates tensor
+    #     """
+    #     obs_embeddings, _, _ = self.feature_extractor(observations)
+    #     values = self.value_network(obs_embeddings)
+    #     return values
+
+    def forward_critic(self, observations: TensorDict) -> torch.Tensor:
+        obs_embeddings = self.feature_extractor.forward_obs(observations["sub_index"])
+        return self.value_network(obs_embeddings)
+
     def forward(self, observations: TensorDict) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through both actor and critic networks.
@@ -357,26 +365,30 @@ class TorchRLValueModule(nn.Module):
         super().__init__()
         self.actor_critic_model = actor_critic_model
     
-    def forward(self, sub_index: torch.Tensor, derived_sub_indices: torch.Tensor, 
-                action_mask: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass that produces state values.
+    # def forward(self, sub_index: torch.Tensor, derived_sub_indices: torch.Tensor, 
+    #             action_mask: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Forward pass that produces state values.
         
-        Args:
-            sub_index: Observation indices
-            derived_sub_indices: Action indices
-            action_mask: Valid action mask
+    #     Args:
+    #         sub_index: Observation indices
+    #         derived_sub_indices: Action indices
+    #         action_mask: Valid action mask
             
-        Returns:
-            State values tensor
-        """
-        tensordict = TensorDict({
-            "sub_index": sub_index,
-            "derived_sub_indices": derived_sub_indices,
-            "action_mask": action_mask,
-        }, batch_size=[])
-        values = self.actor_critic_model.forward_critic(tensordict)
-        return values
+    #     Returns:
+    #         State values tensor
+    #     """
+    #     tensordict = TensorDict({
+    #         "sub_index": sub_index,
+    #         "derived_sub_indices": derived_sub_indices,
+    #         "action_mask": action_mask,
+    #     }, batch_size=[])
+    #     values = self.actor_critic_model.forward_critic(tensordict)
+    #     return values
+
+    def forward(self, sub_index: torch.Tensor) -> torch.Tensor:
+        td = TensorDict({"sub_index": sub_index}, batch_size=[])
+        return self.actor_critic_model.forward_critic(td)
 
 
 class AddFeatureDimension(TensorDictModule):
@@ -472,9 +484,15 @@ def create_torchrl_modules(
     value_net = TorchRLValueModule(actor_critic_model)
     
     # Wrap value in TensorDictModule
+    # value_module = TensorDictModule(
+    #     module=value_net,
+    #     in_keys=["sub_index", "derived_sub_indices", "action_mask"],
+    #     out_keys=["state_value"],
+    # )
+
     value_module = TensorDictModule(
         module=value_net,
-        in_keys=["sub_index", "derived_sub_indices", "action_mask"],
+        in_keys=["sub_index"],            # was ["sub_index", "derived_sub_indices", "action_mask"]
         out_keys=["state_value"],
     )
     

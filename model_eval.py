@@ -193,9 +193,16 @@ def evaluate_policy_torchrl(
             actions = action_output.long()
         
         # Get log probabilities
-        lp_tensor = td_with_action.get("sample_log_prob", torch.zeros(n_envs, device=device))
-        if lp_tensor.dim() == 2:
-            lp_tensor = lp_tensor[:, -1]  # Take last timestep
+        # Extract log-probabilities and ensure they are on the same device
+        # as the actor/accumulators to avoid device-mismatch when indexing.
+        lp_tensor = td_with_action.get("sample_log_prob", None)
+        if lp_tensor is None:
+            lp_tensor = torch.zeros(n_envs, device=device)
+        else:
+            # Move incoming TensorDict tensors to the actor/device
+            lp_tensor = lp_tensor.to(device)
+            if lp_tensor.dim() == 2:
+                lp_tensor = lp_tensor[:, -1]  # Take last timestep
         
         # Enforce action mask (safety check)
         action_mask = obs_td.get("action_mask", None)

@@ -17,160 +17,40 @@ def _seed_stream(n: int, base_seed: int) -> List[int]:
     return rng.integers(0, 2**31 - 1, size=int(n), dtype=np.int64).tolist()
 
 
-class PicklableSamplerWrapper:
-    """Wrapper to make sampler picklable by storing reconstruction parameters.
-    
-    The sampler itself uses types.MethodType which isn't picklable, so we store
-    the parameters needed to reconstruct it after unpickling.
-    """
-    
-    def __init__(self, data_handler, index_manager, corruption_scheme, device):
-        # Store only what's needed to reconstruct the sampler
-        self.data_handler = data_handler
-        self.index_manager = index_manager
-        self.corruption_scheme = corruption_scheme
-        self.device = device
-        self._sampler = None
-    
-    def get_sampler(self):
-        """Lazy initialization of sampler."""
-        if self._sampler is None:
-            from neg_sampling import get_sampler
-            self._sampler = get_sampler(
-                data_handler=self.data_handler,
-                index_manager=self.index_manager,
-                corruption_scheme=self.corruption_scheme,
-                device=self.device,
-            )
-        return self._sampler
-    
-    def __getstate__(self):
-        """Pickle support - exclude the actual sampler."""
-        state = self.__dict__.copy()
-        # Don't pickle the sampler itself, it will be reconstructed
-        state['_sampler'] = None
-        return state
-    
-    def __setstate__(self, state):
-        """Unpickle support - restore state without sampler."""
-        self.__dict__.update(state)
-        # _sampler is None and will be reconstructed on first use
-
-
-class PicklableEnvCreator:
-    """Picklable environment creator for multiprocessing compatibility.
-    
-    This class wraps all the parameters needed to create a LogicEnv instance
-    and can be pickled/unpickled for use with multiprocessing-based collectors
-    like MultiSyncDataCollector.
-    
-    Strategy: Instead of trying to pickle data_handler with its unpicklable sampler,
-    we use a PicklableSamplerWrapper that stores reconstruction parameters and
-    lazily creates the sampler when needed.
-    """
-    
-    def __init__(self, index_manager, data_handler, queries, labels, query_depths, 
-                 facts, mode: str, seed: Optional[int], args: Any, kge_engine=None):
-        # Store direct parameters
-        self.queries = queries
-        self.labels = labels
-        self.query_depths = query_depths
-        self.facts = facts
-        self.mode = mode
-        self.seed = seed
-        self.kge_engine = kge_engine
-        
-        # Store references to objects
-        self.index_manager = index_manager
-        self.data_handler = data_handler
-        
-        # Extract and store individual args values to avoid pickling the args object
-        self.corruption_mode = args.corruption_mode
-        self.corruption_scheme = args.corruption_scheme
-        self.train_neg_ratio = args.train_neg_ratio
-        self.max_depth = args.max_depth
-        self.memory_pruning = args.memory_pruning
-        self.endt_action = args.endt_action
-        self.endf_action = args.endf_action
-        self.skip_unary_actions = args.skip_unary_actions
-        self.padding_atoms = args.padding_atoms
-        self.padding_states = args.padding_states
-        self.engine = args.engine
-        self.kge_action = args.kge_action
-        self.reward_type = args.reward_type
-        self.pbrs_beta = getattr(args, 'pbrs_beta', 0.0)
-        self.pbrs_gamma = getattr(args, 'pbrs_gamma', args.gamma)
-        self.verbose_env = getattr(args, 'verbose_env', 0)
-        self.verbose_prover = getattr(args, 'verbose_prover', 0)
-    
-    def __call__(self) -> EnvBase:
-        """Create and return a LogicEnv instance."""
-        # Ensure data_handler has a sampler if corruption_mode is enabled
-        # The sampler may have been excluded during pickling
-        if self.corruption_mode and (not hasattr(self.data_handler, 'sampler') or self.data_handler.sampler is None):
-            # Import here to avoid circular dependencies
-            from neg_sampling import get_sampler
-            from index_manager import IndexManager
-            
-            # Reconstruct the sampler
-            self.data_handler.sampler = get_sampler(
-                data_handler=self.data_handler,
-                index_manager=self.index_manager,
-                corruption_scheme=self.corruption_scheme,
-                device=torch.device('cpu'),
-            )
-        
-        env = LogicEnv(
-            index_manager=self.index_manager,
-            data_handler=self.data_handler,
-            queries=self.queries,
-            labels=self.labels,
-            query_depths=self.query_depths,
-            facts=self.facts,
-            mode=self.mode,
-            corruption_mode=self.corruption_mode,
-            corruption_scheme=self.corruption_scheme,
-            train_neg_ratio=self.train_neg_ratio,
-            seed=int(self.seed) if self.seed is not None else None,
-            max_depth=self.max_depth,
-            memory_pruning=self.memory_pruning,
-            endt_action=self.endt_action,
-            endf_action=self.endf_action,
-            skip_unary_actions=self.skip_unary_actions,
-            padding_atoms=self.padding_atoms,
-            padding_states=self.padding_states,
-            device=torch.device('cpu'),
-            engine=self.engine,
-            kge_action=self.kge_action,
-            reward_type=self.reward_type,
-            shaping_beta=self.pbrs_beta,
-            shaping_gamma=self.pbrs_gamma,
-            kge_inference_engine=self.kge_engine,
-            verbose=self.verbose_env,
-            prover_verbose=self.verbose_prover,
-        )
-        return env
-
-
 def _make_single_env(index_manager, data_handler, *, queries, labels, query_depths, facts,
                      mode: str, seed: Optional[int], args: Any, kge_engine=None) -> Callable[[], EnvBase]:
-    """Create a picklable environment creator.
-    
-    Returns a PicklableEnvCreator instance that can be called to create an environment.
-    This function is kept for backward compatibility but now returns a picklable object.
-    """
-    return PicklableEnvCreator(
-        index_manager=index_manager,
-        data_handler=data_handler,
-        queries=queries,
-        labels=labels,
-        query_depths=query_depths,
-        facts=facts,
-        mode=mode,
-        seed=seed,
-        args=args,
-        kge_engine=kge_engine,
-    )
+    def _init():
+        env = LogicEnv(
+            index_manager=index_manager,
+            data_handler=data_handler,
+            queries=queries,
+            labels=labels,
+            query_depths=query_depths,
+            facts=facts,
+            mode=mode,
+            corruption_mode=args.corruption_mode,
+            corruption_scheme=args.corruption_scheme,
+            train_neg_ratio=args.train_neg_ratio,
+            seed=int(seed) if seed is not None else None,
+            max_depth=args.max_depth,
+            memory_pruning=args.memory_pruning,
+            endt_action=args.endt_action,
+            endf_action=args.endf_action,
+            skip_unary_actions=args.skip_unary_actions,
+            padding_atoms=args.padding_atoms,
+            padding_states=args.padding_states,
+            device=torch.device('cpu'),
+            engine=args.engine,
+            kge_action=args.kge_action,
+            reward_type=args.reward_type,
+            shaping_beta=getattr(args, 'pbrs_beta', 0.0),
+            shaping_gamma=getattr(args, 'pbrs_gamma', args.gamma),
+            kge_inference_engine=kge_engine,
+            verbose=getattr(args, 'verbose_env', 0),
+            prover_verbose=getattr(args, 'verbose_prover', 0),
+        )
+        return env
+    return _init
 
 
 def _create_parallel_env(queries, labels, query_depths, mode, n_workers, seeds, args, index_manager, data_handler, kge_engine, mp_start_method):

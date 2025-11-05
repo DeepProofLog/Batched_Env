@@ -42,7 +42,7 @@ if __name__ == "__main__":
         # General experiment configuration
 
         # Dataset params
-        'dataset_name': 'countries_s3',
+        'dataset_name': 'family',
 
         'eval_neg_samples': 3,
         'test_neg_samples': 100,
@@ -52,7 +52,7 @@ if __name__ == "__main__":
         'test_depth': None,
 
         'n_train_queries': None,
-        'n_eval_queries': 500,
+        'n_eval_queries': 5,
         'n_test_queries': None,
 
         'prob_facts': False,
@@ -69,14 +69,16 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 400000,
+        'timesteps_train': 200000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 2,
-        'n_steps': 8192,
-        'n_eval_envs': 2,
+        'n_envs': 4,
+        'n_steps': 4096, #8192,
+        'n_eval_envs': 4,
         'batch_size': 128,
+        'use_parallel_envs': True,
+        'parallel_env_start_method': 'spawn',  # Use spawn to avoid CUDA fork issues
 
         # Env params
         'reward_type': 4,
@@ -111,10 +113,10 @@ if __name__ == "__main__":
         # Embedding params
         'atom_embedder': 'transe',
         'state_embedder': 'mean',
-        'atom_embedding_size': 256,
+        'atom_embedding_size': 100,
         'learn_embeddings': True,
-        'padding_atoms': 6,
-        'padding_states': -1,  # Auto-computed from dataset
+        'padding_atoms': 4,
+        'padding_states': 20,  # Auto-computed from dataset
         'max_total_vars': 100,
 
         # Other params

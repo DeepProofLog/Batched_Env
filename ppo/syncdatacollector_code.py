@@ -3,7 +3,7 @@ from torchrl.collectors import SyncDataCollector
 
 
 
-class SyncDataCollector_modified(SyncDataCollector):
+class SyncDataCollector(DataCollectorBase):
     """Generic data collector for RL problems. Requires an environment constructor and a policy.
 
     Args:

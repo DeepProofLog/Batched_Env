@@ -8,31 +8,25 @@ migrated from the original Stable-Baselines3 version.
 import json
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from tensordict import TensorDict
 
 from index_manager import IndexManager
 from utils import (
     get_device,
     print_eval_info,
-    profile_code,
     _set_seeds,
     _freeze_dropout_layernorm,
     _warn_non_reproducible,
-    _maybe_enable_wandb,
-    FileLogger,
 )
-# from custom_env import create_environments
 from env_factory import create_environments
+# from env_factory_backup import create_environments
 from dataset import DataHandler
 from ppo.ppo_model import create_torchrl_modules
 from ppo.ppo_agent import PPOAgent
 from embeddings import get_embedder
-from neg_sampling import get_sampler
-# from model_eval import eval_corruptions_torchrl
 from model_eval import eval_corruptions_torchrl
 from callbacks import (
     RolloutProgressCallback,
