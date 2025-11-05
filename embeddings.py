@@ -721,6 +721,7 @@ class TransE(nn.Module):
         self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate > 0 else nn.Identity()
         self.regularization = regularization
         self.device = device
+        self.to(device)
 
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
         predicate_emb = predicate_emb.squeeze(-2)
@@ -955,6 +956,7 @@ class Sum_state(nn.Module):
         if dropout_rate > 0:
             self.dropout = nn.Dropout(p=dropout_rate)
         self.device = device
+        self.to(device)
 
     def forward(self, atom_embeddings: torch.Tensor) -> torch.Tensor:
         if self.dropout_rate > 0:
@@ -1001,6 +1003,7 @@ class Sum_atom(nn.Module):
         if dropout_rate > 0:
             self.dropout = nn.Dropout(p=dropout_rate)
         self.device = device
+        self.to(device)
 
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
 
@@ -1024,6 +1027,7 @@ class HybridConstantEmbedder(nn.Module):
         self.num_regular = num_regular_constants # Number of regular constants, i.e., symbols with normal embeddings
         self.num_image = num_image_constants
         self.embedding_dim = embedding_dim
+        self.device = device
         
         # Regular constants use standard embeddings
         self.regular_embedder = nn.Embedding(num_regular_constants, embedding_dim)
@@ -1042,11 +1046,12 @@ class HybridConstantEmbedder(nn.Module):
         
         # Store pre-loaded image data with proper indexing
         self.register_buffer('image_data', image_data)
+        
+        # Move to device
+        self.to(device)
 
     def forward(self, indices):
-        # Ensure indices are on the correct device
-        indices = indices.to(self.regular_embedder.weight.device)
-        
+        # nn.Embedding and buffers automatically handle device placement
         # Initialize output tensor
         embeddings = torch.zeros(*indices.shape, self.embedding_dim, 
                                device=indices.device)
@@ -1060,8 +1065,8 @@ class HybridConstantEmbedder(nn.Module):
             # Get valid image indices without filtering
             image_indices = indices[image_mask]
             
-            # Directly index using valid positions
-            selected_images = self.image_data[image_indices.to(torch.int32)]
+            # Directly index using valid positions - use long() for indexing
+            selected_images = self.image_data[image_indices.long()]
             
             # Add channel dimension if missing (for single images)
             if selected_images.dim() == 3:
@@ -1074,7 +1079,7 @@ class HybridConstantEmbedder(nn.Module):
         # Process regular indices
         if regular_mask.any():
             regular_indices = indices[regular_mask] - self.num_image
-            embeddings[regular_mask] = self.regular_embedder(regular_indices.to(torch.int32))
+            embeddings[regular_mask] = self.regular_embedder(regular_indices.long())
             
         return embeddings
 
@@ -1086,10 +1091,11 @@ class ConstantEmbeddings(nn.Module):
         self.embedder = nn.Embedding(num_constants+1, embedding_dim, padding_idx=0)
         self.regularization = regularization
         self.device = device
+        # Move to device immediately
+        self.to(device)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
-        # Ensure indices are on the correct device
-        indices = indices.to(self.embedder.weight.device)
+        # nn.Embedding automatically handles device placement
         embeddings = self.embedder(indices)
         if self.regularization > 0:
             self.add_loss(self.regularization * embeddings.norm(p=2))
@@ -1103,10 +1109,11 @@ class PredicateEmbeddings(nn.Module):
         self.embedder = nn.Embedding(num_predicates+1, embedding_dim, padding_idx=0)
         self.regularization = regularization
         self.device = device
+        # Move to device immediately
+        self.to(device)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
-        # Ensure indices are on the correct device
-        indices = indices.to(self.embedder.weight.device)
+        # nn.Embedding automatically handles device placement
         embeddings = self.embedder(indices)
         if self.regularization > 0:
             self.add_loss(self.regularization * embeddings.norm(p=2))
@@ -1181,6 +1188,11 @@ class EmbedderLearnable(nn.Module):
                  ):
         
         super(EmbedderLearnable, self).__init__()
+        
+        # Store device for later use
+        self.device = device
+        self.embedding_dim = atom_embedding_size
+        self.atom_embedding_size = atom_embedding_size
 
         # Process image data correctly
         image_data = []
@@ -1237,7 +1249,10 @@ class EmbedderLearnable(nn.Module):
             regularization=kge_regularization,
             dropout_rate=kge_dropout_rate,
             device=device
-        )   
+        )
+        
+        # Move entire module to device
+        self.to(device)   
 
     def get_embeddings_batch(self, sub_indices: torch.Tensor) -> torch.Tensor:
         """Get embeddings for a batch of sub-indices.
@@ -1247,8 +1262,11 @@ class EmbedderLearnable(nn.Module):
         Returns:
             torch.Tensor of shape (batch_size=n_envs,n_states,embedding_dim)
         """
+        # Extract indices - use long() for embedding indices
         predicate_indices = sub_indices[..., 0].unsqueeze(-1)
         constant_indices = sub_indices[..., 1:]
+        
+        # Get embeddings - nn.Embedding handles device management
         constant_embeddings = self.constant_embedder(constant_indices)
         predicate_embeddings = self.predicate_embedder(predicate_indices)
         

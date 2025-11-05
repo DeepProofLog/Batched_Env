@@ -194,6 +194,7 @@ def _create_parallel_env(queries, labels, query_depths, mode, n_workers, seeds, 
         create_env_fn=env_fns,
         shared_memory=True,
         mp_start_method=mp_start_method,
+        pin_memory=False,  # Don't use pinned memory - can cause issues with CPU tensors
     )
     # Store env_fns as an attribute for SyncDataCollector
     parallel_env.env_fns = env_fns

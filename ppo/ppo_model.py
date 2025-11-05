@@ -54,9 +54,7 @@ class PolicyNetwork(nn.Module):
         flat_embeddings = embeddings.reshape(-1, original_shape[-1])
         x = self.obs_transform(flat_embeddings)
         for block in self.res_blocks:
-            residual = x
-            x = block(x)
-            x = x + residual
+            x = block(x) + x  # Fused residual addition
         encoded = self.out_transform(x)
         return encoded.view(*original_shape[:-1], -1)
     
@@ -78,12 +76,11 @@ class PolicyNetwork(nn.Module):
         encoded_actions = self._encode_embeddings(action_embeddings)
 
         # Compute similarity (dot product) between observation and action embeddings
-        encoded_obs = encoded_obs.unsqueeze(-2)
-        logits = torch.matmul(encoded_obs, encoded_actions.transpose(-2, -1)).squeeze(-2)
+        # Use bmm instead of matmul for better performance
+        logits = torch.bmm(encoded_obs.unsqueeze(1), encoded_actions.transpose(1, 2)).squeeze(1)
         
-        # Mask invalid actions with -inf
-        action_mask = action_mask.to(logits.device)
-        logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
+        # Mask invalid actions with -inf (avoid .to() call by ensuring mask is on correct device)
+        logits = logits.masked_fill(~action_mask, float("-inf"))
         
         return logits
 
@@ -130,11 +127,9 @@ class ValueNetwork(nn.Module):
         """
         # Process observation embeddings through the input layer
         x = self.input_layer(embeddings)
-        # Pass through residual blocks
+        # Pass through residual blocks with fused addition
         for block in self.res_blocks:
-            residual = x
-            x = block(x)
-            x = x + residual
+            x = block(x) + x  # Fused residual addition
         # Get final value prediction
         value = self.output_layer(x)
         return value.squeeze(-1)
@@ -178,11 +173,14 @@ class EmbeddingExtractor(nn.Module):
         action_sub_indices = observations["derived_sub_indices"]
         action_mask = observations["action_mask"]
         
-        # Ensure correct dtype
-        if obs_sub_indices.dtype != torch.int32:
-            obs_sub_indices = obs_sub_indices.to(torch.int32)
-        if action_sub_indices.dtype != torch.int32:
-            action_sub_indices = action_sub_indices.to(torch.int32)
+        # Optimize device transfer: only transfer if needed
+        # Check if already on correct device to avoid unnecessary transfers
+        if obs_sub_indices.device != self.device or obs_sub_indices.dtype != torch.long:
+            obs_sub_indices = obs_sub_indices.to(device=self.device, dtype=torch.long, non_blocking=True)
+        if action_sub_indices.device != self.device or action_sub_indices.dtype != torch.long:
+            action_sub_indices = action_sub_indices.to(device=self.device, dtype=torch.long, non_blocking=True)
+        if action_mask.device != self.device:
+            action_mask = action_mask.to(device=self.device, non_blocking=True)
         
         # Get embeddings
         obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices)  # (batch, 1, embedding_dim)
@@ -194,8 +192,8 @@ class EmbeddingExtractor(nn.Module):
         return obs_embeddings, action_embeddings, action_mask
 
     def forward_obs(self, obs_sub_indices: torch.Tensor) -> torch.Tensor:
-        if obs_sub_indices.dtype != torch.int32:  # (optionally prefer .long)
-            obs_sub_indices = obs_sub_indices.to(torch.int32)
+        if obs_sub_indices.device != self.device or obs_sub_indices.dtype != torch.long:
+            obs_sub_indices = obs_sub_indices.to(device=self.device, dtype=torch.long, non_blocking=True)
         return self.embedder.get_embeddings_batch(obs_sub_indices).squeeze(1)
 
 class ActorCriticModel(nn.Module):

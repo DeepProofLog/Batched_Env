@@ -47,7 +47,7 @@ def create_test_args():
             self.gamma = 0.99
             self.seed_run_i = 0
             self.n_steps = 2048
-            self.n_envs = 8
+            self.n_envs = 8  # Back to 8 for fair comparison
             self.n_eval_envs = 8
             self.reward_type = 4
             self.train_neg_ratio = 1
@@ -297,4 +297,5 @@ if __name__ == "__main__":
         profile_rollout(collector_type)
     else:
         # Default to profiling sync collector
-        profile_rollout('sync')
+        # profile_rollout('sync')
+        profile_rollout('custom')
