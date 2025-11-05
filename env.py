@@ -1,7 +1,9 @@
-from __future__ import annotations
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
+
 import math
 import random
+import warnings
+
 import numpy as np
 import torch
 from tensordict import NonTensorData, TensorDict
@@ -12,7 +14,6 @@ from torchrl.data.tensor_specs import (
     Unbounded,
     Categorical,
     Binary,
-    DiscreteTensorSpec,
 )
 
 from dataset import DataHandler
@@ -166,6 +167,36 @@ class LogicEnv_gym(EnvBase):
         self.shaping_beta = float(beta)
         self._potential_cache.clear()
 
+    def configure(self, **kwargs):
+        """Configure the environment with new parameters.
+        
+        This method allows updating environment parameters dynamically,
+        which is useful for ParallelEnv where direct attribute access isn't possible.
+        
+        Args:
+            **kwargs: Configuration parameters to update (mode, queries, labels, etc.)
+        """
+        if 'mode' in kwargs:
+            self.mode = kwargs['mode']
+        if 'queries' in kwargs:
+            self.queries = kwargs['queries']
+            if 'labels' not in kwargs:
+                # Default to all positive labels if not specified
+                self.labels = [1] * len(kwargs['queries'])
+            if 'query_depths' not in kwargs:
+                self.query_depths = [None] * len(kwargs['queries'])
+            self.n_episodes = len(kwargs['queries'])
+        if 'labels' in kwargs:
+            self.labels = kwargs['labels']
+        if 'query_depths' in kwargs:
+            self.query_depths = list(kwargs['query_depths'])
+        if 'n_episodes' in kwargs:
+            self.n_episodes = kwargs['n_episodes']
+        if 'eval_idx' in kwargs:
+            self.eval_idx = kwargs['eval_idx']
+        if 'train_neg_ratio' in kwargs:
+            self.train_neg_ratio = kwargs['train_neg_ratio']
+
 
     def _make_spec(self):
         '''Create the observation and action specs using TorchRL's spec system'''
@@ -195,35 +226,13 @@ class LogicEnv_gym(EnvBase):
                 dtype=torch.bool,
                 device=self.device,
             ),
-            # Add metadata fields to observation spec so they're preserved by collectors
-            label=Bounded(
-                low=0,
-                high=1,
-                shape=torch.Size([1]),
-                dtype=torch.long,
-                device=self.device,
-            ),
-            query_depth=Bounded(
-                low=-1,
-                high=100,
-                shape=torch.Size([1]),
-                dtype=torch.long,
-                device=self.device,
-            ),
-            is_success=Binary(
-                n=1,
-                shape=torch.Size([1]),
-                dtype=torch.bool,
-                device=self.device,
-            ),
             shape=torch.Size([]),  # Single environment (no batch dimension yet)
         )
         
-        # Action spec - scalar integer action (not one-hot)
-        # This matches the output of ProbabilisticActor with Categorical distribution
+        # Action spec - discrete action space
         self.action_spec = Categorical(
-            n=self.padding_states,  # Number of possible actions
-            shape=torch.Size([]),  # Scalar action
+            n=self.padding_states,
+            shape=torch.Size([]),
             dtype=torch.int64,
             device=self.device,
         )
@@ -475,13 +484,11 @@ class LogicEnv_gym(EnvBase):
                 "action_mask": action_mask,
                 # Non-tensor data and internal state
                 "state": NonTensorData(data=query),
-                "label": torch.tensor([label], dtype=torch.long, device=self.device),
+                "label": torch.tensor(label, device=self.device),
                 "done": torch.tensor([False], dtype=torch.bool, device=self.device),  # Match done_spec shape [1]
                 "terminated": torch.tensor([False], dtype=torch.bool, device=self.device),  # Required by TorchRL
-                "truncated": torch.tensor([False], dtype=torch.bool, device=self.device),  # Required by TorchRL
                 "derived_states": NonTensorData(data=derived_states),
-                "query_depth": torch.tensor([self.current_query_depth_value if self.current_query_depth_value is not None else -1], dtype=torch.long, device=self.device),
-                "is_success": torch.tensor([False], dtype=torch.bool, device=self.device),  # Initialize as False
+                "query_depth": torch.tensor([self.current_query_depth_value], dtype=torch.long, device=self.device),
             },
             batch_size=torch.Size([]),  # Single environment
         )
@@ -511,23 +518,12 @@ class LogicEnv_gym(EnvBase):
         Returns:
             TensorDict with next state, reward, done signal, and metadata
         '''
-        # Extract action - handle both one-hot encoded and integer actions
+        # Extract action - handle both scalar and tensor inputs
         action_tensor = tensordict["action"]
-        
-        # Convert one-hot encoded action to integer index
-        if action_tensor.dtype == torch.bool and action_tensor.numel() > 1:
-            # One-hot encoded: find the index of the True value
-            action_indices = torch.nonzero(action_tensor, as_tuple=True)[0]
-            if len(action_indices) > 0:
-                action = action_indices[0].item()
-            else:
-                # No action selected, default to 0
-                action = 0
-        elif action_tensor.numel() == 1:
-            # Single scalar action
+        if action_tensor.numel() == 1:
             action = action_tensor.item()
         else:
-            # If batched integer, take first element
+            # If batched, take first element (SerialEnv should unbatch but sometimes doesn't)
             action = action_tensor.flatten()[0].item()
         
         derived_states = self.tensordict["derived_states"]
@@ -540,19 +536,32 @@ class LogicEnv_gym(EnvBase):
         else:
             derived_states_list = derived_states
 
-        # Safety check and clamp action to valid range
-        num_derived = len(derived_states_list)
-        if action >= num_derived:
-            raise ValueError(
-                f"Action index ({action}) out of bounds. "
-                f"Number of derived states: {num_derived}. "
-                f"Current state: {self.tensordict.get('state', 'N/A')}"
-            )
-
         if action >= self.padding_states or action >= len(derived_states_list):
             # Provide detailed error information for debugging
             action_mask = self.tensordict.get("action_mask", None)
             valid_actions = torch.where(action_mask)[0].tolist() if action_mask is not None else "N/A"
+            
+            # DEEP DEBUGGING: Print full environment state
+            print(f"\n{'!'*80}")
+            print(f"[ENV _step] INVALID ACTION DETECTED!")
+            print(f"  Action received: {action}")
+            print(f"  Derived states length: {len(derived_states_list)}")
+            print(f"  Padding states: {self.padding_states}")
+            print(f"  Valid actions: {valid_actions}")
+            print(f"  Current state: {self.tensordict.get('state', 'N/A')}")
+            print(f"\n  Full tensordict keys: {list(self.tensordict.keys())}")
+            print(f"  action_mask from tensordict: {action_mask.tolist() if action_mask is not None else 'None'}")
+            print(f"  action_mask tensor id: {id(action_mask) if action_mask is not None else 'N/A'}")
+            print(f"\n  Input tensordict keys: {list(tensordict.keys())}")
+            if 'action_mask' in tensordict.keys():
+                input_mask = tensordict.get('action_mask')
+                input_valid = torch.where(input_mask)[0].tolist()
+                print(f"  action_mask from input TD: {input_mask.tolist()}")
+                print(f"  Valid actions from input TD: {input_valid}")
+                print(f"  Input mask tensor id: {id(input_mask)}")
+                print(f"  Masks are same tensor: {id(input_mask) == id(action_mask) if action_mask is not None else 'N/A'}")
+            print(f"{'!'*80}\n")
+            
             raise ValueError(
                 f"Invalid action ({action}). "
                 f"Derived states length: {len(derived_states_list)}, "
@@ -602,8 +611,7 @@ class LogicEnv_gym(EnvBase):
         
         # Use the stored label from reset (self.current_label is set in reset())
         label_value = int(self.current_label)
-        depth_value = self.current_query_depth_value if self.current_query_depth_value is not None else -1
-
+        
         # Build next TensorDict
         next_td = TensorDict(
             {
@@ -618,16 +626,16 @@ class LogicEnv_gym(EnvBase):
                 "derived_states": NonTensorData(data=derived_states_next),
                 # Additional info (all as 1D tensors for consistent stacking)
                 "query_type": torch.tensor([label_value], dtype=torch.long, device=self.device),
-                "query_depth": torch.tensor([depth_value], dtype=torch.long, device=self.device),
+                "query_depth": torch.tensor([self.current_query_depth_value], dtype=torch.long, device=self.device),
                 "max_depth_reached": torch.tensor([exceeded_max_depth], dtype=torch.bool, device=self.device),
                 "truncated": torch.tensor([truncated], dtype=torch.bool, device=self.device),
-                "is_success": torch.tensor([successful and not truncated if done_next else False], dtype=torch.bool, device=self.device),
             },
             batch_size=torch.Size([]),
         )
         
-        # Handle episode completion and auto-reset
+        # Add success flag when done
         if done_next:
+            next_td["is_success"] = torch.tensor([successful and not truncated], dtype=torch.bool, device=self.device)
             # if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
             #     janus.query_once(f"asserta({self.current_query.prolog_str()}).")
             
@@ -666,35 +674,7 @@ class LogicEnv_gym(EnvBase):
                                  next_td['reward'], next_td['done'], 
                                  action=action, truncated=truncated)
         
-        # Restructure for TorchRL compatibility: put observations under 'next'
-        reward = next_td.get('reward', torch.zeros(1, dtype=torch.float32, device=self.device))
-        terminated = next_td.get('terminated', torch.zeros(1, dtype=torch.bool, device=self.device))
-        truncated = next_td.get('truncated', torch.zeros(1, dtype=torch.bool, device=self.device))
-        done = next_td.get('done', (terminated | truncated).to(torch.bool))
-
-        out = TensorDict({}, batch_size=torch.Size([]), device=self.device)
-        out.set('reward', reward)
-        out.set('terminated', terminated)
-        out.set('truncated', truncated)
-        out.set('done', done)
-
-        # Build 'next' observation from the new state's fields the policy needs.
-        nxt = TensorDict({}, batch_size=torch.Size([]), device=self.device)
-        for k in ('sub_index', 'derived_sub_indices', 'action_mask'):
-            if k in next_td.keys():
-                nxt.set(k, next_td.get(k))
-
-        # Mirror reward/done under 'next' for downstream code that expects next/*.
-        nxt.set('reward', reward)
-        nxt.set('done', done)
-
-        # Episode metadata for callbacks / metrics (kept under 'next')
-        for k in ('label', 'query_depth', 'is_success', 'episode_idx', 'query_type', 'max_depth_reached'):
-            if k in next_td.keys():
-                nxt.set(k, next_td.get(k))
-
-        out.set('next', nxt)
-        return out
+        return next_td
 
 
 
@@ -866,6 +846,7 @@ class LogicEnv_gym(EnvBase):
             final_sub_indices.append(self.index_manager.get_atom_sub_index(endt_state))
 
         if not derived_states:
+            print(f"\n[DEBUG] get_next_states returning end_in_false() for state: {state}")
             derived_states, derived_sub_indices = self.end_in_false()
         else:
             derived_sub_indices = self._pad_sub_indices(final_sub_indices)
@@ -1036,6 +1017,3 @@ class LogicEnv_gym(EnvBase):
         self.rng = rng
         self.seed_gen = random.Random(self.seed)
         return seed
-
-
-

@@ -1,5 +1,5 @@
 
-# ppo_rollout.py — fast rollout via TorchRL SyncDataCollector
+# ppo_rollout.py — fast rollout via TorchRL MultiaSyncDataCollector
 # This file uses a masked policy wrapper to ensure action_mask is always respected.
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 from tensordict import TensorDict
-from torchrl.collectors import SyncDataCollector
+from torchrl.collectors import MultiaSyncDataCollector
 from torchrl.envs import ParallelEnv
 
 
@@ -22,7 +22,7 @@ class MaskedPolicyWrapper:
     """
     Serializable policy wrapper that re-applies action_mask before sampling.
     
-    This ensures that the data collector never samples invalid (padded) actions,
+    This ensures that the MultiaSyncDataCollector never samples invalid (padded) actions,
     even if the actor's internal distribution doesn't properly handle -inf masking.
     
     This class can be pickled for multiprocessing, unlike nested functions.
@@ -50,7 +50,7 @@ class MaskedPolicyWrapper:
             Updated tensordict with action and sample_log_prob
         """
         self.call_count += 1
-        log_this = False  # Disable for cleaner output
+        log_this = False  # Always log for deep debugging
         
         td_id = id(td)
         is_same_td = td_id == self.previous_td_id
@@ -145,7 +145,7 @@ class MaskedPolicyWrapper:
             raise ValueError(f"TensorDict missing 'action_mask' key. Available keys: {list(td_clean.keys())}")
         
         # CRITICAL FIX: Clone the action_mask to prevent it from being modified
-        # by parallel workers between sampling and stepping.
+        # by MultiaSyncDataCollector's parallel workers between sampling and stepping.
         # This is the root cause of invalid actions - the mask changes after we sample!
         action_mask_snapshot = action_mask.clone()
         
@@ -261,7 +261,7 @@ def _masked_policy_factory(actor):
     Create a serializable masked policy wrapper.
     
     This factory function creates a MaskedPolicyWrapper instance that can be pickled
-    for use with data collectors.
+    for use with multiprocessing collectors like MultiaSyncDataCollector.
     
     Args:
         actor: The ProbabilisticActor module
@@ -349,7 +349,7 @@ def collect_rollouts(
     device: torch.device,
     rollout_callback: Optional[Callable] = None,
 ) -> Tuple[List[TensorDict], Dict[str, Any]]:
-    """Collect one batch (n_envs * n_steps) using SyncDataCollector.
+    """Collect one batch (n_envs * n_steps) using MultiaSyncDataCollector.
 
     Returns
     -------
@@ -362,7 +362,7 @@ def collect_rollouts(
         Contains 'episode_info' list for callbacks.
     """
     from torchrl.envs import set_exploration_type, ExplorationType
-    debug=False  # Disable debug for cleaner output
+    debug=False
     if debug:
         print(f"\n{'='*80}")
         print(f"[collect_rollouts] Starting collection")
@@ -380,16 +380,34 @@ def collect_rollouts(
         print(f"\n[collect_rollouts] Created masked policy wrapper")
         print(f"  Policy type: {type(masked_policy)}")
 
-    # SyncDataCollector can work directly with an already-created environment
-    # No need to wrap in a lambda or pass factories
-    if debug:
-        print(f"\n[collect_rollouts] Setting up SyncDataCollector")
-        print(f"  Total environments: {n_envs}")
-        print(f"  Frames per batch: {frames_per_batch}")
-        print(f"  Passing environment directly (not as factory)")
+    # MultiaSyncDataCollector requires environment factories (list of callables)
+    # Extract individual env factories from the batched environment
+    if hasattr(env, 'env_fns'):
+        # CustomBatchedEnv has env_fns attribute
+        env_factories = env.env_fns
+        if debug:
+            print(f"\n[collect_rollouts] Using CustomBatchedEnv's env_fns")
+            print(f"  Number of env factories available: {len(env_factories)}")
+    else:
+        # Fallback: wrap the batched env in a single factory
+        if debug:
+            print(f"\n[collect_rollouts] Warning: Environment doesn't have env_fns, using as single factory")
+        def create_env_fn():
+            return env
+        env_factories = [create_env_fn]
+    
+    # Use fewer workers to reduce overhead - typically 2-4 workers is optimal
+    # You can adjust this based on your CPU cores and performance needs
+    num_workers = min(4, len(env_factories))  # Use max 4 workers
 
-    collector = SyncDataCollector(
-        create_env_fn=env,  # Pass the environment directly
+    if debug:
+        print(f"\n[collect_rollouts] Setting up MultiaSyncDataCollector")
+        print(f"  Total environments: {n_envs}")
+        print(f"  Number of workers: {num_workers}")
+        print(f"  Frames per batch: {frames_per_batch}")
+
+    collector = MultiaSyncDataCollector(
+        create_env_fn=env_factories,
         policy=masked_policy,  # Use masked policy instead of raw actor
         frames_per_batch=frames_per_batch,
         total_frames=frames_per_batch,
@@ -397,8 +415,7 @@ def collect_rollouts(
         storing_device='cpu',
         split_trajs=False,
         exploration_type=ExplorationType.RANDOM,
-        init_random_frames=-1,  # Don't collect random frames at start
-        use_buffers=False,  # Disable pre-allocated buffers due to dynamic specs
+        num_workers=num_workers,  # Control number of parallel workers
     )
 
     if debug:

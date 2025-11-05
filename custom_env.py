@@ -10,7 +10,7 @@ from tensordict import TensorDict
 from torchrl.envs import EnvBase, ParallelEnv, SerialEnv
 
 # from env import LogicEnv_gym
-from env_backup import LogicEnv_gym
+from env import LogicEnv_gym
 
 
 def create_environments(args, data_handler, index_manager, kge_engine=None, detailed_eval_env=False, device=None):

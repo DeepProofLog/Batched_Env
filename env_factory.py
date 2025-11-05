@@ -69,12 +69,15 @@ def _create_parallel_env(queries, labels, query_depths, mode, n_workers, seeds, 
         )
         for i in range(n_workers)
     ]
-    return ParallelEnv(
+    parallel_env = ParallelEnv(
         num_workers=n_workers,
         create_env_fn=env_fns,
         shared_memory=True,
         mp_start_method=mp_start_method,
     )
+    # Store env_fns as an attribute for SyncDataCollector
+    parallel_env.env_fns = env_fns
+    return parallel_env
 
 
 def _create_single_env(queries, labels, query_depths, mode, seed, args, index_manager, data_handler, kge_engine):
@@ -101,13 +104,16 @@ def create_environments(args: Any, data_handler, index_manager, kge_engine=None,
     Returns
     -------
     (train_env, valid_env, callback_env)
-        train_env: ParallelEnv or single EnvBase with args.n_envs_train workers over TRAIN split.
-        valid_env: ParallelEnv or single EnvBase with args.n_envs_eval workers over VALID split.
-        callback_env: ParallelEnv or single EnvBase with args.n_envs_cb workers over VALID (restart) for detailed metrics.
+        train_env: ParallelEnv or single EnvBase with args.n_envs workers over TRAIN split.
+        valid_env: ParallelEnv or single EnvBase with args.n_eval_envs workers over VALID split.
+        callback_env: ParallelEnv or single EnvBase with 1 worker over VALID (restart) for detailed metrics.
     """
     # Generate seeds for different environment types
-    seeds_train = _seed_stream(1, args.seed_run_i)
-    seeds_eval = _seed_stream(1, args.seed_run_i + 10_000)
+    n_train_envs = getattr(args, 'n_envs', 1)
+    n_eval_envs = getattr(args, 'n_eval_envs', 1)
+    
+    seeds_train = _seed_stream(n_train_envs, args.seed_run_i)
+    seeds_eval = _seed_stream(n_eval_envs, args.seed_run_i + 10_000)
     seeds_cb = _seed_stream(1, args.seed_run_i + 20_000)
 
     use_parallel = getattr(args, 'use_parallel_envs', True)
@@ -125,7 +131,7 @@ def create_environments(args: Any, data_handler, index_manager, kge_engine=None,
             labels=[1] * len(data_handler.train_queries),
             query_depths=data_handler.train_queries_depths,
             mode='train',
-            n_workers=1,
+            n_workers=n_train_envs,
             seeds=seeds_train,
             args=args,
             index_manager=index_manager,
@@ -140,7 +146,7 @@ def create_environments(args: Any, data_handler, index_manager, kge_engine=None,
             labels=[1] * len(data_handler.valid_queries),
             query_depths=data_handler.valid_queries_depths,
             mode='eval',
-            n_workers=1,
+            n_workers=n_eval_envs,
             seeds=seeds_eval,
             args=args,
             index_manager=index_manager,

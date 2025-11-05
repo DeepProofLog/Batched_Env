@@ -137,7 +137,11 @@ def evaluate_policy(
         if verbose:
             print("Warning: wrapping single env in DummyVecEnv")
         env = DummyVecEnv([lambda: env])
-    assert getattr(env, "type_", None) == "custom_dummy", "Requires custom_dummy VecEnv"
+    
+    env_type = getattr(env, "type_", None)
+    assert env_type == "custom_dummy", (
+        f"evaluate_policy requires VecEnv of type 'custom_dummy', got {env_type}"
+    )
 
     device = model.device
     n_envs = env.num_envs
@@ -406,17 +410,31 @@ def _configure_env_batch(
 ) -> None:
     for i, (query, negatives) in enumerate(zip(batch, corrs)):
         sequence = [query] + negatives
-        inner_env = env.envs[i].env
         batch_idx = batch_start_idx + i
         # for the pos retrieve the depth, and for the negatives set -1
         pos_depth = data_depths[batch_idx] if data_depths is not None else None
         depths = [pos_depth] + [-1] * len(negatives)
-        inner_env.mode = "eval"
-        inner_env.queries = sequence
-        inner_env.labels = [1] + [0] * len(negatives)
-        inner_env.query_depths = depths
-        inner_env.n_episodes = len(sequence)
-        inner_env.eval_idx = 0
+        
+        # Check if the environment wrapper supports configure_env method (for ParallelEnv)
+        if hasattr(env, 'configure_env'):
+            env.configure_env(
+                i,
+                mode="eval",
+                queries=sequence,
+                labels=[1] + [0] * len(negatives),
+                query_depths=depths,
+                n_episodes=len(sequence),
+                eval_idx=0
+            )
+        else:
+            # Fall back to direct attribute access
+            inner_env = env.envs[i].env
+            inner_env.mode = "eval"
+            inner_env.queries = sequence
+            inner_env.labels = [1] + [0] * len(negatives)
+            inner_env.query_depths = depths
+            inner_env.n_episodes = len(sequence)
+            inner_env.eval_idx = 0
 
 
 def _evaluate_with_rl(

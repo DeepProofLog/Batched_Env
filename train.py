@@ -25,8 +25,8 @@ from utils import (
     _maybe_enable_wandb,
     FileLogger,
 )
-from custom_env import create_environments
-# from env_factory import create_environments
+# from custom_env import create_environments
+from env_factory import create_environments
 from dataset import DataHandler
 from ppo.ppo_model import create_torchrl_modules
 from ppo.ppo_agent import PPOAgent

@@ -46,39 +46,176 @@ class TorchRLEnvWrapper(VecEnv):
         Args:
             torchrl_env: TorchRL batched environment (e.g., CustomBatchedEnv)
         """
+        from torchrl.envs import EnvBase
+        
         self.torchrl_env = torchrl_env
-        self.num_envs = torchrl_env.num_envs
-        
-        # Get individual environment reference for specs
-        env0 = torchrl_env.envs[0]
-        
-        # Create Gymnasium-compatible spaces from TorchRL specs
-        # For now, use simple Box/Discrete spaces as placeholders
-        # The actual observation/action handling is done via dicts/tensors
+
+        # Try to infer the batch size / number of environments by inspecting
+        # the result of a reset. This works for both custom batched envs and
+        # TorchRL ParallelEnv/EnvBase instances.
+        td = None
+        try:
+            td = self.torchrl_env.reset()
+        except Exception:
+            # If reset fails here, we'll fallback to assumptions below
+            td = None
+
+        # Determine num_envs from returned TensorDict if available
+        self.num_envs = 1
+        if isinstance(td, TensorDict):
+            # For TorchRL envs, batch_size attribute tells us if it's batched
+            td_batch_size = td.batch_size
+            if len(td_batch_size) > 0:
+                # Batched environment - first dimension is num_envs
+                self.num_envs = int(td_batch_size[0])
+            else:
+                # Single (unbatched) environment
+                self.num_envs = 1
+
+        # If the wrapped env exposes a batch_size or num_workers, prefer it
+        if hasattr(torchrl_env, "num_envs"):
+            try:
+                self.num_envs = int(getattr(torchrl_env, "num_envs"))
+            except Exception:
+                pass
+        elif hasattr(torchrl_env, "num_workers"):
+            try:
+                self.num_envs = int(getattr(torchrl_env, "num_workers"))
+            except Exception:
+                pass
+        elif hasattr(torchrl_env, "batch_size"):
+            try:
+                bs = getattr(torchrl_env, "batch_size")
+                if isinstance(bs, (list, tuple)) and len(bs) > 0:
+                    self.num_envs = int(bs[0])
+                elif isinstance(bs, torch.Size) and len(bs) > 0:
+                    self.num_envs = int(bs[0])
+            except Exception:
+                pass
+
+        # Build lightweight Gym spaces from the observed TensorDict shape when possible
         from gymnasium import spaces
-        
-        # Create dummy observation space (Dict space with sub_index, derived_sub_indices, action_mask)
-        self.observation_space = spaces.Dict({
-            'sub_index': spaces.Box(low=0, high=1000, shape=(1, env0.padding_atoms, 3), dtype=np.int32),
-            'derived_sub_indices': spaces.Box(low=0, high=1000, shape=(env0.padding_states, env0.padding_atoms, 3), dtype=np.int32),
-            'action_mask': spaces.Box(low=0, high=1, shape=(env0.padding_states,), dtype=np.bool_),
-        })
-        
-        # Create dummy action space
-        self.action_space = spaces.Discrete(env0.padding_states)
-        
-        # Copy custom attributes needed by evaluate_policy
-        self.type_ = "custom_dummy"  # Pretend to be custom_dummy for compatibility
-        self._episode_count = torchrl_env._episode_count.numpy()
-        self._episode_target = torchrl_env._episode_target.numpy()
-        self.active_envs = torchrl_env.active_envs.numpy()
-        
-        # Track episode statistics for info callback
+        sample_obs = None
+        if isinstance(td, TensorDict):
+            obs_td = td.get("next") if "next" in td.keys() else td
+            sample_obs = {}
+            for key in ("sub_index", "derived_sub_indices", "action_mask"):
+                if key in obs_td.keys():
+                    v = obs_td.get(key)
+                    npv = v.cpu().numpy()
+                    # sample shape excludes batch dim
+                    sample_shape = tuple(npv.shape[1:])
+                    sample_obs[key] = (npv.dtype, sample_shape)
+
+        # Fallback assumptions if we couldn't infer shapes
+        if sample_obs is None:
+            # Conservative defaults
+            sample_obs = {
+                'sub_index': (np.int32, (1, 6, 3)),
+                'derived_sub_indices': (np.int32, (20, 6, 3)),
+                'action_mask': (np.bool_, (24,)),
+            }
+
+        # Build observation_space dict
+        obs_spaces = {}
+        for key, (dtype, shape) in sample_obs.items():
+            high = 1 if np.issubdtype(dtype, np.bool_) else 100000
+            # Prepend no batch dim in gym space definition; evaluate_policy expects per-env shapes
+            obs_spaces[key] = spaces.Box(low=0, high=high, shape=shape, dtype=dtype)
+
+        self.observation_space = spaces.Dict(obs_spaces)
+
+        # Derive action space size from action_mask shape
+        action_mask_info = sample_obs.get('action_mask', (np.bool_, (24,)))
+        action_mask_shape = action_mask_info[1]  # Extract shape tuple from (dtype, shape)
+        # action_mask_shape is a tuple like (24,) - get the first element
+        if isinstance(action_mask_shape, tuple) and len(action_mask_shape) > 0:
+            n_actions = int(action_mask_shape[0])
+        elif isinstance(action_mask_shape, int):
+            n_actions = int(action_mask_shape)
+        else:
+            n_actions = 24  # Fallback
+        self.action_space = spaces.Discrete(n_actions)
+
+        # Compatibility attributes expected by SB3-style evaluators
+        # Always set to "custom_dummy" for SB3 compatibility
+        self.type_ = 'custom_dummy'
+        # Episode counters: try to copy if available, else initialize
+        try:
+            self._episode_count = (torchrl_env._episode_count.numpy()
+                                   if hasattr(torchrl_env, '_episode_count') else np.zeros(self.num_envs, dtype=np.int32))
+        except Exception:
+            self._episode_count = np.zeros(self.num_envs, dtype=np.int32)
+        try:
+            self._episode_target = (torchrl_env._episode_target.numpy()
+                                    if hasattr(torchrl_env, '_episode_target') else np.full(self.num_envs, 2, dtype=np.int32))
+        except Exception:
+            self._episode_target = np.full(self.num_envs, 2, dtype=np.int32)
+        try:
+            self.active_envs = (torchrl_env.active_envs.numpy() if hasattr(torchrl_env, 'active_envs') else np.ones(self.num_envs, dtype=bool))
+        except Exception:
+            self.active_envs = np.ones(self.num_envs, dtype=bool)
+
         self._episode_rewards = np.zeros(self.num_envs, dtype=np.float32)
         self._episode_lengths = np.zeros(self.num_envs, dtype=np.int32)
+
+        # Create a list-like `envs` attribute for compatibility with SB3 code that
+        # expects env wrappers to expose an `envs` sequence of objects with `.env`.
+        # Import here to avoid circular dependencies
+        from torchrl.envs import ParallelEnv
         
-        # Access to underlying envs
-        self.envs = [type('EnvWrapper', (), {'env': env})() for env in torchrl_env.envs]
+        if isinstance(torchrl_env, ParallelEnv):
+            # ParallelEnv runs envs in separate processes - no direct access
+            # Create placeholders
+            self.envs = [type('EnvWrapper', (), {'env': None})() for _ in range(self.num_envs)]
+            self._needs_alternative_env_access = True
+        elif hasattr(torchrl_env, 'envs') and not isinstance(torchrl_env, ParallelEnv):
+            # Custom batched env with direct access to underlying envs
+            self.envs = [type('EnvWrapper', (), {'env': env})() for env in getattr(torchrl_env, 'envs')]
+        elif self.num_envs == 1 and isinstance(torchrl_env, EnvBase):
+            # Single EnvBase instance - wrap it so env.envs[0].env gives the actual env
+            self.envs = [type('EnvWrapper', (), {'env': torchrl_env})()]
+        else:
+            # Fallback: Parallel env with subprocess workers - no direct access
+            # Create placeholders
+            self.envs = [type('EnvWrapper', (), {'env': None})() for _ in range(self.num_envs)]
+            self._needs_alternative_env_access = True
+    
+    def configure_env(self, env_idx: int, **config_kwargs):
+        """Configure a specific environment in the batch.
+        
+        For ParallelEnv, this sends a configure message to the worker process.
+        For direct access envs, this sets attributes directly or calls configure.
+        
+        Args:
+            env_idx: Index of the environment to configure
+            **config_kwargs: Configuration parameters (mode, queries, labels, etc.)
+        """
+        from torchrl.envs import ParallelEnv
+        
+        if isinstance(self.torchrl_env, ParallelEnv):
+            # For ParallelEnv, call the configure method on the worker
+            # ParallelEnv supports calling methods on workers via attribute access
+            try:
+                # Try to call configure on the worker environment
+                # This will be sent to the subprocess
+                self.torchrl_env[env_idx].configure(**config_kwargs)
+            except Exception as e:
+                # If that doesn't work, fall back to setting attributes
+                # This approach stores configs and applies on reset
+                if not hasattr(self, '_pending_configs'):
+                    self._pending_configs = [{}  for _ in range(self.num_envs)]
+                self._pending_configs[env_idx] = config_kwargs
+        elif self.envs[env_idx].env is not None:
+            # Direct access - try configure method first, then fall back to attributes
+            inner_env = self.envs[env_idx].env
+            if hasattr(inner_env, 'configure'):
+                inner_env.configure(**config_kwargs)
+            else:
+                for key, value in config_kwargs.items():
+                    setattr(inner_env, key, value)
+        else:
+            raise RuntimeError(f"Cannot configure environment {env_idx} - no access method available")
         
     def reset(self):
         """Reset the environment and return observations."""
@@ -126,11 +263,22 @@ class TorchRLEnvWrapper(VecEnv):
         assert len(actions_tensor) == self.num_envs, \
             f"Expected {self.num_envs} actions, got {len(actions_tensor)}"
         
-        # Create action TensorDict
-        batch_size = self.torchrl_env.num_envs
+        # Create action TensorDict with proper batch size
+        # For single unbatched env, use empty batch_size; for batched, use [num_envs]
+        if self.num_envs == 1 and hasattr(self.torchrl_env, 'batch_size'):
+            env_batch_size = self.torchrl_env.batch_size
+        else:
+            env_batch_size = torch.Size([self.num_envs])
+        
+        # For unbatched env, action should be scalar
+        if env_batch_size == torch.Size([]):
+            action_val = actions_tensor[0]  # Extract scalar from 1-element tensor
+        else:
+            action_val = actions_tensor
+        
         action_td = TensorDict({
-            "action": torch.as_tensor(actions_tensor, dtype=torch.long),
-        }, batch_size=torch.Size([batch_size]))
+            "action": torch.as_tensor(action_val, dtype=torch.long),
+        }, batch_size=env_batch_size)
         
         # Step the environment
         td = self.torchrl_env.step(action_td)
@@ -161,6 +309,16 @@ class TorchRLEnvWrapper(VecEnv):
         self._episode_rewards += rewards
         self._episode_lengths += 1
         
+        # Helper function to safely extract tensor values (handles both batched and unbatched)
+        def safe_tensor_extract(tensor_val, index):
+            """Extract value from tensor, handling both batched and unbatched cases."""
+            if tensor_val.dim() == 0:
+                # 0-dim tensor (unbatched environment)
+                return tensor_val.item()
+            else:
+                # Batched tensor
+                return tensor_val[index].item()
+        
         # Build info dicts
         infos = []
         for i in range(self.num_envs):
@@ -168,16 +326,25 @@ class TorchRLEnvWrapper(VecEnv):
             if dones[i]:
                 # Add terminal observation if available
                 if "next" in td.keys():
-                    info["terminal_observation"] = {
-                        key: td["next"][key][i].cpu().numpy() 
-                        for key in ["sub_index", "derived_sub_indices", "action_mask"]
-                        if key in td["next"].keys()
-                    }
+                    if self.num_envs == 1:
+                        # Unbatched - no indexing needed
+                        info["terminal_observation"] = {
+                            key: td["next"][key].cpu().numpy() 
+                            for key in ["sub_index", "derived_sub_indices", "action_mask"]
+                            if key in td["next"].keys()
+                        }
+                    else:
+                        # Batched - need indexing
+                        info["terminal_observation"] = {
+                            key: td["next"][key][i].cpu().numpy() 
+                            for key in ["sub_index", "derived_sub_indices", "action_mask"]
+                            if key in td["next"].keys()
+                        }
                 # Add success flag if available
                 if "is_success" in td.keys():
-                    info["is_success"] = bool(td["is_success"][i].item())
+                    info["is_success"] = bool(safe_tensor_extract(td["is_success"], i))
                 elif "next" in td.keys() and "is_success" in td["next"].keys():
-                    info["is_success"] = bool(td["next"]["is_success"][i].item())
+                    info["is_success"] = bool(safe_tensor_extract(td["next"]["is_success"], i))
                 else:
                     info["is_success"] = False
                 
@@ -189,30 +356,38 @@ class TorchRLEnvWrapper(VecEnv):
                 
                 # Extract label from TensorDict
                 if "label" in td.keys():
-                    info["label"] = int(td["label"][i].item())
+                    info["label"] = int(safe_tensor_extract(td["label"], i))
                 elif "next" in td.keys() and "label" in td["next"].keys():
-                    info["label"] = int(td["next"]["label"][i].item())
+                    info["label"] = int(safe_tensor_extract(td["next"]["label"], i))
                 
                 # Extract query_depth from TensorDict
                 if "query_depth" in td.keys():
-                    info["query_depth"] = int(td["query_depth"][i].item())
+                    info["query_depth"] = int(safe_tensor_extract(td["query_depth"], i))
                 elif "next" in td.keys() and "query_depth" in td["next"].keys():
-                    info["query_depth"] = int(td["next"]["query_depth"][i].item())
+                    info["query_depth"] = int(safe_tensor_extract(td["next"]["query_depth"], i))
                 
                 # Add episode index for deduplication
                 if "episode_idx" in td.keys():
-                    info["episode_idx"] = int(td["episode_idx"][i].item())
+                    info["episode_idx"] = int(safe_tensor_extract(td["episode_idx"], i))
                 elif "next" in td.keys() and "episode_idx" in td["next"].keys():
-                    info["episode_idx"] = int(td["next"]["episode_idx"][i].item())
+                    info["episode_idx"] = int(safe_tensor_extract(td["next"]["episode_idx"], i))
                 
                 # Reset episode statistics for this environment
                 self._episode_rewards[i] = 0.0
                 self._episode_lengths[i] = 0
             infos.append(info)
         
-    # Update episode tracking
-        self._episode_count = self.torchrl_env._episode_count.numpy()
-        self.active_envs = self.torchrl_env.active_envs.numpy()
+        # Update episode tracking (only if the wrapped env has these attributes)
+        if hasattr(self.torchrl_env, '_episode_count'):
+            try:
+                self._episode_count = self.torchrl_env._episode_count.numpy()
+            except Exception:
+                pass
+        if hasattr(self.torchrl_env, 'active_envs'):
+            try:
+                self.active_envs = self.torchrl_env.active_envs.numpy()
+            except Exception:
+                pass
         
         return obs, rewards, dones, infos
     
@@ -233,8 +408,14 @@ class TorchRLEnvWrapper(VecEnv):
         for key in ["sub_index", "derived_sub_indices", "action_mask"]:
             if key in obs_td.keys():
                 tensor_val = obs_td[key]
-                # Convert to numpy - should already be batched correctly
+                # Convert to numpy
                 np_val = tensor_val.cpu().numpy()
+                
+                # For unbatched envs (num_envs==1 and no batch dim), add batch dimension
+                if self.num_envs == 1 and (len(np_val.shape) < 2 or np_val.shape[0] != 1):
+                    # Check if this is actually unbatched by looking at expected shapes
+                    # sub_index should be (1, atoms, arity+1), derived_sub_indices (states, atoms, arity+1), action_mask (states,)
+                    np_val = np.expand_dims(np_val, axis=0)  # Add batch dimension
                 
                 # Ensure batch dimension is first and matches num_envs
                 if np_val.shape[0] != self.num_envs:
@@ -250,9 +431,17 @@ class TorchRLEnvWrapper(VecEnv):
         
         results = []
         for idx in indices:
-            env = self.torchrl_env.envs[idx]
-            if hasattr(env, attr_name):
-                results.append(getattr(env, attr_name))
+            env_obj = None
+            if hasattr(self.torchrl_env, 'envs'):
+                try:
+                    env_obj = self.torchrl_env.envs[idx]
+                except Exception:
+                    env_obj = None
+            elif hasattr(self, 'envs') and idx < len(self.envs):
+                env_obj = getattr(self.envs[idx], 'env', None)
+
+            if env_obj is not None and hasattr(env_obj, attr_name):
+                results.append(getattr(env_obj, attr_name))
             else:
                 results.append(None)
         return results
@@ -264,9 +453,20 @@ class TorchRLEnvWrapper(VecEnv):
         
         results = []
         for idx in indices:
-            env = self.torchrl_env.envs[idx]
-            method = getattr(env, method_name)
-            results.append(method(*method_args, **method_kwargs))
+            env_obj = None
+            if hasattr(self.torchrl_env, 'envs'):
+                try:
+                    env_obj = self.torchrl_env.envs[idx]
+                except Exception:
+                    env_obj = None
+            elif hasattr(self, 'envs') and idx < len(self.envs):
+                env_obj = getattr(self.envs[idx], 'env', None)
+
+            if env_obj is None:
+                results.append(None)
+            else:
+                method = getattr(env_obj, method_name)
+                results.append(method(*method_args, **method_kwargs))
         return results
     
     def seed(self, seed=None):
@@ -274,16 +474,55 @@ class TorchRLEnvWrapper(VecEnv):
         if seed is None:
             return
         seeds = []
-        for i, env in enumerate(self.torchrl_env.envs):
-            env_seed = seed + i
-            env.seed(env_seed)
-            seeds.append(env_seed)
+        if hasattr(self.torchrl_env, 'envs'):
+            for i, env in enumerate(self.torchrl_env.envs):
+                env_seed = seed + i
+                try:
+                    env.seed(env_seed)
+                except Exception:
+                    pass
+                seeds.append(env_seed)
+        elif hasattr(self, 'envs'):
+            for i, wrapper in enumerate(self.envs):
+                env_obj = getattr(wrapper, 'env', None)
+                env_seed = seed + i
+                if env_obj is not None:
+                    try:
+                        env_obj.seed(env_seed)
+                    except Exception:
+                        pass
+                seeds.append(env_seed)
+        else:
+            # Try generic setter on the wrapped env
+            if hasattr(self.torchrl_env, 'set_seed'):
+                try:
+                    self.torchrl_env.set_seed(seed)
+                except Exception:
+                    pass
+            seeds = [seed + i for i in range(self.num_envs)]
         return seeds
     
     def close(self):
         """Close all environments."""
-        for env in self.torchrl_env.envs:
-            env.close()
+        if hasattr(self.torchrl_env, 'envs'):
+            for env in self.torchrl_env.envs:
+                try:
+                    env.close()
+                except Exception:
+                    pass
+        elif hasattr(self.torchrl_env, 'close'):
+            try:
+                self.torchrl_env.close()
+            except Exception:
+                pass
+        elif hasattr(self, 'envs'):
+            for wrapper in self.envs:
+                env_obj = getattr(wrapper, 'env', None)
+                if env_obj is not None:
+                    try:
+                        env_obj.close()
+                    except Exception:
+                        pass
     
     def set_attr(self, attr_name: str, value: Any, indices=None):
         """Set attribute on underlying environments."""
@@ -291,8 +530,27 @@ class TorchRLEnvWrapper(VecEnv):
             indices = range(self.num_envs)
         
         for idx in indices:
-            env = self.torchrl_env.envs[idx]
-            setattr(env, attr_name, value)
+            env_obj = None
+            if hasattr(self.torchrl_env, 'envs'):
+                try:
+                    env_obj = self.torchrl_env.envs[idx]
+                except Exception:
+                    env_obj = None
+            elif hasattr(self, 'envs') and idx < len(self.envs):
+                env_obj = getattr(self.envs[idx], 'env', None)
+
+            if env_obj is not None:
+                try:
+                    setattr(env_obj, attr_name, value)
+                except Exception:
+                    pass
+            else:
+                # Try to set attribute on the parallel wrapper if present
+                if hasattr(self.torchrl_env, 'set_attr'):
+                    try:
+                        self.torchrl_env.set_attr(attr_name, value, indices=[idx])
+                    except Exception:
+                        pass
     
     def env_is_wrapped(self, wrapper_class, indices=None):
         """Check if environments are wrapped with a given wrapper."""
@@ -301,9 +559,16 @@ class TorchRLEnvWrapper(VecEnv):
         
         results = []
         for idx in indices:
-            env = self.torchrl_env.envs[idx]
-            # Check if env is instance of wrapper_class
-            is_wrapped = isinstance(env, wrapper_class)
+            env_obj = None
+            if hasattr(self.torchrl_env, 'envs'):
+                try:
+                    env_obj = self.torchrl_env.envs[idx]
+                except Exception:
+                    env_obj = None
+            elif hasattr(self, 'envs') and idx < len(self.envs):
+                env_obj = getattr(self.envs[idx], 'env', None)
+
+            is_wrapped = isinstance(env_obj, wrapper_class) if env_obj is not None else False
             results.append(is_wrapped)
         return results
 
@@ -491,12 +756,17 @@ def evaluate_policy_torchrl(
     """
     # Import here to avoid circular dependency
     from sb3_code.sb3_model_eval import evaluate_policy
+    from torchrl.envs import EnvBase
     
     # Get device from actor parameters
     device = next(actor.parameters()).device
     
-    # Wrap TorchRL batched environment if needed
-    if hasattr(env, 'type_') and env.type_ == "custom_batched":
+    # Wrap TorchRL environment if needed (both custom batched and plain EnvBase)
+    if isinstance(env, EnvBase):
+        # It's a TorchRL environment, wrap it
+        env = TorchRLEnvWrapper(env)
+    elif hasattr(env, 'type_') and env.type_ == "custom_batched":
+        # Legacy custom batched env
         env = TorchRLEnvWrapper(env)
     
     # Create policy wrapper
@@ -563,12 +833,18 @@ def eval_corruptions_torchrl(
     """
     # Import here to avoid circular dependency
     from sb3_code.sb3_model_eval import eval_corruptions
+    from torchrl.envs import EnvBase
     
     # Get device from actor parameters
     device = next(actor.parameters()).device
     
-    # Wrap TorchRL batched environment if needed
-    if hasattr(env, 'type_') and env.type_ == "custom_batched":
+    # Wrap TorchRL environment if needed (both custom batched and plain EnvBase)
+    # Check if it's a TorchRL environment that needs wrapping
+    if isinstance(env, EnvBase):
+        # It's a TorchRL environment, wrap it
+        env = TorchRLEnvWrapper(env)
+    elif hasattr(env, 'type_') and env.type_ == "custom_batched":
+        # Legacy custom batched env
         env = TorchRLEnvWrapper(env)
     
     # Create policy wrapper
