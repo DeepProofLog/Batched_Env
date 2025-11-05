@@ -47,8 +47,8 @@ def create_test_args():
             self.gamma = 0.99
             self.seed_run_i = 0
             self.n_steps = 2048
-            self.n_envs = 8  # Back to 8 for fair comparison
-            self.n_eval_envs = 8
+            self.n_envs = 20
+            self.n_eval_envs = 1
             self.reward_type = 4
             self.train_neg_ratio = 1
             self.engine = 'python'
