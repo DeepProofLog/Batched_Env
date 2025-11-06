@@ -125,6 +125,8 @@ class CustomRolloutCollector:
         
         # Rollout loop
         for step in range(self.n_steps):
+            if self.debug: print(f"\n[CustomRolloutCollector] Step {step+1}/{self.n_steps}", end="\r")
+            # print(f"\n[CustomRolloutCollector] Step {step+1}/{self.n_steps}", end="\r")
             # Select actions using policy
             action, log_prob = self._select_action(obs_td)
             

@@ -1,143 +1,48 @@
-
-============================================================
-Testing Vectorized Batched Pipeline
-============================================================
-Using device: cuda
-
-[1/10] Loading dataset...
-Warning: janus_swi module not available; skipping consult of wn18rr.pl.
-Number of queries with depth None in train: 86835 / 86835
-Number of queries with depth None in valid: 2824 / 2824
-Number of queries with depth None in test: 2924 / 2924
-Train depth distribution: {-1: 46192, 1: 32406, 2: 2392, 4: 2484, 3: 3361}
-Valid depth distribution: {2: 1, -1: 3, 1: 1}
-Dataset wn18rr loaded:
-  Rules: 32
-  Facts: 86906
-  Train queries: 86835
-  Valid queries: 5
-  Test queries: 5
-  Loaded 86835 train queries, 5 valid queries
-  Step completed in 2.07 seconds
-
-[2/10] Building index manager...
-  Index manager ready: 40569 constants, 48 predicates
-  Debug: runtime_var_start=40573, runtime_var_end=41572
-  Debug: variable_no=41572, template_variable_no=3, runtime_variable_no=1000
-  Step completed in 1.52 seconds
-
-[3/10] Creating negative sampler...
-  Sampler ready
-  Step completed in 0.17 seconds
-
-[4/10] Creating embedder...
-  Embedder ready: embed_dim=256
-  Step completed in 0.06 seconds
-
-[5/10] Creating vectorized batched environment (batch_size=32)...
-  Train env ready: batch_size=32
-  Eval env ready: batch_size=2
-  Step completed in 3.26 seconds
-
-[6/10] Creating actor-critic modules...
-  Actor params: 10,699,905
-  Critic params: 10,699,905
-  Step completed in 0.01 seconds
-
-[7/10] Testing environment operations...
-  Reset observation keys: ['sub_index', 'derived_sub_indices', 'action_mask', 'done', 'terminated']
-  Observation shapes:
-    sub_index: torch.Size([32, 1, 6, 3])
-    derived_sub_indices: torch.Size([32, 20, 6, 3])
-    action_mask: torch.Size([32, 20])
-
-  Testing actor forward...
-    Debugging derived_sub_indices...
-    Shape: torch.Size([32, 20, 6, 3])
-    Min value: 0, Max value: 49
-    Predicate indices ([:,0]): min=0, max=49
-    Constant indices ([:,1:]): min=0, max=0
-    Constant embedder size: 10642944
-    Predicate embedder size: 25856
-
-  Actor output keys: ['sub_index', 'derived_sub_indices', 'action_mask', 'done', 'terminated', 'logits', 'action', 'sample_log_prob']
-  Action shape: torch.Size([32])
-  Log prob shape: torch.Size([32])
-
-  Critic output keys: ['sub_index', 'derived_sub_indices', 'action_mask', 'done', 'terminated', 'logits', 'action', 'sample_log_prob', 'state_value']
-  State value shape: torch.Size([32])
-
-  Step output keys: ['sub_index', 'derived_sub_indices', 'action_mask', 'done', 'terminated', 'logits', 'action', 'sample_log_prob', 'state_value', 'next']
-  Next state keys: ['sub_index', 'derived_sub_indices', 'action_mask', 'reward', 'done', 'terminated']
-  Reward shape: torch.Size([32, 1])
-  Done shape: torch.Size([32, 1])
-  Step completed in 0.46 seconds
-
-============================================================
-Testing Rollout Collection
-============================================================
-Collecting 128 steps from 32 parallel queries...
-
-Rollout collection complete:
-  Collected 128 experience steps
-  Episodes completed: 0
-
-  Experience tensordict keys: ['sub_index', 'derived_sub_indices', 'action_mask', 'action', 'sample_log_prob', 'state_value', 'next']
-  Experience batch size: torch.Size([32])
-  Step completed in 35.05 seconds
-
-================================================================================
-PROFILING RESULTS - Top Time-Consuming Functions
-================================================================================
-         11583965 function calls (11549419 primitive calls) in 40.974 seconds
+         10975108 function calls (10959963 primitive calls) in 20.475 seconds
 
    Ordered by: cumulative time
-   List reduced from 1097 to 15 due to restriction <15>
+   List reduced from 1103 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        1    0.034    0.034   33.751   33.751 ppo_rollout_custom.py:86(collect)
-      128    0.002    0.000   32.678    0.255 common.py:3626(step_and_maybe_reset)
-      130    0.003    0.000   27.852    0.214 common.py:2822(reset)
-      130    0.020    0.000   27.693    0.213 batched_env.py:187(_reset)
-      128    0.017    0.000   27.595    0.216 common.py:3723(maybe_reset)
-      130    0.592    0.005   26.752    0.206 batched_env.py:257(_compute_derived_states_vec)
-      259    1.258    0.005   21.623    0.083 batched_unification_gpu.py:84(get_next_unification)
-      824    3.326    0.004   15.003    0.018 batched_unification_cpu.py:447(_unify_with_rules_batched)
-    11934    6.491    0.001    7.881    0.001 batched_unification_cpu.py:132(apply_substitutions_simple)
-     8320    3.352    0.000    5.157    0.001 batched_env.py:556(_state_to_tuple)
-      129    0.002    0.000    5.072    0.039 common.py:2056(step)
-      129    0.022    0.000    5.049    0.039 batched_env.py:317(_step)
-     1648    3.775    0.002    4.875    0.003 batched_unification_cpu.py:44(_unify_one_to_one_optimized)
-      824    1.140    0.001    4.375    0.005 batched_unification_cpu.py:541(_unify_with_facts_batched)
-      129    2.805    0.022    3.203    0.025 batched_env.py:448(_get_done_reward_vec)
+        1    0.003    0.003   13.115   13.115 ppo_rollout_custom.py:109(collect)
+       60    0.001    0.000   12.807    0.213 common.py:3626(step_and_maybe_reset)
+       61    0.001    0.000   12.488    0.205 common.py:2056(step)
+       61    0.012    0.000   12.477    0.205 env.py:406(_step)
+       78    8.934    0.115   12.393    0.159 unification_gpu.py:500(get_next_unification)
+       61    0.034    0.001   12.352    0.202 env.py:494(_compute_derived_states_conditional_vec)
+        2    0.002    0.001    3.198    1.599 common.py:259(__call__)
+        2    0.024    0.012    3.194    1.597 env.py:29(__init__)
+        2    1.860    0.930    2.544    1.272 index_manager.py:565(build_facts_index)
+      123    0.037    0.000    2.326    0.019 unification_gpu.py:353(_unify_with_facts_batched)
+       39    1.744    0.045    2.102    0.054 unification_gpu.py:119(apply_substitutions_batched)
+        1    0.002    0.002    2.090    2.090 __init__.py:1695(_register_triton_kernels)
+        1    0.157    0.157    2.043    2.043 dataset.py:300(__init__)
+        1    0.737    0.737    1.338    1.338 index_manager.py:392(build_fact_index)
+   179518    0.419    0.000    1.080    0.000 utils.py:96(get_atom_from_string)
 
 
 
 
-================================================================================
-PROFILING RESULTS - Top by Total Time
-================================================================================
-         11583965 function calls (11549419 primitive calls) in 40.974 seconds
+         10975108 function calls (10959963 primitive calls) in 20.475 seconds
 
    Ordered by: internal time
-   List reduced from 1097 to 15 due to restriction <15>
+   List reduced from 1103 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-    11934    6.491    0.001    7.881    0.001 batched_unification_cpu.py:132(apply_substitutions_simple)
-     1648    3.775    0.002    4.875    0.003 batched_unification_cpu.py:44(_unify_one_to_one_optimized)
-     8320    3.352    0.000    5.157    0.001 batched_env.py:556(_state_to_tuple)
-      824    3.326    0.004   15.003    0.018 batched_unification_cpu.py:447(_unify_with_rules_batched)
-      129    2.805    0.022    3.203    0.025 batched_env.py:448(_get_done_reward_vec)
-    34273    2.444    0.000    2.444    0.000 {method 'item' of 'torch._C.TensorBase' objects}
-    12699    2.246    0.000    2.246    0.000 {method 'nonzero' of 'torch._C.TensorBase' objects}
-        2    1.863    0.932    2.555    1.278 index_manager.py:565(build_facts_index)
-      259    1.258    0.005   21.623    0.083 batched_unification_gpu.py:84(get_next_unification)
-      824    1.140    0.001    4.375    0.005 batched_unification_cpu.py:541(_unify_with_facts_batched)
-        1    0.679    0.679    1.241    1.241 index_manager.py:392(build_fact_index)
-    27097    0.627    0.000    0.627    0.000 {method 'any' of 'torch._C.TensorBase' objects}
-      130    0.592    0.005   26.752    0.206 batched_env.py:257(_compute_derived_states_vec)
-     5810    0.571    0.000    0.571    0.000 {method 'cpu' of 'torch._C.TensorBase' objects}
-    22549    0.564    0.000    0.564    0.000 {built-in method torch.arange}
-
+       78    8.934    0.115   12.393    0.159 unification_gpu.py:500(get_next_unification)
+        2    1.860    0.930    2.544    1.272 index_manager.py:565(build_facts_index)
+       39    1.744    0.045    2.102    0.054 unification_gpu.py:119(apply_substitutions_batched)
+        1    0.737    0.737    1.338    1.338 index_manager.py:392(build_fact_index)
+   179518    0.419    0.000    1.080    0.000 utils.py:96(get_atom_from_string)
+      760    0.365    0.000    0.365    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
+   538537    0.327    0.000    0.417    0.000 utils.py:121(<genexpr>)
+        2    0.280    0.140    0.495    0.248 index_manager.py:502(_state_to_tensor_vectorized)
+   380791    0.273    0.000    0.273    0.000 {built-in method torch.from_numpy}
+      167    0.266    0.002    0.338    0.002 unification_gpu.py:171(_unify_one_to_one_optimized)
+      917    0.262    0.000    0.383    0.000 env.py:685(_state_to_tuple)
+  1820083    0.212    0.000    0.212    0.000 {method 'append' of 'list' objects}
+   380806    0.206    0.000    0.206    0.000 {built-in method numpy.array}
+      549    0.186    0.000    0.234    0.000 unification_gpu.py:85(apply_substitutions_simple)
+        3    0.184    0.061    0.815    0.272 dataset.py:235(get_filtered_queries)
 
 

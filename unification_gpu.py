@@ -12,6 +12,7 @@ Key Features:
 import torch
 from typing import List, Tuple, Set
 from gpu_optimizations import gpu_parallel_hash, gpu_batch_unique
+from index_manager import IndexManager
 
 def deduplicate_states_gpu(
     states: List[torch.Tensor],
@@ -80,6 +81,179 @@ def deduplicate_states_gpu(
     return unique_list
 
 
+
+def apply_substitutions_simple(goals: torch.Tensor, substitutions: torch.Tensor, im: "IndexManager") -> torch.Tensor:
+    """Apply substitutions to goals tensor - OPTIMIZED.
+    
+    Key optimization: Avoid repeated max() calls and minimize tensor operations.
+    """
+    pad = im.padding_idx
+    device = goals.device
+    
+    # Early exit checks
+    if goals.numel() == 0 or substitutions.numel() == 0:
+        return goals
+    
+    valid_mask = substitutions[:, 0] != pad
+    if not valid_mask.any():
+        return goals
+    
+    subs = substitutions[valid_mask]
+    
+    # OPTIMIZED: Compute max once using torch operations instead of Python max()
+    # This is much faster than calling .max().item() twice
+    # We use a single torch.max call on both tensors
+    combined_tensor = torch.cat([goals.flatten(), subs.flatten()])
+    max_idx = int(combined_tensor.max()) + 1
+    
+    # Pre-allocate mapping on correct device
+    mapping = torch.arange(max_idx, device=device, dtype=torch.long)
+    
+    # Batch index assignment
+    mapping[subs[:, 0]] = subs[:, 1]
+    
+    # Direct indexing with reshape
+    return mapping[goals.flatten()].reshape(goals.shape)
+
+
+def apply_substitutions_batched(
+    goals_batch: torch.Tensor, 
+    substitutions_batch: torch.Tensor, 
+    im: "IndexManager"
+) -> torch.Tensor:
+    """
+    Applies a batch of substitutions to a batch of goal tensors.
+    
+    Args:
+        goals_batch (Tensor[B, G, A]): Batch of goal tensors.
+        substitutions_batch (Tensor[B, S, 2]): Batch of substitution lists.
+        im (IndexManager): The index manager.
+
+    Returns:
+        Tensor[B, G, A]: The batch of goals after applying substitutions.
+    """
+    pad = im.padding_idx
+    device = goals_batch.device
+    B, G, A = goals_batch.shape
+    
+    if B == 0:
+        return goals_batch
+
+    # Find the maximum index across all goals and substitutions to define the mapping table size
+    max_idx = int(max(goals_batch.max(), substitutions_batch.max())) + 1
+    
+    # Create a batch of mapping tables - clone after expand to avoid warning
+    # Shape: [B, max_idx]
+    mapping = torch.arange(max_idx, device=device).unsqueeze(0).expand(B, -1).clone()
+
+    # Prepare batch indices for advanced indexing
+    batch_indices = torch.arange(B, device=device).unsqueeze(1)
+
+    # Filter out padding substitutions
+    valid_mask = substitutions_batch[..., 0] != pad
+    
+    # Get the actual substitutions and their corresponding batch indices
+    from_vars = substitutions_batch[valid_mask][:, 0]
+    to_vals = substitutions_batch[valid_mask][:, 1]
+    # Clone after expand to avoid warning about index_put_ on expanded tensors
+    batch_idx_for_subs = batch_indices.expand_as(substitutions_batch[..., 0])[valid_mask]
+    
+    # Apply substitutions in a batch "scatter" operation
+    # For each item in the batch, this sets mapping[from_var] = to_val
+    mapping[batch_idx_for_subs, from_vars] = to_vals
+    
+    # Apply the mapping to the goals in a batch "gather" operation
+    # mapping.gather(1, goals_batch) would work but can be slow with large `max_idx`.
+    # A more direct indexing is often better if memory allows.
+    return mapping[batch_indices.unsqueeze(-1), goals_batch]
+
+
+def _unify_one_to_one_optimized(
+    queries: torch.Tensor,
+    terms: torch.Tensor,
+    im: "IndexManager"
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Further optimized unification that replaces the expensive 2D `torch.unique`
+    with a faster sort-and-compare method for conflict detection.
+    """
+    B, A1 = queries.shape
+    device = queries.device
+    
+    if B == 0:
+        return torch.empty(0, dtype=torch.bool, device=device), torch.empty(0, A1 - 1, 2, dtype=torch.long, device=device)
+
+    A = A1 - 1
+    pad = im.padding_idx
+    var_start = im.constant_no + 1
+    
+    pred_match = queries[:, 0] == terms[:, 0]
+    q_args, t_args = queries[:, 1:], terms[:, 1:]
+    is_q_var, is_t_var = q_args >= var_start, t_args >= var_start
+    
+    const_mismatch = (~is_q_var & ~is_t_var) & (q_args != t_args)
+    initial_unifiable = pred_match & ~const_mismatch.any(dim=1)
+    
+    potential_indices = initial_unifiable.nonzero(as_tuple=True)[0]
+    if potential_indices.numel() == 0:
+        return torch.zeros(B, dtype=torch.bool, device=device), torch.full((B, A, 2), pad, dtype=torch.long, device=device)
+
+    # --- [OPTIMIZATION V2] Replaced torch.unique with sort-and-compare ---
+    q_pot, t_pot = q_args[potential_indices], t_args[potential_indices]
+    var_to_const_mask = (q_pot >= var_start) & (t_pot < var_start)
+    
+    batch_indices_pot = torch.arange(q_pot.shape[0], device=device).unsqueeze(1).expand_as(q_pot)
+    
+    bindings = torch.stack([
+        batch_indices_pot[var_to_const_mask],
+        q_pot[var_to_const_mask],
+        t_pot[var_to_const_mask]
+    ], dim=1)
+
+    if bindings.numel() > 0:
+        # Sort by batch index, then variable index. This is faster than unique.
+        # We use a stable sort to be predictable, though not strictly necessary here.
+        # We can combine batch and var indices for a single-pass sort.
+        max_var_id = im.variable_no + 1 # A safe upper bound
+        combined_key = bindings[:, 0] * max_var_id + bindings[:, 1]
+        sorted_indices = torch.argsort(combined_key, stable=True)
+        sorted_bindings = bindings[sorted_indices]
+        
+        # Check adjacent rows for conflicts
+        # A conflict is: same batch & var, but different const
+        same_batch_and_var = (sorted_bindings[:-1, :2] == sorted_bindings[1:, :2]).all(dim=1)
+        different_const = sorted_bindings[:-1, 2] != sorted_bindings[1:, 2]
+        
+        conflict_pairs = same_batch_and_var & different_const
+        
+        if conflict_pairs.any():
+            conflicting_batch_indices_pot = torch.unique(sorted_bindings[:-1][conflict_pairs, 0])
+            
+            conflict_mask_pot = torch.zeros(q_pot.shape[0], dtype=torch.bool, device=device)
+            conflict_mask_pot[conflicting_batch_indices_pot] = True
+            
+            initial_unifiable[potential_indices[conflict_mask_pot]] = False
+
+    final_mask = initial_unifiable
+    full_subs = torch.full((B, A, 2), pad, dtype=torch.long, device=device)
+    success_indices = final_mask.nonzero(as_tuple=True)[0]
+
+    if success_indices.numel() > 0:
+        q_succ, t_succ = q_args[success_indices], t_args[success_indices]
+        is_q_var_succ, is_t_var_succ = is_q_var[success_indices], is_t_var[success_indices]
+        
+        # Clone after expand to avoid warning about index_put_ on expanded tensors
+        subs_succ = torch.full_like(q_succ, pad).unsqueeze(-1).expand(-1, -1, 2).clone()
+        
+        q_to_t_mask = is_q_var_succ & ~is_t_var_succ
+        subs_succ[q_to_t_mask] = torch.stack([q_succ[q_to_t_mask], t_succ[q_to_t_mask]], dim=-1)
+
+        t_to_q_mask = ~is_q_var_succ & is_t_var_succ
+        subs_succ[t_to_q_mask] = torch.stack([t_succ[t_to_q_mask], q_succ[t_to_q_mask]], dim=-1)
+        
+        full_subs[success_indices] = subs_succ
+
+    return final_mask, full_subs
 
 
 def _unify_with_rules_batched(

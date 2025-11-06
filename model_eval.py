@@ -111,7 +111,7 @@ def evaluate_policy_torchrl(
     # Set episode targets in environment if supported
     # ParallelEnv and BatchedVecEnv support direct attribute assignment
     from torchrl.envs import ParallelEnv
-    from batched_env import BatchedVecEnv
+    from env import BatchedVecEnv
     
     # Both ParallelEnv and BatchedVecEnv can have these attributes set directly
     if isinstance(env, (ParallelEnv, BatchedVecEnv)):
@@ -460,7 +460,7 @@ def _configure_env_batch(
 ) -> None:
     """Configure environment batch for evaluation with queries and corruptions."""
     from torchrl.envs import ParallelEnv
-    from batched_env import BatchedVecEnv
+    from env import BatchedVecEnv
     
     for i, (query, negatives) in enumerate(zip(batch, corrs)):
         sequence = [query] + negatives

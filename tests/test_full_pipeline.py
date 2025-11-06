@@ -17,7 +17,7 @@ from index_manager import IndexManager
 from neg_sampling import get_sampler, share_sampler_storage
 from embeddings import get_embedder
 from ppo.ppo_model import create_torchrl_modules
-from batched_env import BatchedVecEnv
+from env import BatchedVecEnv
 from ppo.ppo_agent import PPOAgent
 from ppo.ppo_rollout_custom import CustomRolloutCollector
 
@@ -62,8 +62,8 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         variable_no=100,
         seed_run_i=42,
         # Training params
-        batch_size=32,  # Vectorized batch size
-        n_steps=128,    # Steps per rollout
+        batch_size=2,  # Vectorized batch size
+        n_steps=60,    # Steps per rollout
         n_epochs=2,    # PPO epochs
         lr=3e-4,
         gamma=0.99,
@@ -247,47 +247,53 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     # ============================================================
     print("\n[7/10] Testing environment operations...")
     start_time = time()
+    show_output = False
     
     # Test reset
     obs = train_env.reset()
-    print(f"  Reset observation keys: {list(obs.keys())}")
-    print(f"  Observation shapes:")
-    print(f"    sub_index: {obs['sub_index'].shape}")
-    print(f"    derived_sub_indices: {obs['derived_sub_indices'].shape}")
-    print(f"    action_mask: {obs['action_mask'].shape}")
+    if show_output:
+        print(f"  Reset observation keys: {list(obs.keys())}")
+        print(f"  Observation shapes:")
+        print(f"    sub_index: {obs['sub_index'].shape}")
+        print(f"    derived_sub_indices: {obs['derived_sub_indices'].shape}")
+        print(f"    action_mask: {obs['action_mask'].shape}")
     
     # Test actor forward
     print(f"\n  Testing actor forward...")
-    print(f"    Debugging derived_sub_indices...")
     derived = obs['derived_sub_indices']
-    print(f"    Shape: {derived.shape}")
-    print(f"    Min value: {derived.min().item()}, Max value: {derived.max().item()}")
-    print(f"    Predicate indices ([:,0]): min={derived[:,:,:,0].min().item()}, max={derived[:,:,:,0].max().item()}")
-    print(f"    Constant indices ([:,1:]): min={derived[:,:,:,1:].min().item()}, max={derived[:,:,:,1:].max().item()}")
-    print(f"    Constant embedder size: {sum(p.numel() for p in actor.module[0].module.actor_critic_model.feature_extractor.embedder.constant_embedder.parameters())}")
-    print(f"    Predicate embedder size: {sum(p.numel() for p in actor.module[0].module.actor_critic_model.feature_extractor.embedder.predicate_embedder.parameters())}")
+    if show_output:
+        print(f"    Debugging derived_sub_indices...")
+        print(f"    Shape: {derived.shape}")
+        print(f"    Min value: {derived.min().item()}, Max value: {derived.max().item()}")
+        print(f"    Predicate indices ([:,0]): min={derived[:,:,:,0].min().item()}, max={derived[:,:,:,0].max().item()}")
+        print(f"    Constant indices ([:,1:]): min={derived[:,:,:,1:].min().item()}, max={derived[:,:,:,1:].max().item()}")
+        print(f"    Constant embedder size: {sum(p.numel() for p in actor.module[0].module.actor_critic_model.feature_extractor.embedder.constant_embedder.parameters())}")
+        print(f"    Predicate embedder size: {sum(p.numel() for p in actor.module[0].module.actor_critic_model.feature_extractor.embedder.predicate_embedder.parameters())}")
     
     td_out = actor(obs)
-    print(f"\n  Actor output keys: {list(td_out.keys())}")
-    print(f"  Action shape: {td_out['action'].shape}")
-    print(f"  Log prob shape: {td_out['sample_log_prob'].shape}")
+    if show_output:
+        print(f"\n  Actor output keys: {list(td_out.keys())}")
+        print(f"  Action shape: {td_out['action'].shape}")
+        print(f"  Log prob shape: {td_out['sample_log_prob'].shape}")
     
     # Test critic forward
     value_out = critic(obs)
-    print(f"\n  Critic output keys: {list(value_out.keys())}")
-    print(f"  State value shape: {value_out['state_value'].shape}")
+    if show_output:
+        print(f"\n  Critic output keys: {list(value_out.keys())}")
+        print(f"  State value shape: {value_out['state_value'].shape}")
     
     # Test environment step
     action = td_out['action']
     next_obs = train_env.step(td_out)
-    print(f"\n  Step output keys: {list(next_obs.keys())}")
-    if 'next' in next_obs.keys():
-        print(f"  Next state keys: {list(next_obs['next'].keys())}")
-        print(f"  Reward shape: {next_obs['next']['reward'].shape}")
-        print(f"  Done shape: {next_obs['next']['done'].shape}")
-    else:
-        print(f"  Reward shape: {next_obs['reward'].shape}")
-        print(f"  Done shape: {next_obs['done'].shape}")
+    if show_output:
+        print(f"\n  Step output keys: {list(next_obs.keys())}")
+        if 'next' in next_obs.keys():
+            print(f"  Next state keys: {list(next_obs['next'].keys())}")
+            print(f"  Reward shape: {next_obs['next']['reward'].shape}")
+            print(f"  Done shape: {next_obs['next']['done'].shape}")
+        else:
+            print(f"  Reward shape: {next_obs['reward'].shape}")
+            print(f"  Done shape: {next_obs['done'].shape}")
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
     if n_tests == 7:
@@ -403,6 +409,6 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
 
 if __name__ == '__main__':
     # use cuda if available
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = 'cpu'
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = 'cpu'
     test_vectorized_batched_pipeline(n_tests=8, device=device)

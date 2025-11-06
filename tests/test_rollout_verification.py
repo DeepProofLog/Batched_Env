@@ -19,7 +19,7 @@ from dataset import DataHandler
 from index_manager import IndexManager
 from embeddings import get_embedder
 from ppo.ppo_model import create_torchrl_modules
-from batched_env import BatchedVecEnv
+from env import BatchedVecEnv
 from ppo.ppo_rollout_custom import CustomRolloutCollector
 
 

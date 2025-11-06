@@ -12,7 +12,7 @@ from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
 from utils import Term, Rule
-from batched_unification_gpu import get_next_unification
+from unification_gpu import get_next_unification
 # from batched_unification_cpu import get_next_unification
 
 

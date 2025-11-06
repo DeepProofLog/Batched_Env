@@ -21,7 +21,7 @@ from utils import (
     _freeze_dropout_layernorm,
     _warn_non_reproducible,
 )
-from batched_env import BatchedVecEnv
+from env import BatchedVecEnv
 from dataset import DataHandler
 from ppo.ppo_model import create_torchrl_modules
 from ppo.ppo_agent import PPOAgent
