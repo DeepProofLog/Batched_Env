@@ -1,4 +1,4 @@
-from typing import List, Tuple, Dict, Set, Union
+from typing import List, Tuple, Dict, Set, Union, Optional
 import itertools
 import torch
 import numpy as np
@@ -8,9 +8,8 @@ import torch
 
 class IndexManager():
     '''
-    Manages indices for constants, predicates, and fixed variables.
-    Variable indices are pre-assigned based on max_total_vars.
-    Includes a unified lookup map for faster term indexing.
+    Manages indices for constants, predicates, and variables (both template and runtime).
+    Includes unified lookup maps for faster term indexing and tensor-based fact indexing.
     '''
     def __init__(self,
                  constants: set,
@@ -27,6 +26,9 @@ class IndexManager():
         self.idx_dtype = torch.int32
         self.constants = constants
         self.predicates = predicates
+        
+        # Extract template variables from rules
+        self.rule_template_variables = self._extract_template_variables_from_rules(rules)
         
         # Dynamically create a KGE-specific version for each predicate
         self.kge_preds = {f"{p}_kge" for p in self.predicates}
@@ -51,36 +53,124 @@ class IndexManager():
         self.constant_idx2str: Dict[int, str] = {}
         self.predicate_str2idx: Dict[str, int] = {}
         self.predicate_idx2str: Dict[int, str] = {}
-        self.variable_str2idx: Dict[str, int] = {}
-        self.variable_idx2str: Dict[int, str] = {}
+        self.template_variable_str2idx: Dict[str, int] = {}
+        self.template_variable_idx2str: Dict[int, str] = {}
+        self.runtime_variable_str2idx: Dict[str, int] = {}
+        self.runtime_variable_idx2str: Dict[int, str] = {}
         # New unified map for constants and variables
         self.unified_term_map: Dict[str, int] = {}
 
         # --- Global indices for Constants and Predicates ---
         self.create_global_idx()
 
-        # --- Fixed Variable indices ---
-        # Variable indices start after the last constant index
-        self.variable_start_index = self.constant_no + 1
-        self.variable_end_index = self.variable_start_index + self.max_total_vars - 1
-        self.variable_no = self.max_total_vars # Total number of pre-assigned variables
+        # --- Template Variable indices ---
+        self._create_template_var_idx()
 
-        # self.next_var_index = self.variable_start_index # Next available variable index
+        # --- Runtime Variable indices ---
+        # Variable indices start after constants and template variables
+        self.runtime_var_start_index = self.constant_no + self.template_variable_no + 1
+        self.runtime_var_end_index = self.runtime_var_start_index + self.max_total_vars - 1
+        self.runtime_variable_no = self.max_total_vars
+        self.variable_no = self.constant_no + self.template_variable_no + self.runtime_variable_no
 
-        self._create_fixed_var_idx() # Create mappings for fixed variables
+        self._create_fixed_runtime_var_idx() # Create mappings for runtime variables
 
         # --- Create Unified Term Map ---
         # Combine constant and variable maps for faster lookup
         self.unified_term_map.update(self.constant_str2idx)
-        self.unified_term_map.update(self.variable_str2idx)
+        self.unified_term_map.update(self.template_variable_str2idx)
 
-        self.fact_index: Dict[Tuple, Set[Term]] = {}
+        # --- High-Performance Indices ---
+        self.fact_index: Dict[Tuple, Union[Set[Term], torch.Tensor]] = {}
+        self.rule_index: Dict[int, List[int]] = {}
+        
+        # Tensor-based fact storage
+        self.facts_tensor: Optional[torch.Tensor] = None
+        self.sorted_facts_tensor: Optional[torch.Tensor] = None
+        self.predicate_range_map: Optional[torch.Tensor] = None
+        
+        # Special predicate tensors
+        self.true_pred_idx = self.predicate_str2idx.get('True', -1)
+        self.false_pred_idx = self.predicate_str2idx.get('False', -1)
+        
+        if self.true_pred_idx != -1:
+            self.true_tensor = torch.tensor([[self.true_pred_idx, self.padding_idx, self.padding_idx]], dtype=torch.long, device=self.device)
+        else:
+            self.true_tensor = torch.empty((1, 3), dtype=torch.long, device=self.device)
+            
+        if self.false_pred_idx != -1:
+            self.false_tensor = torch.tensor([[self.false_pred_idx, self.padding_idx, self.padding_idx]], dtype=torch.long, device=self.device)
+        else:
+            self.false_tensor = torch.empty((1, 3), dtype=torch.long, device=self.device)
+
+    def _extract_template_variables_from_rules(self, rules: List[Rule]) -> Set[str]:
+        """Iterates through a list of Rule objects and extracts all unique variable names."""
+        template_variables = set()
+        for rule in rules:
+            # Extract from the rule's head
+            for arg in rule.head.args:
+                if is_variable(arg):
+                    template_variables.add(arg)
+            # Extract from the rule's body
+            for body_atom in rule.body:
+                for arg in body_atom.args:
+                    if is_variable(arg):
+                        template_variables.add(arg)
+        return template_variables
 
     # def reset_next_var_index(self):
     #     self.next_var_index = self.variable_start_index
 
     def create_global_idx(self):
         '''Create global indices for constants and predicates (including specials).'''
+        # --- Constants ---
+        current_idx = 1
+        if self.constant_images_no > 0:
+            constants_wout_images = sorted([c for c in self.constants if c not in self.constants_images])
+            img_constants = sorted(list(self.constants_images))
+            for term in img_constants:
+                self.constant_str2idx[term] = current_idx
+                self.constant_idx2str[current_idx] = term
+                current_idx += 1
+            for term in constants_wout_images:
+                self.constant_str2idx[term] = current_idx
+                self.constant_idx2str[current_idx] = term
+                current_idx += 1
+        else:
+            for term in sorted(self.constants):
+                self.constant_str2idx[term] = current_idx
+                self.constant_idx2str[current_idx] = term
+                current_idx += 1
+        self.constant_no = current_idx - 1
+
+        # --- Predicates ---
+        current_idx = 1
+        for term in sorted(self.predicates):
+            self.predicate_str2idx[term] = current_idx
+            self.predicate_idx2str[current_idx] = term
+            current_idx += 1
+        for term in self.special_preds:
+            self.predicate_str2idx[term] = current_idx
+            self.predicate_idx2str[current_idx] = term
+            current_idx += 1
+        self.predicate_no = current_idx - 1
+    
+    def _create_template_var_idx(self):
+        '''Create fixed indices for variables found in rule templates.'''
+        current_idx = self.constant_no + 1
+        for var_name in sorted(list(self.rule_template_variables)):
+            self.template_variable_str2idx[var_name] = current_idx
+            self.template_variable_idx2str[current_idx] = var_name
+            current_idx += 1
+        self.template_variable_no = len(self.rule_template_variables)
+
+    def _create_fixed_runtime_var_idx(self):
+        '''Pre-allocate space for runtime variable indices.'''
+        for i in range(self.max_total_vars):
+            var_index = self.runtime_var_start_index + i
+            var_name = f"RuntimeVar_{var_index}"
+            self.runtime_variable_idx2str[var_index] = var_name
+            self.runtime_variable_str2idx[var_name] = var_index
         # --- Constants ---
         current_idx = 1
         if self.constant_images_no > 0:
@@ -333,3 +423,287 @@ class IndexManager():
                         self.fact_index[key] = set()
                     self.fact_index[key].add(fact)
         return self.fact_index
+
+    # ========================================================================
+    # TENSOR-BASED METHODS
+    # ========================================================================
+
+    def is_var_idx(self, idx: Union[int, torch.Tensor]) -> Union[bool, torch.Tensor]:
+        """
+        Check if the given index or tensor of indices corresponds to any variable (template or runtime).
+        """
+        is_after_constants = self.constant_no < idx
+        is_before_end = idx <= self.runtime_var_end_index
+        return is_after_constants & is_before_end
+
+    def get_next_var(self) -> int:
+        '''Get the next available runtime variable index (not used in tensor ops, but kept for compatibility).'''
+        # This is mainly for the old string-based code
+        if not hasattr(self, 'next_runtime_var_index'):
+            self.next_runtime_var_index = self.runtime_var_start_index
+        if self.next_runtime_var_index > self.runtime_var_end_index:
+            raise ValueError(f"No more available runtime variable indices.")
+        idx = self.next_runtime_var_index
+        var_name = f"RuntimeVar_{idx}"
+        self.runtime_variable_idx2str[idx] = var_name
+        self.runtime_variable_str2idx[var_name] = idx
+        self.unified_term_map[var_name] = idx  # Add to unified map
+        self.next_runtime_var_index += 1
+        return idx
+
+    def get_str_for_term_idx(self, idx: int) -> str:
+        '''Get the string representation for a given index.'''
+        if idx in self.constant_idx2str:
+            return self.constant_idx2str[idx]
+        elif idx in self.template_variable_idx2str:
+            return self.template_variable_idx2str[idx]
+        elif idx in self.runtime_variable_idx2str:
+            return self.runtime_variable_idx2str[idx]
+        elif idx in self.predicate_idx2str:
+            return self.predicate_idx2str[idx]
+        elif idx == self.padding_idx:
+            return "<PAD>"
+        else:
+            raise KeyError(f"Index {idx} not found in any mapping.")
+
+    def term_to_tensor(self, term_str: Term) -> torch.Tensor:
+        """Converts a single Term object to a tensor using the pre-built unified map."""
+        pred_idx = self.predicate_str2idx[term_str.predicate]
+        arg_indices = []
+        term_args = term_str.args if isinstance(term_str.args, tuple) else tuple(term_str.args)
+        for arg_s in term_args:
+            # Handle runtime variables that might not be in the initial unified_term_map
+            if is_variable(arg_s) and arg_s not in self.unified_term_map:
+                if arg_s not in self.runtime_variable_str2idx:
+                    if not hasattr(self, 'next_runtime_var_index'):
+                        self.next_runtime_var_index = self.runtime_var_start_index
+                    self.get_next_var()
+                    self.runtime_variable_str2idx[arg_s] = self.next_runtime_var_index - 1
+                    self.runtime_variable_idx2str[self.next_runtime_var_index - 1] = arg_s
+                    self.unified_term_map[arg_s] = self.next_runtime_var_index - 1  # Add to unified map
+                arg_indices.append(self.runtime_variable_str2idx[arg_s])
+            else:
+                arg_indices.append(self.unified_term_map[arg_s])
+        while len(arg_indices) < self.max_arity:
+            arg_indices.append(self.padding_idx)
+        return torch.tensor([pred_idx] + arg_indices, dtype=torch.long, device=self.device)
+
+    def state_to_tensor(self, state_str: List[Term]) -> torch.Tensor:
+        """Converts a list of Term objects (like facts or queries) to a tensor."""
+        if not state_str:
+            return torch.empty((0, self.max_arity + 1), dtype=torch.long, device=self.device)
+        
+        # OPTIMIZED: Use vectorized conversion for large lists
+        if len(state_str) > 100:  # Threshold for vectorization
+            return self._state_to_tensor_vectorized(state_str)
+        
+        return torch.stack([self.term_to_tensor(t) for t in state_str])
+    
+    def _state_to_tensor_vectorized(self, state_str: List[Term]) -> torch.Tensor:
+        """Vectorized conversion of Terms to tensor - much faster for large lists."""
+        import numpy as np
+        
+        num_terms = len(state_str)
+        
+        # Use numpy for faster construction
+        result = np.full(
+            (num_terms, self.max_arity + 1),
+            self.padding_idx,
+            dtype=np.int64
+        )
+        
+        # Vectorized lookup of predicates - use list comprehension but convert to numpy once
+        pred_indices = np.array([self.predicate_str2idx[term.predicate] for term in state_str], dtype=np.int64)
+        result[:, 0] = pred_indices
+        
+        # Vectorized lookup of arguments - process column by column
+        for arg_pos in range(self.max_arity):
+            # Extract all arguments at this position in one go
+            arg_indices = []
+            for term in state_str:
+                term_args = term.args if isinstance(term.args, tuple) else tuple(term.args)
+                if arg_pos < len(term_args):
+                    arg_s = term_args[arg_pos]
+                    # Use unified map for fast lookup (dictionary lookup is O(1))
+                    arg_idx = self.unified_term_map.get(arg_s, self.padding_idx)
+                    arg_indices.append(arg_idx)
+                else:
+                    arg_indices.append(self.padding_idx)
+            
+            result[:, arg_pos + 1] = np.array(arg_indices, dtype=np.int64)
+        
+        # Convert to torch tensor and move to target device
+        return torch.from_numpy(result).to(device=self.device, dtype=torch.long)
+
+    def rules_to_tensor(self, rules_str_list: List[Rule], max_rule_atoms: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Converts a list of Rule objects to a padded tensor."""
+        if not rules_str_list:
+            return torch.empty((0, max_rule_atoms, self.max_arity + 1), dtype=torch.long, device=self.device), \
+                   torch.empty((0,), dtype=torch.long, device=self.device)
+        rule_tensors_list = []
+        rule_lengths_list = []
+        for rule_obj in rules_str_list:
+            head_tensor = self.term_to_tensor(rule_obj.head)
+            body_tensors = [self.term_to_tensor(t) for t in rule_obj.body]
+            current_rule_atoms_list = [head_tensor] + body_tensors
+            num_atoms = len(current_rule_atoms_list)
+            rule_lengths_list.append(num_atoms)
+            stacked_atoms = torch.stack(current_rule_atoms_list)
+            if num_atoms < max_rule_atoms:
+                padding = torch.full((max_rule_atoms - num_atoms, self.max_arity + 1), self.padding_idx, dtype=torch.long, device=self.device)
+                padded_rule_atoms = torch.cat([stacked_atoms, padding], dim=0)
+            elif num_atoms > max_rule_atoms:
+                raise ValueError(f"Rule {rule_obj} has {num_atoms} atoms, exceeding max_rule_atoms {max_rule_atoms}")
+            else:
+                padded_rule_atoms = stacked_atoms
+            rule_tensors_list.append(padded_rule_atoms)
+        if not rule_tensors_list:
+            return torch.empty((0, max_rule_atoms, self.max_arity + 1), dtype=torch.long, device=self.device), \
+                   torch.empty((0,), dtype=torch.long, device=self.device)
+        return torch.stack(rule_tensors_list), torch.tensor(rule_lengths_list, dtype=torch.long, device=self.device)
+
+    def build_facts_index(self, facts_tensor: torch.Tensor, cache_dir: str = None):
+        """
+        Builds an index that replicates the fast, old, string-based version for tensor-based facts.
+        The index is a dictionary where keys are composite tuples representing every
+        possible query pattern and values are tensors of the fact IDs that match that pattern.
+        
+        Args:
+            facts_tensor: Tensor of facts to index
+            cache_dir: Optional directory to cache the index. If provided and cache exists, loads from cache.
+        """
+        import hashlib
+        import pickle
+        import os
+        
+        self.facts_tensor = facts_tensor.to(self.device)
+        
+        # Try to load from cache if cache_dir is provided
+        cache_file = None
+        if cache_dir is not None:
+            os.makedirs(cache_dir, exist_ok=True)
+            # Create a hash of the facts tensor to ensure cache validity
+            facts_hash = hashlib.md5(facts_tensor.cpu().numpy().tobytes()).hexdigest()
+            cache_file = os.path.join(cache_dir, f"facts_index_{facts_hash}.pkl")
+            
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'rb') as f:
+                        cached_data = pickle.load(f)
+                    # Move tensors to the correct device
+                    self.fact_index = {
+                        key: val.to(self.device) for key, val in cached_data['fact_index'].items()
+                    }
+                    self.sorted_facts_tensor = cached_data['sorted_facts_tensor'].to(self.device)
+                    self.predicate_range_map = cached_data['predicate_range_map'].to(self.device)
+                    return
+                except Exception as e:
+                    print(f"Warning: Failed to load cache from {cache_file}: {e}")
+                    print("Rebuilding index...")
+        
+        # Build the index if not loaded from cache
+        self.fact_index: Dict[Tuple, torch.Tensor] = {}
+        
+        # Build predicate range map for fallback
+        self._build_predicate_range_map()
+
+        # Build the Composite Key Index
+        temp_index: Dict[Tuple, List[int]] = {}
+
+        for fact_id, fact in enumerate(self.facts_tensor):
+            predicate_idx = fact[0].item()
+            
+            # Find all constant arguments in the current fact
+            constant_args_with_pos = []
+            for arg_pos in range(self.max_arity):
+                arg_val = fact[arg_pos + 1].item()
+                if not self.is_var_idx(arg_val) and arg_val != self.padding_idx:
+                    constant_args_with_pos.append((arg_pos, arg_val))
+
+            # Generate a key for every combination of constants (including zero constants)
+            for k in range(len(constant_args_with_pos) + 1):
+                for subset_args in itertools.combinations(constant_args_with_pos, k):
+                    key = (predicate_idx,) + subset_args
+                    
+                    if key not in temp_index:
+                        temp_index[key] = []
+                    temp_index[key].append(fact_id)
+
+        # Convert all lists to tensors for the final, read-only index
+        self.fact_index = {
+            key: torch.tensor(val, dtype=torch.long, device=self.device)
+            for key, val in temp_index.items()
+        }
+        
+        # Save to cache if cache_dir is provided
+        if cache_file is not None:
+            try:
+                # Move tensors to CPU for pickling
+                cache_data = {
+                    'fact_index': {k: v.cpu() for k, v in self.fact_index.items()},
+                    'sorted_facts_tensor': self.sorted_facts_tensor.cpu(),
+                    'predicate_range_map': self.predicate_range_map.cpu()
+                }
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(cache_data, f)
+            except Exception as e:
+                print(f"Warning: Failed to save cache to {cache_file}: {e}")
+
+    def _build_predicate_range_map(self):
+        """Helper to build the sorted tensor and range map for rule unification fallback."""
+        if self.facts_tensor is None or self.facts_tensor.numel() == 0:
+            self.sorted_facts_tensor = torch.empty((0, self.max_arity + 1), dtype=torch.long, device=self.device)
+            self.predicate_range_map = torch.zeros((self.predicate_no + 2, 2), dtype=torch.long, device=self.device)
+            return
+
+        sorted_indices = torch.argsort(self.facts_tensor[:, 0], stable=True)
+        self.sorted_facts_tensor = self.facts_tensor[sorted_indices]
+        
+        pred_indices = self.sorted_facts_tensor[:, 0]
+        unique_preds, counts = torch.unique_consecutive(pred_indices, return_counts=True)
+        
+        self.predicate_range_map = torch.zeros((self.predicate_no + 2, 2), dtype=torch.long, device=self.device)
+        ends = torch.cumsum(counts, dim=0)
+        starts = ends - counts
+        self.predicate_range_map[unique_preds, 0] = starts
+        self.predicate_range_map[unique_preds, 1] = ends
+
+    def build_rule_index(self, rules_tensor: torch.Tensor):
+        """Builds an index for rules based on their head predicate."""
+        self.rule_index.clear()
+        for i in range(rules_tensor.shape[0]):
+            pred_idx = rules_tensor[i, 0, 0].item()
+            if pred_idx not in self.rule_index:
+                self.rule_index[pred_idx] = []
+            self.rule_index[pred_idx].append(i)
+
+    def debug_print_atom(self, atom_tensor: torch.Tensor) -> str:
+        """Debug helper to convert an atom tensor back to a string."""
+        pred_idx_val = atom_tensor[0].item()
+        pred_str = self.predicate_idx2str.get(pred_idx_val, f"<UnkPred:{pred_idx_val}>")
+        args_str_list = []
+        for i in range(1, self.max_arity + 1):
+            arg_idx_val = atom_tensor[i].item()
+            if arg_idx_val == self.padding_idx:
+                break
+            args_str_list.append(self.get_str_for_term_idx(arg_idx_val))
+
+        # Handle special predicates that might have no args printed
+        if pred_str in self.special_preds:
+            return pred_str
+
+        return f"{pred_str}({', '.join(args_str_list)})"
+
+    def debug_print_state_from_indices(self, state_tensor: torch.Tensor, oneline: bool = False) -> str:
+        """Debug helper to convert a state tensor back to a string."""
+        if state_tensor.numel() == 0:
+            return "[]"
+        atom_strs_list = [self.debug_print_atom(atom_tensor) for atom_tensor in state_tensor if atom_tensor[0].item() != self.padding_idx]
+        if not atom_strs_list:
+            return "[]"
+        sep = ", " if oneline else "\n"
+        return f"[{sep.join(atom_strs_list)}]" if oneline else sep.join(atom_strs_list)
+
+    def debug_print_states_from_indices(self, states_list_tensor: List[torch.Tensor]) -> str:
+        """Debug helper to convert a list of state tensors back to a string."""
+        return "[" + ", ".join([self.debug_print_state_from_indices(s, oneline=True) for s in states_list_tensor]) + "]"

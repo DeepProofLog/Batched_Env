@@ -719,7 +719,7 @@ class DataHandler:
 
 #     def _print_debug_info(self):
 #         """Print debugging information about loaded data"""
-#         print(f"\nTrain queries: {len(self.train_queries)}, {self.train_queries}")
+#         print(f"\nTrain queries: {len(self.
 #         print(f"\nValid queries: {len(self.valid_queries)}, {self.valid_queries}")
 #         print(f"\nTest queries: {len(self.test_queries)}, {self.test_queries}")
 #         print(f"\nImages: {len(self.images)}, {[(i, c[0].shape, c[1].shape) for i, c in self.images.items()]}")

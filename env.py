@@ -18,7 +18,8 @@ from torchrl.data.tensor_specs import (
 
 from dataset import DataHandler
 from index_manager import IndexManager
-from python_unification import get_next_unification_python
+from str_python_unification import get_next_unification_python
+from python_unification import get_next_unification_pt
 from utils import Term, print_state_transition
 
 State = List[Term]
@@ -98,6 +99,35 @@ class LogicEnv_gym(EnvBase):
         self.dataset_name = data_handler.dataset_name
         self.facts = facts
 
+        # Initialize tensor-based structures for tensor engine
+        if self.engine == 'python_tensor':
+            # Convert facts to tensors
+            if self.facts:
+                facts_list = list(self.facts) if not isinstance(self.facts, list) else self.facts
+                self.index_manager.facts_tensor = self.index_manager.state_to_tensor(facts_list)
+                self.index_manager.build_facts_index(self.index_manager.facts_tensor)
+            else:
+                self.index_manager.facts_tensor = torch.empty((0, self.max_arity + 1), dtype=torch.long, device=self.device)
+                self.index_manager.build_facts_index(self.index_manager.facts_tensor)
+            
+            # Convert rules to tensors
+            rules_list = self.index_manager.rules if hasattr(self.index_manager, 'rules') else []
+            if rules_list:
+                max_rule_atoms = max(len(r.body) + 1 for r in rules_list)
+                self.index_manager.rules_tensor, self.index_manager.rule_lengths_tensor = \
+                    self.index_manager.rules_to_tensor(rules_list, max_rule_atoms)
+                self.index_manager.build_rule_index(self.index_manager.rules_tensor)
+            else:
+                self.index_manager.rules_tensor = torch.empty((0, 1, self.max_arity + 1), dtype=torch.long, device=self.device)
+                self.index_manager.rule_lengths_tensor = torch.empty((0,), dtype=torch.long, device=self.device)
+            
+            # Initialize runtime variable index for tensor engine
+            self.next_var_index = self.index_manager.runtime_var_start_index
+        else:
+            # For string-based engine, use old initialization
+            self.next_var_index = self.index_manager.constant_no + 1 if hasattr(self.index_manager, 'constant_no') else 1
+
+
         self.corruption_mode = corruption_mode
         self.kge_action = kge_action
 
@@ -148,7 +178,7 @@ class LogicEnv_gym(EnvBase):
         self.n_episodes = len(queries) if queries is not None else 0
         self.eval_idx = 0
         self.consult_janus_eval = False
-        self.next_var_index = self.index_manager.variable_start_index
+        # next_var_index already set above based on engine type
 
         self.current_query_depth_value = None
 
@@ -457,7 +487,13 @@ class LogicEnv_gym(EnvBase):
         
         print('Initial query, label, depth:', query, label, depth) if self.verbose else None
         self.current_depth = torch.tensor(0, device=self.device)
-        self.next_var_index = self.index_manager.variable_start_index
+        
+        # Reset next_var_index based on engine type
+        if self.engine == 'python_tensor':
+            self.next_var_index = self.index_manager.runtime_var_start_index
+        else:
+            self.next_var_index = getattr(self.index_manager, 'variable_start_index', 
+                                         self.index_manager.constant_no + 1)
 
         self.memory = set()
         filtered_query = [q for q in query if q.predicate not in self.terminal_predicates]
@@ -488,7 +524,7 @@ class LogicEnv_gym(EnvBase):
                 "done": torch.tensor([False], dtype=torch.bool, device=self.device),  # Match done_spec shape [1]
                 "terminated": torch.tensor([False], dtype=torch.bool, device=self.device),  # Required by TorchRL
                 "derived_states": NonTensorData(data=derived_states),
-                "query_depth": torch.tensor([self.current_query_depth_value], dtype=torch.long, device=self.device),
+                "query_depth": torch.tensor([self.current_query_depth_value if self.current_query_depth_value is not None else -1], dtype=torch.long, device=self.device),
             },
             batch_size=torch.Size([]),  # Single environment
         )
@@ -626,7 +662,7 @@ class LogicEnv_gym(EnvBase):
                 "derived_states": NonTensorData(data=derived_states_next),
                 # Additional info (all as 1D tensors for consistent stacking)
                 "query_type": torch.tensor([label_value], dtype=torch.long, device=self.device),
-                "query_depth": torch.tensor([self.current_query_depth_value], dtype=torch.long, device=self.device),
+                "query_depth": torch.tensor([self.current_query_depth_value if self.current_query_depth_value is not None else -1], dtype=torch.long, device=self.device),
                 "max_depth_reached": torch.tensor([exceeded_max_depth], dtype=torch.bool, device=self.device),
                 "truncated": torch.tensor([truncated], dtype=torch.bool, device=self.device),
             },
@@ -713,11 +749,43 @@ class LogicEnv_gym(EnvBase):
                 return [state], self._pad_single_state(state), False
             # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
 
-        # if self.engine == 'prolog':
-        #     derived_states, self.next_var_index = get_next_unification_prolog(state,
-        #                                                  next_var_index=self.index_manager.next_var_index, 
-        #                                                  verbose=self.prover_verbose)
-        if self.engine == 'python':
+        # Choose unification method based on engine
+        if self.engine == 'python_tensor':
+            # Use tensor-based unification
+            state_tensor = self.index_manager.state_to_tensor(state)
+            derived_states_tensors, self.next_var_index = get_next_unification_pt(
+                current_state=state_tensor,
+                facts_tensor=self.index_manager.facts_tensor,
+                rules=self.index_manager.rules_tensor,
+                rule_lengths=self.index_manager.rule_lengths_tensor,
+                index_manager=self.index_manager,
+                next_var_index=self.next_var_index,
+                verbose=self.prover_verbose
+            )
+            # Convert tensors back to Term objects for compatibility
+            derived_states = []
+            for state_t in derived_states_tensors:
+                state_terms = []
+                for atom_t in state_t:
+                    if atom_t[0].item() == self.index_manager.padding_idx:
+                        break
+                    pred_idx = atom_t[0].item()
+                    pred_str = self.index_manager.predicate_idx2str.get(pred_idx, f"<UnkPred:{pred_idx}>")
+                    args = []
+                    for i in range(1, self.max_arity + 1):
+                        arg_idx = atom_t[i].item()
+                        if arg_idx == self.index_manager.padding_idx:
+                            break
+                        arg_str = self.index_manager.get_str_for_term_idx(arg_idx)
+                        # Add runtime variables to unified map on the fly
+                        if arg_str.startswith('RuntimeVar_') and arg_str not in self.index_manager.unified_term_map:
+                            self.index_manager.unified_term_map[arg_str] = arg_idx
+                            self.index_manager.runtime_variable_str2idx[arg_str] = arg_idx
+                        args.append(arg_str)
+                    state_terms.append(Term(pred_str, tuple(args)))
+                if state_terms:
+                    derived_states.append(state_terms)
+        elif self.engine == 'python':
             derived_states, self.next_var_index = get_next_unification_python(state,
                                                             facts_set=self.facts,
                                                             facts_indexed=self.index_manager.fact_index,
@@ -727,6 +795,9 @@ class LogicEnv_gym(EnvBase):
                                                             next_var_index=self.next_var_index,
                                                             strategy= self.engine_strategy
                                                             )
+        else:
+            raise ValueError(f"Unsupported engine: {self.engine}")
+            
         if self.skip_unary_actions:
             current_state = state.copy() if isinstance(state, list) else [state]
             counter = 0
