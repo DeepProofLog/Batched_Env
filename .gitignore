@@ -5,6 +5,7 @@ plots/*
 runs/*
 profiler_traces/
 __pycache__/
+data/.cache/
 runs_info/
 runs_info_fam/
 kge_pytorch/models/
