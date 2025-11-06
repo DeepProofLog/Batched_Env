@@ -8,7 +8,7 @@ import sys
 import os
 import torch
 from types import SimpleNamespace
-
+from time import time
 # Ensure repository root is on sys.path so local imports resolve when running from tests/ directory
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -22,7 +22,7 @@ from ppo.ppo_agent import PPOAgent
 from ppo.ppo_rollout_custom import CustomRolloutCollector
 
 
-def test_vectorized_batched_pipeline():
+def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     """
     Test the full pipeline with a vectorized batched environment.
     
@@ -43,27 +43,27 @@ def test_vectorized_batched_pipeline():
         test_file="test.txt",
         rules_file="rules.txt",
         facts_file="wn18rr.pl",
-        n_train_queries=20,
+        n_train_queries=None,
         n_eval_queries=5,
         n_test_queries=5,
         corruption_mode=None,
-        corruption_scheme=['tail'],
-        max_total_vars=50,
+        corruption_scheme=['head', 'tail'],
+        max_total_vars=1000,
         padding_atoms=6,
-        padding_states=12,
-        max_depth=5,
-        memory_pruning=False,
+        padding_states=20,
+        max_depth=20,
+        memory_pruning=True,
         atom_embedder='transe',
         state_embedder='sum',
-        constant_embedding_size=32,
-        predicate_embedding_size=32,
-        atom_embedding_size=32,
+        constant_embedding_size=256,
+        predicate_embedding_size=256,
+        atom_embedding_size=256,
         learn_embeddings=True,
-        variable_no=20,
+        variable_no=100,
         seed_run_i=42,
         # Training params
-        batch_size=4,  # Vectorized batch size (process 4 queries in parallel)
-        n_steps=16,    # Steps per rollout
+        batch_size=32,  # Vectorized batch size
+        n_steps=128,    # Steps per rollout
         n_epochs=2,    # PPO epochs
         lr=3e-4,
         gamma=0.99,
@@ -75,18 +75,20 @@ def test_vectorized_batched_pipeline():
         endf_action=True,
         skip_unary_actions=True,
         train_neg_ratio=1.0,
-        reward_type=4,
+        reward_type=1,
     )
 
     # device = torch.device("cpu")
     # use cuda if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # ============================================================
-    # 1. Build DataHandler and IndexManager
+    # 1. Build DataHandler
     # ============================================================
-    print("\n[1/7] Loading dataset...")
+    start_time = time()
+    print("\n[1/10] Loading dataset...")
     dh = DataHandler(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
@@ -101,8 +103,15 @@ def test_vectorized_batched_pipeline():
         n_test_queries=args.n_test_queries,
     )
     print(f"  Loaded {len(dh.train_queries)} train queries, {len(dh.valid_queries)} valid queries")
-
-    print("\n[2/7] Building index manager...")
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 1:
+        return  # Early exit for quick test of step 1
+    # ============================================================
+    # 2. Build IndexManager
+    # ============================================================
+    start_time = time()
+    print("\n[2/10] Building index manager...")
     im = IndexManager(
         constants=dh.constants,
         predicates=dh.predicates,
@@ -116,11 +125,15 @@ def test_vectorized_batched_pipeline():
     print(f"  Index manager ready: {im.constant_no} constants, {im.predicate_no} predicates")
     print(f"  Debug: runtime_var_start={im.runtime_var_start_index}, runtime_var_end={im.runtime_var_end_index}")
     print(f"  Debug: variable_no={im.variable_no}, template_variable_no={im.template_variable_no}, runtime_variable_no={im.runtime_variable_no}")
-
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 2:
+        return  # Early exit for quick test of steps 1-2
     # ============================================================
-    # 2. Create sampler and embedder
+    # 3. Create sampler
     # ============================================================
-    print("\n[3/7] Creating negative sampler...")
+    start_time = time()
+    print("\n[3/10] Creating negative sampler...")
     sampler = get_sampler(
         data_handler=dh,
         index_manager=im,
@@ -129,18 +142,28 @@ def test_vectorized_batched_pipeline():
     )
     share_sampler_storage(sampler)
     print("  Sampler ready")
-
-    print("\n[4/7] Creating embedder...")
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 3:
+        return  # Early exit for quick test of steps 1-3
+    # ============================================================
+    # 4. Create embedder
+    # ============================================================
+    start_time = time()
+    print("\n[4/10] Creating embedder...")
     embedder_getter = get_embedder(args, dh, im, device)
     embedder = embedder_getter.embedder
     embed_dim = getattr(embedder, 'embed_dim', getattr(embedder, 'embedding_dim', args.atom_embedding_size))
     print(f"  Embedder ready: embed_dim={embed_dim}")
-
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 4:
+        return  # Early exit for quick test of steps 1-4
     # ============================================================
-    # 3. Create vectorized batched environment
+    # 5. Create vectorized batched environment
     # ============================================================
-    print(f"\n[5/7] Creating vectorized batched environment (batch_size={args.batch_size})...")
-    
+    print(f"\n[5/10] Creating vectorized batched environment (batch_size={args.batch_size})...")
+    start_time = time()
     # Create a single BatchedVecEnv with batch_size for vectorized processing
     train_env = BatchedVecEnv(
         batch_size=args.batch_size,
@@ -162,6 +185,11 @@ def test_vectorized_batched_pipeline():
         engine=args.engine,
     )
     print(f"  Train env ready: batch_size={train_env.batch_size_int}")
+
+    if n_tests == 5:
+        end_time = time()
+        print(f"  Step completed in {end_time - start_time:.2f} seconds")
+        return  # Early exit for quick test of steps 1-5    
     
     # Create eval env (smaller batch for testing)
     eval_env = BatchedVecEnv(
@@ -184,11 +212,14 @@ def test_vectorized_batched_pipeline():
         engine=args.engine,
     )
     print(f"  Eval env ready: batch_size={eval_env.batch_size_int}")
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
 
     # ============================================================
-    # 4. Create TorchRL actor/critic modules
+    # 6. Create TorchRL actor/critic modules
     # ============================================================
-    print("\n[6/7] Creating actor-critic modules...")
+    print("\n[6/10] Creating actor-critic modules...")
+    start_time = time()
     actor, critic = create_torchrl_modules(
         embedder=embedder,
         num_actions=args.padding_states,
@@ -207,11 +238,15 @@ def test_vectorized_batched_pipeline():
     # Create optimizer
     params_dict = {id(p): p for p in list(actor.parameters()) + list(critic.parameters())}
     optimizer = torch.optim.Adam(params_dict.values(), lr=args.lr)
-
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 6:
+        return  # Early exit for quick test of steps 1-6
     # ============================================================
-    # 5. Test environment reset and step
+    # 7. Test environment reset and step
     # ============================================================
-    print("\n[7/7] Testing environment operations...")
+    print("\n[7/10] Testing environment operations...")
+    start_time = time()
     
     # Test reset
     obs = train_env.reset()
@@ -253,13 +288,17 @@ def test_vectorized_batched_pipeline():
     else:
         print(f"  Reward shape: {next_obs['reward'].shape}")
         print(f"  Done shape: {next_obs['done'].shape}")
-    
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 7:
+        return  # Early exit for quick test of steps 1-7
     # ============================================================
-    # 6. Test rollout collection
+    # 8. Test rollout collection
     # ============================================================
     print("\n" + "="*60)
     print("Testing Rollout Collection")
     print("="*60)
+    start_time = time()
     
     rollout_collector = CustomRolloutCollector(
         env=train_env,
@@ -282,13 +321,17 @@ def test_vectorized_batched_pipeline():
         exp = experiences[0]
         print(f"\n  Experience tensordict keys: {list(exp.keys())}")
         print(f"  Experience batch size: {exp.batch_size}")
-    
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 8:
+        return  # Early exit for quick test of steps 1-8
     # ============================================================
-    # 7. Test PPO learning step
+    # 9. Test PPO learning step
     # ============================================================
     print("\n" + "="*60)
     print("Testing PPO Learning")
     print("="*60)
+    start_time = time()
     
     if len(experiences) > 0:
         print(f"Running PPO update on {len(experiences)} experiences...")
@@ -328,13 +371,17 @@ def test_vectorized_batched_pipeline():
         print(f"  Value loss: {metrics.get('value_loss', 0.0):.4f}")
         print(f"  Entropy: {metrics.get('entropy', 0.0):.4f}")
         print(f"  Approx KL: {metrics.get('approx_kl', 0.0):.4f}")
-    
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 9:
+        return  # Early exit for quick test of steps 1-9
     # ============================================================
-    # 8. Final assertions
+    # 10. Final assertions
     # ============================================================
     print("\n" + "="*60)
     print("Running Assertions")
     print("="*60)
+    start_time = time()
     
     assert 'action' in td_out.keys(), "Actor should output action"
     assert 'sample_log_prob' in td_out.keys(), "Actor should output log prob"
@@ -349,7 +396,13 @@ def test_vectorized_batched_pipeline():
     print("\n" + "="*60)
     print("Vectorized Batched Pipeline Test Complete")
     print("="*60)
-
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 10:
+        return  # Early exit for quick test of steps 1-10
 
 if __name__ == '__main__':
-    test_vectorized_batched_pipeline()
+    # use cuda if available
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = 'cpu'
+    test_vectorized_batched_pipeline(n_tests=8, device=device)

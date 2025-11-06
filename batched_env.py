@@ -79,24 +79,57 @@ class BatchedVecEnv(EnvBase):
         self.all_labels = labels
         self.all_depths = query_depths
         
-        # Batch state
-        self.current_queries: Optional[Tensor] = None
-        self.current_labels: Optional[Tensor] = None
-        self.current_depths: Optional[Tensor] = None
-        self.next_var_indices: Optional[Tensor] = None
-        
-        # Derived states: [B, max_derived, padding_atoms, arity+1]
-        self.derived_states_batch: Optional[Tensor] = None
-        self.derived_states_counts: Optional[Tensor] = None  # [B] number of valid derived states per env
-        
-        # Memory tracking (still need sets for membership testing)
-        self.memories: List[Set] = [set() for _ in range(self.batch_size_int)]
-        
-        # Precompute constants
+        # Precompute constants (needed before initializing batch state)
         self.max_arity = index_manager.max_arity
         self.padding_idx = index_manager.padding_idx
         self.true_pred_idx = index_manager.true_pred_idx
         self.false_pred_idx = index_manager.false_pred_idx
+        
+        # Batch state - initialize empty tensors for partial reset support
+        self.current_queries: Tensor = torch.full(
+            (self.batch_size_int, padding_atoms, self.max_arity + 1),
+            self.padding_idx,
+            dtype=torch.long,
+            device=self._device_internal
+        )
+        self.current_labels: Tensor = torch.zeros(
+            self.batch_size_int,
+            dtype=torch.long,
+            device=self._device_internal
+        )
+        self.current_depths: Tensor = torch.zeros(
+            self.batch_size_int,
+            dtype=torch.long,
+            device=self._device_internal
+        )
+        self.next_var_indices: Tensor = torch.full(
+            (self.batch_size_int,),
+            self.index_manager.runtime_var_start_index,
+            dtype=torch.long,
+            device=self._device_internal
+        )
+        self.original_queries: Tensor = torch.full(
+            (self.batch_size_int, self.max_arity + 1),
+            self.padding_idx,
+            dtype=torch.long,
+            device=self._device_internal
+        )
+        
+        # Derived states: [B, max_derived, padding_atoms, arity+1]
+        self.derived_states_batch: Tensor = torch.full(
+            (self.batch_size_int, padding_states, padding_atoms, self.max_arity + 1),
+            self.padding_idx,
+            dtype=torch.long,
+            device=self._device_internal
+        )
+        self.derived_states_counts: Tensor = torch.zeros(
+            self.batch_size_int,
+            dtype=torch.long,
+            device=self._device_internal
+        )
+        
+        # Memory tracking (still need sets for membership testing)
+        self.memories: List[Set] = [set() for _ in range(self.batch_size_int)]
         
         # Convert facts to tensor for unification
         if facts:
@@ -183,58 +216,106 @@ class BatchedVecEnv(EnvBase):
             dtype=torch.bool,
             device=self._device_internal,
         )
-    
+
     def _reset(self, tensordict: Optional[TensorDict] = None) -> TensorDict:
-        """Reset all environments in the batch."""
-        # Sample batch of queries
+        """Reset all or some environments in the batch.
+        
+        Args:
+            tensordict: Optional TensorDict with "_reset" key indicating which envs to reset.
+                       If None or no "_reset" key, resets all environments.
+        """
+
+        # Determine which environments to reset
+        if tensordict is not None and "_reset" in tensordict.keys():
+            # Partial reset - only reset environments where _reset is True
+            reset_mask = tensordict["_reset"].squeeze(-1).bool()  # [B]
+            indices_to_reset = torch.where(reset_mask)[0].tolist()
+            num_to_reset = len(indices_to_reset)
+            print(f'\n\nPartial Reset of indices {indices_to_reset}-----------------------------') if self.verbose or self.prover_verbose else None
+            
+            if num_to_reset == 0:
+                # No environments to reset - return current observation
+                return self._create_observation()
+        else:
+            print('\n\n-----------------------------Reset-----------------------------') if self.verbose or self.prover_verbose else None
+            # Full reset - reset all environments
+            reset_mask = torch.ones(self.batch_size_int, dtype=torch.bool, device=self._device_internal)
+            indices_to_reset = list(range(self.batch_size_int))
+            num_to_reset = self.batch_size_int
+        
+        # Sample queries for environments that need reset
         batch_queries = []
         batch_labels = []
         batch_depths = []
         
         if self.mode == 'train':
             # Sample with replacement
-            indices = torch.randint(0, len(self.all_queries), (self.batch_size_int,))
+            indices = torch.randint(0, len(self.all_queries), (num_to_reset,))
             batch_queries = [self.all_queries[i] for i in indices]
             batch_labels = [self.all_labels[i] for i in indices]
             batch_depths = [self.all_depths[i] for i in indices]
         elif self.mode == 'eval':
             # Sequential sampling
-            actual_batch_size = min(self.batch_size_int, len(self.all_queries) - self.counter)
-            batch_queries = self.all_queries[self.counter:self.counter + actual_batch_size]
-            batch_labels = self.all_labels[self.counter:self.counter + actual_batch_size]
-            batch_depths = self.all_depths[self.counter:self.counter + actual_batch_size]
-            
-            # Pad if needed
-            if actual_batch_size < self.batch_size_int:
-                batch_queries.extend([self.all_queries[0]] * (self.batch_size_int - actual_batch_size))
-                batch_labels.extend([self.all_labels[0]] * (self.batch_size_int - actual_batch_size))
-                batch_depths.extend([self.all_depths[0]] * (self.batch_size_int - actual_batch_size))
-            
-            self.counter += actual_batch_size
+            for _ in range(num_to_reset):
+                if self.counter < len(self.all_queries):
+                    batch_queries.append(self.all_queries[self.counter])
+                    batch_labels.append(self.all_labels[self.counter])
+                    batch_depths.append(self.all_depths[self.counter])
+                    self.counter += 1
+                else:
+                    # Wrap around if we run out
+                    batch_queries.append(self.all_queries[0])
+                    batch_labels.append(self.all_labels[0])
+                    batch_depths.append(self.all_depths[0])
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
         
-        # Convert queries to tensors - VECTORIZED
-        queries_tensors = self._convert_queries_to_tensors_vec(batch_queries)
+        # Convert queries to tensors
+        queries_tensors_list = []
+        for query in batch_queries:
+            if isinstance(query, Term):
+                query_tensor = self.index_manager.state_to_tensor([query])
+            else:
+                query_tensor = query
+            queries_tensors_list.append(self._pad_state(query_tensor))
         
-        # Stack into batch [B, padding_atoms, max_arity+1]
-        self.current_queries = queries_tensors.to(self._device_internal)
-        self.current_labels = torch.tensor(batch_labels, dtype=torch.long, device=self._device_internal)
-        self.current_depths = torch.zeros(self.batch_size_int, dtype=torch.long, device=self._device_internal)
+        # Update state only for environments being reset
+        for i, env_idx in enumerate(indices_to_reset):
+            self.current_queries[env_idx] = queries_tensors_list[i]
+            self.current_labels[env_idx] = batch_labels[i]
+            self.current_depths[env_idx] = 0
+            self.next_var_indices[env_idx] = self.index_manager.runtime_var_start_index
+            self.memories[env_idx] = set()
         
-        # Initialize batch-specific state
-        self.next_var_indices = torch.full(
-            (self.batch_size_int,), 
-            self.index_manager.runtime_var_start_index,
-            dtype=torch.long,
-            device=self._device_internal
-        )
-        
-        # Reset memories
-        self.memories = [set() for _ in range(self.batch_size_int)]
-        
-        # Get derived states for ALL queries in batch - VECTORIZED
+        # Extract original queries for exclusion during fact unification
+        # Only for newly reset environments
+        first_atom_mask = self.current_queries[:, :, 0] != self.index_manager.padding_idx
+        first_atom_indices = first_atom_mask.long().argmax(dim=1)  # [B]
+        batch_indices = torch.arange(self.batch_size_int, device=self._device_internal)
+        self.original_queries = self.current_queries[batch_indices, first_atom_indices]  # [B, arity+1]
+
+        if self.verbose >=1: print(f"\nInitial Query (Label: {self.current_labels[batch_indices]}, depth: {self.current_depths[batch_indices]}): "
+                                   f"{self.index_manager.debug_print_state_from_indices(self.current_queries[batch_indices, first_atom_indices], oneline=True)}")
+
+        # Compute derived states for ALL environments (not just reset ones)
+        # This is necessary because the unification function is vectorized
         self._compute_derived_states_vec()
+        
+        if self.verbose >= 1:
+            print(f"\nReset States:")
+            for i in range(self.batch_size_int):
+                if reset_mask[i]:  # Only show for reset environments
+                    print(f"  Env {i}: {self.index_manager.debug_print_state_from_indices(self.current_queries[i], oneline=True)}")
+                    derived_count = self.derived_states_counts[i].item()
+                    derived_states_list = [self.derived_states_batch[i, j] for j in range(derived_count)]
+                    print(f"  Derived States ({derived_count}): {self.index_manager.debug_print_states_from_indices(derived_states_list)}")
+        
+        if self.verbose >= 1:
+            print(f"\n[DEBUG _reset]")
+            print(f"  Reset mask: {reset_mask.tolist()}")
+            print(f"  Reset indices: {indices_to_reset}")
+            print(f"  After _compute_derived_states_vec:")
+            print(f"  derived_states_counts: {self.derived_states_counts.tolist()}")
         
         # Create batched observations
         return self._create_observation()
@@ -264,6 +345,8 @@ class BatchedVecEnv(EnvBase):
             rule_lengths=self.rule_lengths,
             index_manager=self.index_manager,
             next_var_indices=self.next_var_indices,
+            excluded_queries=self.original_queries,
+            labels=self.current_labels,
             verbose=self.prover_verbose
         )
         
@@ -283,11 +366,17 @@ class BatchedVecEnv(EnvBase):
                     ds_tuple = self._state_to_tuple(ds)
                     if ds_tuple not in self.memories[i]:
                         filtered_states.append(ds)
+                    elif self.verbose >= 1:
+                        print(f"Memory Pruning in next derivation: State {self.index_manager.debug_print_state_from_indices(ds, oneline=True)}")
                 all_derived[i] = filtered_states if filtered_states else [self._create_false_state()]
+                if not filtered_states and self.verbose >= 1:
+                    print(f"No valid next states after memory pruning for env {i}, returning [[FALSE]].")
         
         # Truncate if too many states per environment
         for i in range(self.batch_size_int):
             if len(all_derived[i]) > self.padding_states:
+                if self.verbose >= 1:
+                    print(f"Truncating {len(all_derived[i])} derived states to {self.padding_states} for env {i}.")
                 all_derived[i] = all_derived[i][:self.padding_states]
         
         # Find max count
@@ -319,18 +408,26 @@ class BatchedVecEnv(EnvBase):
         actions = tensordict["action"]  # [B]
         
         if self.verbose >= 1:
-            print(f'\n\nVectorized Batched Step-----------------------------')
-            print(f'Actions: {actions}')
+            print(f'\n\n-----------------------------Step-----------------------------')     
+
+        # Store previous state for verbose output
+        if self.verbose >= 2:
+            prev_states = self.current_queries.clone()
         
         # Select next state for each environment using advanced indexing - NO LOOP!
         # Create batch indices
         batch_indices = torch.arange(self.batch_size_int, device=self._device_internal)
         
-        # Clamp actions to valid range
-        clamped_actions = torch.clamp(actions, 0, self.padding_states - 1)
+        if self.verbose >= 2:
+            print(f'\n=== BEFORE ACTION ===')
+            for i in range(self.batch_size_int):
+                print(f'\nEnv {i}:')
+                print(f'  Current state: {self.index_manager.debug_print_state_from_indices(self.current_queries[i], oneline=True)}')
+                print(f'  Available derived states ({self.derived_states_counts[i].item()}):{self.index_manager.debug_print_states_from_indices([self.derived_states_batch[i, j] for j in range(self.derived_states_counts[i].item())])}')
+                print(f'  Selected action: {actions[i].item()}')
         
         # Select states: [B, padding_atoms, arity+1]
-        selected_states = self.derived_states_batch[batch_indices, clamped_actions]
+        selected_states = self.derived_states_batch[batch_indices, actions]
         
         # Check if action was invalid (action_idx >= count)
         invalid_mask = actions >= self.derived_states_counts  # [B]
@@ -338,26 +435,44 @@ class BatchedVecEnv(EnvBase):
         # Create false state for invalid actions
         false_state = self._create_false_state()
         
-        # Replace invalid actions with false state - VECTORIZED
-        selected_states = torch.where(
-            invalid_mask.unsqueeze(-1).unsqueeze(-1),  # [B, 1, 1]
-            false_state.unsqueeze(0).expand(self.batch_size_int, -1, -1),  # [B, padding_atoms, arity+1]
-            selected_states
-        )
+        # if there are any invalid actions, raise an error
+        if invalid_mask.any():
+            raise ValueError(f"Invalid actions selected: {actions[invalid_mask].tolist()} with counts {self.derived_states_counts[invalid_mask].tolist()}")
         
         self.current_queries = selected_states
         
         # Increment depths - VECTORIZED
         self.current_depths += 1
         
+        # if self.verbose >= 2:
+        #     print(f'\n=== AFTER ACTION ===')
+        #     for i in range(self.batch_size_int):
+        #         print(f'\nEnv {i}:')
+        #         print(f'  Next state: {self.index_manager.debug_print_state_from_indices(self.current_queries[i], oneline=True)}')
+        #         print(f'  Depth: {self.current_depths[i].item()}')
+        
         # Compute rewards and dones - VECTORIZED
         rewards, dones = self._get_done_reward_vec()
         
         if self.verbose >= 2:
-            print(f"After _get_done_reward_vec: dones = {dones.squeeze()}")
+            print(f'\n=== REWARD & DONE ===')
+            for i in range(self.batch_size_int):
+                print(f'Env {i}:   Reward: {rewards[i].item():.4f}.  Done: {dones[i].item()}')
         
         # Get next derived states only for non-done environments - OPTIMIZED
         self._compute_derived_states_conditional_vec(dones)
+        
+        # if self.verbose >= 1:
+        #     print(f"\n=== Step States ===")
+        #     for i in range(self.batch_size_int):
+        #         print(f"  Env {i}: {self.index_manager.debug_print_state_from_indices(self.current_queries[i], oneline=True)}")
+        #         derived_count = self.derived_states_counts[i].item()
+        #         derived_states_list = [self.derived_states_batch[i, j] for j in range(derived_count)]
+        #         print(f"        Derived States ({derived_count}): {self.index_manager.debug_print_states_from_indices(derived_states_list)}")
+        #         reward_val = rewards[i].item()
+        #         done_val = dones[i].item()
+        #         truncated_val = (self.current_depths[i] >= self.max_depth).item()
+        #         print(f"        Step Output: Reward={reward_val}, Done={done_val}, Truncated={truncated_val}")
         
         # Create observation
         obs_dict = self._create_observation_dict()
@@ -389,6 +504,8 @@ class BatchedVecEnv(EnvBase):
             rule_lengths=self.rule_lengths,
             index_manager=self.index_manager,
             next_var_indices=self.next_var_indices,
+            excluded_queries=self.original_queries,
+            labels=self.current_labels,
             verbose=self.prover_verbose
         )
         
@@ -479,11 +596,16 @@ class BatchedVecEnv(EnvBase):
             all_true = torch.all(predicates == self.true_pred_idx)
             any_false = torch.any(predicates == self.false_pred_idx)
             depth_exceeded = self.current_depths[i] >= self.max_depth
-            
+            if depth_exceeded:
+                if self.verbose >= 2:
+                    print(f"Env {i} exceeded max depth {self.max_depth}. Marking as done.")
+            if all_true:
+                if self.verbose >= 2:
+                    print(f"Env {i} reached successful proof (all TRUE). Marking as done.")
+            if any_false:
+                if self.verbose >= 2:
+                    print(f"Env {i} reached failed proof (any FALSE). Marking as done.")
             done = all_true | any_false | depth_exceeded  # Use | instead of 'or' to keep as tensor
-            
-            if self.verbose >= 2:
-                print(f"  Env {i}: predicates={predicates.tolist()}, all_true={all_true.item()}, any_false={any_false.item()}, depth={self.current_depths[i].item()}/{self.max_depth}, done={done.item()}")
             
             dones[i, 0] = done
             
@@ -494,7 +616,9 @@ class BatchedVecEnv(EnvBase):
         return rewards, dones
     
     def _create_observation_dict(self) -> Dict:
-        """Create batched observation dictionary - FULLY VECTORIZED."""
+        """Create batched observation dictionary.
+        For given derived states, create a action mask that the 
+        index is true if smaller than the count of derived states."""
         # Create action masks - VECTORIZED
         # Valid actions are those with index < derived_states_counts[i]
         action_indices = torch.arange(self.padding_states, device=self._device_internal)  # [padding_states]
@@ -502,6 +626,11 @@ class BatchedVecEnv(EnvBase):
         counts = self.derived_states_counts.unsqueeze(-1)  # [B, 1]
         
         action_mask = action_indices < counts  # [B, padding_states]
+        
+        if self.verbose >= 3:
+            print(f"\n[DEBUG _create_observation_dict]")
+            print(f"  derived_states_counts: {self.derived_states_counts.tolist()}")
+            print(f"  action_mask:\n{action_mask}")
         
         # Return dict (not TensorDict yet - parent class handles that)
         return {
@@ -554,27 +683,27 @@ class BatchedVecEnv(EnvBase):
         return self._pad_state(false_state)
     
     def _state_to_tuple(self, state: Tensor) -> tuple:
-        """Convert state tensor to hashable tuple for memory - OPTIMIZED."""
+        """Convert state tensor to hashable tuple for memory - OPTIMIZED.
+        
+        Uses a fast hash computation to avoid expensive GPU-CPU transfers.
+        Only calls .item() once at the end instead of for every element.
+        """
         # Remove padding first
         valid_mask = state[:, 0] != self.padding_idx
         if not valid_mask.any():
             return (0,)  # Empty state
         
         valid_state = state[valid_mask]
-        # Fast GPU-based hash using vectorized polynomial hash
         flat = valid_state.flatten()
-        
-        # Use vectorized computation on GPU
-        prime = 31
-        mod = 2**31 - 1
-        
-        # Create powers: [1, 31, 31^2, 31^3, ...]
         n = flat.numel()
-        powers = torch.arange(n, device=flat.device, dtype=torch.long)
-        prime_powers = torch.pow(prime, powers) % mod
         
-        # Compute hash as sum of (value * prime^position)
-        hash_val = ((flat.long() * prime_powers).sum() % mod).item()
+        if n == 0:
+            return (0,)
+        
+        # Simple weighted sum hash - avoid torch.arange which creates new tensor each time
+        # Use cumsum for weights which is faster
+        hash_val = (flat.long() * (torch.arange(n, device=flat.device, dtype=torch.long) + 1)).sum()
+        hash_val = (hash_val & 0x7FFFFFFF).item()
         
         return (hash_val,)
     

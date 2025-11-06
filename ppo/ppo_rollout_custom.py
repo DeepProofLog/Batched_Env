@@ -46,7 +46,7 @@ class CustomRolloutCollector:
     
     @torch.no_grad()
     def _select_action(self, obs_td: TensorDict) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Select action using the actor policy.
+        """Select action using the policy (actor).
         
         Args:
             obs_td: TensorDict with observation data
@@ -69,6 +69,13 @@ class CustomRolloutCollector:
         if action_mask is None:
             raise ValueError("Missing action_mask in observation")
         
+        if self.debug:
+            print(f"\n[DEBUG _select_action]")
+            print(f"  action_mask shape: {action_mask.shape}")
+            print(f"  action_mask:\n{action_mask}")
+            valid_counts = action_mask.sum(dim=1)
+            print(f"  valid_counts: {valid_counts.tolist()}")
+        
         # Mask invalid actions
         mask = action_mask.clone().to(logits.device).bool()
         if mask.dim() == 1 and logits.dim() == 2:
@@ -80,6 +87,22 @@ class CustomRolloutCollector:
         dist = torch.distributions.Categorical(logits=masked_logits)
         action = dist.sample()
         log_prob = dist.log_prob(action)
+        
+        if self.debug:
+            print(f"  sampled actions: {action.tolist()}")
+        
+        # Verify actions are valid (safety check)
+        if self.debug:
+            valid_counts = mask.sum(dim=1)
+            invalid_mask = action >= valid_counts
+            if invalid_mask.any():
+                print(f"\n[ERROR] Invalid action selected DURING action selection!")
+                for i in range(len(action)):
+                    if invalid_mask[i]:
+                        print(f"  Env {i}: action={action[i].item()}, valid_range=0-{valid_counts[i].item()-1}")
+                        print(f"    action_mask: {mask[i].tolist()}")
+                        print(f"    masked_logits: {masked_logits[i].tolist()}")
+                raise ValueError(f"Invalid actions selected after masking: {action[invalid_mask].tolist()}")
         
         return action, log_prob
     
@@ -172,8 +195,12 @@ class CustomRolloutCollector:
                         episode_infos.append(info)
             
             # Update observation for next step
-            # Use next_obs_td which already has the proper observation for next iteration
-            obs_td = next_obs_td
+            # Extract only observation keys from next_obs_td (it may have action/value data too)
+            obs_td = TensorDict({
+                "sub_index": next_obs_td["sub_index"],
+                "derived_sub_indices": next_obs_td["derived_sub_indices"],
+                "action_mask": next_obs_td["action_mask"],
+            }, batch_size=[self.n_envs])
             
             if rollout_callback is not None:
                 rollout_callback(step)

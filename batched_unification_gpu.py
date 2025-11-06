@@ -13,7 +13,6 @@ import torch
 from typing import List, Tuple, Set
 from gpu_optimizations import gpu_parallel_hash, gpu_batch_unique
 
-
 def deduplicate_states_gpu(
     states: List[torch.Tensor],
     var_threshold: int,
@@ -81,6 +80,249 @@ def deduplicate_states_gpu(
     return unique_list
 
 
+
+
+def _unify_with_rules_batched(
+    queries: torch.Tensor,
+    remaining_goals: torch.Tensor,
+    remaining_counts: torch.Tensor,
+    rules: torch.Tensor,
+    rule_lengths: torch.Tensor,
+    index_manager,
+    pred_idx: int
+) -> List[List[torch.Tensor]]:
+    """
+    Batched rule unification for multiple queries with the same predicate.
+    
+    Args:
+        queries: [N, arity+1] batch of queries with same predicate
+        remaining_goals: [N, max_remaining, arity+1] remaining goals for each query
+        remaining_counts: [N] number of remaining goals for each query
+        rules: [num_rules, max_rule_atoms, arity+1] all rules
+        rule_lengths: [num_rules] atoms per rule
+        index_manager: IndexManager instance
+        pred_idx: predicate index being processed
+        
+    Returns:
+        List of length N, each element is List[Tensor] of derived states from rules
+    """
+    device = queries.device
+    pad = index_manager.padding_idx
+    num_queries = queries.shape[0]
+    
+    # Get relevant rules for this predicate
+    relevant_rule_indices = index_manager.rule_index.get(pred_idx, [])
+    if not relevant_rule_indices:
+        return [[] for _ in range(num_queries)]
+    
+    num_rules = len(relevant_rule_indices)
+    rule_heads = rules[relevant_rule_indices, 0, :]  # [num_rules, arity+1]
+    
+    # Expand queries to match all rules: [N * num_rules, arity+1]
+    queries_expanded = queries.unsqueeze(1).expand(-1, num_rules, -1).reshape(-1, queries.shape[1])
+    
+    # Expand rule heads to match all queries: [N * num_rules, arity+1]
+    rule_heads_expanded = rule_heads.unsqueeze(0).expand(num_queries, -1, -1).reshape(-1, rule_heads.shape[1])
+    
+    # Batch unify all query-rule pairs
+    mask, subs = _unify_one_to_one_optimized(queries_expanded, rule_heads_expanded, index_manager)
+    
+    # Reshape mask to [N, num_rules]
+    mask = mask.reshape(num_queries, num_rules)
+    subs = subs.reshape(num_queries, num_rules, subs.shape[1], subs.shape[2])
+    
+    # OPTIMIZED: Batch convert rule lengths to CPU once
+    rule_lengths_cpu = rule_lengths[relevant_rule_indices].cpu().numpy()
+    
+    # Process results for each query
+    results = []
+    for q_idx in range(num_queries):
+        query_results = []
+        
+        # Get successful rule matches for this query
+        success_mask = mask[q_idx]
+        if not success_mask.any():
+            results.append(query_results)
+            continue
+        
+        success_indices = success_mask.nonzero(as_tuple=True)[0]
+        
+        # OPTIMIZED: Convert to CPU once for loop
+        success_indices_cpu = success_indices.cpu().numpy()
+        
+        for rule_idx_local in success_indices_cpu:
+            rule_idx_global = relevant_rule_indices[int(rule_idx_local)]
+            
+            # Get rule body - use pre-converted lengths
+            rule_len = int(rule_lengths_cpu[rule_idx_local])
+            body = rules[rule_idx_global, 1:rule_len]  # [body_len, arity+1]
+            
+            # Apply substitutions to body
+            current_subs = subs[q_idx, rule_idx_local]
+            instantiated_body = apply_substitutions_simple(body, current_subs, index_manager)
+            
+            # Add remaining goals if any
+            if remaining_counts[q_idx] > 0:
+                remaining = remaining_goals[q_idx, :remaining_counts[q_idx]]
+                instantiated_remaining = apply_substitutions_simple(remaining, current_subs, index_manager)
+                next_state = torch.cat([instantiated_body, instantiated_remaining], dim=0)
+            else:
+                next_state = instantiated_body
+            
+            query_results.append(next_state)
+        
+        results.append(query_results)
+    
+    return results
+
+
+def _unify_with_facts_batched(
+    queries: torch.Tensor,
+    remaining_goals: torch.Tensor,
+    remaining_counts: torch.Tensor,
+    index_manager,
+    pred_idx: int,
+    excluded_queries: torch.Tensor = None,
+    labels: torch.Tensor = None
+) -> List[List[torch.Tensor]]:
+    """
+    VECTORIZED fact unification for multiple queries with the same predicate.
+    
+    For positive queries (label=1), excludes the original query from facts to prevent
+    trivial self-unification.
+    
+    Args:
+        queries: [N, arity+1] batch of queries with same predicate
+        remaining_goals: [N, max_remaining, arity+1] remaining goals for each query
+        remaining_counts: [N] number of remaining goals for each query
+        index_manager: IndexManager instance
+        pred_idx: predicate index being processed
+        excluded_queries: [N, arity+1] queries to exclude from facts (for label=1)
+        labels: [N] labels (1=positive, 0=negative)
+        
+    Returns:
+        List of length N, each element is List[Tensor] of derived states from facts
+    """
+    device = queries.device
+    pad = index_manager.padding_idx
+    num_queries = queries.shape[0]
+    
+    # OPTIMIZED: Batch the .item() calls by converting query args to CPU once
+    q_args_cpu = queries[:, 1:].cpu().numpy()  # [N, arity]
+    
+    # VECTORIZED: Lookup all candidates at once
+    # Collect all candidate facts for all queries
+    all_candidates = []
+    query_to_candidate_ranges = []  # (start_idx, end_idx) for each query
+    
+    start_idx = 0
+    for q_idx in range(num_queries):
+        # Use numpy array instead of .item() calls
+        q_args = q_args_cpu[q_idx]
+        
+        # Construct lookup key - now using numpy ints directly
+        constant_args_with_pos = []
+        for arg_pos in range(index_manager.max_arity):
+            arg_val = int(q_args[arg_pos])
+            if not (index_manager.constant_no < arg_val <= index_manager.runtime_var_end_index) and arg_val != pad:
+                constant_args_with_pos.append((arg_pos, arg_val))
+        
+        lookup_key = (pred_idx,) + tuple(constant_args_with_pos)
+        
+        # Lookup candidates
+        candidate_indices = index_manager.fact_index.get(lookup_key)
+        
+        if candidate_indices is not None and candidate_indices.numel() > 0:
+            relevant_facts = index_manager.facts_tensor[candidate_indices]
+            
+            # EXCLUDE the original query for positive labels (label=1)
+            if excluded_queries is not None and labels is not None:
+                if labels[q_idx].item() == 1:
+                    # Exclude facts that match the original excluded query
+                    excluded_query = excluded_queries[q_idx]
+                    # Check which facts match the excluded query
+                    match_mask = (relevant_facts == excluded_query.unsqueeze(0)).all(dim=1)
+                    # Keep only non-matching facts
+                    if match_mask.any():
+                        relevant_facts = relevant_facts[~match_mask]
+            
+            # Only add if we still have candidates after exclusion
+            if relevant_facts.shape[0] > 0:
+                all_candidates.append(relevant_facts)
+                end_idx = start_idx + relevant_facts.shape[0]
+                query_to_candidate_ranges.append((start_idx, end_idx))
+                start_idx = end_idx
+            else:
+                query_to_candidate_ranges.append((start_idx, start_idx))  # Empty range
+        else:
+            query_to_candidate_ranges.append((start_idx, start_idx))  # Empty range
+    
+    # If no candidates found for any query, return empty results
+    if len(all_candidates) == 0:
+        return [[] for _ in range(num_queries)]
+    
+    # VECTORIZED: Stack all candidates and all queries
+    all_candidates_tensor = torch.cat(all_candidates, dim=0)  # [total_candidates, arity+1]
+    
+    # Create expanded queries to match candidates
+    expanded_queries = []
+    for q_idx, (start, end) in enumerate(query_to_candidate_ranges):
+        num_candidates = end - start
+        if num_candidates > 0:
+            expanded_queries.append(queries[q_idx:q_idx+1].expand(num_candidates, -1))
+    
+    if len(expanded_queries) == 0:
+        return [[] for _ in range(num_queries)]
+    
+    expanded_queries_tensor = torch.cat(expanded_queries, dim=0)  # [total_candidates, arity+1]
+    
+    # VECTORIZED: Unify all at once
+    mask, subs = _unify_one_to_one_optimized(
+        expanded_queries_tensor,
+        all_candidates_tensor,
+        index_manager
+    )
+    
+    # VECTORIZED: Process results for each query
+    results = []
+    for q_idx, (start, end) in enumerate(query_to_candidate_ranges):
+        num_candidates = end - start
+        
+        if num_candidates == 0:
+            results.append([])
+            continue
+        
+        # Get results for this query
+        query_mask = mask[start:end]
+        query_subs = subs[start:end]
+        
+        success_indices = query_mask.nonzero(as_tuple=True)[0]
+        if success_indices.numel() == 0:
+            results.append([])
+            continue
+        
+        # If no remaining goals, return true
+        if remaining_counts[q_idx] == 0:
+            results.append([index_manager.true_tensor])
+            continue
+        
+        # Apply substitutions to remaining goals
+        succ_subs = query_subs[success_indices]
+        remaining = remaining_goals[q_idx:q_idx+1, :remaining_counts[q_idx]]  # [1, rem_count, arity+1]
+        
+        # Expand remaining goals for all successful unifications
+        num_succ = succ_subs.shape[0]
+        expanded_goals = remaining.expand(num_succ, -1, -1).clone()  # [num_succ, rem_count, arity+1]
+        
+        # Apply substitutions in batch
+        instantiated_goals_batch = apply_substitutions_batched(expanded_goals, succ_subs, index_manager)
+        
+        # Convert to list of tensors
+        query_results = list(torch.unbind(instantiated_goals_batch, dim=0))
+        results.append(query_results)
+    
+    return results
+
 def get_next_unification(
     current_states: torch.Tensor,
     facts_tensor: torch.Tensor,
@@ -88,6 +330,8 @@ def get_next_unification(
     rule_lengths: torch.Tensor,
     index_manager,
     next_var_indices: torch.Tensor,
+    excluded_queries: torch.Tensor = None,
+    labels: torch.Tensor = None,
     verbose: int = 0
 ) -> Tuple[List[List[torch.Tensor]], torch.Tensor]:
     """
@@ -103,6 +347,11 @@ def get_next_unification(
         facts_tensor: [num_facts, arity+1] facts
         rules: [num_rules, max_rule_atoms, arity+1] rules
         rule_lengths: [num_rules] number of atoms per rule
+        index_manager: IndexManager instance
+        next_var_indices: [B] next variable index for each query
+        excluded_queries: [B, arity+1] queries to exclude from facts (for label=1 queries)
+        labels: [B] labels (1=positive, 0=negative)
+        verbose: verbosity level
         index_manager: IndexManager instance
         next_var_indices: [B] next variable index for each query
         verbose: verbosity level
@@ -191,9 +440,6 @@ def get_next_unification(
         pred_remaining = active_remaining[pred_query_indices]
         pred_remaining_counts = active_remaining_counts[pred_query_indices]
         
-        # Import unification functions from CPU (they work on GPU tensors too)
-        from batched_unification_cpu import _unify_with_rules_batched, _unify_with_facts_batched
-        
         # Ensure all tensors are on GPU
         pred_queries = pred_queries.to(device)
         pred_remaining = pred_remaining.to(device)
@@ -204,9 +450,18 @@ def get_next_unification(
             rules, rule_lengths, index_manager, pred_idx_int
         )
         
+        # Get excluded queries for this predicate group (if any)
+        pred_excluded_queries = None
+        pred_labels = None
+        if excluded_queries is not None and labels is not None:
+            pred_excluded_queries = excluded_queries[original_batch_indices].to(device)
+            pred_labels = labels[original_batch_indices].to(device)
+        
         fact_results = _unify_with_facts_batched(
             pred_queries, pred_remaining, pred_remaining_counts,
-            index_manager, pred_idx_int
+            index_manager, pred_idx_int,
+            excluded_queries=pred_excluded_queries,
+            labels=pred_labels
         )
         
         # Process results WITHOUT canonicalization

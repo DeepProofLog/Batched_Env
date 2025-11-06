@@ -568,56 +568,49 @@ class IndexManager():
         The index is a dictionary where keys are composite tuples representing every
         possible query pattern and values are tensors of the fact IDs that match that pattern.
         
+        OPTIMIZED VERSION: Uses vectorized operations and minimizes GPU-CPU transfers.
+        Index tensors are kept on CPU since they're only used for indexing/lookup operations.
+        The actual facts_tensor stays on GPU for computation.
+        
         Args:
             facts_tensor: Tensor of facts to index
-            cache_dir: Optional directory to cache the index. If provided and cache exists, loads from cache.
+            cache_dir: Optional directory to cache the index (disabled for now due to performance issues)
         """
-        import hashlib
-        import pickle
-        import os
-        
         self.facts_tensor = facts_tensor.to(self.device)
         
-        # Try to load from cache if cache_dir is provided
-        cache_file = None
-        if cache_dir is not None:
-            os.makedirs(cache_dir, exist_ok=True)
-            # Create a hash of the facts tensor to ensure cache validity
-            facts_hash = hashlib.md5(facts_tensor.cpu().numpy().tobytes()).hexdigest()
-            cache_file = os.path.join(cache_dir, f"facts_index_{facts_hash}.pkl")
-            
-            if os.path.exists(cache_file):
-                try:
-                    with open(cache_file, 'rb') as f:
-                        cached_data = pickle.load(f)
-                    # Move tensors to the correct device
-                    self.fact_index = {
-                        key: val.to(self.device) for key, val in cached_data['fact_index'].items()
-                    }
-                    self.sorted_facts_tensor = cached_data['sorted_facts_tensor'].to(self.device)
-                    self.predicate_range_map = cached_data['predicate_range_map'].to(self.device)
-                    return
-                except Exception as e:
-                    print(f"Warning: Failed to load cache from {cache_file}: {e}")
-                    print("Rebuilding index...")
-        
-        # Build the index if not loaded from cache
+        # Build the index - caching disabled for performance
         self.fact_index: Dict[Tuple, torch.Tensor] = {}
         
         # Build predicate range map for fallback
         self._build_predicate_range_map()
 
-        # Build the Composite Key Index
+        # Build the Composite Key Index using optimized operations
         temp_index: Dict[Tuple, List[int]] = {}
 
-        for fact_id, fact in enumerate(self.facts_tensor):
-            predicate_idx = fact[0].item()
+        # Extract all data at once to minimize GPU-CPU transfers
+        # Work with CPU tensors for index building
+        if self.facts_tensor.is_cuda:
+            facts_cpu = self.facts_tensor.cpu()
+        else:
+            facts_cpu = self.facts_tensor
+        
+        # Convert to numpy for fast iteration
+        facts_np = facts_cpu.numpy()
+        
+        # Vectorized check for variables and padding
+        is_var_mask = (facts_np > self.constant_no) & (facts_np <= self.runtime_var_end_index)
+        is_padding_mask = (facts_np == self.padding_idx)
+        
+        # Process all facts
+        for fact_id in range(len(facts_np)):
+            fact = facts_np[fact_id]
+            predicate_idx = int(fact[0])
             
-            # Find all constant arguments in the current fact
+            # Find all constant arguments in the current fact using masks
             constant_args_with_pos = []
             for arg_pos in range(self.max_arity):
-                arg_val = fact[arg_pos + 1].item()
-                if not self.is_var_idx(arg_val) and arg_val != self.padding_idx:
+                arg_val = int(fact[arg_pos + 1])
+                if not is_var_mask[fact_id, arg_pos + 1] and not is_padding_mask[fact_id, arg_pos + 1]:
                     constant_args_with_pos.append((arg_pos, arg_val))
 
             # Generate a key for every combination of constants (including zero constants)
@@ -629,25 +622,13 @@ class IndexManager():
                         temp_index[key] = []
                     temp_index[key].append(fact_id)
 
-        # Convert all lists to tensors for the final, read-only index
-        self.fact_index = {
-            key: torch.tensor(val, dtype=torch.long, device=self.device)
-            for key, val in temp_index.items()
-        }
-        
-        # Save to cache if cache_dir is provided
-        if cache_file is not None:
-            try:
-                # Move tensors to CPU for pickling
-                cache_data = {
-                    'fact_index': {k: v.cpu() for k, v in self.fact_index.items()},
-                    'sorted_facts_tensor': self.sorted_facts_tensor.cpu(),
-                    'predicate_range_map': self.predicate_range_map.cpu()
-                }
-                with open(cache_file, 'wb') as f:
-                    pickle.dump(cache_data, f)
-            except Exception as e:
-                print(f"Warning: Failed to save cache to {cache_file}: {e}")
+        # Convert all lists to tensors on CPU (they're only used for indexing)
+        # This avoids 190k GPU transfers and is much faster
+        import numpy as np
+        for key, val_list in temp_index.items():
+            val_array = np.array(val_list, dtype=np.int64)
+            # Keep index on CPU - it's only used for lookups, not computation
+            self.fact_index[key] = torch.from_numpy(val_array)
 
     def _build_predicate_range_map(self):
         """Helper to build the sorted tensor and range map for rule unification fallback."""
