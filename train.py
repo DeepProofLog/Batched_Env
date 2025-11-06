@@ -21,7 +21,7 @@ from utils import (
     _freeze_dropout_layernorm,
     _warn_non_reproducible,
 )
-from env_factory import create_environments
+from batched_env import BatchedVecEnv
 from dataset import DataHandler
 from ppo.ppo_model import create_torchrl_modules
 from ppo.ppo_agent import PPOAgent
@@ -574,15 +574,114 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     kge_engine = None  # No KGE in this version
     dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
     
-    # Create environments
-    env, eval_env, callback_env = create_environments(
-        args,
-        dh,
-        index_manager,
-        kge_engine=kge_engine,
-        detailed_eval_env=args.extended_eval_info,
-        device='cpu',
+    # Create vectorized batched environments
+    print("\nCreating vectorized batched environments...")
+    
+    # Use n_envs as batch_size for training environment
+    batch_size_train = getattr(args, 'n_envs', 2)
+    batch_size_eval = getattr(args, 'n_eval_envs', 2)
+    
+    facts_set = getattr(dh, "facts_set", None)
+    if facts_set is None:
+        facts_set = frozenset(dh.facts)
+    
+    env = BatchedVecEnv(
+        index_manager=index_manager,
+        data_handler=dh,
+        queries=dh.train_queries,
+        labels=[1] * len(dh.train_queries),
+        query_depths=dh.train_queries_depths,
+        facts=facts_set,
+        mode='train',
+        batch_size=batch_size_train,
+        corruption_mode=args.corruption_mode,
+        corruption_scheme=args.corruption_scheme,
+        train_neg_ratio=args.train_neg_ratio,
+        seed=args.seed_run_i,
+        max_depth=args.max_depth,
+        memory_pruning=args.memory_pruning,
+        endt_action=args.endt_action,
+        endf_action=args.endf_action,
+        skip_unary_actions=args.skip_unary_actions,
+        padding_atoms=args.padding_atoms,
+        padding_states=args.padding_states,
+        device=torch.device('cpu'),
+        engine=args.engine,
+        kge_action=args.kge_action,
+        reward_type=args.reward_type,
+        shaping_beta=getattr(args, 'pbrs_beta', 0.0),
+        shaping_gamma=getattr(args, 'pbrs_gamma', args.gamma),
+        kge_inference_engine=kge_engine,
+        verbose=getattr(args, 'verbose_env', 0),
+        prover_verbose=getattr(args, 'verbose_prover', 0),
     )
+    
+    eval_env = BatchedVecEnv(
+        index_manager=index_manager,
+        data_handler=dh,
+        queries=dh.valid_queries,
+        labels=[1] * len(dh.valid_queries),
+        query_depths=dh.valid_queries_depths,
+        facts=facts_set,
+        mode='eval',
+        batch_size=batch_size_eval,
+        corruption_mode=args.corruption_mode,
+        corruption_scheme=args.corruption_scheme,
+        train_neg_ratio=args.train_neg_ratio,
+        seed=args.seed_run_i + 10_000,
+        max_depth=args.max_depth,
+        memory_pruning=args.memory_pruning,
+        endt_action=args.endt_action,
+        endf_action=args.endf_action,
+        skip_unary_actions=args.skip_unary_actions,
+        padding_atoms=args.padding_atoms,
+        padding_states=args.padding_states,
+        device=torch.device('cpu'),
+        engine=args.engine,
+        kge_action=args.kge_action,
+        reward_type=args.reward_type,
+        shaping_beta=getattr(args, 'pbrs_beta', 0.0),
+        shaping_gamma=getattr(args, 'pbrs_gamma', args.gamma),
+        kge_inference_engine=kge_engine,
+        verbose=getattr(args, 'verbose_env', 0),
+        prover_verbose=getattr(args, 'verbose_prover', 0),
+    )
+    
+    # Callback env for detailed metrics (batch_size=1 for compatibility)
+    callback_env = BatchedVecEnv(
+        index_manager=index_manager,
+        data_handler=dh,
+        queries=dh.valid_queries,
+        labels=[1] * len(dh.valid_queries),
+        query_depths=dh.valid_queries_depths,
+        facts=facts_set,
+        mode='eval_with_restart',
+        batch_size=1,
+        corruption_mode=args.corruption_mode,
+        corruption_scheme=args.corruption_scheme,
+        train_neg_ratio=args.train_neg_ratio,
+        seed=args.seed_run_i + 20_000,
+        max_depth=args.max_depth,
+        memory_pruning=args.memory_pruning,
+        endt_action=args.endt_action,
+        endf_action=args.endf_action,
+        skip_unary_actions=args.skip_unary_actions,
+        padding_atoms=args.padding_atoms,
+        padding_states=args.padding_states,
+        device=torch.device('cpu'),
+        engine=args.engine,
+        kge_action=args.kge_action,
+        reward_type=args.reward_type,
+        shaping_beta=getattr(args, 'pbrs_beta', 0.0),
+        shaping_gamma=getattr(args, 'pbrs_gamma', args.gamma),
+        kge_inference_engine=kge_engine,
+        verbose=getattr(args, 'verbose_env', 0),
+        prover_verbose=getattr(args, 'verbose_prover', 0),
+    )
+    
+    print(f"Train env: batch_size={batch_size_train}")
+    print(f"Eval env: batch_size={batch_size_eval}")
+    print(f"Callback env: batch_size=1")
     
     # --- CREATE MODEL ---
     print("\nCreating TorchRL actor-critic model...")

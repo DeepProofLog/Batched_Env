@@ -1088,6 +1088,8 @@ class ConstantEmbeddings(nn.Module):
     """Module to handle constant embeddings per domain."""
     def __init__(self, num_constants: int, embedding_dim: int, regularization=0.0, device="cpu"): 
         super(ConstantEmbeddings, self).__init__()
+        # num_constants is the count, but indices go from 0 to num_constants
+        # so we need num_constants+1 entries
         self.embedder = nn.Embedding(num_constants+1, embedding_dim, padding_idx=0)
         self.regularization = regularization
         self.device = device
@@ -1106,6 +1108,8 @@ class PredicateEmbeddings(nn.Module):
     """Module to handle predicate embeddings."""
     def __init__(self, num_predicates: int, embedding_dim: int, regularization=0.0, device="cpu"):
         super(PredicateEmbeddings, self).__init__()
+        # num_predicates is the count, but indices go from 0 to num_predicates
+        # so we need num_predicates+1 entries
         self.embedder = nn.Embedding(num_predicates+1, embedding_dim, padding_idx=0)
         self.regularization = regularization
         self.device = device
@@ -1212,6 +1216,13 @@ class EmbedderLearnable(nn.Module):
         self.n_image_constants = n_image_constants
         num_regular_constants = n_constants + n_vars - n_image_constants
         
+        # Calculate total vocabulary size for embedding table
+        # Need to accommodate: padding (0), constants (1..n_constants), 
+        # template vars (n_constants+1..n_constants+template_var_no),
+        # runtime vars (runtime_var_start..runtime_var_end)
+        # The embedding table should be sized to the max index + 1
+        total_constant_vocab = n_constants + n_vars + 1  # +1 for padding at index 0
+        
         # Initialize embedder
         self.constant_embedder = HybridConstantEmbedder(
             num_regular_constants=num_regular_constants,
@@ -1220,7 +1231,7 @@ class EmbedderLearnable(nn.Module):
             embedding_dim=constant_embedding_size,
             device=device
         ) if n_image_constants > 0 else ConstantEmbeddings(
-            num_constants=n_constants + n_vars,
+            num_constants=total_constant_vocab,
             embedding_dim=constant_embedding_size,
             regularization=kge_regularization,
             device=device
@@ -1294,10 +1305,20 @@ class get_embedder():
     def _create_embedder(self, args, data_handler, index_manager, device):
 
         if args.learn_embeddings:
+            # Calculate the actual maximum indices to size embedding tables correctly
+            # The index_manager may have higher indices than the _no fields due to special predicates
+            max_constant_idx = max(index_manager.constant_idx2str.keys()) if index_manager.constant_idx2str else index_manager.constant_no
+            max_predicate_idx = max(index_manager.predicate_idx2str.keys()) if index_manager.predicate_idx2str else index_manager.predicate_no
+            max_var_idx = index_manager.runtime_var_end_index
+            
+            # Total constant vocabulary includes constants + all variables
+            total_constant_vocab = max(max_constant_idx, max_var_idx) + 1
+            total_predicate_vocab = max_predicate_idx + 1
+            
             return EmbedderLearnable(
-                n_constants=index_manager.constant_no,
-                n_predicates=index_manager.predicate_no,
-                n_vars=index_manager.variable_no,
+                n_constants=total_constant_vocab - 1,  # -1 because ConstantEmbeddings adds +1
+                n_predicates=total_predicate_vocab - 1,  # -1 because PredicateEmbeddings adds +1
+                n_vars=0,  # Already included in total_constant_vocab
                 max_arity=data_handler.max_arity,
                 padding_atoms = args.padding_atoms,
                 atom_embedder=args.atom_embedder,

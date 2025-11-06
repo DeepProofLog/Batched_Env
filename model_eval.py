@@ -109,11 +109,21 @@ def evaluate_policy_torchrl(
         print(f"\nEvaluating {total} episodes on {n_envs} envs (avg target: {targets.mean():.2f})")
 
     # Set episode targets in environment if supported
-    # ParallelEnv doesn't support direct attribute assignment, so skip for parallel envs
+    # ParallelEnv and BatchedVecEnv support direct attribute assignment
     from torchrl.envs import ParallelEnv
-    if not isinstance(env, ParallelEnv):
+    from batched_env import BatchedVecEnv
+    
+    # Both ParallelEnv and BatchedVecEnv can have these attributes set directly
+    if isinstance(env, (ParallelEnv, BatchedVecEnv)):
         if hasattr(env, '_episode_target'):
             env._episode_target[:] = padded_targets
+        if hasattr(env, '_episode_count'):
+            env._episode_count[:] = 0
+        if hasattr(env, 'active_envs'):
+            env.active_envs[:] = True
+    elif hasattr(env, '_episode_target'):
+        # Single env case
+        env._episode_target[:] = padded_targets
         if hasattr(env, '_episode_count'):
             env._episode_count[:] = 0
         if hasattr(env, 'active_envs'):
@@ -450,6 +460,7 @@ def _configure_env_batch(
 ) -> None:
     """Configure environment batch for evaluation with queries and corruptions."""
     from torchrl.envs import ParallelEnv
+    from batched_env import BatchedVecEnv
     
     for i, (query, negatives) in enumerate(zip(batch, corrs)):
         sequence = [query] + negatives
@@ -466,8 +477,14 @@ def _configure_env_batch(
             'eval_idx': 0,
         }
         
-        # Handle ParallelEnv differently from direct env access
-        if isinstance(env, ParallelEnv):
+        # Handle different environment types
+        if isinstance(env, BatchedVecEnv):
+            # BatchedVecEnv: configure directly on the batched environment
+            if hasattr(env, 'configure_batch_slot'):
+                env.configure_batch_slot(i, **config_kwargs)
+            elif hasattr(env, 'configure'):
+                env.configure(**config_kwargs)
+        elif isinstance(env, ParallelEnv):
             # For ParallelEnv, we need to send configuration to worker processes
             # This is done through the worker's configure method
             try:
@@ -681,7 +698,23 @@ def _extract_and_accumulate_metrics(
         h1 = (ranks == 1).astype(float)
         h3 = (ranks <= 3).astype(float)
         h10 = (ranks <= 10).astype(float)
-        ap = average_precision_score(y_true_part, y_score_part)
+        
+        # Compute average precision with error handling
+        try:
+            # Check for inf/nan in y_score_part before calling AP
+            if np.any(np.isinf(y_score_part)) or np.any(np.isnan(y_score_part)):
+                print(f"Warning: Found inf/nan in y_score_part after clipping. "
+                      f"inf count: {np.isinf(y_score_part).sum()}, "
+                      f"nan count: {np.isnan(y_score_part).sum()}")
+                # Replace any remaining inf/nan
+                y_score_part = np.nan_to_num(y_score_part, nan=0.0, posinf=1e10, neginf=-1e10)
+            
+            ap = average_precision_score(y_true_part, y_score_part)
+        except ValueError as e:
+            print(f"Warning: average_precision_score failed: {e}")
+            print(f"  y_true_part shape: {y_true_part.shape}, unique values: {np.unique(y_true_part)}")
+            print(f"  y_score_part shape: {y_score_part.shape}, min: {y_score_part.min()}, max: {y_score_part.max()}")
+            ap = 0.0  # Default value on error
         
         batch_metrics['mrr'].extend(mrr.tolist())
         batch_metrics['h1'].extend(h1.tolist())

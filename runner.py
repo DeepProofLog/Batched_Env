@@ -73,12 +73,10 @@ if __name__ == "__main__":
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 2,
-        'n_steps': 8192, #8192, 16384
-        'n_eval_envs': 2,
+        'n_envs': 256,  # Now used as batch_size for BatchedVecEnv
+        'n_steps': 1024, #8192, 16384
+        'n_eval_envs': 256,  # Now used as batch_size for eval BatchedVecEnv
         'batch_size': 128,
-        'use_parallel_envs': True,
-        'parallel_env_start_method': 'spawn',  # Use spawn to avoid CUDA fork issues
 
         # Env params
         'reward_type': 4,

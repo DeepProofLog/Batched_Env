@@ -150,16 +150,27 @@ class PPOAgent:
             if "state_value" not in nxt.keys():
                 self.critic(nxt)
             
-            # Ensure all tensors have consistent shapes (squeeze extra dimensions from reward/done)
-            # GAE expects reward and done to have the same shape as state_value
+            # Ensure all tensors have consistent shapes (squeeze extra dimensions from reward/done/value)
+            # GAE expects all tensors to have the same shape [T, B]
+            if "state_value" in nxt.keys():
+                value = nxt["state_value"]
+                if value.ndim > 2:  # Should be [T, B] but might be [T, B, 1]
+                    nxt.set("state_value", value.squeeze(-1))
+                elif value.ndim == 2 and value.shape[-1] == 1:  # [T*B, 1]
+                    nxt.set("state_value", value.squeeze(-1))
+            
             if "reward" in nxt.keys():
                 reward = nxt["reward"]
                 if reward.ndim > 2:  # Should be [T, B] but might be [T, B, 1]
+                    nxt.set("reward", reward.squeeze(-1))
+                elif reward.ndim == 2 and reward.shape[-1] == 1:  # [T*B, 1]
                     nxt.set("reward", reward.squeeze(-1))
             
             if "done" in nxt.keys():
                 done = nxt["done"]
                 if done.ndim > 2:  # Should be [T, B] but might be [T, B, 1]
+                    nxt.set("done", done.squeeze(-1))
+                elif done.ndim == 2 and done.shape[-1] == 1:  # [T*B, 1]
                     nxt.set("done", done.squeeze(-1))
             
             # Also ensure state_value has the right shape
@@ -172,6 +183,15 @@ class PPOAgent:
                 next_value = nxt["state_value"]
                 if next_value.ndim > 2:
                     nxt.set("state_value", next_value.squeeze(-1))
+            
+            # Also squeeze terminated if it exists
+            if "terminated" in nxt.keys():
+                terminated = nxt["terminated"]
+                if terminated.ndim > 2:
+                    nxt.set("terminated", terminated.squeeze(-1))
+
+            # Permute tensordict from [T, B] to [B, T] for GAE (GAE expects batch first)
+            batch_td_time = batch_td_time.permute(1, 0)
 
             # TorchRL's GAE writes 'advantage' and 'value_target' in-place
             try:
@@ -182,12 +202,16 @@ class PPOAgent:
 
             # Initialize GAE - value_network=None means we already computed values
             # Uses default keys: "state_value", "advantage", "value_target"
+            # Default time_dim=-2 works for [B, T] layout
             gae = GAE(
                 gamma=self.gamma,
                 lmbda=self.gae_lambda,
                 value_network=None,
             )
             batch_td_time = gae(batch_td_time)
+            
+            # Permute back to [T, B]
+            batch_td_time = batch_td_time.permute(1, 0)
 
         advantages = batch_td_time.get("advantage")
         value_targets = batch_td_time.get("value_target")
