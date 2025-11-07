@@ -180,7 +180,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         padding_atoms=args.padding_atoms,
         padding_states=args.padding_states,
         verbose=0,
-        prover_verbose=0,
+        prover_verbose=2,
         device=device,
         engine=args.engine,
     )

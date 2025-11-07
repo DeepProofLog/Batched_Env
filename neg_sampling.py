@@ -16,6 +16,34 @@ Target = Literal["head", "relation", "tail"]
 COLUMN_HEAD, COLUMN_RELATION, COLUMN_TAIL = 0, 1, 2
 LABEL_HEAD, LABEL_RELATION, LABEL_TAIL = "head", "relation", "tail"
 TARGET_TO_INDEX = {LABEL_HEAD: COLUMN_HEAD, LABEL_RELATION: COLUMN_RELATION, LABEL_TAIL: COLUMN_TAIL}
+
+
+def _random_replacement_(
+    batch: torch.Tensor, index: int, selection: slice, size: int, max_index: int, pad_idx: int = 0
+) -> None:
+    """
+    Replace a column of a batch of indices by random indices, excluding
+    the original value and the padding index.
+    """
+    if max_index <= 1:
+        return
+
+    orig = batch[selection, index].to(torch.int64)
+    if pad_idx == 0:
+        # sample from [1, max_index-1], then shift past 'orig' where needed
+        rng = torch.randint(1, max_index, (size,), device=batch.device, dtype=torch.int64)
+        shift = (rng >= orig) & (orig > 0)
+        replacement = (rng + shift.to(rng.dtype)).to(batch.dtype)
+        batch[selection, index] = replacement
+    else:
+        cand = torch.randint(0, max_index, (size,), device=batch.device, dtype=torch.int64)
+        bad  = (cand == orig) | (cand == pad_idx)
+        while bad.any():
+            cand[bad] = torch.randint(0, max_index, (int(bad.sum().item()),), device=batch.device, dtype=torch.int64)
+            bad = (cand == orig) | (cand == pad_idx)
+        batch[selection, index] = cand.to(batch.dtype)
+
+
 # ------------------------------------------------------------------- #
 # 1.  GPU filter with O(log N) search instead of torch.isin           #
 # ------------------------------------------------------------------- #
@@ -91,35 +119,6 @@ class _BaseSampler(torch.nn.Module):
         self.filterer: Optional[SortedHashTripleFilter] = (
             SortedHashTripleFilter(mapped_triples) if filtered else None
         )
-
-
-# ------------------------------------------------------------------- #
-# 3.  Simple "random replacement" helper                               #
-# ------------------------------------------------------------------- #
-def _random_replacement_(
-    batch: torch.Tensor, index: int, selection: slice, size: int, max_index: int, pad_idx: int = 0
-) -> None:
-    """
-    Replace a column of a batch of indices by random indices, excluding
-    the original value and the padding index.
-    """
-    if max_index <= 1:
-        return
-
-    orig = batch[selection, index].to(torch.int64)
-    if pad_idx == 0:
-        # sample from [1, max_index-1], then shift past 'orig' where needed
-        rng = torch.randint(1, max_index, (size,), device=batch.device, dtype=torch.int64)
-        shift = (rng >= orig) & (orig > 0)
-        replacement = (rng + shift.to(rng.dtype)).to(batch.dtype)
-        batch[selection, index] = replacement
-    else:
-        cand = torch.randint(0, max_index, (size,), device=batch.device, dtype=torch.int64)
-        bad  = (cand == orig) | (cand == pad_idx)
-        while bad.any():
-            cand[bad] = torch.randint(0, max_index, (int(bad.sum().item()),), device=batch.device, dtype=torch.int64)
-            bad = (cand == orig) | (cand == pad_idx)
-        batch[selection, index] = cand.to(batch.dtype)
 
 
 # ------------------------------------------------------------------- #

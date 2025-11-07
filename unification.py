@@ -10,9 +10,110 @@ Key Features:
 """
 
 import torch
-from typing import List, Tuple, Set
-from gpu_optimizations import gpu_parallel_hash, gpu_batch_unique
+from typing import List, Tuple, Optional
 from index_manager import IndexManager
+
+
+
+def gpu_parallel_hash(states: torch.Tensor, var_threshold: int, padding_idx: int) -> torch.Tensor:
+    """
+    GPU-parallelized hashing for multiple states - OPTIMIZED VERSION.
+    
+    Uses vectorized operations and avoids .item() calls for massive speedup.
+    
+    Args:
+        states: [B, max_atoms, arity+1] batch of states
+        var_threshold: minimum value for variables
+        padding_idx: padding index
+        
+    Returns:
+        hashes: [B] hash values for each state
+    """
+    B, max_atoms, arity_p1 = states.shape
+    device = states.device
+    
+    # Simple but fast hash: just flatten and use torch hashing
+    # This avoids expensive canonicalization and .item() calls
+    
+    # Valid atoms mask
+    valid_mask = states[:, :, 0] != padding_idx  # [B, max_atoms]
+    
+    # Create a simple hash based on the flattened representation
+    # We'll use a polynomial rolling hash computed fully on GPU
+    prime = 31
+    mod_val = 2**31 - 1  # Large prime for modulo
+    
+    # Flatten states: [B, max_atoms * arity_p1]
+    flat_states = states.reshape(B, -1).long()
+    
+    # Compute powers of prime: [max_atoms * arity_p1]
+    max_len = max_atoms * arity_p1
+    powers = torch.arange(max_len, device=device, dtype=torch.long)
+    prime_powers = torch.pow(prime, powers) % mod_val
+    
+    # Compute hash as sum of (value * prime^position) for each position
+    # [B, max_atoms * arity_p1] * [max_atoms * arity_p1] -> [B]
+    hashes = (flat_states * prime_powers.unsqueeze(0)).sum(dim=1) % mod_val
+    
+    # Zero out hashes for empty states
+    has_atoms = valid_mask.any(dim=1)
+    hashes = hashes * has_atoms.long()
+    
+    return hashes
+
+
+def gpu_batch_unique(
+    states: torch.Tensor,
+    hashes: torch.Tensor,
+    return_inverse: bool = False
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """
+    GPU-based deduplication using precomputed hashes.
+    
+    Args:
+        states: [B, max_atoms, arity+1] states to deduplicate
+        hashes: [B] hash values for each state
+        return_inverse: whether to return inverse mapping
+        
+    Returns:
+        unique_states: [U, max_atoms, arity+1] unique states
+        inverse_indices: [B] mapping from original to unique (if return_inverse=True)
+    """
+    device = states.device
+    B = states.shape[0]
+    
+    # Sort by hash
+    sorted_hashes, sort_indices = torch.sort(hashes)
+    
+    # Find unique hashes
+    if B == 0:
+        return states[:0], torch.tensor([], dtype=torch.long, device=device) if return_inverse else None
+    
+    # Identify unique positions
+    unique_mask = torch.ones(B, dtype=torch.bool, device=device)
+    if B > 1:
+        unique_mask[1:] = sorted_hashes[1:] != sorted_hashes[:-1]
+    
+    # Get unique indices
+    unique_indices = sort_indices[unique_mask]
+    
+    # Extract unique states
+    unique_states = states[unique_indices]
+    
+    if return_inverse:
+        # Create inverse mapping
+        inverse = torch.zeros(B, dtype=torch.long, device=device)
+        unique_pos = torch.arange(unique_mask.sum(), device=device)
+        
+        # Map each original index to its unique position
+        cumsum = unique_mask.cumsum(0) - 1
+        inverse[sort_indices] = cumsum
+        
+        return unique_states, inverse
+    
+    return unique_states, None
+
+
 
 def deduplicate_states_gpu(
     states: List[torch.Tensor],
@@ -135,6 +236,9 @@ def apply_substitutions_batched(
     pad = im.padding_idx
     device = goals_batch.device
     B, G, A = goals_batch.shape
+    
+    # Ensure substitutions are on same device as goals
+    substitutions_batch = substitutions_batch.to(device)
     
     if B == 0:
         return goals_batch
@@ -263,7 +367,8 @@ def _unify_with_rules_batched(
     rules: torch.Tensor,
     rule_lengths: torch.Tensor,
     index_manager,
-    pred_idx: int
+    pred_idx: int,
+    verbose_engine: int = 0
 ) -> List[List[torch.Tensor]]:
     """
     Batched rule unification for multiple queries with the same predicate.
@@ -284,13 +389,28 @@ def _unify_with_rules_batched(
     pad = index_manager.padding_idx
     num_queries = queries.shape[0]
     
+    if verbose_engine >= 1:
+        print(f"\n  [RULE UNIFICATION] Predicate: {index_manager.predicate_idx2str.get(pred_idx, f'pred_{pred_idx}')}")
+        print(f"    Queries ({num_queries}):")
+        for i in range(num_queries):
+            print(f"      Q{i}: {index_manager.debug_print_state_from_indices(queries[i:i+1], oneline=True)}")
+    
     # Get relevant rules for this predicate
     relevant_rule_indices = index_manager.rule_index.get(pred_idx, [])
     if not relevant_rule_indices:
+        if verbose_engine >= 1:
+            print(f"    No rules found for this predicate.")
         return [[] for _ in range(num_queries)]
     
     num_rules = len(relevant_rule_indices)
     rule_heads = rules[relevant_rule_indices, 0, :]  # [num_rules, arity+1]
+    
+    if verbose_engine >= 2:
+        print(f"    Relevant rules ({num_rules}):")
+        for idx, rule_idx in enumerate(relevant_rule_indices):
+            rule_len = int(rule_lengths[rule_idx].item())
+            rule_atoms = rules[rule_idx, :rule_len]
+            print(f"      R{idx}: {index_manager.debug_print_state_from_indices(rule_atoms, oneline=True)}")
     
     # Expand queries to match all rules: [N * num_rules, arity+1]
     queries_expanded = queries.unsqueeze(1).expand(-1, num_rules, -1).reshape(-1, queries.shape[1])
@@ -316,10 +436,15 @@ def _unify_with_rules_batched(
         # Get successful rule matches for this query
         success_mask = mask[q_idx]
         if not success_mask.any():
+            if verbose_engine >= 1:
+                print(f"    Q{q_idx}: No successful rule unifications")
             results.append(query_results)
             continue
         
         success_indices = success_mask.nonzero(as_tuple=True)[0]
+        
+        if verbose_engine >= 1:
+            print(f"    Q{q_idx}: {success_indices.numel()} successful rule unifications")
         
         # OPTIMIZED: Convert to CPU once for loop
         success_indices_cpu = success_indices.cpu().numpy()
@@ -343,6 +468,9 @@ def _unify_with_rules_batched(
             else:
                 next_state = instantiated_body
             
+            if verbose_engine >= 2:
+                print(f"      R{rule_idx_local}: {index_manager.debug_print_state_from_indices(next_state, oneline=True)}")
+            
             query_results.append(next_state)
         
         results.append(query_results)
@@ -357,7 +485,8 @@ def _unify_with_facts_batched(
     index_manager,
     pred_idx: int,
     excluded_queries: torch.Tensor = None,
-    labels: torch.Tensor = None
+    labels: torch.Tensor = None,
+    verbose_engine: int = 0
 ) -> List[List[torch.Tensor]]:
     """
     VECTORIZED fact unification for multiple queries with the same predicate.
@@ -380,6 +509,12 @@ def _unify_with_facts_batched(
     device = queries.device
     pad = index_manager.padding_idx
     num_queries = queries.shape[0]
+    
+    if verbose_engine >= 1:
+        print(f"\n  [FACT UNIFICATION] Predicate: {index_manager.predicate_idx2str.get(pred_idx, f'pred_{pred_idx}')}")
+        print(f"    Queries ({num_queries}):")
+        for i in range(num_queries):
+            print(f"      Q{i}: {index_manager.debug_print_state_from_indices(queries[i:i+1], oneline=True)}")
     
     # OPTIMIZED: Batch the .item() calls by converting query args to CPU once
     q_args_cpu = queries[:, 1:].cpu().numpy()  # [N, arity]
@@ -413,7 +548,7 @@ def _unify_with_facts_batched(
             if excluded_queries is not None and labels is not None:
                 if labels[q_idx].item() == 1:
                     # Exclude facts that match the original excluded query
-                    excluded_query = excluded_queries[q_idx]
+                    excluded_query = excluded_queries[q_idx].to(relevant_facts.device)
                     # Check which facts match the excluded query
                     match_mask = (relevant_facts == excluded_query.unsqueeze(0)).all(dim=1)
                     # Keep only non-matching facts
@@ -433,7 +568,15 @@ def _unify_with_facts_batched(
     
     # If no candidates found for any query, return empty results
     if len(all_candidates) == 0:
+        if verbose_engine >= 1:
+            print(f"    No candidate facts found for any query.")
         return [[] for _ in range(num_queries)]
+    
+    if verbose_engine >= 2:
+        print(f"    Total candidate facts: {sum(end - start for start, end in query_to_candidate_ranges)}")
+        for i, (start, end) in enumerate(query_to_candidate_ranges):
+            if end > start:
+                print(f"      Q{i}: {end - start} candidates")
     
     # VECTORIZED: Stack all candidates and all queries
     all_candidates_tensor = torch.cat(all_candidates, dim=0)  # [total_candidates, arity+1]
@@ -450,6 +593,9 @@ def _unify_with_facts_batched(
     
     expanded_queries_tensor = torch.cat(expanded_queries, dim=0)  # [total_candidates, arity+1]
     
+    # Ensure queries are on same device as candidates
+    expanded_queries_tensor = expanded_queries_tensor.to(all_candidates_tensor.device)
+    
     # VECTORIZED: Unify all at once
     mask, subs = _unify_one_to_one_optimized(
         expanded_queries_tensor,
@@ -463,6 +609,8 @@ def _unify_with_facts_batched(
         num_candidates = end - start
         
         if num_candidates == 0:
+            if verbose_engine >= 1:
+                print(f"    Q{q_idx}: No candidate facts")
             results.append([])
             continue
         
@@ -472,11 +620,23 @@ def _unify_with_facts_batched(
         
         success_indices = query_mask.nonzero(as_tuple=True)[0]
         if success_indices.numel() == 0:
+            if verbose_engine >= 1:
+                print(f"    Q{q_idx}: No successful fact unifications")
             results.append([])
             continue
         
+        if verbose_engine >= 1:
+            print(f"    Q{q_idx}: {success_indices.numel()} successful fact unifications")
+            for idx in success_indices[:20]:
+                fact_idx = start + idx.item()
+                fact = all_candidates_tensor[fact_idx]
+                print(f"      Fact: {index_manager.debug_print_state_from_indices(fact.unsqueeze(0), oneline=True)}")
+                print(f"            Substitution: {index_manager.debug_print_state_from_indices(fact.unsqueeze(0), oneline=True)}")
+        
         # If no remaining goals, return true
         if remaining_counts[q_idx] == 0:
+            if verbose_engine >= 2:
+                print(f"      -> TRUE (no remaining goals)")
             results.append([index_manager.true_tensor])
             continue
         
@@ -493,6 +653,13 @@ def _unify_with_facts_batched(
         
         # Convert to list of tensors
         query_results = list(torch.unbind(instantiated_goals_batch, dim=0))
+        
+        if verbose_engine >= 2:
+            for idx, result in enumerate(query_results[:5]):  # Show first 5
+                print(f"      Result {idx}: {index_manager.debug_print_state_from_indices(result, oneline=True)}")
+            if len(query_results) > 5:
+                print(f"      ... and {len(query_results) - 5} more")
+        
         results.append(query_results)
     
     return results
@@ -565,102 +732,6 @@ def get_queries_and_remaining_goals(current_states: torch.Tensor,
                 raise ValueError("Unexpected terminal state encountered.")
     return queries, remaining_goals, remaining_counts, active_states, all_derived_states, updated_var_indices
 
-def combine_and_deduplicate_results(rule_results: List[List[torch.Tensor]],
-                                    fact_results: List[List[torch.Tensor]],
-                                    current_states: torch.Tensor,
-                                    all_derived_states: List[List[torch.Tensor]],
-                                    index_manager: IndexManager,
-                                    pad: int,
-                                    var_threshold: int,
-                                    device: torch.device,
-                                    original_batch_indices: torch.Tensor,
-                                    next_var_indices: torch.Tensor) -> Tuple[List[List[torch.Tensor]], torch.Tensor]:
-    """
-    Combine and deduplicate derived states from rules and facts.
-    Args:
-        rule_results: List of length B, each element is List[Tensor] from rules
-        fact_results: List of length B, each element is List[Tensor] from facts
-        current_states: [B, padding_atoms, arity+1] batch of current states
-        index_manager.true_tensor: Tensor representing true state
-        index_manager.false_tensor: Tensor representing false state
-        next_var_indices: [B] next variable index for each query
-    Returns:
-        all_derived_states: List of length B, each element is List[Tensor] of derived states
-        next_var_indices: [B] updated variable indices
-    """
-    batch_size = current_states.shape[0]
-        
-    for i, batch_idx in enumerate(original_batch_indices):
-        batch_idx = batch_idx.item()
-        next_var_idx = next_var_indices[batch_idx].item()
-        
-        # Combine results
-        query_rule_results = rule_results[i] if i < len(rule_results) else []
-        query_fact_results = fact_results[i] if i < len(fact_results) else []
-        
-        # Check for early success
-        if query_fact_results and len(query_fact_results) > 0:
-            if isinstance(query_fact_results[0], torch.Tensor) and \
-                torch.equal(query_fact_results[0], index_manager.true_tensor):
-                all_derived_states[batch_idx] = [index_manager.true_tensor]
-                continue
-        
-        all_results = query_rule_results + query_fact_results
-        print(f"length of rule results: {len(query_rule_results)}, fact results: {len(query_fact_results)}, combined: {len(all_results)}")
-
-        if not all_results:
-            all_derived_states[batch_idx] = [index_manager.false_tensor]
-            continue
-        
-        # Deduplicate states. Use structural deduplication instead of canonicalization
-        final_states = []
-        found_true = False
-        
-        # get the combined states by filtering padding and true states
-        for s in all_results:
-            s_valid = s[s[:, 0] != pad]
-
-            if s_valid.numel() == 0:
-                all_derived_states[batch_idx] = [index_manager.true_tensor]
-                found_true = True
-                break
-            
-            final_states.append(s_valid)
-        
-        if not found_true:
-            if not final_states:
-                # Set to false if no valid states
-                all_derived_states[batch_idx] = [index_manager.false_tensor]
-            else:
-                if len(final_states) > 500:
-                    raise ValueError(f"query index (batch idx) {batch_idx}: Large number of derived states ({len(final_states)})")
-                
-                # Deduplicate using GPU batch unique operations
-                unique_states = deduplicate_states_gpu(
-                    final_states, var_threshold, pad
-                )
-                
-                # Pad results
-                original_max_atoms = current_states.shape[1]
-                padded_final_states = []
-                for s in unique_states:
-                    num_rows, num_cols = s.shape
-                    if num_rows > original_max_atoms:
-                        padded_final_states.append(s[:original_max_atoms])
-                    elif num_rows < original_max_atoms:
-                        padding_tensor = torch.full(
-                            (original_max_atoms - num_rows, num_cols),
-                            pad, dtype=s.dtype, device=device
-                        )
-                        padded_final_states.append(torch.cat([s, padding_tensor], dim=0))
-                    else:
-                        padded_final_states.append(s)
-                
-                all_derived_states[batch_idx] = padded_final_states
-        
-        # Note: We don't update next_var_indices since we're not canonicalizing
-        # Variables keep their original IDs
-    return all_derived_states
 
 def get_next_unification(
     current_states: torch.Tensor,
@@ -671,7 +742,8 @@ def get_next_unification(
     next_var_indices: torch.Tensor,
     excluded_queries: torch.Tensor = None,
     labels: torch.Tensor = None,
-    verbose: int = 0
+    verbose: int = 0,
+    verbose_engine: int = 0
 ) -> Tuple[List[List[torch.Tensor]], torch.Tensor]:
     """
     Fully vectorized unification WITHOUT canonicalization.
@@ -704,15 +776,33 @@ def get_next_unification(
     var_threshold = index_manager.constant_no + 1
     device = current_states.device
     
+    if verbose_engine >= 1:
+        print(f"\n{'='*80}")
+        print(f"GET_NEXT_UNIFICATION - Batch size: {batch_size}")
+        print(f"{'='*80}")
+    
     # Step 1: Extract queries and remaining goals and initial checks
 
     queries, remaining_goals, remaining_counts, active_states, all_derived_states, updated_var_indices = get_queries_and_remaining_goals(
         current_states, index_manager, next_var_indices, batch_size, device, pad)
 
+    if verbose_engine >= 1:
+        print(f"\n[INITIAL QUERIES]")
+        for i in range(batch_size):
+            query_str = index_manager.debug_print_state_from_indices(queries[i:i+1], oneline=True)
+            remaining_str = ""
+            if remaining_counts[i] > 0:
+                remaining = remaining_goals[i, :remaining_counts[i]]
+                remaining_str = f" | Remaining: {index_manager.debug_print_state_from_indices(remaining, oneline=True)}"
+            print(f"  Env {i}: {query_str}{remaining_str}")
+            if not active_states[i]:
+                print(f"    -> TERMINAL (skipping unification)")
     
     active_indices = active_states.nonzero(as_tuple=True)[0]
 
     if active_indices.numel() == 0: # all states are terminal
+        if verbose_engine >= 1:
+            print(f"\nAll states are terminal. Returning.")
         return all_derived_states, updated_var_indices
     
     active_queries = queries[active_indices]
@@ -723,7 +813,13 @@ def get_next_unification(
     predicates = active_queries[:, 0]
     unique_preds = torch.unique(predicates)
     
+    if verbose_engine >= 1:
+        print(f"\n[PROCESSING BY PREDICATE]")
+        print(f"  Unique predicates: {[index_manager.predicate_idx2str.get(p.item(), f'pred_{p.item()}') for p in unique_preds]}")
+    
     for pred_idx in unique_preds:
+        if verbose_engine >= 1:
+            print(f"\n{'-'*60}\nProcessing predicate index: {pred_idx.item()} ({index_manager.predicate_idx2str.get(pred_idx.item(), f'pred_{pred_idx.item()}')})")
         pred_idx_int = pred_idx.item()
         
         pred_mask = predicates == pred_idx
@@ -750,7 +846,8 @@ def get_next_unification(
             rules, 
             rule_lengths, 
             index_manager, 
-            pred_idx_int
+            pred_idx_int,
+            verbose_engine=verbose_engine
         )
         
         # Get excluded queries for this predicate group (if any)
@@ -768,22 +865,109 @@ def get_next_unification(
             index_manager, 
             pred_idx_int,
             excluded_queries=pred_excluded_queries,
-            labels=pred_labels
+            labels=pred_labels,
+            verbose_engine=verbose_engine
         )
 
-        print(f"predicate index {pred_idx_int}: len(rule_results)={len(rule_results)}, len(fact_results)={len(fact_results)}")
+        if verbose_engine >= 1:
+            print(f"\n  [SUMMARY] Predicate {index_manager.predicate_idx2str.get(pred_idx_int, f'pred_{pred_idx_int}')}: "
+                  f"len(rule_results)={len(rule_results)}, len(fact_results)={len(fact_results)}")
 
         # Step 4: Combine and deduplicate results
-        all_derived_states = combine_and_deduplicate_results(
-            rule_results, fact_results,
-            current_states,
-            all_derived_states,
-            index_manager,
-            pad,
-            var_threshold,
-            device,
-            original_batch_indices,
-            updated_var_indices
-        )
+        if verbose_engine >= 1:
+            print(f"\n  [COMBINE & DEDUPLICATE]")
+            
+        for i, batch_idx in enumerate(original_batch_indices):
+            batch_idx = batch_idx.item()
+            next_var_idx = next_var_indices[batch_idx].item()
+            
+            # Combine results
+            query_rule_results = rule_results[i] if i < len(rule_results) else []
+            query_fact_results = fact_results[i] if i < len(fact_results) else []
+            
+            if verbose_engine >= 1:
+                print(f"    Env {batch_idx}: {len(query_rule_results)} rule results + {len(query_fact_results)} fact results")
+            
+            # Check for early success
+            if query_fact_results and len(query_fact_results) > 0:
+                if isinstance(query_fact_results[0], torch.Tensor) and \
+                    torch.equal(query_fact_results[0].cpu(), index_manager.true_tensor.cpu()):
+                    all_derived_states[batch_idx] = [index_manager.true_tensor]
+                    if verbose_engine >= 1:
+                        print(f"      -> Early success: TRUE")
+                    continue
+            
+            all_results = query_rule_results + query_fact_results
+
+            if not all_results:
+                all_derived_states[batch_idx] = [index_manager.false_tensor]
+                if verbose_engine >= 1:
+                    print(f"      -> No results: FALSE")
+                continue
+            
+            # Deduplicate states. Use structural deduplication instead of canonicalization
+            final_states = []
+            found_true = False
+            
+            # get the combined states by filtering padding and true states
+            for s in all_results:
+                s_valid = s[s[:, 0] != pad]
+
+                if s_valid.numel() == 0:
+                    raise ValueError("Derived state should not be empty after filtering padding.")                
+                final_states.append(s_valid)
+            
+            if not found_true:
+                if not final_states:
+                    # Set to false if no valid states
+                    all_derived_states[batch_idx] = [index_manager.false_tensor]
+                    if verbose_engine >= 1:
+                        print(f"      -> No valid states: FALSE")
+                else:
+                    if len(final_states) > 100:
+                        print(f"Warning: query index (batch idx) {batch_idx} has a large number of derived states ({len(final_states)}).")
+                        # raise ValueError(f"query index (batch idx) {batch_idx}: Large number of derived states ({len(final_states)})")
+                        final_states = final_states[:100]
+                    
+                    # Deduplicate using GPU batch unique operations
+                    unique_states = deduplicate_states_gpu(
+                        final_states, var_threshold, pad
+                    )
+                    
+                    if verbose_engine >= 2:
+                        print(f"      -> After deduplication: {len(unique_states)} unique states (from {len(final_states)})")
+                    
+                    # Pad results
+                    original_max_atoms = current_states.shape[1]
+                    padded_final_states = []
+                    for s in unique_states:
+                        num_rows, num_cols = s.shape
+                        if num_rows > original_max_atoms:
+                            padded_final_states.append(s[:original_max_atoms])
+                        elif num_rows < original_max_atoms:
+                            padding_tensor = torch.full(
+                                (original_max_atoms - num_rows, num_cols),
+                                pad, dtype=s.dtype, device=device
+                            )
+                            padded_final_states.append(torch.cat([s, padding_tensor], dim=0))
+                        else:
+                            padded_final_states.append(s)
+                    
+                    all_derived_states[batch_idx] = padded_final_states
+            
+            # Note: We don't update next_var_indices since we're not canonicalizing
+            # Variables keep their original IDs
+
+    if verbose_engine >= 1:
+        print(f"\n[FINAL NEXT STATES]")
+        for i in range(batch_size):
+            num_states = len(all_derived_states[i])
+            print(f"  Env {i}: {num_states} derived states")
+            if num_states > 0:
+                for j, state in enumerate(all_derived_states[i][:3]):  # Show first 3
+                    print(f"    State {j}: {index_manager.debug_print_state_from_indices(state, oneline=True)}")
+                if num_states > 3:
+                    print(f"    ... and {num_states - 3} more")
+        print(f"{'='*80}\n")
 
     return all_derived_states, updated_var_indices

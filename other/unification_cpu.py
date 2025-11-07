@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from index_manager import IndexManager
 
 # Import unification functions from GPU (they work on CPU tensors too)
-from unification_gpu import (
+from unification import (
     _unify_with_rules_batched,
     _unify_with_facts_batched,
     _unify_one_to_one_optimized,

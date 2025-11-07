@@ -12,7 +12,7 @@ from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
 from utils import Term, Rule
-from unification_gpu import get_next_unification
+from unification import get_next_unification
 # from batched_unification_cpu import get_next_unification
 
 
@@ -347,7 +347,8 @@ class BatchedVecEnv(EnvBase):
             next_var_indices=self.next_var_indices,
             excluded_queries=self.original_queries,
             labels=self.current_labels,
-            verbose=self.prover_verbose
+            verbose=self.prover_verbose,
+            verbose_engine=self.prover_verbose
         )
         
         # Update variable indices
@@ -506,7 +507,8 @@ class BatchedVecEnv(EnvBase):
             next_var_indices=self.next_var_indices,
             excluded_queries=self.original_queries,
             labels=self.current_labels,
-            verbose=self.prover_verbose
+            verbose=self.prover_verbose,
+            verbose_engine=self.prover_verbose
         )
         
         # Update variable indices only for non-done
