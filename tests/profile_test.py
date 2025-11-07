@@ -11,7 +11,7 @@ import torch
 import cProfile
 import pstats
 import io
-from test_full_pipeline import test_vectorized_batched_pipeline as test_pipeline
+from test_pipeline import test_vectorized_batched_pipeline as test_pipeline
 
 def profile_test():
     """Profile the test with cProfile"""

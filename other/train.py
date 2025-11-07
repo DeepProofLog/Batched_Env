@@ -22,7 +22,7 @@ from utils import (
     _warn_non_reproducible,
 )
 from env import BatchedVecEnv
-from dataset import DataHandler
+from data_handler_original import DataHandler
 from ppo.ppo_model import create_torchrl_modules
 from ppo.ppo_agent import PPOAgent
 from embeddings import get_embedder
@@ -115,7 +115,7 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     im.build_fact_index(dh.facts)
 
     # Negative sampler (now uses optimized version by default)
-    from neg_sampling import get_sampler, share_sampler_storage
+    from sampler_original import get_sampler, share_sampler_storage
     
     sampler_device = torch.device("cpu")
     

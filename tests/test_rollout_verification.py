@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from dataset import DataHandler
+from data_handler_original import DataHandler
 from index_manager import IndexManager
 from embeddings import get_embedder
 from ppo.ppo_model import create_torchrl_modules

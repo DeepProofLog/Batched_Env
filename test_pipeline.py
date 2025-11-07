@@ -12,9 +12,9 @@ from time import time
 # Ensure repository root is on sys.path so local imports resolve when running from tests/ directory
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from dataset import DataHandler
+from data_handler_original import DataHandler
 from index_manager import IndexManager
-from neg_sampling import get_sampler, share_sampler_storage
+from sampler_original import get_sampler, share_sampler_storage
 from embeddings import get_embedder
 from ppo.ppo_model import create_torchrl_modules
 from env import BatchedVecEnv

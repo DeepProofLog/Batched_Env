@@ -1,0 +1,18 @@
+# 1) DataHandler parses and discovers vocab
+dh = DataHandler()
+# dh.add_fact(...); dh.add_rule(...); dh.add_query(...)
+
+constants = {a for (_, a, _) in dh.facts_str} | {b for (_, _, b) in dh.facts_str} \
+          | {a for (_, a, _) in dh.train_queries_str + dh.valid_queries_str + dh.test_queries_str} \
+          | {b for (_, _, b) in dh.train_queries_str + dh.valid_queries_str + dh.test_queries_str}
+# (rules have only vars by your invariant; exclude them from constants)
+predicates = {p for (p, _, _) in dh.facts_str} \
+          | {head[0] for (head, _) in dh.rules_str} \
+          | {p for (p, _, _) in dh.train_queries_str + dh.valid_queries_str + dh.test_queries_str}
+
+# 2) IndexManager builds & freezes ids
+im = IndexManager(constants=constants, predicates=predicates, max_total_runtime_vars=8192, device=device)
+
+# 3) DataHandler materializes everything to **indices** via IM, then drops strings
+dh.materialize_indices(im, max_rule_atoms=8, device=device)
+im.set_facts(dh.facts_idx)     # builds fast predicate index for eager-closure

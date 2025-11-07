@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from tensordict import NonTensorData, TensorDict
 
-from dataset import DataHandler
+from data_handler_original import DataHandler
 from index_manager import IndexManager
 from python_unification import get_next_unification_python
 from utils import Term, print_state_transition

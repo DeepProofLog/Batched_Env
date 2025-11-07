@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from utils import Term
-from dataset import DataHandler
+from data_handler_original import DataHandler
 from index_manager import IndexManager
 
 

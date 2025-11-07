@@ -6,7 +6,7 @@ import numpy as np
 import janus_swi as janus
 from tensordict import TensorDict, NonTensorData
 
-from dataset import DataHandler
+from data_handler_original import DataHandler
 from index_manager import IndexManager
 from utils import Rule, Term
 from python_unification import get_next_unification_pt

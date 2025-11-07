@@ -35,7 +35,7 @@ class PicklableSamplerWrapper:
     def get_sampler(self):
         """Lazy initialization of sampler."""
         if self._sampler is None:
-            from neg_sampling import get_sampler
+            from sampler_original import get_sampler
             self._sampler = get_sampler(
                 data_handler=self.data_handler,
                 index_manager=self.index_manager,
@@ -109,7 +109,7 @@ class PicklableEnvCreator:
         # The sampler may have been excluded during pickling
         if self.corruption_mode and (not hasattr(self.data_handler, 'sampler') or self.data_handler.sampler is None):
             # Import here to avoid circular dependencies
-            from neg_sampling import get_sampler
+            from sampler_original import get_sampler
             from index_manager import IndexManager
             
             # Reconstruct the sampler
