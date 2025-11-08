@@ -19,7 +19,7 @@ from data_handler_original import DataHandler
 from index_manager import IndexManager
 from embeddings import get_embedder
 from ppo.ppo_model import create_torchrl_modules
-from env import BatchedVecEnv
+from env import BatchedEnv
 from ppo.ppo_rollout_custom import CustomRolloutCollector
 
 
@@ -120,7 +120,7 @@ def test_rollout_basic_sanity():
     
     # Create environment
     print("\n[4] Creating environment...")
-    env = BatchedVecEnv(
+    env = BatchedEnv(
         batch_size=args.batch_size,
         index_manager=im,
         data_handler=dh,
@@ -303,7 +303,7 @@ def test_rollout_determinism():
         embedder = embedder_getter.embedder
         embed_dim = getattr(embedder, 'embed_dim', getattr(embedder, 'embedding_dim', args.atom_embedding_size))
         
-        env = BatchedVecEnv(
+        env = BatchedEnv(
             batch_size=args.batch_size,
             index_manager=im,
             data_handler=dh,
@@ -463,7 +463,7 @@ def test_rollout_memory_pruning():
     embedder = embedder_getter.embedder
     embed_dim = getattr(embedder, 'embed_dim', getattr(embedder, 'embedding_dim', args.atom_embedding_size))
     
-    env_with_pruning = BatchedVecEnv(
+    env_with_pruning = BatchedEnv(
         batch_size=args.batch_size,
         index_manager=im,
         data_handler=dh,
@@ -483,7 +483,7 @@ def test_rollout_memory_pruning():
         engine=args.engine,
     )
     
-    env_without_pruning = BatchedVecEnv(
+    env_without_pruning = BatchedEnv(
         batch_size=args.batch_size,
         index_manager=im,
         data_handler=dh,

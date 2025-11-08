@@ -21,7 +21,7 @@ from utils import (
     _freeze_dropout_layernorm,
     _warn_non_reproducible,
 )
-from env import BatchedVecEnv
+from env import BatchedEnv
 from data_handler_original import DataHandler
 from ppo.ppo_model import create_torchrl_modules
 from ppo.ppo_agent import PPOAgent
@@ -585,7 +585,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     if facts_set is None:
         facts_set = frozenset(dh.facts)
     
-    env = BatchedVecEnv(
+    env = BatchedEnv(
         index_manager=index_manager,
         data_handler=dh,
         queries=dh.train_queries,
@@ -616,7 +616,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         prover_verbose=getattr(args, 'verbose_prover', 0),
     )
     
-    eval_env = BatchedVecEnv(
+    eval_env = BatchedEnv(
         index_manager=index_manager,
         data_handler=dh,
         queries=dh.valid_queries,
@@ -648,7 +648,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     )
     
     # Callback env for detailed metrics (batch_size=1 for compatibility)
-    callback_env = BatchedVecEnv(
+    callback_env = BatchedEnv(
         index_manager=index_manager,
         data_handler=dh,
         queries=dh.valid_queries,

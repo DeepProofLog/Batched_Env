@@ -1,48 +1,48 @@
-         10854610 function calls (10839478 primitive calls) in 10.663 seconds
+         6011581 function calls (5826622 primitive calls) in 13.857 seconds
 
    Ordered by: cumulative time
-   List reduced from 1105 to 15 due to restriction <15>
+   List reduced from 1040 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        1    0.004    0.004    3.552    3.552 ppo_rollout_custom.py:109(collect)
-        2    0.002    0.001    3.091    1.545 common.py:259(__call__)
-        2    0.024    0.012    3.087    1.544 env.py:29(__init__)
-       60    0.001    0.000    3.063    0.051 common.py:3626(step_and_maybe_reset)
-       61    0.001    0.000    2.595    0.043 common.py:2056(step)
-       61    0.018    0.000    2.584    0.042 env.py:406(_step)
-        2    1.803    0.901    2.490    1.245 index_manager.py:565(build_facts_index)
-       61    0.033    0.001    2.396    0.039 env.py:494(_compute_derived_states_conditional_vec)
-       77    0.032    0.000    2.336    0.030 unification_gpu.py:664(get_next_unification)
-        1    0.002    0.002    2.133    2.133 __init__.py:1695(_register_triton_kernels)
-        1    0.156    0.156    2.089    2.089 dataset.py:300(__init__)
-        1    0.709    0.709    1.303    1.303 index_manager.py:392(build_fact_index)
-   179518    0.434    0.000    1.113    0.000 utils.py:96(get_atom_from_string)
-      121    0.165    0.001    1.000    0.008 unification_gpu.py:259(_unify_with_rules_batched)
-        3    0.000    0.000    0.834    0.278 dataset.py:463(load_queries_with_depth)
+        1    0.002    0.002   10.050   10.050 ppo_rollout_custom.py:109(collect)
+       20    0.000    0.000    9.848    0.492 common.py:3626(step_and_maybe_reset)
+       58    0.124    0.002    9.543    0.165 unification_engine.py:364(get_derived_states)
+7169/6067    0.065    0.000    8.221    0.001 _contextlib.py:117(decorate_context)
+     5815    4.237    0.001    7.000    0.001 unification_engine.py:654(_prune_eager_true_ground_atoms)
+       21    0.000    0.000    5.258    0.250 common.py:2056(step)
+       21    0.005    0.000    5.254    0.250 env.py:460(_step)
+       21    0.016    0.001    5.167    0.246 env.py:548(_compute_derived_states_conditional_vec)
+       12    0.000    0.000    5.003    0.417 common.py:2822(reset)
+       12    0.006    0.000    4.989    0.416 env.py:285(_reset)
+       12    0.009    0.001    4.907    0.409 env.py:417(_compute_derived_states_vec)
+       20    0.001    0.000    4.710    0.235 common.py:3723(maybe_reset)
+   102620    2.299    0.000    2.299    0.000 {method 'item' of 'torch._C.TensorBase' objects}
+        1    0.000    0.000    1.787    1.787 __init__.py:1695(_register_triton_kernels)
+        1    0.000    0.000    1.757    1.757 data_handler.py:50(__init__)
 
 
 
 
-         10854610 function calls (10839478 primitive calls) in 10.663 seconds
+         6011581 function calls (5826622 primitive calls) in 13.857 seconds
 
    Ordered by: internal time
-   List reduced from 1105 to 15 due to restriction <15>
+   List reduced from 1040 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        2    1.803    0.901    2.490    1.245 index_manager.py:565(build_facts_index)
-        1    0.709    0.709    1.303    1.303 index_manager.py:392(build_fact_index)
-   179518    0.434    0.000    1.113    0.000 utils.py:96(get_atom_from_string)
-     1192    0.417    0.000    0.619    0.001 env.py:685(_state_to_tuple)
-      855    0.375    0.000    0.462    0.001 unification_gpu.py:85(apply_substitutions_simple)
-      166    0.349    0.002    0.443    0.003 unification_gpu.py:171(_unify_one_to_one_optimized)
-   538537    0.338    0.000    0.430    0.000 utils.py:121(<genexpr>)
-      133    0.304    0.002    0.527    0.004 unification_gpu.py:17(deduplicate_states_gpu)
-   380791    0.283    0.000    0.283    0.000 {built-in method torch.from_numpy}
-        2    0.258    0.129    0.455    0.227 index_manager.py:502(_state_to_tensor_vectorized)
-      121    0.212    0.002    0.786    0.006 unification_gpu.py:568(combine_and_deduplicate_results)
-   380806    0.200    0.000    0.200    0.000 {built-in method numpy.array}
-  1756765    0.195    0.000    0.195    0.000 {method 'append' of 'list' objects}
-     2178    0.185    0.000    0.185    0.000 {method 'item' of 'torch._C.TensorBase' objects}
-        3    0.185    0.062    0.834    0.278 dataset.py:235(get_filtered_queries)
+     5815    4.237    0.001    7.000    0.001 unification_engine.py:654(_prune_eager_true_ground_atoms)
+   102620    2.299    0.000    2.299    0.000 {method 'item' of 'torch._C.TensorBase' objects}
+      171    0.839    0.005    1.199    0.007 unification_engine.py:99(_deduplicate_states_gpu)
+    25270    0.455    0.000    0.455    0.000 {method 'any' of 'torch._C.TensorBase' objects}
+ 176834/0    0.445    0.000    0.000          {built-in method torch.tensor}
+   179508    0.435    0.000    1.115    0.000 utils.py:96(get_atom_from_string)
+   538524    0.334    0.000    0.416    0.000 utils.py:120(<genexpr>)
+     1155    0.301    0.000    0.440    0.000 env.py:936(_state_to_tuple)
+      952    0.278    0.000    0.494    0.001 unification_engine.py:134(_apply_substitutions_simple)
+    89866    0.265    0.000    0.265    0.000 {built-in method torch.stack}
+   176586    0.257    0.000    0.842    0.000 index_manager.py:203(atom_to_tensor)
+   353172    0.174    0.000    0.174    0.000 index_manager.py:196(term_to_index)
+        3    0.170    0.057    0.855    0.285 data_handler.py:264(_load_queries_from_file)
+     8329    0.143    0.000    0.143    0.000 {built-in method torch.cat}
+  1077051    0.137    0.000    0.137    0.000 {method 'strip' of 'str' objects}
 
 

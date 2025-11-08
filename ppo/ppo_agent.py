@@ -18,10 +18,7 @@ from tensordict import TensorDict
 
 import torch
 import torch.nn as nn
-
-# from .ppo_rollout_sync import RolloutCollector
 from .ppo_rollout_custom import CustomRolloutCollector as RolloutCollector
-# from .ppo_rollout_multisync import MultiSyncRolloutCollector as RolloutCollector
 
 
 class PPOAgent:

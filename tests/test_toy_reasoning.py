@@ -9,7 +9,7 @@ Setup:
 import torch
 from index_manager import IndexManager
 from unification_engine import UnificationEngine
-from env import BatchedVecEnv
+from env import BatchedEnv
 
 # Manually create a toy dataset
 constants = ['a', 'b', 'c']
@@ -145,7 +145,7 @@ print("Testing with Environment")
 print(f"{'='*60}")
 
 queries_tensor = [query]
-env = BatchedVecEnv(
+env = BatchedEnv(
     batch_size=1,
     unification_engine=engine,
     queries=queries_tensor,

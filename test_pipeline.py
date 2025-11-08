@@ -17,7 +17,7 @@ from index_manager import IndexManager
 from sampler import Sampler, SamplerConfig
 from embeddings import get_embedder
 from ppo.ppo_model import create_torchrl_modules
-from env import BatchedVecEnv
+from env import BatchedEnv
 from ppo.ppo_agent import PPOAgent
 from ppo.ppo_rollout_custom import CustomRolloutCollector
 from unification_engine import UnificationEngine
@@ -40,8 +40,8 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         dataset_name="wn18rr",
         max_depth=20,  # Reduce max depth so episodes complete faster
         batch_size=5,  # Vectorized batch size
-        n_steps=120,    # Steps per rollout
-        n_epochs=10,    # PPO epochs
+        n_steps=20,    # Steps per rollout
+        n_epochs=2,    # PPO epochs
         data_path="data",
         janus_file=None,  # Don't use janus file
         train_file="train.txt",
@@ -259,7 +259,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     print(f"  UnificationEngine ready")
     
     # Create a single BatchedVecEnv with batch_size for vectorized processing
-    train_env = BatchedVecEnv(
+    train_env = BatchedEnv(
         batch_size=args.batch_size,
         unification_engine=unification_engine,
         queries=train_queries_tensor,
