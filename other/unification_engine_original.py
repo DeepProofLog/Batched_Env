@@ -1,4 +1,18 @@
 """
+Unification Engine - Encapsulates all unification logic.
+
+This class handles fact and rule unification, maintaining its own state
+and providing a clean interface to the environment.
+"""
+
+from __future__ import annotations
+from typing import List, Tuple, Optional
+import torch
+from torch import Tensor
+
+from atom_stringifier import AtomStringifier
+
+"""
 Batched Unification with GPU Optimizations
 
 This module implements GPU-optimized unification using GPU-native batch unique operations.
@@ -689,8 +703,17 @@ def get_queries_and_remaining_goals(current_states: torch.Tensor,
     # if there is any empty state, raise an error
     if empty_states.any():
         raise ValueError("Empty states detected in current_states; should not happen.")
-    false_states = (current_states[:, :, 0] == index_manager.false_pred_idx).any(dim=1)
-    true_queries = queries[:, 0] == index_manager.true_pred_idx
+    
+    # Check for false and true predicates (handle None case)
+    if index_manager.false_pred_idx is not None:
+        false_states = (current_states[:, :, 0] == index_manager.false_pred_idx).any(dim=1)
+    else:
+        false_states = torch.zeros(batch_size, dtype=torch.bool, device=device)
+    
+    if index_manager.true_pred_idx is not None:
+        true_queries = queries[:, 0] == index_manager.true_pred_idx
+    else:
+        true_queries = torch.zeros(batch_size, dtype=torch.bool, device=device)
     
     terminal_states = false_states | true_queries
     active_states = ~terminal_states
@@ -971,3 +994,219 @@ def get_next_unification(
         print(f"{'='*80}\n")
 
     return all_derived_states, updated_var_indices
+
+
+class UnificationEngine:
+    """
+    Unification engine that handles fact and rule unification.
+    
+    Maintains facts, rules, and provides methods for deriving new states.
+    """
+    
+    def __init__(
+        self,
+        facts_idx: Tensor,
+        rules_idx: Tensor,
+        rule_lens: Tensor,
+        padding_idx: int,
+        constant_no: int,
+        runtime_var_end_index: int,
+        true_pred_idx: Optional[int],
+        false_pred_idx: Optional[int],
+        max_arity: int,
+        atom_stringifier: Optional[AtomStringifier] = None,
+        device: torch.device = None,
+    ):
+        """
+        Initialize the unification engine.
+        
+        Args:
+            facts_idx: Facts tensor [F, 3]
+            rules_idx: Rules tensor [R, M, 3]
+            rule_lens: Rule lengths [R]
+            padding_idx: Padding index
+            constant_no: Number of constants
+            runtime_var_end_index: End index for runtime variables
+            true_pred_idx: Index for True predicate
+            false_pred_idx: Index for False predicate
+            max_arity: Maximum arity
+            atom_stringifier: Optional stringifier for debugging
+            device: Device to use
+        """
+        self.device = device if device is not None else torch.device('cpu')
+        
+        # Store tensors
+        self.facts_idx = facts_idx.to(self.device)
+        self.rules_idx = rules_idx.to(self.device)
+        self.rule_lens = rule_lens.to(self.device)
+        
+        # Store index parameters
+        self.padding_idx = padding_idx
+        self.constant_no = constant_no
+        self.runtime_var_end_index = runtime_var_end_index
+        self.true_pred_idx = true_pred_idx
+        self.false_pred_idx = false_pred_idx
+        self.max_arity = max_arity
+        
+        # Store stringifier
+        self.atom_stringifier = atom_stringifier
+        
+        # Build True/False tensors
+        if self.true_pred_idx is not None:
+            self.true_tensor = torch.tensor(
+                [[self.true_pred_idx, self.padding_idx, self.padding_idx]],
+                dtype=torch.int32,
+                device=self.device
+            )
+        else:
+            self.true_tensor = None
+            
+        if self.false_pred_idx is not None:
+            self.false_tensor = torch.tensor(
+                [[self.false_pred_idx, self.padding_idx, self.padding_idx]],
+                dtype=torch.int32,
+                device=self.device
+            )
+        else:
+            self.false_tensor = None
+        
+        # Create a minimal index_manager-like object for get_next_unification
+        # This is a temporary shim until we refactor get_next_unification
+        self._create_im_shim()
+    
+    @classmethod
+    def from_index_manager(cls, index_manager, take_ownership: bool = True) -> 'UnificationEngine':
+        """
+        Create a UnificationEngine by taking ownership of tensors from an IndexManager.
+        
+        This is the recommended way to create a UnificationEngine - it transfers
+        ownership of facts and rules tensors from the IndexManager to the engine,
+        allowing the IndexManager to be cleaned up if desired.
+        
+        Args:
+            index_manager: IndexManager instance with facts and rules already set
+            
+        Returns:
+            UnificationEngine instance
+        """
+        # Extract tensors (these are references, not copies)
+        facts_idx = index_manager.facts_idx
+        rules_idx = index_manager.rules_idx
+        rule_lens = index_manager.rule_lens
+        
+        # Create AtomStringifier from IndexManager
+        atom_stringifier = AtomStringifier.from_index_manager(index_manager)
+        if take_ownership:
+            index_manager.facts_idx = None
+            index_manager.rules_idx = None
+            index_manager.rule_lens = None
+        # Create and return engine
+        return cls(
+            facts_idx=facts_idx,
+            rules_idx=rules_idx,
+            rule_lens=rule_lens,
+            padding_idx=index_manager.padding_idx,
+            constant_no=index_manager.constant_no,
+            runtime_var_end_index=index_manager.runtime_var_end_index,
+            true_pred_idx=index_manager.true_pred_idx,
+            false_pred_idx=index_manager.false_pred_idx,
+            max_arity=index_manager.max_arity,
+            atom_stringifier=atom_stringifier,
+            device=index_manager.device,
+        )
+    
+    def _create_im_shim(self):
+        """Create a minimal object that looks like IndexManager for get_next_unification."""
+        class IMShim:
+            def __init__(self, engine):
+                self.padding_idx = engine.padding_idx
+                self.constant_no = engine.constant_no
+                self.runtime_var_end_index = engine.runtime_var_end_index
+                self.true_pred_idx = engine.true_pred_idx
+                self.false_pred_idx = engine.false_pred_idx
+                self.max_arity = engine.max_arity
+                self.true_tensor = engine.true_tensor
+                self.false_tensor = engine.false_tensor
+                self.facts_tensor = engine.facts_idx
+                # Add empty indices for compatibility
+                self.rule_index = {}
+                self.fact_index = {}
+                # Debug methods
+                self.predicate_idx2str = {}
+                
+                def debug_print_state_from_indices(state, oneline=False):
+                    if engine.atom_stringifier:
+                        if state.dim() == 1:
+                            return engine.atom_stringifier.atom_to_str(state)
+                        elif state.dim() == 2:
+                            return engine.atom_stringifier.state_to_str(state)
+                    return f"<state {state.shape}>"
+                
+                self.debug_print_state_from_indices = debug_print_state_from_indices
+        
+        self.im_shim = IMShim(self)
+    
+    def get_derived_states(
+        self,
+        current_states: Tensor,
+        next_var_indices: Tensor,
+        excluded_queries: Tensor = None,
+        labels: Tensor = None,
+        verbose: int = 0,
+    ) -> Tuple[List[List[Tensor]], Tensor]:
+        """
+        Get derived states from current states using unification.
+        
+        Args:
+            current_states: [B, padding_atoms, arity+1] batch of states
+            next_var_indices: [B] next variable index for each batch element
+            excluded_queries: [B, arity+1] queries to exclude from fact unification
+            labels: [B] labels for queries
+            verbose: Verbosity level
+            
+        Returns:
+            all_derived_states: List[List[Tensor]] derived states for each batch element
+            updated_var_indices: [B] updated variable indices
+        """
+        return get_next_unification(
+            current_states=current_states,
+            facts_tensor=self.facts_idx,
+            rules=self.rules_idx,
+            rule_lengths=self.rule_lens,
+            index_manager=self.im_shim,
+            next_var_indices=next_var_indices,
+            excluded_queries=excluded_queries,
+            labels=labels,
+            verbose=verbose,
+            verbose_engine=0,
+        )
+    
+    def is_true_state(self, state: Tensor) -> bool:
+        """Check if a state is the True state."""
+        if self.true_tensor is None:
+            return False
+        # state can be [1, 3] or [3]
+        if state.dim() == 2:
+            state = state.squeeze(0)
+        return torch.equal(state, self.true_tensor.squeeze(0))
+    
+    def is_false_state(self, state: Tensor) -> bool:
+        """Check if a state is the False state."""
+        if self.false_tensor is None:
+            return False
+        # state can be [1, 3] or [3]
+        if state.dim() == 2:
+            state = state.squeeze(0)
+        return torch.equal(state, self.false_tensor.squeeze(0))
+    
+    def get_false_state(self) -> Tensor:
+        """Get the False state tensor [1, 3]."""
+        if self.false_tensor is None:
+            raise ValueError("False predicate not defined")
+        return self.false_tensor.clone()
+    
+    def get_true_state(self) -> Tensor:
+        """Get the True state tensor [1, 3]."""
+        if self.true_tensor is None:
+            raise ValueError("True predicate not defined")
+        return self.true_tensor.clone()

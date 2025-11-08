@@ -93,7 +93,6 @@ class Rule:
         return f"{self.head} :- {body_str}"
 
 
-@functools.lru_cache(maxsize=1000000)
 def get_atom_from_string(atom_str: str) -> Term:
     """
     Optimized version using string methods instead of regex.
@@ -141,21 +140,42 @@ def get_rule_from_string(rule_str: str) -> Rule:
     Convert a rule string into a Rule object with head and body.
 
     Args:
-        rule_str (str): Rule in the form 'head :- body' or a standalone fact.
+        rule_str (str): Rule in the form 'head :- body', 'body -> head', or a standalone fact.
+                       Also handles format like 'r1:1:body -> head' with prefix.
 
     Returns:
         Rule: Structured rule containing head Term and list of body Terms.
     """
-    if ":-" not in rule_str:
-        head = rule_str.strip()
-        rule = Rule(get_atom_from_string(head), [])
-    else:
-        head, body = rule_str.strip().split(":-")
+    rule_str = rule_str.strip()
+    
+    # Handle format with prefix like 'r1:1:body -> head'
+    # Remove the prefix (e.g., 'r1:1:')
+    if ':' in rule_str and not ':-' in rule_str:
+        # Check if it starts with a rule ID like 'r1:1:'
+        parts = rule_str.split(':', 2)  # Split at most twice
+        if len(parts) >= 3 and parts[0].startswith('r') and parts[1].isdigit():
+            # Remove the prefix 'r1:1:'
+            rule_str = parts[2].strip()
+    
+    # Handle ':-' format: 'head :- body'
+    if ":-" in rule_str:
+        head, body = rule_str.split(":-", 1)
         body = re.findall(r'\w+\(.*?\)', body)
         body = [get_atom_from_string(b) for b in body]
-
         head_atom = get_atom_from_string(head)
         rule = Rule(head_atom, body)
+    # Handle '->' format: 'body -> head'
+    elif "->" in rule_str:
+        body, head = rule_str.split("->", 1)
+        body = re.findall(r'\w+\(.*?\)', body)
+        body = [get_atom_from_string(b) for b in body]
+        head_atom = get_atom_from_string(head)
+        rule = Rule(head_atom, body)
+    # Standalone fact (no body)
+    else:
+        head = rule_str.strip()
+        rule = Rule(get_atom_from_string(head), [])
+    
     return rule
 
 

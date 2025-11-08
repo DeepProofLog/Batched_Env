@@ -115,7 +115,7 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     im.build_fact_index(dh.facts)
 
     # Negative sampler (now uses optimized version by default)
-    from sampler_original import get_sampler, share_sampler_storage
+    from other.sampler_original import get_sampler, share_sampler_storage
     
     sampler_device = torch.device("cpu")
     

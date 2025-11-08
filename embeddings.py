@@ -4,11 +4,10 @@ import torch.nn as nn
 
 import numpy as np
 import pickle
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 import math
 
-from data_handler_original import DataHandler
-from index_manager import IndexManager
+from data_handler import DataHandler
 
 
 # ------------------ Load embeddings functions------------------
@@ -1021,69 +1020,6 @@ class Sum_atom(nn.Module):
 
 
 
-class HybridConstantEmbedder(nn.Module):
-    def __init__(self, num_regular_constants, num_image_constants, image_data, embedding_dim, device):
-        super().__init__()
-        self.num_regular = num_regular_constants # Number of regular constants, i.e., symbols with normal embeddings
-        self.num_image = num_image_constants
-        self.embedding_dim = embedding_dim
-        self.device = device
-        
-        # Regular constants use standard embeddings
-        self.regular_embedder = nn.Embedding(num_regular_constants, embedding_dim)
-        
-        # CNN for image constants
-        self.image_embedder = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Flatten(),
-            nn.Linear(32 * 7 * 7, embedding_dim)
-        )
-        
-        # Store pre-loaded image data with proper indexing
-        self.register_buffer('image_data', image_data)
-        
-        # Move to device
-        self.to(device)
-
-    def forward(self, indices):
-        # nn.Embedding and buffers automatically handle device placement
-        # Initialize output tensor
-        embeddings = torch.zeros(*indices.shape, self.embedding_dim, 
-                               device=indices.device)
-        
-        # Create masks using valid index ranges
-        image_mask = (indices >= 0) & (indices < self.num_image)
-        regular_mask = ~image_mask
-        
-        # Process image indices
-        if image_mask.any():
-            # Get valid image indices without filtering
-            image_indices = indices[image_mask]
-            
-            # Directly index using valid positions - use long() for indexing
-            selected_images = self.image_data[image_indices.long()]
-            
-            # Add channel dimension if missing (for single images)
-            if selected_images.dim() == 3:
-                selected_images = selected_images.unsqueeze(1)
-                
-            # Process and store embeddings
-            image_embeds = self.image_embedder(selected_images)
-            embeddings[image_mask] = image_embeds.view(-1, self.embedding_dim)
-        
-        # Process regular indices
-        if regular_mask.any():
-            regular_indices = indices[regular_mask] - self.num_image
-            embeddings[regular_mask] = self.regular_embedder(regular_indices.long())
-            
-        return embeddings
-
-
 class ConstantEmbeddings(nn.Module):
     """Module to handle constant embeddings per domain."""
     def __init__(self, num_constants: int, embedding_dim: int, regularization=0.0, device="cpu"): 
@@ -1224,13 +1160,7 @@ class EmbedderLearnable(nn.Module):
         total_constant_vocab = n_constants + n_vars + 1  # +1 for padding at index 0
         
         # Initialize embedder
-        self.constant_embedder = HybridConstantEmbedder(
-            num_regular_constants=num_regular_constants,
-            num_image_constants=n_image_constants,
-            image_data=image_data,
-            embedding_dim=constant_embedding_size,
-            device=device
-        ) if n_image_constants > 0 else ConstantEmbeddings(
+        self.constant_embedder = ConstantEmbeddings(
             num_constants=total_constant_vocab,
             embedding_dim=constant_embedding_size,
             regularization=kge_regularization,
@@ -1297,19 +1227,42 @@ class get_embedder():
     def __init__(self, 
                 args: dict,
                 data_handler: DataHandler, 
-                index_manager: IndexManager, 
-                device: str):
+                constant_no: int,
+                predicate_no: int,
+                runtime_var_end_index: int,
+                constant_str2idx: Dict[str, int],
+                predicate_str2idx: Dict[str, int],
+                constant_images_no: int = 0,
+                device: str = "cpu"):
+        """
+        Initialize embedder factory.
         
-        self.embedder = self._create_embedder(args, data_handler, index_manager, device)
+        Args:
+            args: Configuration arguments
+            data_handler: DataHandler instance
+            constant_no: Number of constants (without variables)
+            predicate_no: Number of predicates
+            runtime_var_end_index: Maximum index for variables
+            constant_str2idx: Constant string to index mapping
+            predicate_str2idx: Predicate string to index mapping
+            constant_images_no: Number of image constants (0 if not using images)
+            device: Device for embeddings
+        """
+        self.embedder = self._create_embedder(
+            args, data_handler, constant_no, predicate_no, 
+            runtime_var_end_index, constant_str2idx, predicate_str2idx,
+            constant_images_no, device
+        )
 
-    def _create_embedder(self, args, data_handler, index_manager, device):
+    def _create_embedder(self, args, data_handler, constant_no, predicate_no, 
+                        runtime_var_end_index, constant_str2idx, predicate_str2idx,
+                        constant_images_no, device):
 
         if args.learn_embeddings:
             # Calculate the actual maximum indices to size embedding tables correctly
-            # The index_manager may have higher indices than the _no fields due to special predicates
-            max_constant_idx = max(index_manager.constant_idx2str.keys()) if index_manager.constant_idx2str else index_manager.constant_no
-            max_predicate_idx = max(index_manager.predicate_idx2str.keys()) if index_manager.predicate_idx2str else index_manager.predicate_no
-            max_var_idx = index_manager.runtime_var_end_index
+            max_constant_idx = max(constant_str2idx.values()) if constant_str2idx else constant_no
+            max_predicate_idx = max(predicate_str2idx.values()) if predicate_str2idx else predicate_no
+            max_var_idx = runtime_var_end_index
             
             # Total constant vocabulary includes constants + all variables
             total_constant_vocab = max(max_constant_idx, max_var_idx) + 1
@@ -1327,15 +1280,15 @@ class get_embedder():
                 predicate_embedding_size=args.predicate_embedding_size,
                 atom_embedding_size=args.atom_embedding_size,
                 device=device,
-                n_image_constants=index_manager.constant_images_no if args.dataset_name == 'mnist_addition' else 0,
+                n_image_constants=constant_images_no if args.dataset_name == 'mnist_addition' else 0,
                 image_dict=data_handler.images if args.dataset_name == 'mnist_addition' else None
             )
         
         else:
-            constant_str2idx, predicate_str2idx = index_manager.constant_str2idx, index_manager.predicate_str2idx
             constant_idx2emb, predicate_idx2emb = read_embeddings(args.constant_emb_file, args.predicate_emb_file, constant_str2idx, predicate_str2idx)
             if args.rule_depend_var:
                 constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, predicate_idx2emb, data_handler.variable_no)
             else:
                 constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, predicate_idx2emb, args.variable_no)
             return EmbedderNonLearnable(constant_idx2emb, predicate_idx2emb, device=device)
+
