@@ -85,6 +85,8 @@ class IndexManager:
             pred_list.append('True')
         if 'False' not in pred_list:
             pred_list.append('False')
+        if 'End' not in pred_list:
+            pred_list.append('End')
         pred_list = sorted(pred_list)  # Re-sort after adding
 
         # String <-> index maps (CPU int32 to save RAM)
@@ -109,12 +111,16 @@ class IndexManager:
         self.max_total_vars: int = max_total_runtime_vars  # Alias for compatibility
         self.max_arity: int = max_arity  # Store max_arity
 
+        self.total_vocab_size = self.variable_no + 1  # already present
+        self.pack_base = self.total_vocab_size + 1    # safe 64-bit packing base
+
         self.padding_idx: int = 0
         self.padding_atoms: int = padding_atoms
         
         # Special predicate indices
         self.true_pred_idx: Optional[int] = self.predicate_str2idx.get('True')
         self.false_pred_idx: Optional[int] = self.predicate_str2idx.get('False')
+        self.end_pred_idx: Optional[int] = self.predicate_str2idx.get('End')
 
         # Runtime var range [start, end]
         self.runtime_var_start_index: int = self.constant_no + self.template_variable_no + 1
@@ -132,6 +138,7 @@ class IndexManager:
 
         # Fact index (CPU) for quick predicate slices
         self.predicate_range_map: Optional[torch.IntTensor] = None  # [num_predicates+1, 2]
+        self.predicate_range_map_gpu = self.predicate_range_map.to(self.device)
 
         # Special tensors for True/False atoms
         self.true_tensor: Optional[LongTensor] = None

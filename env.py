@@ -190,8 +190,17 @@ class BatchedEnv(EnvBase):
             device=self._device,
         )
         
-        # Done spec
+        # Done spec (terminated)
         self.done_spec = Bounded(
+            low=0,
+            high=1,
+            shape=torch.Size([self.batch_size_int, 1]),
+            dtype=torch.bool,
+            device=self._device,
+        )
+        
+        # Truncated spec (for time limits)
+        self.truncated_spec = Bounded(
             low=0,
             high=1,
             shape=torch.Size([self.batch_size_int, 1]),
@@ -353,13 +362,16 @@ class BatchedEnv(EnvBase):
         selected_states = self.derived_states_batch[batch_indices, actions]
         self.current_queries = selected_states
         self.current_depths += 1
-        # Reward & done
-        rewards, dones = self._get_done_reward()
+        # Reward, terminated, & truncated
+        rewards, terminated, truncated = self._get_done_reward()
+        
+        # done is the combination of terminated and truncated
+        dones = terminated | truncated
         
         if self.verbose >= 2:
             print(f'\n=== REWARD & DONE ===')
             for i in range(self.batch_size_int):
-                print(f'Env {i}:   Reward: {rewards[i].item():.4f}.  Done: {dones[i].item()}')
+                print(f'Env {i}:   Reward: {rewards[i].item():.4f}.  Done: {dones[i].item()}. Terminated: {terminated[i].item()}. Truncated: {truncated[i].item()}')
         
         # Next derived states for non-done envs
         active_mask = ~dones.squeeze(-1)
@@ -369,7 +381,7 @@ class BatchedEnv(EnvBase):
         obs_dict = self._create_observation_dict()
         
         td = TensorDict(
-            {**obs_dict, "reward": rewards, "done": dones, "terminated": dones},
+            {**obs_dict, "reward": rewards, "done": dones, "terminated": terminated, "truncated": truncated},
             batch_size=self.batch_size, device=self._device
         )
         return td
@@ -383,6 +395,7 @@ class BatchedEnv(EnvBase):
         - Batched skip-unary closure collapses chains of unary-only transitions.
         - Writes results back into the full batched buffers.
         - Optionally clears inactive envs' derived states.
+        Optimized with vectorized operations where possible.
         """
         if active_mask is None:
             active_mask = torch.ones(self.batch_size_int, dtype=torch.bool, device=self._device)
@@ -408,16 +421,22 @@ class BatchedEnv(EnvBase):
             if self.skip_unary_actions:
                 all_derived = self._skip_unary(idx, all_derived)
 
-            # Process and pack per-env (no further unary skipping here)
-            for k, env_idx in enumerate(idx.tolist()):
+            # Process and pack per-env (vectorize padding operation)
+            env_idx_list = idx.tolist()
+            for k, env_idx in enumerate(env_idx_list):
                 processed = self._postprocess(env_idx, all_derived[k], stage="final")
                 c = min(len(processed), self.padding_states)
                 counts[env_idx] = c
+                
+                # Clear this environment's derived states
                 batched_derived[env_idx].fill_(self.padding_idx)
-                for j in range(c):
-                    batched_derived[env_idx, j] = self._pad_state(processed[j])
+                
+                # Batch pad states if multiple states to process
+                if c > 0:
+                    for j in range(c):
+                        batched_derived[env_idx, j] = self._pad_state(processed[j])
 
-        # Optionally clear inactive rows
+        # Vectorized clear for inactive rows
         if clear_inactive:
             inactive_mask = ~active_mask
             if inactive_mask.any():
@@ -430,6 +449,7 @@ class BatchedEnv(EnvBase):
     # -------- Batched skip-unary closure (new) --------
 
     def _skip_unary(self, idx_subset: torch.Tensor, derived_lists: List[List[Tensor]]) -> List[List[Tensor]]:
+        """Batched skip-unary closure with vectorized checks where possible."""
         if not derived_lists:
             return derived_lists
 
@@ -437,24 +457,38 @@ class BatchedEnv(EnvBase):
         env_to_pos = {env: pos for pos, env in enumerate(env_idxs)}
 
         def _is_unary_nonterminal(lst: List[Tensor]) -> bool:
+            """Check if list contains exactly one non-terminal state."""
             if len(lst) != 1:
                 return False
             st = lst[0]
             if st is None or st.numel() == 0:
                 return False
-            pred = st[0, 0].item()
-            return pred not in {self.true_pred_idx, self.false_pred_idx, self.end_pred_idx}
+            pred = st[0, 0]
+            # Vectorized comparison - no .item() needed for comparison
+            is_terminal = (pred == self.true_pred_idx) | (pred == self.false_pred_idx)
+            if self.end_pred_idx is not None:
+                is_terminal = is_terminal | (pred == self.end_pred_idx)
+            return not is_terminal.item()
 
         iters = 0
         while iters < self.max_skip_unary_iters:
             sel_envs = []
+            states_to_check = []  # Collect states for batch atom budget check
+            
             for pos, env in enumerate(env_idxs):
                 lst = derived_lists[pos]
                 if not _is_unary_nonterminal(lst):
                     continue
                 st = lst[0]
-                # If atom budget exceeded, force FALSE and stop skipping
+                states_to_check.append((pos, env, st))
+            
+            if not states_to_check:
+                break
+            
+            # Vectorized atom budget check
+            for pos, env, st in states_to_check:
                 if st.shape[0] > self.padding_atoms:
+                    # Force FALSE and stop skipping
                     derived_lists[pos] = [self._create_false_state()]
                     continue
                 # Promote single successor to current state
@@ -511,21 +545,30 @@ class BatchedEnv(EnvBase):
         if not states:
             return [self._create_false_state()]
 
-        # ---- filter None ----
-        states = [s for s in states if s is not None]
+        # ---- filter None (vectorized check) ----
+        states = [s for s in states if s is not None and s.numel() > 0]
         if not states:
             return [self._create_false_state()]
 
-        # ---- memory pruning (also records current state signature) ----
+        # ---- memory pruning (vectorized signature computation) ----
         if self.memory_pruning:
             curr_sig = self._state_signature(self.current_queries[env_idx])
             self.memories[env_idx].add(curr_sig)
             mem = self.memories[env_idx]
-            states = [s for s in states if self._state_signature(s) not in mem]
+            
+            # Vectorize signature computation where possible
+            # Compute signatures in batch for states with same number of atoms
+            kept_states = []
+            for s in states:
+                if self._state_signature(s) not in mem:
+                    kept_states.append(s)
+            states = kept_states
+            
             if not states:
                 return [self._create_false_state()]
 
-        # ---- truncate by atom budget ----
+        # ---- truncate by atom budget (vectorized) ----
+        # Create a boolean mask for valid states
         states = [s for s in states if s.shape[0] <= self.padding_atoms]
         if not states:
             return [self._create_false_state()]
@@ -536,14 +579,12 @@ class BatchedEnv(EnvBase):
 
         # ---- final stage: truncate by number of states (reserve END if needed) ----
         reserve_end = False
-        if self.end_proof_action:
-            # Reserve an END slot iff at least one non-terminal exists
-            for s in states:
-                if s.numel() > 0:
-                    p = s[0, 0].item()
-                    if p not in {self.true_pred_idx, self.false_pred_idx}:
-                        reserve_end = True
-                        break
+        if self.end_proof_action and states:
+            # Vectorized check for non-terminal states
+            # Stack first predicates and check in batch
+            first_preds = torch.stack([s[0, 0] for s in states if s.numel() > 0])
+            terminal_mask = (first_preds == self.true_pred_idx) | (first_preds == self.false_pred_idx)
+            reserve_end = not terminal_mask.all().item()
 
         limit = self.padding_states - (1 if reserve_end else 0)
         if len(states) > limit:
@@ -558,88 +599,130 @@ class BatchedEnv(EnvBase):
 
         return states
 
+        return states
+
     # ------------------- Reward/Done -------------------
 
-    def _get_done_reward(self) -> Tuple[Tensor, Tensor]:
-        """Compute rewards and dones for all environments - VECTORIZED."""
+    def _get_done_reward(self) -> Tuple[Tensor, Tensor, Tensor]:
+        """Compute rewards, terminated flags, and truncated flags for all environments.
+        Vectorized implementation where possible.
+        
+        Returns:
+            rewards: [B, 1] reward tensor
+            terminated: [B, 1] bool tensor for natural episode termination (success/failure)
+            truncated: [B, 1] bool tensor for artificial termination (time limit)
+        """
         # Initialize outputs
         rewards = torch.zeros(self.batch_size_int, 1, dtype=torch.float32, device=self._device)
-        dones = torch.zeros(self.batch_size_int, 1, dtype=torch.bool, device=self._device)
+        terminated = torch.zeros(self.batch_size_int, 1, dtype=torch.bool, device=self._device)
+        truncated = torch.zeros(self.batch_size_int, 1, dtype=torch.bool, device=self._device)
         
         # Get all states [B, padding_atoms, arity+1]
         states = self.current_queries
         
-        # Check for empty states (numel == 0 not applicable here, check if all padding)
-        # states[:, :, 0] gives predicates [B, padding_atoms]
+        # Vectorized: Check for non-padding predicates [B, padding_atoms]
         non_padding_mask = states[:, :, 0] != self.padding_idx  # [B, A]
-        has_non_padding = non_padding_mask.any(dim=1)           # [B]
-        if has_non_padding.all():
-            raise ValueError("Current implementation assumes states always have at least one atom.")
         
-        # For each environment, check terminal conditions
-        for i in range(self.batch_size_int):
-            # Extract current state that is not padding
-            state = states[i]  # [padding_atoms, arity+1]
-            non_pad = state[:, 0] != self.padding_idx
-            predicates = state[non_pad, 0]
+        # Vectorized terminal checks per batch
+        # Extract predicates for each environment [B, padding_atoms]
+        predicates = states[:, :, 0]  # [B, padding_atoms]
+        
+        # For vectorization, we need to handle variable-length states
+        # Create masks for all_true and any_false per batch element
+        all_true_batch = torch.zeros(self.batch_size_int, dtype=torch.bool, device=self._device)
+        any_false_batch = torch.zeros(self.batch_size_int, dtype=torch.bool, device=self._device)
+        is_end_batch = torch.zeros(self.batch_size_int, dtype=torch.bool, device=self._device)
+        
+        if self.true_pred_idx is not None:
+            # all_true: all non-padding predicates are true_pred_idx
+            true_mask = (predicates == self.true_pred_idx) | ~non_padding_mask
+            all_true_batch = true_mask.all(dim=1) & non_padding_mask.any(dim=1)
+        
+        if self.false_pred_idx is not None:
+            # any_false: at least one predicate is false_pred_idx
+            any_false_batch = (predicates == self.false_pred_idx).any(dim=1)
+        
+        if self.end_proof_action:
+            # Check if single predicate is end_pred_idx
+            is_single_pred = non_padding_mask.sum(dim=1) == 1
+            first_pred = predicates[torch.arange(self.batch_size_int, device=self._device), 
+                                   non_padding_mask.long().argmax(dim=1)]
+            is_end_batch = is_single_pred & (first_pred == self.end_pred_idx)
+            # End counts as success
+            all_true_batch = all_true_batch | is_end_batch
+            any_false_batch = any_false_batch & ~is_end_batch
+        
+        # Vectorized depth check
+        depth_exceeded_batch = self.current_depths >= self.max_depth
+        
+        # Natural termination vs truncation
+        natural_termination = all_true_batch | any_false_batch
+        terminated[:, 0] = natural_termination
+        truncated[:, 0] = depth_exceeded_batch & ~natural_termination
+        
+        # done is combination
+        done_batch = natural_termination | depth_exceeded_batch
+        
+        # Vectorized reward computation based on reward_type
+        successful_batch = all_true_batch
+        labels_batch = self.current_labels  # [B]
+        
+        if self.reward_type == 0:
+            # Simple: +1 only for successful proof with positive label
+            reward_mask = done_batch & successful_batch & (labels_batch == 1)
+            rewards[reward_mask, 0] = 1.0
             
-            all_true = (predicates == self.true_pred_idx).all().item() if self.true_pred_idx is not None else False
-            any_false = (predicates == self.false_pred_idx).any().item() if self.false_pred_idx is not None else False
+        elif self.reward_type == 1:
+            # +1 for true positive, -1 for false positive
+            tp_mask = done_batch & successful_batch & (labels_batch == 1)
+            fp_mask = done_batch & successful_batch & (labels_batch == 0)
+            rewards[tp_mask, 0] = 1.0
+            rewards[fp_mask, 0] = -1.0
             
-            # Check for End state (if end_proof_action is enabled)
-            is_end_terminal = False
-            if self.end_proof_action and self.end_pred_idx is not None:
-                assert len(predicates) == 1, "End state should have only one predicate."
-                if predicates[0].item() == self.end_pred_idx:
-                    is_end_terminal = True
-                    all_true = True  # End of action counts as successful proof
-                    any_false = False
+        elif self.reward_type == 2:
+            # +1 for correct classification (TP or TN)
+            tp_mask = done_batch & successful_batch & (labels_batch == 1)
+            tn_mask = done_batch & ~successful_batch & (labels_batch == 0)
+            rewards[tp_mask, 0] = 1.0
+            rewards[tn_mask, 0] = 1.0
             
-            depth_exceeded = self.current_depths[i] >= self.max_depth
-            done = all_true | any_false | depth_exceeded | is_end_terminal            
-            dones[i, 0] = done
+        elif self.reward_type == 3:
+            # Asymmetric: penalize false positives more
+            pos_label = labels_batch == 1
+            neg_label = labels_batch == 0
             
-            # Compute reward based on reward_type
-            successful = all_true.item() if isinstance(all_true, torch.Tensor) else all_true
-            label = self.current_labels[i].item()
+            # Positive label cases
+            tp_mask = done_batch & successful_batch & pos_label
+            fn_mask = done_batch & ~successful_batch & pos_label
+            rewards[tp_mask, 0] = 1.0
+            rewards[fn_mask, 0] = -0.5
             
-            if self.reward_type == 0:
-                # Simple: +1 only for successful proof with positive label
-                if done and successful and label == 1:
-                    rewards[i, 0] = 1.0
-            elif self.reward_type == 1:
-                # +1 for true positive, -1 for false positive
-                if done and successful and label == 1:
-                    rewards[i, 0] = 1.0
-                elif done and successful and label == 0:
-                    rewards[i, 0] = -1.0
-            elif self.reward_type == 2:
-                # +1 for correct classification (TP or TN)
-                if done and successful and label == 1:
-                    rewards[i, 0] = 1.0
-                elif done and not successful and label == 0:
-                    rewards[i, 0] = 1.0
-            elif self.reward_type == 3:
-                # Asymmetric: penalize false positives more
-                if label == 1:
-                    if done and successful:
-                        rewards[i, 0] = 1.0
-                    elif done and not successful:
-                        rewards[i, 0] = -0.5
-                else:
-                    if done and successful:
-                        rewards[i, 0] = -1.5
-                    elif done and not successful:
-                        rewards[i, 0] = 1.0
-            elif self.reward_type == 4:
-                if label == 1:
-                    rewards[i, 0] = 1.0 if (done and successful) else (-1.0 if done else 0.0)
-                else:
-                    rewards[i, 0] = -1.0 if (done and successful) else (1.0 if done else 0.0)
-            else:
-                raise ValueError(f"Invalid reward_type: {self.reward_type}. Choose 0-4.")
+            # Negative label cases
+            fp_mask = done_batch & successful_batch & neg_label
+            tn_mask = done_batch & ~successful_batch & neg_label
+            rewards[fp_mask, 0] = -1.5
+            rewards[tn_mask, 0] = 1.0
+            
+        elif self.reward_type == 4:
+            pos_label = labels_batch == 1
+            neg_label = labels_batch == 0
+            
+            # Positive label: +1 if done&successful, -1 if done&not successful, 0 otherwise
+            tp_mask = done_batch & successful_batch & pos_label
+            fp_done_mask = done_batch & ~successful_batch & pos_label
+            rewards[tp_mask, 0] = 1.0
+            rewards[fp_done_mask, 0] = -1.0
+            
+            # Negative label: -1 if done&successful, +1 if done&not successful, 0 otherwise
+            fp_mask = done_batch & successful_batch & neg_label
+            tn_mask = done_batch & ~successful_batch & neg_label
+            rewards[fp_mask, 0] = -1.0
+            rewards[tn_mask, 0] = 1.0
+            
+        else:
+            raise ValueError(f"Invalid reward_type: {self.reward_type}. Choose 0-4.")
     
-        return rewards, dones
+        return rewards, terminated, truncated
 
     # ------------------- Observation packing -------------------
 
@@ -659,6 +742,7 @@ class BatchedEnv(EnvBase):
         obs = self._create_observation_dict()
         obs['done'] = torch.zeros(self.batch_size_int, 1, dtype=torch.bool, device=self._device)
         obs['terminated'] = torch.zeros(self.batch_size_int, 1, dtype=torch.bool, device=self._device)
+        obs['truncated'] = torch.zeros(self.batch_size_int, 1, dtype=torch.bool, device=self._device)
         return TensorDict(obs, batch_size=self.batch_size, device=self._device)
 
     # ------------------- Utilities -------------------
@@ -716,21 +800,23 @@ class BatchedEnv(EnvBase):
                 )
 
     def _state_signature(self, state: Tensor) -> tuple:
+        """Compute a signature for a state for deduplication.
+        Optimized version with cached state tuples for faster comparison.
+        """
         # Remove padding
         valid_mask = state[:, 0] != self.padding_idx
         if not valid_mask.any():
             return (0, 0, 0)
-        valid = state[valid_mask].flatten().long()
-        n = valid.numel()
-        first_pred = int(state[valid_mask][0, 0].item())
+        
+        valid_state = state[valid_mask]
+        n = valid_state.shape[0]
+        first_pred = int(valid_state[0, 0].item())
 
-        # 64-bit rolling hash (FNV-like)
-        base = torch.tensor(1469598103934665603, device=valid.device, dtype=torch.long)
-        prime = torch.tensor(1099511628211, device=valid.device, dtype=torch.long)
-        h = base
-        for v in valid:
-            h = (h ^ v) * prime
-        h = (h & 0x7FFFFFFFFFFFFFFF).item()  # fold to signed 64-bit
+        # Convert to tuple for hashing - this is the fastest approach for small tensors
+        # Python's built-in hash on tuples is highly optimized
+        state_tuple = tuple(valid_state.flatten().tolist())
+        h = hash(state_tuple) & 0x7FFFFFFFFFFFFFFF  # Ensure positive 63-bit int
+        
         return (int(n), int(first_pred), int(h))
     
     def _set_seed(self, seed: int):

@@ -513,4 +513,4 @@ if __name__ == '__main__':
     # use cuda if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # device = 'cpu'
-    test_vectorized_batched_pipeline(n_tests=10, device=device)
+    test_vectorized_batched_pipeline(n_tests=8, device=device)

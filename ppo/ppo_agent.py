@@ -146,7 +146,17 @@ class PPOAgent:
             nxt = batch_td_time.get("next")
             if "state_value" not in nxt.keys():
                 self.critic(nxt)
-            
+
+            # --- Treat time limits as NON-terminal for GAE ---
+            # If both keys exist, compute advantages using TERMINATION only,
+            # so we bootstrap across time-limit truncations.
+            if "terminated" in nxt.keys():
+                done_for_gae = nxt.get("terminated")
+                # ensure shape is [T, B] not [T, B, 1]
+                if done_for_gae.ndim > 2 or (done_for_gae.ndim == 2 and done_for_gae.shape[-1] == 1):
+                    done_for_gae = done_for_gae.squeeze(-1)
+                nxt.set("done", done_for_gae)
+
             # Ensure all tensors have consistent shapes (squeeze extra dimensions from reward/done/value)
             # GAE expects all tensors to have the same shape [T, B]
             if "state_value" in nxt.keys():
