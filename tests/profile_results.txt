@@ -1,48 +1,48 @@
-         6631222 function calls (6519347 primitive calls) in 38.312 seconds
+         5486500 function calls (5429263 primitive calls) in 14.848 seconds
 
    Ordered by: cumulative time
    List reduced from 1066 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        1    0.701    0.701   35.371   35.371 ppo_rollout_custom.py:110(collect)
-      512    0.007    0.000   31.708    0.062 common.py:3626(step_and_maybe_reset)
-      514    0.010    0.000   29.802    0.058 common.py:2822(reset)
-      512    0.036    0.000   29.598    0.058 common.py:3723(maybe_reset)
-      514    0.116    0.000   29.410    0.057 env.py:210(_reset)
-     1027    0.687    0.001   28.669    0.028 env.py:334(_compute_derived_states)
-7943/1511    0.215    0.000   25.024    0.017 _contextlib.py:117(decorate_context)
-      997    2.307    0.002   23.166    0.023 unification_engine.py:752(get_derived_states)
-      514    4.705    0.009   10.052    0.020 unification_engine.py:352(_unify_with_facts)
-      514    1.212    0.002    6.210    0.012 unification_engine.py:505(_unify_with_rules)
-     1028    4.961    0.005    5.260    0.005 unification_engine.py:221(_unify_one_to_one)
-      997    1.479    0.001    3.339    0.003 env.py:510(_postprocess)
-      514    0.215    0.000    2.825    0.005 env.py:411(_skip_unary)
-46686/1026    0.066    0.000    2.219    0.002 module.py:1771(_wrapped_call_impl)
-46686/1026    0.110    0.000    2.217    0.002 module.py:1779(_call_impl)
+        1    0.307    0.307   11.937   11.937 ppo_rollout_custom.py:110(collect)
+      256    0.003    0.000   10.319    0.040 common.py:3626(step_and_maybe_reset)
+      258    0.004    0.000    9.580    0.037 common.py:2822(reset)
+      258    0.053    0.000    9.410    0.036 env.py:210(_reset)
+      256    0.017    0.000    9.369    0.037 common.py:3723(maybe_reset)
+      515    0.307    0.001    9.061    0.018 env.py:334(_compute_derived_states)
+ 3748/760    0.085    0.000    7.315    0.010 _contextlib.py:117(decorate_context)
+      502    1.051    0.002    6.509    0.013 unification_engine.py:748(get_derived_states)
+      258    0.544    0.002    2.978    0.012 unification_engine.py:501(_unify_with_rules)
+        1    0.000    0.000    1.866    1.866 __init__.py:1695(_register_triton_kernels)
+        1    0.000    0.000    1.842    1.842 data_handler.py:46(__init__)
+        1    0.000    0.000    1.842    1.842 data_handler.py:163(load_dataset)
+      502    0.685    0.001    1.559    0.003 env.py:510(_postprocess)
+      258    0.100    0.000    1.338    0.005 env.py:411(_skip_unary)
+   179450    0.442    0.000    1.153    0.000 utils.py:97(get_atom_from_string)
 
 
 
 
-         6631222 function calls (6519347 primitive calls) in 38.312 seconds
+         5486500 function calls (5429263 primitive calls) in 14.848 seconds
 
    Ordered by: internal time
    List reduced from 1066 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-     1028    4.961    0.005    5.260    0.005 unification_engine.py:221(_unify_one_to_one)
-      514    4.705    0.009   10.052    0.020 unification_engine.py:352(_unify_with_facts)
-      997    2.307    0.002   23.166    0.023 unification_engine.py:752(get_derived_states)
-     1028    1.766    0.002    2.209    0.002 unification_engine.py:185(_apply_substitutions)
-      997    1.479    0.001    3.339    0.003 env.py:510(_postprocess)
-      514    1.212    0.002    6.210    0.012 unification_engine.py:505(_unify_with_rules)
-    30569    0.814    0.000    0.814    0.000 {built-in method torch.arange}
-      511    0.751    0.001    1.364    0.003 unification_engine.py:1001(_canonicalize_variables)
-        1    0.701    0.701   35.371   35.371 ppo_rollout_custom.py:110(collect)
-     2507    0.697    0.000    1.096    0.000 env.py:881(_state_hash64)
-     1027    0.687    0.001   28.669    0.028 env.py:334(_compute_derived_states)
-    23458    0.687    0.000    0.687    0.000 {method 'any' of 'torch._C.TensorBase' objects}
-    18255    0.589    0.000    0.589    0.000 {method 'index_select' of 'torch._C.TensorBase' objects}
-      514    0.547    0.001    0.927    0.002 unification_engine.py:958(_prune_and_prove)
-     1510    0.523    0.000    1.413    0.001 env.py:936(_bloom_add_current)
+      502    1.051    0.002    6.509    0.013 unification_engine.py:748(get_derived_states)
+      516    0.954    0.002    1.149    0.002 unification_engine.py:185(_apply_substitutions)
+      502    0.685    0.001    1.559    0.003 env.py:510(_postprocess)
+      258    0.544    0.002    2.978    0.012 unification_engine.py:501(_unify_with_rules)
+   179450    0.442    0.000    1.153    0.000 utils.py:97(get_atom_from_string)
+    14592    0.354    0.000    0.354    0.000 {built-in method torch.arange}
+   538350    0.351    0.000    0.437    0.000 utils.py:124(<genexpr>)
+      258    0.346    0.001    0.633    0.002 unification_engine.py:997(_canonicalize_variables)
+     1261    0.319    0.000    0.512    0.000 env.py:881(_state_hash64)
+      515    0.307    0.001    9.061    0.018 env.py:334(_compute_derived_states)
+        1    0.307    0.307   11.937   11.937 ppo_rollout_custom.py:110(collect)
+     9175    0.286    0.000    0.286    0.000 {method 'index_select' of 'torch._C.TensorBase' objects}
+      774    0.272    0.000    0.272    0.000 {method 'index_put_' of 'torch._C.TensorBase' objects}
+    10236    0.272    0.000    0.272    0.000 {method 'any' of 'torch._C.TensorBase' objects}
+     3855    0.263    0.000    0.263    0.000 {built-in method torch._C._nn.linear}
 
 

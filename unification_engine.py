@@ -1,6 +1,6 @@
 # unification_engine.py
 from __future__ import annotations
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 import torch
 from torch import Tensor
 
@@ -392,72 +392,68 @@ def _unify_with_facts(
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
+    q_args = queries[:, 1:]
+    ground_mask = (q_args <= engine.constant_no).all(dim=1)
     drop_ground_mask = None
-    query_hashes = None
     if excluded_queries is not None:
         same_atom = (excluded_queries == queries).all(dim=1)
-        if same_atom.any():
-            ground_q = (queries[:, 1:] <= engine.constant_no).all(dim=1)
-            drop_ground_mask = same_atom & ground_q
-            if drop_ground_mask.any():
-                query_hashes = _pack_triples_64(queries.long(), engine.pack_base)
+        drop_ground_mask = same_atom & ground_mask
 
-    # 1) Ragged pairing (query → contiguous block of matching facts) ----------
-    # OPTIMIZATION: predicate_range_map is already int32 on device, avoid redundant .to()
-    prm = engine.predicate_range_map
-    seg_starts = prm[:, 0].long()
-    seg_lens   = (prm[:, 1] - prm[:, 0]).long()
+    qi_accum: List[Tensor] = []
+    inst_accum: List[Tensor] = []
+    remcount_accum: List[Tensor] = []
 
-    qi, fi = _pairs_via_predicate_ranges(pred_indices, seg_starts, seg_lens)  # [L], [L]
-    if qi.numel() == 0:
+    # Fast O(1) lookup for ground queries ------------------------------------
+    ground_idx = torch.nonzero(ground_mask, as_tuple=False).view(-1)
+    if ground_idx.numel() > 0:
+        ground_queries = queries.index_select(0, ground_idx).long()
+        ground_hits = engine.fact_index.contains(ground_queries)
+        if drop_ground_mask is not None:
+            ground_hits = ground_hits & ~drop_ground_mask.index_select(0, ground_idx)
+        if ground_hits.any():
+            emit_idx = ground_idx[ground_hits]
+            qi_accum.append(emit_idx)
+            inst_accum.append(remaining_goals.index_select(0, emit_idx))
+            remcount_accum.append(remaining_counts.index_select(0, emit_idx))
+
+    # Ragged pairing for non-ground queries ----------------------------------
+    non_ground_mask = ~ground_mask
+    if non_ground_mask.any():
+        ng_idx = torch.nonzero(non_ground_mask, as_tuple=False).view(-1)
+        queries_ng = queries.index_select(0, ng_idx)
+        preds_ng = pred_indices.index_select(0, ng_idx)
+
+        prm = engine.predicate_range_map
+        seg_starts = prm[:, 0].long()
+        seg_lens = (prm[:, 1] - prm[:, 0]).long()
+
+        qi_local, fi = _pairs_via_predicate_ranges(preds_ng, seg_starts, seg_lens)
+        if qi_local.numel() > 0:
+            q_pairs = queries_ng.index_select(0, qi_local)
+            f_pairs = engine.facts_idx.index_select(0, fi)
+
+            ok, subs = _unify_one_to_one(q_pairs, f_pairs, engine.constant_no, pad)
+            if ok.any():
+                qi_orig = ng_idx.index_select(0, qi_local)
+                qi_ok = qi_orig[ok]
+                subs_ok = subs[ok].view(-1, 2, 2)
+
+                remaining_sel = remaining_goals.index_select(0, qi_ok)
+                remain_inst = _apply_substitutions(
+                    remaining_sel, subs_ok.view(subs_ok.shape[0], -1, 2), pad
+                )
+
+                qi_accum.append(qi_ok)
+                inst_accum.append(remain_inst)
+                remcount_accum.append(remaining_counts.index_select(0, qi_ok))
+
+    if not qi_accum:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
-    # Optional: exclude trivial self-matches (labels not needed) --------------
-    if drop_ground_mask is not None and drop_ground_mask.any():
-        drop_rows = drop_ground_mask[qi]
-        if drop_rows.any():
-            if query_hashes is None:
-                query_hashes = _pack_triples_64(queries.long(), engine.pack_base)
-            fact_hashes = engine.facts_packed
-            cand_idx = torch.nonzero(drop_rows, as_tuple=False).squeeze(1)
-            if cand_idx.numel() > 0:
-                q_hash = query_hashes[qi[cand_idx]]
-                f_hash = fact_hashes[fi[cand_idx]]
-                same = q_hash == f_hash
-                if same.any():
-                    drop_rows[cand_idx] = same
-                    keep = ~drop_rows
-                    qi = qi[keep]
-                    fi = fi[keep]
-                    if qi.numel() == 0:
-                        empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
-                        return empty, torch.zeros(A, dtype=torch.long, device=device)
-
-    # Gather pairs and unify pairwise (still loop-free) -----------------------
-    q_pairs = queries.index_select(0, qi)                  # [L, 3]
-    f_pairs = engine.facts_idx.index_select(0, fi)         # [L, 3]
-
-    ok, subs = _unify_one_to_one(q_pairs, f_pairs, engine.constant_no, pad)
-    if not ok.any():
-        empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
-        return empty, torch.zeros(A, dtype=torch.long, device=device)
-
-    # Keep successful matches only -------------------------------------------
-    qi = qi[ok]
-    subs = subs[ok].view(-1, 2, 2)                         # [M', 2, 2]
-    if qi.numel() == 0:
-        empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
-        return empty, torch.zeros(A, dtype=torch.long, device=device)
-
-    # 2) Instantiate remaining goals with the substitutions ------------------
-    remaining_sel = remaining_goals.index_select(0, qi)    # [M', G, 3]
-    remain_inst = _apply_substitutions(
-        remaining_sel, subs.view(subs.shape[0], -1, 2), pad
-    )                                                      # [M', G, 3]
-
-    # 3) Compact to active goal count per-row (drop padded tail) -------------
-    rem_counts = remaining_counts.index_select(0, qi)
+    qi = torch.cat(qi_accum, dim=0)
+    remain_inst = torch.cat(inst_accum, dim=0)
+    rem_counts = torch.cat(remcount_accum, dim=0)
     if rem_counts.numel() == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
