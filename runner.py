@@ -5,17 +5,16 @@ This module provides the command-line interface and experiment management,
 migrated from the original Stable-Baselines3 version to use TorchRL.
 """
 
-import torch
 import argparse
-import datetime
 import copy
+import datetime
 import os
-import sys
-import warnings
 from itertools import product
-from typing import Optional, List
+from typing import List, Optional
 
 import numpy as np
+import torch
+
 from utils import FileLogger
 from train import main
 from utils_config import (
@@ -30,10 +29,13 @@ from utils_config import (
 
 # Use new API for TF32 settings to avoid deprecation warnings
 # Valid precision values: 'ieee', 'tf32', None (for default)
-if hasattr(torch.backends.cuda.matmul, 'fp32_precision'):
-    torch.backends.cuda.matmul.fp32_precision = 'tf32'
-if hasattr(torch.backends.cudnn.conv, 'fp32_precision'):
-    torch.backends.cudnn.conv.fp32_precision = 'tf32'
+_cuda_matmul_backend = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
+if _cuda_matmul_backend is not None and hasattr(_cuda_matmul_backend, "fp32_precision"):
+    _cuda_matmul_backend.fp32_precision = "tf32"
+
+_cudnn_conv_backend = getattr(getattr(torch.backends, "cudnn", None), "conv", None)
+if _cudnn_conv_backend is not None and hasattr(_cudnn_conv_backend, "fp32_precision"):
+    _cudnn_conv_backend.fp32_precision = "tf32"
 
 
 if __name__ == "__main__":
@@ -44,7 +46,7 @@ if __name__ == "__main__":
         # Dataset params
         'dataset_name': 'countries_s3',
 
-        'eval_neg_samples': 3,
+        'eval_neg_samples': 4,
         'test_neg_samples': 100,
 
         'train_depth': None,
@@ -53,11 +55,8 @@ if __name__ == "__main__":
 
         'n_train_queries': None,
         'n_eval_queries': 500,
-        'n_test_queries': None,
+        'n_test_queries': 500,
 
-        'prob_facts': False,
-        'topk_facts': None,
-        'topk_facts_threshold': 0.33,
 
         # Model params
         'model_name': 'PPO',
@@ -69,13 +68,13 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 200000,
+        'timesteps_train': 20000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 256,  # Now used as batch_size for BatchedVecEnv
-        'n_steps': 1024, #8192, 16384
-        'n_eval_envs': 256,  # Now used as batch_size for eval BatchedVecEnv
+        'n_envs': 8,  # Now used as batch_size for BatchedVecEnv
+        'n_steps': 128, #8192, 16384
+        'n_eval_envs': 64,  # Now used as batch_size for eval BatchedVecEnv
         'batch_size': 128,
 
         # Env params
@@ -87,7 +86,7 @@ if __name__ == "__main__":
         'skip_unary_actions': True,
         'max_depth': 20,
         'memory_pruning': True,
-        'corruption_mode': 'dynamic',
+        'corruption_mode': True,
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -267,6 +266,9 @@ if __name__ == "__main__":
 
         namespace = argparse.Namespace(**cfg)
 
+        raw_corruption_mode = getattr(namespace, "corruption_mode", True)
+        namespace.corruption_mode = bool(raw_corruption_mode)
+
         # Auto-configure padding_states based on dataset
         if namespace.padding_states == -1:
             if namespace.dataset_name in {"countries_s3", "countries_s2", "countries_s1"}:
@@ -290,16 +292,12 @@ if __name__ == "__main__":
         namespace.corruption_scheme = ['head', 'tail']
         if 'countries' in namespace.dataset_name or 'ablation' in namespace.dataset_name:
             namespace.corruption_scheme = ['tail']
+        namespace.corruption_scheme = list(namespace.corruption_scheme)
 
         # File names
         train_file = "train.txt"
         valid_file = "valid.txt"
         test_file = "test.txt"
-
-        if namespace.corruption_mode == "static":
-            train_file = "train_label_corruptions.json"
-            valid_file = "valid_label_corruptions.json"
-            test_file = "test_label_corruptions.json"
 
         # Always use depth files if they exist (depth filter is applied in DataHandler)
         # Check if depth files exist and use them
@@ -412,8 +410,17 @@ if __name__ == "__main__":
                 }
                 logger.log(log_filename_tmp, logged_data.__dict__, dicts_to_log)
 
-                rewards_pos_mean = np.round(np.mean(test_metrics.get('rewards_pos_mean', [0])), 3)
-                mrr = np.round(np.mean(test_metrics.get('mrr_mean', [0])), 3)
+                # Extract scalar values from metrics (handle both float and list cases)
+                rewards_pos_mean_val = test_metrics.get('rewards_pos_mean', 0)
+                if isinstance(rewards_pos_mean_val, (list, np.ndarray)):
+                    rewards_pos_mean_val = np.mean(rewards_pos_mean_val)
+                rewards_pos_mean = np.round(float(rewards_pos_mean_val), 3)
+                
+                mrr_val = test_metrics.get('mrr_mean', 0)
+                if isinstance(mrr_val, (list, np.ndarray)):
+                    mrr_val = np.mean(mrr_val)
+                mrr = np.round(float(mrr_val), 3)
+                
                 metrics = f"{rewards_pos_mean:.3f}_{mrr:.3f}"
                 log_filename_run_name = os.path.join(
                     args.logger_path,

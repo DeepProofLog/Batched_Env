@@ -1,62 +1,78 @@
 """
 TorchRL-based training script for Neural-guided Grounding.
 
-This module provides the main training loop using TorchRL's PPO implementation,
-migrated from the original Stable-Baselines3 version.
+This version is fully aligned with the refactored pipeline (DataHandler,
+IndexManager, BatchedEnv, Sampler, TorchRL PPO stack).
 """
+from __future__ import annotations
 
 import json
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from tensordict import TensorDict
 
+from atom_stringifier import AtomStringifier
+from callbacks import (
+    EvaluationCallback,
+    RolloutProgressCallback,
+    TorchRLCallbackManager,
+    TrainingMetricsCallback,
+)
+from data_handler import DataHandler
+from embeddings import get_embedder
+from env import BatchedEnv
 from index_manager import IndexManager
+from model_eval import evaluate_ranking_metrics
+from ppo.ppo_agent import PPOAgent
+from ppo.ppo_model import create_torchrl_modules
+from sampler import Sampler
+from unification_engine import UnificationEngine
 from utils import (
+    _freeze_dropout_layernorm,
+    _set_seeds,
+    _warn_non_reproducible,
     get_device,
     print_eval_info,
-    profile_code,
-    _set_seeds,
-    _freeze_dropout_layernorm,
-    _warn_non_reproducible,
-    _maybe_enable_wandb,
-    FileLogger,
-)
-from env_factory import create_environments
-from dataset import DataHandler
-from ppo import create_torchrl_modules, PPOAgent
-from embeddings import get_embedder
-from neg_sampling import get_sampler
-from model_eval import eval_corruptions_torchrl, TorchRLPolicyWrapper
-from callbacks import (
-    RolloutProgressCallback,
-    EvaluationCallback,
-    TrainingMetricsCallback,
-    TorchRLCallbackManager,
 )
 
 try:
     from torch.utils.tensorboard import SummaryWriter
+
     TENSORBOARD_AVAILABLE = True
 except ImportError:
     TENSORBOARD_AVAILABLE = False
-    print("Warning: TensorBoard not available. Install tensorboard for advanced logging.")
+    print("Warning: TensorBoard not available. Install tensorboard for logging.")
 
 
-# ------------------------------
-# Initialization helpers
-# ------------------------------
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler, IndexManager, Any, Any]:
-    """Prepare DataHandler, IndexManager, sampler and embedder."""
-    # Dataset
-    dh = DataHandler(
+def _default_corruption_mode(corruption_scheme: Optional[list[str]]) -> str:
+    scheme = corruption_scheme or ["head", "tail"]
+    has_head = "head" in scheme
+    has_tail = "tail" in scheme
+    if has_head and has_tail:
+        return "both"
+    if has_head:
+        return "head"
+    if has_tail:
+        return "tail"
+    return "both"
+
+
+def _materialize_data_components(
+    args: Any,
+    device: torch.device,
+) -> Tuple[DataHandler, IndexManager, Sampler, Any, UnificationEngine, AtomStringifier]:
+    """Build dataset, indices, sampler, embedder, and unification helpers."""
+    data_handler = DataHandler(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
-        janus_file=args.janus_file,
+        janus_file=getattr(args, "janus_file", None),
         train_file=args.train_file,
         valid_file=args.valid_file,
         test_file=args.test_file,
@@ -65,93 +81,220 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         n_train_queries=args.n_train_queries,
         n_eval_queries=args.n_eval_queries,
         n_test_queries=args.n_test_queries,
+        train_depth=getattr(args, "train_depth", None),
+        valid_depth=getattr(args, "valid_depth", None),
+        test_depth=getattr(args, "test_depth", None),
+        prob_facts=getattr(args, "prob_facts", False),
+        topk_facts=getattr(args, "topk_facts", None),
+        topk_facts_threshold=getattr(args, "topk_facts_threshold", None),
         corruption_mode=args.corruption_mode,
-        train_depth=args.train_depth,
-        valid_depth=args.valid_depth,
-        test_depth=args.test_depth,
-        prob_facts=args.prob_facts,
-        topk_facts=args.topk_facts,
-        topk_facts_threshold=args.topk_facts_threshold,
     )
 
-    # Respect caps from args while ensuring >1 eval query
-    args.n_train_queries = (
-        len(dh.train_queries)
-        if args.n_train_queries is None
-        else min(args.n_train_queries, len(dh.train_queries))
-    )
-    args.n_eval_queries = (
-        len(dh.valid_queries)
-        if args.n_eval_queries is None
-        else min(args.n_eval_queries, len(dh.valid_queries))
-    )
-    assert (
-        args.n_eval_queries > 1
-    ), "Number of evaluation queries must be greater than 1."
-    args.n_test_queries = (
-        len(dh.test_queries)
-        if args.n_test_queries is None
-        else min(args.n_test_queries, len(dh.test_queries))
-    )
-
-    # Index manager
-    im = IndexManager(
-        dh.constants,
-        dh.predicates,
-        args.max_total_vars,
-        constants_images=dh.constants_images if args.dataset_name == "mnist_addition" else set(),
-        constant_images_no=dh.constant_images_no if args.dataset_name == "mnist_addition" else 0,
-        rules=dh.rules,
-        max_arity=dh.max_arity,
-        device="cpu",
+    index_manager = IndexManager(
+        constants=data_handler.constants,
+        predicates=data_handler.predicates,
+        max_total_runtime_vars=args.max_total_vars,
+        max_arity=data_handler.max_arity,
         padding_atoms=args.padding_atoms,
-    )
-    im.build_fact_index(dh.facts)
-
-    # Negative sampler
-    dh.sampler = get_sampler(
-        data_handler=dh,
-        index_manager=im,
-        corruption_scheme=args.corruption_scheme,
         device=device,
     )
-    sampler = dh.sampler
 
-    # Embedder
-    embedder_getter = get_embedder(args, dh, im, device)
+    data_handler.materialize_indices(im=index_manager, device=device)
+
+    sampler = Sampler.from_data(
+        all_known_triples_idx=data_handler.all_known_triples_idx,
+        num_entities=index_manager.constant_no,
+        num_relations=index_manager.predicate_no,
+        device=device,
+        default_mode=_default_corruption_mode(args.corruption_scheme),
+        seed=args.seed_run_i,
+        domain_heads=getattr(data_handler, "allowed_heads_per_rel", None) or None,
+        domain_tails=getattr(data_handler, "allowed_tails_per_rel", None) or None,
+    )
+
+    embedder_getter = get_embedder(
+        args=args,
+        data_handler=data_handler,
+        constant_no=index_manager.constant_no,
+        predicate_no=index_manager.predicate_no,
+        runtime_var_end_index=index_manager.runtime_var_end_index,
+        constant_str2idx=index_manager.constant_str2idx,
+        predicate_str2idx=index_manager.predicate_str2idx,
+        constant_images_no=getattr(index_manager, "constant_images_no", 0),
+        device=device,
+    )
     embedder = embedder_getter.embedder
+    if hasattr(embedder, "to"):
+        embedder = embedder.to(device)
 
-    # Derived dims for concat options
-    args.atom_embedding_size = (
-        args.atom_embedding_size
-        if args.atom_embedder != "concat"
-        else (1 + dh.max_arity) * args.atom_embedding_size
+    unification_engine = UnificationEngine.from_index_manager(index_manager)
+    atom_stringifier = AtomStringifier.from_index_manager(index_manager)
+
+    return data_handler, index_manager, sampler, embedder, unification_engine, atom_stringifier
+
+
+def _make_env_from_split(
+    split,
+    *,
+    mode: str,
+    batch_size: int,
+    args: Any,
+    index_manager: IndexManager,
+    sampler: Sampler,
+    unification_engine: UnificationEngine,
+    atom_stringifier: AtomStringifier,
+    device: torch.device,
+) -> BatchedEnv:
+    """Instantiate a BatchedEnv for a specific dataset split."""
+    env = BatchedEnv(
+        batch_size=max(1, int(batch_size)),
+        queries=split.queries,
+        labels=split.labels,
+        query_depths=split.depths,
+        unification_engine=unification_engine,
+        sampler=sampler,
+        mode=mode,
+        max_arity=index_manager.max_arity,
+        padding_idx=index_manager.padding_idx,
+        runtime_var_start_index=index_manager.runtime_var_start_index,
+        total_vocab_size=index_manager.total_vocab_size,
+        padding_atoms=args.padding_atoms,
+        padding_states=args.padding_states,
+        true_pred_idx=index_manager.true_pred_idx,
+        false_pred_idx=index_manager.false_pred_idx,
+        end_pred_idx=index_manager.end_pred_idx if getattr(args, "endf_action", False) else None,
+        atom_stringifier=atom_stringifier if getattr(args, "verbose_env", 0) > 0 else None,
+        corruption_mode=args.corruption_mode if mode == "train" else False,
+        corruption_scheme=args.corruption_scheme,
+        train_neg_ratio=args.train_neg_ratio if mode == "train" else 0.0,
+        max_depth=args.max_depth,
+        memory_pruning=args.memory_pruning if mode == "train" else False,
+        end_proof_action=getattr(args, "endf_action", False),
+        skip_unary_actions=args.skip_unary_actions,
+        reward_type=args.reward_type,
+        verbose=getattr(args, "verbose_env", 0),
+        prover_verbose=getattr(args, "verbose_prover", 0),
+        device=device,
     )
-    args.state_embedding_size = (
-        args.atom_embedding_size
-        if args.state_embedder != "concat"
-        else args.atom_embedding_size * args.padding_atoms
+    env.index_manager = index_manager  # For diagnostics / evaluation tooling
+    return env
+
+
+def _extract_query_triples(split, limit: Optional[int]) -> torch.Tensor:
+    if split.queries.numel() == 0:
+        return torch.empty((0, 3), dtype=torch.long, device=split.queries.device)
+    triples = split.queries[:, 0, :3]
+    if limit is not None:
+        limit = min(int(limit), triples.shape[0])
+        triples = triples[:limit]
+    return triples
+
+
+def _evaluate_split(
+    actor: nn.Module,
+    env: Optional[BatchedEnv],
+    sampler: Sampler,
+    split,
+    *,
+    n_queries: Optional[int],
+    n_corruptions: Optional[int],
+    corruption_scheme: list[str],
+    verbose: bool = False,
+) -> dict:
+    if env is None or split is None or split.queries.shape[0] == 0:
+        return {}
+    if not n_corruptions or n_corruptions <= 0:
+        return {}
+
+    queries = _extract_query_triples(split, n_queries)
+    if queries.shape[0] == 0:
+        return {}
+
+    device = getattr(env, "_device", torch.device("cpu"))
+    queries = queries.to(device)
+
+    metrics = evaluate_ranking_metrics(
+        actor=actor,
+        env=env,
+        queries=queries,
+        sampler=sampler,
+        n_corruptions=n_corruptions,
+        corruption_modes=corruption_scheme,
+        deterministic=True,
+        verbose=verbose,
     )
-    embedder.embed_dim = args.state_embedding_size
+    
+    # Transform keys to match expected format (lowercase with _mean suffix)
+    # evaluate_ranking_metrics returns: MRR, Hits@1, Hits@3, Hits@10, per_mode
+    transformed_metrics = {
+        'mrr_mean': metrics.get('MRR', 0.0),
+        'hits1_mean': metrics.get('Hits@1', 0.0),
+        'hits3_mean': metrics.get('Hits@3', 0.0),
+        'hits10_mean': metrics.get('Hits@10', 0.0),
+    }
+    
+    # Add per-mode metrics if available
+    if 'per_mode' in metrics:
+        per_mode = metrics['per_mode']
+        for mode, mode_metrics in per_mode.items():
+            transformed_metrics[f'{mode}_mrr_mean'] = mode_metrics.get('MRR', 0.0)
+            transformed_metrics[f'{mode}_hits1_mean'] = mode_metrics.get('Hits@1', 0.0)
+            transformed_metrics[f'{mode}_hits3_mean'] = mode_metrics.get('Hits@3', 0.0)
+            transformed_metrics[f'{mode}_hits10_mean'] = mode_metrics.get('Hits@10', 0.0)
+    
+    return transformed_metrics
 
-    return dh, im, sampler, embedder
 
+def _evaluate(
+    args: Any,
+    actor: nn.Module,
+    sampler: Sampler,
+    data_handler: DataHandler,
+    eval_env: Optional[BatchedEnv],
+    test_env: Optional[BatchedEnv],
+) -> Tuple[dict, dict, dict]:
+    actor.eval()
 
-# ------------------------------
-# Checkpoint helpers
-# ------------------------------
+    metrics_valid = _evaluate_split(
+        actor,
+        eval_env,
+        sampler,
+        data_handler.get_materialized_split("valid"),
+        n_queries=args.n_eval_queries,
+        n_corruptions=args.eval_neg_samples,
+        corruption_scheme=args.corruption_scheme,
+        verbose=getattr(args, "depth_info", False),
+    )
+    if metrics_valid:
+        print_eval_info("VALID", metrics_valid)
+
+    metrics_test = _evaluate_split(
+        actor,
+        test_env,
+        sampler,
+        data_handler.get_materialized_split("test"),
+        n_queries=args.n_test_queries,
+        n_corruptions=args.test_neg_samples or args.eval_neg_samples,
+        corruption_scheme=args.corruption_scheme,
+        verbose=getattr(args, "depth_info", False),
+    )
+    if metrics_test:
+        print_eval_info("TEST", metrics_test)
+
+    metrics_train = {key: 0.0 for key in metrics_valid.keys()} if metrics_valid else {}
+    return metrics_train, metrics_valid, metrics_test
+
 
 def _model_dir(args: Any, date: str) -> Path:
-    return Path(args.models_path) / args.run_signature / f"seed_{args.seed_run_i}"
+    return Path(args.models_path) / args.run_signature / f"seed_{args.seed_run_i}" / date
 
 
 def _resolve_ckpt_to_load(root: Path, restore_best: bool) -> Optional[Path]:
-    if not root.is_dir():
-        raise FileNotFoundError(f"Model directory does not exist: {root}")
+    if not root.exists():
+        return None
     keyword = "best_eval" if restore_best else "last_epoch"
-    candidates = sorted([p for p in root.glob(f"*{keyword}*.pt")])
-    return candidates[-1] if candidates else None
-
+    matches = sorted(root.glob(f"*{keyword}*.pt"))
+    return matches[-1] if matches else None
 
 
 def _load_checkpoint(
@@ -161,233 +304,146 @@ def _load_checkpoint(
     checkpoint_path: Path,
     device: torch.device,
 ) -> Tuple[int, int, dict]:
-    """Load model checkpoint."""
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    
-    actor.load_state_dict(checkpoint['actor_state_dict'])
-    critic.load_state_dict(checkpoint['critic_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    
-    epoch = checkpoint.get('epoch', 0)
-    timestep = checkpoint.get('timestep', 0)
-    metrics = checkpoint.get('metrics', {})
-    
+    actor.load_state_dict(checkpoint["actor_state_dict"])
+    critic.load_state_dict(checkpoint["critic_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    epoch = checkpoint.get("epoch", 0)
+    timestep = checkpoint.get("timestep", 0)
+    metrics = checkpoint.get("metrics", {})
     print(f"Loaded checkpoint from {checkpoint_path}")
-    print(f"  Epoch: {epoch}, Timestep: {timestep}")
-    
     return epoch, timestep, metrics
 
 
-# ------------------------------
-# Logging utilities
-# ------------------------------
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 
 class TrainingLogger:
-    """
-    Advanced logging for training metrics.
-    
-    Supports console output, file logging, and TensorBoard.
-    """
+    """Simple logger that writes to disk and (optionally) TensorBoard."""
+
     def __init__(
         self,
         log_dir: Path,
         use_tensorboard: bool = True,
-        use_wandb: bool = False,
     ):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        
-        # File logger
         self.log_file = self.log_dir / "training_log.txt"
-        
-        # TensorBoard
+
         self.use_tensorboard = use_tensorboard and TENSORBOARD_AVAILABLE
         self.tb_writer = None
         if self.use_tensorboard:
             tb_dir = self.log_dir / "tensorboard"
             tb_dir.mkdir(exist_ok=True)
             self.tb_writer = SummaryWriter(log_dir=str(tb_dir))
-            print(f"TensorBoard logging to: {tb_dir}")
-        
-        # WandB (placeholder for future)
-        self.use_wandb = use_wandb
-        
-        # Metrics history
-        self.history = {
-            'train': [],
-            'eval': [],
-        }
-    
-    def log_scalar(
-        self,
-        name: str,
-        value: float,
-        step: int,
-        category: str = "train",
-    ) -> None:
-        """Log a scalar value."""
-        # TensorBoard
+
+        self.history = {"train": [], "eval": []}
+
+    def log_scalar(self, name: str, value: float, step: int, category: str = "train") -> None:
         if self.tb_writer is not None:
             self.tb_writer.add_scalar(f"{category}/{name}", value, step)
-        
-        # File
-        with open(self.log_file, 'a') as f:
-            f.write(f"[Step {step}] {category}/{name}: {value:.6f}\n")
-    
-    def log_dict(
-        self,
-        metrics: dict,
-        step: int,
-        category: str = "train",
-        prefix: str = "",
-    ) -> None:
-        """Log a dictionary of metrics."""
+        with open(self.log_file, "a", encoding="utf-8") as handle:
+            handle.write(f"[Step {step}] {category}/{name}: {value:.6f}\n")
+
+    def log_dict(self, metrics: dict, step: int, category: str = "train", prefix: str = "") -> None:
         for key, value in metrics.items():
             if isinstance(value, (int, float)):
                 full_name = f"{prefix}{key}" if prefix else key
-                self.log_scalar(full_name, value, step, category)
-    
+                self.log_scalar(full_name, float(value), step, category)
+
     def log_training_step(
         self,
-        iteration: int,
         global_step: int,
         policy_loss: float,
         value_loss: float,
         entropy: float,
-        mean_reward: float = None,
     ) -> None:
-        """Log training step metrics."""
         metrics = {
-            'policy_loss': policy_loss,
-            'value_loss': value_loss,
-            'entropy': entropy,
+            "policy_loss": policy_loss,
+            "value_loss": value_loss,
+            "entropy": entropy,
         }
-        if mean_reward is not None:
-            metrics['mean_reward'] = mean_reward
-        
         self.log_dict(metrics, global_step, category="train")
-    
-    def log_evaluation(
-        self,
-        iteration: int,
-        global_step: int,
-        metrics: dict,
-        prefix: str = "eval",
-    ) -> None:
-        """Log evaluation metrics."""
-        self.log_dict(metrics, global_step, category="eval", prefix=prefix + "/")
-        
-        # Store in history
-        self.history['eval'].append({
-            'iteration': iteration,
-            'step': global_step,
-            'metrics': metrics.copy(),
-        })
-        
-        # Console output (key metrics only)
-        key_metrics = ['mrr_mean', 'hits1_mean', 'hits10_mean', 'rewards_pos_mean']
-        msg = f"[Eval at Iter {iteration}]"
-        for key in key_metrics:
-            if key in metrics:
-                msg += f" {key}={metrics[key]:.4f}"
-        print(msg)
-    
+
+    def log_evaluation(self, iteration: int, global_step: int, metrics: dict, prefix: str = "eval") -> None:
+        self.log_dict(metrics, global_step, category="eval", prefix=f"{prefix}/")
+        self.history["eval"].append(
+            {
+                "iteration": iteration,
+                "step": global_step,
+                "metrics": metrics.copy(),
+            }
+        )
+
     def save_history(self) -> None:
-        """Save training history to JSON file."""
-        import json
-        history_file = self.log_dir / "training_history.json"
-        with open(history_file, 'w') as f:
-            json.dump(self.history, f, indent=2)
-        print(f"Saved training history to: {history_file}")
-    
+        history_path = self.log_dir / "training_history.json"
+        with open(history_path, "w", encoding="utf-8") as handle:
+            json.dump(self.history, handle, indent=2)
+
     def close(self) -> None:
-        """Close loggers."""
         if self.tb_writer is not None:
             self.tb_writer.close()
         self.save_history()
 
 
-# ------------------------------
+# ---------------------------------------------------------------------------
 # Training loop
-# ------------------------------
+# ---------------------------------------------------------------------------
 
 def _train(
     args: Any,
     actor: nn.Module,
     critic: nn.Module,
     optimizer: torch.optim.Optimizer,
-    train_env,
-    eval_env,
-    sampler,
+    train_env: BatchedEnv,
+    eval_env: Optional[BatchedEnv],
+    sampler: Sampler,
     data_handler: DataHandler,
     model_path: Path,
     device: torch.device,
 ) -> Tuple[nn.Module, nn.Module]:
-    """
-    Main TorchRL training loop with full metrics and logging.
-    
-    This function uses the modular PPOAgent class to handle training.
-    """
     if args.timesteps_train <= 0:
-        print("No training steps requested (timesteps_train <= 0)")
+        print("No training requested (timesteps_train <= 0). Skipping optimization.")
         return actor, critic
-    
-    # Training hyperparameters
-    n_steps = args.n_steps
-    batch_size = args.batch_size
-    n_epochs = args.n_epochs
-    total_timesteps = args.timesteps_train
-    
-    # Initialize logger
-    logger = TrainingLogger(
-        log_dir=model_path,
-        use_tensorboard=True,
-        use_wandb=False,
-    )
-    
-    # Initialize callbacks
+
+    logger = TrainingLogger(model_path, use_tensorboard=True)
+
     rollout_callback = RolloutProgressCallback(
-        total_steps=n_steps * args.n_envs,
+        total_steps=args.n_steps * args.n_envs,
         n_envs=args.n_envs,
         update_interval=25,
         verbose=True,
     )
-    
+
     eval_callback = EvaluationCallback(
         eval_env=eval_env,
         sampler=sampler,
-        eval_data=data_handler.valid_queries[:args.n_eval_queries],
-        eval_data_depths=(
-            data_handler.valid_depths[:args.n_eval_queries]
-            if hasattr(data_handler, 'valid_depths') and data_handler.valid_depths is not None
-            else None
-        ),
+        eval_data=data_handler.valid_queries,
+        eval_data_depths=getattr(data_handler, "valid_depths", None),
         n_corruptions=args.eval_neg_samples,
-        eval_freq=1,  # Evaluate every iteration
-        best_metric=args.eval_best_metric if hasattr(args, 'eval_best_metric') else "mrr_mean",
+        eval_freq=1,
+        best_metric=getattr(args, "eval_best_metric", "mrr_mean"),
         save_path=model_path,
         verbose=True,
-        collect_detailed=args.depth_info,
-        verbose_cb=getattr(args, 'verbose_cb', False),  # Enable verbose callback debugging
+        collect_detailed=getattr(args, "depth_info", False),
+        verbose_cb=getattr(args, "verbose_cb", False),
     )
-    
+
     train_callback = TrainingMetricsCallback(
         log_interval=1,
         verbose=True,
-        verbose_cb=getattr(args, 'verbose_cb', False),  # Enable verbose callback debugging
-        collect_detailed=args.depth_info 
+        verbose_cb=getattr(args, "verbose_cb", False),
+        collect_detailed=getattr(args, "depth_info", False),
     )
-    
+
     callback_manager = TorchRLCallbackManager(
         rollout_callback=rollout_callback,
-        eval_callback=eval_callback,
+        eval_callback=eval_callback if eval_env is not None else None,
         train_callback=train_callback,
     )
-    
-    # Notify callbacks of training start
     callback_manager.on_training_start()
-    
-    # Create PPO agent
+
     ppo_agent = PPOAgent(
         actor=actor,
         critic=critic,
@@ -396,11 +452,12 @@ def _train(
         eval_env=eval_env,
         sampler=sampler,
         data_handler=data_handler,
+        index_manager=None,
         args=args,
         n_envs=args.n_envs,
-        n_steps=n_steps,
-        n_epochs=n_epochs,
-        batch_size=batch_size,
+        n_steps=args.n_steps,
+        n_epochs=args.n_epochs,
+        batch_size=args.batch_size,
         gamma=args.gamma,
         gae_lambda=0.95,
         clip_range=args.clip_range,
@@ -409,230 +466,143 @@ def _train(
         max_grad_norm=0.5,
         device=device,
         model_save_path=model_path,
-        eval_best_metric=args.eval_best_metric if hasattr(args, 'eval_best_metric') else "mrr_mean",
-        verbose_cb=getattr(args, 'verbose_cb', False),  # Enable verbose callback debugging
+        eval_best_metric=getattr(args, "eval_best_metric", "mrr_mean"),
+        verbose_cb=getattr(args, "verbose_cb", False),
     )
-    
-    # Train the agent
+
     actor, critic = ppo_agent.train(
-        total_timesteps=total_timesteps,
+        total_timesteps=args.timesteps_train,
         eval_callback=callback_manager,
         rollout_callback=callback_manager.rollout_callback,
         callback_manager=callback_manager,
         logger=logger,
     )
-    
-    # Close logger
+
     logger.close()
-    
-    # Restore best model if requested
+
     if args.restore_best_val_model and ppo_agent.best_model_path is not None:
         print(f"Restoring best model from {ppo_agent.best_model_path}")
         ppo_agent.load_checkpoint(ppo_agent.best_model_path)
-    
+
     return actor, critic
 
 
-def _evaluate(
-    args: Any,
-    actor: nn.Module,
-    eval_env,
-    kge_engine,
-    sampler,
-    data_handler: DataHandler
-) -> Tuple[dict, dict, dict]:
-    """
-    Final evaluation on train/valid/test sets with full corruption-based metrics.
-    
-    Returns:
-        Tuple of (train_metrics, valid_metrics, test_metrics)
-    """
-    from sb3_code.sb3_callbacks import _EvalDepthRewardTracker
-    
-    print("\n" + "="*60)
-    print("Running Final Evaluation with Corruption-based Metrics")
-    print("="*60)
-    
-    actor.eval()
-    
-    # Prepare datasets
-    valid_data = data_handler.valid_queries[:args.n_eval_queries]
-    test_data = data_handler.test_queries[:args.n_test_queries]
-    
-    valid_depths = (
-        data_handler.valid_queries_depths[:args.n_eval_queries]
-        if hasattr(data_handler, 'valid_queries_depths') and data_handler.valid_queries_depths is not None
-        else None
-    )
-    test_depths = (
-        data_handler.test_queries_depths[:args.n_test_queries]
-        if hasattr(data_handler, 'test_queries_depths') and data_handler.test_queries_depths is not None
-        else None
-    )
-    
-    # Evaluate on each split
-    metrics_valid = {}
-    metrics_test = {}
-    
-    # Valid set
-    if len(valid_data) > 0:
-        print("\n--- Evaluating on VALID set ---")
-        # Create depth tracker for this evaluation
-        depth_tracker = _EvalDepthRewardTracker()
-        
-        metrics_valid = eval_corruptions_torchrl(
-            actor=actor,
-            env=eval_env,
-            data=valid_data,
-            sampler=sampler,
-            n_corruptions=args.eval_neg_samples,
-            deterministic=True,
-            verbose=1,
-            plot=False,
-            evaluation_mode='rl_only',
-            corruption_scheme=['head', 'tail'],
-            info_callback=depth_tracker,
-            data_depths=valid_depths,
-        )
-        
-        # Merge depth-based metrics into results
-        depth_metrics = depth_tracker.metrics()
-        metrics_valid.update(depth_metrics)
-        print_eval_info("VALID", metrics_valid)
-    
-    # Test set (full evaluation)
-    if len(test_data) > 0:
-        print("\n--- Evaluating on TEST set ---")
-        # Create depth tracker for this evaluation
-        depth_tracker = _EvalDepthRewardTracker()
-        
-        metrics_test = eval_corruptions_torchrl(
-            actor=actor,
-            env=eval_env,
-            data=test_data,
-            sampler=sampler,
-            n_corruptions=args.test_neg_samples,
-            deterministic=True,
-            verbose=1,
-            plot=args.plot_trajectories if hasattr(args, 'plot_trajectories') else False,
-            evaluation_mode='rl_only',
-            corruption_scheme=['head', 'tail'],
-            info_callback=depth_tracker,
-            data_depths=test_depths,
-        )
-        
-        # Merge depth-based metrics into results
-        depth_metrics = depth_tracker.metrics()
-        metrics_test.update(depth_metrics)
-        print_eval_info("TEST", metrics_test)
-    
-    print("\n" + "="*60)
-    print("Final Evaluation Complete")
-    print("="*60 + "\n")
-
-    # set metrics train as metrics valid with all 0s
-    metrics_train = {key: 0.0 for key in metrics_valid.keys()}
-    
-    return metrics_train, metrics_valid, metrics_test
-
-
-# ------------------------------
-# Main training function
-# ------------------------------
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 def main(args, log_filename, use_logger, use_WB, WB_path, date):
-    """Main training function for TorchRL-based PPO."""
-    
+    del log_filename, use_logger, use_WB, WB_path  # Unused legacy parameters
+
     _warn_non_reproducible(args)
     _set_seeds(args.seed_run_i)
-    
-    # Normalize flags (no KGE integration in this version)
-    args.kge_action = False
-    args.logit_fusion = False
-    args.inference_fusion = False
-    args.pbrs = False
-    args.enable_top_k = False
-    
-    device = get_device(args.device)
-    print(f"Device: {device}. CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
-    
-    # Build data and index
-    kge_engine = None  # No KGE in this version
-    dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
-    
-    # Create environments
-    train_env, eval_env, callback_env = create_environments(
-        args, 
-        dh, 
-        index_manager, 
-        kge_engine=None)
 
-    # --- CREATE MODEL ---
-    print("\nCreating TorchRL actor-critic model...")
-    
+    args.corruption_scheme = list(args.corruption_scheme or ["head", "tail"])
+
+    device = get_device(args.device)
+    print(
+        f"Device: {device}. CUDA available: {torch.cuda.is_available()}, "
+        f"Device count: {torch.cuda.device_count()}"
+    )
+
+    (
+        data_handler,
+        index_manager,
+        sampler,
+        embedder,
+        unification_engine,
+        atom_stringifier,
+    ) = _materialize_data_components(args, device)
+
+    train_split = data_handler.get_materialized_split("train")
+    valid_split = data_handler.get_materialized_split("valid")
+    test_split = data_handler.get_materialized_split("test")
+
+    train_env = _make_env_from_split(
+        train_split,
+        mode="train",
+        batch_size=args.n_envs,
+        args=args,
+        index_manager=index_manager,
+        sampler=sampler,
+        unification_engine=unification_engine,
+        atom_stringifier=atom_stringifier,
+        device=device,
+    )
+    eval_env = _make_env_from_split(
+        valid_split,
+        mode="eval",
+        batch_size=getattr(args, "n_eval_envs", args.n_envs),
+        args=args,
+        index_manager=index_manager,
+        sampler=sampler,
+        unification_engine=unification_engine,
+        atom_stringifier=atom_stringifier,
+        device=device,
+    )
+    test_env = _make_env_from_split(
+        test_split,
+        mode="eval",
+        batch_size=getattr(args, "n_eval_envs", args.n_envs),
+        args=args,
+        index_manager=index_manager,
+        sampler=sampler,
+        unification_engine=unification_engine,
+        atom_stringifier=atom_stringifier,
+        device=device,
+    )
+
+    embed_dim = getattr(embedder, "embed_dim", getattr(embedder, "atom_embedding_size", args.atom_embedding_size))
     actor, critic = create_torchrl_modules(
         embedder=embedder,
         num_actions=args.padding_states,
-        embed_dim=args.state_embedding_size,
+        embed_dim=embed_dim,
         hidden_dim=128,
         num_layers=8,
         dropout_prob=0.2,
         device=device,
         enable_kge_action=False,
         kge_inference_engine=None,
-        index_manager=None,
+        index_manager=index_manager,
     )
-    
-    print(f"Actor parameters: {sum(p.numel() for p in actor.parameters()):,}")
-    print(f"Critic parameters: {sum(p.numel() for p in critic.parameters()):,}")
-    
-    # --- CREATE OPTIMIZER ---
-    # Deduplicate parameters since actor and critic share the same underlying model
-    params_dict = {id(p): p for p in list(actor.parameters()) + list(critic.parameters())}
-    optimizer = torch.optim.Adam(params_dict.values(), lr=args.lr)
-    
-    # --- LOAD MODEL IF REQUESTED ---
+
+    params = {id(p): p for p in list(actor.parameters()) + list(critic.parameters())}
+    optimizer = torch.optim.Adam(params.values(), lr=args.lr)
+
     model_path = _model_dir(args, date)
-    start_epoch = 0
-    
+    model_path.mkdir(parents=True, exist_ok=True)
+
     if args.load_model:
-        try:
-            ckpt = _resolve_ckpt_to_load(model_path, restore_best=args.restore_best_val_model)
-            if ckpt is not None:
-                start_epoch, _, _ = _load_checkpoint(actor, critic, optimizer, ckpt, device)
-            else:
-                print(f"No checkpoint found in {model_path}, starting from scratch.")
-        except Exception as e:
-            print(f"Warning: Could not load model: {e}")
-            if args.timesteps_train == 0:
-                raise ValueError("In eval-only mode but could not load model.")
-    
-    # --- TRAIN ---
-    if args.timesteps_train > 0 and not args.load_model:
+        ckpt = _resolve_ckpt_to_load(model_path, restore_best=args.restore_best_val_model)
+        if ckpt is None:
+            raise FileNotFoundError(f"No checkpoint found in {model_path}")
+        _load_checkpoint(actor, critic, optimizer, ckpt, device)
+    else:
         actor, critic = _train(
             args,
             actor,
             critic,
             optimizer,
             train_env,
-            callback_env,
+            eval_env,
             sampler,
-            dh,
+            data_handler,
             model_path,
             device,
         )
-    
-    # --- TEST ---
-    print("\nFreezing dropout and layer normalization for evaluation...")
+
     actor.apply(_freeze_dropout_layernorm)
     critic.apply(_freeze_dropout_layernorm)
-    
     actor.eval()
     critic.eval()
-    
-    # Evaluate
+
     metrics_train, metrics_valid, metrics_test = _evaluate(
-        args, actor, eval_env, kge_engine, sampler, dh
+        args,
+        actor,
+        sampler,
+        data_handler,
+        eval_env,
+        test_env,
     )
-    
+
     return metrics_train, metrics_valid, metrics_test

@@ -615,7 +615,17 @@ def _unify_with_rules(
     cat_sorted = cat_compact.index_select(0, perm)
     seg_start = torch.ones_like(owner_sorted, dtype=torch.bool, device=device)
     seg_start[1:] = owner_sorted[1:] != owner_sorted[:-1]
-    pos_in_owner = torch.cumsum(seg_start, dim=0) - 1
+    
+    # FIX: pos_in_owner should be position WITHIN each segment, not segment ID
+    # Compute the index where each segment starts
+    seg_indices = torch.arange(owner_sorted.shape[0], device=device)
+    seg_first_idx = torch.zeros_like(owner_sorted, dtype=torch.long)
+    seg_first_idx[seg_start] = seg_indices[seg_start]
+    # Forward-fill to get the start index for each position
+    seg_first_idx = torch.cummax(seg_first_idx, dim=0)[0]
+    # Position within segment is current index - segment start index
+    pos_in_owner = seg_indices - seg_first_idx
+    
     keep = pos_in_owner < K
     if keep.any():
         db = owner_sorted[keep]

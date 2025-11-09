@@ -79,6 +79,13 @@ class PolicyNetwork(nn.Module):
         # Use bmm instead of matmul for better performance
         logits = torch.bmm(encoded_obs.unsqueeze(1), encoded_actions.transpose(1, 2)).squeeze(1)
         
+        # Check if any rows have all actions masked (debugging)
+        all_masked = (~action_mask).all(dim=1)
+        if all_masked.any():
+            print(f"WARNING: {all_masked.sum().item()} environments have all actions masked!")
+            # Set first action to 0 logit as fallback (will still be invalid, but at least won't be -inf everywhere)
+            logits[all_masked, 0] = 0.0
+        
         # Mask invalid actions with -inf (avoid .to() call by ensuring mask is on correct device)
         logits = logits.masked_fill(~action_mask, float("-inf"))
         

@@ -235,10 +235,18 @@ class DataHandler:
                 line = line.strip()
                 if not line or line.startswith('%') or line.startswith('one_step'):
                     continue
+                # Skip Prolog directives
+                if line.startswith(':-'):
+                    continue
+                # Skip lines with Prolog operators (rules, clauses)
+                if ':-' in line or 'findall' in line or line in ['(', ')', ');', ',', '.']:
+                    continue
                 try:
                     term = get_atom_from_string(line)
-                    self.facts.append(term)
-                    self.facts_str.append((term.predicate, *term.args))
+                    # Only accept binary relations (arity 2)
+                    if len(term.args) == 2:
+                        self.facts.append(term)
+                        self.facts_str.append((term.predicate, *term.args))
                 except Exception:
                     continue
 

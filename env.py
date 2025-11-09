@@ -238,9 +238,45 @@ class BatchedEnv(EnvBase):
         if self.mode == 'train':
             idxs = torch.randint(0, self._num_all, (N,), device=device)
         elif self.mode == 'eval':
-            base = torch.arange(N, device=device) + int(self.counter)
-            idxs = torch.remainder(base, self._num_all)
-            self.counter = int((int(self.counter) + N) % self._num_all)
+            assert hasattr(self, "_eval_slot_starts") and self._eval_slot_starts is not None and \
+                   hasattr(self, "_eval_slot_lengths") and self._eval_slot_lengths is not None and \
+                   hasattr(self, "_eval_slot_ptr") and self._eval_slot_ptr is not None, \
+                "Evaluation slots not initialized. Call set_eval_dataset with per_slot_lengths."
+            # Per-slot schedule: pick next item for each env row independently
+            # env_idx lists the rows we are resetting (ascending order)
+            # Filter out slots with zero length
+            starts  = self._eval_slot_starts
+            lengths = self._eval_slot_lengths
+            ptrs    = self._eval_slot_ptr
+            
+            # Filter env_idx to only include slots with non-zero lengths
+            active_slots_mask = lengths[env_idx] > 0
+            if not active_slots_mask.any():
+                # No active slots to reset, return empty observation
+                return self._create_observation()
+            
+            active_env_idx = env_idx[active_slots_mask]
+            N_active = active_env_idx.shape[0]
+            
+            idxs = torch.empty(N_active, dtype=torch.long, device=device)
+            # local copy to avoid multiple Python <-> tensor switches
+            for j in range(N_active):
+                s = int(active_env_idx[j].item())    # slot id
+                ofs = int(ptrs[s].item())            # next local offset for this slot
+                if ofs >= int(lengths[s].item()):
+                    raise RuntimeError(
+                        f"Slot {s} exceeded its scheduled eval items "
+                        f"(ptr={ofs}, limit={int(lengths[s].item())}, "
+                        f"lengths={lengths.tolist()})"
+                    )
+                idxs[j] = starts[s] + ofs
+                ptrs[s] = ofs + 1                    # advance local pointer
+            # write back (in-place tensor already updated)
+            self._eval_slot_ptr = ptrs
+            
+            # Update env_idx and N to only include active slots
+            env_idx = active_env_idx
+            N = N_active
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
 
@@ -282,7 +318,56 @@ class BatchedEnv(EnvBase):
         self._update_original_queries_for_indices(env_idx)
 
         # Compute derived only for reset envs
-        self._compute_derived_states(active_mask=reset_mask, clear_inactive=False)
+        # Create a mask that only includes the environments that were actually reset (env_idx)
+        actual_reset_mask = torch.zeros(B, dtype=torch.bool, device=device)
+        actual_reset_mask[env_idx] = True
+        
+        # Debug: Check if we're computing derived states for any environments
+        if self.verbose > 0 and env_idx.numel() > 0:
+            print(f"[DEBUG _reset] Computing derived states for {env_idx.numel()} envs")
+            print(f"[DEBUG _reset] current_queries shape: {self.current_queries[env_idx].shape}")
+            print(f"[DEBUG _reset] Sample current_query: {self.current_queries[env_idx[0]]}")
+        
+        self._compute_derived_states(active_mask=actual_reset_mask, clear_inactive=False)
+        
+        # Debug: Check derived states after computation
+        if self.verbose > 0 and env_idx.numel() > 0:
+            print(f"[DEBUG _reset] Derived counts after compute: {self.derived_states_counts[env_idx]}")
+            if self.derived_states_counts[env_idx].sum() == 0:
+                print(f"[DEBUG _reset] WARNING: All derived counts are 0!")
+        
+        # IMPORTANT: Initialize inactive slots AFTER _compute_derived_states to avoid being overwritten
+        if self.mode == 'eval':
+            # For inactive slots in the original reset_mask, set them to a terminal state
+            # This needs to happen AFTER _compute_derived_states so it doesn't get overwritten
+            if reset_mask is not None:
+                original_reset_idx = torch.arange(reset_mask.shape[0], device=device)[reset_mask]
+            else:
+                original_reset_idx = torch.arange(B, device=device)
+            
+            lengths = self._eval_slot_lengths
+            inactive_in_reset = original_reset_idx[lengths[original_reset_idx] == 0]
+            if inactive_in_reset.numel() > 0:
+                # Set inactive slots to terminated state (FALSE + done=True)
+                false_state_full = self._create_false_state()  # [M, D] padded
+                false_atom = false_state_full[0]  # Just the first atom [D]
+                false_queries = torch.full((inactive_in_reset.shape[0], A, D), pad, dtype=torch.long, device=device)
+                false_queries[:, 0] = false_atom
+                self.current_queries.index_copy_(0, inactive_in_reset, false_queries)
+                self.current_labels.index_fill_(0, inactive_in_reset, 0)
+                self.current_depths.index_fill_(0, inactive_in_reset, self.max_depth + 1)  # Exceed max_depth to ensure done
+                self.next_var_indices.index_fill_(0, inactive_in_reset, self.runtime_var_start_index)
+                
+                # CRITICAL: Also set derived states for inactive slots to have at least one action
+                # Otherwise they'll trigger "all actions masked" warnings
+                # Create a dummy FALSE derived state
+                inactive_count = inactive_in_reset.shape[0]
+                S = self.padding_states
+                dummy_derived = torch.full((inactive_count, S, A, D), pad, dtype=torch.long, device=device)
+                dummy_derived[:, 0, 0] = false_atom  # First action is FALSE
+                self.derived_states_batch.index_copy_(0, inactive_in_reset, dummy_derived)
+                self.derived_states_counts.index_fill_(0, inactive_in_reset, 1)  # Only 1 action available
+        
         return self._create_observation()
 
     def _step(self, tensordict: TensorDict) -> TensorDict:
@@ -292,8 +377,11 @@ class BatchedEnv(EnvBase):
         if actions.dtype != torch.long:
             actions = actions.long()
 
-        # Validate actions
-        invalid_mask = actions >= self.derived_states_counts
+        counts = self.derived_states_counts
+        active_mask = counts > 0
+
+        # Validate actions only for rows that have available successors
+        invalid_mask = (actions >= counts) & active_mask
         invalid_idx = torch.arange(actions.shape[0], device=self._device)[invalid_mask]
         if invalid_idx.numel() > 0:
             raise ValueError(
@@ -304,24 +392,56 @@ class BatchedEnv(EnvBase):
         # Apply
         B = self.batch_size_int
         batch_ids = torch.arange(B, device=self._device)
-        self.current_queries = self.derived_states_batch[batch_ids, actions]
-        self.current_depths = self.current_depths + 1
+        if active_mask.any():
+            active_rows = batch_ids[active_mask]
+            chosen = self.derived_states_batch[active_rows, actions[active_rows]]
+            self.current_queries.index_copy_(0, active_rows, chosen)
+        self.current_depths = self.current_depths + active_mask.long()
 
         # Add new current state to memory
         if self.memory_pruning:
-            self._bloom_add_current(batch_ids)
+            if active_mask.any():
+                self._bloom_add_current(batch_ids[active_mask])
 
         # Reward + done
         rewards, terminated, truncated, is_success = self._get_done_reward()
         dones = terminated | truncated
+        if self.verbose > 1:
+            sample = min(2, B)
+            print(f"[DEBUG _step] dones sample: {dones[:sample].view(-1)}")
+
+        if self.verbose > 0:
+            sample = min(2, B)
+            print(f"[DEBUG _step] depth={self.current_depths[:sample]}, done={dones[:sample].view(-1)}")
+            print(f"[DEBUG _step] current_query[0]={self.current_queries[0, 0]}")
 
         # Next derived states for active envs
         active_mask = ~dones.squeeze(-1)
-        self._compute_derived_states(active_mask=active_mask, clear_inactive=True)
+        if self.verbose > 0:
+            print(f"[DEBUG _step] active_mask={active_mask[:min(4, B)]}, sum={active_mask.sum().item()}")
+        if self.verbose > 0 and active_mask.any():
+            active_idx = torch.arange(self.batch_size_int, device=self._device)[active_mask]
+            print(f"[DEBUG _step] Before compute_derived: active_mask sum={active_mask.sum().item()}")
+            print(f"[DEBUG _step] current_queries[active]: {self.current_queries[active_idx[:min(2, active_idx.shape[0])]]}")
+            print(f"[DEBUG _step] current_depths[active]: {self.current_depths[active_idx[:min(2, active_idx.shape[0])]]}")
+        
+        # In eval mode, don't clear inactive (done) envs - they need to keep their terminal state with valid actions
+        # In train mode, clearing is OK because envs will be reset immediately
+        should_clear_inactive = (self.mode == 'train')
+        self._compute_derived_states(active_mask=active_mask, clear_inactive=should_clear_inactive)
+        
+        if self.verbose > 0:
+            print(f"[DEBUG _step] After compute_derived: derived_counts={self.derived_states_counts[:min(8, self.batch_size_int)]}")
 
         # Pack observation
         obs = self._create_observation_dict()
         obs['is_success'] = is_success.squeeze(-1)
+        
+        # DEBUG: Print derived counts to diagnose constrained action space
+        if self.verbose > 0:
+            sample_counts = self.derived_states_counts[:min(4, B)]
+            print(f"[DEBUG env.step] derived_states_counts (first 4): {sample_counts.tolist()}")
+        
         td = TensorDict(
             {**obs, "reward": rewards, "done": dones, "terminated": terminated, "truncated": truncated},
             batch_size=self.batch_size, device=self._device
@@ -338,25 +458,41 @@ class BatchedEnv(EnvBase):
         idx = torch.arange(active_mask.shape[0], device=self._device)[active_mask]
         batched_derived = self.derived_states_batch.clone()
         counts = self.derived_states_counts.clone()
+        
+        verbose = self.verbose > 0
 
         if idx.numel() > 0:
+            if verbose:
+                print(f"[DEBUG _compute_derived_states] Computing for {idx.numel()} envs")
+                print(f"[DEBUG] Sample current_query: {self.current_queries[idx[0]]}")
+                print(f"[DEBUG] next_var_indices: {self.next_var_indices[idx[:min(3, idx.numel())]]}")
+            
             all_derived, derived_counts_subset, updated_var_indices = self.unification_engine.get_derived_states(
                 current_states=self.current_queries.index_select(0, idx),
                 next_var_indices=self.next_var_indices.index_select(0, idx),
                 excluded_queries=self.original_queries.index_select(0, idx),
                 verbose=self.prover_verbose,
             )
+            
+            if verbose:
+                print(f"[DEBUG] After get_derived_states: all_derived.shape={all_derived.shape}, counts_subset={derived_counts_subset[:min(3, derived_counts_subset.shape[0])]}")
+            
             self.next_var_indices.index_copy_(0, idx, updated_var_indices)
 
             # Optional skip-unary closure on the active subset
             if self.skip_unary_actions:
                 all_derived, derived_counts_subset = self._skip_unary(idx, all_derived, derived_counts_subset)
+                if verbose:
+                    print(f"[DEBUG] After _skip_unary: counts_subset={derived_counts_subset[:min(3, derived_counts_subset.shape[0])]}")
 
             # Vectorized postprocess (with memory pruning)
             all_derived, derived_counts_subset = self._postprocess(
                 idx, all_derived, derived_counts_subset, stage="final"
             )
-
+            
+            if verbose:
+                print(f"[DEBUG] After _postprocess: counts_subset={derived_counts_subset[:min(3, derived_counts_subset.shape[0])]}")
+            
             # Fit to env buffers [S, A] dimensions
             A, K_sub, M_sub, D = all_derived.shape if all_derived.numel() > 0 else (idx.numel(), 0, self.padding_atoms, self.max_arity+1)
             K_full = batched_derived.shape[1]
@@ -402,8 +538,9 @@ class BatchedEnv(EnvBase):
             batched_derived[dst_rows, 0] = expanded
             counts[dst_rows] = 1
 
-        self.derived_states_batch = batched_derived
-        self.derived_states_counts = counts
+        # Write back in-place instead of reassigning
+        self.derived_states_batch.copy_(batched_derived)
+        self.derived_states_counts.copy_(counts)
 
     # ---------------------------------------------------------------------
     # Skip-unary closure (batched; bounded loop on subset only)
@@ -654,6 +791,11 @@ class BatchedEnv(EnvBase):
         states = self.current_queries                                     # [B, A, D]
         non_pad = states[:, :, 0] != pad                                   # [B, A]
         preds = states[:, :, 0]                                            # [B, A]
+        if self.verbose > 1:
+            sample = min(2, B)
+            print(f"[DEBUG _get_done_reward] preds sample: {preds[:sample, :2]}")
+            print(f"[DEBUG _get_done_reward] labels sample: {self.current_labels[:sample]}")
+            print(f"[DEBUG _get_done_reward] true_idx={self.true_pred_idx} false_idx={self.false_pred_idx}")
 
         all_true = torch.zeros(B, dtype=torch.bool, device=device)
         any_false = torch.zeros(B, dtype=torch.bool, device=device)
@@ -662,9 +804,13 @@ class BatchedEnv(EnvBase):
         if self.true_pred_idx is not None:
             true_mask = (preds == self.true_pred_idx) | ~non_pad
             all_true = true_mask.all(dim=1) & non_pad.any(dim=1)
+            if self.verbose > 1:
+                print(f"[DEBUG _get_done_reward] all_true raw: {all_true[:sample]}")
 
         if self.false_pred_idx is not None:
             any_false = (preds == self.false_pred_idx).any(dim=1)
+            if self.verbose > 1:
+                print(f"[DEBUG _get_done_reward] any_false raw: {any_false[:sample]}")
 
         if self.end_proof_action:
             single_pred = non_pad.sum(dim=1) == 1
@@ -676,9 +822,14 @@ class BatchedEnv(EnvBase):
 
         depth_exceeded = self.current_depths >= self.max_depth
         natural_term = all_true | any_false
+        if self.verbose > 1:
+            print(f"[DEBUG _get_done_reward] natural_term: {natural_term[:sample]}")
         terminated[:, 0] = natural_term
         truncated[:, 0] = depth_exceeded & ~natural_term
         done = natural_term | depth_exceeded
+        if self.verbose > 1:
+            print(f"[DEBUG _get_done_reward] terminated: {terminated[:sample, 0]}")
+            print(f"[DEBUG _get_done_reward] truncated: {truncated[:sample, 0]}")
 
         success = all_true
         labels = self.current_labels
@@ -734,6 +885,35 @@ class BatchedEnv(EnvBase):
         action_indices = torch.arange(S, device=device).view(1, S).expand(B, S)
         counts = self.derived_states_counts.view(B, 1)
         action_mask = action_indices < counts
+        
+        # If everything is masked we need to surface the underlying issue immediately.
+        # HOWEVER: If all environments are done, this is normal and we should just return dummy obs
+        all_false = (~action_mask).all(dim=1)
+        if all_false.any():
+            rows = all_false.nonzero(as_tuple=False).view(-1)
+            # Check if these rows are all done - if so, it's OK (terminal states don't need actions)
+            # For now, check if current state is terminal (TRUE/FALSE/END)
+            first_preds = self.current_queries[rows, 0, 0]
+            is_terminal = torch.zeros_like(first_preds, dtype=torch.bool)
+            if self.true_pred_idx is not None:
+                is_terminal = is_terminal | (first_preds == self.true_pred_idx)
+            if self.false_pred_idx is not None:
+                is_terminal = is_terminal | (first_preds == self.false_pred_idx)
+            if self.end_pred_idx is not None:
+                is_terminal = is_terminal | (first_preds == self.end_pred_idx)
+            
+            non_terminal_masked = rows[~is_terminal]
+            if non_terminal_masked.numel() > 0:
+                diagnostics = {
+                    "rows": non_terminal_masked.tolist(),
+                    "derived_counts": self.derived_states_counts[non_terminal_masked].tolist(),
+                    "current_depths": self.current_depths[non_terminal_masked].tolist(),
+                    "labels": self.current_labels[non_terminal_masked].tolist(),
+                }
+                raise RuntimeError(
+                    "[BatchedEnv] All actions masked for non-terminal states; inspect derived-state generator. "
+                    f"Context={diagnostics}"
+                )
 
         return {
             'sub_index': self.current_queries.unsqueeze(1),
@@ -956,3 +1136,61 @@ class BatchedEnv(EnvBase):
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed(seed)
+
+    def set_eval_dataset(
+        self,
+        queries: torch.Tensor,        # [M, A, D]
+        labels: torch.Tensor,         # [M]
+        query_depths: torch.Tensor,   # [M]
+        per_slot_lengths: Optional[torch.Tensor] = None,  # [B] (first Q > 0, rest 0)
+    ) -> None:
+        """
+        Preloads the evaluation dataset and (optionally) a per-slot schedule.
+
+        If per_slot_lengths is provided:
+        - Data in `queries/labels/depths` MUST be laid out as a concatenation of
+            per-slot blocks: slot0's E0 items, then slot1's E1 items, etc.
+        - We compute per-slot (start, length) and reset per-slot pointers.
+        - _reset(mode='eval') will then pull the next item for EACH SLOT independently
+            (partial resets work too).
+
+        If per_slot_lengths is None:
+        - Falls back to the original global sequential pointer (self.counter).
+        """
+        device = self._device
+        
+        # Switch to eval mode (required for per-slot scheduling to work)
+        self.mode = 'eval'
+        
+        # 1) Store dataset tensors
+        self._all_queries_padded = self._ensure_query_tensor(queries.to(device))
+        self._all_first_atoms    = self._compute_first_atoms(self._all_queries_padded)
+        self._all_labels         = self._ensure_vector(labels.to(device), self._all_queries_padded.shape[0], "labels")
+        self._all_depths         = self._ensure_vector(query_depths.to(device), self._all_queries_padded.shape[0], "query_depths")
+        self._num_all            = int(self._all_queries_padded.shape[0])
+
+        # 2) Default: no per-slot schedule
+        self._eval_slot_lengths = None
+        self._eval_slot_starts  = None
+        self._eval_slot_ptr     = None
+
+        # 3) Optional per-slot schedule (first Q entries > 0; rest 0)
+        if per_slot_lengths is not None:
+            per_slot_lengths = per_slot_lengths.to(device=device, dtype=torch.long)
+            if per_slot_lengths.numel() != self.batch_size_int:
+                raise ValueError(f"per_slot_lengths must be [B], got {per_slot_lengths.shape}")
+            total = int(per_slot_lengths.sum().item())
+            if total != self._num_all:
+                raise ValueError(f"Sum(per_slot_lengths)={total} must equal #items M={self._num_all}.")
+
+            # starts[i] = sum_{j<i} lengths[j]
+            starts = torch.zeros_like(per_slot_lengths)
+            if starts.numel() > 1:
+                starts[1:] = torch.cumsum(per_slot_lengths[:-1], dim=0)
+
+            self._eval_slot_lengths = per_slot_lengths
+            self._eval_slot_starts  = starts
+            self._eval_slot_ptr     = torch.zeros_like(per_slot_lengths)  # next local offset per slot
+
+        # 4) Reset global pointer as well (used if no per-slot schedule)
+        self.counter = 0

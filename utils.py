@@ -680,6 +680,15 @@ class FileLogger:
                             continue
         return False
 
+    def _flatten_metric_dict(self, prefix: str, value: Any):
+        """Recursively flatten nested metric dictionaries."""
+        if isinstance(value, dict):
+            for sub_key, sub_value in value.items():
+                new_prefix = f"{prefix}_{sub_key}"
+                yield from self._flatten_metric_dict(new_prefix, sub_value)
+        else:
+            yield prefix, value
+
     def _parse_line(self, line: str) -> Dict[str, Any]:
         """
         Parse a semicolon-delimited log line into a typed dictionary.
@@ -697,12 +706,9 @@ class FileLogger:
                 continue
             d_key, raw_value = el.split(':', 1)
             parsed_value = self._coerce_metric_value(raw_value)
-            if (
-                isinstance(parsed_value, dict)
-                and {'mean', 'std', 'count'} <= set(parsed_value.keys())
-            ):
-                for suffix, numeric_value in parsed_value.items():
-                    data_dict[f"{d_key}_{suffix}"] = numeric_value
+            if isinstance(parsed_value, dict):
+                for flat_key, flat_val in self._flatten_metric_dict(d_key, parsed_value):
+                    data_dict[flat_key] = flat_val
             else:
                 data_dict[d_key] = parsed_value
         return data_dict

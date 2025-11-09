@@ -14,12 +14,14 @@ Performance Note:
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, List
+import warnings
 from tensordict import TensorDict
 
 import torch
 import torch.nn as nn
 from .ppo_rollout_custom import CustomRolloutCollector as RolloutCollector
-
+from torchrl.objectives import ClipPPOLoss as PPOLossCls
+from torchrl.objectives.value import GAE
 
 class PPOAgent:
     """
@@ -200,12 +202,6 @@ class PPOAgent:
             # Permute tensordict from [T, B] to [B, T] for GAE (GAE expects batch first)
             batch_td_time = batch_td_time.permute(1, 0)
 
-            # TorchRL's GAE writes 'advantage' and 'value_target' in-place
-            try:
-                from torchrl.objectives.value import GAE
-            except Exception:
-                # Fallback API path for older versions
-                from torchrl.objectives.advantages import GAE  # type: ignore
 
             # Initialize GAE - value_network=None means we already computed values
             # Uses default keys: "state_value", "advantage", "value_target"
@@ -277,14 +273,6 @@ class PPOAgent:
         adv_norm = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
         flat_td.set("advantage", adv_norm)
 
-        # Build loss module
-        try:
-            from torchrl.objectives import ClipPPOLoss as PPOLossCls
-        except Exception:
-            try:
-                from torchrl.objectives import PPOLoss as PPOLossCls  # older alias
-            except Exception:
-                from torchrl.objectives.ppo import ClipPPOLoss as PPOLossCls  # very old fallback
 
         loss_module = PPOLossCls(
             actor_network=self.actor,
@@ -325,6 +313,15 @@ class PPOAgent:
 
         for epoch in range(self.n_epochs):
             perm = indices[torch.randperm(flat_bs, device=self.device)]
+            
+            # Reset per-epoch accumulators
+            epoch_policy_loss = 0.0
+            epoch_value_loss = 0.0
+            epoch_entropy = 0.0
+            epoch_approx_kl = 0.0
+            epoch_clip_fraction = 0.0
+            epoch_updates = 0
+            
             for mb in range(num_minibatches):
                 mb_idx = perm[mb * int(self.batch_size):(mb + 1) * int(self.batch_size)]
                 mb_td = flat_td[mb_idx]
@@ -342,12 +339,79 @@ class PPOAgent:
                 if policy_loss is None:
                     # fall back to 0 to avoid crashing; shouldn't happen on recent versions
                     policy_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+                    if epoch == 0 and mb == 0:
+                        print(f"  WARNING: policy_loss not found in loss_out! Defaulting to 0.0")
 
                 value_loss = loss_out.get("loss_critic", torch.tensor(0.0, device=self.device))
+                
+                # Compute entropy manually from logits with action masking
+                # TorchRL's PPOLoss doesn't handle masked distributions correctly
+                # Check if entropy from loss_out is actually non-zero, otherwise compute manually
                 entropy = loss_out.get("entropy", None)
-                if entropy is None:
+                use_manual_entropy = False
+                
+                if entropy is not None and torch.abs(entropy) < 1e-6:
+                    # Entropy is effectively zero, likely due to masking issues
+                    warnings.warn("Entropy is effectively zero, likely due to masking issues")
+                    use_manual_entropy = True
+                elif entropy is None:
                     # if module returns loss_entropy instead
-                    entropy = -loss_out.get("loss_entropy", torch.tensor(0.0, device=self.device))
+                    loss_entropy = loss_out.get("loss_entropy", None)
+                    if loss_entropy is not None and torch.abs(loss_entropy) < 1e-6:
+                        use_manual_entropy = True
+                    elif loss_entropy is None:
+                        use_manual_entropy = True
+                    else:
+                        entropy = -loss_entropy
+                
+                if use_manual_entropy:
+                    # Compute entropy manually from logits with proper masking
+                    with torch.no_grad():
+                        if "logits" in mb_td.keys():
+                            logits = mb_td.get("logits")
+                            action_mask = mb_td.get("action_mask", None)
+                            
+                            if epoch == 0 and mb == 0:
+                                print(f"  DEBUG: Computing entropy manually from logits")
+                                print(f"    logits shape: {logits.shape}")
+                                print(f"    action_mask shape: {action_mask.shape if action_mask is not None else None}")
+                                print(f"    logits sample (first 3 envs, first 5 actions): {logits[:3, :5]}")
+                                if action_mask is not None:
+                                    print(f"    action_mask sample (first 3 envs, first 5 actions): {action_mask[:3, :5]}")
+                                    num_valid_actions = action_mask.sum(dim=-1)
+                                    print(f"    num valid actions per env - min: {num_valid_actions.min()}, max: {num_valid_actions.max()}, mean: {num_valid_actions.float().mean():.2f}")
+                                    print(f"    num envs with >1 valid action: {(num_valid_actions > 1).sum()}/{len(num_valid_actions)}")
+                            
+                            # Mask invalid actions with -inf
+                            if action_mask is not None:
+                                masked_logits = logits.masked_fill(~action_mask, float("-inf"))
+                            else:
+                                masked_logits = logits
+                            
+                            # Compute probabilities and entropy
+                            probs = torch.softmax(masked_logits, dim=-1)
+                            # Replace NaNs (from all -inf rows) with uniform over valid actions
+                            if action_mask is not None:
+                                valid_count = action_mask.sum(dim=-1, keepdim=True).float().clamp(min=1.0)
+                                uniform_probs = action_mask.float() / valid_count
+                                probs = torch.where(torch.isnan(probs), uniform_probs, probs)
+                            
+                            # Entropy: -sum(p * log(p))
+                            log_probs = torch.log(probs + 1e-8)
+                            entropy = -(probs * log_probs).sum(dim=-1).mean()
+                            
+                            if epoch == 0 and mb == 0:
+                                print(f"    probs sample (first 3 envs, first 5 actions): {probs[:3, :5]}")
+                                print(f"    entropy per env (first 10): {(-(probs * log_probs).sum(dim=-1))[:10]}")
+                                print(f"    mean entropy: {entropy.item():.6f}")
+                        else:
+                            entropy = torch.tensor(0.0, device=self.device)
+                            if epoch == 0 and mb == 0:
+                                print(f"  DEBUG: No logits found in mb_td, entropy set to 0")
+                
+                if epoch == 0 and mb == 0:
+                    print(f"  DEBUG: policy_loss={policy_loss.item():.6f}, value_loss={value_loss.item():.6f}, entropy={entropy.item():.6f}")
+                    print(f"  DEBUG: Total loss components - pg={policy_loss.item():.6f}, v={self.value_coef * value_loss.item():.6f}, ent={-self.ent_coef * entropy.item():.6f}")
 
                 # Build total loss (value and entropy terms already scaled in some versions;
                 # we scale explicitly here for consistency).
@@ -410,22 +474,34 @@ class PPOAgent:
                         if not torch.isfinite(clip_fraction):
                             clip_fraction = torch.tensor(0.0, device=self.device)
 
-                # Accumulate
-                total_policy_loss += float(policy_loss.detach().cpu().item())
-                total_value_loss += float(value_loss.detach().cpu().item())
-                total_entropy += float(entropy.detach().cpu().item())
+                # Accumulate (both for total and per-epoch)
+                # PPO policy loss can be positive or negative depending on the advantage
+                pl_val = float(policy_loss.detach().cpu().item())
+                vl_val = float(value_loss.detach().cpu().item())
+                ent_val = float(entropy.detach().cpu().item())
+                
+                if epoch == 0 and mb < 3:
+                    print(f"  DEBUG minibatch {mb}: policy_loss={pl_val:.6f}")
+                
+                # Track raw policy loss (without abs) for both total and epoch metrics
+                total_policy_loss += pl_val
+                total_value_loss += vl_val
+                total_entropy += ent_val
                 total_approx_kl += float(approx_kl.detach().cpu().item())
                 total_clip_fraction += float(clip_fraction.detach().cpu().item())
                 num_updates += 1
 
             # Per-epoch callback
-            if metrics_callback is not None and num_minibatches > 0:
+            if metrics_callback is not None and epoch_updates > 0:
+                avg_pl = epoch_policy_loss / epoch_updates
+                if epoch == 0:
+                    print(f"  DEBUG epoch {epoch+1}: sum={epoch_policy_loss:.6f}, count={epoch_updates}, avg={avg_pl:.6f}")
                 metrics_callback.on_training_epoch(
                     epoch=epoch + 1,
                     n_epochs=self.n_epochs,
-                    policy_loss=total_policy_loss / max(1, num_updates),
-                    value_loss=total_value_loss / max(1, num_updates),
-                    entropy=total_entropy / max(1, num_updates),
+                    policy_loss=avg_pl,
+                    value_loss=epoch_value_loss / epoch_updates,
+                    entropy=epoch_entropy / epoch_updates,
                 )
 
         # Aggregate metrics
@@ -549,12 +625,10 @@ class PPOAgent:
                 # Log training metrics
                 if logger is not None:
                     logger.log_training_step(
-                        iteration=iteration + 1,
                         global_step=self.global_step,
                         policy_loss=train_metrics["policy_loss"],
                         value_loss=train_metrics["value_loss"],
                         entropy=train_metrics["entropy"],
-                        mean_reward=None,
                     )
                 
                 # Prepare metrics for callback
@@ -646,17 +720,21 @@ class PPOAgent:
         Returns:
             Dictionary of evaluation metrics
         """
-        from model_eval import eval_corruptions_torchrl
+        from model_eval import evaluate_ranking_metrics
         
         actor.eval()
         
         # Prepare evaluation data
+        # Get the materialized valid split
+        valid_split = data_handler.get_materialized_split('valid')
+        eval_queries_tensor = valid_split.queries
+        
         # Get number of eval queries from args if available
-        n_eval_queries = len(data_handler.valid_queries)
+        n_eval_queries = eval_queries_tensor.shape[0]
         if self.args and hasattr(self.args, 'n_eval_queries') and self.args.n_eval_queries:
             n_eval_queries = min(self.args.n_eval_queries, n_eval_queries)
         
-        eval_data = data_handler.valid_queries[:n_eval_queries]
+        eval_data = eval_queries_tensor[:n_eval_queries]
         eval_depths = (
             data_handler.valid_queries_depths[:n_eval_queries]
             if hasattr(data_handler, 'valid_queries_depths') and data_handler.valid_queries_depths is not None
@@ -671,28 +749,54 @@ class PPOAgent:
                
         # Run evaluation to get metrics
         try:
-            # Create info callback with verbose logging
-            def info_callback_with_verbose(infos):
-                if callback is not None:
-                    if self.verbose_cb:
-                        print(f"[PPOAgent._run_evaluation] Callback receiving {len(infos)} infos")
-                    callback.accumulate_episode_stats(infos, mode="eval")
+            # Prepare queries for evaluation
+            queries = eval_data
             
-            metrics = eval_corruptions_torchrl(
+            # queries is already a tensor from the materialized split
+            # It should be [N, A, D] where A is atoms per query, D is dimensions per atom
+            if queries.dim() == 2:  # [N, 3] -> [N, 1, 3]
+                queries = queries.unsqueeze(1)
+            
+            # Get corruption scheme from args
+            corruption_scheme = ['head', 'tail']
+            if self.args and hasattr(self.args, 'corruption_scheme'):
+                corruption_scheme = self.args.corruption_scheme
+            
+            print(f"  Evaluating on {queries.shape[0]} queries with {n_corruptions} corruptions per query...")
+            
+            # Call evaluate_ranking_metrics with the correct signature
+            metrics = evaluate_ranking_metrics(
                 actor=actor,
                 env=eval_env,
-                data=eval_data,
+                queries=queries,
                 sampler=sampler,
                 n_corruptions=n_corruptions,
+                corruption_modes=corruption_scheme,
                 deterministic=True,
-                verbose=0,
-                plot=False,
-                kge_inference_engine=None,
-                evaluation_mode='rl_only',
-                corruption_scheme=['head', 'tail'],
-                info_callback=info_callback_with_verbose,
-                data_depths=eval_depths,
+                verbose=False,
             )
+            
+            print(f"  Evaluation complete: MRR={metrics.get('MRR', 0.0):.4f}, Hits@1={metrics.get('Hits@1', 0.0):.4f}, Hits@10={metrics.get('Hits@10', 0.0):.4f}")
+            
+            # Transform keys to match expected format (lowercase with _mean suffix)
+            # evaluate_ranking_metrics returns: MRR, Hits@1, Hits@3, Hits@10, per_mode
+            transformed_metrics = {
+                'mrr_mean': metrics.get('MRR', 0.0),
+                'hits1_mean': metrics.get('Hits@1', 0.0),
+                'hits3_mean': metrics.get('Hits@3', 0.0),
+                'hits10_mean': metrics.get('Hits@10', 0.0),
+            }
+            
+            # Add per-mode metrics if available
+            if 'per_mode' in metrics:
+                per_mode = metrics['per_mode']
+                for mode, mode_metrics in per_mode.items():
+                    transformed_metrics[f'{mode}_mrr_mean'] = mode_metrics.get('MRR', 0.0)
+                    transformed_metrics[f'{mode}_hits1_mean'] = mode_metrics.get('Hits@1', 0.0)
+                    transformed_metrics[f'{mode}_hits3_mean'] = mode_metrics.get('Hits@3', 0.0)
+                    transformed_metrics[f'{mode}_hits10_mean'] = mode_metrics.get('Hits@10', 0.0)
+            
+            metrics = transformed_metrics
             
         except Exception as e:
             print(f"Warning: Evaluation failed with error: {e}")

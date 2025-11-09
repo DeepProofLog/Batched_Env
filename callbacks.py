@@ -691,6 +691,9 @@ class TrainingMetricsCallback:
         })
         
         if self.verbose and (epoch % max(1, n_epochs // 10) == 0 or epoch == n_epochs):
+            # Debug: print actual values
+            if epoch == 1:
+                print(f"  DEBUG in callback: policy_loss={policy_loss}, type={type(policy_loss)}")
             print(f"  Training epoch {epoch}/{n_epochs}: "
                   f"pg_loss={policy_loss:.4f}, v_loss={value_loss:.4f}, entropy={entropy:.4f}")
     

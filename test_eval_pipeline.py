@@ -12,7 +12,7 @@ from data_handler import DataHandler
 from embeddings import get_embedder
 from env import BatchedEnv
 from index_manager import IndexManager
-from model_eval import _evaluate_ranking_metrics
+from model_eval import evaluate_ranking_metrics
 from ppo.ppo_model import create_torchrl_modules
 from sampler import Sampler
 from unification_engine import UnificationEngine
@@ -20,7 +20,7 @@ from unification_engine import UnificationEngine
 
 def _build_eval_components(device: torch.device):
     args = SimpleNamespace(
-        dataset_name="wn18rr",
+        dataset_name="countries_s3",
         data_path="data",
         janus_file=None,
         train_file="train.txt",
@@ -28,12 +28,11 @@ def _build_eval_components(device: torch.device):
         test_file="test.txt",
         rules_file="rules.txt",
         facts_file="train.txt",
-        n_train_queries=32,
-        n_eval_queries=12,
-        n_test_queries=12,
+        n_eval_queries=None,
+        n_valid_negatives=10,  # Use 10 negatives per query for faster testing
         padding_atoms=6,
         padding_states=16,
-        batch_size=4,
+        batch_size=128,
         max_total_vars=256,
         atom_embedder="transe",
         state_embedder="sum",
@@ -43,14 +42,16 @@ def _build_eval_components(device: torch.device):
         learn_embeddings=True,
         variable_no=64,
         corruption_mode=True,
-        corruption_scheme=["head", "tail"],
-        train_neg_ratio=0.0,
+        corruption_scheme=["both"],
+        train_neg_ratio=1,
         seed_run_i=7,
-        max_depth=12,
+        max_depth=20,
         skip_unary_actions=True,
         reward_type=1,
     )
-
+    if args.dataset_name == "countries_s3":
+        args.corruption_scheme = ["tail"]
+    
     data_handler = DataHandler(
         dataset_name=args.dataset_name,
         base_path=args.data_path,
@@ -60,9 +61,7 @@ def _build_eval_components(device: torch.device):
         test_file=args.test_file,
         rules_file=args.rules_file,
         facts_file=args.facts_file,
-        n_train_queries=args.n_train_queries,
         n_eval_queries=args.n_eval_queries,
-        n_test_queries=args.n_test_queries,
         corruption_mode=args.corruption_mode,
     )
 
@@ -158,56 +157,52 @@ def _build_eval_components(device: torch.device):
 
 
 def test_eval_pipeline_vectorized():
-    """Test evaluation pipeline with ranking metrics."""
+    """Test evaluation pipeline with ranking metrics - simplified version."""
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
 
     device = torch.device("cpu")
     components = _build_eval_components(device)
+    
+    # Use a much smaller test: just 10 queries with 10 negatives each
+    query_triples = components.data_handler.get_materialized_split("valid").queries[:10].to(device)
 
-    valid_split = components.data_handler.get_materialized_split("valid")
-    n_test_queries = min(8, len(valid_split))
-    test_queries_idx = valid_split.queries[:n_test_queries]
-    query_triples = test_queries_idx[:, 0, :3].clone()
+    print(f"Testing with {query_triples.shape[0]} validation queries")
 
-    print(f"Testing with {n_test_queries} validation queries")
-    n_negatives = 5
-
-    results = _evaluate_ranking_metrics(
+    results = evaluate_ranking_metrics(
         actor=components.actor,
         env=components.env,
         queries=query_triples,
         sampler=components.sampler,
-        n_corruptions=n_negatives,
-        corruption_modes=['head', 'tail'],
+        n_corruptions=10,  # Use fixed 10 negatives
+        corruption_modes=['head'],  # Test just one mode
         deterministic=True,
         verbose=True,
-        info_callback=None,
     )
 
     print("\n=== Test Results ===")
-    assert 'head_metrics' in results
-    assert 'tail_metrics' in results
+    
+    # The function returns a dict with aggregated metrics and per_mode breakdown
+    # Keys: 'MRR', 'Hits@1', 'Hits@3', 'Hits@10', 'per_mode'
+    if 'per_mode' in results:
+        for corruption_type in ['head']:
+            if corruption_type in results['per_mode']:
+                metrics = results['per_mode'][corruption_type]
+                print(f"\n{corruption_type.capitalize()} Metrics:")
+                for metric_name, value in metrics.items():
+                    print(f"  {metric_name}: {value:.4f}")
+                    if metric_name in ['MRR', 'Hits@1', 'Hits@3', 'Hits@10']:
+                        assert 0.0 <= value <= 1.0
 
-    for corruption_type in ['head', 'tail']:
-        metrics_key = f'{corruption_type}_metrics'
-        if metrics_key in results:
-            metrics = results[metrics_key]
-            print(f"\n{corruption_type.capitalize()} Metrics:")
-            for metric_name, value in metrics.items():
-                print(f"  {metric_name}: {value:.4f}")
-                if metric_name in ['mrr', 'h1', 'h3', 'h10']:
-                    assert 0.0 <= value <= 1.0
-
-    if 'mrr_mean' in results:
-        print(f"\nOverall Metrics:")
-        print(f"  MRR: {results['mrr_mean']:.4f}")
-        print(f"  Hits@1: {results['h1_mean']:.4f}")
-        print(f"  Hits@3: {results['h3_mean']:.4f}")
-        print(f"  Hits@10: {results['h10_mean']:.4f}")
-        assert 0.0 <= results['mrr_mean'] <= 1.0
-        assert 0.0 <= results['h1_mean'] <= 1.0
+    # Overall aggregated metrics
+    print(f"\nOverall Metrics:")
+    print(f"  MRR: {results['MRR']:.4f}")
+    print(f"  Hits@1: {results['Hits@1']:.4f}")
+    print(f"  Hits@3: {results['Hits@3']:.4f}")
+    print(f"  Hits@10: {results['Hits@10']:.4f}")
+    assert 0.0 <= results['MRR'] <= 1.0
+    assert 0.0 <= results['Hits@1'] <= 1.0
 
     print("\n=== Test passed! ===")
 

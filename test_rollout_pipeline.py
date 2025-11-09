@@ -37,10 +37,10 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     
     # Configuration (small scale for testing)
     args = SimpleNamespace(
-        dataset_name="wn18rr",
+        dataset_name="countries_s3",
         max_depth=20,  # Reduce max depth so episodes complete faster
-        batch_size=256,  # Vectorized batch size
-        n_steps=256,    # Steps per rollout
+        batch_size=4,  # Vectorized batch size
+        n_steps=40,    # Steps per rollout
         n_epochs=2,    # PPO epochs
         data_path="data",
         janus_file=None,  # Don't use janus file
@@ -74,10 +74,12 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         # Engine
         engine='python_tensor',
         endt_action=False,
-        endf_action=True,
-        skip_unary_actions=True,
-        memory_pruning=True,
+        endf_action=False,  # DISABLED to test action space
+        skip_unary_actions=False,  # DISABLED - was causing 1-action constraint!
+        memory_pruning=False,  # DISABLED to test if this is the issue
         reward_type=0,  # Use reward_type=4 for symmetric ±1 rewards
+        verbose_env=2,  # Enable verbose environment logging
+        verbose_prover=1,  # Enable prover logging
     )
     args.corruption_scheme = args.corruption_scheme if args.dataset_name not in ['countries_s3'] else ['tail']
 
@@ -129,6 +131,28 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     print(f"  Debug: runtime_var_start={im.runtime_var_start_index}, runtime_var_end={im.runtime_var_end_index}")
     print(f"  Debug: variable_no={im.total_vocab_size}, template_variable_no={im.template_variable_no}, runtime_variable_no={im.runtime_variable_no}")
     print(f"  Facts: {im.facts_idx.shape}, Rules: {im.rules_idx.shape}")
+    print(f"  Predicate indices: TRUE={im.true_pred_idx}, FALSE={im.false_pred_idx}, END={im.end_pred_idx}")
+    print(f"  First 2 rules:")
+    for i in range(min(2, im.rules_idx.shape[0])):
+        print(f"    Rule {i}: {im.rules_idx[i]}")
+    
+    # [DEBUG] Print predicate mapping
+    print(f"\n  [DEBUG] Predicate str2idx mapping:")
+    for pred_str, pred_idx in sorted(im.predicate_str2idx.items(), key=lambda x: x[1]):
+        print(f"    {pred_idx}: {pred_str}")
+    
+    # [DEBUG] Print first rule in string form
+    if dh.rules_str:
+        print(f"\n  [DEBUG] First rule in string form:")
+        head, body = dh.rules_str[0]
+        print(f"    Head: {head}")
+        print(f"    Body: {body}")
+        if len(dh.rules_str) > 1:
+            head1, body1 = dh.rules_str[1]
+            print(f"  [DEBUG] Second rule in string form:")
+            print(f"    Head: {head1}")
+            print(f"    Body: {body1}")
+    
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
     if n_tests == 2:
@@ -211,9 +235,18 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     train_split = dh.get_materialized_split('train')
     valid_split = dh.get_materialized_split('valid')
     print(f"  Materialized {len(train_split)} train queries and {len(valid_split)} valid queries")
+    print(f"  [DEBUG] Train query shape: {train_split.queries.shape}")
+    print(f"  [DEBUG] First 3 queries (raw): {train_split.queries[:3]}")
+    print(f"  [DEBUG] Query predicate indices (first 10): {train_split.queries[:10, 0]}")
+    print(f"  [DEBUG] Max predicate index in queries: {train_split.queries[:, 0].max().item()}")
+    print(f"  [DEBUG] Min predicate index in queries: {train_split.queries[:, 0].min().item()}")
+    print(f"  [DEBUG] Number of predicates in im: {im.predicate_no}")
     
     # Create UnificationEngine using from_index_manager classmethod
     print("  Creating UnificationEngine...")
+    print(f"    [DEBUG] Facts shape in im: {im.facts_idx.shape}")
+    print(f"    [DEBUG] First 5 facts: {im.facts_idx[:5]}")
+    print(f"    [DEBUG] Facts with predicate 7 (neighborOf): {(im.facts_idx[:, 0] == 7).sum().item()}")
     unification_engine = UnificationEngine.from_index_manager(im)
     print(f"  UnificationEngine ready")
     
@@ -230,8 +263,8 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         padding_atoms=args.padding_atoms,
         padding_states=args.padding_states,
         reward_type=args.reward_type,
-        verbose=0,
-        prover_verbose=2,
+        verbose=1,  # Enable verbose to see derived state counts
+        prover_verbose=0,
         device=device,
         corruption_mode=args.corruption_mode,
         sampler=sampler,
@@ -361,10 +394,49 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         n_envs=args.batch_size,
         n_steps=args.n_steps,
         device=device,
-        debug=False,
+        debug=True,
+        debug_action_space=True,  # Enable action space diagnostics
     )
     
     print(f"Collecting {args.n_steps} steps from {args.batch_size} parallel queries...")
+    
+    # DEBUG: Check initial derived states
+    td_reset = train_env.reset()
+    print(f"\n[DEBUG] Initial reset - derived_states_counts: {train_env.derived_states_counts.tolist()}")
+    print(f"[DEBUG] Initial reset - action_mask sum: {td_reset['action_mask'].sum(dim=1).tolist()}")
+    
+    # Print the FULL initial state in readable form
+    for i in range(min(2, args.batch_size)):
+        print(f"\n[DEBUG] Environment {i}:")
+        print(f"  Original query: {train_env.original_queries[i].tolist()}")
+        stringifier = train_env.atom_stringifier
+        if stringifier:
+            pred_idx = train_env.original_queries[i, 0].item()
+            pred_name = stringifier.idx2pred.get(pred_idx, f"UNKNOWN_{pred_idx}")
+            arg1_idx = train_env.original_queries[i, 1].item()
+            arg1_name = stringifier.idx2const.get(arg1_idx, f"VAR_{arg1_idx}")
+            arg2_idx = train_env.original_queries[i, 2].item()
+            arg2_name = stringifier.idx2const.get(arg2_idx, f"VAR_{arg2_idx}")
+            print(f"  Query readable: {pred_name}({arg1_name}, {arg2_name})")
+            print(f"  Label: {train_env.current_labels[i].item()}")
+        
+        print(f"  Current state (full):")
+        for j in range(train_env.padding_atoms):
+            atom = train_env.current_queries[i, j]
+            if atom[0].item() != im.padding_idx:
+                atom_str = stringifier.atom_to_string(atom) if stringifier else str(atom.tolist())
+                print(f"    [{j}]: {atom_str}")
+        
+        print(f"  Derived states count: {train_env.derived_states_counts[i].item()}")
+        for j in range(train_env.derived_states_counts[i].item()):
+            derived_state = train_env.derived_states_batch[i, j]
+            print(f"  Derived state {j}:")
+            for k in range(train_env.padding_atoms):
+                atom = derived_state[k]
+                if atom[0].item() != im.padding_idx:
+                    atom_str = stringifier.atom_to_string(atom) if stringifier else str(atom.tolist())
+                    print(f"      [{k}]: {atom_str}")
+    
     experiences, stats = rollout_collector.collect(critic=critic)
     
     print(f"\nRollout collection complete:")
@@ -472,4 +544,4 @@ if __name__ == '__main__':
     # use cuda if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # device = 'cpu'
-    test_vectorized_batched_pipeline(n_tests=8, device=device)
+    test_vectorized_batched_pipeline(n_tests=9, device=device)

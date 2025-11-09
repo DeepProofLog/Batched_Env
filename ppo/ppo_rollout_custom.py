@@ -22,6 +22,7 @@ class CustomRolloutCollector:
         n_steps: int,
         device: torch.device,
         debug: bool = False,
+        debug_action_space: bool = False,
     ):
         """Initialize custom collector.
         
@@ -32,6 +33,7 @@ class CustomRolloutCollector:
             n_steps: Steps per rollout
             device: Device for computation
             debug: Enable debug logging
+            debug_action_space: Enable detailed action space diagnostics
         """
         self.env = env
         self.actor = actor
@@ -39,11 +41,23 @@ class CustomRolloutCollector:
         self.n_steps = n_steps
         self.device = device
         self.debug = debug
+        self.debug_action_space = debug_action_space
+        
+        # Action space diagnostics
+        if self.debug_action_space:
+            self.action_space_stats = {
+                'total_measurements': 0,
+                'single_action_count': 0,
+                'zero_action_count': 0,
+                'action_distribution': {},
+                'entropy_values': [],
+            }
         
         if debug:
             print(f"[CustomRolloutCollector] Initialized")
             print(f"  n_envs: {n_envs}, n_steps: {n_steps}")
             print(f"  device: {device}")
+            print(f"  debug_action_space: {debug_action_space}")
     
     @torch.no_grad()
     def _select_action(self, obs_td: TensorDict) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -70,6 +84,10 @@ class CustomRolloutCollector:
         if action_mask is None:
             raise ValueError("Missing action_mask in observation")
         
+        # ACTION SPACE DIAGNOSTICS
+        if self.debug_action_space:
+            self._diagnose_action_space(action_mask, obs_td)
+        
         if self.debug:
             print(f"\n[DEBUG _select_action]")
             print(f"  action_mask shape: {action_mask.shape}")
@@ -89,6 +107,11 @@ class CustomRolloutCollector:
         action = dist.sample()
         log_prob = dist.log_prob(action)
         
+        # Track entropy for diagnostics
+        if self.debug_action_space:
+            entropy = dist.entropy()
+            self.action_space_stats['entropy_values'].extend(entropy.detach().cpu().tolist())
+        
         if self.debug:
             print(f"  sampled actions: {action.tolist()}")
         
@@ -106,6 +129,120 @@ class CustomRolloutCollector:
                 raise ValueError(f"Invalid actions selected after masking: {action[invalid_mask].tolist()}")
         
         return action, log_prob
+    
+    def _diagnose_action_space(self, action_mask: torch.Tensor, obs_td: TensorDict):
+        """Diagnose action space constraints and collect statistics."""
+        valid_counts = action_mask.sum(dim=1)  # [n_envs]
+        
+        # Update statistics
+        self.action_space_stats['total_measurements'] += self.n_envs
+        self.action_space_stats['single_action_count'] += (valid_counts == 1).sum().item()
+        self.action_space_stats['zero_action_count'] += (valid_counts == 0).sum().item()
+        
+        # Track distribution
+        for count in valid_counts.tolist():
+            self.action_space_stats['action_distribution'][count] = \
+                self.action_space_stats['action_distribution'].get(count, 0) + 1
+        
+        # Compute entropy (if logits available after actor call)
+        # We'll store entropy after action selection
+        
+    def get_action_space_diagnostics(self) -> Dict[str, Any]:
+        """Get action space diagnostic summary."""
+        if not self.debug_action_space:
+            return {}
+        
+        stats = self.action_space_stats
+        total = stats['total_measurements']
+        
+        if total == 0:
+            return {"message": "No measurements collected"}
+        
+        single_pct = 100.0 * stats['single_action_count'] / total
+        zero_pct = 100.0 * stats['zero_action_count'] / total
+        
+        # Average actions
+        avg_actions = sum(count * freq for count, freq in stats['action_distribution'].items()) / total
+        
+        # Median actions
+        sorted_dist = sorted(stats['action_distribution'].items())
+        cumsum = 0
+        median_actions = 0
+        for count, freq in sorted_dist:
+            cumsum += freq
+            if cumsum >= total / 2:
+                median_actions = count
+                break
+        
+        diagnostics = {
+            'total_measurements': total,
+            'single_action_count': stats['single_action_count'],
+            'single_action_pct': single_pct,
+            'zero_action_count': stats['zero_action_count'],
+            'zero_action_pct': zero_pct,
+            'avg_actions': avg_actions,
+            'median_actions': median_actions,
+            'action_distribution': dict(sorted_dist),
+            'is_constrained': single_pct > 50.0,
+            'has_zero_actions': zero_pct > 0,
+        }
+        
+        if stats['entropy_values']:
+            diagnostics['avg_entropy'] = np.mean(stats['entropy_values'])
+            diagnostics['std_entropy'] = np.std(stats['entropy_values'])
+        
+        return diagnostics
+    
+    def print_action_space_diagnostics(self):
+        """Print action space diagnostic summary."""
+        if not self.debug_action_space:
+            return
+        
+        diag = self.get_action_space_diagnostics()
+        if 'message' in diag:
+            print(f"\n[ACTION SPACE DIAGNOSTICS] {diag['message']}")
+            return
+        
+        print("\n" + "="*80)
+        print("ACTION SPACE DIAGNOSTICS")
+        print("="*80)
+        
+        print(f"\nTotal measurements: {diag['total_measurements']}")
+        print(f"Average actions per state: {diag['avg_actions']:.2f}")
+        print(f"Median actions per state: {diag['median_actions']}")
+        
+        print(f"\n[CONSTRAINT ANALYSIS]")
+        print(f"  Single-action states: {diag['single_action_count']} ({diag['single_action_pct']:.1f}%)")
+        print(f"  Zero-action states: {diag['zero_action_count']} ({diag['zero_action_pct']:.1f}%)")
+        
+        if diag['is_constrained']:
+            print(f"\n⚠️  WARNING: Action space is HEAVILY CONSTRAINED!")
+            print(f"     Over 50% of states have only 1 action available.")
+        
+        if diag['has_zero_actions']:
+            print(f"\n⚠️  WARNING: Zero-action states detected!")
+            print(f"     This indicates a serious bug in action generation.")
+        
+        print(f"\n[ACTION DISTRIBUTION]")
+        dist = diag['action_distribution']
+        for n_actions in sorted(dist.keys())[:10]:  # Show top 10
+            count = dist[n_actions]
+            pct = 100.0 * count / diag['total_measurements']
+            bar = "█" * int(pct / 2)  # Scale to 50 chars max
+            print(f"  {n_actions:3d} actions: {count:6d} ({pct:5.1f}%) {bar}")
+        
+        if len(dist) > 10:
+            print(f"  ... and {len(dist) - 10} more")
+        
+        if 'avg_entropy' in diag:
+            print(f"\n[ENTROPY ANALYSIS]")
+            print(f"  Average entropy: {diag['avg_entropy']:.4f}")
+            print(f"  Std entropy: {diag['std_entropy']:.4f}")
+            if diag['avg_entropy'] < 0.1:
+                print(f"  ⚠️  Very low entropy - policy is extremely confident/deterministic")
+        
+        print("="*80 + "\n")
+
     
     def collect(self, critic: torch.nn.Module, rollout_callback: Optional[Callable] = None) -> Tuple[List[TensorDict], Dict[str, Any]]:
         """Collect one rollout batch by manually stepping through environments.
@@ -131,6 +268,19 @@ class CustomRolloutCollector:
             # Select actions using policy
             action, log_prob = self._select_action(obs_td)
             
+            # Extract logits from obs_td (was set by _select_action)
+            logits = obs_td.get("logits")
+            
+            if step == 0 and self.debug:
+                print(f"[DEBUG collect] Step 0: logits present? {logits is not None}")
+                if logits is not None:
+                    print(f"  logits shape: {logits.shape}")
+                action_mask = obs_td.get("action_mask")
+                if action_mask is not None:
+                    num_valid = action_mask.sum(dim=-1)
+                    print(f"  num valid actions - min: {num_valid.min()}, max: {num_valid.max()}, mean: {num_valid.float().mean():.2f}")
+                    print(f"  num envs with >1 valid action: {(num_valid > 1).sum()}/{len(num_valid)}")
+            
             # Create tensordict with current state and action
             step_td = TensorDict({
                 "sub_index": obs_td["sub_index"].clone(),
@@ -138,6 +288,7 @@ class CustomRolloutCollector:
                 "action_mask": obs_td["action_mask"].clone(),
                 "action": action,
                 "sample_log_prob": log_prob,
+                "logits": logits.clone() if logits is not None else None,  # Store logits for entropy computation
             }, batch_size=[self.n_envs])
             
             # Get value estimate from critic
@@ -216,6 +367,10 @@ class CustomRolloutCollector:
         
         if self.debug:
             print(f"[CustomRolloutCollector] Collected {len(experiences)} steps, {len(episode_infos)} episodes")
+        
+        # Print action space diagnostics if enabled
+        if self.debug_action_space:
+            self.print_action_space_diagnostics()
         
         return experiences, stats
     

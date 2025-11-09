@@ -4,14 +4,12 @@ Profile the batched environment to find bottlenecks
 
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 
 import torch
 import cProfile
 import pstats
 import io
-from test_pipeline import test_vectorized_batched_pipeline as test_pipeline
+from test_rollout_pipeline import test_vectorized_batched_pipeline as test_pipeline
 from test_eval_pipeline import test_eval_pipeline_vectorized as test_eval_pipeline
 
 TRAIN = False
