@@ -1943,8 +1943,8 @@ def unify_with_rules_vectorized(
     h_exp = rule_heads.unsqueeze(0).expand(N, -1, -1).reshape(N * R, 3)
     
     # Unify (using the existing optimized function)
-    from unification_engine import _unify_one_to_one_optimized
-    mask, subs = _unify_one_to_one_optimized(q_exp, h_exp, constant_no, padding_idx)  # [N*R], [N*R, 2, 2]
+    from unification_engine import _unify_one_to_one
+    mask, subs = _unify_one_to_one(q_exp, h_exp, constant_no, padding_idx)  # [N*R], [N*R, 2, 2]
     
     # Reshape: [N, R]
     mask = mask.reshape(N, R)
@@ -1974,11 +1974,11 @@ def unify_with_rules_vectorized(
     remaining_counts_flat = remaining_counts[query_idx]  # [total_outputs]
     
     # Apply substitutions to bodies (batched)
-    from unification_engine import _apply_substitutions_batched
-    bodies_inst = _apply_substitutions_batched(bodies_flat, subs_flat, padding_idx)  # [total_outputs, max_body, 3]
+    from unification_engine import _apply_substitutions
+    bodies_inst = _apply_substitutions(bodies_flat, subs_flat, padding_idx)  # [total_outputs, max_body, 3]
     
     # Apply substitutions to remaining goals (batched)
-    remaining_inst = _apply_substitutions_batched(remaining_flat, subs_flat, padding_idx)  # [total_outputs, max_rem, 3]
+    remaining_inst = _apply_substitutions(remaining_flat, subs_flat, padding_idx)  # [total_outputs, max_rem, 3]
     
     # Concatenate body + remaining for each output (VECTORIZED - NO LOOP!)
     max_atoms = max_body + max_rem
@@ -2122,8 +2122,8 @@ def unify_with_facts_vectorized(
     f_flat = facts[f_idx]
     
     # Unify
-    from unification_engine import _unify_one_to_one_optimized
-    mask, subs = _unify_one_to_one_optimized(q_flat, f_flat, constant_no, padding_idx)
+    from unification_engine import _unify_one_to_one
+    mask, subs = _unify_one_to_one(q_flat, f_flat, constant_no, padding_idx)
     
     # Filter successes
     succ_idx = mask.nonzero(as_tuple=True)[0]
@@ -2141,8 +2141,8 @@ def unify_with_facts_vectorized(
     remaining_counts_exp = remaining_counts[q_succ]  # [S]
     
     # Apply substitutions (batched)
-    from unification_engine import _apply_substitutions_batched
-    remaining_inst = _apply_substitutions_batched(remaining_exp, subs_succ, padding_idx)  # [S, max_rem, 3]
+    from unification_engine import _apply_substitutions
+    remaining_inst = _apply_substitutions(remaining_exp, subs_succ, padding_idx)  # [S, max_rem, 3]
     
     # Group by query index
     output_counts = torch.zeros(N, dtype=torch.long, device=device)

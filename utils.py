@@ -8,6 +8,7 @@ import ast
 from collections import defaultdict
 import dataclasses
 from dataclasses import dataclass, field
+from functools import lru_cache
 from tensordict import TensorDict, TensorDictBase
 import functools
 
@@ -93,11 +94,14 @@ class Rule:
         return f"{self.head} :- {body_str}"
 
 
+@lru_cache(maxsize=10000)
 def get_atom_from_string(atom_str: str) -> Term:
     """
     Optimized version using string methods instead of regex.
     Handles optional trailing '.' and atoms with no arguments.
     Strips quotes from arguments for consistency.
+    
+    OPTIMIZATION: Cached with lru_cache to avoid re-parsing common atoms.
     """
     # --- Basic String Cleaning ---
     s = atom_str.strip().removesuffix('.')

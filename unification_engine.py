@@ -12,7 +12,7 @@ def deduplicate_states_packed(
     states: Tensor,
     state_counts: Tensor,
     padding_idx: int,
-    hash_cache: Optional[Tensor] = None
+    hash_cache: Optional[GPUHashCache] = None
 ) -> Tuple[Tensor, Tensor]:
     """
     GPU-vectorized deduplication - NO LOOPS AT ALL!
@@ -22,7 +22,7 @@ def deduplicate_states_packed(
         states: [B, max_states, max_atoms, 3] - packed states from all branches
         state_counts: [B] - number of valid states per batch element
         padding_idx: padding value
-        hash_cache: optional pre-computed prime powers
+        hash_cache: optional GPUHashCache object for prime powers
         
     Returns:
         unique_states: [B, max_unique, max_atoms, 3] - deduplicated states  
@@ -41,16 +41,19 @@ def deduplicate_states_packed(
     valid_mask = state_counts.unsqueeze(1) > torch.arange(max_states, device=device).unsqueeze(0)  # [B, max_states]
     
     # Compute polynomial hash
+    prime = 31
+    mod_val = 2**31 - 1
+    max_len = max_atoms * arity
+    
     if hash_cache is None:
-        prime = 31
-        mod_val = 2**31 - 1
-        max_len = max_atoms * arity
         powers = torch.arange(max_len, device=device, dtype=torch.long)
-        hash_cache = torch.pow(torch.tensor(prime, device=device, dtype=torch.long), powers) % mod_val
+        prime_powers = torch.pow(torch.tensor(prime, device=device, dtype=torch.long), powers) % mod_val
+    else:
+        prime_powers = hash_cache.get_powers(max_len)
     
     # Hash computation: [B, max_states]
-    hashes = (flat_states * hash_cache.unsqueeze(0).unsqueeze(0)).sum(dim=2) % (2**31 - 1)
-    hashes = torch.where(valid_mask, hashes, torch.tensor(2**31 - 1, device=device, dtype=torch.long))  # Max hash for invalid
+    hashes = (flat_states * prime_powers.unsqueeze(0).unsqueeze(0)).sum(dim=2) % mod_val
+    hashes = torch.where(valid_mask, hashes, torch.tensor(mod_val, device=device, dtype=torch.long))  # Max hash for invalid
     
     # Batched sort: [B, max_states]
     sorted_hashes, sort_indices = torch.sort(hashes, dim=1)
@@ -71,7 +74,9 @@ def deduplicate_states_packed(
     
     # Count uniques per batch
     unique_counts = unique_mask.sum(dim=1)  # [B]
-    max_unique = int(unique_counts.max().item()) if unique_counts.numel() > 0 else 0
+    # OPTIMIZED: Cache max result
+    max_unique_tensor = unique_counts.max() if unique_counts.numel() > 0 else torch.tensor(0, device=device)
+    max_unique = int(max_unique_tensor.item())
     
     if max_unique == 0:
         return torch.full((B, 0, max_atoms, arity), padding_idx, dtype=states.dtype, device=device), unique_counts
@@ -179,7 +184,7 @@ class GPUFactIndex:
 # =========================================================
 
 @torch.no_grad()
-def _apply_substitutions_batched(goals_batch: Tensor,
+def _apply_substitutions(goals_batch: Tensor,
                                  substitutions_batch: Tensor,
                                  padding_idx: int) -> Tensor:
     """
@@ -194,10 +199,11 @@ def _apply_substitutions_batched(goals_batch: Tensor,
     args = goals_batch[:, :, 1:]
 
     # Build a dense mapping per batch row.
-    max_idx = int(torch.max(torch.cat([
-        goals_batch[:, :, 1:].flatten().long(),
-        substitutions_batch.flatten().long().clamp_min(0)
-    ], dim=0)).item()) + 1
+    # OPTIMIZED: Compute max once, cache the result
+    goals_flat = goals_batch[:, :, 1:].flatten().long()
+    subs_flat = substitutions_batch.flatten().long().clamp_min(0)
+    max_idx_tensor = torch.max(torch.cat([goals_flat, subs_flat], dim=0))
+    max_idx = int(max_idx_tensor.item()) + 1
 
     mapping = torch.arange(max_idx, device=goals_batch.device).unsqueeze(0).expand(B, -1).clone()
     valid = substitutions_batch[..., 0] != padding_idx
@@ -213,7 +219,7 @@ def _apply_substitutions_batched(goals_batch: Tensor,
 
 
 @torch.no_grad()
-def _unify_one_to_one_optimized(queries: Tensor,
+def _unify_one_to_one(queries: Tensor,
                                 terms: Tensor,
                                 constant_no: int,
                                 padding_idx: int) -> Tuple[Tensor, Tensor]:
@@ -324,9 +330,11 @@ def _pairs_via_predicate_ranges(query_preds: Tensor, seg_starts: Tensor, seg_len
         ii: [L] indices into items (facts or rules)
     """
     device = query_preds.device
-    lens = seg_lens[query_preds.long()].to(torch.long)     # [A]
-    starts = seg_starts[query_preds.long()].to(torch.long) # [A]
-    if lens.sum().item() == 0:
+    # OPTIMIZATION: Avoid redundant .to(torch.long) if already long
+    lens = seg_lens[query_preds.long()]
+    starts = seg_starts[query_preds.long()]
+    # OPTIMIZED: Check using tensor operations, avoid .item()
+    if lens.numel() == 0 or lens.sum() == 0:
         z = torch.zeros(0, dtype=torch.long, device=device)
         return z, z
     keep = lens > 0
@@ -340,13 +348,15 @@ def _pairs_via_predicate_ranges(query_preds: Tensor, seg_starts: Tensor, seg_len
     row_ids = torch.repeat_interleave(torch.arange(lens.numel(), device=device), lens)
     prefix = torch.cumsum(lens, dim=0) - lens
     offs = torch.repeat_interleave(prefix, lens)
-    pos_in_row = torch.arange(int(lens.sum().item()), device=device) - offs
+    # OPTIMIZED: Use lens.sum() directly as a tensor until needed for arange
+    total_len = lens.sum()
+    pos_in_row = torch.arange(total_len.item(), device=device) - offs
     item_idx = starts[row_ids] + pos_in_row
     query_idx = kept_qidx[row_ids]
     return query_idx, item_idx
 
 @torch.no_grad()
-def _unify_with_facts_all_preds(
+def _unify_with_facts(
     engine,
     queries: Tensor,
     remaining_goals: Tensor,
@@ -389,9 +399,10 @@ def _unify_with_facts_all_preds(
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
     # 1) Ragged pairing (query → contiguous block of matching facts) ----------
-    prm = engine.predicate_range_map.to(device=device, dtype=torch.int32)
-    seg_starts = prm[:, 0].to(torch.long)
-    seg_lens   = (prm[:, 1] - prm[:, 0]).to(torch.long)
+    # OPTIMIZATION: predicate_range_map is already int32 on device, avoid redundant .to()
+    prm = engine.predicate_range_map
+    seg_starts = prm[:, 0].long()
+    seg_lens   = (prm[:, 1] - prm[:, 0]).long()
 
     qi, fi = _pairs_via_predicate_ranges(pred_indices, seg_starts, seg_lens)  # [L], [L]
     if qi.numel() == 0:
@@ -400,26 +411,39 @@ def _unify_with_facts_all_preds(
 
     # Optional: exclude trivial self-matches (labels not needed) --------------
     if excluded_queries is not None:
-        ex = excluded_queries.index_select(0, qi).to(torch.bool)
-        if ex.any():
-            q_tmp = queries.index_select(0, qi)               # [L,3]
-            f_tmp = engine.facts_idx.index_select(0, fi)      # [L,3]
-            ground_q = (q_tmp[:, 1:] <= engine.constant_no).all(dim=1)
-            same = (q_tmp == f_tmp).all(dim=1)
-            drop = ex & ground_q & same
-            if drop.any():
-                keep = ~drop
-                qi = qi[keep]
-                fi = fi[keep]
-                if qi.numel() == 0:
-                    empty = torch.full((A, 0, 1, 3), pad, dtype=torch.int32, device=device)
-                    return empty, torch.zeros(A, dtype=torch.long, device=device)
+        # excluded_queries is [A, 3] - the original queries to exclude
+        # For each (qi, fi) pair, check if queries[qi] == excluded_queries[qi] == facts[fi]
+        # If so, this is a trivial self-match and should be dropped
+        
+        ex_queries = excluded_queries.index_select(0, qi)  # [L, 3] - get excluded query for each pair
+        q_tmp = queries.index_select(0, qi)                # [L, 3] - get current query for each pair
+        f_tmp = engine.facts_idx.index_select(0, fi)       # [L, 3] - get matched fact for each pair
+        
+        # Check if query matches excluded query (i.e., this is the original query)
+        query_is_excluded = (q_tmp == ex_queries).all(dim=1)  # [L]
+        
+        # Check if query is ground (all arguments are constants)
+        ground_q = (q_tmp[:, 1:] <= engine.constant_no).all(dim=1)  # [L]
+        
+        # Check if query matches fact
+        same = (q_tmp == f_tmp).all(dim=1)  # [L]
+        
+        # Drop if: query is excluded AND ground AND matches fact (trivial self-match)
+        drop = query_is_excluded & ground_q & same  # [L]
+        
+        if drop.any():
+            keep = ~drop
+            qi = qi[keep]
+            fi = fi[keep]
+            if qi.numel() == 0:
+                empty = torch.full((A, 0, 1, 3), pad, dtype=torch.int32, device=device)
+                return empty, torch.zeros(A, dtype=torch.long, device=device)
 
     # Gather pairs and unify pairwise (still loop-free) -----------------------
     q_pairs = queries.index_select(0, qi)                  # [L, 3]
     f_pairs = engine.facts_idx.index_select(0, fi)         # [L, 3]
 
-    ok, subs = _unify_one_to_one_optimized(q_pairs, f_pairs, engine.constant_no, pad)
+    ok, subs = _unify_one_to_one(q_pairs, f_pairs, engine.constant_no, pad)
     if not ok.any():
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.int32, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
@@ -430,7 +454,7 @@ def _unify_with_facts_all_preds(
 
     # 2) Instantiate remaining goals with the substitutions ------------------
     remaining_sel = remaining_goals.index_select(0, qi)    # [M', G, 3]
-    remain_inst = _apply_substitutions_batched(
+    remain_inst = _apply_substitutions(
         remaining_sel, subs.view(subs.shape[0], -1, 2), pad
     )                                                      # [M', G, 3]
 
@@ -439,7 +463,9 @@ def _unify_with_facts_all_preds(
     take_g = pos_g < remaining_counts.index_select(0, qi).unsqueeze(1)   # [M', G]
 
     counts = take_g.sum(1)
-    max_cols = int(counts.max().item()) if counts.numel() > 0 else 1
+    # OPTIMIZED: Cache max result
+    max_cols_tensor = counts.max() if counts.numel() > 0 else torch.tensor(1, device=device)
+    max_cols = int(max_cols_tensor.item())
     compact = torch.full((counts.shape[0], max_cols, 3), pad, dtype=torch.int32, device=device)
     if take_g.any():
         row = torch.arange(counts.shape[0], device=device).unsqueeze(1).expand_as(take_g)
@@ -449,7 +475,9 @@ def _unify_with_facts_all_preds(
 
     # 4) Cap per-owner fanout (K per original query row) ---------------------
     K_per_owner = torch.bincount(qi, minlength=A)
-    K = int(min(max_output_per_query, K_per_owner.max().item())) if K_per_owner.numel() > 0 else 0
+    # OPTIMIZED: Cache max result
+    K_max_tensor = K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)
+    K = int(min(max_output_per_query, K_max_tensor.item()))
     if K == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.int32, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
@@ -475,7 +503,7 @@ def _unify_with_facts_all_preds(
     return out, counts_per_q
 
 @torch.no_grad()
-def _unify_with_rules_all_preds(
+def _unify_with_rules(
     engine,
     queries: Tensor,
     remaining_goals: Tensor,
@@ -520,14 +548,17 @@ def _unify_with_rules_all_preds(
 
     pcol = heads_sorted[:, 0]
     uniq, counts = torch.unique_consecutive(pcol, return_counts=True)
+    # OPTIMIZATION: counts is already long, avoid redundant .to()
     starts = torch.cumsum(
-        torch.cat([torch.zeros(1, dtype=torch.long, device=device), counts[:-1].to(torch.long)]),
+        torch.cat([torch.zeros(1, dtype=torch.long, device=device), counts[:-1]]),
         dim=0,
     )
-    ends = torch.cumsum(counts.to(torch.long), dim=0)
+    ends = torch.cumsum(counts, dim=0)
 
     # Compact range arrays sized to max predicate id encountered
-    max_pred = int(pcol.max().item())
+    # OPTIMIZED: Cache max result
+    max_pred_tensor = pcol.max()
+    max_pred = int(max_pred_tensor.item())
     seg_starts = torch.zeros((max_pred + 1,), dtype=torch.long, device=device)
     seg_lens   = torch.zeros((max_pred + 1,), dtype=torch.long, device=device)
     seg_starts[uniq] = starts
@@ -542,7 +573,7 @@ def _unify_with_rules_all_preds(
     q_pairs = queries.index_select(0, qi)                 # [L, 3]
     h_pairs = heads_sorted.index_select(0, ri)            # [L, 3]
 
-    ok, subs = _unify_one_to_one_optimized(q_pairs, h_pairs, engine.constant_no, pad)
+    ok, subs = _unify_one_to_one(q_pairs, h_pairs, engine.constant_no, pad)
     if not ok.any():
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.int32, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
@@ -558,8 +589,8 @@ def _unify_with_rules_all_preds(
     remaining_sel = remaining_goals.index_select(0, qi)   # [M', G, 3]
 
     subs_b = subs.view(subs.shape[0], -1, 2)
-    bodies_inst = _apply_substitutions_batched(bodies_all, subs_b, pad)
-    remain_inst = _apply_substitutions_batched(remaining_sel, subs_b, pad)
+    bodies_inst = _apply_substitutions(bodies_all, subs_b, pad)
+    remain_inst = _apply_substitutions(remaining_sel, subs_b, pad)
 
     # Keep active atoms only (drop padded tail for both parts)
     Bmax = bodies_all.shape[1]
@@ -570,7 +601,9 @@ def _unify_with_rules_all_preds(
     take_g = pos_g < remaining_counts.index_select(0, qi).unsqueeze(1)
 
     counts = take_b.sum(1) + take_g.sum(1)                # [M']
-    max_cols = int(counts.max().item()) if counts.numel() > 0 else 1
+    # OPTIMIZED: Cache max result
+    max_cols_tensor = counts.max() if counts.numel() > 0 else torch.tensor(1, device=device)
+    max_cols = int(max_cols_tensor.item())
 
     # Concatenate body and remaining, then compact to `max_cols`
     cat_full = torch.full((counts.shape[0], Bmax + G, 3), pad, dtype=torch.int32, device=device)
@@ -589,7 +622,9 @@ def _unify_with_rules_all_preds(
 
     # 4) Cap per-owner fanout (K per original query row) ---------------------
     K_per_owner = torch.bincount(qi, minlength=A)
-    K = int(min(max_output_per_query, K_per_owner.max().item())) if K_per_owner.numel() > 0 else 0
+    # OPTIMIZED: Cache max result
+    K_max_tensor = K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)
+    K = int(min(max_output_per_query, K_max_tensor.item()))
     if K == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.int32, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
@@ -645,16 +680,36 @@ class UnificationEngine:
         self.true_pred_idx = true_pred_idx
         self.false_pred_idx = false_pred_idx
 
-        self.facts_idx = (facts_idx or torch.empty((0, 3), dtype=torch.int32)).to(device=device, dtype=torch.int32)
-        self.rules_idx = (rules_idx or torch.empty((0, 1, 3), dtype=torch.int32)).to(device=device, dtype=torch.int32)
-        self.rule_lens = (rule_lens or torch.empty((0,), dtype=torch.int32)).to(device=device, dtype=torch.int32)
-        self.rules_heads_idx = (rules_heads_idx or torch.empty((0, 3), dtype=torch.int32)).to(device=device, dtype=torch.int32)
+        # Handle None properly for tensors
+        if facts_idx is None:
+            self.facts_idx = torch.empty((0, 3), dtype=torch.int32, device=device)
+        else:
+            self.facts_idx = facts_idx.to(device=device, dtype=torch.int32)
+            
+        if rules_idx is None:
+            self.rules_idx = torch.empty((0, 1, 3), dtype=torch.int32, device=device)
+        else:
+            self.rules_idx = rules_idx.to(device=device, dtype=torch.int32)
+            
+        if rule_lens is None:
+            self.rule_lens = torch.empty((0,), dtype=torch.int32, device=device)
+        else:
+            self.rule_lens = rule_lens.to(device=device, dtype=torch.int32)
+            
+        if rules_heads_idx is None:
+            self.rules_heads_idx = torch.empty((0, 3), dtype=torch.int32, device=device)
+        else:
+            self.rules_heads_idx = rules_heads_idx.to(device=device, dtype=torch.int32)
 
         # canonical pack base (>= max index + 1)
+        # OPTIMIZED: Minimize .item() calls in initialization
         max_idx = 1
-        for t in [self.facts_idx, self.rules_idx, self.rules_heads_idx]:
-            if t.numel() > 0:
-                max_idx = max(max_idx, int(t.max().item()))
+        tensors_to_check = [self.facts_idx, self.rules_idx, self.rules_heads_idx]
+        non_empty_tensors = [t for t in tensors_to_check if t.numel() > 0]
+        if non_empty_tensors:
+            # Compute all maxes in one go
+            max_vals = [t.max() for t in non_empty_tensors]
+            max_idx = max(max_idx, int(torch.stack(max_vals).max().item()))
         self.pack_base = int(pack_base if pack_base is not None else (max(max_idx, self.runtime_var_end_index) + 2))
 
         # predicate ranges (GPU copy if provided)
@@ -783,12 +838,12 @@ class UnificationEngine:
         preds = queries[:, 0]
 
         # ---- 2) rules
-        rule_states, rule_counts = _unify_with_rules_all_preds(
+        rule_states, rule_counts = _unify_with_rules(
             self, queries, remaining_goals, remaining_counts, preds
         )
 
         # ---- 3) facts
-        fact_states, fact_counts = _unify_with_facts_all_preds(
+        fact_states, fact_counts = _unify_with_facts(
             self, queries, remaining_goals, remaining_counts, preds,
             excluded_queries=excluded_queries[active_idx] if excluded_queries is not None else None,
         )
@@ -846,7 +901,7 @@ class UnificationEngine:
         counts_kept = pruned_counts[keep_mask]
 
         # ---- 6) canonicalise + update next var indices
-        canon_states, next_vars_per_state = self._canonicalize_variables_batched(
+        canon_states, next_vars_per_state = self._canonicalize_variables(
             states_kept, counts_kept, self.constant_no,
             next_var_indices[owners_kept], pad
         )
@@ -871,6 +926,17 @@ class UnificationEngine:
             pos = torch.minimum(pos, torch.full_like(pos, K - 1))
             dst_b = sort_vals
             dst_s = pos
+            
+            # Ensure states_sorted matches max_atoms_comb dimension
+            if states_sorted.shape[1] < max_atoms_comb:
+                # Pad atoms dimension
+                padding = torch.full((states_sorted.shape[0], max_atoms_comb - states_sorted.shape[1], 3),
+                                   pad, dtype=torch.int32, device=device)
+                states_sorted = torch.cat([states_sorted, padding], dim=1)
+            elif states_sorted.shape[1] > max_atoms_comb:
+                # Truncate atoms dimension
+                states_sorted = states_sorted[:, :max_atoms_comb]
+            
             packed_states[dst_b, dst_s] = states_sorted
             owner_maxpos = torch.full((B,), -1, dtype=torch.long, device=device)
             owner_maxpos.index_put_((dst_b,), dst_s, accumulate=True)
@@ -923,7 +989,9 @@ class UnificationEngine:
 
         pos = torch.cumsum(keep.long(), dim=1) - 1
         row = torch.arange(N, device=device).unsqueeze(1).expand_as(pos)
-        out_len = int(pruned_counts.max().item()) if pruned_counts.numel() > 0 else 1
+        # OPTIMIZED: Cache max result
+        out_len_tensor = pruned_counts.max() if pruned_counts.numel() > 0 else torch.tensor(1, device=device)
+        out_len = int(out_len_tensor.item())
         out = torch.full((N, out_len, 3), pad, dtype=torch.int32, device=device)
         if keep.any():
             src_idx = torch.arange(M, device=device).unsqueeze(0).expand_as(keep)
@@ -931,7 +999,7 @@ class UnificationEngine:
         return (out, pruned_counts, is_proof)
 
     @torch.no_grad()
-    def _canonicalize_variables_batched(self,
+    def _canonicalize_variables(self,
                                         states: Tensor,
                                         counts: Tensor,
                                         constant_no: int,

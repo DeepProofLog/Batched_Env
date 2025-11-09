@@ -111,9 +111,6 @@ class IndexManager:
         self.max_total_vars: int = max_total_runtime_vars  # Alias for compatibility
         self.max_arity: int = max_arity  # Store max_arity
 
-        self.total_vocab_size = self.variable_no + 1  # already present
-        self.pack_base = self.total_vocab_size + 1    # safe 64-bit packing base
-
         self.padding_idx: int = 0
         self.padding_atoms: int = padding_atoms
         
@@ -129,6 +126,7 @@ class IndexManager:
         # Total vocabulary size
         self.variable_no: int = self.constant_no + self.template_variable_no + self.runtime_variable_no
         self.total_vocab_size: int = self.variable_no + 1  # +1 for padding
+        self.pack_base = self.total_vocab_size + 1    # safe 64-bit packing base
 
         # Tensors (filled later by materializers)
         self.facts_idx: Optional[LongTensor] = None            # [F, 3]
@@ -138,7 +136,7 @@ class IndexManager:
 
         # Fact index (CPU) for quick predicate slices
         self.predicate_range_map: Optional[torch.IntTensor] = None  # [num_predicates+1, 2]
-        self.predicate_range_map_gpu = self.predicate_range_map.to(self.device)
+        self.predicate_range_map_gpu: Optional[torch.IntTensor] = None
 
         # Special tensors for True/False atoms
         self.true_tensor: Optional[LongTensor] = None

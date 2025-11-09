@@ -39,8 +39,8 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     args = SimpleNamespace(
         dataset_name="wn18rr",
         max_depth=20,  # Reduce max depth so episodes complete faster
-        batch_size=5,  # Vectorized batch size
-        n_steps=20,    # Steps per rollout
+        batch_size=128,  # Vectorized batch size
+        n_steps=128,    # Steps per rollout
         n_epochs=2,    # PPO epochs
         data_path="data",
         janus_file=None,  # Don't use janus file
