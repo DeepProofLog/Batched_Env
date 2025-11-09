@@ -29,6 +29,301 @@ from torchrl.envs import EnvBase
 
 
 # ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _infer_num_envs(env: EnvBase) -> int:
+    if hasattr(env, "batch_size") and len(env.batch_size) > 0:
+        return int(env.batch_size[0])
+    if hasattr(env, "num_workers"):
+        return int(env.num_workers)
+    return 1
+
+
+def _compute_episode_targets(
+    n_envs: int,
+    n_eval_episodes: int,
+    target_episodes: np.ndarray | None,
+) -> Tuple[np.ndarray, np.ndarray, int, int]:
+    if target_episodes is None:
+        offsets = np.arange(max(n_envs, 1), dtype=int)
+        targets = ((n_eval_episodes + offsets) // max(n_envs, 1)).astype(int)
+    else:
+        targets = np.asarray(target_episodes, dtype=int)
+    padded = np.zeros(max(n_envs, len(targets)), dtype=int)
+    padded[:len(targets)] = targets
+    max_t = int(padded.max()) if padded.size else 0
+    total = int(padded.sum())
+    return targets, padded, max_t, total
+
+
+def _sync_env_episode_targets(env: EnvBase, padded_targets: np.ndarray) -> None:
+    from torchrl.envs import ParallelEnv
+    from env import BatchedEnv
+
+    if isinstance(env, (ParallelEnv, BatchedEnv)):
+        if hasattr(env, "_episode_target"):
+            env._episode_target[:] = padded_targets
+        if hasattr(env, "_episode_count"):
+            env._episode_count[:] = 0
+        if hasattr(env, "active_envs"):
+            env.active_envs[:] = True
+        return
+
+    if hasattr(env, "_episode_target"):
+        env._episode_target[:] = padded_targets
+    if hasattr(env, "_episode_count"):
+        env._episode_count[:] = 0
+    if hasattr(env, "active_envs"):
+        env.active_envs[:] = True
+
+
+def _flatten_env_value(
+    value: Optional[torch.Tensor],
+    device: torch.device,
+    n_envs: int,
+) -> torch.Tensor:
+    if value is None:
+        return torch.zeros(n_envs, device=device)
+    tensor = value.to(device)
+    if tensor.ndim == 0:
+        return tensor.repeat(n_envs)
+    if tensor.shape[0] != n_envs:
+        tensor = tensor.reshape(n_envs, -1)
+    else:
+        tensor = tensor.view(n_envs, -1)
+    return tensor[:, 0]
+
+
+def _extract_tensor_from_td(
+    td: TensorDict,
+    key: str,
+    device: torch.device,
+    n_envs: int,
+) -> Optional[torch.Tensor]:
+    source = None
+    if key in td.keys():
+        source = td.get(key)
+    elif "next" in td.keys() and key in td["next"].keys():
+        source = td["next"].get(key)
+    if source is None:
+        return None
+    return _flatten_env_value(source, device, n_envs)
+
+
+def _normalize_action_tensor(action_output: torch.Tensor, n_envs: int) -> torch.Tensor:
+    if action_output is None:
+        raise ValueError("Actor did not produce 'action' in output TensorDict")
+    actions = action_output
+    if actions.ndim >= 3:
+        actions = actions[:, -1, :]
+    if actions.ndim >= 2:
+        actions = torch.argmax(actions, dim=-1)
+    actions = actions.to(torch.long).view(-1)
+    if actions.numel() == 1 and n_envs > 1:
+        actions = actions.repeat(n_envs)
+    return actions[:n_envs]
+
+
+def _extract_log_prob(
+    td_with_action: TensorDict,
+    device: torch.device,
+    n_envs: int,
+) -> torch.Tensor:
+    lp_tensor = td_with_action.get("sample_log_prob", None)
+    if lp_tensor is None:
+        return torch.zeros(n_envs, device=device)
+    tensor = lp_tensor.to(device)
+    if tensor.ndim == 2:
+        tensor = tensor[:, -1]
+    tensor = tensor.view(-1)
+    if tensor.numel() == 1 and n_envs > 1:
+        tensor = tensor.repeat(n_envs)
+    return tensor[:n_envs]
+
+
+def _apply_action_mask_vectorized(
+    actions: torch.Tensor,
+    action_mask: torch.Tensor,
+    log_probs: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if action_mask.ndim == 1:
+        flat_mask = action_mask.unsqueeze(0).expand(actions.shape[0], -1)
+    elif action_mask.shape[0] != actions.shape[0]:
+        flat_mask = action_mask.reshape(actions.shape[0], -1)
+    else:
+        flat_mask = action_mask.view(actions.shape[0], -1)
+
+    flat_mask = flat_mask.to(torch.bool)
+    action_dim = flat_mask.shape[-1]
+    clipped = actions.clamp(min=0, max=max(action_dim - 1, 0))
+    gather_idx = clipped.unsqueeze(-1)
+    valid_taken = torch.gather(flat_mask, 1, gather_idx).squeeze(-1)
+    within_bounds = (actions >= 0) & (actions < action_dim)
+    valid = valid_taken & within_bounds
+    invalid = ~valid
+
+    any_valid = flat_mask.any(dim=-1)
+    fallback = torch.argmax(flat_mask.int(), dim=-1)
+    fallback = torch.where(any_valid, fallback, torch.zeros_like(fallback))
+    adjusted_actions = torch.where(invalid, fallback, clipped)
+
+    valid_counts = flat_mask.sum(dim=-1).clamp(min=1)
+    replacement_lp = torch.where(
+        any_valid,
+        -torch.log(valid_counts.float()),
+        torch.full_like(valid_counts.float(), float("-inf")),
+    )
+    adjusted_log_probs = torch.where(invalid, replacement_lp, log_probs)
+    return adjusted_actions, adjusted_log_probs
+
+
+def _build_info_dicts(
+    done_mask: torch.Tensor,
+    rewards: torch.Tensor,
+    lengths: torch.Tensor,
+    success: torch.Tensor,
+    td: TensorDict,
+    device: torch.device,
+    n_envs: int,
+) -> List[Dict[str, Any]]:
+    if not torch.any(done_mask):
+        return [{} for _ in range(n_envs)]
+
+    labels = _extract_tensor_from_td(td, "label", device, n_envs)
+    depths = _extract_tensor_from_td(td, "query_depth", device, n_envs)
+    episode_idx = _extract_tensor_from_td(td, "episode_idx", device, n_envs)
+
+    done_np = done_mask.detach().cpu().numpy().astype(bool)
+    reward_np = rewards.detach().cpu().numpy()
+    length_np = lengths.detach().cpu().numpy()
+    success_np = success.detach().cpu().numpy().astype(bool)
+    label_np = labels.detach().cpu().numpy() if labels is not None else None
+    depth_np = depths.detach().cpu().numpy() if depths is not None else None
+    episode_np = episode_idx.detach().cpu().numpy() if episode_idx is not None else None
+
+    infos = [{} for _ in range(n_envs)]
+    indices = np.nonzero(done_np)[0].tolist()
+    for idx in indices:
+        payload: Dict[str, Any] = {
+            "episode": {
+                "r": float(reward_np[idx]),
+                "l": int(length_np[idx]),
+            },
+            "is_success": bool(success_np[idx]),
+        }
+        if label_np is not None:
+            payload["label"] = int(label_np[idx])
+        if depth_np is not None:
+            payload["query_depth"] = int(depth_np[idx])
+        if episode_np is not None:
+            payload["episode_idx"] = int(episode_np[idx])
+        infos[idx] = payload
+    return infos
+
+
+class _TrajectoryRecorder:
+    """Utility to keep log-prob and state histories when plotting."""
+
+    def __init__(self, env: EnvBase, n_envs: int):
+        index_manager = getattr(env, "index_manager", None)
+        if index_manager is None and hasattr(env, "envs") and len(getattr(env, "envs", [])) > 0:
+            inner_env = env.envs[0]
+            index_manager = getattr(inner_env, "index_manager", None)
+
+        self.enabled = index_manager is not None
+        self.index_manager = index_manager
+        self.n_envs = n_envs
+
+        self.current_state_histories = [[] for _ in range(n_envs)]
+        self.current_choices_histories = [[] for _ in range(n_envs)]
+        self.current_steplogprob_histories = [[] for _ in range(n_envs)]
+
+        self.episode_logprob_histories: List[np.ndarray] = []
+        self.episode_choices_histories: List[np.ndarray] = []
+        self.episode_steplogprob_histories: List[np.ndarray] = []
+        self.episode_state_histories: List[np.ndarray] = []
+
+    def _compute_num_choices(self, obs_td: TensorDict) -> torch.Tensor:
+        derived = obs_td.get("derived_sub_indices", None)
+        if derived is None:
+            return torch.zeros(self.n_envs, dtype=torch.int64)
+        mask = derived.sum(dim=(-1, -2)) != 0
+        return mask.sum(dim=-1).to(torch.int64)
+
+    def record_state(self, obs_td: TensorDict, active_mask: torch.Tensor) -> None:
+        if not self.enabled or "sub_index" not in obs_td.keys():
+            return
+        num_choices = self._compute_num_choices(obs_td)
+        sub_index = obs_td["sub_index"].detach().cpu().numpy()
+        active_indices = active_mask.nonzero(as_tuple=False).squeeze(-1).tolist()
+        for idx in active_indices:
+            state_np = sub_index[idx]
+            state_str = self.index_manager.state_subindex_to_str(state_np, truncate=True)
+            self.current_state_histories[idx].append(state_str)
+            self.current_choices_histories[idx].append(int(num_choices[idx]))
+
+    def record_step_log_probs(self, log_probs: torch.Tensor, active_mask: torch.Tensor) -> None:
+        if not self.enabled:
+            return
+        log_np = log_probs.detach().cpu().numpy()
+        active_indices = active_mask.nonzero(as_tuple=False).squeeze(-1).tolist()
+        for idx in active_indices:
+            value = log_np[idx] if np.ndim(log_np) > 0 else float(log_np)
+            self.current_steplogprob_histories[idx].append(float(value))
+
+    def finalize(self, done_indices: torch.Tensor, td: TensorDict) -> None:
+        if not self.enabled or done_indices.numel() == 0:
+            return
+        next_td = td.get("next") if "next" in td.keys() else td
+        sub_index = None
+        if "sub_index" in next_td.keys():
+            sub_index = next_td["sub_index"].detach().cpu().numpy()
+
+        for env_idx in done_indices.detach().cpu().tolist():
+            if not self.current_steplogprob_histories[env_idx]:
+                continue
+
+            self.current_choices_histories[env_idx].append(0)
+            self.current_steplogprob_histories[env_idx].append(0.0)
+
+            self.episode_logprob_histories.append(
+                np.cumsum(self.current_steplogprob_histories[env_idx])
+            )
+            self.episode_steplogprob_histories.append(
+                np.array(self.current_steplogprob_histories[env_idx])
+            )
+            self.episode_choices_histories.append(
+                np.array(self.current_choices_histories[env_idx])
+            )
+
+            if sub_index is not None:
+                final_state = sub_index[env_idx]
+                final_state_str = self.index_manager.state_subindex_to_str(final_state, truncate=True)
+                self.current_state_histories[env_idx].append(final_state_str)
+                self.episode_state_histories.append(
+                    np.array(self.current_state_histories[env_idx])
+                )
+
+            self.current_state_histories[env_idx].clear()
+            self.current_choices_histories[env_idx].clear()
+            self.current_steplogprob_histories[env_idx].clear()
+
+    def payload(self) -> Tuple[
+        List[np.ndarray],
+        List[np.ndarray],
+        List[np.ndarray],
+        List[np.ndarray],
+    ]:
+        return (
+            self.episode_logprob_histories,
+            self.episode_choices_histories,
+            self.episode_steplogprob_histories,
+            self.episode_state_histories,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Low-level, fast vectorized evaluator for TorchRL
 # ---------------------------------------------------------------------------
 
@@ -78,332 +373,161 @@ def evaluate_policy_torchrl(
         Accumulated action log-probabilities per episode.
     mask : np.ndarray, shape (n_envs, max_episodes), dtype=bool
         Mask marking valid episode slots per env.
-    proof_successful : np.ndarray, shape (n_envs, max_episodes), dtype=bool
+        proof_successful : np.ndarray, shape (n_envs, max_episodes), dtype=bool
         Whether the env reported success for each finished episode.
     """
-    # Set actor to eval mode
     actor.eval()
-    
-    # Determine number of environments from env's batch_size
-    if hasattr(env, 'batch_size') and len(env.batch_size) > 0:
-        n_envs = int(env.batch_size[0])
-    elif hasattr(env, 'num_workers'):
-        n_envs = int(env.num_workers)
-    else:
-        n_envs = 1
-    
+    n_envs = _infer_num_envs(env)
     device = next(actor.parameters()).device
 
-    # --- targets ---
-    if target_episodes is None:
-        targets = np.array([(n_eval_episodes + i) // n_envs for i in range(n_envs)], dtype=int)
-    else:
-        targets = np.asarray(target_episodes, dtype=int)
-
-    padded_targets = np.zeros(n_envs, dtype=int)
-    padded_targets[:len(targets)] = targets
-    max_t = int(padded_targets.max())
-    total = int(padded_targets.sum())
-
+    targets, padded_targets, max_t, total = _compute_episode_targets(
+        n_envs, n_eval_episodes, target_episodes
+    )
     if verbose:
-        print(f"\nEvaluating {total} episodes on {n_envs} envs (avg target: {targets.mean():.2f})")
+        avg_target = targets.mean() if targets.size > 0 else 0.0
+        print(f"\nEvaluating {total} episodes on {n_envs} envs (avg target: {avg_target:.2f})")
 
-    # Set episode targets in environment if supported
-    # ParallelEnv and BatchedVecEnv support direct attribute assignment
-    from torchrl.envs import ParallelEnv
-    from env import BatchedEnv
-    
-    # Both ParallelEnv and BatchedVecEnv can have these attributes set directly
-    if isinstance(env, (ParallelEnv, BatchedEnv)):
-        if hasattr(env, '_episode_target'):
-            env._episode_target[:] = padded_targets
-        if hasattr(env, '_episode_count'):
-            env._episode_count[:] = 0
-        if hasattr(env, 'active_envs'):
-            env.active_envs[:] = True
-    elif hasattr(env, '_episode_target'):
-        # Single env case
-        env._episode_target[:] = padded_targets
-        if hasattr(env, '_episode_count'):
-            env._episode_count[:] = 0
-        if hasattr(env, 'active_envs'):
-            env.active_envs[:] = True
+    _sync_env_episode_targets(env, padded_targets)
 
-    # --- buffers on device ---
     rewards = torch.zeros((n_envs, max_t), device=device)
-    lengths = torch.zeros_like(rewards, dtype=torch.int32)
-    logps = torch.zeros_like(rewards)
-    proof_successful = torch.zeros_like(rewards, dtype=torch.bool)
+    lengths = torch.zeros((n_envs, max_t), dtype=torch.int32, device=device)
+    logps = torch.zeros((n_envs, max_t), device=device)
+    proof_successful = torch.zeros((n_envs, max_t), dtype=torch.bool, device=device)
 
     counts = torch.zeros(n_envs, dtype=torch.int32, device=device)
     current_rew = torch.zeros(n_envs, device=device)
     current_len = torch.zeros(n_envs, dtype=torch.int32, device=device)
     current_lp = torch.zeros(n_envs, device=device)
 
-    # Optional histories for plotting/debug
-    episode_logprob_histories: list[np.ndarray] = []
-    episode_choices_histories: list[np.ndarray] = []
-    episode_steplogprob_histories: list[np.ndarray] = []
-    episode_state_histories: list[np.ndarray] = []
-    if track_logprobs:
-        current_steplogprob_histories: list[list[float]] = [[] for _ in range(n_envs)]
-        current_choices_histories: list[list[int]] = [[] for _ in range(n_envs)]
-        current_state_histories: list[list[str]] = [[] for _ in range(n_envs)]
-        # Try to get index_manager for state string conversion
-        index_manager = None
-        if hasattr(env, 'index_manager'):
-            index_manager = env.index_manager
-        elif hasattr(env, 'envs') and len(env.envs) > 0:
-            if hasattr(env.envs[0], 'index_manager'):
-                index_manager = env.envs[0].index_manager
+    recorder = _TrajectoryRecorder(env, n_envs) if track_logprobs else None
 
-    # Reset environment
     td = env.reset()
     padded_targets_t = torch.as_tensor(padded_targets, device=device)
+    active_mask = counts < padded_targets_t
 
-    # Main evaluation loop
-    while torch.any(counts < padded_targets_t).item():
-        active_mask_t = counts < padded_targets_t
-        active_idx = torch.where(active_mask_t)[0]
-
-        # Get observations from TensorDict
+    while bool(torch.any(active_mask)):
         obs_td = td.get("next") if "next" in td.keys() else td
-        
-        # Track histories before step
-        if track_logprobs and index_manager is not None:
-            num_choices = (obs_td["derived_sub_indices"].sum(dim=(-1, -2)) != 0).sum(dim=-1).cpu().numpy()
-            all_sub_indices = obs_td["sub_index"].cpu().numpy()
-            for i in active_idx.cpu().tolist():
-                if n_envs == 1:
-                    subidx = all_sub_indices.squeeze(0)
-                else:
-                    subidx = all_sub_indices[i].squeeze(0)
-                state_str = index_manager.state_subindex_to_str(subidx, truncate=True)
-                current_state_histories[i].append(state_str)
-                if n_envs == 1:
-                    current_choices_histories[i].append(num_choices.item() if num_choices.ndim == 0 else num_choices[0])
-                else:
-                    current_choices_histories[i].append(num_choices[i])
+        if recorder is not None:
+            recorder.record_state(obs_td, active_mask)
 
-        # Get actions from actor
-        td_with_action = actor(obs_td)
-        
-        # Extract actions and log probabilities
-        action_output = td_with_action.get("action")
-        if action_output is None:
-            raise ValueError("Actor did not produce 'action' in output TensorDict")
-        
-        # Handle action format: convert to indices if needed
-        if action_output.dim() >= 2:
-            # One-hot or batched format
-            if action_output.dim() == 3:
-                action_output = action_output[:, -1, :]  # Take last timestep
-            actions = torch.argmax(action_output, dim=-1)
-        else:
-            actions = action_output.long()
-        
-        # Get log probabilities
-        # Extract log-probabilities and ensure they are on the same device
-        # as the actor/accumulators to avoid device-mismatch when indexing.
-        lp_tensor = td_with_action.get("sample_log_prob", None)
-        if lp_tensor is None:
-            lp_tensor = torch.zeros(n_envs, device=device)
-        else:
-            # Move incoming TensorDict tensors to the actor/device
-            lp_tensor = lp_tensor.to(device)
-            if lp_tensor.dim() == 2:
-                lp_tensor = lp_tensor[:, -1]  # Take last timestep
-        
-        # Enforce action mask (safety check)
+        policy_td = actor(obs_td)
+        actions = _normalize_action_tensor(policy_td.get("action"), n_envs).to(device)
+        log_probs = _extract_log_prob(policy_td, device, n_envs)
+
         action_mask = obs_td.get("action_mask", None)
         if action_mask is not None:
-            action_mask = action_mask.to(torch.bool)
-            for i in range(actions.shape[0]):
-                a = int(actions[i].item())
-                if action_mask.dim() == 2:
-                    mask_i = action_mask[i]
-                else:
-                    mask_i = action_mask
-                if a < 0 or a >= mask_i.shape[0] or not bool(mask_i[a].item()):
-                    valid = torch.where(mask_i)[0]
-                    if valid.numel() > 0:
-                        actions[i] = valid[0]
-                        lp_tensor[i] = torch.log(torch.tensor(1.0 / float(valid.numel()), device=device))
-                    else:
-                        actions[i] = 0
-                        lp_tensor[i] = float('-inf')
+            actions, log_probs = _apply_action_mask_vectorized(
+                actions, action_mask.to(device), log_probs
+            )
+
+        batch_size = getattr(env, "batch_size", torch.Size([n_envs]))
+        try:
+            batched_actions = actions.view(batch_size)
+        except Exception:
+            batched_actions = actions.view(-1)
+        action_td = TensorDict({"action": batched_actions}, batch_size=batch_size)
         
-        # Accumulate log probs for active environments
-        current_lp[active_idx] += lp_tensor[active_idx]
-        
-        # Create action TensorDict
-        if n_envs == 1:
-            action_td = TensorDict({
-                "action": actions[0] if actions.dim() > 0 else actions,
-            }, batch_size=env.batch_size)
+        # Use step_and_maybe_reset to automatically handle episode resets
+        step_td_complete, next_obs_td = env.step_and_maybe_reset(action_td)
+        td = step_td_complete  # Contains the step result with reward/done
+        # Update td for next iteration to use the reset observation if needed
+        if "next" in next_obs_td.keys():
+            td = next_obs_td
         else:
-            action_td = TensorDict({
-                "action": actions,
-            }, batch_size=env.batch_size)
-        
-        # Step environment
-        td = env.step(action_td)
-        
-        # Extract step results
-        if "next" in td.keys():
-            next_td = td["next"]
-            reward_tensor = next_td.get("reward")
-            done_tensor = next_td.get("done")
-        else:
-            reward_tensor = td.get("reward")
-            done_tensor = td.get("done")
-        
+            td = TensorDict({"next": next_obs_td}, batch_size=batch_size)
+
+        next_td = step_td_complete.get("next") if "next" in step_td_complete.keys() else step_td_complete
+        reward_tensor = next_td.get("reward")
+        done_tensor = next_td.get("done")
         if reward_tensor is None or done_tensor is None:
-            raise ValueError(f"TensorDict missing 'reward' or 'done'. Keys: {list(td.keys())}")
-        
-        # Convert to CPU tensors
-        rews_t = reward_tensor.to(device).flatten()[:n_envs]
-        dones_t = done_tensor.to(device).flatten()[:n_envs].to(torch.bool)
-        
-        # Accumulate episode statistics
-        current_rew[active_idx] += rews_t[active_idx]
-        current_len[active_idx] += 1
-        
-        # Track step log probs
-        if track_logprobs:
-            step_lp_np = lp_tensor.detach().cpu().numpy()
-            for i in active_idx.cpu().tolist():
-                if n_envs == 1:
-                    current_steplogprob_histories[i].append(step_lp_np.item() if step_lp_np.ndim == 0 else step_lp_np[0])
-                else:
-                    current_steplogprob_histories[i].append(step_lp_np[i])
-        
-        # Handle episode completions
-        done_and_active = dones_t & active_mask_t
-        if done_and_active.any():
-            done_idx = torch.where(done_and_active)[0]
-            slots = counts[done_idx]
-            
-            rewards[done_idx, slots] = current_rew[done_idx]
-            lengths[done_idx, slots] = current_len[done_idx]
-            logps[done_idx, slots] = current_lp[done_idx]
-            
-            # Extract success flag
-            def safe_extract(tensor_val, index):
-                if tensor_val.dim() == 0:
-                    return tensor_val.item()
-                else:
-                    return tensor_val[index].item()
-            
-            succ_list = []
-            for env_i in done_idx.cpu().tolist():
-                if "is_success" in td.keys():
-                    succ = bool(safe_extract(td["is_success"], env_i))
-                elif "next" in td.keys() and "is_success" in td["next"].keys():
-                    succ = bool(safe_extract(td["next"]["is_success"], env_i))
-                else:
-                    succ = False
-                succ_list.append(succ)
-            
-            proof_successful[done_idx, slots] = torch.as_tensor(succ_list, device=device)
-            
-            # Build info dicts for callback
+            raise ValueError(f"TensorDict missing 'reward' or 'done'. Keys: {list(next_td.keys())}")
+
+        rewards_step = _flatten_env_value(reward_tensor, device, n_envs)
+        dones = _flatten_env_value(done_tensor, device, n_envs).to(torch.bool)
+
+        mask_float = active_mask.to(rewards_step.dtype)
+        current_rew += rewards_step * mask_float
+        current_len += active_mask.to(current_len.dtype)
+        current_lp += log_probs * mask_float
+
+        if recorder is not None:
+            recorder.record_step_log_probs(log_probs, active_mask)
+
+        done_and_active = dones & active_mask
+        if torch.any(done_and_active):
+            done_idx = torch.nonzero(done_and_active, as_tuple=False).squeeze(-1)
+            slot_idx = counts[done_idx].long()
+
+            rewards[done_idx, slot_idx] = current_rew[done_idx]
+            lengths[done_idx, slot_idx] = current_len[done_idx]
+            logps[done_idx, slot_idx] = current_lp[done_idx]
+
+            success_tensor = _extract_tensor_from_td(td, "is_success", device, n_envs)
+            if success_tensor is None:
+                success_tensor = torch.zeros(n_envs, dtype=torch.bool, device=device)
+            proof_successful[done_idx, slot_idx] = success_tensor.to(torch.bool)[done_idx]
+
             if info_callback is not None:
-                infos = []
-                for i in range(n_envs):
-                    info = {}
-                    if i in done_idx.cpu().tolist():
-                        info["episode"] = {
-                            "r": float(current_rew[i].item()),
-                            "l": int(current_len[i].item()),
-                        }
-                        info["is_success"] = succ_list[done_idx.cpu().tolist().index(i)]
-                        
-                        # Extract additional fields
-                        if "label" in td.keys():
-                            info["label"] = int(safe_extract(td["label"], i))
-                        elif "next" in td.keys() and "label" in td["next"].keys():
-                            info["label"] = int(safe_extract(td["next"]["label"], i))
-                        
-                        if "query_depth" in td.keys():
-                            info["query_depth"] = int(safe_extract(td["query_depth"], i))
-                        elif "next" in td.keys() and "query_depth" in td["next"].keys():
-                            info["query_depth"] = int(safe_extract(td["next"]["query_depth"], i))
-                        
-                        if "episode_idx" in td.keys():
-                            info["episode_idx"] = int(safe_extract(td["episode_idx"], i))
-                        elif "next" in td.keys() and "episode_idx" in td["next"].keys():
-                            info["episode_idx"] = int(safe_extract(td["next"]["episode_idx"], i))
-                    
-                    infos.append(info)
-                
+                infos = _build_info_dicts(
+                    done_and_active,
+                    current_rew.clone(),
+                    current_len.clone(),
+                    success_tensor.to(torch.bool),
+                    td,
+                    device,
+                    n_envs,
+                )
                 info_callback(infos)
-            
-            # Track histories for completed episodes
-            if track_logprobs and index_manager is not None:
-                for env_i in done_idx.cpu().tolist():
-                    if not current_steplogprob_histories[env_i]:
-                        continue
-                    
-                    # Append final terminal state
-                    current_choices_histories[env_i].append(0)
-                    current_steplogprob_histories[env_i].append(0.0)
-                    
-                    episode_logprob_histories.append(np.cumsum(current_steplogprob_histories[env_i]))
-                    episode_steplogprob_histories.append(np.array(current_steplogprob_histories[env_i]))
-                    episode_choices_histories.append(np.array(current_choices_histories[env_i]))
-                    
-                    # Get terminal state
-                    if "next" in td.keys():
-                        if n_envs == 1:
-                            term_sub = td["next"]["sub_index"].cpu().numpy().squeeze(0)
-                        else:
-                            term_sub = td["next"]["sub_index"][env_i].cpu().numpy().squeeze(0)
-                    else:
-                        if n_envs == 1:
-                            term_sub = td["sub_index"].cpu().numpy().squeeze(0)
-                        else:
-                            term_sub = td["sub_index"][env_i].cpu().numpy().squeeze(0)
-                    
-                    final_state_str = index_manager.state_subindex_to_str(term_sub, truncate=True)
-                    current_state_histories[env_i].append(final_state_str)
-                    episode_state_histories.append(np.array(current_state_histories[env_i]))
-                    
-                    # Clear buffers
-                    current_steplogprob_histories[env_i].clear()
-                    current_choices_histories[env_i].clear()
-                    current_state_histories[env_i].clear()
-            
-            # Update counters
+
+            if recorder is not None:
+                recorder.finalize(done_idx, td)
+
             counts[done_idx] += 1
             current_rew[done_idx] = 0
             current_len[done_idx] = 0
             current_lp[done_idx] = 0
-        
+
         if verbose:
             print(f"\rEpisodes done: {int(counts.sum())}/{total}", end="", flush=True)
-    
+
+        active_mask = counts < padded_targets_t
+
     if verbose:
         print("\r" + " " * 80 + "\r", end="")
-    
-    # Create mask for valid episodes
-    mask = (torch.arange(max_t, device=device)[None, :]
-            < torch.as_tensor(padded_targets, device=device)[:, None])
-    
-    # Trim to requested number of envs
-    L = len(target_episodes) if target_episodes is not None else n_envs
-    rewards, lengths, logps, mask, proof_successful = [
-        x[:L].cpu().numpy() for x in (rewards, lengths, logps, mask, proof_successful)
+
+    mask = (
+        torch.arange(max_t, device=device)[None, :]
+        < torch.as_tensor(padded_targets, device=device)[:, None]
+    )
+
+    trim = len(target_episodes) if target_episodes is not None else n_envs
+    outputs = [rewards, lengths, logps, mask, proof_successful]
+    rewards_np, lengths_np, logps_np, mask_np, success_np = [
+        tensor[:trim].cpu().numpy() for tensor in outputs
     ]
-    
-    if track_logprobs:
+
+    if recorder is not None:
+        (
+            episode_logprob_histories,
+            episode_choices_histories,
+            episode_steplogprob_histories,
+            episode_state_histories,
+        ) = recorder.payload()
         return (
-            rewards, lengths, logps, mask, proof_successful,
-            episode_logprob_histories, episode_choices_histories,
-            episode_steplogprob_histories, episode_state_histories
+            rewards_np,
+            lengths_np,
+            logps_np,
+            mask_np,
+            success_np,
+            episode_logprob_histories,
+            episode_choices_histories,
+            episode_steplogprob_histories,
+            episode_state_histories,
         )
-    else:
-        return (rewards, lengths, logps, mask, proof_successful)
+    
+    return rewards_np, lengths_np, logps_np, mask_np, success_np
+
+   
 
 
 # ---------------------------------------------------------------------------
@@ -436,127 +560,258 @@ def _init_global_metrics() -> Dict[str, List[float]]:
     return {key: [] for key in _GLOBAL_METRICS_TEMPLATE}
 
 
-def _compute_targets_and_mask(
-    corrs: List[List[Any]],
-    num_envs: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    targets = np.array([1 + len(c) for c in corrs], dtype=int)
-    max_t = int(targets.max()) if targets.size > 0 else 0
-    padded_targets = np.zeros(num_envs, dtype=int)
-    padded_targets[:len(corrs)] = targets
-    if max_t == 0:
-        mask = np.zeros((num_envs, 0), dtype=bool)
-    else:
-        mask = (np.arange(max_t)[None, :] < padded_targets[:, None])
-    return targets, mask
-
-
-def _configure_env_batch(
-    env: EnvBase,
-    batch: List[Any],
-    corrs: List[List[Any]],
-    data_depths: Optional[List[int]],
-    batch_start_idx: int,
-) -> None:
-    """Configure environment batch for evaluation with queries and corruptions."""
-    from torchrl.envs import ParallelEnv
-    from env import BatchedEnv
-    
-    for i, (query, negatives) in enumerate(zip(batch, corrs)):
-        sequence = [query] + negatives
-        batch_idx = batch_start_idx + i
-        pos_depth = data_depths[batch_idx] if data_depths is not None else None
-        depths = [pos_depth] + [-1] * len(negatives)
-        
-        config_kwargs = {
-            'mode': 'eval',
-            'queries': sequence,
-            'labels': [1] + [0] * len(negatives),
-            'query_depths': depths,
-            'n_episodes': len(sequence),
-            'eval_idx': 0,
-        }
-        
-        # Handle different environment types
-        if isinstance(env, BatchedEnv):
-            # BatchedVecEnv: configure directly on the batched environment
-            if hasattr(env, 'configure_batch_slot'):
-                env.configure_batch_slot(i, **config_kwargs)
-            elif hasattr(env, 'configure'):
-                env.configure(**config_kwargs)
-        elif isinstance(env, ParallelEnv):
-            # For ParallelEnv, we need to send configuration to worker processes
-            # This is done through the worker's configure method
-            try:
-                # Access the worker environment and call configure
-                # ParallelEnv doesn't expose envs directly, so we store config
-                # and apply it on the next reset
-                if not hasattr(env, '_pending_configs'):
-                    env._pending_configs = [{} for _ in range(env.num_workers)]
-                env._pending_configs[i] = config_kwargs
-            except Exception:
-                pass
-        elif hasattr(env, 'envs') and len(env.envs) > i:
-            # Direct access to environment list
-            inner_env = env.envs[i]
-            if hasattr(inner_env, 'configure'):
-                inner_env.configure(**config_kwargs)
-            else:
-                for key, value in config_kwargs.items():
-                    setattr(inner_env, key, value)
-        else:
-            # Single environment
-            if hasattr(env, 'configure'):
-                env.configure(**config_kwargs)
-            else:
-                for key, value in config_kwargs.items():
-                    setattr(env, key, value)
-
-
-def _evaluate_with_rl(
+def _evaluate_ranking_metrics(
     actor: nn.Module,
     env: EnvBase,
-    batch: List[Any],
-    corrs: List[List[Any]],
-    targets: np.ndarray,
-    deterministic: bool,
-    verbose: bool,
-    info_callback: Optional[Callable[[List[Dict[str, Any]]], None]],
-    data_depths: Optional[List[int]],
-    batch_start_idx: int,
-    plot: bool,
-) -> Tuple[
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-    Optional[Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray]]],
-]:
-    _configure_env_batch(env, batch, corrs, data_depths, batch_start_idx)
+    queries: torch.Tensor,
+    sampler: Any,
+    n_corruptions: int = 10,
+    corruption_modes: List[str] = None,
+    deterministic: bool = True,
+    verbose: bool = False,
+    info_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+) -> Dict[str, Any]:
+    """Evaluate ranking metrics by generating negatives and computing logprobs.
     
-    eval_kwargs = dict(
-        actor=actor,
-        env=env,
-        deterministic=deterministic,
-        target_episodes=targets,
-        verbose=verbose,
-        info_callback=info_callback,
-    )
+    This function:
+    1. Takes a batch of positive queries (triples)
+    2. Generates negatives using the sampler (head and/or tail corruptions)
+    3. Distributes positive + negatives across the batched environment
+    4. Evaluates each triple to get log probabilities
+    5. Computes ranking metrics (MRR, Hits@K, etc.)
     
-    if plot:
-        (
-            rewards, lengths, log_probs, mask, proof_successful,
-            logprob_histories, choices_histories,
-            steplogprob_histories, state_histories,
-        ) = evaluate_policy_torchrl(track_logprobs=True, **eval_kwargs)
-        plot_payload = (
-            logprob_histories, choices_histories,
-            steplogprob_histories, state_histories,
-        )
-    else:
-        rewards, lengths, log_probs, mask, proof_successful = evaluate_policy_torchrl(
-            track_logprobs=False, **eval_kwargs
-        )
-        plot_payload = None
+    Parameters
+    ----------
+    actor : nn.Module
+        TorchRL actor module (e.g., ProbabilisticActor).
+    env : EnvBase
+        TorchRL batched environment (BatchedEnv or similar).
+    queries : torch.Tensor
+        Positive query triples of shape [N, 3] where each row is [relation, head, tail].
+    sampler : Any
+        Sampler instance with corrupt() method for generating negatives.
+    n_corruptions : int, default 10
+        Number of negative samples to generate per query.
+    corruption_modes : List[str], optional
+        List of corruption types to evaluate. Default is ['head', 'tail'].
+    deterministic : bool, default True
+        Whether to use deterministic policy actions.
+    verbose : bool, default False
+        Print progress information.
+    info_callback : callable, optional
+        Callback for info dicts after each step.
     
-    return rewards, lengths, log_probs, mask, proof_successful, plot_payload
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - head_metrics: Dict with head corruption metrics (MRR, Hits@K, etc.)
+        - tail_metrics: Dict with tail corruption metrics
+        - overall_metrics: Dict with averaged metrics across both corruption types
+        - raw_results: Dict with raw evaluation results per corruption type
+    """
+    if corruption_modes is None:
+        corruption_modes = ['head', 'tail']
+    
+    device = queries.device
+    n_queries = queries.shape[0]
+    batch_size = _infer_num_envs(env)
+    
+    if verbose:
+        print(f"Evaluating {n_queries} queries with {n_corruptions} corruptions each")
+        print(f"Corruption modes: {corruption_modes}")
+        print(f"Batch size: {batch_size}")
+    
+    # Store results per corruption type
+    all_results = {}
+    global_metrics = _init_global_metrics()
+    
+    for corruption_type in corruption_modes:
+        if verbose:
+            print(f"\n=== Evaluating {corruption_type} corruptions ===")
+        
+        # Generate negatives for all queries
+        negatives = sampler.corrupt(
+            queries,
+            num_negatives=n_corruptions,
+            mode=corruption_type,
+            device=device,
+            filter=True,
+            unique=True,
+        )  # [N, K, 3]
+        
+        if verbose:
+            print(f"Generated {negatives.shape[1]} negatives per query")
+        
+        # Process queries in batches
+        batch_results = []
+        batch_metrics = _init_batch_metrics()
+        
+        for batch_start in range(0, n_queries, batch_size):
+            batch_end = min(batch_start + batch_size, n_queries)
+            batch_queries = queries[batch_start:batch_end]  # [B, 3]
+            batch_negs = negatives[batch_start:batch_end]  # [B, K, 3]
+            actual_batch_size = batch_queries.shape[0]
+            
+            # Combine positive and negatives: [B, 1+K, 3]
+            all_triples = torch.cat([
+                batch_queries.unsqueeze(1),  # [B, 1, 3]
+                batch_negs,  # [B, K, 3]
+            ], dim=1)  # [B, 1+K, 3]
+            
+            n_episodes = all_triples.shape[1]  # 1 + K
+            
+            # Convert triples to query format expected by environment
+            # Get original query structure from environment
+            if hasattr(env, 'queries'):
+                query_shape = env.queries.shape[1:]  # [L, max_arity+1]
+            else:
+                # Default shape for simple queries
+                query_shape = (1, 4)  # Single atom, max_arity+1
+            
+            # Create query tensor
+            expanded_queries = torch.zeros(
+                actual_batch_size, 
+                n_episodes,
+                query_shape[0],  # L (sequence length)
+                query_shape[1],  # max_arity+1
+                dtype=torch.long,
+                device=device
+            )
+            
+            # Fill in the queries (assume single-atom queries with format [r, h, t])
+            expanded_queries[:, :, 0, :3] = all_triples
+            
+            # Create labels: positive (1) at index 0, negatives (0) at indices 1..K
+            labels = torch.zeros(actual_batch_size, n_episodes, dtype=torch.long, device=device)
+            labels[:, 0] = 1
+            
+            # Create depths (use -1 for unknown depth for negatives)
+            depths = torch.full((actual_batch_size, n_episodes), -1, dtype=torch.long, device=device)
+            
+            # Flatten batch for environment
+            flat_queries = expanded_queries.reshape(-1, query_shape[0], query_shape[1])
+            flat_labels = labels.reshape(-1)
+            flat_depths = depths.reshape(-1)
+            
+            # Pad or truncate to match batch_size
+            if flat_queries.shape[0] < batch_size:
+                # Pad with zeros
+                pad_size = batch_size - flat_queries.shape[0]
+                flat_queries = torch.cat([
+                    flat_queries,
+                    torch.zeros(pad_size, *query_shape, dtype=torch.long, device=device)
+                ], dim=0)
+                flat_labels = torch.cat([
+                    flat_labels,
+                    torch.zeros(pad_size, dtype=torch.long, device=device)
+                ], dim=0)
+                flat_depths = torch.cat([
+                    flat_depths,
+                    torch.full((pad_size,), -1, dtype=torch.long, device=device)
+                ], dim=0)
+            elif flat_queries.shape[0] > batch_size:
+                flat_queries = flat_queries[:batch_size]
+                flat_labels = flat_labels[:batch_size]
+                flat_depths = flat_depths[:batch_size]
+            
+            # Reconfigure environment
+            env.queries = flat_queries
+            env.labels = flat_labels
+            env.query_depths = flat_depths
+            env.n_queries = flat_queries.shape[0]
+            
+            # Set episode targets
+            episode_targets = torch.full(
+                (batch_size,), 
+                n_episodes, 
+                dtype=torch.long,
+                device=device
+            )
+            # Only first actual_batch_size environments should run
+            episode_targets[actual_batch_size:] = 0
+            
+            if hasattr(env, '_episode_target'):
+                env._episode_target = episode_targets
+            if hasattr(env, '_episode_count'):
+                env._episode_count = torch.zeros(batch_size, dtype=torch.long, device=device)
+            if hasattr(env, 'active_envs'):
+                env.active_envs = torch.ones(batch_size, dtype=torch.bool, device=device)
+                env.active_envs[actual_batch_size:] = False
+            
+            # Evaluate
+            total_episodes = actual_batch_size * n_episodes
+            results = evaluate_policy_torchrl(
+                actor=actor,
+                env=env,
+                n_eval_episodes=total_episodes,
+                deterministic=deterministic,
+                target_episodes=episode_targets.cpu().numpy(),
+                verbose=0,
+                track_logprobs=False,
+                info_callback=info_callback,
+            )
+            
+            rewards, lengths, log_probs, mask, proof_successful = results
+            
+            # Reshape results back to [B, n_episodes]
+            rewards = rewards[:actual_batch_size, :n_episodes]
+            lengths = lengths[:actual_batch_size, :n_episodes]
+            log_probs = log_probs[:actual_batch_size, :n_episodes]
+            mask = mask[:actual_batch_size, :n_episodes]
+            proof_successful = proof_successful[:actual_batch_size, :n_episodes]
+            
+            # Extract and accumulate metrics for this batch
+            _extract_and_accumulate_metrics(
+                batch_metrics=batch_metrics,
+                global_metrics=global_metrics,
+                corruption_type=corruption_type,
+                mask=mask,
+                proof_successful=proof_successful,
+                log_probs=log_probs,
+                rewards=rewards,
+                lengths=lengths,
+            )
+            
+            batch_results.append({
+                'rewards': rewards,
+                'lengths': lengths,
+                'log_probs': log_probs,
+                'mask': mask,
+                'proof_successful': proof_successful,
+            })
+        
+        # Store results for this corruption type
+        all_results[corruption_type] = {
+            'batch_metrics': batch_metrics,
+            'batch_results': batch_results,
+        }
+        
+        if verbose:
+            _report_batch_metrics(batch_metrics, corruption_type)
+    
+    # Compute final aggregated metrics
+    final_results = _finalize_and_get_results(global_metrics)
+    final_results['raw_results'] = all_results
+    
+    # Add per-corruption-type metrics
+    for corruption_type in corruption_modes:
+        if corruption_type in all_results:
+            metrics = all_results[corruption_type]['batch_metrics']
+            final_results[f'{corruption_type}_metrics'] = {
+                'mrr': float(np.mean(metrics['mrr'])) if metrics['mrr'] else 0.0,
+                'h1': float(np.mean(metrics['h1'])) if metrics['h1'] else 0.0,
+                'h3': float(np.mean(metrics['h3'])) if metrics['h3'] else 0.0,
+                'h10': float(np.mean(metrics['h10'])) if metrics['h10'] else 0.0,
+            }
+    
+    if verbose:
+        print(f"\n=== Final Results ===")
+        for key in ['mrr_mean', 'h1_mean', 'h3_mean', 'h10_mean']:
+            if key in final_results:
+                print(f"  {key}: {final_results[key]:.4f}")
+    
+    return final_results
 
 
 def _combine_hybrid_scores(
@@ -612,6 +867,33 @@ def kge_eval(
         log_probs[env_idx, ep_idx] = log_score
     
     return log_probs
+
+
+def _report_batch_metrics(
+    batch_metrics: Dict[str, List[float]],
+    corruption_type: str,
+) -> None:
+    """Print summary statistics for batch metrics."""
+    if not batch_metrics['mrr']:
+        return
+    
+    def safe_mean(values):
+        return float(np.mean(values)) if values else 0.0
+    
+    b_pos_rw = safe_mean(batch_metrics["pos_rw"])
+    b_neg_rw = safe_mean(batch_metrics["neg_rw"])
+    b_pos_len = safe_mean(batch_metrics["pos_len"])
+    b_neg_len = safe_mean(batch_metrics["neg_len"])
+    b_mrr = safe_mean(batch_metrics["mrr"])
+    b_h1 = safe_mean(batch_metrics["h1"])
+    b_h3 = safe_mean(batch_metrics["h3"])
+    b_h10 = safe_mean(batch_metrics["h10"])
+    
+    print(f"  Completed {corruption_type} corruptions")
+    print(f"    Pos Rw: {b_pos_rw:.3f} | Neg Rw: {b_neg_rw:.3f} | "
+          f"Pos Len: {b_pos_len:.3f} | Neg Len: {b_neg_len:.3f}")
+    print(f"    MRR: {b_mrr:.4f} | H@1: {b_h1:.4f} | "
+          f"H@3: {b_h3:.4f} | H@10: {b_h10:.4f}")
 
 
 def _extract_and_accumulate_metrics(
@@ -729,48 +1011,6 @@ def _extract_and_accumulate_metrics(
         global_metrics[f'{corruption_type}_ap'].append(ap)
 
 
-def _report_batch_metrics(
-    batch_metrics: Dict[str, List[float]],
-    global_metrics: Dict[str, List[float]]
-) -> None:
-    """Pretty-print current batch metrics and rolling totals."""
-    def safe_mean(values: List[float]) -> float:
-        return float(np.mean(values)) if values else 0.0
-    
-    def safe_str(val: float) -> str:
-        return f"{val:.3f}" if isinstance(val, float) else val
-    
-    # Batch metrics
-    b_pos_rw = safe_mean(batch_metrics["pos_rw"])
-    b_neg_rw = safe_mean(batch_metrics["neg_rw"])
-    b_pos_len = safe_mean(batch_metrics["pos_len"])
-    b_neg_len = safe_mean(batch_metrics["neg_len"])
-    b_mrr = safe_mean(batch_metrics["mrr"])
-    b_h1 = safe_mean(batch_metrics["h1"])
-    b_h3 = safe_mean(batch_metrics["h3"])
-    b_h10 = safe_mean(batch_metrics["h10"])
-    
-    # Global metrics
-    g_pos_rw = safe_mean(global_metrics["pos_rw"])
-    g_neg_rw = safe_mean(global_metrics["neg_rw"])
-    g_pos_len = safe_mean(global_metrics["pos_len"])
-    g_neg_len = safe_mean(global_metrics["neg_len"])
-    
-    head_mrr = safe_mean(global_metrics["head_mrr"])
-    head_h1 = safe_mean(global_metrics["head_h1"])
-    tail_mrr = safe_mean(global_metrics["tail_mrr"])
-    tail_h1 = safe_mean(global_metrics["tail_h1"])
-    
-    print(f"  Batch:  Pos Rw: {safe_str(b_pos_rw)} | Neg Rw: {safe_str(b_neg_rw)} | "
-          f"Pos Len: {safe_str(b_pos_len)} | Neg Len: {safe_str(b_neg_len)}")
-    print(f"          MRR: {safe_str(b_mrr)} | H@1: {safe_str(b_h1)} | "
-          f"H@3: {safe_str(b_h3)} | H@10: {safe_str(b_h10)}")
-    print(f"  Global: Pos Rw: {safe_str(g_pos_rw)} | Neg Rw: {safe_str(g_neg_rw)} | "
-          f"Pos Len: {safe_str(g_pos_len)} | Neg Len: {safe_str(g_neg_len)}")
-    print(f"          Head MRR: {safe_str(head_mrr)} | Head H@1: {safe_str(head_h1)} | "
-          f"Tail MRR: {safe_str(tail_mrr)} | Tail H@1: {safe_str(tail_h1)}")
-
-
 def _finalize_and_get_results(global_metrics: Dict[str, List[float]]) -> Dict[str, Any]:
     """Compute final statistics from accumulated metrics."""
     def safe_mean(values: List[float]) -> float:
@@ -820,192 +1060,12 @@ def _finalize_and_get_results(global_metrics: Dict[str, List[float]]) -> Dict[st
         else:
             results["f1"] = 0.0
     
+    
     return results
-
-
-# ---------------------------------------------------------------------------
-# High-level evaluator for head/tail corruptions and ranking metrics
-# ---------------------------------------------------------------------------
-
-def eval_corruptions_torchrl(
-    actor: nn.Module,
-    env: EnvBase,
-    data: List[Any],
-    sampler: Any,
-    n_corruptions: Optional[int] = None,
-    deterministic: bool = True,
-    verbose: int = 1,
-    plot: bool = False,
-    kge_inference_engine = None,
-    evaluation_mode: str = 'rl_only',
-    corruption_scheme: List[str] | None = None,
-    info_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
-    data_depths: Optional[List[int]] = None,
-    hybrid_kge_weight: float = 2.0,
-    hybrid_rl_weight: float = 1.0,
-    hybrid_success_only: bool = True,
-) -> Dict[str, Any]:
-    """Evaluate a TorchRL actor by ranking positive queries vs. corruptions.
-
-    For each positive query in `data`, generates head/tail corruptions using
-    `sampler` and assigns scores according to `evaluation_mode`:
-
-    - "rl_only": score = RL log-probability (failed proofs heavily penalized)
-    - "kge_only": score = log(KGE score)
-    - "hybrid": score = α·log(KGE) + (optionally) β·RL for successful proofs
-
-    Parameters
-    ----------
-    actor : nn.Module
-        TorchRL actor module (ProbabilisticActor).
-    env : EnvBase
-        TorchRL environment (ParallelEnv or single EnvBase).
-    data : List[Any]
-        List of positive queries to evaluate.
-    sampler : Any
-        Negative sampler for generating corruptions.
-    n_corruptions : Optional[int]
-        Number of negatives per type (None = all).
-    deterministic : bool
-        Whether to use deterministic actions.
-    verbose : int
-        Verbosity level.
-    plot : bool
-        Whether to collect trajectory data for plotting.
-    kge_inference_engine : optional
-        KGE model wrapper with `.predict_batch()` method.
-    evaluation_mode : str
-        One of 'rl_only', 'kge_only', 'hybrid'.
-    corruption_scheme : List[str]
-        Subset of ["head", "tail"] to evaluate.
-    info_callback : callable
-        Callback for info dicts after each step.
-    data_depths : List[int]
-        Depth values for queries.
-    hybrid_kge_weight : float
-        Weight for KGE scores in hybrid mode.
-    hybrid_rl_weight : float
-        Weight for RL scores in hybrid mode.
-    hybrid_success_only : bool
-        Add RL bonus only for successful proofs.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Aggregated metrics (MRR, Hits@K, accuracy, etc.)
-    """
-    if evaluation_mode not in ("rl_only", "kge_only", "hybrid"):
-        raise ValueError(f"Invalid evaluation_mode: {evaluation_mode}")
-    if evaluation_mode != "rl_only" and kge_inference_engine is None:
-        raise ValueError(f"kge_inference_engine required for mode: '{evaluation_mode}'")
-    
-    # Determine number of environments
-    if hasattr(env, 'batch_size') and len(env.batch_size) > 0:
-        num_envs = int(env.batch_size[0])
-    elif hasattr(env, 'num_workers'):
-        num_envs = int(env.num_workers)
-    else:
-        num_envs = 1
-    
-    if n_corruptions == -1:
-        n_corruptions = None
-    
-    device = next(actor.parameters()).device
-    
-    if verbose:
-        print(f"Evaluating {len(data)} queries in '{evaluation_mode}' mode.")
-        print(f"N corruptions per query (per type): "
-              f"{'All' if n_corruptions is None else n_corruptions} | Envs: {num_envs}")
-    
-    global_metrics = _init_global_metrics()
-    
-    total_batches = (len(data) + num_envs - 1) // num_envs
-    for b, start in enumerate(range(0, len(data), num_envs)):
-        time_start = time.time()
-        if verbose:
-            end_idx = min(start + num_envs - 1, len(data) - 1)
-            print(f"\n--- Batch {b+1}/{total_batches} (Queries {start}-{end_idx}) ---")
-        
-        batch = data[start:start + num_envs]
-        B = len(batch)
-        batch_metrics = _init_batch_metrics()
-        
-        if n_corruptions == 0:
-            head_corrs = [[] for _ in range(B)]
-            tail_corrs = [[] for _ in range(B)]
-        else:
-            head_corrs, tail_corrs = sampler.get_negatives_from_states_separate(
-                [[q] for q in batch], device, num_negs=n_corruptions
-            )
-            if B == 1:
-                if head_corrs and not isinstance(head_corrs[0], list):
-                    head_corrs = [head_corrs]
-                if tail_corrs and not isinstance(tail_corrs[0], list):
-                    tail_corrs = [tail_corrs]
-        
-        for corruption_type, corrs in (("head", head_corrs), ("tail", tail_corrs)):
-            if corruption_scheme and corruption_type not in corruption_scheme:
-                continue
-            
-            targets, mask = _compute_targets_and_mask(corrs, num_envs)
-            if not np.any(targets > 1):
-                continue
-            
-            rewards: Optional[np.ndarray] = None
-            lengths: Optional[np.ndarray] = None
-            
-            if evaluation_mode == "kge_only":
-                log_probs = kge_eval(batch, corrs, mask, kge_inference_engine)
-                proof_successful = np.zeros_like(mask, dtype=bool)
-            else:
-                (
-                    rewards, lengths, log_probs, eval_mask,
-                    proof_successful, plot_payload,
-                ) = _evaluate_with_rl(
-                    actor=actor,
-                    env=env,
-                    batch=batch,
-                    corrs=corrs,
-                    targets=targets,
-                    deterministic=deterministic,
-                    verbose=verbose > 1,
-                    info_callback=info_callback,
-                    data_depths=data_depths,
-                    batch_start_idx=start,
-                    plot=plot,
-                )
-                mask = eval_mask
-                
-                if evaluation_mode == "hybrid":
-                    kge_log_scores = kge_eval(batch, corrs, mask, kge_inference_engine)
-                    log_probs = _combine_hybrid_scores(
-                        rl_log_probs=log_probs,
-                        kge_log_scores=kge_log_scores,
-                        mask=mask,
-                        proof_successful=proof_successful,
-                        kge_weight=hybrid_kge_weight,
-                        rl_weight=hybrid_rl_weight,
-                        success_only=hybrid_success_only,
-                    )
-                
-                log_probs = log_probs.copy()
-                log_probs[~proof_successful] -= 100.0
-            
-            _extract_and_accumulate_metrics(
-                batch_metrics, global_metrics, corruption_type,
-                mask, proof_successful, log_probs, rewards, lengths,
-            )
-        
-        if verbose:
-            _report_batch_metrics(batch_metrics, global_metrics)
-            print(f"Batch {b+1} took {time.time() - time_start:.2f} seconds")
-    
-    return _finalize_and_get_results(global_metrics)
 
 
 # Re-export commonly used utilities
 __all__ = [
     'evaluate_policy_torchrl',
-    'eval_corruptions_torchrl',
-    'kge_eval',
+    '_evaluate_ranking_metrics',
 ]

@@ -195,27 +195,26 @@ def _apply_substitutions(goals_batch: Tensor,
         return goals_batch
     B, G, _ = goals_batch.shape
     preds = goals_batch[:, :, 0:1]
-    args = goals_batch[:, :, 1:]
+    args = goals_batch[:, :, 1:].clone()
 
-    # Build a dense mapping per batch row.
-    # OPTIMIZED: Compute max once, cache the result
-    goals_flat = goals_batch[:, :, 1:].flatten().long()
-    subs_flat = substitutions_batch.flatten().long().clamp_min(0)
-    max_idx_tensor = torch.max(torch.cat([goals_flat, subs_flat], dim=0))
-    max_idx = int(max_idx_tensor.item()) + 1
-
-    mapping = torch.arange(max_idx, device=goals_batch.device).unsqueeze(0).expand(B, -1).clone()
     valid = substitutions_batch[..., 0] != padding_idx
-    if valid.any():
-        row_idx = torch.arange(B, device=goals_batch.device).unsqueeze(1).expand_as(valid)
-        sel_rows = row_idx[valid]
-        frm = substitutions_batch[..., 0].long()[valid]
-        to  = substitutions_batch[..., 1].long()[valid]
-        mapping[sel_rows, frm] = to
+    if not valid.any():
+        return goals_batch
 
-    out_args = mapping[torch.arange(B, device=goals_batch.device).view(B, 1, 1),
-                       args.long()]
-    return torch.cat([preds, out_args], dim=2)
+    subs = substitutions_batch.long()
+    for slot in range(subs.shape[1]):
+        slot_mask = valid[:, slot]
+        if not slot_mask.any():
+            continue
+        rows = torch.nonzero(slot_mask, as_tuple=False).squeeze(1)
+        subs_rows = subs.index_select(0, rows)
+        frm = subs_rows[:, slot, 0].view(-1, 1, 1)
+        to = subs_rows[:, slot, 1].view(-1, 1, 1)
+        rows_args = args.index_select(0, rows)
+        rows_args = torch.where(rows_args == frm, to, rows_args)
+        args.index_copy_(0, rows, rows_args)
+
+    return torch.cat([preds, args], dim=2)
 
 
 @torch.no_grad()
@@ -531,37 +530,18 @@ def _unify_with_rules(
     A, G = remaining_goals.shape[:2]
 
     # Fast exits --------------------------------------------------------------
-    if A == 0 or engine.rules_heads_idx.numel() == 0:
+    if A == 0 or engine.rules_heads_sorted.numel() == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
-    # 1) Sort rule heads by predicate and build ranges -----------------------
-    # heads_sorted/bodies_sorted/lens_sorted share the same permutation.
-    order = torch.argsort(engine.rules_heads_idx[:, 0])
-    heads_sorted = engine.rules_heads_idx.index_select(0, order)  # [R, 3]
-    bodies_sorted = engine.rules_idx.index_select(0, order)       # [R, Bmax, 3]
-    lens_sorted = engine.rule_lens.index_select(0, order)         # [R]
-
-    pcol = heads_sorted[:, 0]
-    uniq, counts = torch.unique_consecutive(pcol, return_counts=True)
-    # OPTIMIZATION: counts is already long, avoid redundant .to()
-    starts = torch.cumsum(
-        torch.cat([torch.zeros(1, dtype=torch.long, device=device), counts[:-1]]),
-        dim=0,
-    )
-    ends = torch.cumsum(counts, dim=0)
-
-    # Compact range arrays sized to max predicate id encountered
-    # OPTIMIZED: Cache max result
-    max_pred_tensor = pcol.max()
-    max_pred = int(max_pred_tensor.item())
-    seg_starts = torch.zeros((max_pred + 1,), dtype=torch.long, device=device)
-    seg_lens   = torch.zeros((max_pred + 1,), dtype=torch.long, device=device)
-    seg_starts[uniq] = starts
-    seg_lens[uniq] = (ends - starts)
+    heads_sorted = engine.rules_heads_sorted
+    bodies_sorted = engine.rules_idx_sorted
+    lens_sorted = engine.rule_lens_sorted
 
     # 2) Ragged pairing (query, rule) via ranges -----------------------------
-    qi, ri = _pairs_via_predicate_ranges(pred_indices, seg_starts, seg_lens)
+    qi, ri = _pairs_via_predicate_ranges(
+        pred_indices, engine.rule_seg_starts, engine.rule_seg_lens
+    )
     if qi.numel() == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
@@ -718,6 +698,38 @@ class UnificationEngine:
         else:
             self.facts_packed = torch.empty((0,), dtype=torch.long, device=device)
         self.hash_cache = GPUHashCache(device)
+
+        # Pre-sort rules by predicate once and build predicate ranges
+        if self.rules_heads_idx.numel() > 0:
+            order = torch.argsort(self.rules_heads_idx[:, 0])
+            self.rules_heads_sorted = self.rules_heads_idx.index_select(0, order)
+            self.rules_idx_sorted = self.rules_idx.index_select(0, order)
+            self.rule_lens_sorted = self.rule_lens.index_select(0, order)
+
+            preds = self.rules_heads_sorted[:, 0]
+            uniq, counts = torch.unique_consecutive(preds, return_counts=True)
+            starts = torch.cumsum(
+                torch.cat([torch.zeros(1, dtype=torch.long, device=device), counts[:-1]]),
+                dim=0,
+            )
+            # Determine predicate table size (reuse fact map if available)
+            if self.predicate_range_map is not None and self.predicate_range_map.numel() > 0:
+                num_predicates = max(
+                    self.predicate_range_map.shape[0],
+                    int(preds.max().item()) + 2,
+                )
+            else:
+                num_predicates = int(preds.max().item()) + 2
+            self.rule_seg_starts = torch.zeros((num_predicates,), dtype=torch.long, device=device)
+            self.rule_seg_lens = torch.zeros((num_predicates,), dtype=torch.long, device=device)
+            self.rule_seg_starts[uniq] = starts
+            self.rule_seg_lens[uniq] = counts
+        else:
+            self.rules_heads_sorted = self.rules_heads_idx
+            self.rules_idx_sorted = self.rules_idx
+            self.rule_lens_sorted = self.rule_lens
+            self.rule_seg_starts = torch.zeros((1,), dtype=torch.long, device=device)
+            self.rule_seg_lens = torch.zeros((1,), dtype=torch.long, device=device)
 
     # ---- factory ----
     @classmethod

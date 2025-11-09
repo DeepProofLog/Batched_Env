@@ -84,29 +84,10 @@ if __name__ == "__main__":
         'engine': 'python',
         'engine_strategy': 'cmp',
         'endf_action': True,
-        'endt_action': False,
         'skip_unary_actions': True,
         'max_depth': 20,
         'memory_pruning': True,
         'corruption_mode': 'dynamic',
-        'false_rules': False,
-
-        # KGE integration params (disabled for TorchRL migration)
-        'kge_action': False,
-        'logit_fusion': False,
-        'inference_fusion': False,
-        'inference_success_only': False,
-        'pbrs': False,
-        'enable_top_k': False,
-        'kge_engine': 'tf',
-        'kge_checkpoint_dir': './../checkpoints/',
-        'kge_run_signature': None,
-        'kge_scores_file': None,
-
-        # Evaluation params
-        'eval_hybrid_success_only': True,
-        'eval_hybrid_kge_weight': 2.0,
-        'eval_hybrid_rl_weight': 1.0,
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -284,45 +265,6 @@ if __name__ == "__main__":
         }
         cfg['eval_best_metric'] = metric_name_map.get(metric_normalized, metric_normalized)
 
-        # Force KGE integration to False (not yet supported in TorchRL version)
-        cfg['kge_action'] = False
-        cfg['logit_fusion'] = False
-        cfg['inference_fusion'] = False
-        cfg['inference_success_only'] = False
-        cfg['pbrs'] = False
-        cfg['pbrs_beta'] = 0.0
-        cfg['pbrs_gamma'] = None
-        cfg['enable_top_k'] = False
-        cfg['prob_facts'] = bool(cfg.get('prob_facts', False))
-
-        # Handle topk_facts
-        topk_facts = cfg.get('topk_facts')
-        if topk_facts is None or (isinstance(topk_facts, str) and topk_facts.strip().lower() in {'none', ''}):
-            cfg['topk_facts'] = None
-        elif isinstance(topk_facts, bool):
-            cfg['topk_facts'] = None if not topk_facts else int(topk_facts)
-        else:
-            cfg['topk_facts'] = int(topk_facts)
-
-        topk_threshold = cfg.get('topk_facts_threshold')
-        if topk_threshold is None or (isinstance(topk_threshold, str) and topk_threshold.strip().lower() in {'none', ''}):
-            cfg['topk_facts_threshold'] = None
-        else:
-            cfg['topk_facts_threshold'] = float(topk_threshold)
-
-        cfg['eval_hybrid_success_only'] = True
-
-        # KGE engine validation (even though not used, keep for config compatibility)
-        kge_engine = cfg.get('kge_engine', 'tf').strip().lower()
-        if kge_engine in {'tensorflow'}:
-            kge_engine = 'tf'
-        elif kge_engine in {'torch'}:
-            kge_engine = 'pytorch'
-        cfg['kge_engine'] = kge_engine
-
-        # No need for KGE run signature in TorchRL version
-        cfg['kge_run_signature'] = None
-
         namespace = argparse.Namespace(**cfg)
 
         # Auto-configure padding_states based on dataset
@@ -342,25 +284,12 @@ if __name__ == "__main__":
             else:
                 raise ValueError("Unknown dataset name for automatic padding configuration.")
 
-        if namespace.dataset_name == "mnist_addition":
-            namespace.corruption_mode = None
+
 
         # Corruption scheme
         namespace.corruption_scheme = ['head', 'tail']
         if 'countries' in namespace.dataset_name or 'ablation' in namespace.dataset_name:
             namespace.corruption_scheme = ['tail']
-
-        # Prolog file configuration
-        if namespace.false_rules:
-            if namespace.engine == 'prolog':
-                namespace.janus_file = "countries_false_rules.pl"
-            else:
-                raise ValueError("False rules not implemented for python engine.")
-        elif namespace.engine == 'python':
-            namespace.janus_file = None
-        else:
-            namespace.janus_file = f"{namespace.dataset_name}.pl"
-            print("Using prolog file:", namespace.janus_file)
 
         # File names
         train_file = "train.txt"

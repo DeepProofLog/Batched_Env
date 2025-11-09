@@ -12,6 +12,9 @@ import cProfile
 import pstats
 import io
 from test_pipeline import test_vectorized_batched_pipeline as test_pipeline
+from test_eval_pipeline import test_eval_pipeline_vectorized as test_eval_pipeline
+
+TRAIN = False
 
 def profile_test():
     """Profile the test with cProfile"""
@@ -23,9 +26,11 @@ def profile_test():
     profiler.enable()
     
     # Run test with smaller batch
-
-    test_pipeline(n_tests=8, device=device)
-
+    if TRAIN:
+        test_pipeline(n_tests=9, device=device)
+    else:
+        test_eval_pipeline()
+        
     profiler.disable()
     
     # Print profiling results

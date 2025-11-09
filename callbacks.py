@@ -465,7 +465,6 @@ class EvaluationCallback:
     """
     Callback for comprehensive evaluation with depth and label breakdowns.
     
-    Provides detailed metrics similar to SB3's CustomEvalCallbackMRR.
     Uses DetailedMetricsCollector for optional detailed breakdown by depth.
     """
     
