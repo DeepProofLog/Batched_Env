@@ -180,18 +180,19 @@ class Sampler:
 
     def _draw_from_domain(self, rel_ids: LongTensor, head: bool, device: torch.device) -> LongTensor:
         """Per-row domain sampling. rel_ids: [N]. Returns [N] sampled entities."""
-        out = torch.empty((rel_ids.shape[0],), dtype=torch.long, device=device)
+        # Work on CPU (ragged domain lists live on CPU), then move once to `device`.
+        out = torch.empty((rel_ids.shape[0],), dtype=torch.long, device='cpu')
         arr = self.allowed_heads_per_rel if head else self.allowed_tails_per_rel
-        
-        # CPU sampling per-row to handle ragged domains; small overhead amortized by vectorized calls
         for i, r in enumerate(rel_ids.tolist()):
             cand = arr[r]
             if cand is None or cand.numel() == 0:
-                out[i] = torch.randint(1, self.num_entities + 1, (1,), generator=self.rng).item()
+                val = torch.randint(1, self.num_entities + 1, (1,), generator=self.rng,
+                                    device='cpu', dtype=torch.long)
+                out[i] = val[0]                      # 0-dim tensor assignment (no .item())
             else:
-                j = torch.randint(0, cand.numel(), (1,), generator=self.rng).item()
-                out[i] = cand[j].item()
-        return out
+                j = torch.randint(0, cand.numel(), (1,), generator=self.rng, device='cpu')
+                out[i] = cand[j]                     # 0-dim tensor assignment (no .item())
+        return out.to(device=device, non_blocking=True)
 
     # -----------------------------
     # Public API
@@ -328,56 +329,63 @@ class Sampler:
             base_ids = base_ids[keep2]
             cand = cand[keep2]
 
-        # Now we need exactly K per base triple. We'll pack row-by-row.
+        # Now we need exactly K per base triple. We'll pack without Python loops.
         out = torch.zeros((B, K, 3), dtype=torch.long, device=device)
         counts = torch.zeros((B,), dtype=torch.long, device=device)
-        
-        # scatter-fill
         if cand.shape[0] > 0:
-            # recompute base_ids if we didn't compute earlier
             if not (unique or filter):
                 base_ids = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(K_os)
-            # clamp to available slots
-            for i in range(cand.shape[0]):
-                b = int(base_ids[i].item())
-                c = int(counts[b].item())
-                if c < K:
-                    out[b, c] = cand[i]
-                    counts[b] += 1
+            # compute 0.. per group positions
+            seg_start = torch.ones_like(base_ids, dtype=torch.bool)
+            seg_start[1:] = base_ids[1:] != base_ids[:-1]
+            pos_in_base = torch.cumsum(seg_start.long(), dim=0) - 1
+            take = pos_in_base < K
+            if take.any():
+                out[base_ids[take], pos_in_base[take]] = cand[take]
+                counts = torch.bincount(base_ids, minlength=B).clamp_max(K)
 
-        # For rows with <K, do a small top-up with uniform draws (unfiltered to avoid long loops).
+        # For rows with <K, do a small top-up with uniform draws (unfiltered).
         need = (K - counts).clamp(min=0)
-        if int(need.sum().item()) > 0:
-            b_idx = need.nonzero(as_tuple=False).squeeze(-1)
-            extra_total = int(need.sum().item())
-            
-            # draw extras for tails by default (balanced choice is okay)
-            r = positives[b_idx, 0].repeat_interleave(need[b_idx])
-            h = positives[b_idx, 1].repeat_interleave(need[b_idx])
-            t = positives[b_idx, 2].repeat_interleave(need[b_idx])
-            
+        need_mask = need > 0
+        if need_mask.any():
+            b_idx = need_mask.nonzero(as_tuple=True)[0]          # rows needing fill
+            need_vals = need[b_idx]                              # how many per row
+            extra_total_t = need_vals.sum()                      # tensor
+            extra_total   = int(extra_total_t)                   # single scalar read
+
+            # Repeat base triples to match the number of extras we’ll generate
+            r = positives[b_idx, 0].repeat_interleave(need_vals)
+            h = positives[b_idx, 1].repeat_interleave(need_vals)
+            t = positives[b_idx, 2].repeat_interleave(need_vals)
+
+            # Build extras depending on corruption mode
             if mode == 'head':
                 h_new = self._draw_uniform_entities(extra_total, device)
                 extras = torch.stack([r, h_new, t], dim=-1)
             elif mode == 'tail':
                 t_new = self._draw_uniform_entities(extra_total, device)
                 extras = torch.stack([r, h, t_new], dim=-1)
-            else:
-                coin = torch.randint(0, 2, (extra_total,), generator=self.rng, device='cpu', dtype=torch.long).to(device=device, non_blocking=True).bool()
+            else:  # mode == 'both'
+                coin = torch.randint(0, 2, (extra_total,), generator=self.rng, device='cpu',
+                                    dtype=torch.long).to(device=device, non_blocking=True).bool()
                 heads_pool = self._draw_uniform_entities(extra_total, device)
                 tails_pool = self._draw_uniform_entities(extra_total, device)
                 h_new = torch.where(coin, heads_pool, h)
                 t_new = torch.where(~coin, tails_pool, t)
                 extras = torch.stack([r, h_new, t_new], dim=-1)
-            
-            # fill remaining slots
-            ptrs = torch.zeros_like(need)
-            for i, b in enumerate(b_idx.tolist()):
-                kneed = int(need[b].item())
-                start = int(ptrs[b].item())
-                out[b, counts[b]:counts[b] + kneed] = extras[start:start + kneed]
-                counts[b] += kneed
-                ptrs[b] += kneed
+
+            # Indices to write into out[ B, K, 3 ]
+            repeat_idx = b_idx.repeat_interleave(need_vals)      # length == extra_total
+
+            # Positions within each row (0..need_i-1) without .tolist()
+            offsets = torch.cumsum(torch.nn.functional.pad(need_vals[:-1], (1, 0)), dim=0)
+            all_pos = torch.arange(extra_total, device=device)
+            pos_in_group = all_pos - offsets.repeat_interleave(need_vals)
+
+            write_pos = counts[repeat_idx] + pos_in_group
+            out[repeat_idx, write_pos] = extras
+            counts[b_idx] += need_vals
+
 
         return out  # [B,K,3]
 

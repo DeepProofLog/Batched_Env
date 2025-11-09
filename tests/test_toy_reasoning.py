@@ -144,13 +144,23 @@ print(f"\n{'='*60}")
 print("Testing with Environment")
 print(f"{'='*60}")
 
-queries_tensor = [query]
+# Build padded query tensor for the environment
+padding_atoms = 6
+query_state = torch.full(
+    (1, padding_atoms, 3),
+    im.padding_idx,
+    dtype=torch.long,
+    device=device,
+)
+query_state[0, 0] = query[0].to(dtype=torch.long, device=device)
+labels_tensor = torch.tensor([1], dtype=torch.long, device=device)
+depths_tensor = torch.tensor([0], dtype=torch.long, device=device)
 env = BatchedEnv(
     batch_size=1,
     unification_engine=engine,
-    queries=queries_tensor,
-    labels=[1],  # Positive label
-    query_depths=[0],
+    queries=query_state,
+    labels=labels_tensor,
+    query_depths=depths_tensor,
     mode='train',
     max_depth=10,
     memory_pruning=False,

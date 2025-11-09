@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 from tensordict import TensorDict
 
@@ -176,25 +177,29 @@ class CustomRolloutCollector:
             next_state_data = step_td["next"]
             
             # Check for completed episodes and extract info
-            done_mask = next_state_data["done"].squeeze(-1).bool()
-            for env_idx in range(self.n_envs):
-                if done_mask[env_idx].item():
-                    # Episode completed - extract episode info if available
-                    if "label" in next_state_data.keys():
-                        info = {
-                            "episode": {
-                                "r": 0.0,  # Need to track cumulative reward separately
-                                "l": 0,    # Need to track steps separately
-                            }
-                        }
-                        # Add optional fields if present
-                        info["label"] = int(next_state_data["label"][env_idx].item())
-                        if "query_depth" in next_state_data.keys():
-                            info["query_depth"] = int(next_state_data["query_depth"][env_idx].item())
-                        if "is_success" in next_state_data.keys():
-                            info["is_success"] = bool(next_state_data["is_success"][env_idx].item())
-                        
-                        episode_infos.append(info)
+            done_mask = next_state_data["done"].squeeze(-1).to(torch.bool)
+            if done_mask.any() and "label" in next_state_data.keys():
+                label_tensor = next_state_data["label"].squeeze(-1)
+                depth_tensor = next_state_data.get("query_depth", None)
+                success_tensor = next_state_data.get("is_success", None)
+
+                label_vals = label_tensor[done_mask].detach().cpu().tolist()
+                depth_vals = (
+                    depth_tensor.squeeze(-1)[done_mask].detach().cpu().tolist()
+                    if depth_tensor is not None else None
+                )
+                success_vals = (
+                    success_tensor.squeeze(-1)[done_mask].detach().cpu().tolist()
+                    if success_tensor is not None else None
+                )
+
+                for i, lbl in enumerate(label_vals):
+                    info = {"episode": {"r": 0.0, "l": 0}, "label": int(lbl)}
+                    if depth_vals is not None:
+                        info["query_depth"] = int(depth_vals[i])
+                    if success_vals is not None:
+                        info["is_success"] = bool(success_vals[i])
+                    episode_infos.append(info)
             
             # Update observation for next step
             # Extract only observation keys from next_obs_td (it may have action/value data too)
@@ -240,40 +245,40 @@ def _extract_episode_infos(batch_td: TensorDict, n_steps: int, n_envs: int, devi
     if done is None or reward is None:
         return infos
     
-    done = done.reshape(n_steps, n_envs).squeeze(-1).to(torch.bool)
+    done = done.reshape(n_steps, n_envs).squeeze(-1)
     reward = reward.reshape(n_steps, n_envs).squeeze(-1)
     
-    if label is not None:
-        label = label.reshape(n_steps, n_envs).squeeze(-1)
-    if depth is not None:
-        depth = depth.reshape(n_steps, n_envs).squeeze(-1)
-    if success is not None:
-        success = success.reshape(n_steps, n_envs).squeeze(-1)
+    label = label.reshape(n_steps, n_envs).squeeze(-1) if label is not None else None
+    depth = depth.reshape(n_steps, n_envs).squeeze(-1) if depth is not None else None
+    success = success.reshape(n_steps, n_envs).squeeze(-1) if success is not None else None
     
-    # Precompute cumulative sums for fast range-sum queries per env
-    csum = reward.cumsum(dim=0)
+    done_np = done.detach().cpu().numpy().astype(bool)
+    reward_np = reward.detach().cpu().numpy()
+    csum_np = np.cumsum(reward_np, axis=0)
+    label_np = label.detach().cpu().numpy() if label is not None else None
+    depth_np = depth.detach().cpu().numpy() if depth is not None else None
+    success_np = success.detach().cpu().numpy() if success is not None else None
     
     # For each environment, find time indices where an episode finished
     for env in range(n_envs):
-        done_indices = torch.nonzero(done[:, env], as_tuple=False).reshape(-1)
-        if done_indices.numel() == 0:
+        done_indices = np.nonzero(done_np[:, env])[0]
+        if done_indices.size == 0:
             continue
         prev_t = -1
         for t in done_indices.tolist():
-            # Sum of rewards from prev_t+1 .. t inclusive
             if prev_t < 0:
-                ep_ret = float(csum[t, env].item())
+                ep_ret = float(csum_np[t, env])
             else:
-                ep_ret = float((csum[t, env] - csum[prev_t, env]).item())
+                ep_ret = float(csum_np[t, env] - csum_np[prev_t, env])
             ep_len = int(t - prev_t)
             
             info: Dict[str, Any] = {"episode": {"r": ep_ret, "l": ep_len}}
-            if label is not None:
-                info["label"] = int(label[t, env].item())
-            if depth is not None:
-                info["query_depth"] = int(depth[t, env].item())
-            if success is not None:
-                info["is_success"] = bool(success[t, env].item())
+            if label_np is not None:
+                info["label"] = int(label_np[t, env])
+            if depth_np is not None:
+                info["query_depth"] = int(depth_np[t, env])
+            if success_np is not None:
+                info["is_success"] = bool(success_np[t, env])
             
             infos.append(info)
             prev_t = t

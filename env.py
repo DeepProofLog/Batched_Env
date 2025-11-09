@@ -4,7 +4,6 @@ from torch import Tensor
 from typing import Dict, List, Optional, Tuple
 from tensordict import TensorDict
 from torchrl.envs import EnvBase
-from torch.nn.utils.rnn import pad_sequence
 
 from atom_stringifier import AtomStringifier  # API parity
 from unification_engine import UnificationEngine
@@ -27,9 +26,9 @@ class BatchedEnv(EnvBase):
     def __init__(
         self,
         batch_size: int,
-        queries: List[Tensor],
-        labels: List[int],
-        query_depths: List[int],
+        queries: Tensor,
+        labels: Tensor,
+        query_depths: Tensor,
         unification_engine: UnificationEngine,
         sampler=None,
         mode: str = 'train',
@@ -108,10 +107,11 @@ class BatchedEnv(EnvBase):
                 dtype=torch.long, device=self._device
             )
 
-        # -------- Dataset materialization (vectorized) --------
-        self._all_queries_padded, self._all_first_atoms = self._materialize_queries(queries)
-        self._all_labels = torch.as_tensor(labels, dtype=torch.long, device=self._device)
-        self._all_depths = torch.as_tensor(query_depths, dtype=torch.long, device=self._device)
+        # -------- Dataset tensors (pre-materialized) --------
+        self._all_queries_padded = self._ensure_query_tensor(queries)
+        self._all_first_atoms = self._compute_first_atoms(self._all_queries_padded)
+        self._all_labels = self._ensure_vector(labels, self._all_queries_padded.shape[0], "labels")
+        self._all_depths = self._ensure_vector(query_depths, self._all_queries_padded.shape[0], "query_depths")
         self._num_all = int(self._all_queries_padded.shape[0])
 
         # Sampling pointer for eval mode
@@ -223,12 +223,13 @@ class BatchedEnv(EnvBase):
             reset_mask = tensordict["_reset"].squeeze(-1)
             if reset_mask.dtype != torch.bool:
                 reset_mask = reset_mask.bool()
-            if not reset_mask.any():
+            env_idx = torch.arange(reset_mask.shape[0], device=device)[reset_mask]
+            if env_idx.numel() == 0:
                 raise ValueError("No environments to reset in partial reset.")
         else:
             reset_mask = torch.ones(B, dtype=torch.bool, device=device)
+            env_idx = torch.arange(B, device=device)
 
-        env_idx = reset_mask.nonzero(as_tuple=True)[0]
         N = env_idx.shape[0]
         if N == 0:
             return self._create_observation()
@@ -253,17 +254,18 @@ class BatchedEnv(EnvBase):
         if (self.mode == 'train') and self.corruption_mode and (self.sampler is not None) and (self.train_neg_ratio > 0):
             p_neg = float(self.train_neg_ratio) / (1.0 + float(self.train_neg_ratio))
             neg_mask = torch.rand(N, device=device) < p_neg
-            if neg_mask.any():
-                atoms = batch_first_atoms[neg_mask]                               # [U, D]
+            neg_rows = torch.arange(N, device=device)[neg_mask]
+            if neg_rows.numel() > 0:
+                atoms = batch_first_atoms.index_select(0, neg_rows)               # [U, D]
                 corrupted = self.sampler.corrupt(atoms, num_negatives=1, device=device)
                 if corrupted.dim() == 3:
                     corrupted = corrupted[:, 0]                                    # [U, D]
-                neg_states = torch.full((corrupted.shape[0], A, D), pad, dtype=torch.long, device=device)
+                neg_states = torch.full((neg_rows.shape[0], A, D), pad, dtype=torch.long, device=device)
                 neg_states[:, 0] = corrupted
                 batch_q = batch_q.clone()
-                batch_q[neg_mask] = neg_states
+                batch_q.index_copy_(0, neg_rows, neg_states)
                 batch_labels = batch_labels.clone()
-                batch_labels[neg_mask] = 0
+                batch_labels.index_fill_(0, neg_rows, 0)
 
         # Write into runtime buffers
         self.current_queries.index_copy_(0, env_idx, batch_q)
@@ -277,7 +279,7 @@ class BatchedEnv(EnvBase):
             self._bloom_add_current(env_idx)
 
         # original_queries = first non-padding atom of current state
-        self._update_original_queries_for_indices(env_idx.tolist())
+        self._update_original_queries_for_indices(env_idx)
 
         # Compute derived only for reset envs
         self._compute_derived_states(active_mask=reset_mask, clear_inactive=False)
@@ -292,10 +294,12 @@ class BatchedEnv(EnvBase):
 
         # Validate actions
         invalid_mask = actions >= self.derived_states_counts
-        if invalid_mask.any():
-            bad_a = actions[invalid_mask].tolist()
-            bad_c = self.derived_states_counts[invalid_mask].tolist()
-            raise ValueError(f"Invalid actions: {bad_a} with counts {bad_c}")
+        invalid_idx = torch.arange(actions.shape[0], device=self._device)[invalid_mask]
+        if invalid_idx.numel() > 0:
+            raise ValueError(
+                f"Invalid actions for envs {invalid_idx}: "
+                f"actions={actions[invalid_idx]}, counts={self.derived_states_counts[invalid_idx]}"
+            )
 
         # Apply
         B = self.batch_size_int
@@ -331,7 +335,7 @@ class BatchedEnv(EnvBase):
         if active_mask is None:
             active_mask = torch.ones(self.batch_size_int, dtype=torch.bool, device=self._device)
 
-        idx = active_mask.nonzero(as_tuple=True)[0]
+        idx = torch.arange(active_mask.shape[0], device=self._device)[active_mask]
         batched_derived = self.derived_states_batch.clone()
         counts = self.derived_states_counts.clone()
 
@@ -383,18 +387,18 @@ class BatchedEnv(EnvBase):
             counts.index_copy_(0, idx, derived_counts_subset)
 
         if clear_inactive:
-            inactive = ~active_mask
-            if inactive.any():
-                batched_derived[inactive] = self.padding_idx
-                counts[inactive] = 0
+            inactive_mask = ~active_mask
+            inactive_idx = torch.arange(active_mask.shape[0], device=self._device)[inactive_mask]
+            if inactive_idx.numel() > 0:
+                batched_derived[inactive_idx] = self.padding_idx
+                counts[inactive_idx] = 0
 
         # Safety: any active env with zero states -> insert FALSE
         need_false = active_mask & (counts == 0)
-        if need_false.any():
+        dst_rows = torch.arange(active_mask.shape[0], device=self._device)[need_false]
+        if dst_rows.numel() > 0:
             false_state = self._create_false_state()                  # [M, D]
-            B = need_false.sum()
-            expanded = false_state.unsqueeze(0).expand(B, -1, -1)     # [B, M, D]
-            dst_rows = need_false.nonzero(as_tuple=True)[0]
+            expanded = false_state.unsqueeze(0).expand(dst_rows.shape[0], -1, -1)
             batched_derived[dst_rows, 0] = expanded
             counts[dst_rows] = 1
 
@@ -434,10 +438,11 @@ class BatchedEnv(EnvBase):
             return is_single & ~is_term
 
         unary_mask = _unary_nonterminal(derived_states, derived_counts)
+        unary_idx = torch.arange(A, device=self._device)[unary_mask]
 
         # Bounded iterations; each loop is a *single* batched UE call on the subset
-        while unary_mask.any() and iters < self.max_skip_unary_iters:
-            uidx = unary_mask.nonzero(as_tuple=True)[0]          # [U]
+        while unary_idx.numel() > 0 and iters < self.max_skip_unary_iters:
+            uidx = unary_idx                                           # [U]
             # OPTIMIZATION: idx_subset should already be long dtype
             env_rows = idx_subset.index_select(0, uidx)
             if env_rows.dtype != torch.long:
@@ -494,6 +499,7 @@ class BatchedEnv(EnvBase):
 
             # Recompute unary mask
             unary_mask = _unary_nonterminal(derived_states, derived_counts)
+            unary_idx = torch.arange(A, device=self._device)[unary_mask]
             iters += 1
 
         return derived_states, derived_counts
@@ -534,7 +540,8 @@ class BatchedEnv(EnvBase):
                 owners = owners.long()
             # Evaluate membership for all [A,K] candidates where base_valid is True
             visited = torch.zeros((A, K), dtype=torch.bool, device=device)
-            if base_valid.any():
+            has_valid = bool(base_valid.any())
+            if has_valid:
                 cand = states.clone()  # [A, K, M, D]
                 # Compute membership for all candidates
                 visited = self._bloom_membership(cand, owners)  # [A, K]
@@ -550,26 +557,26 @@ class BatchedEnv(EnvBase):
         needs_false = (new_counts == 0) & has_states                     # [A]
 
         # 3) Compact kept states - OPTIMIZATION: Avoid .item() by clamping to reasonable max
-        # Use a conservative upper bound instead of calling .item()
-        max_new = torch.clamp(new_counts.max() if new_counts.numel() > 0 else torch.tensor(0, device=device), min=1, max=K)
-        max_new_int = max_new.item()  # Only one .item() call instead of in loop
-
-        pos = torch.cumsum(keep_mask.long(), dim=1) - 1                  # [A, K]
-        pos = torch.clamp(pos, min=0, max=max_new_int - 1)
+        # Allocate full-K and fill by position; we’ll truncate later if needed
+        pos = torch.cumsum(keep_mask.long(), dim=1) - 1                      # [A, K]
+        pos = torch.clamp(pos, min=0, max=K - 1)
         batch_idx = torch.arange(A, device=device).view(A, 1).expand(A, K)
-        compact = torch.full((A, max_new_int, M, D), pad, dtype=states.dtype, device=device)
-        mask_flat = keep_mask
-        if mask_flat.any():
-            compact[batch_idx[mask_flat], pos[mask_flat]] = states[batch_idx[mask_flat], torch.arange(K, device=device).view(1, K).expand(A, K)[mask_flat]]
+        col_idx   = torch.arange(K, device=device).view(1, K).expand(A, K)
 
+        compact = torch.full((A, K, M, D), pad, dtype=states.dtype, device=device)
+        if keep_mask.any():
+            target_rows = batch_idx[keep_mask]
+            target_pos = pos[keep_mask]
+            compact[target_rows, target_pos] = states[keep_mask]
         counts_out = new_counts.clone()
+        W = compact.size(1)   # width of the 2nd dim (was max_new / max_new_int / K)
+
 
         # 4) Inject FALSE where needed
         if needs_false.any():
-            false_state = self._create_false_state()     # [M, D]
-            idx = needs_false.nonzero(as_tuple=True)[0]
-            compact[idx, 0] = false_state
-            counts_out[idx] = 1
+            false_state = self._create_false_state().unsqueeze(0)     # [1, M, D]
+            compact[needs_false, 0] = false_state
+            counts_out[needs_false] = 1
 
         # 5) Intermediate stage ends here
         if stage != "final":
@@ -586,7 +593,7 @@ class BatchedEnv(EnvBase):
                 is_term = is_term | (first_preds == self.false_pred_idx)
             is_term = is_term | (first_preds == pad)
 
-            valid_state_mask = torch.arange(max_new, device=device).view(1, -1).expand(A, -1) < counts_out.view(A, 1)
+            valid_state_mask = torch.arange(W, device=device).view(1, -1).expand(A, -1) < counts_out.view(A, 1)
             all_terminal = (is_term | ~valid_state_mask).all(dim=1)
             reserve_end = ~all_terminal & (counts_out > 0)
 
@@ -596,35 +603,35 @@ class BatchedEnv(EnvBase):
 
         need_trunc = counts_out > limit
         if need_trunc.any():
-            scores = (compact[:, :, :, 0] != pad).sum(dim=2)                              # [A, max_new_int]
-            valid_mask = torch.arange(max_new_int, device=device).view(1, -1).expand(A, -1) < counts_out.view(A, 1)
-            big = torch.full_like(scores, 10**9)
-            scores_masked = torch.where(valid_mask, scores, big)
-
-            sort_idx = torch.argsort(scores_masked, dim=1, stable=True)                  # [A, max_new_int]
-            gather_idx = sort_idx.unsqueeze(2).unsqueeze(3).expand(A, max_new_int, M, D)
+            # scores / masks sized by W
+            scores = (compact[:, :, :, 0] != pad).sum(dim=2)  # [A, W]
+            valid_mask = torch.arange(W, device=device).view(1, -1).expand(A, -1) < counts_out.view(A, 1)
+            scores_masked = torch.where(valid_mask, scores, torch.full_like(scores, -1))
+            sort_idx = torch.argsort(scores_masked, dim=1, stable=True)          # [A, W]
+            gather_idx = sort_idx.unsqueeze(2).unsqueeze(3).expand(A, W, M, D)
             sorted_states = torch.gather(compact, 1, gather_idx)
 
-            # OPTIMIZATION: Minimize .item() calls
-            Kmax = torch.clamp(limit.max(), min=1, max=self.padding_states)
-            Kmax_int = Kmax.item()  # Single .item() call
-            take_mask = torch.arange(max_new_int, device=device).view(1, -1).expand(A, -1) < limit.view(A, 1)
-            out = torch.full((A, Kmax_int, M, D), pad, dtype=compact.dtype, device=device)
+            take_mask = torch.arange(W, device=device).view(1, -1).expand(A, -1) < limit.view(A, 1)
+            out = torch.full_like(compact, pad)                                   # keep width = W
             if take_mask.any():
-                row = torch.arange(A, device=device).view(A, 1).expand(A, max_new_int)[take_mask]
-                col = torch.arange(max_new_int, device=device).view(1, max_new_int).expand(A, max_new_int)[take_mask]
+                row_ids = torch.arange(A, device=device).view(A, 1).expand(A, W)
+                col_ids = torch.arange(W, device=device).view(1, W).expand(A, W)
+                take_rows = row_ids[take_mask]
+                take_cols = col_ids[take_mask]
                 pos2 = torch.cumsum(take_mask.long(), dim=1) - 1
-                pos2 = torch.clamp(pos2, min=0, max=Kmax_int - 1)
-                out[row, pos2[take_mask]] = sorted_states[row, col]
+                pos2 = torch.clamp(pos2, min=0, max=W - 1)
+                out[take_rows, pos2[take_mask]] = sorted_states[take_rows, take_cols]
+
             compact = out
             counts_out = torch.minimum(counts_out, limit)
+
 
         # 7) Add END action if configured and room available
         if self.end_proof_action:
             can_add_end = reserve_end & (counts_out < self.padding_states)
-            if can_add_end.any():
+            rows = torch.arange(A, device=device)[can_add_end]
+            if rows.numel() > 0:
                 end_state = self._create_end_state()  # [M, D]
-                rows = can_add_end.nonzero(as_tuple=True)[0]
                 pos3 = counts_out[rows]
                 compact[rows, pos3] = end_state
                 counts_out[rows] = pos3 + 1
@@ -748,41 +755,72 @@ class BatchedEnv(EnvBase):
     # ---------------------------------------------------------------------
     # Utilities
     # ---------------------------------------------------------------------
-    def _materialize_queries(self, queries: List[Tensor]) -> Tuple[Tensor, Tensor]:
-        device = self._device
+    def _ensure_query_tensor(self, queries: Tensor) -> Tensor:
+        if not isinstance(queries, torch.Tensor) or queries.dim() != 3:
+            raise TypeError(
+                "Expected `queries` to be a tensor of shape [N, L, max_arity+1]. "
+                "Use DataHandler.materialize_indices() to build these tensors."
+            )
+        queries = queries.to(device=self._device, dtype=torch.long)
         pad = self.padding_idx
-        A = self.padding_atoms
-        D = self.max_arity + 1
+        B, cur_atoms, cur_width = queries.shape
+        target_width = self.max_arity + 1
 
-        if len(queries) == 0:
-            empty_queries = torch.full((0, A, D), pad, dtype=torch.long, device=device)
-            empty_atoms = torch.full((0, D), pad, dtype=torch.long, device=device)
-            return empty_queries, empty_atoms
+        if cur_width < target_width:
+            width_tail = torch.full(
+                (B, cur_atoms, target_width - cur_width),
+                pad,
+                dtype=torch.long,
+                device=self._device,
+            )
+            queries = torch.cat([queries, width_tail], dim=2)
+            cur_width = target_width
+        elif cur_width > target_width:
+            queries = queries[:, :, :target_width]
+            cur_width = target_width
 
-        # OPTIMIZATION: Check first query as heuristic - if it's already correct, assume all are
-        # Most queries should already be in correct format from index_manager
-        first_q = queries[0]
-        if first_q.device != device or first_q.dtype != torch.long:
-            q_batched = pad_sequence([q.to(dtype=torch.long, device=device) for q in queries], batch_first=True, padding_value=pad)
-        else:
-            q_batched = pad_sequence(queries, batch_first=True, padding_value=pad)
-        Lmax = q_batched.shape[1]
-        if Lmax >= A:
-            q_batched = q_batched[:, :A]
-        else:
-            pad_tail = torch.full((q_batched.shape[0], A - Lmax, D), pad, dtype=torch.long, device=device)
-            q_batched = torch.cat([q_batched, pad_tail], dim=1)
+        if cur_atoms < self.padding_atoms:
+            atom_tail = torch.full(
+                (B, self.padding_atoms - cur_atoms, cur_width),
+                pad,
+                dtype=torch.long,
+                device=self._device,
+            )
+            queries = torch.cat([queries, atom_tail], dim=1)
+        elif cur_atoms > self.padding_atoms:
+            queries = queries[:, :self.padding_atoms]
 
-        valid = q_batched[:, :, 0] != pad
+        return queries
+
+    def _ensure_vector(self, data: Optional[Tensor], expected_len: int, name: str) -> Tensor:
+        if data is None:
+            if expected_len == 0:
+                return torch.zeros((0,), dtype=torch.long, device=self._device)
+            raise ValueError(f"{name} must be provided when queries are non-empty")
+        tensor = torch.as_tensor(data, dtype=torch.long, device=self._device).view(-1)
+        if tensor.shape[0] != expected_len:
+            raise ValueError(
+                f"{name} length ({tensor.shape[0]}) does not match number of queries ({expected_len})"
+            )
+        return tensor
+
+    def _compute_first_atoms(self, padded_queries: Tensor) -> Tensor:
+        pad = self.padding_idx
+        if padded_queries.shape[0] == 0:
+            return torch.full(
+                (0, self.max_arity + 1), pad, dtype=torch.long, device=self._device
+            )
+        valid = padded_queries[:, :, 0] != pad
         has_valid = valid.any(dim=1)
         first_pos = valid.long().argmax(dim=1)
-        batch_ids = torch.arange(q_batched.shape[0], device=device)
-        first_atoms = q_batched[batch_ids, first_pos]
+        batch_ids = torch.arange(padded_queries.shape[0], device=self._device)
+        first_atoms = padded_queries[batch_ids, first_pos]
         if (~has_valid).any():
             first_atoms = first_atoms.clone()
-            first_atoms[~has_valid] = torch.full((D,), pad, dtype=torch.long, device=device)
-
-        return q_batched, first_atoms
+            first_atoms[~has_valid] = torch.full(
+                (self.max_arity + 1,), pad, dtype=torch.long, device=self._device
+            )
+        return first_atoms
 
     def _pad_state(self, state: Tensor) -> Tensor:
         device = self._device
@@ -816,13 +854,13 @@ class BatchedEnv(EnvBase):
         state[0, 0] = int(self.end_pred_idx)
         return self._pad_state(state)
 
-    def _update_original_queries_for_indices(self, indices: List[int]):
-        if not indices:
+    def _update_original_queries_for_indices(self, indices: Tensor):
+        if indices.numel() == 0:
             return
         device = self._device
         pad = self.padding_idx
 
-        rows = torch.as_tensor(indices, dtype=torch.long, device=device)
+        rows = indices.to(device=device, dtype=torch.long)
         states = self.current_queries.index_select(0, rows)               # [N, A, D]
         masks = states[:, :, 0] != pad                                    # [N, A]
         has_valid = masks.any(dim=1)                                      # [N]

@@ -351,38 +351,12 @@ def test_multiple_queries(num_queries=10):
         max_arity=dh.max_arity,
         device=device,
     )
-    
-    # Set facts and rules using IndexManager's direct methods
-    print(f"  Setting facts and rules in IndexManager...")
-    facts_tensor = idx_manager.state_to_tensor([(f.predicate, 
-                                        f.args[0] if len(f.args) > 0 else '', 
-                                        f.args[1] if len(f.args) > 1 else '') 
-                                        for f in dh.facts])
-    idx_manager.set_facts(facts_tensor)
-    
-    max_rule_atoms = max([len(r.body) for r in dh.rules]) if dh.rules else 8
-    rules_as_tuples = [
-        (
-            (r.head.predicate, r.head.args[0] if len(r.head.args) > 0 else '', r.head.args[1] if len(r.head.args) > 1 else ''),
-            [(t.predicate, t.args[0] if len(t.args) > 0 else '', t.args[1] if len(t.args) > 1 else '') for t in r.body]
-        )
-        for r in dh.rules
-    ]
-    rules_tensor, rule_lens = idx_manager.rules_to_tensor(rules_as_tuples, max_rule_atoms=max_rule_atoms)
-    idx_manager.set_rules(rules_tensor, rule_lens)
+    print("  Materializing indices and dataset tensors...")
+    dh.materialize_indices(im=idx_manager, device=device)
     
     # Create sampler
     print("\nCreating negative sampler...")
-    # Prepare all known triples for filtering
-    all_triples = []
-    for split_queries in [dh.train_queries, dh.valid_queries, dh.test_queries]:
-        for q in split_queries:
-            all_triples.append([
-                idx_manager.predicate_str2idx[q.predicate],
-                idx_manager.constant_str2idx[q.args[0]] if len(q.args) > 0 else 0,
-                idx_manager.constant_str2idx[q.args[1]] if len(q.args) > 1 else 0
-            ])
-    all_triples_tensor = torch.tensor(all_triples, dtype=torch.long, device='cpu')
+    all_triples_tensor = dh.all_known_triples_idx.to('cpu')
     
     # Determine default_mode from corruption_scheme
     if args.corruption_scheme is not None:
@@ -415,20 +389,13 @@ def test_multiple_queries(num_queries=10):
     
     # Create environment
     print("\nCreating environment...")
-    train_queries_tensor = torch.stack([
-        idx_manager.state_to_tensor([(q.predicate, 
-                                    q.args[0] if len(q.args) > 0 else '', 
-                                    q.args[1] if len(q.args) > 1 else '')])
-        for q in dh.train_queries
-    ]).squeeze(1)  # [N, 3]
-    train_labels = [1 for _ in dh.train_queries]  # All positive initially
-    train_depths = [d if d is not None else 0 for d in dh.train_depths]
+    train_split = dh.get_materialized_split('train')
     
     env = BatchedEnv(
         batch_size=args.batch_size,
-        queries=train_queries_tensor,
-        labels=train_labels,
-        query_depths=train_depths,
+        queries=train_split.queries,
+        labels=train_split.labels,
+        query_depths=train_split.depths,
         unification_engine=engine,
         sampler=sampler,
         max_arity=dh.max_arity,

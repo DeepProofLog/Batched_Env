@@ -143,7 +143,7 @@ class IndexManager:
         self.false_tensor: Optional[LongTensor] = None
 
         self.device: torch.device = device if device is not None else torch.device("cpu")
-        self.idx_dtype = torch.int32  # For compatibility
+        self.idx_dtype = torch.long  # For compatibility
 
         # For backward compatibility with old code
         self.constants = set(const_list)
@@ -162,13 +162,13 @@ class IndexManager:
         if self.true_pred_idx is not None:
             self.true_tensor = torch.tensor(
                 [[self.true_pred_idx, self.padding_idx, self.padding_idx]],
-                dtype=torch.int32,
+                dtype=torch.long,
                 device=self.device
             )
         if self.false_pred_idx is not None:
             self.false_tensor = torch.tensor(
                 [[self.false_pred_idx, self.padding_idx, self.padding_idx]],
-                dtype=torch.int32,
+                dtype=torch.long,
                 device=self.device
             )
 
@@ -210,14 +210,21 @@ class IndexManager:
         p = self.predicate_str2idx[pred_str]
         a = self.term_to_index(a_str)
         b = self.term_to_index(b_str)
-        return torch.tensor([p, a, b], dtype=torch.int32)
-
+        return torch.tensor([p, a, b], dtype=torch.long)
     def state_to_tensor(self, atoms: Iterable[Tuple[str, str, str]]) -> LongTensor:
-        """Convert an iterable of string atoms into [k, 3] indices."""
-        rows = [self.atom_to_tensor(p, a, b) for (p, a, b) in atoms]
-        if not rows:
-            return torch.empty((0, 3), dtype=torch.int32)
-        return torch.stack(rows, dim=0)
+        """Convert an iterable of string atoms into [k, 3] indices with a single allocation."""
+        atoms = list(atoms)
+        n = len(atoms)
+        if n == 0:
+            return torch.empty((0, 3), dtype=torch.long)
+        p = [self.predicate_str2idx[p] for (p, _, _) in atoms]
+        a = [self.term_to_index(x) for (_, x, _) in atoms]
+        b = [self.term_to_index(y) for (_, _, y) in atoms]
+        out = torch.empty((n, 3), dtype=torch.long)
+        out[:, 0] = torch.as_tensor(p, dtype=torch.long)
+        out[:, 1] = torch.as_tensor(a, dtype=torch.long)
+        out[:, 2] = torch.as_tensor(b, dtype=torch.long)
+        return out
 
     def rules_to_tensor(
         self,
@@ -239,7 +246,7 @@ class IndexManager:
             k = b.shape[0]
             if k > max_rule_atoms:
                 raise ValueError(f"Rule body length {k} > max_rule_atoms={max_rule_atoms}")
-            pad = torch.zeros((max_rule_atoms - k, 3), dtype=torch.int32)
+            pad = torch.zeros((max_rule_atoms - k, 3), dtype=torch.long)
             rb = torch.cat([b, pad], dim=0) if k > 0 else pad
             heads.append(h)
             bodies.append(rb)
@@ -248,8 +255,8 @@ class IndexManager:
         if not heads:
             raise ValueError("No rules provided for rules_to_tensor")
 
-        rules_idx = torch.stack(bodies, dim=0)                 # [R, M, 3]
-        rule_lens = torch.tensor(lens, dtype=torch.int32)       # [R]
+        rules_idx = torch.stack(bodies, dim=0)
+        rule_lens = torch.tensor(lens, dtype=torch.long)       # [R]
         # also keep heads at index 0 of body for convenience if desired
         self.rules_heads_idx = torch.stack(heads, dim=0)       # [R, 3]
         return rules_idx, rule_lens
@@ -260,12 +267,12 @@ class IndexManager:
     def set_facts(self, facts_idx: LongTensor) -> None:
         """Register facts (index tensor) and build predicate index (CPU)."""
         if facts_idx.numel() == 0:
-            self.facts_idx = facts_idx.to(self.device, dtype=torch.int32)
+            self.facts_idx = facts_idx.to(self.device, dtype=torch.long)
             self.predicate_range_map = torch.zeros((self.predicate_no + 1, 2), dtype=torch.int32)
             return
 
         # Sort by predicate for fast slicing
-        facts_cpu = facts_idx.detach().to("cpu").to(dtype=torch.int32)
+        facts_cpu = facts_idx.detach().to("cpu").to(dtype=torch.long)
         order = torch.argsort(facts_cpu[:, 0], stable=True)
         facts_sorted = facts_cpu.index_select(0, order)
 
@@ -281,12 +288,12 @@ class IndexManager:
             pr[u, 0] = int(s)
             pr[u, 1] = int(e)
 
-        self.facts_idx = facts_sorted.to(self.device, dtype=torch.int32)
+        self.facts_idx = facts_sorted.to(self.device, dtype=torch.long)
         self.predicate_range_map = pr  # keep on CPU
 
     def set_rules(self, rules_idx: LongTensor, rule_lens: LongTensor) -> None:
-        self.rules_idx = rules_idx.to(self.device, dtype=torch.int32, non_blocking=True)
-        self.rule_lens = rule_lens.to(self.device, dtype=torch.int32, non_blocking=True)
+        self.rules_idx = rules_idx.to(self.device, dtype=torch.long, non_blocking=True)
+        self.rule_lens = rule_lens.to(self.device, dtype=torch.long, non_blocking=True)
         # derive heads for fast predicate filtering
         R, M, _ = self.rules_idx.shape if self.rules_idx.numel() > 0 else (0,0,0)
         if R > 0:
@@ -295,7 +302,7 @@ class IndexManager:
             assert hasattr(self, 'rules_heads_idx') and self.rules_heads_idx is not None
             self.rules_heads_idx = self.rules_heads_idx.to(self.device)
         else:
-            self.rules_heads_idx = torch.empty((0,3), dtype=torch.int32, device=self.device)
+            self.rules_heads_idx = torch.empty((0,3), dtype=torch.long, device=self.device)
 
     def build_true_false_preds(self, true_pred: Optional[str], false_pred: Optional[str]) -> None:
         """Optionally set special predicate indices for TRUE/FALSE atoms (debug/terminals)."""

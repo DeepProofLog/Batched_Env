@@ -21,18 +21,14 @@ LongTensor = torch.LongTensor
 
 
 @dataclass
-class DatasetSplits:
-    """Container for train/valid/test query splits."""
-    train_queries_idx: List[LongTensor]
-    valid_queries_idx: List[LongTensor]
-    test_queries_idx: List[LongTensor]
-    # Optional labels/depths for supervision
-    train_labels: Optional[List[int]] = None
-    valid_labels: Optional[List[int]] = None
-    test_labels: Optional[List[int]] = None
-    train_depths: Optional[List[int]] = None
-    valid_depths: Optional[List[int]] = None
-    test_depths: Optional[List[int]] = None
+class MaterializedSplit:
+    """Tensorized representation of a dataset split for the environment."""
+    queries: torch.LongTensor        # [N, L, max_arity+1]
+    labels: torch.LongTensor         # [N]
+    depths: torch.LongTensor         # [N]
+
+    def __len__(self) -> int:
+        return int(self.queries.shape[0])
 
 
 class DataHandler:
@@ -111,9 +107,10 @@ class DataHandler:
         self.train_depths: List[int] = []
         self.valid_depths: List[int] = []
         self.test_depths: List[int] = []
-
-        # Query splits as lists of [1,3] tensors (each query is a one-atom state)
-        self.splits: Optional[DatasetSplits] = None
+        self.train_labels: List[int] = []
+        self.valid_labels: List[int] = []
+        self.test_labels: List[int] = []
+        self._materialized_splits: Dict[str, MaterializedSplit] = {}
 
         # Optional: domain info for sampler (index-only, ragged)
         # maps predicate_id -> LongTensor of allowed entity ids
@@ -316,14 +313,17 @@ class DataHandler:
             self.train_queries = queries
             self.train_queries_str = queries_str
             self.train_depths = depths
+            self.train_labels = [1] * len(queries)
         elif split == 'valid':
             self.valid_queries = queries
             self.valid_queries_str = queries_str
             self.valid_depths = depths
+            self.valid_labels = [1] * len(queries)
         else:
             self.test_queries = queries
             self.test_queries_str = queries_str
             self.test_depths = depths
+            self.test_labels = [1] * len(queries)
 
     def _discover_vocabulary(self) -> None:
         """Discover constants and predicates from loaded data."""
@@ -478,56 +478,61 @@ class DataHandler:
     def materialize_indices(
         self,
         im: IndexManager,
-        max_rule_atoms: int = 8,
-        device: torch.device = None,
+        max_rule_atoms: Optional[int] = None,
+        device: Optional[torch.device] = None,
         drop_strings: bool = False,
     ) -> None:
-        """
-        Convert all string data to index tensors using IndexManager.
-        Moves resulting tensors to `device` once. Strings can be dropped to save RAM.
-        """
-        if device is None:
-            device = torch.device('cpu')
-        
-        # Facts
-        facts_idx = im.state_to_tensor(self.facts_str)
-        im.set_facts(facts_idx) # [F,3]
-        
-        # Rules
-        rules_idx, rule_lens = im.rules_to_tensor(self.rules_str, max_rule_atoms)
+        """Convert strings to tensor form and build simple tensors for each split."""
+        device = device or torch.device('cpu')
+        self._materialized_splits.clear()
+
+        if self.facts_str:
+            im.set_facts(im.state_to_tensor(self.facts_str))
+        else:
+            im.set_facts(torch.empty((0, 3), dtype=torch.long))
+
+        if max_rule_atoms is None:
+            max_rule_atoms = max((len(body) for _, body in self.rules_str), default=0)
+        max_rule_atoms = max(1, max_rule_atoms)
+        if self.rules_str:
+            rules_idx, rule_lens = im.rules_to_tensor(self.rules_str, max_rule_atoms)
+        else:
+            rules_idx = torch.empty((0, max_rule_atoms, 3), dtype=torch.long)
+            rule_lens = torch.empty((0,), dtype=torch.long)
+            im.rules_heads_idx = torch.empty((0, 3), dtype=torch.long)
         im.set_rules(rules_idx, rule_lens)
 
-        # Queries (each as [1,3])
-        def make_query_list(qs: List[Tuple[str, str, str]]) -> List[LongTensor]:
-            return [im.state_to_tensor([q]).to(device=device, dtype=torch.long) for q in qs]
+        width = getattr(im, 'max_arity', self.max_arity) + 1
+        splits = {}
+        for name, query_strs, label_list, depth_list in (
+            ('train', self.train_queries_str, self.train_labels, self.train_depths),
+            ('valid', self.valid_queries_str, self.valid_labels, self.valid_depths),
+            ('test', self.test_queries_str, self.test_labels, self.test_depths),
+        ):
+            if query_strs:
+                qs = im.state_to_tensor(query_strs)  # [N, 3]
+                qs = qs.view(qs.shape[0], 1, qs.shape[1]).pin_memory()
+                queries_tensor = qs.to(device=device, non_blocking=True)
+            else:
+                queries_tensor = torch.empty((0, 1, width), dtype=torch.long, device=device)
+            labels_tensor = torch.as_tensor(label_list, dtype=torch.long, device=device)
+            depths_tensor = torch.as_tensor(depth_list, dtype=torch.long, device=device)
+            splits[name] = MaterializedSplit(
+                queries=queries_tensor,
+                labels=labels_tensor,
+                depths=depths_tensor,
+            )
 
-        train_q = make_query_list(self.train_queries_str)
-        valid_q = make_query_list(self.valid_queries_str)
-        test_q = make_query_list(self.test_queries_str)
-
-        self.splits = DatasetSplits(
-            train_queries_idx=train_q,
-            valid_queries_idx=valid_q,
-            test_queries_idx=test_q,
-            train_depths=self.train_depths if self.train_depths else None,
-            valid_depths=self.valid_depths if self.valid_depths else None,
-            test_depths=self.test_depths if self.test_depths else None,
-        )
-
-        # All-known triples for filtered negative sampling
-        # include facts and queries
         ak = []
         if im.facts_idx is not None and im.facts_idx.numel() > 0:
             ak.append(im.facts_idx.detach().to('cpu'))
-        if len(train_q) > 0:
-            ak.append(torch.cat([q.squeeze(0) for q in train_q], dim=0).to('cpu'))
-        if len(valid_q) > 0:
-            ak.append(torch.cat([q.squeeze(0) for q in valid_q], dim=0).to('cpu'))
-        if len(test_q) > 0:
-            ak.append(torch.cat([q.squeeze(0) for q in test_q], dim=0).to('cpu'))
+        for split in splits.values():
+            if split.queries.numel() > 0:
+                ak.append(split.queries[:, 0].detach().to('cpu'))
         self.all_known_triples_idx = torch.vstack(ak) if ak else torch.empty((0, 3), dtype=torch.long)
-        
-        # Build domain maps if available
+
+        self._materialized_splits = splits
+
         if self.entity2domain is not None:
             self._build_domain_maps(im)
 
@@ -566,14 +571,11 @@ class DataHandler:
     # -----------------------------
     # Split accessors
     # -----------------------------
-    def get_split(self, split: Literal['train', 'valid', 'test']) -> List[LongTensor]:
-        """Get query split by name."""
-        assert self.splits is not None, "Call materialize_indices() first"
-        if split == 'train':
-            return self.splits.train_queries_idx
-        if split == 'valid':
-            return self.splits.valid_queries_idx
-        return self.splits.test_queries_idx
+    def get_materialized_split(self, split: Literal['train', 'valid', 'test']) -> MaterializedSplit:
+        """Return tensorized data for a split."""
+        if split not in self._materialized_splits:
+            raise ValueError("Call materialize_indices() before requesting materialized splits")
+        return self._materialized_splits[split]
 
     # -----------------------------
     # Optional domain API (index-only)

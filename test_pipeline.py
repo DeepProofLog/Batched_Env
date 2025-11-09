@@ -123,25 +123,8 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         device=device,
     )
     
-    # Set facts and rules using IndexManager's direct methods
-    print(f"  Setting facts and rules in IndexManager...")
-    facts_tensor = im.state_to_tensor([(f.predicate, 
-                                        f.args[0] if len(f.args) > 0 else '', 
-                                        f.args[1] if len(f.args) > 1 else '') 
-                                        for f in dh.facts])
-    im.set_facts(facts_tensor)
-    
-    max_rule_atoms = max([len(r.body) for r in dh.rules]) if dh.rules else 8
-    rules_as_tuples = [
-        (
-            (r.head.predicate, r.head.args[0] if len(r.head.args) > 0 else '', r.head.args[1] if len(r.head.args) > 1 else ''),
-            [(t.predicate, t.args[0] if len(t.args) > 0 else '', t.args[1] if len(t.args) > 1 else '') for t in r.body]
-        )
-        for r in dh.rules
-    ]
-    rules_tensor, rule_lens = im.rules_to_tensor(rules_as_tuples, max_rule_atoms=max_rule_atoms)
-    im.set_rules(rules_tensor, rule_lens)
-    
+    print("  Materializing indices and dataset tensors...")
+    dh.materialize_indices(im=im, device=device)
     print(f"  Index manager ready: {im.constant_no} constants, {im.predicate_no} predicates")
     print(f"  Debug: runtime_var_start={im.runtime_var_start_index}, runtime_var_end={im.runtime_var_end_index}")
     print(f"  Debug: variable_no={im.total_vocab_size}, template_variable_no={im.template_variable_no}, runtime_variable_no={im.runtime_variable_no}")
@@ -157,15 +140,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     print("\n[3/10] Creating negative sampler")
     
     # Prepare all known triples for filtering
-    all_triples = []
-    for split_queries in [dh.train_queries, dh.valid_queries, dh.test_queries]:
-        for q in split_queries:
-            all_triples.append([
-                im.predicate_str2idx[q.predicate],
-                im.constant_str2idx[q.args[0]] if len(q.args) > 0 else 0,
-                im.constant_str2idx[q.args[1]] if len(q.args) > 1 else 0
-            ])
-    all_triples_tensor = torch.tensor(all_triples, dtype=torch.long, device='cpu')
+    all_triples_tensor = dh.all_known_triples_idx.to('cpu')
     
     # Determine default_mode from corruption_scheme
     if args.corruption_scheme is not None:
@@ -190,19 +165,13 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     )
 
     # sample 3 negatives from each positive query (2 positives in batch)
-    positive_queries = [dh.train_queries[0], dh.train_queries[1]]
-    # convert to tensor
-    positive_queries_tensor = torch.stack([
-        im.state_to_tensor([(q.predicate, 
-                            q.args[0] if len(q.args) > 0 else '', 
-                            q.args[1] if len(q.args) > 1 else '')])
-        for q in positive_queries
-    ]).squeeze(1)  # [2, 3]
-    
-    negatives = sampler.corrupt(positive_queries_tensor, num_negatives=3)  # [2, 3, 3]
-    print(f"  Sampled negatives for 2 positive queries (3 each):")
-    print(f"    Positive shapes: {positive_queries_tensor.shape}")
-    print(f"    Negative shapes: {negatives.shape}")
+    train_split_for_sampler = dh.get_materialized_split('train')
+    if train_split_for_sampler.queries.shape[0] >= 2:
+        positive_queries_tensor = train_split_for_sampler.queries[:2, 0]
+        negatives = sampler.corrupt(positive_queries_tensor, num_negatives=3)  # [2, 3, 3]
+        print(f"  Sampled negatives for 2 positive queries (3 each):")
+        print(f"    Positive shapes: {positive_queries_tensor.shape}")
+        print(f"    Negative shapes: {negatives.shape}")
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
     if n_tests == 3:
@@ -237,21 +206,11 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     print(f"\n[5/10] Creating vectorized batched environment (batch_size={args.batch_size})...")
     start_time = time()
     
-    # Convert queries from Term objects to tensors
-    print("  Converting queries to tensors...")
-    train_queries_tensor = [
-        im.state_to_tensor([(q.predicate, 
-                            q.args[0] if len(q.args) > 0 else '', 
-                            q.args[1] if len(q.args) > 1 else '')])
-        for q in dh.train_queries
-    ]
-    valid_queries_tensor = [
-        im.state_to_tensor([(q.predicate, 
-                            q.args[0] if len(q.args) > 0 else '', 
-                            q.args[1] if len(q.args) > 1 else '')])
-        for q in dh.valid_queries
-    ]
-    print(f"  Converted {len(train_queries_tensor)} train queries and {len(valid_queries_tensor)} valid queries")
+    # Use pre-materialized dataset splits for the environment
+    print("  Using materialized dataset splits...")
+    train_split = dh.get_materialized_split('train')
+    valid_split = dh.get_materialized_split('valid')
+    print(f"  Materialized {len(train_split)} train queries and {len(valid_split)} valid queries")
     
     # Create UnificationEngine using from_index_manager classmethod
     print("  Creating UnificationEngine...")
@@ -262,9 +221,9 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     train_env = BatchedEnv(
         batch_size=args.batch_size,
         unification_engine=unification_engine,
-        queries=train_queries_tensor,
-        labels=[1] * len(train_queries_tensor),
-        query_depths=dh.train_queries_depths if hasattr(dh, 'train_queries_depths') else [0] * len(train_queries_tensor),
+        queries=train_split.queries,
+        labels=train_split.labels,
+        query_depths=train_split.depths,
         mode='train',
         max_depth=args.max_depth,
         memory_pruning=args.memory_pruning,
