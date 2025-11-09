@@ -252,43 +252,53 @@ def _unify_one_to_one(queries: Tensor,
 
     # Early exit
     subs = torch.full((N, 2, 2), padding_idx, dtype=torch.long, device=device)
-    if mask.any():
-        q = q_args
-        t = t_args
-        qv = (q >= var_start) & (q != padding_idx)
-        tv = (t >= var_start) & (t != padding_idx)
-        valid_rows = mask.unsqueeze(1).expand_as(qv)
+    if not mask.any():
+        return mask, subs
 
-        from_slot = subs[:, :, 0]
-        to_slot = subs[:, :, 1]
+    # Work only on feasible rows to avoid pointless tensor ops
+    valid_idx = torch.nonzero(mask, as_tuple=False).squeeze(1)
+    q = q_args.index_select(0, valid_idx)
+    t = t_args.index_select(0, valid_idx)
+    qv = (q >= var_start) & (q != padding_idx)
+    tv = (t >= var_start) & (t != padding_idx)
 
-        # Case 1: qVar - tConst (non-padding const)
-        case1 = valid_rows & qv & (~tv) & (t != 0)
+    subs_sel = torch.full((valid_idx.shape[0], 2, 2), padding_idx, dtype=torch.long, device=device)
+    from_slot = subs_sel[:, :, 0]
+    to_slot = subs_sel[:, :, 1]
+
+    # Case 1: qVar - tConst (non-padding const)
+    case1 = qv & (~tv) & (t != 0)
+    if case1.any():
         from_slot = torch.where(case1, q.long(), from_slot)
         to_slot = torch.where(case1, t.long(), to_slot)
 
-        # Case 2: tVar - qConst (non-padding const)
-        case2 = valid_rows & (~qv) & (q != 0) & tv
+    # Case 2: tVar - qConst (non-padding const)
+    case2 = (~qv) & (q != 0) & tv
+    if case2.any():
         from_slot = torch.where(case2, t.long(), from_slot)
         to_slot = torch.where(case2, q.long(), to_slot)
 
-        # Case 3: both variables
-        case3 = valid_rows & qv & tv
+    # Case 3: both variables
+    case3 = qv & tv
+    if case3.any():
         from_slot = torch.where(case3, t.long(), from_slot)
         to_slot = torch.where(case3, q.long(), to_slot)
 
-        subs[:, :, 0] = from_slot
-        subs[:, :, 1] = to_slot
+    subs_sel[:, :, 0] = from_slot
+    subs_sel[:, :, 1] = to_slot
 
-        # ---- Consistency check: same variable must map to single target
-        same_var = (from_slot[:, 0] == from_slot[:, 1]) & (from_slot[:, 0] != padding_idx)
-        diff_target = to_slot[:, 0] != to_slot[:, 1]
-        conflict_rows = same_var & diff_target
-        if conflict_rows.any():
-            mask = mask & ~conflict_rows
-            subs[conflict_rows] = padding_idx
+    # ---- Consistency check: same variable must map to single target
+    same_var = (from_slot[:, 0] == from_slot[:, 1]) & (from_slot[:, 0] != padding_idx)
+    diff_target = to_slot[:, 0] != to_slot[:, 1]
+    conflict_rows = same_var & diff_target
+    if conflict_rows.any():
+        bad_rows = valid_idx[conflict_rows]
+        mask[bad_rows] = False
+        subs_sel[conflict_rows] = padding_idx
 
-    return (mask, subs.long())
+    subs.index_copy_(0, valid_idx, subs_sel)
+
+    return mask, subs
 
 
 # =========================================================
@@ -328,15 +338,13 @@ def _pairs_via_predicate_ranges(query_preds: Tensor, seg_starts: Tensor, seg_len
         return z, z
     lens = lens[kept_qidx]
     starts = starts[kept_qidx]
-    # Flat cartesian product without loops
+    total_items = int(lens.sum().item())
+    if total_items == 0:
+        z = torch.zeros(0, dtype=torch.long, device=device)
+        return z, z
     row_ids = torch.repeat_interleave(torch.arange(lens.numel(), device=device), lens)
     prefix = torch.cumsum(lens, dim=0) - lens
-    offs = torch.repeat_interleave(prefix, lens)
-    # Build a 2D grid [rows, max_len], mask to ragged lengths, then flatten
-    max_len = lens.max()
-    grid = torch.arange(max_len, device=device).unsqueeze(0).expand(lens.numel(), -1)  # [R, max_len]
-    mask = grid < lens.unsqueeze(1)                                                   # [R, max_len]
-    pos_in_row = grid[mask]                                                           # [sum(lens)]
+    pos_in_row = torch.arange(total_items, device=device, dtype=torch.long) - prefix[row_ids]
     item_idx = starts[row_ids] + pos_in_row
     query_idx = kept_qidx[row_ids]
     return query_idx, item_idx
@@ -384,6 +392,16 @@ def _unify_with_facts(
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
+    drop_ground_mask = None
+    query_hashes = None
+    if excluded_queries is not None:
+        same_atom = (excluded_queries == queries).all(dim=1)
+        if same_atom.any():
+            ground_q = (queries[:, 1:] <= engine.constant_no).all(dim=1)
+            drop_ground_mask = same_atom & ground_q
+            if drop_ground_mask.any():
+                query_hashes = _pack_triples_64(queries.long(), engine.pack_base)
+
     # 1) Ragged pairing (query → contiguous block of matching facts) ----------
     # OPTIMIZATION: predicate_range_map is already int32 on device, avoid redundant .to()
     prm = engine.predicate_range_map
@@ -396,33 +414,25 @@ def _unify_with_facts(
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
     # Optional: exclude trivial self-matches (labels not needed) --------------
-    if excluded_queries is not None:
-        # excluded_queries is [A, 3] - the original queries to exclude
-        # For each (qi, fi) pair, check if queries[qi] == excluded_queries[qi] == facts[fi]
-        # If so, this is a trivial self-match and should be dropped
-        
-        ex_queries = excluded_queries.index_select(0, qi)  # [L, 3] - get excluded query for each pair
-        q_tmp = queries.index_select(0, qi)                # [L, 3] - get current query for each pair
-        f_tmp = engine.facts_idx.index_select(0, fi)       # [L, 3] - get matched fact for each pair
-        
-        # Check if query matches excluded query (i.e., this is the original query)
-        query_is_excluded = (q_tmp == ex_queries).all(dim=1)  # [L]
-        
-        # Check if query is ground (all arguments are constants)
-        ground_q = (q_tmp[:, 1:] <= engine.constant_no).all(dim=1)  # [L]
-        
-        # Check if query matches fact
-        same = (q_tmp == f_tmp).all(dim=1)  # [L]
-        
-        # Drop if: query is excluded AND ground AND matches fact (trivial self-match)
-        drop = query_is_excluded & ground_q & same  # [L]
-        if drop.any():
-            keep = ~drop
-            qi = qi[keep]
-            fi = fi[keep]
-            if qi.numel() == 0:
-                empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
-                return empty, torch.zeros(A, dtype=torch.long, device=device)
+    if drop_ground_mask is not None and drop_ground_mask.any():
+        drop_rows = drop_ground_mask[qi]
+        if drop_rows.any():
+            if query_hashes is None:
+                query_hashes = _pack_triples_64(queries.long(), engine.pack_base)
+            fact_hashes = engine.facts_packed
+            cand_idx = torch.nonzero(drop_rows, as_tuple=False).squeeze(1)
+            if cand_idx.numel() > 0:
+                q_hash = query_hashes[qi[cand_idx]]
+                f_hash = fact_hashes[fi[cand_idx]]
+                same = q_hash == f_hash
+                if same.any():
+                    drop_rows[cand_idx] = same
+                    keep = ~drop_rows
+                    qi = qi[keep]
+                    fi = fi[keep]
+                    if qi.numel() == 0:
+                        empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
+                        return empty, torch.zeros(A, dtype=torch.long, device=device)
 
     # Gather pairs and unify pairwise (still loop-free) -----------------------
     q_pairs = queries.index_select(0, qi)                  # [L, 3]
@@ -454,12 +464,9 @@ def _unify_with_facts(
 
     max_cols_tensor = rem_counts.max() if rem_counts.numel() > 0 else torch.tensor(1, device=device)
     max_cols = int(max(max_cols_tensor.item(), 1))
-    states_per_match = torch.full((rem_counts.shape[0], max_cols, 3), pad, dtype=torch.long, device=device)
-    slice_cols = min(G, max_cols)
-    if slice_cols > 0:
-        states_per_match[:, :slice_cols] = remain_inst[:, :slice_cols]
-    col_mask = torch.arange(max_cols, device=device).unsqueeze(0) < rem_counts.unsqueeze(1)
-    states_per_match = torch.where(col_mask.unsqueeze(-1), states_per_match, pad)
+    if G > 0:
+        max_cols = min(max_cols, G)
+    states_per_match = remain_inst[:, :max_cols]
 
     # 4) Cap per-owner fanout (K per original query row) ---------------------
     K_per_owner = torch.bincount(qi, minlength=A)
@@ -473,8 +480,8 @@ def _unify_with_facts(
     out = torch.full((A, K, max_cols, 3), pad, dtype=torch.long, device=device)
 
     # Stable segmented take by owner id (loop-free) --------------------------
-    owner_sorted, perm = torch.sort(qi, stable=True)
-    states_sorted = states_per_match.index_select(0, perm)
+    owner_sorted = qi  # already grouped by construction
+    states_sorted = states_per_match
     num_matches = owner_sorted.shape[0]
     if num_matches > 0:
         row_ids = torch.arange(num_matches, device=device)
@@ -491,7 +498,7 @@ def _unify_with_facts(
             ds = pos_in_owner[keep]
             out[db, ds] = states_sorted[keep]
 
-    counts_per_q = torch.minimum(K_per_owner, torch.full_like(K_per_owner, K))
+    counts_per_q = torch.clamp_max(K_per_owner, K)
 
     return out, counts_per_q
 
@@ -710,6 +717,10 @@ class UnificationEngine:
 
         # indices for fast membership & dedup
         self.fact_index = GPUFactIndex(self.facts_idx, self.pack_base)
+        if self.facts_idx.numel() > 0:
+            self.facts_packed = _pack_triples_64(self.facts_idx.long(), self.pack_base)
+        else:
+            self.facts_packed = torch.empty((0,), dtype=torch.long, device=device)
         self.hash_cache = GPUHashCache(device)
 
     # ---- factory ----
