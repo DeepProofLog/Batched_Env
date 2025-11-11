@@ -499,12 +499,14 @@ class BatchedEnv(EnvBase):
             self._log(3, f"[step] depth sample: {self.current_depths[:sample]}, labels: {self.current_labels[:sample]}")
             self._log(3, f"[step] current query sample: {self.current_queries[:sample]}")
 
-        # Next derived states for active envs
+
+        # Next derived states for envs that are NOT done
         active_mask = ~dones.squeeze(-1)
+
         if self.verbose >= 3:
             self._log(3, f"[step] active_mask={active_mask[:min(4, B)]}, sum={active_mask.sum().item()}")
             if active_mask.any():
-                active_idx = torch.arange(self.batch_size_int, device=self._device)[active_mask]
+                active_idx = batch_ids[active_mask]
                 self._log(3, f"[step] current_queries[active]: {self.current_queries[active_idx[:min(2, active_idx.shape[0])]]}")
                 self._log(3, f"[step] current_depths[active]: {self.current_depths[active_idx[:min(2, active_idx.shape[0])]]}")
         
@@ -1265,6 +1267,7 @@ class BatchedEnv(EnvBase):
         
         # Switch to eval mode (required for per-slot scheduling to work)
         self.mode = 'eval'
+        self.memory_pruning = False
         
         # 1) Store dataset tensors
         self._all_queries_padded = self._ensure_query_tensor(queries.to(device))
