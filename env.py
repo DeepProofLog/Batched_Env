@@ -73,6 +73,7 @@ class BatchedEnv(EnvBase):
         self.padding_states = int(padding_states)
         self.reward_type = int(reward_type)
         self.verbose = int(verbose)
+        self._debug_prefix = "[BatchedEnv]"
         self.prover_verbose = int(prover_verbose)
 
         # Index/vocab params
@@ -87,6 +88,7 @@ class BatchedEnv(EnvBase):
         # External engines / helpers
         self.unification_engine = unification_engine
         self.atom_stringifier = atom_stringifier
+        self._last_reset_rows = None
 
         # Negative sampling
         self.corruption_mode = bool(corruption_mode)
@@ -118,26 +120,28 @@ class BatchedEnv(EnvBase):
         self.counter = 0
 
         # -------- Runtime state tensors (GPU) --------
+        # B: batch size, A: atoms size, D: arity+1
         arity_plus = self.max_arity + 1
         B = self.batch_size_int
         self.current_queries = torch.full(
             (B, self.padding_atoms, arity_plus), self.padding_idx, dtype=torch.long, device=self._device
-        )
-        self.current_labels = torch.zeros(B, dtype=torch.long, device=self._device)
-        self.current_depths = torch.zeros(B, dtype=torch.long, device=self._device)
+        )  # [B, A, D] - current query states for each env
+        self.current_labels = torch.zeros(B, dtype=torch.long, device=self._device)  # [B] - labels for each env
+        self.current_depths = torch.zeros(B, dtype=torch.long, device=self._device)  # [B] - current depths for each env
         self.next_var_indices = torch.full(
             (B,), self.runtime_var_start_index, dtype=torch.long, device=self._device
-        )
+        )  # [B] - next variable indices for each env
         self.original_queries = torch.full(
             (B, arity_plus), self.padding_idx, dtype=torch.long, device=self._device
-        )
+        )  # [B, D] - original query atoms for each env
 
-        # Derived states [B, S, M, D]
+        # Derived states [B, S, A, D]
+        # S: state size (max number of derived states per env)
         self.derived_states_batch = torch.full(
             (B, self.padding_states, self.padding_atoms, arity_plus),
             self.padding_idx, dtype=torch.long, device=self._device
-        )
-        self.derived_states_counts = torch.zeros(B, dtype=torch.long, device=self._device)
+        )  # [B, S, A, D] - derived states for each env
+        self.derived_states_counts = torch.zeros(B, dtype=torch.long, device=self._device)  # [B] - number of valid derived states per env
 
         # -------- Memory pruning (Bloom filter per env) --------
         # Disable memory pruning in eval to preserve pure evaluation unless requested
@@ -165,6 +169,81 @@ class BatchedEnv(EnvBase):
         # Build specs
         self._make_specs()
 
+    # ------------------------------------------------------------------
+    # Debug helpers
+    # ------------------------------------------------------------------
+    def set_verbose(self, level: int) -> None:
+        self.verbose = int(level)
+
+    def _log(self, level: int, message: str) -> None:
+        if self.verbose >= level:
+            print(f"{self._debug_prefix} {message}")
+
+    def _format_atoms(self, state: torch.Tensor) -> list[str]:
+        """Format a state tensor into a list of atom strings or indices."""
+        mask = state[:, 0] != self.padding_idx
+        atoms = state[mask]
+        if atoms.numel() == 0:
+            return []
+        if self.atom_stringifier is not None:
+            return [self.atom_stringifier.atom_to_str(atom) for atom in atoms]
+        return atoms.tolist()
+
+    def _dump_states(self, label: str, rows: Optional[torch.Tensor] = None, level=2,
+                     action_mask: Optional[torch.Tensor] = None,
+                     done: Optional[torch.Tensor] = None,
+                     rewards: Optional[torch.Tensor] = None) -> None:
+        """Dump current and derived states for specified rows (or all)."""
+        if rows is None:
+            self._log(level, f"{label}: there are no rows to dump for {label}.")
+        else:
+            rows_list = rows.tolist()
+            self._log(level, f"{label}: inspecting rows {rows_list}")
+            for idx in rows_list:
+                state = self.current_queries[idx]
+                derived_count = int(self.derived_states_counts[idx].item())
+                state_atoms = self._format_atoms(state)
+                self._log(level, f"  Idx {idx} depth={int(self.current_depths[idx])} label={int(self.current_labels[idx])} query={state_atoms}")
+
+                # Include action mask info if provided
+                if action_mask is not None:
+                    mask_for_idx = action_mask[idx].tolist()
+                    valid_actions = sum(1 for m in mask_for_idx if m)
+                    self._log(level, f"    Action mask valid: {valid_actions}")
+
+                # Include done/rewards info if provided
+                if done is not None:
+                    done_for_idx = done[idx].item()
+                    self._log(level, f"    Done: {done_for_idx}")
+                if rewards is not None:
+                    reward_for_idx = rewards[idx].item()
+                    self._log(level, f"    Reward: {reward_for_idx}")
+
+                derived_atoms = []
+                for d in range(derived_count):
+                    derived_atoms.append(self._format_atoms(self.derived_states_batch[idx, d]))
+                self._log(level, f"    Derived: {derived_atoms}\n")
+
+    def _merge_reset_obs(self, base_td: TensorDict, reset_td: TensorDict, done_mask: torch.Tensor) -> TensorDict:
+        """Merge base and reset tensordicts based on done mask."""
+        rows = done_mask.nonzero(as_tuple=False).view(-1)
+        if rows.numel() == 0:
+            return base_td
+        merged = base_td.clone()
+        for key in reset_td.keys():
+            reset_val = reset_td.get(key)
+            if isinstance(reset_val, TensorDict):
+                base_val = merged.get(key) if key in merged.keys() else reset_val.clone()
+                merged.set(key, self._merge_reset_obs(base_val, reset_val, done_mask))
+            else:
+                if key in merged.keys():
+                    target = merged.get(key).clone()
+                else:
+                    target = reset_val.clone()
+                target[rows] = reset_val[rows]
+                merged.set(key, target)
+        return merged
+
     # ---------------------------------------------------------------------
     # Specs
     # ---------------------------------------------------------------------
@@ -172,37 +251,37 @@ class BatchedEnv(EnvBase):
         from torchrl.data import Composite, Bounded
 
         max_vocab_size = int(self.total_vocab_size)
-        B = self.batch_size_int
-        A = self.padding_atoms
-        D = self.max_arity + 1
-        S = self.padding_states
+        B = self.batch_size_int  # batch size
+        A = self.padding_atoms   # atoms size
+        D = self.max_arity + 1   # arity + 1
+        S = self.padding_states  # state size
 
         self.observation_spec = Composite(
             sub_index=Bounded(
                 low=-1, high=max_vocab_size,
                 shape=torch.Size([B, 1, A, D]), dtype=torch.int64, device=self._device,
-            ),
+            ),  # [B, 1, A, D] - current query state
             derived_sub_indices=Bounded(
                 low=-1, high=max_vocab_size,
                 shape=torch.Size([B, S, A, D]), dtype=torch.int64, device=self._device,
-            ),
+            ),  # [B, S, A, D] - derived states
             action_mask=Bounded(
                 low=0, high=1, shape=torch.Size([B, S]), dtype=torch.bool, device=self._device
-            ),
+            ),  # [B, S] - mask for valid actions
             shape=torch.Size([B]),
         )
         self.action_spec = Bounded(
             low=0, high=self.padding_states - 1, shape=torch.Size([B]), dtype=torch.int64, device=self._device
-        )
+        )  # [B] - action indices
         self.reward_spec = Bounded(
             low=-float('inf'), high=float('inf'), shape=torch.Size([B, 1]), dtype=torch.float32, device=self._device
-        )
+        )  # [B, 1] - rewards
         self.done_spec = Bounded(
             low=0, high=1, shape=torch.Size([B, 1]), dtype=torch.bool, device=self._device
-        )
+        )  # [B, 1] - termination flags
         self.truncated_spec = Bounded(
             low=0, high=1, shape=torch.Size([B, 1]), dtype=torch.bool, device=self._device
-        )
+        )  # [B, 1] - truncation flags
 
     # ---------------------------------------------------------------------
     # Core Env API
@@ -211,28 +290,43 @@ class BatchedEnv(EnvBase):
         """
         Vectorized reset with optional negative sampling. Resets per-env Bloom
         filters and inserts the initial state into memory when memory_pruning is on.
+        TD keys are: 
+            "_reset": [B, 1] boolean mask for partial reset
+            
         """
-        B = self.batch_size_int
         device = self._device
         pad = self.padding_idx
+        B = self.batch_size_int
         A = self.padding_atoms
         D = self.max_arity + 1
 
+        if self.verbose >= 3:
+            if tensordict is not None:
+                self._log(3, f"[Reset]  td info:")
+                for key in tensordict.keys():
+                    self._log(3, f"[Reset]  Key: {key}, Shape: {tensordict[key].shape}, Dtype: {tensordict[key].dtype}, Values: {tensordict[key]}")
+            else: 
+                self._log(3, "[Reset]  No tensordict provided.")
+
         # Reset mask
-        if tensordict is not None and "_reset" in tensordict.keys():
-            reset_mask = tensordict["_reset"].squeeze(-1)
-            if reset_mask.dtype != torch.bool:
-                reset_mask = reset_mask.bool()
-            env_idx = torch.arange(reset_mask.shape[0], device=device)[reset_mask]
-            if env_idx.numel() == 0:
-                raise ValueError("No environments to reset in partial reset.")
+        if tensordict is not None:
+            if "_reset" not in tensordict.keys():
+                raise ValueError("_reset key not found in tensordict for partial reset.")
+            reset_mask = tensordict["_reset"].squeeze(-1) # [B] bool
+            assert reset_mask.dtype == torch.bool, "_reset mask must be of boolean dtype"
+            env_idx = torch.arange(reset_mask.shape[0], device=device)[reset_mask] # N Indices to reset
+            assert env_idx.numel() > 0, "No environments to reset in partial reset."
         else:
             reset_mask = torch.ones(B, dtype=torch.bool, device=device)
             env_idx = torch.arange(B, device=device)
 
+        if self.verbose >= 1:
+            # if there are envs not being reset, log them
+            if not reset_mask.shape[0] == B:
+                self._log(2, f"[Reset] Not resetting envs: {[(i.item()) for i in torch.arange(B, device=device) if i not in env_idx]}")
+
+        assert env_idx.shape[0] > 0, "No environments to reset."
         N = env_idx.shape[0]
-        if N == 0:
-            return self._create_observation()
 
         # Sample indices
         if self.mode == 'train':
@@ -287,7 +381,7 @@ class BatchedEnv(EnvBase):
         batch_first_atoms = self._all_first_atoms.index_select(0, idxs)          # [N, D]
 
         # Vectorized negative sampling
-        if (self.mode == 'train') and self.corruption_mode and (self.sampler is not None) and (self.train_neg_ratio > 0):
+        if (self.mode == 'train') and self.corruption_mode and (self.train_neg_ratio > 0):
             p_neg = float(self.train_neg_ratio) / (1.0 + float(self.train_neg_ratio))
             neg_mask = torch.rand(N, device=device) < p_neg
             neg_rows = torch.arange(N, device=device)[neg_mask]
@@ -302,11 +396,14 @@ class BatchedEnv(EnvBase):
                 batch_q.index_copy_(0, neg_rows, neg_states)
                 batch_labels = batch_labels.clone()
                 batch_labels.index_fill_(0, neg_rows, 0)
+                # define the depths as -1 for corrupted states
+                batch_depths = batch_depths.clone()
+                batch_depths.index_fill_(0, neg_rows, -1)
 
         # Write into runtime buffers
         self.current_queries.index_copy_(0, env_idx, batch_q)
         self.current_labels.index_copy_(0, env_idx, batch_labels)
-        self.current_depths.index_fill_(0, env_idx, 0)
+        self.current_depths.index_copy_(0, env_idx, batch_depths)
         self.next_var_indices.index_fill_(0, env_idx, self.runtime_var_start_index)
 
         # Reset per-env memory & add the starting state
@@ -321,20 +418,8 @@ class BatchedEnv(EnvBase):
         # Create a mask that only includes the environments that were actually reset (env_idx)
         actual_reset_mask = torch.zeros(B, dtype=torch.bool, device=device)
         actual_reset_mask[env_idx] = True
-        
-        # Debug: Check if we're computing derived states for any environments
-        if self.verbose > 0 and env_idx.numel() > 0:
-            print(f"[DEBUG _reset] Computing derived states for {env_idx.numel()} envs")
-            print(f"[DEBUG _reset] current_queries shape: {self.current_queries[env_idx].shape}")
-            print(f"[DEBUG _reset] Sample current_query: {self.current_queries[env_idx[0]]}")
-        
+                
         self._compute_derived_states(active_mask=actual_reset_mask, clear_inactive=False)
-        
-        # Debug: Check derived states after computation
-        if self.verbose > 0 and env_idx.numel() > 0:
-            print(f"[DEBUG _reset] Derived counts after compute: {self.derived_states_counts[env_idx]}")
-            if self.derived_states_counts[env_idx].sum() == 0:
-                print(f"[DEBUG _reset] WARNING: All derived counts are 0!")
         
         # IMPORTANT: Initialize inactive slots AFTER _compute_derived_states to avoid being overwritten
         if self.mode == 'eval':
@@ -349,7 +434,7 @@ class BatchedEnv(EnvBase):
             inactive_in_reset = original_reset_idx[lengths[original_reset_idx] == 0]
             if inactive_in_reset.numel() > 0:
                 # Set inactive slots to terminated state (FALSE + done=True)
-                false_state_full = self._create_false_state()  # [M, D] padded
+                false_state_full = self._create_false_state()  # [A, D] padded
                 false_atom = false_state_full[0]  # Just the first atom [D]
                 false_queries = torch.full((inactive_in_reset.shape[0], A, D), pad, dtype=torch.long, device=device)
                 false_queries[:, 0] = false_atom
@@ -367,12 +452,14 @@ class BatchedEnv(EnvBase):
                 dummy_derived[:, 0, 0] = false_atom  # First action is FALSE
                 self.derived_states_batch.index_copy_(0, inactive_in_reset, dummy_derived)
                 self.derived_states_counts.index_fill_(0, inactive_in_reset, 1)  # Only 1 action available
-        
+        if self.verbose >= 1:
+            obs_dict = self._create_observation_dict()
+            self._dump_states("After reset", env_idx, level=1, action_mask=obs_dict.get('action_mask'))
         return self._create_observation()
 
     def _step(self, tensordict: TensorDict) -> TensorDict:
         """Vectorized step. Adds visited states to Bloom memory when enabled."""
-        # OPTIMIZATION: Actions should already be on correct device/dtype from actor
+
         actions = tensordict["action"]
         if actions.dtype != torch.long:
             actions = actions.long()
@@ -406,46 +493,45 @@ class BatchedEnv(EnvBase):
         # Reward + done
         rewards, terminated, truncated, is_success = self._get_done_reward()
         dones = terminated | truncated
-        if self.verbose > 1:
-            sample = min(2, B)
-            print(f"[DEBUG _step] dones sample: {dones[:sample].view(-1)}")
-
-        if self.verbose > 0:
-            sample = min(2, B)
-            print(f"[DEBUG _step] depth={self.current_depths[:sample]}, done={dones[:sample].view(-1)}")
-            print(f"[DEBUG _step] current_query[0]={self.current_queries[0, 0]}")
+        if self.verbose >= 3:
+            sample = min(4, B)
+            self._log(3, f"[step] dones sample: {dones[:sample].view(-1)}")
+            self._log(3, f"[step] depth sample: {self.current_depths[:sample]}, labels: {self.current_labels[:sample]}")
+            self._log(3, f"[step] current query sample: {self.current_queries[:sample]}")
 
         # Next derived states for active envs
         active_mask = ~dones.squeeze(-1)
-        if self.verbose > 0:
-            print(f"[DEBUG _step] active_mask={active_mask[:min(4, B)]}, sum={active_mask.sum().item()}")
-        if self.verbose > 0 and active_mask.any():
-            active_idx = torch.arange(self.batch_size_int, device=self._device)[active_mask]
-            print(f"[DEBUG _step] Before compute_derived: active_mask sum={active_mask.sum().item()}")
-            print(f"[DEBUG _step] current_queries[active]: {self.current_queries[active_idx[:min(2, active_idx.shape[0])]]}")
-            print(f"[DEBUG _step] current_depths[active]: {self.current_depths[active_idx[:min(2, active_idx.shape[0])]]}")
+        if self.verbose >= 3:
+            self._log(3, f"[step] active_mask={active_mask[:min(4, B)]}, sum={active_mask.sum().item()}")
+            if active_mask.any():
+                active_idx = torch.arange(self.batch_size_int, device=self._device)[active_mask]
+                self._log(3, f"[step] current_queries[active]: {self.current_queries[active_idx[:min(2, active_idx.shape[0])]]}")
+                self._log(3, f"[step] current_depths[active]: {self.current_depths[active_idx[:min(2, active_idx.shape[0])]]}")
         
         # In eval mode, don't clear inactive (done) envs - they need to keep their terminal state with valid actions
         # In train mode, clearing is OK because envs will be reset immediately
         should_clear_inactive = (self.mode == 'train')
         self._compute_derived_states(active_mask=active_mask, clear_inactive=should_clear_inactive)
         
-        if self.verbose > 0:
-            print(f"[DEBUG _step] After compute_derived: derived_counts={self.derived_states_counts[:min(8, self.batch_size_int)]}")
+        if self.verbose >= 3:
+            self._log(3, f"[step] After compute_derived: derived_counts={self.derived_states_counts[:min(8, self.batch_size_int)]}")
 
         # Pack observation
         obs = self._create_observation_dict()
         obs['is_success'] = is_success.squeeze(-1)
         
         # DEBUG: Print derived counts to diagnose constrained action space
-        if self.verbose > 0:
+        if self.verbose >= 2:
             sample_counts = self.derived_states_counts[:min(4, B)]
-            print(f"[DEBUG env.step] derived_states_counts (first 4): {sample_counts.tolist()}")
+            self._log(2, f"[step] derived_states_counts (first 4): {sample_counts.tolist()}")
         
         td = TensorDict(
             {**obs, "reward": rewards, "done": dones, "terminated": terminated, "truncated": truncated},
             batch_size=self.batch_size, device=self._device
         )
+        if self.verbose >= 1:
+            self._dump_states("After step", action_mask=obs.get('action_mask'), done=dones, rewards=rewards, level=1)
+        print(osdihb)
         return td
 
     # ---------------------------------------------------------------------
@@ -459,13 +545,13 @@ class BatchedEnv(EnvBase):
         batched_derived = self.derived_states_batch.clone()
         counts = self.derived_states_counts.clone()
         
-        verbose = self.verbose > 0
+        verbose = self.verbose >= 3
 
         if idx.numel() > 0:
             if verbose:
-                print(f"[DEBUG _compute_derived_states] Computing for {idx.numel()} envs")
-                print(f"[DEBUG] Sample current_query: {self.current_queries[idx[0]]}")
-                print(f"[DEBUG] next_var_indices: {self.next_var_indices[idx[:min(3, idx.numel())]]}")
+                self._log(3, f"[compute_derived] env_count={idx.numel()}")
+                self._log(3, f"[compute_derived] sample query: {self.current_queries[idx[0]]}")
+                self._log(3, f"[compute_derived] next_var_indices: {self.next_var_indices[idx[:min(3, idx.numel())]]}")
             
             all_derived, derived_counts_subset, updated_var_indices = self.unification_engine.get_derived_states(
                 current_states=self.current_queries.index_select(0, idx),
@@ -475,7 +561,7 @@ class BatchedEnv(EnvBase):
             )
             
             if verbose:
-                print(f"[DEBUG] After get_derived_states: all_derived.shape={all_derived.shape}, counts_subset={derived_counts_subset[:min(3, derived_counts_subset.shape[0])]}")
+                self._log(3, f"[compute_derived] after UE shape={all_derived.shape}, counts={derived_counts_subset[:min(3, derived_counts_subset.shape[0])]}")
             
             self.next_var_indices.index_copy_(0, idx, updated_var_indices)
 
@@ -483,7 +569,7 @@ class BatchedEnv(EnvBase):
             if self.skip_unary_actions:
                 all_derived, derived_counts_subset = self._skip_unary(idx, all_derived, derived_counts_subset)
                 if verbose:
-                    print(f"[DEBUG] After _skip_unary: counts_subset={derived_counts_subset[:min(3, derived_counts_subset.shape[0])]}")
+                    self._log(3, f"[compute_derived] after skip_unary counts={derived_counts_subset[:min(3, derived_counts_subset.shape[0])]}")
 
             # Vectorized postprocess (with memory pruning)
             all_derived, derived_counts_subset = self._postprocess(
@@ -491,7 +577,7 @@ class BatchedEnv(EnvBase):
             )
             
             if verbose:
-                print(f"[DEBUG] After _postprocess: counts_subset={derived_counts_subset[:min(3, derived_counts_subset.shape[0])]}")
+                self._log(3, f"[compute_derived] after postprocess counts={derived_counts_subset[:min(3, derived_counts_subset.shape[0])]}")
             
             # Fit to env buffers [S, A] dimensions
             A, K_sub, M_sub, D = all_derived.shape if all_derived.numel() > 0 else (idx.numel(), 0, self.padding_atoms, self.max_arity+1)
@@ -533,7 +619,7 @@ class BatchedEnv(EnvBase):
         need_false = active_mask & (counts == 0)
         dst_rows = torch.arange(active_mask.shape[0], device=self._device)[need_false]
         if dst_rows.numel() > 0:
-            false_state = self._create_false_state()                  # [M, D]
+            false_state = self._create_false_state()                  # [A, D]
             expanded = false_state.unsqueeze(0).expand(dst_rows.shape[0], -1, -1)
             batched_derived[dst_rows, 0] = expanded
             counts[dst_rows] = 1
@@ -590,6 +676,18 @@ class BatchedEnv(EnvBase):
             promoted = derived_states[uidx, 0]
             if promoted.dtype != self.current_queries.dtype:
                 promoted = promoted.long()
+            # Ensure promoted states respect env atom budget
+            if promoted.shape[1] > self.padding_atoms:
+                promoted = promoted[:, :self.padding_atoms]
+            elif promoted.shape[1] < self.padding_atoms:
+                pad_rows = self.padding_atoms - promoted.shape[1]
+                pad_tail = torch.full(
+                    (promoted.shape[0], pad_rows, promoted.shape[2]),
+                    pad,
+                    dtype=promoted.dtype,
+                    device=self._device,
+                )
+                promoted = torch.cat([promoted, pad_tail], dim=1)
             self.current_queries.index_copy_(0, env_rows, promoted)
 
             # Add promoted states to memory to respect tabling
@@ -661,7 +759,7 @@ class BatchedEnv(EnvBase):
         has_states = counts > 0
 
         # 1) Drop empty & beyond-count & atom budget
-        valid_atom = states[:, :, :, 0] != pad                          # [A, K, M]
+        valid_atom = states[:, :, :, 0] != pad                          # [A, K, A]
         state_nonempty = valid_atom.any(dim=2)                           # [A, K]
         atom_counts = valid_atom.sum(dim=2)                              # [A, K]
         within_budget = atom_counts <= self.padding_atoms                # [A, K]
@@ -679,7 +777,7 @@ class BatchedEnv(EnvBase):
             visited = torch.zeros((A, K), dtype=torch.bool, device=device)
             has_valid = bool(base_valid.any())
             if has_valid:
-                cand = states.clone()  # [A, K, M, D]
+                cand = states.clone()  # [A, K, A, D]
                 # Compute membership for all candidates
                 visited = self._bloom_membership(cand, owners)  # [A, K]
                 # Ignore invalid positions
@@ -711,7 +809,7 @@ class BatchedEnv(EnvBase):
 
         # 4) Inject FALSE where needed
         if needs_false.any():
-            false_state = self._create_false_state().unsqueeze(0)     # [1, M, D]
+            false_state = self._create_false_state().unsqueeze(0)     # [1, A, D]
             compact[needs_false, 0] = false_state
             counts_out[needs_false] = 1
 
@@ -768,9 +866,10 @@ class BatchedEnv(EnvBase):
             can_add_end = reserve_end & (counts_out < self.padding_states)
             rows = torch.arange(A, device=device)[can_add_end]
             if rows.numel() > 0:
-                end_state = self._create_end_state()  # [M, D]
+                end_state = self._create_end_state(target_atoms=compact.shape[2])
                 pos3 = counts_out[rows]
-                compact[rows, pos3] = end_state
+                expanded_end = end_state.unsqueeze(0).expand(rows.shape[0], -1, -1)
+                compact[rows, pos3] = expanded_end
                 counts_out[rows] = pos3 + 1
 
         return compact, counts_out
@@ -791,11 +890,11 @@ class BatchedEnv(EnvBase):
         states = self.current_queries                                     # [B, A, D]
         non_pad = states[:, :, 0] != pad                                   # [B, A]
         preds = states[:, :, 0]                                            # [B, A]
-        if self.verbose > 1:
+        if self.verbose >= 3:
             sample = min(2, B)
-            print(f"[DEBUG _get_done_reward] preds sample: {preds[:sample, :2]}")
-            print(f"[DEBUG _get_done_reward] labels sample: {self.current_labels[:sample]}")
-            print(f"[DEBUG _get_done_reward] true_idx={self.true_pred_idx} false_idx={self.false_pred_idx}")
+            self._log(3, f"[reward] preds sample: {preds[:sample, :2]}")
+            self._log(3, f"[reward] labels sample: {self.current_labels[:sample]}")
+            self._log(3, f"[reward] true_idx={self.true_pred_idx} false_idx={self.false_pred_idx}")
 
         all_true = torch.zeros(B, dtype=torch.bool, device=device)
         any_false = torch.zeros(B, dtype=torch.bool, device=device)
@@ -804,13 +903,13 @@ class BatchedEnv(EnvBase):
         if self.true_pred_idx is not None:
             true_mask = (preds == self.true_pred_idx) | ~non_pad
             all_true = true_mask.all(dim=1) & non_pad.any(dim=1)
-            if self.verbose > 1:
-                print(f"[DEBUG _get_done_reward] all_true raw: {all_true[:sample]}")
+            if self.verbose >= 3:
+                self._log(3, f"[reward] all_true raw: {all_true[:sample]}")
 
         if self.false_pred_idx is not None:
             any_false = (preds == self.false_pred_idx).any(dim=1)
-            if self.verbose > 1:
-                print(f"[DEBUG _get_done_reward] any_false raw: {any_false[:sample]}")
+            if self.verbose >= 3:
+                self._log(3, f"[reward] any_false raw: {any_false[:sample]}")
 
         if self.end_proof_action:
             single_pred = non_pad.sum(dim=1) == 1
@@ -822,14 +921,14 @@ class BatchedEnv(EnvBase):
 
         depth_exceeded = self.current_depths >= self.max_depth
         natural_term = all_true | any_false
-        if self.verbose > 1:
-            print(f"[DEBUG _get_done_reward] natural_term: {natural_term[:sample]}")
+        if self.verbose >= 3:
+            self._log(3, f"[reward] natural_term: {natural_term[:sample]}")
         terminated[:, 0] = natural_term
         truncated[:, 0] = depth_exceeded & ~natural_term
         done = natural_term | depth_exceeded
-        if self.verbose > 1:
-            print(f"[DEBUG _get_done_reward] terminated: {terminated[:sample, 0]}")
-            print(f"[DEBUG _get_done_reward] truncated: {truncated[:sample, 0]}")
+        if self.verbose >= 3:
+            self._log(3, f"[reward] terminated: {terminated[:sample, 0]}")
+            self._log(3, f"[reward] truncated: {truncated[:sample, 0]}")
 
         success = all_true
         labels = self.current_labels
@@ -884,7 +983,7 @@ class BatchedEnv(EnvBase):
         device = self._device
         action_indices = torch.arange(S, device=device).view(1, S).expand(B, S)
         counts = self.derived_states_counts.view(B, 1)
-        action_mask = action_indices < counts
+        action_mask = action_indices < counts # [B, S]
         
         # If everything is masked we need to surface the underlying issue immediately.
         # HOWEVER: If all environments are done, this is normal and we should just return dummy obs
@@ -895,13 +994,11 @@ class BatchedEnv(EnvBase):
             # For now, check if current state is terminal (TRUE/FALSE/END)
             first_preds = self.current_queries[rows, 0, 0]
             is_terminal = torch.zeros_like(first_preds, dtype=torch.bool)
-            if self.true_pred_idx is not None:
-                is_terminal = is_terminal | (first_preds == self.true_pred_idx)
-            if self.false_pred_idx is not None:
-                is_terminal = is_terminal | (first_preds == self.false_pred_idx)
+            # Also treat depth-capped states as terminal: they hit truncation even if query isn't TRUE/FALSE
+            depth_capped = self.current_depths[rows] >= self.max_depth
+            is_terminal = is_terminal | (first_preds == self.true_pred_idx) | (first_preds == self.false_pred_idx)| depth_capped
             if self.end_pred_idx is not None:
-                is_terminal = is_terminal | (first_preds == self.end_pred_idx)
-            
+                is_terminal = is_terminal | (first_preds == self.end_pred_idx)          
             non_terminal_masked = rows[~is_terminal]
             if non_terminal_masked.numel() > 0:
                 diagnostics = {
@@ -924,6 +1021,7 @@ class BatchedEnv(EnvBase):
         }
 
     def _create_observation(self) -> TensorDict:
+        """Create initial observation TensorDict"""
         B = self.batch_size_int
         device = self._device
         obs = self._create_observation_dict()
@@ -932,10 +1030,26 @@ class BatchedEnv(EnvBase):
         obs['truncated'] = torch.zeros(B, 1, dtype=torch.bool, device=device)
         return TensorDict(obs, batch_size=self.batch_size, device=device)
 
+    def step_and_maybe_reset(self, tensordict: TensorDict):
+        """Leverage EnvBase implementation but keep verbose logging."""
+        step_td, next_td = super().step_and_maybe_reset(tensordict)
+        if self.verbose >= 2:
+            done_mask = next_td.get("done").squeeze(-1).bool()
+            reward = next_td.get("reward")
+            action_mask = next_td.get("action_mask")
+            self._log(2, f"[step_and_maybe_reset] done_mask={done_mask.tolist()}")
+            self._dump_states("After step_and_maybe_reset", action_mask=action_mask, done=done_mask, rewards=reward)
+        return step_td, next_td
+
     # ---------------------------------------------------------------------
     # Utilities
     # ---------------------------------------------------------------------
     def _ensure_query_tensor(self, queries: Tensor) -> Tensor:
+        """Ensure queries tensor is properly padded to [N, padding_atoms, max_arity+1].
+        Expects input of shape [N, L, D] where 
+        N is number of queries, L is current atom count, D is current width.
+        Pads/truncates atoms to padding_atoms and width to max_arity + 1.
+        """
         if not isinstance(queries, torch.Tensor) or queries.dim() != 3:
             raise TypeError(
                 "Expected `queries` to be a tensor of shape [N, L, max_arity+1]. "
@@ -945,19 +1059,7 @@ class BatchedEnv(EnvBase):
         pad = self.padding_idx
         B, cur_atoms, cur_width = queries.shape
         target_width = self.max_arity + 1
-
-        if cur_width < target_width:
-            width_tail = torch.full(
-                (B, cur_atoms, target_width - cur_width),
-                pad,
-                dtype=torch.long,
-                device=self._device,
-            )
-            queries = torch.cat([queries, width_tail], dim=2)
-            cur_width = target_width
-        elif cur_width > target_width:
-            queries = queries[:, :, :target_width]
-            cur_width = target_width
+        assert cur_width == target_width, "Input queries must have arity+1 dimension of size 3."
 
         if cur_atoms < self.padding_atoms:
             atom_tail = torch.full(
@@ -968,11 +1070,12 @@ class BatchedEnv(EnvBase):
             )
             queries = torch.cat([queries, atom_tail], dim=1)
         elif cur_atoms > self.padding_atoms:
-            queries = queries[:, :self.padding_atoms]
+            raise ValueError("Query atom count exceeds padding_atoms.")
 
         return queries
 
     def _ensure_vector(self, data: Optional[Tensor], expected_len: int, name: str) -> Tensor:
+        """Ensure data is a 1D tensor of expected length on the correct device."""
         if data is None:
             if expected_len == 0:
                 return torch.zeros((0,), dtype=torch.long, device=self._device)
@@ -985,13 +1088,13 @@ class BatchedEnv(EnvBase):
         return tensor
 
     def _compute_first_atoms(self, padded_queries: Tensor) -> Tensor:
+        """Extract first atoms from padded queries tensor.
+        Expects shape [N, A, D], returns [N, D].
+        N is number of queries, A is padding_atoms, D is max_arity + 1."""
         pad = self.padding_idx
-        if padded_queries.shape[0] == 0:
-            return torch.full(
-                (0, self.max_arity + 1), pad, dtype=torch.long, device=self._device
-            )
+        assert padded_queries.dim() == 3, "padded_queries must be 3D tensor"
         valid = padded_queries[:, :, 0] != pad
-        has_valid = valid.any(dim=1)
+        has_valid = valid.any(dim=1) # check if each query has any valid atom
         first_pos = valid.long().argmax(dim=1)
         batch_ids = torch.arange(padded_queries.shape[0], device=self._device)
         first_atoms = padded_queries[batch_ids, first_pos]
@@ -1002,10 +1105,10 @@ class BatchedEnv(EnvBase):
             )
         return first_atoms
 
-    def _pad_state(self, state: Tensor) -> Tensor:
+    def _pad_state(self, state: Tensor, target_atoms: Optional[int] = None) -> Tensor:
         device = self._device
         pad = self.padding_idx
-        A = self.padding_atoms
+        A = int(target_atoms) if target_atoms is not None else self.padding_atoms
         D = self.max_arity + 1
 
         # OPTIMIZATION: State should already be on correct device
@@ -1027,14 +1130,15 @@ class BatchedEnv(EnvBase):
         state[0, 0] = int(self.false_pred_idx)
         return self._pad_state(state)
 
-    def _create_end_state(self) -> Tensor:
+    def _create_end_state(self, target_atoms: Optional[int] = None) -> Tensor:
         if self.end_pred_idx is None:
             raise ValueError("End predicate index is not defined.")
         state = torch.full((1, self.max_arity + 1), self.padding_idx, dtype=torch.long, device=self._device)
         state[0, 0] = int(self.end_pred_idx)
-        return self._pad_state(state)
+        return self._pad_state(state, target_atoms)
 
     def _update_original_queries_for_indices(self, indices: Tensor):
+        """For selected env indices, update original_queries to match the first atom of current_queries."""
         if indices.numel() == 0:
             return
         device = self._device

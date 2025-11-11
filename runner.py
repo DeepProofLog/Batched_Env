@@ -68,25 +68,25 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 20000,
+        'timesteps_train': 200000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 8,  # Now used as batch_size for BatchedVecEnv
-        'n_steps': 128, #8192, 16384
-        'n_eval_envs': 64,  # Now used as batch_size for eval BatchedVecEnv
+        'n_envs': 4,  # Now used as batch_size for BatchedVecEnv
+        'n_steps': 20, #8192, 16384
+        'n_eval_envs': 4,  # Now used as batch_size for eval BatchedVecEnv
         'batch_size': 128,
 
         # Env params
-        'reward_type': 4,
+        'reward_type': 1,
         'train_neg_ratio': 1,
         'engine': 'python',
-        'engine_strategy': 'cmp',
-        'endf_action': True,
-        'skip_unary_actions': True,
+        'endf_action': False,
+        'skip_unary_actions': False,
         'max_depth': 20,
-        'memory_pruning': True,
+        'memory_pruning': False,
         'corruption_mode': True,
+        'min_multiaction_ratio': 0.05,
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -94,8 +94,8 @@ if __name__ == "__main__":
         'atom_embedding_size': 100,
         'learn_embeddings': True,
         'padding_atoms': 4,
-        'padding_states': 20,  # Auto-computed from dataset
-        'max_total_vars': 100,
+        'padding_states': 20,  # if -1, auto-computed from dataset
+        'max_total_vars': 2000000,
 
         # Other params
         'device': 'cuda:1',  # 'cpu', 'cuda:1' (auto-select), or 'cuda:all'
@@ -106,7 +106,7 @@ if __name__ == "__main__":
         'plot': False,
         'depth_info': False,
         'verbose_cb': False,  # Verbose callback debugging
-        'verbose_env': 0,  # Environment verbosity level (0=quiet, 1=verbose)
+        'verbose_env': 1,  # Environment verbosity level (0=quiet, 1=verbose)
         'verbose_prover': 0,  # Prover verbosity level (0=quiet, 1=verbose)
         'data_path': './data/',
         'models_path': 'models/',
@@ -116,6 +116,7 @@ if __name__ == "__main__":
         'logger_path': './runs/',
         'use_wb': False,
         'wb_path': './../wandb/',
+        'debug_ppo': False,
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())
@@ -341,10 +342,11 @@ if __name__ == "__main__":
         args_namespace = build_namespace(config)
         
         if not args_namespace.save_model and args_namespace.restore_best_val_model:
-            raise ValueError(
-                "restore_best_val_model=True but save_model=False. "
-                "Enable model saving or disable best-model restoration."
+            print(
+                "\nWARNING: restore_best_val_model requested but save_model is False. "
+                "Disabling best-model restoration for this run.\n"
             )
+            args_namespace.restore_best_val_model = False
 
         if args_namespace.restore_best_val_model and args_namespace.load_model == 'last_epoch':
             print(
@@ -359,7 +361,6 @@ if __name__ == "__main__":
             args_namespace.endf_action,
             args_namespace.ent_coef,
             args_namespace.clip_range,
-            args_namespace.engine_strategy,
             args_namespace.train_neg_ratio,
             args_namespace.reward_type,
             args_namespace.n_epochs,

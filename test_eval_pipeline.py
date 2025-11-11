@@ -12,7 +12,7 @@ from data_handler import DataHandler
 from embeddings import get_embedder
 from env import BatchedEnv
 from index_manager import IndexManager
-from model_eval import evaluate_ranking_metrics
+from model_eval import evaluate_ranking_metrics, evaluate_policy
 from ppo.ppo_model import create_torchrl_modules
 from sampler import Sampler
 from unification_engine import UnificationEngine
@@ -33,7 +33,7 @@ def _build_eval_components(device: torch.device):
         padding_atoms=6,
         padding_states=16,
         batch_size=128,
-        max_total_vars=256,
+        max_total_vars=1000000,
         atom_embedder="transe",
         state_embedder="sum",
         constant_embedding_size=32,
@@ -45,9 +45,10 @@ def _build_eval_components(device: torch.device):
         corruption_scheme=["both"],
         train_neg_ratio=1,
         seed_run_i=7,
-        max_depth=20,
-        skip_unary_actions=True,
+        max_depth=8,
+        skip_unary_actions=False,
         reward_type=1,
+        endf_action=True,
     )
     if args.dataset_name == "countries_s3":
         args.corruption_scheme = ["tail"]
@@ -127,9 +128,10 @@ def _build_eval_components(device: torch.device):
         skip_unary_actions=args.skip_unary_actions,
         reward_type=args.reward_type,
         max_depth=args.max_depth,
-        memory_pruning=False,
+        memory_pruning=True,
         corruption_mode=False,
         device=device,
+        end_proof_action=args.endf_action,
     )
 
     actor, _ = create_torchrl_modules(
@@ -178,7 +180,7 @@ def test_eval_pipeline_vectorized():
         n_corruptions=10,  # Use fixed 10 negatives
         corruption_modes=['head'],  # Test just one mode
         deterministic=True,
-        verbose=True,
+        verbose=False,
     )
 
     print("\n=== Test Results ===")
@@ -203,6 +205,36 @@ def test_eval_pipeline_vectorized():
     print(f"  Hits@10: {results['Hits@10']:.4f}")
     assert 0.0 <= results['MRR'] <= 1.0
     assert 0.0 <= results['Hits@1'] <= 1.0
+
+    # Debug reward sanity: run a tiny evaluation episode batch and ensure rewards are not all zero
+    env_batch = int(components.env.batch_size[0]) if isinstance(components.env.batch_size, torch.Size) else int(components.env.batch_size)
+    q_debug = min(env_batch, query_triples.shape[0])
+    slot_lengths = torch.tensor(
+        [1] * q_debug + [0] * (env_batch - q_debug),
+        dtype=torch.long,
+        device=device,
+    )
+    flat_depths = torch.zeros(q_debug, dtype=torch.long, device=device)
+    flat_labels = torch.ones(q_debug, dtype=torch.long, device=device)
+    components.env.set_eval_dataset(
+        queries=query_triples[:q_debug],
+        labels=flat_labels,
+        query_depths=flat_depths,
+        per_slot_lengths=slot_lengths,
+    )
+    debug_out = evaluate_policy(
+        actor=components.actor,
+        env=components.env,
+        target_episodes=slot_lengths.tolist(),
+        deterministic=True,
+        verbose=0,
+    )
+    reward_matrix = debug_out["rewards"]
+    if isinstance(reward_matrix, torch.Tensor):
+        reward_sum = reward_matrix.abs().sum().item()
+    else:
+        reward_sum = np.abs(reward_matrix).sum()
+    assert reward_sum > 0.0, "Evaluation rewards should contain non-zero values"
 
     print("\n=== Test passed! ===")
 

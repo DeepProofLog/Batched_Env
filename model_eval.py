@@ -124,6 +124,7 @@ def evaluate_policy(
     deterministic: bool = True,   # kept for API symmetry; use inside your actor if needed
     track_logprobs: bool = False, # left in for easy toggling; not required for ranking
     info_callback: Optional[Callable[[TensorDict], None]] = None,
+    verbose: int = 0,
 ) -> Dict[str, torch.Tensor]:
     """
     Evaluate a policy on a single TorchRL env with internal batch dimension.
@@ -136,6 +137,7 @@ def evaluate_policy(
 
     actor_was_training = actor.training
     actor.eval()
+    verbose_level = max(int(verbose), 1 if DEBUG_EVAL else 0)
 
     # Output buffers
     rewards  = torch.zeros((B, T), dtype=torch.float32, device=device)
@@ -161,7 +163,7 @@ def evaluate_policy(
             return nxt.get(key)
         return default
 
-    if DEBUG_EVAL:
+    if verbose_level > 0:
         init_done_vals = _get_step_value(
             td,
             "done",
@@ -173,16 +175,18 @@ def evaluate_policy(
 
     while bool((ep_count < targets).any()):
         # 1) Policy
-        out = actor(td)
-        action = out.get("action")
-        action = action.view(-1).long()
-        action_td = TensorDict({"action": action}, batch_size=env.batch_size).to(device)
+        actor_device = next(actor.parameters(), torch.zeros((), device=device)).device if isinstance(actor, nn.Module) else device
+        policy_td = td.clone().to(actor_device)
+        out = actor(policy_td)
+        policy_out = out if isinstance(out, TensorDict) else policy_td
+        action = policy_out.get("action").view(-1).long().to(device)
+        action_td = TensorDict({"action": action.to(device)}, batch_size=env.batch_size).to(device)
 
-        log_probs = out.get("log_prob", torch.zeros(B, device=device)).view(-1)
+        log_probs = policy_out.get("sample_log_prob", torch.zeros(B, device=device)).view(-1)
         # 2) Step + maybe partial reset ONLY where we still need episodes
         done_prev = prev_done
         need_more = ep_count < targets
-        if DEBUG_EVAL:
+        if verbose_level > 1:
             print(
                 "[evaluate_policy] pre-step done=",
                 done_prev.tolist(),
@@ -190,7 +194,7 @@ def evaluate_policy(
                 need_more.tolist(),
             )
         reset_rows = done_prev & need_more  # rows that finished an episode and still need work
-        if DEBUG_EVAL and reset_rows.any():
+        if verbose_level > 1 and reset_rows.any():
             print(
                 "[evaluate_policy] reset_rows=",
                 reset_rows.nonzero(as_tuple=False).view(-1).tolist(),
@@ -211,7 +215,7 @@ def evaluate_policy(
             "done",
             torch.zeros(B, 1, dtype=torch.bool, device=device),
         ).view(-1).bool()
-        if DEBUG_EVAL:
+        if verbose_level > 1:
             print("[evaluate_policy] post-step done=", done_curr.tolist())
         suc = _get_step_value(step_td, "is_success", torch.zeros(B, device=device)).view(-1).float()
 

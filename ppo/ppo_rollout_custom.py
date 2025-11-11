@@ -23,6 +23,7 @@ class CustomRolloutCollector:
         device: torch.device,
         debug: bool = False,
         debug_action_space: bool = False,
+        verbose: int = 0,
     ):
         """Initialize custom collector.
         
@@ -41,6 +42,7 @@ class CustomRolloutCollector:
         self.n_steps = n_steps
         self.device = device
         self.debug = debug
+        self.verbose = max(int(verbose), 1 if debug else 0)
         self.debug_action_space = debug_action_space
         
         # Action space diagnostics
@@ -58,6 +60,10 @@ class CustomRolloutCollector:
             print(f"  n_envs: {n_envs}, n_steps: {n_steps}")
             print(f"  device: {device}")
             print(f"  debug_action_space: {debug_action_space}")
+
+    def _vlog(self, level: int, message: str) -> None:
+        if self.verbose >= level:
+            print(f"[CustomRolloutCollector] {message}")
     
     @torch.no_grad()
     def _select_action(self, obs_td: TensorDict) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -69,17 +75,15 @@ class CustomRolloutCollector:
         Returns:
             Tuple of (action, log_prob)
         """
-        # Get logits from actor
-        # Call the actor's first module to get logits
-        if hasattr(self.actor, "module") and len(self.actor.module) > 0:
-            self.actor.module[0](obs_td)
+        actor_input = obs_td.clone().to(self.device)
+        actor_out = self.actor(actor_input)
+        if isinstance(actor_out, TensorDict):
+            action_td = actor_out
         else:
-            self.actor(obs_td)
-        
-        logits = obs_td.get("logits")
-        if logits is None:
-            raise ValueError("Actor failed to produce logits")
-        
+            action_td = actor_input
+        logits = action_td.get("logits")
+        if logits is not None:
+            obs_td.set("logits", logits.to(self.env._device))
         action_mask = obs_td.get("action_mask")
         if action_mask is None:
             raise ValueError("Missing action_mask in observation")
@@ -88,45 +92,53 @@ class CustomRolloutCollector:
         if self.debug_action_space:
             self._diagnose_action_space(action_mask, obs_td)
         
-        if self.debug:
-            print(f"\n[DEBUG _select_action]")
-            print(f"  action_mask shape: {action_mask.shape}")
-            print(f"  action_mask:\n{action_mask}")
-            valid_counts = action_mask.sum(dim=1)
-            print(f"  valid_counts: {valid_counts.tolist()}")
+        # Use actor-provided action if available
+        env_device = self.env._device
+        if "action" in action_td.keys():
+            action = action_td.get("action").long()
+            log_prob = None
+            for key in ("sample_log_prob", "log_prob"):
+                if key in action_td.keys():
+                    log_prob = action_td.get(key)
+                    if log_prob.dim() > 1:
+                        log_prob = log_prob.squeeze(-1)
+                    break
+            if log_prob is None:
+                raise ValueError("Actor returned actions without log probabilities.")
+            action = action.to(env_device)
+            log_prob = log_prob.to(env_device)
+            if self.verbose >= 2:
+                self._vlog(2, f"_select_action actor_output action={action.tolist()}")
+            return action, log_prob
         
-        # Mask invalid actions
+        if logits is None:
+            raise ValueError("Actor failed to produce logits for sampling")
+        
+        if self.verbose >= 2:
+            self._vlog(2, f"_select_action logits shape={logits.shape}")
+        
         mask = action_mask.clone().to(logits.device).bool()
         if mask.dim() == 1 and logits.dim() == 2:
             mask = mask.unsqueeze(0)
         
         masked_logits = logits.masked_fill(~mask, float("-inf"))
-        
-        # Sample action
         dist = torch.distributions.Categorical(logits=masked_logits)
         action = dist.sample()
         log_prob = dist.log_prob(action)
         
-        # Track entropy for diagnostics
         if self.debug_action_space:
             entropy = dist.entropy()
             self.action_space_stats['entropy_values'].extend(entropy.detach().cpu().tolist())
         
-        if self.debug:
-            print(f"  sampled actions: {action.tolist()}")
+        if self.verbose >= 2:
+            self._vlog(2, f"_select_action sampled actions={action.tolist()}")
         
-        # Verify actions are valid (safety check)
-        if self.debug:
-            valid_counts = mask.sum(dim=1)
-            invalid_mask = action >= valid_counts
-            if invalid_mask.any():
-                print(f"\n[ERROR] Invalid action selected DURING action selection!")
-                for i in range(len(action)):
-                    if invalid_mask[i]:
-                        print(f"  Env {i}: action={action[i].item()}, valid_range=0-{valid_counts[i].item()-1}")
-                        print(f"    action_mask: {mask[i].tolist()}")
-                        print(f"    masked_logits: {masked_logits[i].tolist()}")
-                raise ValueError(f"Invalid actions selected after masking: {action[invalid_mask].tolist()}")
+        valid_counts = mask.sum(dim=1)
+        invalid_mask = action >= valid_counts
+        if invalid_mask.any():
+            raise ValueError(f"Invalid actions selected: {action[invalid_mask].tolist()}")
+        action = action.to(env_device)
+        log_prob = log_prob.to(env_device)
         
         return action, log_prob
     
@@ -257,29 +269,29 @@ class CustomRolloutCollector:
         """
         experiences: List[TensorDict] = []
         episode_infos: List[Dict[str, Any]] = []
+        running_returns = torch.zeros(self.n_envs, dtype=torch.float32, device=self.env._device)
+        running_lengths = torch.zeros(self.n_envs, dtype=torch.long, device=self.env._device)
         
         # Reset environments to get initial observations
         obs_td = self.env.reset()
         
         # Rollout loop
         for step in range(self.n_steps):
-            if self.debug: print(f"\n[CustomRolloutCollector] Step {step+1}/{self.n_steps}", end="\r")
-            # print(f"\n[CustomRolloutCollector] Step {step+1}/{self.n_steps}", end="\r")
+            self._vlog(2, f"Step {step+1}/{self.n_steps}")
             # Select actions using policy
             action, log_prob = self._select_action(obs_td)
             
             # Extract logits from obs_td (was set by _select_action)
             logits = obs_td.get("logits")
             
-            if step == 0 and self.debug:
-                print(f"[DEBUG collect] Step 0: logits present? {logits is not None}")
+            if step == 0 and self.verbose >= 2:
+                self._vlog(2, f"Step 0 logits present? {logits is not None}")
                 if logits is not None:
-                    print(f"  logits shape: {logits.shape}")
+                    self._vlog(2, f"  logits shape: {logits.shape}")
                 action_mask = obs_td.get("action_mask")
                 if action_mask is not None:
                     num_valid = action_mask.sum(dim=-1)
-                    print(f"  num valid actions - min: {num_valid.min()}, max: {num_valid.max()}, mean: {num_valid.float().mean():.2f}")
-                    print(f"  num envs with >1 valid action: {(num_valid > 1).sum()}/{len(num_valid)}")
+                    self._vlog(2, f"  valid actions stats min={num_valid.min()}, max={num_valid.max()}, mean={num_valid.float().mean():.2f}")
             
             # Create tensordict with current state and action
             step_td = TensorDict({
@@ -288,11 +300,15 @@ class CustomRolloutCollector:
                 "action_mask": obs_td["action_mask"].clone(),
                 "action": action,
                 "sample_log_prob": log_prob,
-                "logits": logits.clone() if logits is not None else None,  # Store logits for entropy computation
             }, batch_size=[self.n_envs])
+            if logits is not None:
+                step_td.set("logits", logits.clone())
             
-            # Get value estimate from critic
-            critic(step_td)
+            # Get value estimate from critic (on its device)
+            critic_input = step_td.clone().to(self.device)
+            critic(critic_input)
+            if "state_value" in critic_input.keys():
+                step_td.set("state_value", critic_input["state_value"].to(self.env._device))
             
             # Step environments using step_and_maybe_reset
             # Returns (step_td_with_next, next_obs_td)
@@ -301,11 +317,11 @@ class CustomRolloutCollector:
             step_td_complete, next_obs_td = self.env.step_and_maybe_reset(step_td)
             
             # Debug: check what keys are in the returned tensordicts
-            if step == 0 and self.debug:
-                print(f"[DEBUG] step_td_complete keys: {step_td_complete.keys()}")
+            if step == 0 and self.verbose >= 2:
+                self._vlog(2, f"step_td_complete keys: {step_td_complete.keys()}")
                 if "next" in step_td_complete.keys():
-                    print(f"[DEBUG] step_td_complete['next'] keys: {step_td_complete['next'].keys()}")
-                print(f"[DEBUG] next_obs_td keys: {next_obs_td.keys()}")
+                    self._vlog(2, f"step_td_complete['next'] keys: {step_td_complete['next'].keys()}")
+                self._vlog(2, f"next_obs_td keys: {next_obs_td.keys()}")
             
             # The step_td_complete already has the "next" key with reward/done
             # We just need to copy that to our step_td
@@ -326,31 +342,33 @@ class CustomRolloutCollector:
             # Extract the next state data for episode info extraction
             # The next state info is in step_td["next"]
             next_state_data = step_td["next"]
+            reward_next = next_state_data["reward"].view(-1).to(self.env._device)
+            running_returns = running_returns + reward_next
+            running_lengths = running_lengths + 1
             
             # Check for completed episodes and extract info
             done_mask = next_state_data["done"].squeeze(-1).to(torch.bool)
-            if done_mask.any() and "label" in next_state_data.keys():
-                label_tensor = next_state_data["label"].squeeze(-1)
+            if done_mask.any():
+                done_rows = done_mask.nonzero(as_tuple=False).view(-1)
+                label_tensor = next_state_data.get("label", None)
                 depth_tensor = next_state_data.get("query_depth", None)
                 success_tensor = next_state_data.get("is_success", None)
-
-                label_vals = label_tensor[done_mask].detach().cpu().tolist()
-                depth_vals = (
-                    depth_tensor.squeeze(-1)[done_mask].detach().cpu().tolist()
-                    if depth_tensor is not None else None
-                )
-                success_vals = (
-                    success_tensor.squeeze(-1)[done_mask].detach().cpu().tolist()
-                    if success_tensor is not None else None
-                )
-
-                for i, lbl in enumerate(label_vals):
-                    info = {"episode": {"r": 0.0, "l": 0}, "label": int(lbl)}
-                    if depth_vals is not None:
-                        info["query_depth"] = int(depth_vals[i])
-                    if success_vals is not None:
-                        info["is_success"] = bool(success_vals[i])
+                for row in done_rows.tolist():
+                    info = {
+                        "episode": {
+                            "r": float(running_returns[row].item()),
+                            "l": int(running_lengths[row].item()),
+                        }
+                    }
+                    if label_tensor is not None:
+                        info["label"] = int(label_tensor.view(-1)[row].item())
+                    if depth_tensor is not None:
+                        info["query_depth"] = int(depth_tensor.view(-1)[row].item())
+                    if success_tensor is not None:
+                        info["is_success"] = bool(success_tensor.view(-1)[row].item())
                     episode_infos.append(info)
+                running_returns[done_rows] = 0.0
+                running_lengths[done_rows] = 0
             
             # Update observation for next step
             # Extract only observation keys from next_obs_td (it may have action/value data too)
@@ -365,8 +383,7 @@ class CustomRolloutCollector:
         
         stats = {"episode_info": episode_infos}
         
-        if self.debug:
-            print(f"[CustomRolloutCollector] Collected {len(experiences)} steps, {len(episode_infos)} episodes")
+        self._vlog(1, f"Collected {len(experiences)} steps, {len(episode_infos)} episodes")
         
         # Print action space diagnostics if enabled
         if self.debug_action_space:

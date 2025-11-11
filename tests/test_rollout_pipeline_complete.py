@@ -110,6 +110,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         n_eval_queries=args.n_eval_queries,
         n_test_queries=args.n_test_queries,
     )
+    print(f"  Loaded {len(dh.train_queries)} train queries, {len(dh.valid_queries)} valid queries")
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
     if n_tests == 1:
@@ -127,7 +128,34 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         max_arity=dh.max_arity,
         device=device,
     )
+    
+    print("  Materializing indices and dataset tensors...")
     dh.materialize_indices(im=im, device=device)
+    print(f"  Index manager ready: {im.constant_no} constants, {im.predicate_no} predicates")
+    print(f"  Debug: runtime_var_start={im.runtime_var_start_index}, runtime_var_end={im.runtime_var_end_index}")
+    print(f"  Debug: variable_no={im.total_vocab_size}, template_variable_no={im.template_variable_no}, runtime_variable_no={im.runtime_variable_no}")
+    print(f"  Facts: {im.facts_idx.shape}, Rules: {im.rules_idx.shape}")
+    print(f"  Predicate indices: TRUE={im.true_pred_idx}, FALSE={im.false_pred_idx}, END={im.end_pred_idx}")
+    print(f"  First 2 rules:")
+    for i in range(min(2, im.rules_idx.shape[0])):
+        print(f"    Rule {i}: {im.rules_idx[i]}")
+    
+    # [DEBUG] Print predicate mapping
+    print(f"\n  [DEBUG] Predicate str2idx mapping:")
+    for pred_str, pred_idx in sorted(im.predicate_str2idx.items(), key=lambda x: x[1]):
+        print(f"    {pred_idx}: {pred_str}")
+    
+    # [DEBUG] Print first rule in string form
+    if dh.rules_str:
+        print(f"\n  [DEBUG] First rule in string form:")
+        head, body = dh.rules_str[0]
+        print(f"    Head: {head}")
+        print(f"    Body: {body}")
+        if len(dh.rules_str) > 1:
+            head1, body1 = dh.rules_str[1]
+            print(f"  [DEBUG] Second rule in string form:")
+            print(f"    Head: {head1}")
+            print(f"    Body: {body1}")
     
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
@@ -164,12 +192,14 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         seed=args.seed_run_i,
     )
 
-    # # sample 3 negatives from each positive query (2 positives in batch)
-    # train_split_for_sampler = dh.get_materialized_split('train')
-    # if train_split_for_sampler.queries.shape[0] >= 2:
-    #     positive_queries_tensor = train_split_for_sampler.queries[:2, 0]
-    #     negatives = sampler.corrupt(positive_queries_tensor, num_negatives=3)  # [2, 3, 3]
-
+    # sample 3 negatives from each positive query (2 positives in batch)
+    train_split_for_sampler = dh.get_materialized_split('train')
+    if train_split_for_sampler.queries.shape[0] >= 2:
+        positive_queries_tensor = train_split_for_sampler.queries[:2, 0]
+        negatives = sampler.corrupt(positive_queries_tensor, num_negatives=3)  # [2, 3, 3]
+        print(f"  Sampled negatives for 2 positive queries (3 each):")
+        print(f"    Positive shapes: {positive_queries_tensor.shape}")
+        print(f"    Negative shapes: {negatives.shape}")
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
     if n_tests == 3:
@@ -192,6 +222,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     )
     embedder = embedder_getter.embedder
     embed_dim = getattr(embedder, 'embed_dim', getattr(embedder, 'embedding_dim', args.atom_embedding_size))
+    print(f"  Embedder ready: embed_dim={embed_dim}")
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
     if n_tests == 4:
@@ -204,9 +235,22 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     start_time = time()
     
     # Use pre-materialized dataset splits for the environment
+    print("  Using materialized dataset splits...")
     train_split = dh.get_materialized_split('train')
     valid_split = dh.get_materialized_split('valid')
-
+    print(f"  Materialized {len(train_split)} train queries and {len(valid_split)} valid queries")
+    print(f"  [DEBUG] Train query shape: {train_split.queries.shape}")
+    print(f"  [DEBUG] First 3 queries (raw): {train_split.queries[:3]}")
+    print(f"  [DEBUG] Query predicate indices (first 10): {train_split.queries[:10, 0]}")
+    print(f"  [DEBUG] Max predicate index in queries: {train_split.queries[:, 0].max().item()}")
+    print(f"  [DEBUG] Min predicate index in queries: {train_split.queries[:, 0].min().item()}")
+    print(f"  [DEBUG] Number of predicates in im: {im.predicate_no}")
+    
+    # Create UnificationEngine using from_index_manager classmethod
+    print("  Creating UnificationEngine...")
+    print(f"    [DEBUG] Facts shape in im: {im.facts_idx.shape}")
+    print(f"    [DEBUG] First 5 facts: {im.facts_idx[:5]}")
+    print(f"    [DEBUG] Facts with predicate 7 (neighborOf): {(im.facts_idx[:, 0] == 7).sum().item()}")
     unification_engine = UnificationEngine.from_index_manager(im)
     print(f"  UnificationEngine ready")
     
@@ -237,13 +281,16 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         max_arity=im.max_arity,
         padding_idx=im.padding_idx,
     )
+    print(f"  Train env ready: batch_size={train_env.batch_size_int}")
 
+    if n_tests == 5:
+        end_time = time()
+        print(f"  Step completed in {end_time - start_time:.2f} seconds")
+        return  # Early exit for quick test of steps 1-5    
     
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
 
-    if n_tests == 5:
-        return  # Early exit for quick test of steps 1-5    
     # ============================================================
     # 6. Create TorchRL actor/critic modules
     # ============================================================
@@ -261,6 +308,8 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         kge_inference_engine=None,
         index_manager=im,
     )
+    print(f"  Actor params: {sum(p.numel() for p in actor.parameters()):,}")
+    print(f"  Critic params: {sum(p.numel() for p in critic.parameters()):,}")
 
     # Create optimizer
     params_dict = {id(p): p for p in list(actor.parameters()) + list(critic.parameters())}
@@ -270,9 +319,73 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     if n_tests == 6:
         return  # Early exit for quick test of steps 1-6
     
- 
     # ============================================================
-    # 7. Test rollout collection
+    # 7. Test environment reset and step
+    # ============================================================
+    print("\n[7/10] Testing environment operations...")
+    start_time = time()
+    show_output = False  # Disable verbose debug output
+    
+    # Test reset
+    obs = train_env.reset()
+    if show_output:
+        print(f"  Reset observation keys: {list(obs.keys())}")
+        print(f"  Observation shapes:")
+        print(f"    sub_index: {obs['sub_index'].shape}")
+        print(f"    derived_sub_indices: {obs['derived_sub_indices'].shape}")
+        print(f"    action_mask: {obs['action_mask'].shape}")
+        print(f"  DEBUG: action_mask values:")
+        print(f"    {obs['action_mask']}")
+        print(f"  DEBUG: derived_states_counts (from env internals):")
+        print(f"    {train_env.derived_states_counts}")
+    
+    # Test actor forward
+    print(f"\n  Testing actor forward...")
+    derived = obs['derived_sub_indices']
+    if show_output:
+        print(f"    Debugging derived_sub_indices...")
+        print(f"    Shape: {derived.shape}")
+        print(f"    Min value: {derived.min().item()}, Max value: {derived.max().item()}")
+        print(f"    Predicate indices ([:,0]): min={derived[:,:,:,0].min().item()}, max={derived[:,:,:,0].max().item()}")
+        print(f"    Constant indices ([:,1:]): min={derived[:,:,:,1:].min().item()}, max={derived[:,:,:,1:].max().item()}")
+        print(f"    Constant embedder size: {sum(p.numel() for p in actor.module[0].module.actor_critic_model.feature_extractor.embedder.constant_embedder.parameters())}")
+        print(f"    Predicate embedder size: {sum(p.numel() for p in actor.module[0].module.actor_critic_model.feature_extractor.embedder.predicate_embedder.parameters())}")
+    
+    td_out = actor(obs)
+    if show_output:
+        print(f"\n  Actor output keys: {list(td_out.keys())}")
+        print(f"  Action shape: {td_out['action'].shape}")
+        print(f"  Action values: {td_out['action']}")
+        print(f"  Log prob shape: {td_out['sample_log_prob'].shape}")
+        if 'logits' in td_out.keys():
+            print(f"  Logits shape: {td_out['logits'].shape}")
+            print(f"  Logits values (first 5): {td_out['logits'][:, :5]}")
+    
+    # Test critic forward
+    value_out = critic(obs)
+    if show_output:
+        print(f"\n  Critic output keys: {list(value_out.keys())}")
+        print(f"  State value shape: {value_out['state_value'].shape}")
+    
+    # Test environment step
+    action = td_out['action']
+    next_obs = train_env.step(td_out)
+    if show_output:
+        print(f"\n  Step output keys: {list(next_obs.keys())}")
+        if 'next' in next_obs.keys():
+            print(f"  Next state keys: {list(next_obs['next'].keys())}")
+            print(f"  Reward shape: {next_obs['next']['reward'].shape}")
+            print(f"  Done shape: {next_obs['next']['done'].shape}")
+        else:
+            print(f"  Reward shape: {next_obs['reward'].shape}")
+            print(f"  Done shape: {next_obs['done'].shape}")
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 7:
+        return  # Early exit for quick test of steps 1-7
+    
+    # ============================================================
+    # 8. Test rollout collection
     # ============================================================
     print("\n" + "="*60)
     print("Testing Rollout Collection")
@@ -288,9 +401,14 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         debug=True,
         debug_action_space=True,
     )
-        
+    
+    print(f"Collecting {args.n_steps} steps from {args.batch_size} parallel queries...")
+    
+    # DEBUG: Check initial derived states
     td_reset = train_env.reset()
-
+    print(f"\n[DEBUG] Initial reset - derived_states_counts: {train_env.derived_states_counts.tolist()}")
+    print(f"[DEBUG] Initial reset - action_mask sum: {td_reset['action_mask'].sum(dim=1).tolist()}")
+    
     # Print the FULL initial state in readable form
     for i in range(min(2, args.batch_size)):
         print(f"\n[DEBUG] Environment {i}:")
@@ -349,11 +467,11 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
             assert any(r > 0 for r in unique_rewards), "Rollout should include positive rewards from authentic queries"
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
-    if n_tests == 7:
+    if n_tests == 8:
         return  # Early exit for quick test of steps 1-8
     
     # ============================================================
-    # 8. Test PPO learning step
+    # 9. Test PPO learning step
     # ============================================================
     print("\n" + "="*60)
     print("Testing PPO Learning")
@@ -389,17 +507,47 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         )
         
         # Run learning step
-        ppo_agent.learn(
+        metrics = ppo_agent.learn(
             experiences=experiences,
             n_steps=args.n_steps,
             n_envs=args.batch_size,
         )
-
+        
+        print("\nPPO update complete:")
+        print(f"  Policy loss: {metrics.get('policy_loss', 0.0):.4f}")
+        print(f"  Value loss: {metrics.get('value_loss', 0.0):.4f}")
+        print(f"  Entropy: {metrics.get('entropy', 0.0):.4f}")
+        print(f"  Approx KL: {metrics.get('approx_kl', 0.0):.4f}")
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
-    if n_tests == 8:
+    if n_tests == 9:
         return  # Early exit for quick test of steps 1-9
-
+    
+    # ============================================================
+    # 10. Final assertions
+    # ============================================================
+    print("\n" + "="*60)
+    print("Running Assertions")
+    print("="*60)
+    start_time = time()
+    
+    assert 'action' in td_out.keys(), "Actor should output action"
+    assert 'sample_log_prob' in td_out.keys(), "Actor should output log prob"
+    assert 'state_value' in value_out.keys(), "Critic should output state value"
+    # Reward and done are in next_obs['next'] after step
+    assert 'next' in next_obs.keys(), "Step should return next state"
+    assert 'reward' in next_obs['next'].keys(), "Next state should contain reward"
+    assert 'done' in next_obs['next'].keys(), "Next state should contain done"
+    assert len(experiences) == args.n_steps, f"Should collect {args.n_steps} experiences"
+    
+    print("\n✓ All assertions passed!")
+    print("\n" + "="*60)
+    print("Vectorized Batched Pipeline Test Complete")
+    print("="*60)
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
+    if n_tests == 10:
+        return  # Early exit for quick test of steps 1-10
 
 if __name__ == '__main__':
     # use cuda if available

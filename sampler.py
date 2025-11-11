@@ -336,13 +336,20 @@ class Sampler:
             if not (unique or filter):
                 base_ids = torch.arange(B, device=device, dtype=torch.long).repeat_interleave(K_os)
             # compute 0.. per group positions
-            seg_start = torch.ones_like(base_ids, dtype=torch.bool)
-            seg_start[1:] = base_ids[1:] != base_ids[:-1]
-            pos_in_base = torch.cumsum(seg_start.long(), dim=0) - 1
+            if base_ids.numel() > 0:
+                _, counts_per_row = torch.unique_consecutive(base_ids, return_counts=True)
+                if counts_per_row.numel() == 0:
+                    pos_in_base = torch.zeros_like(base_ids)
+                else:
+                    starts = torch.cumsum(torch.nn.functional.pad(counts_per_row[:-1], (1, 0)), dim=0)
+                    expanded = torch.repeat_interleave(starts, counts_per_row)
+                    pos_in_base = torch.arange(base_ids.shape[0], device=device) - expanded
+            else:
+                pos_in_base = torch.zeros_like(base_ids)
             take = pos_in_base < K
             if take.any():
                 out[base_ids[take], pos_in_base[take]] = cand[take]
-                counts = torch.bincount(base_ids, minlength=B).clamp_max(K)
+                counts = torch.bincount(base_ids[take], minlength=B).clamp_max(K)
 
         # For rows with <K, do a small top-up with uniform draws (unfiltered).
         need = (K - counts).clamp(min=0)
@@ -452,4 +459,3 @@ class Sampler:
         if mode == 'tail':
             return [], tails_list
         return heads_list, tails_list
-

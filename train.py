@@ -468,6 +468,8 @@ def _train(
         model_save_path=model_path,
         eval_best_metric=getattr(args, "eval_best_metric", "mrr_mean"),
         verbose_cb=getattr(args, "verbose_cb", False),
+        debug_mode=getattr(args, "debug_ppo", False),
+        min_multiaction_ratio=getattr(args, "min_multiaction_ratio", 0.05),
     )
 
     actor, critic = ppo_agent.train(

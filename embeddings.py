@@ -1034,6 +1034,12 @@ class ConstantEmbeddings(nn.Module):
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         # nn.Embedding automatically handles device placement
+        if indices.numel() > 0:
+            max_idx = int(indices.max().item())
+            if max_idx >= self.embedder.num_embeddings:
+                raise RuntimeError(
+                    f"ConstantEmbeddings overflow: index {max_idx} >= table size {self.embedder.num_embeddings}"
+                )
         embeddings = self.embedder(indices)
         if self.regularization > 0:
             self.add_loss(self.regularization * embeddings.norm(p=2))
@@ -1291,4 +1297,3 @@ class get_embedder():
             else:
                 constant_idx2emb, predicate_idx2emb = create_embed_tables(constant_idx2emb, predicate_idx2emb, args.variable_no)
             return EmbedderNonLearnable(constant_idx2emb, predicate_idx2emb, device=device)
-

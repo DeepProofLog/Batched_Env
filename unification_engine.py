@@ -63,10 +63,26 @@ def deduplicate_states_packed(
     state_indices = sort_indices.view(B, max_states, 1, 1).expand(B, max_states, max_atoms, arity)
     sorted_states = torch.gather(states, 1, state_indices)
     
-    # Find unique mask: consecutive elements with different hashes
+    # Find unique mask: consecutive elements with different hashes OR different content
     # [B, max_states]
     unique_mask = torch.ones((B, max_states), dtype=torch.bool, device=device)
-    unique_mask[:, 1:] = sorted_hashes[:, 1:] != sorted_hashes[:, :-1]
+    
+    # First check hash differences
+    hash_diff = sorted_hashes[:, 1:] != sorted_hashes[:, :-1]
+    
+    # For elements with same hash, check actual content
+    same_hash = ~hash_diff  # [B, max_states-1]
+    if same_hash.any():
+        # Compare actual state content for same-hash pairs
+        # Compare sorted_states[:, 1:] with sorted_states[:, :-1]
+        states_curr = sorted_states[:, 1:]  # [B, max_states-1, max_atoms, 3]
+        states_prev = sorted_states[:, :-1]  # [B, max_states-1, max_atoms, 3]
+        # Check if all elements match
+        content_same = (states_curr == states_prev).all(dim=(2, 3))  # [B, max_states-1]
+        # Unique if hash differs OR content differs
+        unique_mask[:, 1:] = hash_diff | ~content_same
+    else:
+        unique_mask[:, 1:] = hash_diff
     
     # Also mask out invalid entries (those past state_counts)
     valid_after_sort = sort_indices < state_counts.unsqueeze(1)
@@ -632,7 +648,7 @@ def _unify_with_rules(
         ds = pos_in_owner[keep]
         out[db, ds] = cat_sorted[keep]
         maxpos = torch.full((A,), -1, dtype=torch.long, device=device)
-        maxpos.index_put_((db,), ds, accumulate=True)
+        maxpos.scatter_reduce_(0, db, ds, reduce='amax', include_self=False)
         counts_per_q = torch.clamp(maxpos + 1, min=0, max=K)
 
     return out, counts_per_q
@@ -772,7 +788,9 @@ class UnificationEngine:
                            current_states: Tensor,
                            next_var_indices: Tensor,
                            excluded_queries: Optional[Tensor] = None,
-                           verbose: int = 0) -> Tuple[Tensor, Tensor, Tensor]:
+                           verbose: int = 0,
+                           stringifier=None,
+                           debug: bool = False) -> Tuple[Tensor, Tensor, Tensor]:
         """
         One-step expansion, strictly ordered:
 
@@ -783,10 +801,52 @@ class UnificationEngine:
         5) combine
         6) canonicalise + dedup
         7) pad back
+        
+        Args:
+            verbose: If > 0, print debug information with atom/state strings.
+            stringifier: An AtomStringifier instance for verbose output.
+            debug: If True, print detailed debug information for unifications, canonicalization, and dedup.
         """
         device = current_states.device
         pad = self.padding_idx
         B, max_atoms, _ = current_states.shape
+
+        # Helper for verbose printing
+        def print_states(title: str, states_tensor: Tensor, counts: Tensor = None):
+            """Print states in human-readable format."""
+            if verbose <= 0 or stringifier is None:
+                return
+            print(f"\n{'='*60}")
+            print(f"{title}")
+            print(f"{'='*60}")
+            if states_tensor.dim() == 3:  # [B, M, 3]
+                for i in range(states_tensor.shape[0]):
+                    state = states_tensor[i]
+                    valid = state[:, 0] != pad
+                    if valid.any():
+                        atoms = state[valid]
+                        atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
+                        print(f"  State {i}: [{', '.join(atoms_str)}]")
+                    else:
+                        print(f"  State {i}: <empty>")
+            elif states_tensor.dim() == 4:  # [B, K, M, 3]
+                for i in range(states_tensor.shape[0]):
+                    count = counts[i].item() if counts is not None else states_tensor.shape[1]
+                    if count > 0:
+                        print(f"  Batch {i} ({count} states):")
+                        for j in range(min(count, states_tensor.shape[1])):
+                            state = states_tensor[i, j]
+                            valid = state[:, 0] != pad
+                            if valid.any():
+                                atoms = state[valid]
+                                atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
+                                print(f"    [{j}]: [{', '.join(atoms_str)}]")
+                            else:
+                                print(f"    [{j}]: <empty>")
+
+        # i) Print current states
+        if verbose > 0:
+            print_states("i) CURRENT STATES", current_states)
 
         # ---- 1) preprocessing
         valid_mask = current_states[:, :, 0] != pad
@@ -801,7 +861,10 @@ class UnificationEngine:
         terminal = empty_states | has_false | only_true
 
         max_derived_per_state = 128
-        all_derived = torch.full((B, max_derived_per_state, max_atoms, 3), pad, dtype=torch.long, device=device)
+        # Output states can have more atoms than input (e.g., rule body + remaining goals)
+        # Use a reasonable maximum based on max rule body size
+        max_atoms_output = max(max_atoms, 10)  # At least 10 atoms for derived states
+        all_derived = torch.full((B, max_derived_per_state, max_atoms_output, 3), pad, dtype=torch.long, device=device)
         derived_counts = torch.zeros(B, dtype=torch.long, device=device)
         updated_next_var_indices = next_var_indices.clone()
 
@@ -852,12 +915,20 @@ class UnificationEngine:
         rule_states, rule_counts = _unify_with_rules(
             self, queries, remaining_goals, remaining_counts, preds
         )
+        
+        # ii) Print rule unifications
+        if verbose > 0:
+            print_states("ii) RULE UNIFICATIONS", rule_states, rule_counts)
 
         # ---- 3) facts
         fact_states, fact_counts = _unify_with_facts(
             self, queries, remaining_goals, remaining_counts, preds,
             excluded_queries=excluded_queries[active_idx] if excluded_queries is not None else None,
         )
+        
+        # iii) Print fact unifications
+        if verbose > 0:
+            print_states("iii) FACT UNIFICATIONS", fact_states, fact_counts)
 
         # ---- 4) detect immediate proof (remaining goals vanish due to fact match)
         immediate = (remaining_counts == 0) & (fact_counts > 0)
@@ -880,11 +951,26 @@ class UnificationEngine:
         owner_fact_mask = torch.arange(Fmax, device=device).unsqueeze(0).expand(A, -1) < fact_counts.unsqueeze(1)
         owner_mask = torch.cat([owner_rule_mask, owner_fact_mask], dim=1) & (~immediate).unsqueeze(1)
 
+        # Check which active states have NO unifications at all
+        has_any_unification = (rule_counts > 0) | (fact_counts > 0)
+        
         if not owner_mask.any():
+            # Handle immediate proofs (True())
             if immediate_idx.numel() > 0:
                 dst = active_idx[immediate_idx]
                 all_derived[dst, 0, 0] = self.true_tensor.squeeze(0)
                 derived_counts[dst] = 1
+            
+            # Handle states with NO unifications (False())
+            # These are active states that had no rule matches and no fact matches
+            no_match = ~has_any_unification
+            no_match_idx = torch.arange(A, device=device)[no_match]
+            if no_match_idx.numel() > 0:
+                dst = active_idx[no_match_idx]
+                if self.false_tensor is not None:
+                    all_derived[dst, 0, 0] = self.false_tensor.squeeze(0)
+                    derived_counts[dst] = 1
+            
             return (all_derived, derived_counts, updated_next_var_indices)
 
         row_ids = torch.arange(A, device=device).unsqueeze(1).expand_as(owner_mask)
@@ -897,6 +983,26 @@ class UnificationEngine:
         # ---- 4-bis) prune ground facts & mark proofs
         pruned_states, pruned_counts, is_proof = self._prune_and_prove(candidates, cand_counts)
         owners_for_cands = active_idx[owner_ids]
+        
+        # iv) Print after pruning ground facts
+        if verbose > 0:
+            print(f"\n{'='*60}")
+            print("iv) PRUNE GROUND FACTS & DETECT IMMEDIATE PROOFS")
+            print(f"{'='*60}")
+            if stringifier is not None:
+                for i in range(pruned_states.shape[0]):
+                    state = pruned_states[i]
+                    valid = state[:, 0] != pad
+                    if valid.any():
+                        atoms = state[valid]
+                        atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
+                        proof_str = " [PROOF]" if is_proof[i] else ""
+                        print(f"  Candidate {i} (owner={owners_for_cands[i].item()}){proof_str}: [{', '.join(atoms_str)}]")
+                    else:
+                        print(f"  Candidate {i} (owner={owners_for_cands[i].item()}) [PROOF]: <empty>")
+            if immediate_idx.numel() > 0:
+                print(f"  Immediate proofs detected for states: {immediate_idx.tolist()}")
+
 
         if immediate_idx.numel() > 0:
             dst = active_idx[immediate_idx]
@@ -920,11 +1026,32 @@ class UnificationEngine:
             states_kept, counts_kept, self.constant_no,
             next_var_indices[owners_kept], pad
         )
+        
+        # v) Print after canonicalization (before dedup)
+        if verbose > 0:
+            print(f"\n{'='*60}")
+            print("v) CANONICALIZE (before dedup)")
+            print(f"{'='*60}")
+            if stringifier is not None:
+                for i in range(canon_states.shape[0]):
+                    state = canon_states[i]
+                    valid = state[:, 0] != pad
+                    if valid.any():
+                        atoms = state[valid]
+                        atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
+                        print(f"  Candidate {i} (owner={owners_kept[i].item()}): [{', '.join(atoms_str)}]")
+            if debug:
+                print(f"\n[DEBUG] Before packing:")
+                print(f"  canon_states.shape: {canon_states.shape}")
+                print(f"  counts_kept: {counts_kept.tolist()}")
+                print(f"  owners_kept: {owners_kept.tolist()}")
+
+
 
         if canon_states.shape[0] > 0:
             # keep the maximum next_var index across expansions for each owner
             agg = torch.full((B,), 0, dtype=next_var_indices.dtype, device=device)
-            agg.index_put_((owners_kept,), next_vars_per_state, accumulate=True)
+            agg.scatter_reduce_(0, owners_kept, next_vars_per_state, reduce='amax', include_self=False)
             updated_next_var_indices = torch.maximum(updated_next_var_indices, agg)
 
         # ---- pack back per original owner
@@ -937,7 +1064,19 @@ class UnificationEngine:
             counts_sorted = counts_kept[sort_idx]
             seg_start = torch.ones_like(sort_vals, dtype=torch.bool, device=device)
             seg_start[1:] = sort_vals[1:] != sort_vals[:-1]
-            pos = torch.cumsum(seg_start.long(), dim=0) - 1
+            
+            # Compute position within each owner's segment correctly
+            # Assign a segment ID to each element
+            seg_id = torch.cumsum(seg_start.long(), dim=0) - 1
+            # For each segment, count positions 0, 1, 2, ...
+            # Use scatter to find segment starts
+            num_segs = seg_id.max().item() + 1 if seg_id.numel() > 0 else 0
+            seg_starts = torch.full((num_segs,), len(seg_id), dtype=torch.long, device=device)  # Initialize to max value
+            if num_segs > 0:
+                seg_starts.scatter_reduce_(0, seg_id, torch.arange(len(seg_id), device=device), reduce='amin', include_self=False)
+            
+            # Position within segment = current_index - segment_start
+            pos = torch.arange(len(seg_id), device=device) - seg_starts[seg_id]
             pos = torch.minimum(pos, torch.full_like(pos, K - 1))
             dst_b = sort_vals
             dst_s = pos
@@ -954,21 +1093,55 @@ class UnificationEngine:
             
             packed_states[dst_b, dst_s] = states_sorted
             owner_maxpos = torch.full((B,), -1, dtype=torch.long, device=device)
-            owner_maxpos.index_put_((dst_b,), dst_s, accumulate=True)
+            # Use scatter_reduce with 'amax' to find the maximum position per owner
+            owner_maxpos.scatter_reduce_(0, dst_b, dst_s, reduce='amax', include_self=False)
             packed_counts = torch.clamp(owner_maxpos + 1, min=0, max=K)
 
         # ---- 6-bis) dedup
+        if debug and verbose > 0:
+            print(f"\n[DEBUG] Before dedup:")
+            print(f"  packed_states.shape: {packed_states.shape}")
+            print(f"  packed_counts: {packed_counts.tolist()}")
+            if stringifier is not None:
+                for b in range(B):
+                    if packed_counts[b] > 0:
+                        print(f"  Batch {b}:")
+                        for i in range(min(packed_counts[b].item(), 5)):
+                            state = packed_states[b, i]
+                            valid = state[:, 0] != pad
+                            if valid.any():
+                                atoms = state[valid]
+                                atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
+                                print(f"    Packed state {i}: [{', '.join(atoms_str)}]")
+                            else:
+                                print(f"    Packed state {i}: <empty> [BUG!]")
+        
         unique_states, unique_counts = deduplicate_states_packed(
             packed_states, packed_counts, pad, self.hash_cache
         )
+        
+        # vi) Print final next states after dedup
+        if verbose > 0:
+            print_states("vi) FINAL NEXT STATES (after dedup)", unique_states, unique_counts)
 
         # ---- 7) pad back to original batch
         write_mask = unique_counts > 0
         write_idx = torch.arange(B, device=device)[write_mask]
         if write_idx.numel() > 0:
-            max_atoms_write = min(max_atoms_comb, max_atoms)
+            # Write as many atoms as fit in the output tensor
+            max_atoms_write = min(max_atoms_comb, max_atoms_output)
             all_derived[write_idx, :unique_states.shape[1], :max_atoms_write] = unique_states[write_idx, :, :max_atoms_write]
             derived_counts[write_idx] = unique_counts[write_idx]
+        
+        # ---- 8) Handle active states that ended up with NO derived states -> False()
+        # These are active states that had unifications but after pruning/dedup have nothing
+        no_derived = (derived_counts == 0) & torch.tensor(
+            [i in active_idx for i in range(B)], dtype=torch.bool, device=device
+        )
+        no_derived_idx = torch.arange(B, device=device)[no_derived]
+        if no_derived_idx.numel() > 0 and self.false_tensor is not None:
+            all_derived[no_derived_idx, 0, 0] = self.false_tensor.squeeze(0)
+            derived_counts[no_derived_idx] = 1
 
         return (all_derived, derived_counts, updated_next_var_indices)
 
@@ -1018,11 +1191,11 @@ class UnificationEngine:
 
     @torch.no_grad()
     def _canonicalize_variables(self,
-                                        states: Tensor,
-                                        counts: Tensor,
-                                        constant_no: int,
-                                        next_var_start: Tensor,
-                                        pad: int) -> Tuple[Tensor, Tensor]:
+                                states: Tensor,
+                                counts: Tensor,
+                                constant_no: int,
+                                next_var_start: Tensor,
+                                pad: int) -> Tuple[Tensor, Tensor]:
         """
         Alpha-rename variables per state to a compact, deterministic range:
           newVar_i := next_var_start[state] + rank(i)
@@ -1076,9 +1249,20 @@ class UnificationEngine:
         key3 = group_state * BIG + first_pos_per_group
         ord3 = torch.argsort(key3)
         sorted_state = group_state[ord3]
-        boundary = torch.ones_like(sorted_state, dtype=torch.bool)
-        boundary[1:] = sorted_state[1:] != sorted_state[:-1]
-        rank_sorted = torch.cumsum(boundary.long(), dim=0) - 1
+        # Detect state boundaries
+        state_boundary = torch.ones_like(sorted_state, dtype=torch.bool)
+        state_boundary[1:] = sorted_state[1:] != sorted_state[:-1]
+        # Compute rank within state using cumsum with reset at boundaries
+        # state_group_id assigns a unique ID to each contiguous run of the same state
+        state_group_id = torch.cumsum(state_boundary.long(), dim=0) - 1
+        # Count position within each state group
+        # For each state_group_id, we want positions 0, 1, 2, ...
+        # Use bincount to get counts per group, then cumsum within each group
+        ones = torch.ones_like(state_group_id)
+        # Cumulative count within group: current_position - group_start_position
+        group_starts = torch.zeros(state_group_id.max() + 1, device=device, dtype=torch.long)
+        group_starts.scatter_reduce_(0, state_group_id, torch.arange(len(state_group_id), device=device), reduce='amin', include_self=True)
+        rank_sorted = torch.arange(len(state_group_id), device=device) - group_starts[state_group_id]
         # scatter back to original group order
         ranks = torch.empty_like(rank_sorted)
         ranks[ord3] = rank_sorted                     # [G]
@@ -1086,6 +1270,16 @@ class UnificationEngine:
         # base per group
         base_per_group = next_var_start[group_state]
         new_id_per_group = base_per_group + ranks
+        max_runtime_idx = self.runtime_var_end_index
+        if new_id_per_group.numel() > 0:
+            overflow_groups = new_id_per_group > max_runtime_idx
+            if overflow_groups.any():
+                overflow_states = torch.unique(group_state[overflow_groups])
+                raise RuntimeError(
+                    f"Canonicalization exceeded runtime variable budget "
+                    f"(limit={self.runtime_var_end_index}) for {overflow_states.numel()} states. "
+                    "Increase max_total_vars or adjust rule complexity."
+                )
 
         # assign new variable ids per occurrence, then back to states
         new_id_per_occ = new_id_per_group[inv]        # [T]
@@ -1093,9 +1287,10 @@ class UnificationEngine:
         new_args[occ_mask] = new_id_per_occ.long()
         canon_states = torch.cat([states[:, :, 0:1], new_args], dim=2)
 
+        updated_next = next_var_start
         # update next_var index: base + (#unique vars in each state)
         vars_per_state = torch.bincount(group_state, minlength=N)
-        updated_next = next_var_start + vars_per_state
+        updated_next = updated_next + vars_per_state
         return canon_states, updated_next
 
     # ---- misc ----

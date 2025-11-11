@@ -1,8 +1,12 @@
 """
-Neural Networks for PPO
+Neural Networks for PPO (Parameter-Sharing Version)
 
 This module contains the policy and value network architectures,
 as well as TorchRL-compatible wrappers for the actor-critic model.
+
+This version uses a parameter-sharing architecture where the actor
+and critic share a common "body" (residual stack) and have 
+separate "heads" for policy and value.
 """
 
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -18,13 +22,16 @@ from tensordict.nn import TensorDictSequential
 from torch.distributions import Categorical
 
 
-class PolicyNetwork(nn.Module):
-    """Residual MLP that produces policy logits from observation embeddings."""
+class SharedBody(nn.Module):
+    """
+    A shared residual MLP body for the actor and critic.
+    Maps embeddings (embed_dim) to shared features (hidden_dim).
+    """
     
     def __init__(self, embed_dim: int = 64, hidden_dim: int = 128, num_layers: int = 8, dropout_prob: float = 0.2):
         super().__init__()
-        # Initial transformation from observation embedding to hidden representation
-        self.obs_transform = nn.Sequential(
+        # Initial transformation from observation embedding to hidden dimension
+        self.input_layer = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim),
@@ -40,8 +47,43 @@ class PolicyNetwork(nn.Module):
                 nn.Dropout(dropout_prob)
             ) for _ in range(num_layers)
         ])
+    
+    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        Compute shared features from embeddings.
         
-        # Final transformation that projects the processed observation back to the embedding space
+        Args:
+            embeddings: Tensor of shape (..., embed_dim)
+            
+        Returns:
+            Features tensor of shape (..., hidden_dim)
+        """
+        # We need to handle arbitrary leading dimensions (e.g., [B, N, D])
+        original_shape = embeddings.shape
+        flat_embeddings = embeddings.reshape(-1, original_shape[-1])
+        
+        # Process embeddings through the input layer
+        x = self.input_layer(flat_embeddings)
+        # Pass through residual blocks with fused addition
+        for block in self.res_blocks:
+            x = block(x) + x  # Fused residual addition
+            
+        # Reshape back to original leading dims
+        return x.view(*original_shape[:-1], -1)
+
+
+class PolicyNetwork(nn.Module):
+    """
+    Residual MLP (Policy Head) that produces policy logits from shared features.
+    """
+    
+    def __init__(self, shared_body: SharedBody, embed_dim: int, hidden_dim: int):
+        super().__init__()
+        # Store the shared body
+        self.shared_body = shared_body
+
+        # Final transformation (policy head)
+        # Projects shared features (hidden_dim) to policy embeddings (embed_dim)
         self.out_transform = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -50,13 +92,11 @@ class PolicyNetwork(nn.Module):
 
     def _encode_embeddings(self, embeddings: torch.Tensor) -> torch.Tensor:
         """Apply shared residual stack to observation or action embeddings."""
-        original_shape = embeddings.shape
-        flat_embeddings = embeddings.reshape(-1, original_shape[-1])
-        x = self.obs_transform(flat_embeddings)
-        for block in self.res_blocks:
-            x = block(x) + x  # Fused residual addition
+        # 1. Get shared features (..., hidden_dim)
+        x = self.shared_body(embeddings)
+        # 2. Apply policy head (..., embed_dim)
         encoded = self.out_transform(x)
-        return encoded.view(*original_shape[:-1], -1)
+        return encoded
     
     def forward(self, obs_embeddings: torch.Tensor, action_embeddings: torch.Tensor, 
                 action_mask: torch.Tensor) -> torch.Tensor:
@@ -93,29 +133,17 @@ class PolicyNetwork(nn.Module):
 
 
 class ValueNetwork(nn.Module):
-    """Residual MLP that maps observation embeddings to scalar value estimates."""
+    """
+    MLP (Value Head) that maps shared features to scalar value estimates.
+    """
     
-    def __init__(self, embed_dim: int = 64, hidden_dim: int = 128, num_layers: int = 8, dropout_prob: float = 0.2):
+    def __init__(self, shared_body: SharedBody, hidden_dim: int):
         super().__init__()
-        # Initial transformation from observation embedding to hidden dimension
-        self.input_layer = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
-            nn.ReLU(),
-            nn.LayerNorm(hidden_dim),
-            nn.Dropout(dropout_prob)
-        )
-        
-        # Residual blocks for deep feature extraction
-        self.res_blocks = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.ReLU(),
-                nn.LayerNorm(hidden_dim),
-                nn.Dropout(dropout_prob)
-            ) for _ in range(num_layers)
-        ])
-        
+        # Store the shared body
+        self.shared_body = shared_body
+
         # Final output layers to produce a single scalar value estimate
+        # This is the "value head"
         self.output_layer = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
@@ -132,12 +160,9 @@ class ValueNetwork(nn.Module):
         Returns:
             Value tensor of shape (batch,)
         """
-        # Process observation embeddings through the input layer
-        x = self.input_layer(embeddings)
-        # Pass through residual blocks with fused addition
-        for block in self.res_blocks:
-            x = block(x) + x  # Fused residual addition
-        # Get final value prediction
+        # 1. Get shared features (batch, hidden_dim)
+        x = self.shared_body(embeddings)
+        # 2. Get final value prediction
         value = self.output_layer(x)
         return value.squeeze(-1)
 
@@ -207,8 +232,7 @@ class ActorCriticModel(nn.Module):
     """
     Combined actor-critic model for TorchRL.
     
-    This model contains both the policy (actor) and value (critic) networks,
-    along with the embedding extractor.
+    This model uses a shared body for feature extraction.
     """
     
     def __init__(
@@ -248,19 +272,27 @@ class ActorCriticModel(nn.Module):
         # Feature extractor
         self.feature_extractor = EmbeddingExtractor(embedder, device=device)
         
-        # Policy and value networks
-        self.policy_network = PolicyNetwork(
+        # --- Shared Body ---
+        # Create the shared feature extraction body ONCE
+        self.shared_body = SharedBody(
             embed_dim=embed_dim,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
             dropout_prob=dropout_prob
         )
-        
-        self.value_network = ValueNetwork(
-            embed_dim=embed_dim,
+
+        # --- Actor and Critic Heads ---
+        # Create policy network (head) and pass the shared body
+        self.policy_network = PolicyNetwork(
+            shared_body=self.shared_body,
             hidden_dim=hidden_dim,
-            num_layers=num_layers,
-            dropout_prob=dropout_prob
+            embed_dim=embed_dim  # Policy head needs this
+        )
+        
+        # Create value network (head) and pass the shared body
+        self.value_network = ValueNetwork(
+            shared_body=self.shared_body,
+            hidden_dim=hidden_dim,
         )
         
         # Move to device
@@ -280,8 +312,16 @@ class ActorCriticModel(nn.Module):
         logits = self.policy_network(obs_embeddings, action_embeddings, action_mask)
         return logits
     
-
     def forward_critic(self, observations: TensorDict) -> torch.Tensor:
+        """
+        Forward pass for the critic (value) network.
+        
+        Args:
+            observations: TensorDict containing observation data
+            
+        Returns:
+            Value estimates tensor
+        """
         obs_embeddings = self.feature_extractor.forward_obs(observations["sub_index"])
         return self.value_network(obs_embeddings)
 
@@ -453,10 +493,11 @@ def create_torchrl_modules(
     
     # Create value module
     value_net = TorchRLValueModule(actor_critic_model)
-
-    value_module = TensorDictModule(
+    
+    # Wrap value in ValueOperator
+    value_module = ValueOperator(
         module=value_net,
-        in_keys=["sub_index"],            # was ["sub_index", "derived_sub_indices", "action_mask"]
+        in_keys=["sub_index"],
         out_keys=["state_value"],
     )
     
