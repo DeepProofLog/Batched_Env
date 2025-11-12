@@ -261,7 +261,7 @@ def run_iceland_false_test(engine, im, c, p, rv, pad_idx):
 
 def main():
     im, c, p, _ = setup_countries_kb()
-    engine = UnificationEngine.from_index_manager(im)
+    engine = UnificationEngine.from_index_manager(im, stringifier_params=None)
     rv = lambda i: im.runtime_var_start_index + i
     pad_idx = im.padding_idx
 

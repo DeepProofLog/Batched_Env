@@ -13,7 +13,7 @@ Addresses all requirements:
 import torch
 from index_manager import IndexManager
 from unification_engine import UnificationEngine
-from atom_stringifier import AtomStringifier
+from debug_helper import DebugHelper
 
 
 def setup_test_kb():
@@ -343,8 +343,9 @@ def main():
     print()
     
     im, c, p, v = setup_test_kb()
-    engine = UnificationEngine.from_index_manager(im)
-    stringifier = AtomStringifier.from_index_manager(im)
+    stringifier_params = im.get_stringifier_params()
+    engine = UnificationEngine.from_index_manager(im, stringifier_params=stringifier_params)
+    stringifier = DebugHelper(stringifier_params)
     rv = lambda i: im.runtime_var_start_index + i
     pad = im.padding_idx
     
@@ -361,7 +362,7 @@ def main():
     next_var1 = torch.tensor([rv(0)], dtype=torch.long)
     
     derived1, counts1, _ = engine.get_derived_states(
-        query1, next_var1, verbose=1, stringifier=stringifier, debug=True
+        query1, next_var1, verbose=1, debug=True
     )
     
     print_final_states(derived1, counts1, stringifier, pad)
@@ -382,7 +383,7 @@ def main():
     next_var2 = torch.tensor([rv(1)], dtype=torch.long)
     
     derived2, counts2, _ = engine.get_derived_states(
-        query2, next_var2, verbose=1, stringifier=stringifier, debug=True
+        query2, next_var2, verbose=1, debug=True
     )
     
     print_final_states(derived2, counts2, stringifier, pad)

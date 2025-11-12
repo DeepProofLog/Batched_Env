@@ -24,7 +24,7 @@ from utils_config import (
     update_config_value,
     parse_assignment,
     get_available_gpus,
-    select_best_gpu,
+    select_device_with_min_memory,
 )
 
 # Use new API for TF32 settings to avoid deprecation warnings
@@ -72,19 +72,21 @@ if __name__ == "__main__":
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 4,  # Now used as batch_size for BatchedVecEnv
-        'n_steps': 20, #8192, 16384
-        'n_eval_envs': 4,  # Now used as batch_size for eval BatchedVecEnv
-        'batch_size': 128,
+        'n_steps': 64,
+        'batch_size_env': 512,  # Now used as batch_size for BatchedVecEnv
+        'batch_size_env_eval': 512,  # Now used as batch_size for eval BatchedVecEnv
+        'batch_size': 8192,
+        'use_ppo_base': True,
 
         # Env params
         'reward_type': 1,
         'train_neg_ratio': 1,
         'engine': 'python',
-        'endf_action': False,
-        'skip_unary_actions': False,
+        'end_proof_action': True,
+        'skip_unary_actions': True,
         'max_depth': 20,
-        'memory_pruning': False,
+        'memory_pruning': True,
+        'eval_pruning': False,
         'corruption_mode': True,
         'min_multiaction_ratio': 0.05,
 
@@ -106,7 +108,7 @@ if __name__ == "__main__":
         'plot': False,
         'depth_info': False,
         'verbose_cb': False,  # Verbose callback debugging
-        'verbose_env': 1,  # Environment verbosity level (0=quiet, 1=verbose)
+        'verbose_env': 0,  # Environment verbosity level (0=quiet, 1=verbose)
         'verbose_prover': 0,  # Prover verbosity level (0=quiet, 1=verbose)
         'data_path': './data/',
         'models_path': 'models/',
@@ -158,16 +160,12 @@ if __name__ == "__main__":
         device = "cpu"
     
     elif device_choice == "cuda:1":
-        print("\n=== Auto-selecting best GPU ===")
-        best_gpu = select_best_gpu(min_free_gb=min_memory_gb)
-        if best_gpu is not None:
-            device = f"cuda:{best_gpu}"
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
-            print(f"Using device: cuda:{best_gpu}\n")
-        else:
-            device = "cpu"
-            print(f"No GPU with at least {min_memory_gb} GB free memory found.")
+        print("\n=== Auto-selecting GPU(s) ===")
+        device = select_device_with_min_memory(min_memory_gb=min_memory_gb, use_multiple_gpus=True)
+        if device == "cpu":
             print("Falling back to CPU\n")
+        else:
+            print(f"Using device: {device}\n")
     
     elif device_choice == "cuda:all":
         print("\n=== Using all available GPUs ===")
@@ -270,6 +268,9 @@ if __name__ == "__main__":
         raw_corruption_mode = getattr(namespace, "corruption_mode", True)
         namespace.corruption_mode = bool(raw_corruption_mode)
 
+        raw_eval_pruning = getattr(namespace, "eval_pruning", False)
+        namespace.eval_pruning = bool(raw_eval_pruning)
+
         # Auto-configure padding_states based on dataset
         if namespace.padding_states == -1:
             if namespace.dataset_name in {"countries_s3", "countries_s2", "countries_s1"}:
@@ -333,7 +334,7 @@ if __name__ == "__main__":
             namespace.constant_embedding_size = 2 * namespace.atom_embedding_size
 
         namespace.device = device
-        namespace.eval_freq = namespace.n_steps * namespace.n_envs
+        namespace.eval_freq = namespace.n_steps * namespace.batch_size_env
 
         return namespace
 
@@ -358,14 +359,14 @@ if __name__ == "__main__":
         run_vars = (
             args_namespace.dataset_name,
             args_namespace.atom_embedding_size,
-            args_namespace.endf_action,
+            args_namespace.end_proof_action,
             args_namespace.ent_coef,
             args_namespace.clip_range,
             args_namespace.train_neg_ratio,
             args_namespace.reward_type,
             args_namespace.n_epochs,
             args_namespace.lr,
-            args_namespace.n_envs,
+            args_namespace.batch_size_env,
             'torchrl',  # Mark as TorchRL version
         )
         args_namespace.run_signature = '-'.join(str(v) for v in run_vars)

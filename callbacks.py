@@ -672,31 +672,39 @@ class TrainingMetricsCallback:
             print("[TrainingMetricsCallback] Training started")
         self.train_start_time = time.time()
     
-    def on_training_epoch(self, epoch: int, n_epochs: int, policy_loss: float, value_loss: float, entropy: float):
-        """
-        Called during each training epoch.
+    # def on_training_epoch(self, epoch: int, n_epochs: int, 
+    #                       policy_loss: float, 
+    #                       value_loss: float, 
+    #                       entropy: float,
+    #                       approx_kl: float,
+    #                       clip_frac: float,
+    #                       grad_norm: Optional[float] = None):
+    #     """
+    #     Called during each training epoch.
         
-        Args:
-            epoch: Current epoch number (1-indexed)
-            n_epochs: Total number of epochs
-            policy_loss: Policy gradient loss for this epoch
-            value_loss: Value function loss for this epoch
-            entropy: Entropy for this epoch
-        """
-        self.training_epoch_losses.append({
-            'epoch': epoch,
-            'policy_loss': policy_loss,
-            'value_loss': value_loss,
-            'entropy': entropy,
-        })
-        
-        if self.verbose and (epoch % max(1, n_epochs // 10) == 0 or epoch == n_epochs):
-            # Debug: print actual values
-            if epoch == 1:
-                print(f"  DEBUG in callback: policy_loss={policy_loss}, type={type(policy_loss)}")
-            print(f"  Training epoch {epoch}/{n_epochs}: "
-                  f"pg_loss={policy_loss:.4f}, v_loss={value_loss:.4f}, entropy={entropy:.4f}")
-    
+    #     Args:
+    #         epoch: Current epoch number (1-indexed)
+    #         n_epochs: Total number of epochs
+    #         policy_loss: Policy gradient loss for this epoch
+    #         value_loss: Value function loss for this epoch
+    #         entropy: Entropy for this epoch
+    #     """
+    #     self.training_epoch_losses.append({
+    #         'epoch': epoch,
+    #         'policy_loss': policy_loss,
+    #         'value_loss': value_loss,
+    #         'entropy': entropy,
+    #     })
+    #     shown_in_learn_loop = True
+    #     if not shown_in_learn_loop:
+    #         if self.verbose and (epoch % max(1, n_epochs // 10) == 0 or epoch == n_epochs):
+    #             if grad_norm is not None:
+    #                 print(f"  Training epoch {epoch}/{n_epochs}: "
+    #                     f"pg_loss={policy_loss:.4f}, v_loss={value_loss:.4f}, entropy={entropy:.4f}, kl={approx_kl:.4f}, clip_frac={clip_frac:.4f}, grad_norm={grad_norm:.4f}")
+    #             else:
+    #                 print(f"  Training epoch {epoch}/{n_epochs}: "
+    #                     f"pg_loss={policy_loss:.4f}, v_loss={value_loss:.4f}, entropy={entropy:.4f}, kl={approx_kl:.4f}, clip_frac={clip_frac:.4f}")
+
     def accumulate_episode_stats(self, infos: List[Dict[str, Any]]):
         """Accumulate episode stats during training using the common collector."""
         if self.verbose_cb:
@@ -707,7 +715,6 @@ class TrainingMetricsCallback:
         self,
         iteration: int,
         global_step: int,
-        train_metrics: Dict[str, float],
         n_envs: int = 1,
     ):
         """Called at the end of a training iteration."""
@@ -727,8 +734,8 @@ class TrainingMetricsCallback:
         # Compute timing metrics
         time_metrics = self._compute_time_metrics(iteration, global_step, n_envs)
         
-        # Combine time and train metrics for extra_metrics
-        extra_metrics = {**time_metrics, **train_metrics}
+        # Use only timing metrics for additional context
+        extra_metrics = time_metrics
         
         # Use the common print function
         print_formatted_metrics(
@@ -864,7 +871,7 @@ class TorchRLCallbackManager:
         if self.rollout_callback:
             self.rollout_callback.on_rollout_end()
     
-    def accumulate_episode_stats(self, infos: List[Dict[str, Any]], mode: str = "train"):
+    def accumulate_episode_stats(self, infos: Union[List[Dict[str, Any]], Dict[str, torch.Tensor]], mode: str = "train"):
         """
         Accumulate episode statistics.
         
@@ -872,14 +879,60 @@ class TorchRLCallbackManager:
             infos: List of info dicts from environment
             mode: 'train' or 'eval'
         """
-        if mode == "eval" and self.eval_callback:
+        def _tensor_batch_to_list(batch: Dict[str, torch.Tensor]) -> List[Dict[str, Any]]:
+            reward_tensor = batch.get("reward")
+            length_tensor = batch.get("length")
+            if reward_tensor is None or length_tensor is None:
+                return []
+
+            count = reward_tensor.shape[0]
+            if count == 0:
+                return []
+
+            def _to_list(t: Optional[torch.Tensor]) -> Optional[List[Any]]:
+                if t is None:
+                    return None
+                return t.detach().cpu().tolist()
+
+            rewards = _to_list(reward_tensor)
+            lengths = _to_list(length_tensor)
+            labels = _to_list(batch.get("label"))
+            depths = _to_list(batch.get("query_depth"))
+            successes = _to_list(batch.get("is_success"))
+
+            result: List[Dict[str, Any]] = []
+            for idx in range(count):
+                entry = {
+                    "episode": {
+                        "r": float(rewards[idx]),
+                        "l": int(lengths[idx]),
+                    }
+                }
+                if labels is not None:
+                    entry["label"] = int(labels[idx])
+                if depths is not None:
+                    entry["query_depth"] = int(depths[idx])
+                if successes is not None:
+                    entry["is_success"] = bool(successes[idx])
+                result.append(entry)
+            return result
+
+        processed_infos: List[Dict[str, Any]]
+        if isinstance(infos, dict):
+            processed_infos = _tensor_batch_to_list(infos)
+        else:
+            processed_infos = infos
+        if not processed_infos:
+            return
+
+        if mode == "train" and self.train_callback:
+            if hasattr(self.train_callback, "verbose_cb") and self.train_callback.verbose_cb:
+                print(f"[CallbackManager] Forwarding {len(processed_infos)} infos to train callback")
+            self.train_callback.accumulate_episode_stats(processed_infos)
+        elif mode == "eval" and self.eval_callback:
             if hasattr(self.eval_callback, 'verbose_cb') and self.eval_callback.verbose_cb:
-                print(f"[CallbackManager] Forwarding {len(infos)} infos to eval callback")
-            self.eval_callback.accumulate_episode_stats(infos)
-        elif mode == "train" and self.train_callback:
-            if hasattr(self.train_callback, 'verbose_cb') and self.train_callback.verbose_cb:
-                print(f"[CallbackManager] Forwarding {len(infos)} infos to train callback")
-            self.train_callback.accumulate_episode_stats(infos)
+                print(f"[CallbackManager] Forwarding {len(processed_infos)} infos to eval callback")
+            self.eval_callback.accumulate_episode_stats(processed_infos)
     
     def should_evaluate(self, iteration: int) -> bool:
         """Check if evaluation should be run."""
@@ -916,9 +969,8 @@ class TorchRLCallbackManager:
         self,
         iteration: int,
         global_step: int,
-        train_metrics: Dict[str, float],
         n_envs: int = 1,
     ):
         """Called at the end of a training iteration."""
         if self.train_callback:
-            self.train_callback.on_iteration_end(iteration, global_step, train_metrics, n_envs)
+            self.train_callback.on_iteration_end(iteration, global_step, n_envs)

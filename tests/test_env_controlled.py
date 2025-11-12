@@ -7,10 +7,9 @@ from tensordict import TensorDict
 from env import BatchedEnv
 from unification_engine import UnificationEngine
 from test_unification_countries import setup_countries_kb
-from atom_stringifier import AtomStringifier
 from embeddings import EmbedderNonLearnable
-from ppo.ppo_model import create_torchrl_modules
-from ppo.ppo_rollout_custom import CustomRolloutCollector
+from ppo.ppo_model_torchrl import create_torchrl_modules
+from ppo.ppo_rollout import RolloutCollector
 from model_eval import evaluate_policy
 
 MODEL_DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -60,7 +59,7 @@ def find_state_with_atom_count(env: BatchedEnv, batch_idx: int, atom_count: int)
 def make_env(verbose_level: int = 0, device: torch.device = ENV_DEVICE):
     """Instantiate a size-1 BatchedEnv over the miniature countries KB."""
     im, c, p, _ = setup_countries_kb(device=device)
-    engine = UnificationEngine.from_index_manager(im)
+    engine = UnificationEngine.from_index_manager(im, stringifier_params=None)
 
     queries = torch.tensor(
         [[[p['locatedInCR'], c['tunisia'], c['africa']]]],
@@ -109,8 +108,8 @@ def make_eval_env_with_slots(per_slot_queries, verbose_level: int = 0, device: t
     contains tuples of (pred, arg1, arg2) that will be replayed sequentially.
     """
     im, c, p, _ = setup_countries_kb(device=device)
-    engine = UnificationEngine.from_index_manager(im)
-    stringifier = AtomStringifier.from_index_manager(im)
+    stringifier_params = im.get_stringifier_params()
+    engine = UnificationEngine.from_index_manager(im, stringifier_params=stringifier_params)
 
     query_rows = []
     labels = []
@@ -143,7 +142,7 @@ def make_eval_env_with_slots(per_slot_queries, verbose_level: int = 0, device: t
         padding_states=4,
         true_pred_idx=im.true_pred_idx,
         false_pred_idx=im.false_pred_idx,
-        atom_stringifier=stringifier,
+        stringifier_params=stringifier_params,
         corruption_mode=False,
         train_neg_ratio=0.0,
         max_depth=6,
@@ -162,7 +161,7 @@ def make_eval_env_with_slots(per_slot_queries, verbose_level: int = 0, device: t
         per_slot_lengths=torch.tensor(per_slot_lengths, dtype=torch.long, device=device),
     )
 
-    return env, im, c, p, stringifier
+    return env, im, c, p, stringifier_params
 
 
 def build_rollout_env(slot_repeats: int = 3, verbose_level: int = 0, device: torch.device = ENV_DEVICE):
@@ -338,7 +337,7 @@ def test_custom_rollout_collector_with_debug_tracer():
     env, im, c, p, _ = build_rollout_env(slot_repeats=4, verbose_level=3, device=ENV_DEVICE)
     actor, critic = build_actor_critic_modules(im, env, device=MODEL_DEVICE)
 
-    collector = CustomRolloutCollector(
+    collector = RolloutCollector(
         env=env,
         actor=actor,
         n_envs=env.batch_size_int,
@@ -361,13 +360,11 @@ def test_custom_rollout_collector_with_debug_tracer():
 
     assert 'episode_info' in stats
     episodes = stats['episode_info']
-    assert isinstance(episodes, list)
-    assert len(episodes) >= 1
-    for info in episodes:
-        assert 'episode' in info
-        assert 'r' in info['episode']
-        assert 'l' in info['episode']
-    total_lengths = sum(info['episode']['l'] for info in episodes)
+    assert isinstance(episodes, dict)
+    assert 'reward' in episodes and 'length' in episodes
+    assert episodes['reward'].numel() > 0
+    assert episodes['length'].numel() > 0
+    total_lengths = episodes['length'].sum().item()
     assert total_lengths > 0
 
 

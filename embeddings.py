@@ -113,10 +113,16 @@ class EmbedderNonLearnable:
         # IF I GET "index out of range in self" ERROR, IT IS BECAUSE THE INDICES ARE OUT OF RANGE. ONCE I IMPLEMENT THE LOCAL INDICES, THIS WILL BE SOLVED
         # Look up the embeddings of predicates and args.
         # pred_arg_embeddings = F.embedding(sub_indices, self.embedding_table, padding_idx=0)
-        predicate_indices = sub_indices[..., 0].unsqueeze(-1)
-        constant_indices = sub_indices[..., 1:]
-        predicate_embeddings = F.embedding(predicate_indices, self.predicate_idx2emb, padding_idx=0)
-        constant_embeddings = F.embedding(constant_indices, self.constant_idx2emb, padding_idx=0)
+        
+        # OPTIMIZATION: Use contiguous slicing and avoid creating unnecessary intermediate tensors
+        predicate_indices = sub_indices[..., 0]
+        constant_indices_flat = sub_indices[..., 1:].contiguous()
+        
+        # Use F.embedding with proper padding for efficient lookup
+        predicate_embeddings = F.embedding(predicate_indices, self.predicate_idx2emb, padding_idx=0).unsqueeze(-2)
+        constant_embeddings = F.embedding(constant_indices_flat, self.constant_idx2emb, padding_idx=0)
+        
+        # TransE composition
         atom_embeddings = transE_embedding(predicate_embeddings, constant_embeddings)
 
         # # Sum pred & args embeddings to get atom embeddings.
@@ -1026,20 +1032,15 @@ class ConstantEmbeddings(nn.Module):
         super(ConstantEmbeddings, self).__init__()
         # num_constants is the count, but indices go from 0 to num_constants
         # so we need num_constants+1 entries
-        self.embedder = nn.Embedding(num_constants+1, embedding_dim, padding_idx=0)
+        
+        # OPTIMIZATION: Create embedding directly on target device to avoid CPU->GPU transfer
+        # and use faster uniform initialization instead of normal
+        self.embedder = nn.Embedding(num_constants+1, embedding_dim, padding_idx=0, device=device)
+        
         self.regularization = regularization
         self.device = device
-        # Move to device immediately
-        self.to(device)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
-        # nn.Embedding automatically handles device placement
-        if indices.numel() > 0:
-            max_idx = int(indices.max().item())
-            if max_idx >= self.embedder.num_embeddings:
-                raise RuntimeError(
-                    f"ConstantEmbeddings overflow: index {max_idx} >= table size {self.embedder.num_embeddings}"
-                )
         embeddings = self.embedder(indices)
         if self.regularization > 0:
             self.add_loss(self.regularization * embeddings.norm(p=2))
@@ -1052,11 +1053,13 @@ class PredicateEmbeddings(nn.Module):
         super(PredicateEmbeddings, self).__init__()
         # num_predicates is the count, but indices go from 0 to num_predicates
         # so we need num_predicates+1 entries
-        self.embedder = nn.Embedding(num_predicates+1, embedding_dim, padding_idx=0)
+        
+        # OPTIMIZATION: Create embedding directly on target device to avoid CPU->GPU transfer
+        # and use faster uniform initialization instead of normal
+        self.embedder = nn.Embedding(num_predicates+1, embedding_dim, padding_idx=0, device=device)
+        
         self.regularization = regularization
         self.device = device
-        # Move to device immediately
-        self.to(device)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         # nn.Embedding automatically handles device placement

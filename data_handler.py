@@ -463,12 +463,25 @@ class DataHandler:
         
         self.entity2domain = {}
         self.domain2entity = defaultdict(list)
+        self.predicate_domain_map = {}  # predicate_str -> (head_domain, tail_domain)
         
         with open(domain_file, 'r') as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
+                    
+                # Check if this line defines a predicate domain mapping
+                # Format: "predicate:head_domain:tail_domain"
+                if ':' in line and not ' ' in line.split(':')[0]:
+                    parts = line.split(':')
+                    if len(parts) == 3:
+                        pred_str, head_dom, tail_dom = parts
+                        self.predicate_domain_map[pred_str] = (head_dom, tail_dom)
+                        continue
+                
+                # Otherwise, it's a domain definition
+                # Format: "domain entity1 entity2 ..."
                 parts = line.split()
                 if len(parts) < 2:
                     continue
@@ -477,8 +490,6 @@ class DataHandler:
                 for entity in entities:
                     self.entity2domain[entity] = domain
                     self.domain2entity[domain].append(entity)
-        
-        print(f"Loaded domain mapping: {len(self.entity2domain)} entities in {len(self.domain2entity)} domains")
 
     # -----------------------------
     # Materialization (strings -> indices)
@@ -570,11 +581,22 @@ class DataHandler:
             if entity_indices:
                 domain_to_entity_indices[domain] = entity_indices
         
-        # For each predicate, determine which domain constraints apply
-        # This is dataset-specific logic that may need customization
-        # For now, we'll just store the full domain mapping
-        # The sampler can use it when needed
+        # Store for reference
         self.domain_to_entity_indices = domain_to_entity_indices
+        predicate_domain_map = self.predicate_domain_map
+        
+        # Apply domain constraints to predicates
+        for pred_str, (head_domain, tail_domain) in predicate_domain_map.items():
+            if pred_str in im.predicate_str2idx:
+                pred_id = im.predicate_str2idx[pred_str]
+                
+                # Set head domain if available
+                if head_domain in domain_to_entity_indices:
+                    self.set_domain_heads(pred_id, domain_to_entity_indices[head_domain])
+                
+                # Set tail domain if available
+                if tail_domain in domain_to_entity_indices:
+                    self.set_domain_tails(pred_id, domain_to_entity_indices[tail_domain])
 
     # -----------------------------
     # Split accessors

@@ -1,55 +1,10 @@
 import ast
 import copy
+import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 from typing import Optional, List
 import torch
-
-def select_best_gpu(min_free_gb: float = 1.0) -> Optional[int]:
-    """
-    Automatically select the GPU with the most free memory.
-    
-    Args:
-        min_free_gb: Minimum free memory in GB required to consider a GPU
-    
-    Returns:
-        GPU index with most free memory, or None if no suitable GPU found
-    """
-    if not torch.cuda.is_available():
-        return None
-    
-    num_gpus = torch.cuda.device_count()
-    if num_gpus == 0:
-        return None
-    
-    # Get free memory for each GPU
-    max_free_memory = 0
-    best_gpu = None
-    min_free_bytes = min_free_gb * 1e9
-    
-    for gpu_id in range(num_gpus):
-        try:
-            # Query memory without setting device (to avoid OOM on full GPUs)
-            free_memory, total_memory = torch.cuda.mem_get_info(gpu_id)
-            used_memory = total_memory - free_memory
-            
-            print(f"GPU {gpu_id}: {free_memory / 1e9:.2f} GB free / {total_memory / 1e9:.2f} GB total "
-                  f"({used_memory / 1e9:.2f} GB used, {100 * used_memory / total_memory:.1f}% utilized)")
-            
-            # Only consider GPUs with sufficient free memory
-            if free_memory >= min_free_bytes and free_memory > max_free_memory:
-                max_free_memory = free_memory
-                best_gpu = gpu_id
-        except Exception as e:
-            print(f"Warning: Could not query GPU {gpu_id}: {e}")
-            continue
-    
-    if best_gpu is not None:
-        print(f"Selected GPU {best_gpu} with {max_free_memory / 1e9:.2f} GB free memory")
-    else:
-        print(f"No GPU found with at least {min_free_gb:.1f} GB free memory")
-    
-    return best_gpu
 
 
 def get_available_gpus(min_free_gb: float = 1.0) -> List[int]:
@@ -244,6 +199,72 @@ def parse_assignment(entry: str) -> tuple[str, str]:
     return key, raw.strip()
 
 
+def select_device_with_min_memory(min_memory_gb: float = 2.0, use_multiple_gpus: bool = True) -> str:
+    """
+    Select device using GPUs with sufficient free memory.
+    
+    If use_multiple_gpus is False, selects the best single GPU.
+    If use_multiple_gpus is True and multiple GPUs available, selects all of them
+    and returns "cuda:0" (which maps to the GPU with most free memory).
+    Sets CUDA_VISIBLE_DEVICES to restrict to selected GPU(s), ordered by free memory.
+    
+    Args:
+        min_memory_gb: Minimum free memory in GB required
+        use_multiple_gpus: If True, use all available GPUs instead of just the best one
+    
+    Returns:
+        Device string ("cpu", "cuda:X", or "cuda:0" for multi-GPU with best GPU as primary)
+    """
+    available_gpus = get_available_gpus(min_free_gb=min_memory_gb)
+    
+    if len(available_gpus) == 0:
+        print(f"No GPU with at least {min_memory_gb} GB free memory found.")
+        print("Falling back to CPU")
+        return "cpu"
+    elif len(available_gpus) == 1 or not use_multiple_gpus:
+        # Select single GPU (best if multiple available)
+        if len(available_gpus) == 1:
+            gpu_id = available_gpus[0]
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            print(f"Selected GPU {gpu_id}")
+            return f"cuda:{gpu_id}"
+        else:
+            # Select the GPU with most free memory
+            max_free_memory = 0
+            best_gpu = None
+            
+            for gpu_id in available_gpus:
+                free_memory, _ = torch.cuda.mem_get_info(gpu_id)
+                if free_memory > max_free_memory:
+                    max_free_memory = free_memory
+                    best_gpu = gpu_id
+            
+            if best_gpu is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
+                print(f"Selected best GPU {best_gpu} from {available_gpus} with {max_free_memory / 1e9:.2f} GB free")
+                return f"cuda:{best_gpu}"
+            else:
+                print("Unexpected error selecting best GPU")
+                return "cpu"
+    else:
+        # Use multiple GPUs - sort by free memory (highest first)
+        gpu_memory_pairs = []
+        for gpu_id in available_gpus:
+            free_memory, _ = torch.cuda.mem_get_info(gpu_id)
+            gpu_memory_pairs.append((gpu_id, free_memory))
+        
+        # Sort by free memory descending
+        gpu_memory_pairs.sort(key=lambda x: x[1], reverse=True)
+        sorted_gpus = [gpu_id for gpu_id, _ in gpu_memory_pairs]
+        
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, sorted_gpus))
+        best_gpu = sorted_gpus[0]
+        best_memory = gpu_memory_pairs[0][1]
+        print(f"Selected multiple GPUs: {sorted_gpus}")
+        print(f"Primary GPU (cuda:0) is GPU {best_gpu} with {best_memory / 1e9:.2f} GB free memory")
+        return f"cuda:0"  # PyTorch will see them as cuda:0, cuda:1, etc. with cuda:0 having most memory
+
+
 __all__ = [
     'BOOLEAN_TRUE',
     'BOOLEAN_FALSE',
@@ -252,4 +273,5 @@ __all__ = [
     'coerce_config_value',
     'update_config_value',
     'parse_assignment',
+    'select_device_with_min_memory',
 ]

@@ -336,12 +336,11 @@ class IndexManager:
         return [self.debug_atom_to_str(atom) for atom in state_idx]
 
 
-    def make_stringifier(self):
-        """Return a tiny object with only the tables needed to stringify atoms/states."""
-        from atom_stringifier import AtomStringifier
-        return AtomStringifier(
-            n_constants=self.constant_no,
-            idx2constant=tuple(self.idx2constant),
-            idx2predicate=tuple(self.idx2predicate),
-            idx2template_var=tuple(self.idx2template_var),
-        )
+    def get_stringifier_params(self):
+        """Return the parameters needed for atom stringification."""
+        return {
+            'n_constants': self.constant_no,
+            'idx2constant': tuple(self.idx2constant),
+            'idx2predicate': tuple(self.idx2predicate),
+            'idx2template_var': tuple(self.idx2template_var),
+        }

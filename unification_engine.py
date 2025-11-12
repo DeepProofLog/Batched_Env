@@ -4,6 +4,8 @@ from typing import List, Optional, Tuple
 import torch
 from torch import Tensor
 
+from debug_helper import DebugHelper
+
 
 
 
@@ -675,7 +677,8 @@ class UnificationEngine:
                  max_arity: int,
                  predicate_range_map: Optional[Tensor],
                  device: torch.device,
-                 pack_base: Optional[int] = None):
+                 pack_base: Optional[int] = None,
+                 stringifier_params: Optional[dict] = None):
         self.device = device
         self.padding_idx = int(padding_idx)
         self.constant_no = int(constant_no)
@@ -757,9 +760,12 @@ class UnificationEngine:
             self.rule_seg_starts = torch.zeros((1,), dtype=torch.long, device=device)
             self.rule_seg_lens = torch.zeros((1,), dtype=torch.long, device=device)
 
+        # Initialize DebugHelper for verbose output
+        self.debug_helper = DebugHelper(**stringifier_params) if stringifier_params else None
+
     # ---- factory ----
     @classmethod
-    def from_index_manager(cls, im, take_ownership: bool = False) -> 'UnificationEngine':
+    def from_index_manager(cls, im, take_ownership: bool = False, stringifier_params: Optional[dict] = None) -> 'UnificationEngine':
         engine = cls(
             facts_idx=getattr(im, 'facts_idx', None),
             rules_idx=getattr(im, 'rules_idx', None),
@@ -773,7 +779,8 @@ class UnificationEngine:
             max_arity=im.max_arity,
             predicate_range_map=getattr(im, 'predicate_range_map', None),
             device=im.device,
-            pack_base=getattr(im, 'total_vocab_size', None)
+            pack_base=getattr(im, 'total_vocab_size', None),
+            stringifier_params=stringifier_params
         )
         if take_ownership:
             im.facts_idx = None
@@ -789,7 +796,6 @@ class UnificationEngine:
                            next_var_indices: Tensor,
                            excluded_queries: Optional[Tensor] = None,
                            verbose: int = 0,
-                           stringifier=None,
                            debug: bool = False) -> Tuple[Tensor, Tensor, Tensor]:
         """
         One-step expansion, strictly ordered:
@@ -804,45 +810,16 @@ class UnificationEngine:
         
         Args:
             verbose: If > 0, print debug information with atom/state strings.
-            stringifier: An AtomStringifier instance for verbose output.
             debug: If True, print detailed debug information for unifications, canonicalization, and dedup.
         """
         device = current_states.device
         pad = self.padding_idx
         B, max_atoms, _ = current_states.shape
 
-        # Helper for verbose printing
+        # Helper for verbose printing - now uses DebugHelper
         def print_states(title: str, states_tensor: Tensor, counts: Tensor = None):
             """Print states in human-readable format."""
-            if verbose <= 0 or stringifier is None:
-                return
-            print(f"\n{'='*60}")
-            print(f"{title}")
-            print(f"{'='*60}")
-            if states_tensor.dim() == 3:  # [B, M, 3]
-                for i in range(states_tensor.shape[0]):
-                    state = states_tensor[i]
-                    valid = state[:, 0] != pad
-                    if valid.any():
-                        atoms = state[valid]
-                        atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
-                        print(f"  State {i}: [{', '.join(atoms_str)}]")
-                    else:
-                        print(f"  State {i}: <empty>")
-            elif states_tensor.dim() == 4:  # [B, K, M, 3]
-                for i in range(states_tensor.shape[0]):
-                    count = counts[i].item() if counts is not None else states_tensor.shape[1]
-                    if count > 0:
-                        print(f"  Batch {i} ({count} states):")
-                        for j in range(min(count, states_tensor.shape[1])):
-                            state = states_tensor[i, j]
-                            valid = state[:, 0] != pad
-                            if valid.any():
-                                atoms = state[valid]
-                                atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
-                                print(f"    [{j}]: [{', '.join(atoms_str)}]")
-                            else:
-                                print(f"    [{j}]: <empty>")
+            self.debug_helper.print_states(title, states_tensor, counts, pad)
 
         # i) Print current states
         if verbose > 0:
@@ -989,13 +966,13 @@ class UnificationEngine:
             print(f"\n{'='*60}")
             print("iv) PRUNE GROUND FACTS & DETECT IMMEDIATE PROOFS")
             print(f"{'='*60}")
-            if stringifier is not None:
+            if self.debug_helper is not None:
                 for i in range(pruned_states.shape[0]):
                     state = pruned_states[i]
                     valid = state[:, 0] != pad
                     if valid.any():
                         atoms = state[valid]
-                        atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
+                        atoms_str = [self.debug_helper.atom_to_str(atom) for atom in atoms]
                         proof_str = " [PROOF]" if is_proof[i] else ""
                         print(f"  Candidate {i} (owner={owners_for_cands[i].item()}){proof_str}: [{', '.join(atoms_str)}]")
                     else:
@@ -1032,13 +1009,13 @@ class UnificationEngine:
             print(f"\n{'='*60}")
             print("v) CANONICALIZE (before dedup)")
             print(f"{'='*60}")
-            if stringifier is not None:
+            if self.debug_helper is not None:
                 for i in range(canon_states.shape[0]):
                     state = canon_states[i]
                     valid = state[:, 0] != pad
                     if valid.any():
                         atoms = state[valid]
-                        atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
+                        atoms_str = [self.debug_helper.atom_to_str(atom) for atom in atoms]
                         print(f"  Candidate {i} (owner={owners_kept[i].item()}): [{', '.join(atoms_str)}]")
             if debug:
                 print(f"\n[DEBUG] Before packing:")
@@ -1102,7 +1079,7 @@ class UnificationEngine:
             print(f"\n[DEBUG] Before dedup:")
             print(f"  packed_states.shape: {packed_states.shape}")
             print(f"  packed_counts: {packed_counts.tolist()}")
-            if stringifier is not None:
+            if self.debug_helper is not None:
                 for b in range(B):
                     if packed_counts[b] > 0:
                         print(f"  Batch {b}:")
@@ -1111,7 +1088,7 @@ class UnificationEngine:
                             valid = state[:, 0] != pad
                             if valid.any():
                                 atoms = state[valid]
-                                atoms_str = [stringifier.atom_to_str(atom) for atom in atoms]
+                                atoms_str = [self.debug_helper.atom_to_str(atom) for atom in atoms]
                                 print(f"    Packed state {i}: [{', '.join(atoms_str)}]")
                             else:
                                 print(f"    Packed state {i}: <empty> [BUG!]")
@@ -1176,7 +1153,6 @@ class UnificationEngine:
         is_proof = pruned_counts == 0
 
         pos = torch.cumsum(keep.long(), dim=1) - 1
-        row = torch.arange(N, device=device).unsqueeze(1).expand_as(pos)
         # OPTIMIZED: Cache max result
         out_len_tensor = pruned_counts.max() if pruned_counts.numel() > 0 else torch.tensor(1, device=device)
         out_len = int(out_len_tensor.item())

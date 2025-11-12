@@ -1,11 +1,20 @@
-from __future__ import annotations
+"""
+Neural Networks for PPO
 
-from typing import Any, Optional, Tuple
+This module contains the policy and value network architectures,
+as well as TorchRL-compatible wrappers for the actor-critic model.
+"""
+
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from tensordict import TensorDict
-from torch import nn
-
+from tensordict.nn import TensorDictModule
+from torchrl.modules import ProbabilisticActor, ValueOperator
+from torchrl.modules.distributions import MaskedCategorical
+from tensordict.nn import TensorDictSequential
 
 
 class PolicyNetwork(nn.Module):
@@ -16,15 +25,17 @@ class PolicyNetwork(nn.Module):
         # Initial transformation from observation embedding to hidden representation
         self.obs_transform = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
-            nn.ReLU(inplace=True),  # Inplace for memory efficiency
+            nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
             nn.Dropout(dropout_prob)
         )
         
-        # Residual blocks for deep feature extraction - OPTIMIZED: removed LayerNorm
+        # Residual blocks for deep feature extraction
         self.res_blocks = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
-                nn.ReLU(inplace=True),
+                nn.ReLU(),
+                nn.LayerNorm(hidden_dim),
                 nn.Dropout(dropout_prob)
             ) for _ in range(num_layers)
         ])
@@ -32,7 +43,7 @@ class PolicyNetwork(nn.Module):
         # Final transformation that projects the processed observation back to the embedding space
         self.out_transform = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Linear(hidden_dim, embed_dim)
         )
 
@@ -80,15 +91,17 @@ class ValueNetwork(nn.Module):
         # Initial transformation from observation embedding to hidden dimension
         self.input_layer = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
-            nn.ReLU(inplace=True),  # Inplace for memory efficiency
+            nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
             nn.Dropout(dropout_prob)
         )
         
-        # Residual blocks for deep feature extraction - OPTIMIZED: removed LayerNorm
+        # Residual blocks for deep feature extraction
         self.res_blocks = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
-                nn.ReLU(inplace=True),
+                nn.ReLU(),
+                nn.LayerNorm(hidden_dim),
                 nn.Dropout(dropout_prob)
             ) for _ in range(num_layers)
         ])
@@ -96,7 +109,7 @@ class ValueNetwork(nn.Module):
         # Final output layers to produce a single scalar value estimate
         self.output_layer = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Linear(hidden_dim // 2, 1)
         )
     
@@ -158,19 +171,14 @@ class EmbeddingExtractor(nn.Module):
         action_sub_indices = observations["derived_sub_indices"]
         action_mask = observations["action_mask"]
         
-        # OPTIMIZATION: Check device once and batch transfer if needed
-        needs_transfer = (obs_sub_indices.device != self.device)
-        
-        if needs_transfer:
+        # Optimize device transfer: only transfer if needed
+        # Check if already on correct device to avoid unnecessary transfers
+        if obs_sub_indices.device != self.device or obs_sub_indices.dtype != torch.long:
             obs_sub_indices = obs_sub_indices.to(device=self.device, dtype=torch.long, non_blocking=True)
+        if action_sub_indices.device != self.device or action_sub_indices.dtype != torch.long:
             action_sub_indices = action_sub_indices.to(device=self.device, dtype=torch.long, non_blocking=True)
+        if action_mask.device != self.device:
             action_mask = action_mask.to(device=self.device, non_blocking=True)
-        else:
-            # Ensure correct dtype without transfer overhead
-            if obs_sub_indices.dtype != torch.long:
-                obs_sub_indices = obs_sub_indices.long()
-            if action_sub_indices.dtype != torch.long:
-                action_sub_indices = action_sub_indices.long()
         
         # Get embeddings
         obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices)  # (batch, 1, embedding_dim)
@@ -284,87 +292,126 @@ class ActorCriticModel(nn.Module):
         return logits, values
 
 
-class OptimizedActorModule(nn.Module):
-    """Lightweight actor wrapper that outputs logits and optionally samples actions."""
-
-    def __init__(self, actor_critic_model: ActorCriticModel, deterministic: bool = True):
+class TorchRLActorModule(nn.Module):
+    """
+    TorchRL-compatible actor module that wraps the actor-critic model.
+    
+    This module is designed to be used with TorchRL's TensorDictModule.
+    """
+    
+    def __init__(self, actor_critic_model: ActorCriticModel):
         """
         Initialize the actor module.
         
         Args:
             actor_critic_model: The underlying actor-critic model
-            deterministic: If True, use argmax for action selection in eval mode.
-                          If False, sample from the distribution in eval mode.
         """
         super().__init__()
         self.actor_critic_model = actor_critic_model
-        self.deterministic = deterministic
-
-    def forward(self, tensordict: TensorDict) -> TensorDict:
-        obs = tensordict.select("sub_index", "derived_sub_indices", "action_mask")
-        logits = self.actor_critic_model.forward_actor(obs.clone().to(self.actor_critic_model.device))
-        logits = logits.to(obs.device if obs.device is not None else logits.device)
-        out = tensordict.clone(False)
-        out.set("logits", logits)
+    
+    def forward(
+        self,
+        sub_index: torch.Tensor,
+        derived_sub_indices: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass that produces action logits.
         
-        # For evaluation, also select actions
-        if not self.training:
-            action_mask = tensordict.get("action_mask")
-            if action_mask is not None:
-                # Ensure mask is boolean and on correct device
-                mask = action_mask.to(logits.device, non_blocking=True).bool()
-                # Mask invalid actions with -inf
-                masked_logits = logits.masked_fill(~mask, float("-inf"))
-                
-                if self.deterministic:
-                    # Deterministic: take argmax (most likely action)
-                    action = masked_logits.argmax(dim=-1)
-                else:
-                    # Stochastic: sample from distribution
-                    dist = torch.distributions.Categorical(logits=masked_logits)
-                    action = dist.sample()
-                
-                out.set("action", action)
-                
-                # Compute log_prob for the selected action
-                dist = torch.distributions.Categorical(logits=masked_logits)
-                log_prob = dist.log_prob(action)
-                out.set("sample_log_prob", log_prob)
-        
-        return out
+        Args:
+            sub_index: Observation indices
+            derived_sub_indices: Action indices
+            action_mask: Valid action mask
+            
+        Returns:
+            Tuple (logits, mask) for distribution construction
+        """
+        tensordict = TensorDict({
+            "sub_index": sub_index,
+            "derived_sub_indices": derived_sub_indices,
+            "action_mask": action_mask,
+        }, batch_size=[])
+        logits = self.actor_critic_model.forward_actor(tensordict)
+        return logits, action_mask
 
 
-class OptimizedValueModule(nn.Module):
-    """Value wrapper that produces 'state_value' entries compatible with the collector."""
-
+class TorchRLValueModule(nn.Module):
+    """
+    TorchRL-compatible value module that wraps the actor-critic model.
+    
+    This module is designed to be used with TorchRL's TensorDictModule.
+    """
+    
     def __init__(self, actor_critic_model: ActorCriticModel):
+        """
+        Initialize the value module.
+        
+        Args:
+            actor_critic_model: The underlying actor-critic model
+        """
         super().__init__()
         self.actor_critic_model = actor_critic_model
 
+    def forward(self, sub_index: torch.Tensor) -> torch.Tensor:
+        td = TensorDict({"sub_index": sub_index}, batch_size=[])
+        return self.actor_critic_model.forward_critic(td)
+
+
+class AddFeatureDimension(TensorDictModule):
+    """
+    Module that adds a feature dimension to scalar tensors.
+    This is needed for TorchRL's PPO loss which expects all tensors to have a feature dimension.
+    """
+    def __init__(self):
+        # Create a simple passthrough module
+        super().__init__(
+            module=nn.Identity(),
+            in_keys=["sample_log_prob"],
+            out_keys=["sample_log_prob"],
+        )
+    
     def forward(self, tensordict: TensorDict) -> TensorDict:
-        obs = tensordict.select("sub_index")
-        values = self.actor_critic_model.forward_critic(obs.clone().to(self.actor_critic_model.device))
-        values = values.squeeze(-1).to(obs.device if obs.device is not None else values.device)
-        out = tensordict.clone(False)
-        out.set("state_value", values)
-        return out
+        """Add feature dimension if needed."""
+        if "sample_log_prob" in tensordict.keys():
+            log_prob = tensordict.get("sample_log_prob")
+            if log_prob.dim() == 1:
+                # Add feature dimension: [batch] -> [batch, 1]
+                tensordict.set("sample_log_prob", log_prob.unsqueeze(-1))
+        return tensordict
 
 
-def create_torch_modules(
-    *,
+def create_torchrl_modules(
     embedder: Any,
     num_actions: int,
-    embed_dim: int,
-    hidden_dim: int,
-    num_layers: int,
-    dropout_prob: float,
-    device: torch.device,
+    embed_dim: int = 200,
+    hidden_dim: int = 128,
+    num_layers: int = 8,
+    dropout_prob: float = 0.2,
+    device: torch.device = torch.device('cpu'),
     enable_kge_action: bool = False,
     kge_inference_engine: Optional[Any] = None,
     index_manager: Optional[Any] = None,
-) -> Tuple[nn.Module, nn.Module, ActorCriticModel]:
-    """Factory for the optimised actor/critic pair."""
-    core_model = ActorCriticModel(
+) -> Tuple[ProbabilisticActor, ValueOperator]:
+    """
+    Create TorchRL-compatible actor and value modules.
+    
+    Args:
+        embedder: Embedding model
+        num_actions: Number of possible actions
+        embed_dim: Embedding dimension
+        hidden_dim: Hidden dimension for networks
+        num_layers: Number of residual layers
+        dropout_prob: Dropout probability
+        device: Device to use
+        enable_kge_action: Whether to enable KGE actions
+        kge_inference_engine: KGE engine
+        index_manager: Index manager
+        
+    Returns:
+        Tuple of (actor_module, value_module)
+    """
+    # Create the shared actor-critic model
+    actor_critic_model = ActorCriticModel(
         embedder=embedder,
         embed_dim=embed_dim,
         hidden_dim=hidden_dim,
@@ -375,7 +422,35 @@ def create_torch_modules(
         kge_inference_engine=kge_inference_engine,
         index_manager=index_manager,
     )
+    
+    # Create actor module that outputs logits
+    actor_net = TorchRLActorModule(actor_critic_model)
+    
+    # Wrap actor in TensorDictModule
+    actor_td_module = TensorDictModule(
+        module=actor_net,
+        in_keys=["sub_index", "derived_sub_indices", "action_mask"],
+        out_keys=["logits", "mask"],
+    )
+    
+    # Wrap in ProbabilisticActor with MaskedCategorical so entropy/log-probs
+    # remain finite even when most actions are invalid.
+    actor_module = ProbabilisticActor(
+        module=actor_td_module,
+        in_keys={"logits": "logits", "mask": "mask"},
+        out_keys=["action"],
+        distribution_class=MaskedCategorical,
+        return_log_prob=True,
+        log_prob_key="sample_log_prob",
+    )
+    
+    # Create value module
+    value_net = TorchRLValueModule(actor_critic_model)
 
-    actor_module = OptimizedActorModule(core_model)
-    value_module = OptimizedValueModule(core_model)
+    value_module = TensorDictModule(
+        module=value_net,
+        in_keys=["sub_index"],            # was ["sub_index", "derived_sub_indices", "action_mask"]
+        out_keys=["state_value"],
+    )
+    
     return actor_module, value_module

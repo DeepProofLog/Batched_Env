@@ -12,9 +12,9 @@ import io
 from test_rollout_pipeline import test_vectorized_batched_pipeline as test_pipeline
 from test_eval_pipeline import test_eval_pipeline_vectorized as test_eval_pipeline
 
-TRAIN = False
+TRAIN = True
 
-def profile_test():
+def profile_test(use_torchrl=False):
     """Profile the test with cProfile"""
     # use cuda if available, but for profiling we might want CPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -25,11 +25,12 @@ def profile_test():
     
     # Run test with smaller batch
     if TRAIN:
-        test_pipeline(n_tests=9, device=device)
+        test_pipeline(n_tests=9, device=device, use_torchrl=use_torchrl)
     else:
         test_eval_pipeline()
         
     profiler.disable()
+    # profiler.dump_stats('tests/profile.prof')
     
     # Print profiling results
     print("\n" + "="*80)
@@ -66,4 +67,16 @@ def profile_test():
 
 
 if __name__ == '__main__':
-    profile_test()
+
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--torchrl", action="store_true", help="Use TorchRL implementation")
+    args = parser.parse_args()
+
+    use_torchrl = args.torchrl
+    if use_torchrl:
+        print("Using TorchRL implementation for profiling.")
+    else:
+        use_torchrl = False
+    
+    profile_test(use_torchrl=use_torchrl)

@@ -13,7 +13,7 @@ from embeddings import get_embedder
 from env import BatchedEnv
 from index_manager import IndexManager
 from model_eval import evaluate_ranking_metrics, evaluate_policy
-from ppo.ppo_model import create_torchrl_modules
+from ppo.ppo_model_torchrl import create_torchrl_modules
 from sampler import Sampler
 from unification_engine import UnificationEngine
 
@@ -48,7 +48,7 @@ def _build_eval_components(device: torch.device):
         max_depth=8,
         skip_unary_actions=False,
         reward_type=1,
-        endf_action=True,
+        end_proof_action=True,
     )
     if args.dataset_name == "countries_s3":
         args.corruption_scheme = ["tail"]
@@ -99,7 +99,7 @@ def _build_eval_components(device: torch.device):
     embedder = embedder_getter.embedder
     embed_dim = getattr(embedder, "embed_dim", getattr(embedder, "embedding_dim", args.atom_embedding_size))
 
-    unification_engine = UnificationEngine.from_index_manager(index_manager)
+    unification_engine = UnificationEngine.from_index_manager(index_manager, stringifier_params=None)
     valid_split = data_handler.get_materialized_split("valid")
 
     batch_limit = min(valid_split.queries.shape[0], args.batch_size * 3)
@@ -131,7 +131,7 @@ def _build_eval_components(device: torch.device):
         memory_pruning=True,
         corruption_mode=False,
         device=device,
-        end_proof_action=args.endf_action,
+        end_proof_action=args.end_proof_action,
     )
 
     actor, _ = create_torchrl_modules(

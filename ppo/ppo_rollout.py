@@ -7,7 +7,7 @@ import torch
 from tensordict import TensorDict
 
 
-class CustomRolloutCollector:
+class RolloutCollector:
     """Custom rollout collector that doesn't use TorchRL collectors.
     
     This implementation manually steps through parallel environments and collects
@@ -146,15 +146,21 @@ class CustomRolloutCollector:
         """Diagnose action space constraints and collect statistics."""
         valid_counts = action_mask.sum(dim=1)  # [n_envs]
         
-        # Update statistics
+        # Update statistics (keep on GPU to avoid transfers)
         self.action_space_stats['total_measurements'] += self.n_envs
-        self.action_space_stats['single_action_count'] += (valid_counts == 1).sum().item()
-        self.action_space_stats['zero_action_count'] += (valid_counts == 0).sum().item()
+        self.action_space_stats['single_action_count'] += int((valid_counts == 1).sum())
+        self.action_space_stats['zero_action_count'] += int((valid_counts == 0).sum())
         
-        # Track distribution
-        for count in valid_counts.tolist():
-            self.action_space_stats['action_distribution'][count] = \
-                self.action_space_stats['action_distribution'].get(count, 0) + 1
+        # Track distribution - only transfer unique counts
+        # Use bincount for efficient histogram computation on GPU
+        max_count = int(valid_counts.max()) if valid_counts.numel() > 0 else 0
+        if max_count >= 0:
+            # Create histogram on GPU then transfer once
+            hist = torch.bincount(valid_counts, minlength=max_count + 1)
+            for count_val, freq in enumerate(hist.tolist()):
+                if freq > 0:
+                    self.action_space_stats['action_distribution'][count_val] = \
+                        self.action_space_stats['action_distribution'].get(count_val, 0) + freq
         
         # Compute entropy (if logits available after actor call)
         # We'll store entropy after action selection
@@ -268,22 +274,31 @@ class CustomRolloutCollector:
             stats: Dictionary with episode_info
         """
         experiences: List[TensorDict] = []
-        episode_infos: List[Dict[str, Any]] = []
         running_returns = torch.zeros(self.n_envs, dtype=torch.float32, device=self.env._device)
         running_lengths = torch.zeros(self.n_envs, dtype=torch.long, device=self.env._device)
-        
+
+        # Batch buffers for completed episodes to minimize cpu() synchronizations
+        completed_rewards: List[torch.Tensor] = []
+        completed_lengths: List[torch.Tensor] = []
+        completed_labels: List[torch.Tensor] = []
+        completed_depths: List[torch.Tensor] = []
+        completed_success: List[torch.Tensor] = []
+        labels_available = True
+        depths_available = True
+        success_available = True
+
         # Reset environments to get initial observations
         obs_td = self.env.reset()
-        
+
         # Rollout loop
         for step in range(self.n_steps):
             self._vlog(2, f"Step {step+1}/{self.n_steps}")
             # Select actions using policy
             action, log_prob = self._select_action(obs_td)
-            
+
             # Extract logits from obs_td (was set by _select_action)
             logits = obs_td.get("logits")
-            
+
             if step == 0 and self.verbose >= 2:
                 self._vlog(2, f"Step 0 logits present? {logits is not None}")
                 if logits is not None:
@@ -292,7 +307,7 @@ class CustomRolloutCollector:
                 if action_mask is not None:
                     num_valid = action_mask.sum(dim=-1)
                     self._vlog(2, f"  valid actions stats min={num_valid.min()}, max={num_valid.max()}, mean={num_valid.float().mean():.2f}")
-            
+
             # Create tensordict with current state and action
             step_td = TensorDict({
                 "sub_index": obs_td["sub_index"].clone(),
@@ -303,26 +318,26 @@ class CustomRolloutCollector:
             }, batch_size=[self.n_envs])
             if logits is not None:
                 step_td.set("logits", logits.clone())
-            
+
             # Get value estimate from critic (on its device)
             critic_input = step_td.clone().to(self.device)
-            critic(critic_input)
-            if "state_value" in critic_input.keys():
-                step_td.set("state_value", critic_input["state_value"].to(self.env._device))
-            
+            critic_out = critic(critic_input)
+            if "state_value" in critic_out.keys():
+                step_td.set("state_value", critic_out["state_value"].to(self.env._device))
+
             # Step environments using step_and_maybe_reset
             # Returns (step_td_with_next, next_obs_td)
             # step_td_with_next contains the current step with reward/done in "next" key
             # next_obs_td contains the observation for the next step (already reset if episode ended)
             step_td_complete, next_obs_td = self.env.step_and_maybe_reset(step_td)
-            
+
             # Debug: check what keys are in the returned tensordicts
             if step == 0 and self.verbose >= 2:
                 self._vlog(2, f"step_td_complete keys: {step_td_complete.keys()}")
                 if "next" in step_td_complete.keys():
                     self._vlog(2, f"step_td_complete['next'] keys: {step_td_complete['next'].keys()}")
                 self._vlog(2, f"next_obs_td keys: {next_obs_td.keys()}")
-            
+
             # The step_td_complete already has the "next" key with reward/done
             # We just need to copy that to our step_td
             if "next" in step_td_complete.keys():
@@ -336,16 +351,16 @@ class CustomRolloutCollector:
                     "reward": step_td_complete["reward"].clone(),
                     "done": step_td_complete["done"].clone(),
                 }, batch_size=[self.n_envs]))
-            
+
             experiences.append(step_td)
-            
+
             # Extract the next state data for episode info extraction
             # The next state info is in step_td["next"]
             next_state_data = step_td["next"]
             reward_next = next_state_data["reward"].view(-1).to(self.env._device)
-            running_returns = running_returns + reward_next
-            running_lengths = running_lengths + 1
-            
+            running_returns.add_(reward_next)
+            running_lengths.add_(1)
+
             # Check for completed episodes and extract info
             done_mask = next_state_data["done"].squeeze(-1).to(torch.bool)
             if done_mask.any():
@@ -353,23 +368,32 @@ class CustomRolloutCollector:
                 label_tensor = next_state_data.get("label", None)
                 depth_tensor = next_state_data.get("query_depth", None)
                 success_tensor = next_state_data.get("is_success", None)
-                for row in done_rows.tolist():
-                    info = {
-                        "episode": {
-                            "r": float(running_returns[row].item()),
-                            "l": int(running_lengths[row].item()),
-                        }
-                    }
-                    if label_tensor is not None:
-                        info["label"] = int(label_tensor.view(-1)[row].item())
-                    if depth_tensor is not None:
-                        info["query_depth"] = int(depth_tensor.view(-1)[row].item())
-                    if success_tensor is not None:
-                        info["is_success"] = bool(success_tensor.view(-1)[row].item())
-                    episode_infos.append(info)
+
+                # Buffer GPU clones; convert to CPU once after rollout finishes
+                completed_rewards.append(running_returns[done_rows].detach().clone())
+                completed_lengths.append(running_lengths[done_rows].detach().clone())
+
+                if labels_available and label_tensor is not None:
+                    completed_labels.append(label_tensor.view(-1)[done_rows].detach().clone())
+                elif label_tensor is None:
+                    labels_available = False
+                    completed_labels.clear()
+
+                if depths_available and depth_tensor is not None:
+                    completed_depths.append(depth_tensor.view(-1)[done_rows].detach().clone())
+                elif depth_tensor is None:
+                    depths_available = False
+                    completed_depths.clear()
+
+                if success_available and success_tensor is not None:
+                    completed_success.append(success_tensor.view(-1)[done_rows].detach().clone())
+                elif success_tensor is None:
+                    success_available = False
+                    completed_success.clear()
+
                 running_returns[done_rows] = 0.0
                 running_lengths[done_rows] = 0
-            
+
             # Update observation for next step
             # Extract only observation keys from next_obs_td (it may have action/value data too)
             obs_td = TensorDict({
@@ -377,13 +401,36 @@ class CustomRolloutCollector:
                 "derived_sub_indices": next_obs_td["derived_sub_indices"],
                 "action_mask": next_obs_td["action_mask"],
             }, batch_size=[self.n_envs])
-            
+
             if rollout_callback is not None:
                 rollout_callback(step)
-        
-        stats = {"episode_info": episode_infos}
-        
-        self._vlog(1, f"Collected {len(experiences)} steps, {len(episode_infos)} episodes")
+
+        if completed_rewards:
+            reward_tensor = torch.cat(completed_rewards, dim=0)
+            length_tensor = torch.cat(completed_lengths, dim=0)
+
+            episode_info: Dict[str, torch.Tensor] = {
+                "reward": reward_tensor.detach(),
+                "length": length_tensor.detach(),
+            }
+
+            if labels_available and completed_labels:
+                episode_info["label"] = torch.cat(completed_labels, dim=0).detach()
+            if depths_available and completed_depths:
+                episode_info["query_depth"] = torch.cat(completed_depths, dim=0).detach()
+            if success_available and completed_success:
+                episode_info["is_success"] = torch.cat(completed_success, dim=0).detach()
+        else:
+            device = self.env._device
+            episode_info = {
+                "reward": torch.zeros(0, dtype=torch.float32, device=device),
+                "length": torch.zeros(0, dtype=torch.long, device=device),
+            }
+
+        stats = {"episode_info": episode_info}
+
+        episode_count = int(episode_info["reward"].shape[0]) if episode_info.get("reward") is not None else 0
+        self._vlog(1, f"Collected {len(experiences)} steps, {episode_count} episodes")
         
         # Print action space diagnostics if enabled
         if self.debug_action_space:

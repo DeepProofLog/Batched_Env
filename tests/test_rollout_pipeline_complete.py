@@ -16,12 +16,22 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 from sampler import Sampler, SamplerConfig
 from embeddings import get_embedder
-from ppo.ppo_model import create_torchrl_modules
+from ppo.ppo_model_torchrl import create_torchrl_modules
 from env import BatchedEnv
-from ppo.ppo_agent import PPOAgent
-from ppo.ppo_rollout_custom import CustomRolloutCollector
+from ppo.ppo_agent_torchrl import PPOAgentTorchRL
+from ppo.ppo_rollout import RolloutCollector
 from unification_engine import UnificationEngine
-from atom_stringifier import AtomStringifier
+from utils_config import select_device_with_min_memory
+
+# Use new API for TF32 settings to avoid deprecation warnings
+# Valid precision values: 'ieee', 'tf32', None (for default)
+_cuda_matmul_backend = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
+if _cuda_matmul_backend is not None and hasattr(_cuda_matmul_backend, "fp32_precision"):
+    _cuda_matmul_backend.fp32_precision = "tf32"
+
+_cudnn_conv_backend = getattr(getattr(torch.backends, "cudnn", None), "conv", None)
+if _cudnn_conv_backend is not None and hasattr(_cudnn_conv_backend, "fp32_precision"):
+    _cudnn_conv_backend.fp32_precision = "tf32"
 
 
 def test_vectorized_batched_pipeline(n_tests=1, device='None'):
@@ -55,14 +65,14 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         corruption_mode=True,  # Enable negative sampling
         corruption_scheme=['head', 'tail'],
         train_neg_ratio=3,  # Encourage negatives so rewards cover ±1
-        max_total_vars=1000000,
-        padding_atoms=6,
+        max_total_vars=2000000,
+        padding_atoms=4,
         padding_states=20,
         atom_embedder='transe',
         state_embedder='sum',
-        constant_embedding_size=256,
-        predicate_embedding_size=256,
-        atom_embedding_size=256,
+        constant_embedding_size=100,
+        predicate_embedding_size=100,
+        atom_embedding_size=100,
         learn_embeddings=True,
         variable_no=100,
         seed_run_i=42,
@@ -74,9 +84,9 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         # Engine
         engine='python_tensor',
         endt_action=False,
-        endf_action=True,  # include explicit END action to guarantee at least two choices
+        end_proof_action=True,  # include explicit END action to guarantee at least two choices
         skip_unary_actions=False,  # keep unary expansions for broader branching
-        memory_pruning=False,  # DISABLED to test if this is the issue
+        memory_pruning=True,  # Same as runner.py default
         reward_type=4,  # Symmetric rewards so negatives matter
         verbose_env=0,  # Enable verbose environment logging
         verbose_prover=0,  # Enable prover logging
@@ -87,10 +97,26 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed_run_i)
 
-    # use cuda if available
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    # Handle device selection (same as runner.py)
+    if device is None or device == 'None':
+        device_choice = 'cuda:1'  # Auto-select best GPU like runner.py
+        min_memory_gb = 2.0
+        
+        if device_choice == "cuda:1":
+            print("\n=== Auto-selecting GPU(s) ===")
+            device = select_device_with_min_memory(min_memory_gb=min_memory_gb, use_multiple_gpus=True)
+            if device == "cpu":
+                print("Falling back to CPU\n")
+            else:
+                print(f"Using device: {device}\n")
+    else:
+        print(f"Using provided device: {device}\n")
+
+    # Ensure device is a torch.device
+    if isinstance(device, str):
+        device = torch.device(device)
+    
+    args.use_amp = device.type == 'cuda'
 
     # ============================================================
     # 1. Build DataHandler
@@ -251,7 +277,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     print(f"    [DEBUG] Facts shape in im: {im.facts_idx.shape}")
     print(f"    [DEBUG] First 5 facts: {im.facts_idx[:5]}")
     print(f"    [DEBUG] Facts with predicate 7 (neighborOf): {(im.facts_idx[:, 0] == 7).sum().item()}")
-    unification_engine = UnificationEngine.from_index_manager(im)
+    unification_engine = UnificationEngine.from_index_manager(im, stringifier_params=None)
     print(f"  UnificationEngine ready")
     
     # Create a single BatchedVecEnv with batch_size for vectorized processing
@@ -273,9 +299,9 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         corruption_mode=args.corruption_mode,
         sampler=sampler,
         train_neg_ratio=args.train_neg_ratio,
-        end_proof_action=args.endf_action,
+        end_proof_action=args.end_proof_action,
         skip_unary_actions=args.skip_unary_actions,
-        end_pred_idx=im.predicate_str2idx.get('End', None) if args.endf_action else None,
+        end_pred_idx=im.predicate_str2idx.get('End', None) if args.end_proof_action else None,
         true_pred_idx=im.true_pred_idx,
         false_pred_idx=im.false_pred_idx,
         max_arity=im.max_arity,
@@ -310,6 +336,12 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     )
     print(f"  Actor params: {sum(p.numel() for p in actor.parameters()):,}")
     print(f"  Critic params: {sum(p.numel() for p in critic.parameters()):,}")
+
+    # Wrap models with DataParallel for multi-GPU training
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        print(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
+        actor = torch.nn.DataParallel(actor)
+        critic = torch.nn.DataParallel(critic)
 
     # Create optimizer
     params_dict = {id(p): p for p in list(actor.parameters()) + list(critic.parameters())}
@@ -392,7 +424,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     print("="*60)
     start_time = time()
     
-    rollout_collector = CustomRolloutCollector(
+    rollout_collector = RolloutCollector(
         env=train_env,
         actor=actor,
         n_envs=args.batch_size,
@@ -482,7 +514,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         print(f"Running PPO update on {len(experiences)} experiences...")
         
         # Create minimal PPO agent for testing
-        ppo_agent = PPOAgent(
+        ppo_agent = PPOAgentTorchRL(
             actor=actor,
             critic=critic,
             optimizer=optimizer,
@@ -504,6 +536,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
             device=device,
             debug_mode=True,
             min_multiaction_ratio=args.min_multiaction_ratio,
+            use_amp=args.use_amp,
         )
         
         # Run learning step
@@ -513,11 +546,17 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
             n_envs=args.batch_size,
         )
         
+        def _metric_value(key: str, default: float = 0.0) -> float:
+            value = metrics.get(key, default)
+            if isinstance(value, torch.Tensor):
+                return value.detach().item()
+            return float(value)
+
         print("\nPPO update complete:")
-        print(f"  Policy loss: {metrics.get('policy_loss', 0.0):.4f}")
-        print(f"  Value loss: {metrics.get('value_loss', 0.0):.4f}")
-        print(f"  Entropy: {metrics.get('entropy', 0.0):.4f}")
-        print(f"  Approx KL: {metrics.get('approx_kl', 0.0):.4f}")
+        print(f"  Policy loss: {_metric_value('policy_loss'):.4f}")
+        print(f"  Value loss: {_metric_value('value_loss'):.4f}")
+        print(f"  Entropy: {_metric_value('entropy'):.4f}")
+        print(f"  Approx KL: {_metric_value('approx_kl'):.4f}")
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
     if n_tests == 9:

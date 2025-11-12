@@ -258,7 +258,10 @@ class Sampler:
             # avoid sampling equal to gold head: resample once (cheap)
             mask_eq = h_new == h
             if mask_eq.any():
-                h_new[mask_eq] = self._draw_uniform_entities(int(mask_eq.sum()), device)
+                if use_domain:
+                    h_new[mask_eq] = self._draw_from_domain(rel_ids[mask_eq], head=True, device=device)
+                else:
+                    h_new[mask_eq] = self._draw_uniform_entities(int(mask_eq.sum()), device)
             cand = torch.stack([r, h_new, t], dim=-1)  # [B*K_os,3]
 
         elif mode == 'tail':
@@ -269,7 +272,10 @@ class Sampler:
                 t_new = self._draw_uniform_entities(total, device)
             mask_eq = t_new == t
             if mask_eq.any():
-                t_new[mask_eq] = self._draw_uniform_entities(int(mask_eq.sum()), device)
+                if use_domain:
+                    t_new[mask_eq] = self._draw_from_domain(rel_ids[mask_eq], head=False, device=device)
+                else:
+                    t_new[mask_eq] = self._draw_uniform_entities(int(mask_eq.sum()), device)
             cand = torch.stack([r, h, t_new], dim=-1)
 
         else:  # both
@@ -291,10 +297,16 @@ class Sampler:
             # prevent identity replacements; re-draw once for offending positions
             mask_h = coin & (h_new == h)
             if mask_h.any():
-                h_new[mask_h] = self._draw_uniform_entities(int(mask_h.sum()), device)
+                if use_domain:
+                    h_new[mask_h] = self._draw_from_domain(rel_ids[mask_h], head=True, device=device)
+                else:
+                    h_new[mask_h] = self._draw_uniform_entities(int(mask_h.sum()), device)
             mask_t = (~coin) & (t_new == t)
             if mask_t.any():
-                t_new[mask_t] = self._draw_uniform_entities(int(mask_t.sum()), device)
+                if use_domain:
+                    t_new[mask_t] = self._draw_from_domain(rel_ids[mask_t], head=False, device=device)
+                else:
+                    t_new[mask_t] = self._draw_uniform_entities(int(mask_t.sum()), device)
 
             cand = torch.stack([r, h_new, t_new], dim=-1)
 

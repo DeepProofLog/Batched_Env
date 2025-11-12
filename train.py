@@ -14,7 +14,6 @@ from typing import Any, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from atom_stringifier import AtomStringifier
 from callbacks import (
     EvaluationCallback,
     RolloutProgressCallback,
@@ -26,8 +25,10 @@ from embeddings import get_embedder
 from env import BatchedEnv
 from index_manager import IndexManager
 from model_eval import evaluate_ranking_metrics
+from ppo.ppo_agent_torchrl import PPOAgentTorchRL
 from ppo.ppo_agent import PPOAgent
-from ppo.ppo_model import create_torchrl_modules
+from ppo.ppo_model_torchrl import create_torchrl_modules
+from ppo.ppo_model import create_torch_modules
 from sampler import Sampler
 from unification_engine import UnificationEngine
 from utils import (
@@ -67,7 +68,7 @@ def _default_corruption_mode(corruption_scheme: Optional[list[str]]) -> str:
 def _materialize_data_components(
     args: Any,
     device: torch.device,
-) -> Tuple[DataHandler, IndexManager, Sampler, Any, UnificationEngine, AtomStringifier]:
+) -> Tuple[DataHandler, IndexManager, Sampler, Any, UnificationEngine, dict]:
     """Build dataset, indices, sampler, embedder, and unification helpers."""
     data_handler = DataHandler(
         dataset_name=args.dataset_name,
@@ -127,10 +128,10 @@ def _materialize_data_components(
     if hasattr(embedder, "to"):
         embedder = embedder.to(device)
 
-    unification_engine = UnificationEngine.from_index_manager(index_manager)
-    atom_stringifier = AtomStringifier.from_index_manager(index_manager)
+    stringifier_params = index_manager.get_stringifier_params()
+    unification_engine = UnificationEngine.from_index_manager(index_manager, stringifier_params=stringifier_params)
 
-    return data_handler, index_manager, sampler, embedder, unification_engine, atom_stringifier
+    return data_handler, index_manager, sampler, embedder, unification_engine, stringifier_params
 
 
 def _make_env_from_split(
@@ -142,12 +143,12 @@ def _make_env_from_split(
     index_manager: IndexManager,
     sampler: Sampler,
     unification_engine: UnificationEngine,
-    atom_stringifier: AtomStringifier,
+    stringifier_params: dict,
     device: torch.device,
 ) -> BatchedEnv:
     """Instantiate a BatchedEnv for a specific dataset split."""
     env = BatchedEnv(
-        batch_size=max(1, int(batch_size)),
+        batch_size=int(batch_size),
         queries=split.queries,
         labels=split.labels,
         query_depths=split.depths,
@@ -162,14 +163,15 @@ def _make_env_from_split(
         padding_states=args.padding_states,
         true_pred_idx=index_manager.true_pred_idx,
         false_pred_idx=index_manager.false_pred_idx,
-        end_pred_idx=index_manager.end_pred_idx if getattr(args, "endf_action", False) else None,
-        atom_stringifier=atom_stringifier if getattr(args, "verbose_env", 0) > 0 else None,
+        end_pred_idx=index_manager.end_pred_idx if getattr(args, "end_proof_action", False) else None,
+        stringifier_params=stringifier_params,
         corruption_mode=args.corruption_mode if mode == "train" else False,
         corruption_scheme=args.corruption_scheme,
         train_neg_ratio=args.train_neg_ratio if mode == "train" else 0.0,
         max_depth=args.max_depth,
         memory_pruning=args.memory_pruning if mode == "train" else False,
-        end_proof_action=getattr(args, "endf_action", False),
+        eval_pruning=getattr(args, "eval_pruning", False),
+        end_proof_action=getattr(args, "end_proof_action", False),
         skip_unary_actions=args.skip_unary_actions,
         reward_type=args.reward_type,
         verbose=getattr(args, "verbose_env", 0),
@@ -391,7 +393,7 @@ class TrainingLogger:
 # Training loop
 # ---------------------------------------------------------------------------
 
-def _train(
+def train(
     args: Any,
     actor: nn.Module,
     critic: nn.Module,
@@ -402,6 +404,7 @@ def _train(
     data_handler: DataHandler,
     model_path: Path,
     device: torch.device,
+    use_ppo_base: bool = True,
 ) -> Tuple[nn.Module, nn.Module]:
     if args.timesteps_train <= 0:
         print("No training requested (timesteps_train <= 0). Skipping optimization.")
@@ -410,8 +413,8 @@ def _train(
     logger = TrainingLogger(model_path, use_tensorboard=True)
 
     rollout_callback = RolloutProgressCallback(
-        total_steps=args.n_steps * args.n_envs,
-        n_envs=args.n_envs,
+        total_steps=args.n_steps * args.batch_size_env,
+        n_envs=args.batch_size_env,
         update_interval=25,
         verbose=True,
     )
@@ -444,7 +447,11 @@ def _train(
     )
     callback_manager.on_training_start()
 
-    ppo_agent = PPOAgent(
+    agent_cls = PPOAgent if use_ppo_base else PPOAgentTorchRL
+    use_amp = getattr(args, "use_amp", device.type == "cuda")
+    setattr(args, "use_amp", use_amp)
+
+    ppo_agent = agent_cls(
         actor=actor,
         critic=critic,
         optimizer=optimizer,
@@ -454,7 +461,7 @@ def _train(
         data_handler=data_handler,
         index_manager=None,
         args=args,
-        n_envs=args.n_envs,
+        n_envs=args.batch_size_env,
         n_steps=args.n_steps,
         n_epochs=args.n_epochs,
         batch_size=args.batch_size,
@@ -470,6 +477,7 @@ def _train(
         verbose_cb=getattr(args, "verbose_cb", False),
         debug_mode=getattr(args, "debug_ppo", False),
         min_multiaction_ratio=getattr(args, "min_multiaction_ratio", 0.05),
+        use_amp=use_amp,
     )
 
     actor, critic = ppo_agent.train(
@@ -513,7 +521,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         sampler,
         embedder,
         unification_engine,
-        atom_stringifier,
+        stringifier_params,
     ) = _materialize_data_components(args, device)
 
     train_split = data_handler.get_materialized_split("train")
@@ -523,50 +531,71 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     train_env = _make_env_from_split(
         train_split,
         mode="train",
-        batch_size=args.n_envs,
+        batch_size=args.batch_size_env,
         args=args,
         index_manager=index_manager,
         sampler=sampler,
         unification_engine=unification_engine,
-        atom_stringifier=atom_stringifier,
+        stringifier_params=stringifier_params,
         device=device,
     )
     eval_env = _make_env_from_split(
         valid_split,
         mode="eval",
-        batch_size=getattr(args, "n_eval_envs", args.n_envs),
+        batch_size=args.batch_size_env_eval,
         args=args,
         index_manager=index_manager,
         sampler=sampler,
         unification_engine=unification_engine,
-        atom_stringifier=atom_stringifier,
+        stringifier_params=stringifier_params,
         device=device,
     )
     test_env = _make_env_from_split(
         test_split,
         mode="eval",
-        batch_size=getattr(args, "n_eval_envs", args.n_envs),
+        batch_size=args.batch_size_env_eval,
         args=args,
         index_manager=index_manager,
         sampler=sampler,
         unification_engine=unification_engine,
-        atom_stringifier=atom_stringifier,
+        stringifier_params=stringifier_params,
         device=device,
     )
 
     embed_dim = getattr(embedder, "embed_dim", getattr(embedder, "atom_embedding_size", args.atom_embedding_size))
-    actor, critic = create_torchrl_modules(
-        embedder=embedder,
-        num_actions=args.padding_states,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=8,
-        dropout_prob=0.2,
-        device=device,
-        enable_kge_action=False,
-        kge_inference_engine=None,
-        index_manager=index_manager,
-    )
+    use_ppo_base = getattr(args, "use_ppo_base", False)
+    if use_ppo_base:
+        actor, critic = create_torch_modules(
+            embedder=embedder,
+            num_actions=args.padding_states,
+            embed_dim=embed_dim,
+            hidden_dim=128,
+            num_layers=8,
+            dropout_prob=0.2,
+            device=device,
+            enable_kge_action=False,
+            kge_inference_engine=None,
+            index_manager=index_manager,
+        )
+    else:
+        actor, critic = create_torchrl_modules(
+            embedder=embedder,
+            num_actions=args.padding_states,
+            embed_dim=embed_dim,
+            hidden_dim=128,
+            num_layers=8,
+            dropout_prob=0.2,
+            device=device,
+            enable_kge_action=False,
+            kge_inference_engine=None,
+            index_manager=index_manager,
+        )
+
+    # Wrap models with DataParallel for multi-GPU training
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        print(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
+        actor = torch.nn.DataParallel(actor)
+        critic = torch.nn.DataParallel(critic)
 
     params = {id(p): p for p in list(actor.parameters()) + list(critic.parameters())}
     optimizer = torch.optim.Adam(params.values(), lr=args.lr)
@@ -580,7 +609,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
             raise FileNotFoundError(f"No checkpoint found in {model_path}")
         _load_checkpoint(actor, critic, optimizer, ckpt, device)
     else:
-        actor, critic = _train(
+        actor, critic = train(
             args,
             actor,
             critic,
@@ -591,6 +620,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
             data_handler,
             model_path,
             device,
+            use_ppo_base=use_ppo_base,
         )
 
     actor.apply(_freeze_dropout_layernorm)

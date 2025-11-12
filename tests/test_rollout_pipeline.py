@@ -16,15 +16,17 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 from sampler import Sampler, SamplerConfig
 from embeddings import get_embedder
-from ppo.ppo_model import create_torchrl_modules
+from ppo.ppo_model_torchrl import create_torchrl_modules
+from ppo.ppo_model import create_torch_modules
 from env import BatchedEnv
+from ppo.ppo_agent_torchrl import PPOAgentTorchRL
 from ppo.ppo_agent import PPOAgent
-from ppo.ppo_rollout_custom import CustomRolloutCollector
+from ppo.ppo_rollout import RolloutCollector
 from unification_engine import UnificationEngine
-from atom_stringifier import AtomStringifier
 
+USE_TORCHRL = False
 
-def test_vectorized_batched_pipeline(n_tests=1, device='None'):
+def test_vectorized_batched_pipeline(n_tests=1, device='None', use_torchrl=True):
     """
     Test the full pipeline with a vectorized batched environment.
     
@@ -39,9 +41,10 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     args = SimpleNamespace(
         dataset_name="countries_s3",
         max_depth=20,  # Reduce max depth so episodes complete faster
-        batch_size=4,  # Vectorized batch size
-        n_steps=40,    # Steps per rollout
-        n_epochs=2,    # PPO epochs
+        batch_size_model=8192,  # PPO batch size
+        batch_size_env=512,    # Number of queries in the env
+        n_steps=64,    # Steps per rollout
+        n_epochs=5,    # PPO epochs
         data_path="data",
         janus_file=None,  # Don't use janus file
         train_file="train.txt",
@@ -74,7 +77,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         # Engine
         engine='python_tensor',
         endt_action=False,
-        endf_action=True,  # include explicit END action to guarantee at least two choices
+        end_proof_action=True,  # include explicit END action to guarantee at least two choices
         skip_unary_actions=False,  # keep unary expansions for broader branching
         memory_pruning=False,  # DISABLED to test if this is the issue
         reward_type=4,  # Symmetric rewards so negatives matter
@@ -91,6 +94,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    args.use_amp = isinstance(device, torch.device) and device.type == 'cuda'
 
     # ============================================================
     # 1. Build DataHandler
@@ -140,27 +144,14 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     print("\n[3/10] Creating negative sampler")
     
     # Prepare all known triples for filtering
-    all_triples_tensor = dh.all_known_triples_idx.to('cpu')
-    
-    # Determine default_mode from corruption_scheme
-    if args.corruption_scheme is not None:
-        if 'head' in args.corruption_scheme and 'tail' in args.corruption_scheme:
-            default_mode = 'both'
-        elif 'head' in args.corruption_scheme:
-            default_mode = 'head'
-        elif 'tail' in args.corruption_scheme:
-            default_mode = 'tail'
-        else:
-            default_mode = 'both'
-    else:
-        default_mode = 'both'
+    all_triples_tensor = dh.all_known_triples_idx.to(device)
     
     sampler = Sampler.from_data(
         all_known_triples_idx=all_triples_tensor,
         num_entities=im.constant_no,
         num_relations=im.predicate_no,
         device=device,
-        default_mode=default_mode,
+        default_mode=args.corruption_scheme,
         seed=args.seed_run_i,
     )
 
@@ -200,19 +191,19 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     # ============================================================
     # 5. Create vectorized batched environment
     # ============================================================
-    print(f"\n[5/10] Creating vectorized batched environment (batch_size={args.batch_size})...")
+    print(f"\n[5/10] Creating vectorized batched environment (batch_size={args.batch_size_env})...")
     start_time = time()
     
     # Use pre-materialized dataset splits for the environment
     train_split = dh.get_materialized_split('train')
     valid_split = dh.get_materialized_split('valid')
 
-    unification_engine = UnificationEngine.from_index_manager(im)
+    unification_engine = UnificationEngine.from_index_manager(im, stringifier_params=None)
     print(f"  UnificationEngine ready")
     
     # Create a single BatchedVecEnv with batch_size for vectorized processing
     train_env = BatchedEnv(
-        batch_size=args.batch_size,
+        batch_size=args.batch_size_env,
         unification_engine=unification_engine,
         queries=train_split.queries,
         labels=train_split.labels,
@@ -229,9 +220,9 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
         corruption_mode=args.corruption_mode,
         sampler=sampler,
         train_neg_ratio=args.train_neg_ratio,
-        end_proof_action=args.endf_action,
+        end_proof_action=args.end_proof_action,
         skip_unary_actions=args.skip_unary_actions,
-        end_pred_idx=im.predicate_str2idx.get('End', None) if args.endf_action else None,
+        end_pred_idx=im.predicate_str2idx.get('End', None) if args.end_proof_action else None,
         true_pred_idx=im.true_pred_idx,
         false_pred_idx=im.false_pred_idx,
         max_arity=im.max_arity,
@@ -249,22 +240,41 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     # ============================================================
     print("\n[6/10] Creating actor-critic modules...")
     start_time = time()
-    actor, critic = create_torchrl_modules(
-        embedder=embedder,
-        num_actions=args.padding_states,
-        embed_dim=args.atom_embedding_size,
-        hidden_dim=32,
-        num_layers=2,
-        dropout_prob=0.0,
-        device=device,
-        enable_kge_action=False,
-        kge_inference_engine=None,
-        index_manager=im,
-    )
+    hidden_dim = 256
+    num_layers = 4
+    if not use_torchrl:
+        actor, critic = create_torch_modules(
+            embedder=embedder,
+            num_actions=args.padding_states,
+            embed_dim=args.atom_embedding_size,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout_prob=0.0,
+            device=device,
+            enable_kge_action=False,
+            kge_inference_engine=None,
+            index_manager=im,
+        )
+    else:
+        actor, critic = create_torchrl_modules(
+            embedder=embedder,
+            num_actions=args.padding_states,
+            embed_dim=args.atom_embedding_size,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout_prob=0.0,
+            device=device,
+            enable_kge_action=False,
+            kge_inference_engine=None,
+            index_manager=im,
+        )
 
-    # Create optimizer
+    # Create optimizer with fused Adam for better performance on CUDA
     params_dict = {id(p): p for p in list(actor.parameters()) + list(critic.parameters())}
-    optimizer = torch.optim.Adam(params_dict.values(), lr=args.lr)
+    use_fused = device.type == 'cuda' and torch.cuda.is_available()
+    optimizer = torch.optim.AdamW(params_dict.values(), lr=args.lr, fused=use_fused)
+    if use_fused:
+        print(f"  Using fused AdamW optimizer for faster training")
     end_time = time()
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
     if n_tests == 6:
@@ -279,71 +289,23 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     print("="*60)
     start_time = time()
     
-    rollout_collector = CustomRolloutCollector(
+    rollout_collector = RolloutCollector(
         env=train_env,
         actor=actor,
-        n_envs=args.batch_size,
+        n_envs=args.batch_size_env,
         n_steps=args.n_steps,
         device=device,
-        debug=True,
-        debug_action_space=True,
-    )
-        
-    td_reset = train_env.reset()
-
-    # Print the FULL initial state in readable form
-    for i in range(min(2, args.batch_size)):
-        print(f"\n[DEBUG] Environment {i}:")
-        print(f"  Original query: {train_env.original_queries[i].tolist()}")
-        stringifier = train_env.atom_stringifier
-        if stringifier:
-            pred_idx = train_env.original_queries[i, 0].item()
-            pred_name = stringifier.idx2pred.get(pred_idx, f"UNKNOWN_{pred_idx}")
-            arg1_idx = train_env.original_queries[i, 1].item()
-            arg1_name = stringifier.idx2const.get(arg1_idx, f"VAR_{arg1_idx}")
-            arg2_idx = train_env.original_queries[i, 2].item()
-            arg2_name = stringifier.idx2const.get(arg2_idx, f"VAR_{arg2_idx}")
-            print(f"  Query readable: {pred_name}({arg1_name}, {arg2_name})")
-            print(f"  Label: {train_env.current_labels[i].item()}")
-        
-        print(f"  Current state (full):")
-        for j in range(train_env.padding_atoms):
-            atom = train_env.current_queries[i, j]
-            if atom[0].item() != im.padding_idx:
-                atom_str = stringifier.atom_to_string(atom) if stringifier else str(atom.tolist())
-                print(f"    [{j}]: {atom_str}")
-        
-        print(f"  Derived states count: {train_env.derived_states_counts[i].item()}")
-        for j in range(train_env.derived_states_counts[i].item()):
-            derived_state = train_env.derived_states_batch[i, j]
-            print(f"  Derived state {j}:")
-            for k in range(train_env.padding_atoms):
-                atom = derived_state[k]
-                if atom[0].item() != im.padding_idx:
-                    atom_str = stringifier.atom_to_string(atom) if stringifier else str(atom.tolist())
-                    print(f"      [{k}]: {atom_str}")
-    
+        debug=False,
+        debug_action_space=False,
+    )    
     experiences, stats = rollout_collector.collect(critic=critic)
-    
-    print(f"\nRollout collection complete:")
-    print(f"  Collected {len(experiences)} experience steps")
-    print(f"  Episodes completed: {len(stats.get('episode_info', []))}")
-    
+
     # Verify experience structure
     if len(experiences) > 0:
         exp = experiences[0]
-        print(f"\n  Experience tensordict keys: {list(exp.keys())}")
-        print(f"  Experience batch size: {exp.batch_size}")
-        
         # Check rewards
         if 'next' in exp.keys() and 'reward' in exp['next'].keys():
             rewards = torch.stack([experiences[i]['next']['reward'] for i in range(len(experiences))])
-            print(f"\n  Reward statistics:")
-            print(f"    Mean: {rewards.mean().item():.4f}")
-            print(f"    Std: {rewards.std().item():.4f}")
-            print(f"    Min: {rewards.min().item():.4f}")
-            print(f"    Max: {rewards.max().item():.4f}")
-            print(f"    Unique values: {torch.unique(rewards).tolist()}")
             unique_rewards = torch.unique(rewards).tolist()
             assert any(r < 0 for r in unique_rewards), "Rollout should include negative rewards from corrupted queries"
             assert any(r > 0 for r in unique_rewards), "Rollout should include positive rewards from authentic queries"
@@ -359,40 +321,64 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None'):
     print("Testing PPO Learning")
     print("="*60)
     start_time = time()
-    
+
     if len(experiences) > 0:
-        print(f"Running PPO update on {len(experiences)} experiences...")
-        
-        # Create minimal PPO agent for testing
-        ppo_agent = PPOAgent(
-            actor=actor,
-            critic=critic,
-            optimizer=optimizer,
-            train_env=train_env,
-            eval_env=None,
-            sampler=sampler,
-            data_handler=dh,
-            args=args,
-            n_envs=args.batch_size,
-            n_steps=args.n_steps,
-            n_epochs=args.n_epochs,
-            batch_size=args.batch_size,
-            gamma=args.gamma,
-            gae_lambda=0.95,
-            clip_range=args.clip_range,
-            ent_coef=args.ent_coef,
-            value_coef=0.5,
-            max_grad_norm=0.5,
-            device=device,
-            debug_mode=True,
-            min_multiaction_ratio=args.min_multiaction_ratio,
-        )
+        if not use_torchrl:
+            ppo_agent = PPOAgent(
+                actor=actor,
+                critic=critic,
+                optimizer=optimizer,
+                train_env=train_env,
+                eval_env=None,
+                sampler=sampler,
+                data_handler=dh,
+                args=args,
+                n_envs=args.batch_size_env,
+                n_steps=args.n_steps,
+                n_epochs=args.n_epochs,
+                batch_size=args.batch_size_model,
+                gamma=args.gamma,
+                gae_lambda=0.95,
+                clip_range=args.clip_range,
+                ent_coef=args.ent_coef,
+                value_coef=0.5,
+                max_grad_norm=0.5,
+                device=device,
+                debug_mode=True,
+                min_multiaction_ratio=args.min_multiaction_ratio,
+                use_amp=args.use_amp,
+            )
+        else:
+            ppo_agent = PPOAgentTorchRL(
+                actor=actor,
+                critic=critic,
+                optimizer=optimizer,
+                train_env=train_env,
+                eval_env=None,
+                sampler=sampler,
+                data_handler=dh,
+                args=args,
+                n_envs=args.batch_size_env,
+                n_steps=args.n_steps,
+                n_epochs=args.n_epochs,
+                batch_size=args.batch_size_model,
+                gamma=args.gamma,
+                gae_lambda=0.95,
+                clip_range=args.clip_range,
+                ent_coef=args.ent_coef,
+                value_coef=0.5,
+                max_grad_norm=0.5,
+                device=device,
+                debug_mode=True,
+                min_multiaction_ratio=args.min_multiaction_ratio,
+                use_amp=args.use_amp,
+            )
         
         # Run learning step
         ppo_agent.learn(
             experiences=experiences,
             n_steps=args.n_steps,
-            n_envs=args.batch_size,
+            n_envs=args.batch_size_env,
         )
 
     end_time = time()
@@ -405,4 +391,4 @@ if __name__ == '__main__':
     # use cuda if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # device = 'cpu'
-    test_vectorized_batched_pipeline(n_tests=9, device=device)
+    test_vectorized_batched_pipeline(n_tests=8, device=device, use_torchrl=USE_TORCHRL)
