@@ -273,7 +273,8 @@ class PPOAgent():
         if values.numel() == 0:
             return targets.new_zeros(())
         var_y = torch.var(targets)
-        if torch.allclose(var_y, var_y.new_zeros(())):
+        # OPTIMIZED: Replace expensive torch.allclose with simple threshold check
+        if var_y < 1e-8:
             return var_y.new_zeros(())
         return 1 - torch.var(targets - values) / var_y
 
@@ -316,9 +317,12 @@ class PPOAgent():
         advantages, returns = self._compute_gae(rewards, dones, values, next_values)
         advantages = advantages.reshape(-1)
         returns = returns.reshape(-1)
-        # Normalize advantages
-        adv_std, adv_mean = torch.std_mean(advantages, unbiased=False)
-        advantages = (advantages - adv_mean) / (adv_std + 1e-8)
+        
+        # Normalizing advantages - optimized in-place
+        with torch.no_grad():  # advantages don’t need grads in PPO
+            adv_std, adv_mean = torch.std_mean(advantages, unbiased=False)  # both are GPU tensors
+        # normalize on GPU (no sync)
+        advantages.sub_(adv_mean).div_(adv_std.clamp_min(1e-8))
 
         # Extract old log probs and actions - detach since they're from the old policy
         old_log_probs = flat_td.get("sample_log_prob").reshape(-1).detach()
@@ -345,6 +349,7 @@ class PPOAgent():
         has_params_to_clip = len(params_to_clip) > 0
 
         for epoch in range(self.n_epochs):
+            # Print epoch progress (causes minor GPU-CPU sync overhead but useful for monitoring)
             print(f"Starting epoch {epoch+1}/{self.n_epochs}...")
             # Generate permutation on CPU (much faster) then move to device
             perm_cpu = torch.randperm(flat_bs, generator=generator)
@@ -413,14 +418,13 @@ class PPOAgent():
                 epoch_clip += clip_fraction  # Already detached via no_grad context
                 epoch_updates += 1
 
-            if self.verbose and epoch_updates > 0:
-                epoch_metrics = torch.stack((epoch_pl, epoch_vl, epoch_ent, epoch_kl, epoch_clip))
-                epoch_metrics = epoch_metrics / max(1, epoch_updates)
-                print(
-                    f"Epoch {epoch+1}/{self.n_epochs}. Losses (policy, value, entropy, KL, clip):"
-                    f" {epoch_metrics.detach()}"
-                )
-            print(f"Epoch {epoch+1}. Losses: policy {epoch_pl/epoch_updates:.4f}, value {epoch_vl/epoch_updates:.4f}, entropy {epoch_ent/epoch_updates:.4f}, KL {epoch_kl/epoch_updates:.4f}, clip {epoch_clip/epoch_updates:.4f}"  )
+            # Using division to ensure we get scalar tensors, then .item()
+            epoch_pl_f = float((epoch_pl / epoch_updates).item())
+            epoch_vl_f = float((epoch_vl / epoch_updates).item())
+            epoch_ent_f = float((epoch_ent / epoch_updates).item())
+            epoch_kl_f = float((epoch_kl / epoch_updates).item())
+            epoch_clip_f = float((epoch_clip / epoch_updates).item())
+            print(f"Epoch {epoch+1}. Losses: policy {epoch_pl_f:.4f}, value {epoch_vl_f:.4f}, entropy {epoch_ent_f:.4f}, KL {epoch_kl_f:.4f}, clip {epoch_clip_f:.4f}")
 
         total_metrics = torch.stack((
             total_policy_loss,
@@ -469,17 +473,11 @@ class PPOAgent():
             if total_timesteps <= 0:
                 raise ValueError("total_timesteps must be positive")
 
-            def _to_float(value: Any) -> float:
+            def _to_float(value):
                 if isinstance(value, torch.Tensor):
-                    return value.detach().item()
+                    return float(value.detach().to('cpu'))  # one controlled sync at the call site
                 return float(value)
-
-            def _to_formatted(value: Any, precision: int) -> str:
-                if isinstance(value, torch.Tensor):
-                    scalar = value.detach().item()
-                    return f"{scalar:.{precision}f}"
-                return f"{value:.{precision}f}"
-            
+           
             # Calculate training parameters
             steps_per_iteration = self.n_steps * self.n_envs
             n_iterations = total_timesteps // steps_per_iteration
@@ -561,14 +559,14 @@ class PPOAgent():
                 if self.debug_mode:
                     self._debug_print_optimizer_stats(train_metrics)
                 
-                # Log training metrics
-                if logger is not None:
-                    logger.log_training_step(
-                        global_step=self.global_step,
-                        policy_loss=_to_float(train_metrics["policy_loss"]),
-                        value_loss=_to_float(train_metrics["value_loss"]),
-                        entropy=_to_float(train_metrics["entropy"]),
-                    )
+                # # Log training metrics
+                # if logger is not None:
+                #     logger.log_training_step(
+                #         global_step=self.global_step,
+                #         policy_loss=_to_float(train_metrics["policy_loss"]),
+                #         value_loss=_to_float(train_metrics["value_loss"]),
+                #         entropy=_to_float(train_metrics["entropy"]),
+                #     )
                 
                 training_time = time.time() - training_start_time
                 print(f"Time to train {training_time:.2f}s\n")

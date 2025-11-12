@@ -53,6 +53,8 @@ if __name__ == "__main__":
         'valid_depth': None,
         'test_depth': None,
 
+        'load_depth_info': False,
+
         'n_train_queries': None,
         'n_eval_queries': 500,
         'n_test_queries': 500,
@@ -73,15 +75,14 @@ if __name__ == "__main__":
         'load_model': False,
         'save_model': True,
         'n_steps': 64,
-        'batch_size_env': 512,  # Now used as batch_size for BatchedVecEnv
-        'batch_size_env_eval': 512,  # Now used as batch_size for eval BatchedVecEnv
-        'batch_size': 8192,
+        'batch_size_env': 256,  # Now used as batch_size for BatchedVecEnv
+        'batch_size_env_eval': 256,  # Now used as batch_size for eval BatchedVecEnv
+        'batch_size': 2048,
         'use_ppo_base': True,
 
         # Env params
-        'reward_type': 1,
+        'reward_type': 0,
         'train_neg_ratio': 1,
-        'engine': 'python',
         'end_proof_action': True,
         'skip_unary_actions': True,
         'max_depth': 20,
@@ -95,9 +96,9 @@ if __name__ == "__main__":
         'state_embedder': 'mean',
         'atom_embedding_size': 100,
         'learn_embeddings': True,
-        'padding_atoms': 4,
+        'padding_atoms': 6,
         'padding_states': 20,  # if -1, auto-computed from dataset
-        'max_total_vars': 2000000,
+        'max_total_vars': 1000000,
 
         # Other params
         'device': 'cuda:1',  # 'cpu', 'cuda:1' (auto-select), or 'cuda:all'
@@ -150,45 +151,8 @@ if __name__ == "__main__":
         base_config['load_model'] = True
         base_config['timesteps_train'] = 0
 
-    # Handle device selection
-    device_choice = base_config.get('device', 'cuda:1')
-    min_memory_gb = base_config.get('min_gpu_memory_gb', 2.0)
-    
-    if device_choice == "cpu":
-        print("\n=== Using CPU ===")
-        print("Training will run on CPU (slower but always available)\n")
-        device = "cpu"
-    
-    elif device_choice == "cuda:1":
-        print("\n=== Auto-selecting GPU(s) ===")
-        device = select_device_with_min_memory(min_memory_gb=min_memory_gb, use_multiple_gpus=True)
-        if device == "cpu":
-            print("Falling back to CPU\n")
-        else:
-            print(f"Using device: {device}\n")
-    
-    elif device_choice == "cuda:all":
-        print("\n=== Using all available GPUs ===")
-        available_gpus = get_available_gpus(min_free_gb=min_memory_gb)
-        
-        if len(available_gpus) == 0:
-            device = "cpu"
-            print(f"No GPUs with at least {min_memory_gb} GB free memory found.")
-            print("Falling back to CPU\n")
-        elif len(available_gpus) == 1:
-            device = f"cuda:{available_gpus[0]}"
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(available_gpus[0])
-            print(f"Only 1 GPU available: GPU {available_gpus[0]}")
-            print(f"Using device: cuda:{available_gpus[0]}\n")
-        else:
-            print(f"Found {len(available_gpus)} GPUs: {available_gpus}")
-            print("Note: Multi-GPU training requires additional setup. Using first available GPU.")
-            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, available_gpus))
-            device = f"cuda:0"
-            print(f"Using device: cuda:0 (mapped from GPU {available_gpus[0]})\n")
-    else:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Using device: {device}\n")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}\n")
 
     # Prepare grid search
     grid_spec = {}
@@ -307,12 +271,13 @@ if __name__ == "__main__":
         from os.path import join
         dataset_path = join(namespace.data_path, namespace.dataset_name)
         
-        if os.path.exists(join(dataset_path, train_file.replace('.txt', '_depths.txt'))):
-            train_file = train_file.replace('.txt', '_depths.txt')
-        if os.path.exists(join(dataset_path, valid_file.replace('.txt', '_depths.txt'))):
-            valid_file = valid_file.replace('.txt', '_depths.txt')
-        if os.path.exists(join(dataset_path, test_file.replace('.txt', '_depths.txt'))):
-            test_file = test_file.replace('.txt', '_depths.txt')
+        if namespace.load_depth_info:
+            if os.path.exists(join(dataset_path, train_file.replace('.txt', '_depths.txt'))):
+                train_file = train_file.replace('.txt', '_depths.txt')
+            if os.path.exists(join(dataset_path, valid_file.replace('.txt', '_depths.txt'))):
+                valid_file = valid_file.replace('.txt', '_depths.txt')
+            if os.path.exists(join(dataset_path, test_file.replace('.txt', '_depths.txt'))):
+                test_file = test_file.replace('.txt', '_depths.txt')
 
         namespace.train_file = train_file
         namespace.valid_file = valid_file

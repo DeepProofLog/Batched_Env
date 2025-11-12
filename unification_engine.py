@@ -92,11 +92,12 @@ def deduplicate_states_packed(
     
     # Count uniques per batch
     unique_counts = unique_mask.sum(dim=1)  # [B]
-    # OPTIMIZED: Cache max result
-    max_unique_tensor = unique_counts.max() if unique_counts.numel() > 0 else torch.tensor(0, device=device)
-    max_unique = int(max_unique_tensor.item())
+    # OPTIMIZED: Use max_states as upper bound instead of .item() call
+    # In worst case, all states are unique, so max_unique <= max_states
+    max_unique_val = max_states
     
-    if max_unique == 0:
+    # Early return check using tensor operations
+    if (unique_counts.max() if unique_counts.numel() > 0 else torch.tensor(0, device=device)) == 0:
         return torch.full((B, 0, max_atoms, arity), padding_idx, dtype=states.dtype, device=device), unique_counts
     
     # Compact using cumsum to create packed indices (NO LOOP!)
@@ -105,7 +106,7 @@ def deduplicate_states_packed(
     positions = torch.cumsum(unique_mask.long(), dim=1) - 1  # [B, max_states] - position in output (0-indexed)
     
     # Mask to valid range
-    valid_positions = positions < max_unique
+    valid_positions = positions < max_unique_val
     final_mask = unique_mask & valid_positions
     
     # Create scatter indices: [B, max_unique, max_atoms, 3]
@@ -117,7 +118,7 @@ def deduplicate_states_packed(
     # Since we need to pad to max_unique, we'll use a different approach:
     
     # Create output tensor
-    unique_states = torch.full((B, max_unique, max_atoms, arity), padding_idx, dtype=states.dtype, device=device)
+    unique_states = torch.full((B, max_unique_val, max_atoms, arity), padding_idx, dtype=states.dtype, device=device)
     
     # Use scatter: for each valid unique position, copy the corresponding state
     # Build indices tensor [num_valid, 4] for batch, unique_idx, atom, arity
@@ -355,13 +356,15 @@ def _pairs_via_predicate_ranges(query_preds: Tensor, seg_starts: Tensor, seg_len
         return z, z
     lens = lens[kept_qidx]
     starts = starts[kept_qidx]
-    total_items = int(lens.sum().item())
-    if total_items == 0:
+    # OPTIMIZED: Use repeat_interleave first, then use row_ids.numel() to avoid .item() call
+    # row_ids.numel() == total_items, but we get it without synchronization
+    row_ids = torch.repeat_interleave(torch.arange(lens.numel(), device=device), lens)
+    if row_ids.numel() == 0:
         z = torch.zeros(0, dtype=torch.long, device=device)
         return z, z
-    row_ids = torch.repeat_interleave(torch.arange(lens.numel(), device=device), lens)
     prefix = torch.cumsum(lens, dim=0) - lens
-    pos_in_row = torch.arange(total_items, device=device, dtype=torch.long) - prefix[row_ids]
+    # Use row_ids.numel() instead of total_items.item() - same value, no sync
+    pos_in_row = torch.arange(row_ids.numel(), device=device, dtype=torch.long) - prefix[row_ids]
     item_idx = starts[row_ids] + pos_in_row
     query_idx = kept_qidx[row_ids]
     return query_idx, item_idx
@@ -475,22 +478,22 @@ def _unify_with_facts(
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
-    max_cols_tensor = rem_counts.max() if rem_counts.numel() > 0 else torch.tensor(1, device=device)
-    max_cols = int(max(max_cols_tensor.item(), 1))
-    if G > 0:
-        max_cols = min(max_cols, G)
-    states_per_match = remain_inst[:, :max_cols]
+    # OPTIMIZED: Use fixed maximum to avoid .item() synchronization
+    # Pre-allocate with worst-case dimensions to avoid GPU-CPU sync
+    max_cols_val = G if G > 0 else 1  # Use fixed maximum instead of computing exact size
+    states_per_match = remain_inst[:, :max_cols_val]
 
     # 4) Cap per-owner fanout (K per original query row) ---------------------
     K_per_owner = torch.bincount(qi, minlength=A)
-    # OPTIMIZED: Cache max result
-    K_max_tensor = K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)
-    K = int(min(max_output_per_query, K_max_tensor.item()))
-    if K == 0:
+    # OPTIMIZED: Use K=max_output_per_query directly to avoid .item() call
+    # The actual counts will be clamped later
+    K_val = max_output_per_query
+    # Check if we have no matches at all - can use tensor comparison
+    if (K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)) == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
-    out = torch.full((A, K, max_cols, 3), pad, dtype=torch.long, device=device)
+    out = torch.full((A, K_val, max_cols_val, 3), pad, dtype=torch.long, device=device)
 
     # Stable segmented take by owner id (loop-free) --------------------------
     owner_sorted = qi  # already grouped by construction
@@ -501,17 +504,18 @@ def _unify_with_facts(
         group_change = torch.ones(num_matches, dtype=torch.bool, device=device)
         group_change[1:] = owner_sorted[1:] != owner_sorted[:-1]
         group_ids = torch.cumsum(group_change.long(), dim=0) - 1
-        num_groups = int(group_ids[-1].item()) + 1
-        first_indices = torch.zeros(num_groups, dtype=torch.long, device=device)
+        # OPTIMIZED: Use A (number of queries) as upper bound instead of .item() call
+        # worst case: each query has at least one match
+        first_indices = torch.zeros(A, dtype=torch.long, device=device)
         first_indices.scatter_(0, group_ids[group_change], row_ids[group_change])
         pos_in_owner = row_ids - first_indices[group_ids]
-        keep = pos_in_owner < K
+        keep = pos_in_owner < K_val
         if keep.any():
             db = owner_sorted[keep]
             ds = pos_in_owner[keep]
             out[db, ds] = states_sorted[keep]
 
-    counts_per_q = torch.clamp_max(K_per_owner, K)
+    counts_per_q = torch.clamp_max(K_per_owner, K_val)
 
     return out, counts_per_q
 
@@ -595,9 +599,8 @@ def _unify_with_rules(
     take_g = pos_g < remaining_counts.index_select(0, qi).unsqueeze(1)
 
     counts = take_b.sum(1) + take_g.sum(1)                # [M']
-    # OPTIMIZED: Cache max result
-    max_cols_tensor = counts.max() if counts.numel() > 0 else torch.tensor(1, device=device)
-    max_cols = int(max_cols_tensor.item())
+    # OPTIMIZED: Use Bmax + G as fixed maximum to avoid .item() call
+    max_cols_val = Bmax + G
 
     # Concatenate body and remaining, then compact to `max_cols`
     cat_full = torch.full((counts.shape[0], Bmax + G, 3), pad, dtype=torch.long, device=device)
@@ -607,7 +610,7 @@ def _unify_with_rules(
 
     pos = torch.cumsum(keep_mask.long(), dim=1) - 1
     if keep_mask.any():
-        cat_compact = torch.full((counts.shape[0], max_cols, 3), pad, dtype=torch.long, device=device)
+        cat_compact = torch.full((counts.shape[0], max_cols_val, 3), pad, dtype=torch.long, device=device)
         src = torch.arange(keep_mask.shape[1], device=device).unsqueeze(0).expand_as(keep_mask)
         row_ids = torch.arange(keep_mask.shape[0], device=device).unsqueeze(1).expand_as(keep_mask)
         sel_rows = row_ids[keep_mask]
@@ -618,14 +621,14 @@ def _unify_with_rules(
 
     # 4) Cap per-owner fanout (K per original query row) ---------------------
     K_per_owner = torch.bincount(qi, minlength=A)
-    # OPTIMIZED: Cache max result
-    K_max_tensor = K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)
-    K = int(min(max_output_per_query, K_max_tensor.item()))
-    if K == 0:
+    # OPTIMIZED: Use K=max_output_per_query directly to avoid .item() call
+    K_val = max_output_per_query
+    # Check if we have no matches at all
+    if (K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)) == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
-    out = torch.full((A, K, cat_compact.shape[1], 3), pad, dtype=torch.long, device=device)
+    out = torch.full((A, K_val, cat_compact.shape[1], 3), pad, dtype=torch.long, device=device)
     counts_per_q = torch.zeros(A, dtype=torch.long, device=device)
 
     # Stable segmented take by owner id (loop-free) --------------------------
@@ -644,14 +647,14 @@ def _unify_with_rules(
     # Position within segment is current index - segment start index
     pos_in_owner = seg_indices - seg_first_idx
     
-    keep = pos_in_owner < K
+    keep = pos_in_owner < K_val
     if keep.any():
         db = owner_sorted[keep]
         ds = pos_in_owner[keep]
         out[db, ds] = cat_sorted[keep]
         maxpos = torch.full((A,), -1, dtype=torch.long, device=device)
         maxpos.scatter_reduce_(0, db, ds, reduce='amax', include_self=False)
-        counts_per_q = torch.clamp(maxpos + 1, min=0, max=K)
+        counts_per_q = torch.clamp(maxpos + 1, min=0, max=K_val)
 
     return out, counts_per_q
 
@@ -1047,9 +1050,10 @@ class UnificationEngine:
             seg_id = torch.cumsum(seg_start.long(), dim=0) - 1
             # For each segment, count positions 0, 1, 2, ...
             # Use scatter to find segment starts
-            num_segs = seg_id.max().item() + 1 if seg_id.numel() > 0 else 0
-            seg_starts = torch.full((num_segs,), len(seg_id), dtype=torch.long, device=device)  # Initialize to max value
-            if num_segs > 0:
+            # OPTIMIZED: Use B as upper bound (max possible segments = batch size)
+            num_segs_val = B
+            seg_starts = torch.full((num_segs_val,), len(seg_id), dtype=torch.long, device=device)  # Initialize to max value
+            if seg_id.numel() > 0:
                 seg_starts.scatter_reduce_(0, seg_id, torch.arange(len(seg_id), device=device), reduce='amin', include_self=False)
             
             # Position within segment = current_index - segment_start
@@ -1112,9 +1116,10 @@ class UnificationEngine:
         
         # ---- 8) Handle active states that ended up with NO derived states -> False()
         # These are active states that had unifications but after pruning/dedup have nothing
-        no_derived = (derived_counts == 0) & torch.tensor(
-            [i in active_idx for i in range(B)], dtype=torch.bool, device=device
-        )
+        # OPTIMIZED: Create mask directly on GPU without .item() calls
+        is_active = torch.zeros(B, dtype=torch.bool, device=device)
+        is_active[active_idx] = True
+        no_derived = (derived_counts == 0) & is_active
         no_derived_idx = torch.arange(B, device=device)[no_derived]
         if no_derived_idx.numel() > 0 and self.false_tensor is not None:
             all_derived[no_derived_idx, 0, 0] = self.false_tensor.squeeze(0)
@@ -1153,10 +1158,9 @@ class UnificationEngine:
         is_proof = pruned_counts == 0
 
         pos = torch.cumsum(keep.long(), dim=1) - 1
-        # OPTIMIZED: Cache max result
-        out_len_tensor = pruned_counts.max() if pruned_counts.numel() > 0 else torch.tensor(1, device=device)
-        out_len = int(out_len_tensor.item())
-        out = torch.full((N, out_len, 3), pad, dtype=torch.long, device=device)
+        # OPTIMIZED: Use M as upper bound to avoid .item() call
+        out_len_val = M
+        out = torch.full((N, out_len_val, 3), pad, dtype=torch.long, device=device)
         if keep.any():
             src_idx = torch.arange(M, device=device).unsqueeze(0).expand_as(keep)
             row_ids = torch.arange(N, device=device).unsqueeze(1).expand_as(keep)

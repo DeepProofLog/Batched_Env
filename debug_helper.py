@@ -53,6 +53,10 @@ class DebugHelper:
         """Set the verbosity level."""
         self.verbose = int(level)
 
+    def is_enabled(self, level: int = 1) -> bool:
+        """Check if debugging is enabled at the given level."""
+        return self.verbose >= level
+
     def _log(self, level: int, message: str) -> None:
         """Log a message if verbosity level is sufficient."""
         if self.verbose >= level:
@@ -106,6 +110,9 @@ class DebugHelper:
         rewards: Optional[torch.Tensor] = None
     ) -> None:
         """Dump current and derived states for specified rows (or all)."""
+        if self.verbose < level:
+            return  # Skip all work when not verbose enough
+        
         print("\n")
         if rows is None:
             if self.batch_size_int is not None:
@@ -149,7 +156,7 @@ class DebugHelper:
     def print_states(self, title: str, states_tensor: torch.Tensor, counts: Optional[torch.Tensor] = None, padding_idx: Optional[int] = None) -> None:
         """Print states in human-readable format."""
         if self.verbose <= 0:
-            return
+            return  # Skip all work when not verbose
         
         pad = padding_idx if padding_idx is not None else self.padding_idx
         

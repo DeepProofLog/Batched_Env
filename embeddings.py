@@ -731,6 +731,15 @@ class TransE(nn.Module):
     def forward(self, predicate_emb: torch.Tensor, constant_embs: torch.Tensor) -> torch.Tensor:
         predicate_emb = predicate_emb.squeeze(-2)
         head, tail = constant_embs[..., 0, :], constant_embs[..., 1, :]
+        
+        # Debug: check shapes to detect explosion
+        if predicate_emb.numel() > 1e9:  # More than 1 billion elements
+            print(
+                f"Tensor explosion detected! "
+                f"predicate_emb.shape={predicate_emb.shape} ({predicate_emb.numel()} elements), "
+                f"head.shape={head.shape}, tail.shape={tail.shape}"
+            )
+        
         predicate_emb = self.dropout(predicate_emb)
         head = self.dropout(head)
         tail = self.dropout(tail)
