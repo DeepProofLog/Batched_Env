@@ -478,7 +478,8 @@ class LogicEnv_gym(gym.Env):
         info["query_depth"] = self.current_query_depth_value
         info["max_depth_reached"] = bool(exceeded_max_depth)
         if done_next:
-            info["is_success"] = successful and not truncated
+            # Match tensor_env behavior: success is based on proof completion, not truncation
+            info["is_success"] = successful
             # if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
             #     janus.query_once(f"asserta({self.current_query.prolog_str()}).")
             #     # janus.query_once(f"asserta({self.current_query}).")
