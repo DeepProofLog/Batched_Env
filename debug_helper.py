@@ -78,10 +78,15 @@ class DebugHelper:
         return f"{ps}({term_str(a)},{term_str(b)})"
 
     def state_to_str(self, state_idx: torch.LongTensor) -> str:
-        """Convert a state index tensor to a string representation."""
+        """Convert a state index tensor to a string representation, excluding padding."""
         if state_idx.numel() == 0:
             return "<empty>"
-        parts = [self.atom_to_str(row) for row in state_idx]
+        # Filter out padding atoms
+        non_pad_mask = state_idx[:, 0] != self.padding_idx
+        non_pad_atoms = state_idx[non_pad_mask]
+        if non_pad_atoms.numel() == 0:
+            return "<empty>"
+        parts = [self.atom_to_str(row) for row in non_pad_atoms]
         return ", ".join(parts)
 
     def _format_atoms(self, state: torch.Tensor) -> list[str]:

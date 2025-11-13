@@ -501,7 +501,7 @@ class BatchedEnv(EnvBase):
                 all_derived, derived_counts_subset, updated_var_indices = self.unification_engine.get_derived_states(
                     current_states=self.current_queries.index_select(0, non_terminal_idx),
                     next_var_indices=self.next_var_indices.index_select(0, non_terminal_idx),
-                    excluded_queries=self.original_queries.index_select(0, non_terminal_idx),
+                    excluded_queries=self.original_queries.index_select(0, non_terminal_idx).unsqueeze(1),
                     verbose=self.prover_verbose,
                     max_derived_per_state=self.padding_states,
                 )
@@ -804,7 +804,7 @@ class BatchedEnv(EnvBase):
                 sub_derived, sub_counts, sub_next = self.unification_engine.get_derived_states(
                     current_states=self.current_queries.index_select(0, non_terminal_in_promoted),
                     next_var_indices=self.next_var_indices.index_select(0, non_terminal_in_promoted),
-                    excluded_queries=self.original_queries.index_select(0, non_terminal_in_promoted),
+                    excluded_queries=self.original_queries.index_select(0, non_terminal_in_promoted).unsqueeze(1),
                     verbose=self.prover_verbose,
                     max_derived_per_state=self.padding_states,
                 )

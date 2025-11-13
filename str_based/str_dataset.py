@@ -5,10 +5,7 @@ import re
 import ast
 from collections import defaultdict
 
-# import janus_swi as janus
-janus = None 
-
-from str_utils import is_variable, Term, Rule, get_atom_from_string, get_rule_from_string
+from str_based.str_utils import is_variable, Term, Rule, get_atom_from_string
 
 
 

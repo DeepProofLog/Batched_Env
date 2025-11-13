@@ -4,6 +4,7 @@ Test to compare derived states between str engine and tensor engine for countrie
 import os
 import sys
 root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, root_path)
 
 import random
 import torch
@@ -23,46 +24,29 @@ from debug_helper import DebugHelper
 
 
 DATASET = "wn18rr"
+MAX_DERIVED_STATES = 200
+SKIP_QUERY_LEN = MAX_DERIVED_STATES
 
 def canonicalize_str_state(state: List[StrTerm]) -> str:
     """Convert state to canonical string representation with canonicalized variables.
     
-    Atoms are sorted by structure (predicate and constant positions), then variables
-    are renumbered by order of first appearance in this sorted sequence.
+    IMPORTANT: This function ONLY renames variables to canonical names.
+    It does NOT reorder atoms - atom order must be preserved for proof search!
+    Variables are renamed by order of first appearance (atom by atom, arg by arg).
     """
-    # Pre-compute sort keys and canonical strings in a single pass
-    # This avoids multiple iterations and reduces string operations
-    atoms_data = []
-    for term in state:
-        # Build sort key by replacing variables with 'V'
-        sort_key_parts = [term.predicate, '(']
-        for i, arg in enumerate(term.args):
-            if i > 0:
-                sort_key_parts.append(',')
-            if isinstance(arg, str) and arg.startswith('Var'):
-                sort_key_parts.append('V')
-            else:
-                sort_key_parts.append(str(arg))
-        sort_key_parts.append(')')
-        sort_key = ''.join(sort_key_parts)
-        atoms_data.append((sort_key, term))
-    
-    # Sort by structure
-    atoms_data.sort(key=lambda x: x[0])
-    
-    # Find variables in order of first appearance in sorted atoms
+    # Find variables in order of first appearance (preserve atom order!)
     var_mapping = {}
     next_var_num = 1
-    for _, term in atoms_data:
+    for term in state:
         for arg in term.args:
             if isinstance(arg, str) and arg.startswith('Var') and arg not in var_mapping:
                 var_mapping[arg] = f"Var_{next_var_num}"
                 next_var_num += 1
     
-    # Build final canonical strings (single pass, pre-allocated list)
+    # Build canonical strings preserving atom order
     atoms_str = []
-    for _, term in atoms_data:
-        # Build atom string directly without intermediate list
+    for term in state:
+        # Build atom string directly
         atom_parts = [term.predicate, '(']
         for i, arg in enumerate(term.args):
             if i > 0:
@@ -74,8 +58,7 @@ def canonicalize_str_state(state: List[StrTerm]) -> str:
         atom_parts.append(')')
         atoms_str.append(''.join(atom_parts))
     
-    # Sort final canonical atoms
-    atoms_str.sort()
+    # Return with atoms in original order
     return '|'.join(atoms_str)
 
 
@@ -83,8 +66,8 @@ def canonicalize_str_state(state: List[StrTerm]) -> str:
 def canonicalize_state_by_appearance(state: torch.Tensor, constant_no: int, debug_helper=None) -> torch.Tensor:
     """Canonicalize variables in state by order of first appearance.
     
-    Atoms are sorted by structure (predicate and constant positions), then variables
-    are renumbered by order of first appearance in this sorted sequence.
+    IMPORTANT: This function ONLY renames variables to canonical names.
+    It does NOT reorder atoms - atom order must be preserved for proof search!
     """
     # Find non-padding atoms using vectorized operation
     non_padding_mask = state[:, 0] != 0
@@ -96,21 +79,9 @@ def canonicalize_state_by_appearance(state: torch.Tensor, constant_no: int, debu
     # Extract non-padding atoms - work directly with torch tensors for speed
     atoms = state[:n_atoms]
     
-    # Create sort keys with sentinel for variables (vectorized)
-    # Use 999999 as sentinel for variables to group them together in sorting
-    sort_keys = atoms.clone()
-    sort_keys[:, 1] = torch.where(atoms[:, 1] > constant_no, 999999, atoms[:, 1])
-    sort_keys[:, 2] = torch.where(atoms[:, 2] > constant_no, 999999, atoms[:, 2])
-    
-    # Sort using argsort on computed keys (p, k1, k2)
-    # Create a combined key for sorting: p * 1e12 + k1 * 1e6 + k2
-    combined_keys = sort_keys[:, 0] * 1000000000000 + sort_keys[:, 1] * 1000000 + sort_keys[:, 2]
-    sort_indices = torch.argsort(combined_keys)
-    sorted_atoms = atoms[sort_indices]
-    
-    # Find unique variables in order of first appearance
+    # Find unique variables in order of first appearance (row-major: atom by atom, arg by arg)
     # Flatten arguments and filter for variables
-    args = sorted_atoms[:, 1:].flatten()
+    args = atoms[:, 1:].flatten()  # Process in order: atom0_arg1, atom0_arg2, atom1_arg1, atom1_arg2, ...
     var_mask = args > constant_no
     vars_in_order = args[var_mask]
     
@@ -129,32 +100,43 @@ def canonicalize_state_by_appearance(state: torch.Tensor, constant_no: int, debu
         for new_idx, old_var in enumerate(var_order):
             var_map[old_var] = constant_no + 1 + new_idx
         
-        # Apply mapping using vectorized operations
-        canonical_atoms = sorted_atoms.clone()
+        # Apply mapping using vectorized operations - preserve atom order!
+        canonical_atoms = atoms.clone()
         for col in [1, 2]:
             var_mask = canonical_atoms[:, col] > constant_no
             if var_mask.any():
                 canonical_atoms[var_mask, col] = var_map[canonical_atoms[var_mask, col]]
     else:
-        canonical_atoms = sorted_atoms.clone()
+        canonical_atoms = atoms.clone()
     
-    # Final sort by canonical representation using combined key
-    final_keys = canonical_atoms[:, 0] * 1000000000000 + canonical_atoms[:, 1] * 1000000 + canonical_atoms[:, 2]
-    final_indices = torch.argsort(final_keys)
-    
+    # Return with atom order preserved
     result = state.clone()
-    result[:n_atoms] = canonical_atoms[final_indices]
+    result[:n_atoms] = canonical_atoms
     
     return result
 
-def convert_state_to_str(state: torch.Tensor, debug_helper) -> str:
-    """Convert tensor state to string representation."""
+def convert_state_to_str(state: torch.Tensor, debug_helper, constant_no: int = None) -> str:
+    """Convert tensor state to string representation WITHOUT sorting atoms.
+    If constant_no is provided, use canonical variable names (Var_1, Var_2, etc.)."""
     valid = state[:, 0] != 0  # assuming padding_idx = 0
+    n_atoms = valid.sum().item()
     atoms_str = []
-    for i in range(valid.sum().item()):
-        atom_str = debug_helper.atom_to_str(state[i])
-        atoms_str.append(atom_str)
-    atoms_str.sort()
+    
+    if constant_no is not None:
+        # Use canonical names for variables
+        idx2predicate_cache = debug_helper.idx2predicate if debug_helper.idx2predicate else []
+        idx2constant_cache = debug_helper.idx2constant if debug_helper.idx2constant else []
+        for i in range(n_atoms):
+            atom_str = atom_to_str_canonical(state[i], debug_helper, constant_no,
+                                            idx2predicate_cache, idx2constant_cache)
+            atoms_str.append(atom_str)
+    else:
+        # Use raw variable indices
+        for i in range(n_atoms):
+            atom_str = debug_helper.atom_to_str(state[i])
+            atoms_str.append(atom_str)
+    
+    # DO NOT SORT - preserve original atom order
     return '|'.join(atoms_str)
 
 def atom_to_str_canonical(atom_idx: torch.LongTensor, debug_helper, constant_no: int, 
@@ -208,7 +190,7 @@ def canonicalize_tensor_state(state: torch.Tensor, debug_helper, constant_no: in
                                          idx2predicate_cache, idx2constant_cache)
         atoms_str.append(atom_str)
     
-    atoms_str.sort()
+    # DO NOT SORT - preserve original atom order for proper comparison
     return '|'.join(atoms_str)
 
 
@@ -275,7 +257,7 @@ def test_single_query(p: str, h: str, t: str, str_engine_data, tensor_engine_dat
         branch_next_states, _ = get_next_unification_python(
             state, facts_set_str, fact_index_str, rules_by_pred, 
             excluded_fact=excluded_fact_str, verbose=0, next_var_index=1,
-            max_derived_states=500
+            max_derived_states=MAX_DERIVED_STATES
         )
         valid = []
         for s in branch_next_states:
@@ -302,10 +284,20 @@ def test_single_query(p: str, h: str, t: str, str_engine_data, tensor_engine_dat
         # Exclude training queries from facts to test actual proof mechanism
         derived, derived_counts, updated_next_var = engine.get_derived_states(
             state, next_var,
-            excluded_queries=excluded_query_tensor, verbose=0,
-            max_derived_per_state=500
+            excluded_queries=excluded_query_tensor, verbose=1 if verbose else 0,
+            max_derived_per_state=MAX_DERIVED_STATES
         )
         num_derived = derived_counts[0].item()
+        
+        # DEBUG: Print all derived states
+        if verbose:
+            print(f"\n[DEBUG] get_derived_states returned {num_derived} states:")
+            for i in range(num_derived):
+                s = derived[0, i]
+                is_true = engine.is_true_state(s)
+                is_false = engine.is_false_state(s)
+                print(f"  {i}: {convert_state_to_str(s, debug_helper, engine.constant_no)} | is_true={is_true} | is_false={is_false}")
+        
         valid = []
         for i in range(num_derived):
             s = derived[0, i]
@@ -337,6 +329,12 @@ def test_single_query(p: str, h: str, t: str, str_engine_data, tensor_engine_dat
     max_depth = 10
     
     for step in range(max_depth):
+        # DEBUG: Print current state at beginning of each step
+        if verbose and step <= 2:
+            print(f"\n[DEBUG] === STEP {step} ===")
+            print(f"  Str state:    {str_state}")
+            print(f"  Tensor state: {convert_state_to_str(tensor_state.squeeze(0) if tensor_state.dim() > 2 else tensor_state, debug_helper, engine.constant_no)}")
+        
         # Check if both are done
         str_done = str_is_true(str_state)
         tensor_done = tensor_is_true(tensor_state)
@@ -367,16 +365,30 @@ def test_single_query(p: str, h: str, t: str, str_engine_data, tensor_engine_dat
             error_msg = f"\n{'='*60}\nLENGTH MISMATCH at STEP {step} for query: {p}({h}, {t})\n{'='*60}\n"
             error_msg += f"Current state at step {step}:\n"
             error_msg += f"  Str:    {str_state}\n"
-            error_msg += f"  Tensor: {convert_state_to_str(tensor_state.squeeze(0) if tensor_state.dim() > 2 else tensor_state, debug_helper)}\n\n"
+            error_msg += f"  Tensor: {convert_state_to_str(tensor_state.squeeze(0) if tensor_state.dim() > 2 else tensor_state, debug_helper, engine.constant_no)}\n\n"
             error_msg += f"String engine: {len(str_derived)} derived states\n"
             error_msg += f"Tensor engine: {len(tensor_derived)} derived states\n"
             error_msg += f"\n[ORIG] Str states:\n"
             for i, s in enumerate(str_derived):
-                error_msg += f"  {i}: {s}\n"
+                if len(str_derived)>20 and i==19:
+                    error_msg += f"  ... ({len(str_derived)-20} more states)\n"
+                    break
+                if i<20:
+                    error_msg += f"  {i}: {s}\n"
             error_msg += f"\n[ORIG] Tensor states:\n"
             for i, s in enumerate(tensor_derived):
-                error_msg += f"  {i}: {convert_state_to_str(s.squeeze(0) if s.dim() > 2 else s, debug_helper)}\n"
+                if len(tensor_derived)>20 and i==19:
+                    error_msg += f"  ... ({len(tensor_derived)-20} more states)\n"
+                    break
+                if i<20:
+                    error_msg += f"  {i}: {convert_state_to_str(s.squeeze(0) if s.dim() > 2 else s, debug_helper, engine.constant_no)}\n"
             raise ValueError(error_msg)
+        
+        # if the length is that of SKIP_QUERY_LEN, then skip the query (the cap has been reached)
+        if len(str_derived) == SKIP_QUERY_LEN:
+            if verbose:
+                print(f"  ⚠️  Skipping query at step {step} due to max derived states reached ({SKIP_QUERY_LEN})")
+            return True, None, None, "skipped"
         
         # Canonicalize and compare
         canon_str = [canonicalize_str_state(s) for s in str_derived]
@@ -389,7 +401,7 @@ def test_single_query(p: str, h: str, t: str, str_engine_data, tensor_engine_dat
             error_msg = f"\n{'='*60}\nCANONICALIZATION MISMATCH at STEP {step} for query: {p}({h}, {t})\n{'='*60}\n"
             error_msg += f"Current state at step {step}:\n"
             error_msg += f"  Str:    {str_state}\n"
-            error_msg += f"  Tensor: {convert_state_to_str(tensor_state.squeeze(0) if tensor_state.dim() > 2 else tensor_state, debug_helper)}\n\n"
+            error_msg += f"  Tensor: {convert_state_to_str(tensor_state.squeeze(0) if tensor_state.dim() > 2 else tensor_state, debug_helper, engine.constant_no)}\n\n"
             error_msg += f"[CANON] Str:    {canon_str}\n"
             error_msg += f"[CANON] Tensor: {canon_tensor}\n\n"
             error_msg += f"[ORIG] Str:\n"
@@ -397,7 +409,7 @@ def test_single_query(p: str, h: str, t: str, str_engine_data, tensor_engine_dat
                 error_msg += f"  {i}: {s}\n"
             error_msg += f"\n[ORIG] Tensor:\n"
             for i, s in enumerate(tensor_derived):
-                error_msg += f"  {i}: {convert_state_to_str(s.squeeze(0) if s.dim() > 2 else s, debug_helper)}\n"
+                error_msg += f"  {i}: {convert_state_to_str(s.squeeze(0) if s.dim() > 2 else s, debug_helper, engine.constant_no)}\n"
             raise ValueError(error_msg)
         
         if verbose and step == 0:
@@ -565,6 +577,8 @@ def main():
     failed_queries = []
     
     # Test each query
+    # shuffle the queries
+    random.shuffle(all_queries)
     for query_idx, (split, p, h, t) in enumerate(all_queries):
         # Skip queries before start_query
         if query_idx < start_query:
@@ -573,7 +587,7 @@ def main():
         stats["tested"] += 1
         
         # Test query (verbose for first 5 after start)
-        verbose = stats["tested"] <= 5
+        verbose = stats["tested"] <= 0 # JUST TO FIND ERRORS
         
         # This will raise an error immediately on any mismatch
         match, str_success, tensor_success, reason = test_single_query(

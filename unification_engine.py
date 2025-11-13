@@ -540,63 +540,121 @@ def _unify_with_facts(
     if rem_counts.numel() == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
+    
+    # NOTE: No capping here! To match string engine behavior, we return ALL fact unifications
+    # and let get_derived_states cap the combined (facts + rules) result.
+    # The string engine generates all facts and rules, then caps the combined result.
+    
+    # EARLY EXIT OPTIMIZATION (matching string engine behavior):
+    # Check if all remaining goals in each derived state are facts.
+    # CRITICAL: This check happens AFTER capping! The string engine checks during
+    # iteration over the FIRST K matches only. We cap first, then check those K matches for proofs.
+    
+    # For each match, check if ALL remaining atoms are ground facts (vectorized)
+    N_matches = remain_inst.shape[0]
+    
+    # Create valid mask: atoms with count within rem_counts
+    # Shape: [N_matches, G]
+    atom_idx_grid = torch.arange(G, device=device).unsqueeze(0).expand(N_matches, -1)
+    valid_atom_mask = atom_idx_grid < rem_counts.unsqueeze(1)
+    
+    # Check if atoms are ground (all args <= constant_no)
+    # Shape: [N_matches, G, 2] for the two arguments
+    args = remain_inst[:, :, 1:3]
+    is_ground = (args <= engine.constant_no).all(dim=2)  # [N_matches, G]
+    
+    # Only check valid atoms
+    is_ground = is_ground & valid_atom_mask
+    
+    # For ground atoms, check if they're facts (batch operation)
+    # Flatten to get all ground atoms
+    ground_atoms_mask = is_ground.flatten()  # [N_matches * G]
+    if ground_atoms_mask.any():
+        all_atoms_flat = remain_inst.view(-1, 3)  # [N_matches * G, 3]
+        ground_atoms = all_atoms_flat[ground_atoms_mask]  # [num_ground, 3]
+        
+        # Check which are facts (batched)
+        are_facts = engine.fact_index.contains(ground_atoms)  # [num_ground]
+        
+        # Handle excluded queries (avoid circular proofs)
+        if excluded_queries is not None:
+            # Match each ground atom to its owner
+            match_indices = torch.arange(N_matches, device=device).unsqueeze(1).expand(-1, G).flatten()[ground_atoms_mask]
+            owners = qi[match_indices]  # [num_ground]
+            
+            # Get excluded atoms for each owner
+            excl_atoms = excluded_queries[owners, 0, :]  # [num_ground, 3]
+            
+            # Mark as non-fact if it matches excluded query
+            matches_excluded = (ground_atoms == excl_atoms).all(dim=1)
+            are_facts = are_facts & ~matches_excluded
+        
+        # Scatter results back to grid
+        is_fact_grid = torch.zeros(N_matches, G, dtype=torch.bool, device=device)
+        is_fact_grid.view(-1)[ground_atoms_mask] = are_facts
+    else:
+        is_fact_grid = torch.zeros(N_matches, G, dtype=torch.bool, device=device)
+    
+    # For each match: all valid atoms must be ground AND facts
+    # If any valid atom is non-ground OR (ground but not a fact), the match is not a proof
+    all_valid_are_ground_facts = valid_atom_mask.clone()
+    all_valid_are_ground_facts[valid_atom_mask] = is_ground[valid_atom_mask] & is_fact_grid[valid_atom_mask]
+    
+    # A match is a proof if all its valid atoms are ground facts
+    all_atoms_are_facts = (all_valid_are_ground_facts | ~valid_atom_mask).all(dim=1)  # [N_matches]
+    
 
-    # OPTIMIZED: Use fixed maximum to avoid .item() synchronization
-    # Pre-allocate with worst-case dimensions to avoid GPU-CPU sync
-    max_cols_val = G if G > 0 else 1  # Use fixed maximum instead of computing exact size
+    
+    # If ANY unification leads to all facts, return True() for that owner immediately
+    # (matching string engine's behavior: return [[Term('True', ())]] on first proof found)
+    if all_atoms_are_facts.any():
+        # Group by owner to find which owners have proofs
+        proof_match_indices = torch.nonzero(all_atoms_are_facts, as_tuple=False).view(-1)
+        proof_owners = qi[proof_match_indices].unique()
+        
+        if verbose > 1:
+            print(f"  EARLY EXIT: Found {len(proof_owners)} owners with immediate proofs from fact unification")
+            print(f"    Proof owners: {proof_owners.tolist()}")
+        
+        # Return True() states for owners with proofs, empty for others
+        # Create output with one True() state per proof owner
+        true_tensor = torch.tensor([engine.true_pred_idx, 0, 0], dtype=torch.long, device=device)
+        out_true = torch.full((A, 1, 1, 3), pad, dtype=torch.long, device=device)
+        counts_true = torch.zeros(A, dtype=torch.long, device=device)
+        
+        out_true[proof_owners, 0, 0] = true_tensor
+        counts_true[proof_owners] = 1
+        
+        return out_true, counts_true
+    
+    # No immediate proofs found - pack and return ALL states (no capping)
+    # Pack states into output tensor
+    max_cols_val = G if G > 0 else 1
     states_per_match = remain_inst[:, :max_cols_val]
-
-    # 4) Cap per-owner fanout (K per original query row) ---------------------
-    K_per_owner = torch.bincount(qi, minlength=A)
-    # OPTIMIZED: Use K=max_output_per_query directly to avoid .item() call
-    # The actual counts will be clamped later
-    K_val = max_output_per_query
     
-    if verbose > 1:
-        print(f"  After exclusion: {qi.numel()} total unifications")
-        print(f"  Max output per query (cap): {K_val}")
-        for i in range(A):
-            if K_per_owner[i] > 0:
-                actual_count = K_per_owner[i].item()
-                capped_count = min(actual_count, K_val)
-                print(f"    Query {i}: {actual_count} matches (capped to {capped_count})")
-                if actual_count > K_val:
-                    print(f"    WARNING: Query {i} hit the cap! Losing {actual_count - K_val} states")
+    # Determine maximum states per owner for output allocation
+    states_per_owner = torch.bincount(qi, minlength=A)
+    max_states_any_owner = states_per_owner.max().item() if states_per_owner.numel() > 0 else 1
     
-    # Print warning even at lower verbosity if cap is hit significantly
-    if verbose > 0 or (K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)) > 100:
-        for i in range(A):
-            if K_per_owner[i] > K_val:
-                print(f"WARNING (_unify_with_facts): Query {i} generated {K_per_owner[i].item()} states, capping to {K_val}")
+    out = torch.full((A, max_states_any_owner, max_cols_val, 3), pad, dtype=torch.long, device=device)
+    counts_per_q = torch.bincount(qi, minlength=A)
     
-    # Check if we have no matches at all - can use tensor comparison
-    if (K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)) == 0:
-        empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
-        return empty, torch.zeros(A, dtype=torch.long, device=device)
-
-    out = torch.full((A, K_val, max_cols_val, 3), pad, dtype=torch.long, device=device)
-
-    # Stable segmented take by owner id (loop-free) --------------------------
-    owner_sorted = qi  # already grouped by construction
-    states_sorted = states_per_match
-    num_matches = owner_sorted.shape[0]
-    if num_matches > 0:
-        row_ids = torch.arange(num_matches, device=device)
-        group_change = torch.ones(num_matches, dtype=torch.bool, device=device)
-        group_change[1:] = owner_sorted[1:] != owner_sorted[:-1]
-        group_ids = torch.cumsum(group_change.long(), dim=0) - 1
-        # OPTIMIZED: Use A (number of queries) as upper bound instead of .item() call
-        # worst case: each query has at least one match
-        first_indices = torch.zeros(A, dtype=torch.long, device=device)
-        first_indices.scatter_(0, group_ids[group_change], row_ids[group_change])
-        pos_in_owner = row_ids - first_indices[group_ids]
-        keep = pos_in_owner < K_val
-        if keep.any():
-            db = owner_sorted[keep]
-            ds = pos_in_owner[keep]
-            out[db, ds] = states_sorted[keep]
-
-    counts_per_q = torch.clamp_max(K_per_owner, K_val)
+    if qi.numel() > 0:
+        # Compute positions again after capping
+        sort_vals, sort_idx = torch.sort(qi, stable=True)
+        states_sorted = states_per_match[sort_idx]
+        
+        seg_start = torch.ones_like(sort_vals, dtype=torch.bool, device=device)
+        seg_start[1:] = sort_vals[1:] != sort_vals[:-1]
+        seg_indices = torch.arange(sort_vals.shape[0], device=device)
+        seg_first_idx = torch.zeros_like(sort_vals, dtype=torch.long)
+        seg_first_idx[seg_start] = seg_indices[seg_start]
+        seg_first_idx = torch.cummax(seg_first_idx, dim=0)[0]
+        pos_in_owner = seg_indices - seg_first_idx
+        
+        db = sort_vals
+        ds = pos_in_owner
+        out[db, ds] = states_sorted
 
     return out, counts_per_q
 
@@ -734,51 +792,40 @@ def _unify_with_rules(
     else:
         cat_compact = torch.full((counts.shape[0], 1, 3), pad, dtype=torch.long, device=device)
 
-    # 4) Cap per-owner fanout (K per original query row) ---------------------
+    # 4) Pack all rule states (no capping) to match string engine behavior ----------
+    # The string engine generates all rules and all facts, then caps the combined result.
     K_per_owner = torch.bincount(qi, minlength=A)
-    # OPTIMIZED: Use K=max_output_per_query directly to avoid .item() call
-    K_val = max_output_per_query
     
-    # Print warning if cap is hit significantly
     max_k = K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)
-    if max_k > 500:
-        for i in range(A):
-            if K_per_owner[i] > K_val:
-                print(f"WARNING (_unify_with_rules): Query {i} generated {K_per_owner[i].item()} states, capping to {K_val}")
     
     # Check if we have no matches at all
     if max_k == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
-    out = torch.full((A, K_val, cat_compact.shape[1], 3), pad, dtype=torch.long, device=device)
-    counts_per_q = torch.zeros(A, dtype=torch.long, device=device)
+    # Allocate output for maximum states per owner (no artificial cap)
+    max_states_per_owner = max_k.item() if isinstance(max_k, torch.Tensor) else int(max_k)
+    out = torch.full((A, max_states_per_owner, cat_compact.shape[1], 3), pad, dtype=torch.long, device=device)
+    counts_per_q = K_per_owner
 
-    # Stable segmented take by owner id (loop-free) --------------------------
+    # Pack all states per owner (loop-free) --------------------------
     owner_sorted, perm = torch.sort(qi)
     cat_sorted = cat_compact.index_select(0, perm)
     seg_start = torch.ones_like(owner_sorted, dtype=torch.bool, device=device)
     seg_start[1:] = owner_sorted[1:] != owner_sorted[:-1]
     
-    # FIX: pos_in_owner should be position WITHIN each segment, not segment ID
-    # Compute the index where each segment starts
+    # Compute position within each segment
     seg_indices = torch.arange(owner_sorted.shape[0], device=device)
     seg_first_idx = torch.zeros_like(owner_sorted, dtype=torch.long)
     seg_first_idx[seg_start] = seg_indices[seg_start]
-    # Forward-fill to get the start index for each position
     seg_first_idx = torch.cummax(seg_first_idx, dim=0)[0]
-    # Position within segment is current index - segment start index
     pos_in_owner = seg_indices - seg_first_idx
     
-    keep = pos_in_owner < K_val
-    if keep.any():
-        db = owner_sorted[keep]
-        ds = pos_in_owner[keep]
-        out[db, ds] = cat_sorted[keep]
-        maxpos = torch.full((A,), -1, dtype=torch.long, device=device)
-        maxpos.scatter_reduce_(0, db, ds, reduce='amax', include_self=False)
-        counts_per_q = torch.clamp(maxpos + 1, min=0, max=K_val)
-
+    # Pack all states (no filtering)
+    db = owner_sorted
+    ds = pos_in_owner
+    out[db, ds] = cat_sorted
+    
     return out, counts_per_q
 
 
@@ -923,7 +970,8 @@ class UnificationEngine:
                            excluded_queries: Optional[Tensor] = None,
                            verbose: int = 0,
                            debug: bool = False,
-                           max_derived_per_state: int = 500) -> Tuple[Tensor, Tensor, Tensor]:
+                           max_derived_per_state: int = 500,
+                           deduplicate: bool = False) -> Tuple[Tensor, Tensor, Tensor]:
         """
         One-step expansion, strictly ordered:
 
@@ -932,7 +980,7 @@ class UnificationEngine:
         3) fact unification
         4) prune ground facts & detect immediate proofs
         5) combine
-        6) canonicalise + dedup
+        6) canonicalise + dedup (optional)
         7) pad back
         
         Args:
@@ -942,6 +990,7 @@ class UnificationEngine:
             verbose: If > 0, print debug information with atom/state strings.
             debug: If True, print detailed debug information for unifications, canonicalization, and dedup.
             max_derived_per_state: Maximum number of derived states per input state. Default 500.
+            deduplicate: If True, remove duplicate states after canonicalization. Default False to match string engine.
         """
         device = current_states.device
         pad = self.padding_idx
@@ -1013,43 +1062,8 @@ class UnificationEngine:
             )
         active_next_var = updated_next_var_indices[active_idx]
 
-        # --- SORT ATOMS BY CONSTRAINT (FEWER VARIABLES FIRST) ---
-        # Count variables in each atom (args > constant_no are variables)
-        # Shape: [A, max_atoms]
-        var_counts = (active_states[:, :, 1:] > self.constant_no).sum(dim=-1)
-        # Set padded positions to a high value so they sort last
-        var_counts = torch.where(active_valid, var_counts, torch.full_like(var_counts, 1000000))
-        
-        # Debug: Print states before sorting
-        if verbose > 0 and A > 0 and self.debug_helper:
-            print("\n=== ATOM SORTING DEBUG ===")
-            for i in range(min(3, A)):
-                print(f"State {i} before sort:")
-                for j in range(max_atoms):
-                    if active_valid[i, j]:
-                        atom_str = self.debug_helper.atom_to_str(active_states[i, j])
-                        print(f"  pos {j}: {atom_str} (vars={var_counts[i, j].item()})")
-        
-        # Get sorting indices for each state (sort by variable count ascending, stable to match string engine)
-        sorted_indices = var_counts.argsort(dim=1, stable=True)
-        
-        # Reorder atoms in each state according to sorted indices
-        batch_indices = torch.arange(A, device=device).unsqueeze(1).expand(-1, max_atoms)
-        active_states = active_states[batch_indices, sorted_indices]
-        active_valid = active_valid[batch_indices, sorted_indices]
-        
-        # Debug: Print states after sorting
-        if verbose > 0 and A > 0 and self.debug_helper:
-            print("\nAfter sorting:")
-            for i in range(min(3, A)):
-                print(f"State {i} after sort:")
-                for j in range(max_atoms):
-                    if active_valid[i, j]:
-                        atom_str = self.debug_helper.atom_to_str(active_states[i, j])
-                        vc = (active_states[i, j, 1:] > self.constant_no).sum().item()
-                        print(f"  pos {j}: {atom_str} (vars={vc})")
-            print("=== END SORTING DEBUG ===\n")
-        
+
+
         # split into (query, remaining)
         first_pos = active_valid.long().argmax(dim=1)
         arangeA = torch.arange(A, device=device)
@@ -1075,7 +1089,8 @@ class UnificationEngine:
 
         # ---- 2) rules
         rule_states, rule_counts = _unify_with_rules(
-            self, queries, remaining_goals, remaining_counts, preds, active_next_var
+            self, queries, remaining_goals, remaining_counts, preds, active_next_var,
+            max_output_per_query=max_derived_per_state
         )
         
         # ii) Print rule unifications
@@ -1087,6 +1102,7 @@ class UnificationEngine:
             self, queries, remaining_goals, remaining_counts, preds,
             excluded_queries=excluded_queries[active_idx] if excluded_queries is not None else None,
             verbose=verbose,
+            max_output_per_query=max_derived_per_state
         )
         
         # iii) Print fact unifications
@@ -1095,6 +1111,18 @@ class UnificationEngine:
 
         # ---- 4) detect immediate proof (remaining goals vanish due to fact match)
         immediate = (remaining_counts == 0) & (fact_counts > 0)
+        
+        # Also detect early-exit proofs from _unify_with_facts
+        # These are cases where fact unification detected that all remaining goals are facts
+        # and returned True() directly (matching string engine behavior)
+        if fact_counts.any() and self.true_pred_idx is not None:
+            for i in range(A):
+                if fact_counts[i] > 0:
+                    # Check if first fact state is True()
+                    first_fact = fact_states[i, 0, 0]  # [max_atoms, 3] -> [3]
+                    if first_fact[0].item() == self.true_pred_idx:
+                        immediate[i] = True
+        
         immediate_idx = torch.arange(A, device=device)[immediate]
 
         # ---- 5) combine candidates
@@ -1144,7 +1172,9 @@ class UnificationEngine:
         cand_counts = (candidates[:, :, 0] != pad).sum(dim=1)
 
         # ---- 4-bis) prune ground facts & mark proofs
-        pruned_states, pruned_counts, is_proof = self._prune_and_prove(candidates, cand_counts)
+        # Pass excluded_queries mapped to active owners
+        excluded_for_owners = excluded_queries[active_idx[owner_ids]] if excluded_queries is not None else None
+        pruned_states, pruned_counts, is_proof = self._prune_and_prove(candidates, cand_counts, excluded_for_owners)
         owners_for_cands = active_idx[owner_ids]
         
         # iv) Print after pruning ground facts
@@ -1179,7 +1209,7 @@ class UnificationEngine:
             derived_counts[proof_owners] = 1
             
             # When a proof is found for an owner, only return True() - discard non-proof states
-            # Vectorized: create mask indicating which candidates belong to owners with proofs
+            # This is correct: if we found one way to prove the query, we're done!
             has_proof_mask = torch.zeros(A, dtype=torch.bool, device=device)
             has_proof_mask[proof_owners] = True
             owners_have_proof = has_proof_mask[owners_for_cands]
@@ -1284,7 +1314,7 @@ class UnificationEngine:
             owner_maxpos.scatter_reduce_(0, dst_b, dst_s, reduce='amax', include_self=False)
             packed_counts = torch.clamp(owner_maxpos + 1, min=0, max=K)
 
-        # ---- 6-bis) dedup
+        # ---- 6-bis) dedup (optional)
         if debug and verbose > 0:
             print(f"\n[DEBUG] Before dedup:")
             print(f"  packed_states.shape: {packed_states.shape}")
@@ -1303,13 +1333,18 @@ class UnificationEngine:
                             else:
                                 print(f"    Packed state {i}: <empty> [BUG!]")
         
-        unique_states, unique_counts = deduplicate_states_packed(
-            packed_states, packed_counts, pad, self.hash_cache
-        )
+        if deduplicate:
+            unique_states, unique_counts = deduplicate_states_packed(
+                packed_states, packed_counts, pad, self.hash_cache
+            )
+            dedup_suffix = " (after dedup)"
+        else:
+            unique_states, unique_counts = packed_states, packed_counts
+            dedup_suffix = " (no dedup)"
         
-        # vi) Print final next states after dedup
+        # vi) Print final next states
         if verbose > 0:
-            print_states("vi) FINAL NEXT STATES (after dedup)", unique_states, unique_counts)
+            print_states(f"vi) FINAL NEXT STATES{dedup_suffix}", unique_states, unique_counts)
 
         # ---- 7) pad back to original batch
         write_mask = unique_counts > 0
@@ -1335,11 +1370,15 @@ class UnificationEngine:
 
     # ---- helpers ----
     @torch.no_grad()
-    def _prune_and_prove(self, candidates: Tensor, atom_counts: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+    def _prune_and_prove(self, candidates: Tensor, atom_counts: Tensor, 
+                         excluded_queries: Optional[Tensor] = None) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Remove ground atoms known to be facts and detect empty (proof) states.
+        Also removes atoms that match the original excluded query to prevent circular proofs.
+        
         candidates:  [N, M, 3]
         atom_counts: [N]
+        excluded_queries: [N, max_atoms, 3] - original query for each candidate to exclude
         """
         device, pad = candidates.device, self.padding_idx
         if candidates.numel() == 0:
@@ -1352,12 +1391,27 @@ class UnificationEngine:
         ground = valid & is_const
 
         drop_mask = torch.zeros_like(valid)
+        
+        # Drop ground atoms that are facts
         if ground.any():
             atoms = candidates.reshape(-1, 3)[ground.flatten()]
             is_fact = self.fact_index.contains(atoms)
             dm = torch.zeros_like(ground.flatten(), dtype=torch.bool, device=device)
             dm[ground.flatten()] = is_fact
             drop_mask = dm.view(N, M)
+        
+        # DON'T drop ground atoms that match the original excluded query
+        # We want to keep them so the state is NOT considered a proof (no circular reasoning)
+        if excluded_queries is not None and ground.any():
+            # For each candidate, check if any ground atom matches the first atom of excluded_query
+            excluded_first_atoms = excluded_queries[:, 0, :]  # [N, 3]
+            # Expand for broadcasting: [N, 1, 3] vs [N, M, 3]
+            excluded_expanded = excluded_first_atoms.unsqueeze(1).expand(-1, M, -1)
+            # Check if ground atoms match excluded query
+            matches_excluded = ground & (candidates == excluded_expanded).all(dim=2)
+            # INVERT the drop mask: keep (don't drop) atoms that match the excluded query
+            # If an atom was marked to drop because it's a fact, but it matches excluded query, unmark it
+            drop_mask = drop_mask & ~matches_excluded
 
         keep = valid & ~drop_mask
         pruned_counts = keep.sum(dim=1)

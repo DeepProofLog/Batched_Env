@@ -77,7 +77,7 @@ if __name__ == "__main__":
         'n_steps': 64, #64
         'batch_size_env': 256,  # 256
         'batch_size_env_eval': 256,  # 256
-        'batch_size': 4096,
+        'batch_size': 32,
         'use_ppo_base': True,
 
         # Env params
@@ -97,7 +97,7 @@ if __name__ == "__main__":
         'atom_embedding_size': 100,
         'learn_embeddings': True,
         'padding_atoms': 6,
-        'padding_states': 20,  # if -1, auto-computed from dataset
+        'padding_states': 40,  # if -1, auto-computed from dataset
         'max_total_vars': 1000000,
 
         # Other params

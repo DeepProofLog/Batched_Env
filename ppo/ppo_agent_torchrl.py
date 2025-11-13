@@ -453,14 +453,16 @@ class PPOAgentTorchRL:
             # Permute back to [T, B]
             batch_td_time = batch_td_time.permute(1, 0)
 
-        advantages = batch_td_time.get("advantage")
-        value_targets = batch_td_time.get("value_target")
+            # CRITICAL FIX: Explicitly detach advantage and value_target to prevent gradient tracking
+            # This saves significant memory by not storing the computation graph
+            advantages = batch_td_time.get("advantage").detach()
+            value_targets = batch_td_time.get("value_target").detach()
 
-        # Reshape to [T, B] if they came out flattened
-        if advantages.dim() == 1:
-            advantages = advantages.view(n_steps, n_envs)
-        if value_targets.dim() == 1:
-            value_targets = value_targets.view(n_steps, n_envs)
+            # Reshape to [T, B] if they came out flattened
+            if advantages.dim() == 1:
+                advantages = advantages.view(n_steps, n_envs)
+            if value_targets.dim() == 1:
+                value_targets = value_targets.view(n_steps, n_envs)
 
         return advantages, value_targets
 
@@ -487,15 +489,16 @@ class PPOAgentTorchRL:
         # Move to device for optimization (data might be on CPU from collector)
         flat_td = flat_td.to(self.device)
         
+        # CRITICAL FIX: Detach old log probs and actions - we don't need gradients for these
         # Ensure log-prob and action keys have shapes expected by TorchRL.
         if "sample_log_prob" in flat_td.keys():
-            log_prob = flat_td.get("sample_log_prob")
+            log_prob = flat_td.get("sample_log_prob").detach()
             if log_prob.dim() > 1:
                 log_prob = log_prob.squeeze(-1)
             flat_td.set("sample_log_prob", log_prob)
         
         if "action" in flat_td.keys():
-            action = flat_td.get("action")
+            action = flat_td.get("action").detach()
             if action.dim() > 1:
                 if action.shape[-1] == 1:
                     action = action.squeeze(-1)
@@ -555,18 +558,18 @@ class PPOAgentTorchRL:
         total_clip_fraction = torch.tensor(0.0, device=self.device)
         num_updates = 0
 
-        # Cache frequently used values
+        # CRITICAL FIX: Create a single zero tensor for default values, no need to clone
         zero_tensor = torch.tensor(0.0, device=self.device)
 
         for epoch in range(self.n_epochs):
             perm = indices[torch.randperm(flat_bs, device=self.device)]
             
-            # Reset per-epoch accumulators (also as tensors)
-            epoch_policy_loss = zero_tensor.clone()
-            epoch_value_loss = zero_tensor.clone()
-            epoch_entropy = zero_tensor.clone()
-            epoch_approx_kl = zero_tensor.clone()
-            epoch_clip_fraction = zero_tensor.clone()
+            # CRITICAL FIX: Use zeros() instead of clone() - more efficient
+            epoch_policy_loss = torch.zeros((), device=self.device)
+            epoch_value_loss = torch.zeros((), device=self.device)
+            epoch_entropy = torch.zeros((), device=self.device)
+            epoch_approx_kl = torch.zeros((), device=self.device)
+            epoch_clip_fraction = torch.zeros((), device=self.device)
             epoch_updates = 0
             
             for mb in range(num_minibatches):
@@ -579,6 +582,7 @@ class PPOAgentTorchRL:
                 with self._amp_context():
                     loss_out = loss_module(mb_td)
 
+                # CRITICAL FIX: Extract all needed values immediately and detach what we don't need for backprop
                 total_loss = self._sum_loss_terms(loss_out)
                 policy_loss = self._get_first_key(
                     loss_out,
@@ -595,6 +599,22 @@ class PPOAgentTorchRL:
                     ("entropy",),
                     required_label="entropy metric",
                 )
+                # Extract metrics before clearing loss_out
+                approx_kl = self._get_first_key(
+                    loss_out,
+                    ("approx_kl", "kl_approx"),
+                    required_label="approx_kl/kl_approx metric",
+                )
+                clip_fraction = self._get_first_key(
+                    loss_out,
+                    ("clip_fraction",),
+                    required_label="clip_fraction metric",
+                )
+                
+                # CRITICAL FIX: Clear loss_out TensorDict to free intermediate tensors
+                # This saves significant memory since ClipPPOLoss stores many intermediate values
+                del loss_out
+                
                 mask = mb_td.get("action_mask", None)
                 if mask is not None:
                     zero_valid = (mask.sum(dim=-1) == 0)
@@ -644,18 +664,6 @@ class PPOAgentTorchRL:
                     grad_total_sum += total_norm_val
                     grad_measurements += 1
 
-                # ----- Metrics (approx_kl & clip_fraction) -----
-                approx_kl = self._get_first_key(
-                    loss_out,
-                    ("approx_kl", "kl_approx"),
-                    required_label="approx_kl/kl_approx metric",
-                )
-                clip_fraction = self._get_first_key(
-                    loss_out,
-                    ("clip_fraction",),
-                    required_label="clip_fraction metric",
-                )
-
                 # Accumulate on GPU (avoid .item() calls in the loop)
                 # PPO policy loss can be positive or negative depending on the advantage
                 epoch_policy_loss += policy_loss.detach()
@@ -682,6 +690,9 @@ class PPOAgentTorchRL:
                 total_approx_kl += approx_kl.detach()
                 total_clip_fraction += clip_fraction.detach()
                 num_updates += 1
+                
+                # CRITICAL FIX: Clear minibatch TensorDict to free memory after each update
+                del mb_td
             if epoch_updates > 0:
                 epoch_metrics = torch.stack(
                     (
@@ -710,6 +721,10 @@ class PPOAgentTorchRL:
                             grad=grad_str,
                         )
                     )
+            
+            # CRITICAL FIX: Force CUDA cache cleanup after each epoch to prevent memory fragmentation
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
 
         # Aggregate metrics (transfer to CPU once at the end)
         divisor = max(1, num_updates)

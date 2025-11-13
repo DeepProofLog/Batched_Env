@@ -8,11 +8,16 @@ import random
 import torch
 from typing import List
 
+import os
+import sys
+root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, root_path)
+
 # String-engine stack
-from str_dataset import DataHandler as StrDataHandler
-from str_index_manager import IndexManager as StrIndexManager
-from str_utils import Term as StrTerm
-from str_unification import get_next_unification_python
+from str_based.str_dataset import DataHandler as StrDataHandler
+from str_based.str_index_manager import IndexManager as StrIndexManager
+from str_based.str_utils import Term as StrTerm
+from str_based.str_unification import get_next_unification_python
 
 # Tensor-engine stack
 from data_handler import DataHandler
