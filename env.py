@@ -503,6 +503,7 @@ class BatchedEnv(EnvBase):
                     next_var_indices=self.next_var_indices.index_select(0, non_terminal_idx),
                     excluded_queries=self.original_queries.index_select(0, non_terminal_idx),
                     verbose=self.prover_verbose,
+                    max_derived_per_state=self.padding_states,
                 )
                 
                 if verbose:
@@ -805,6 +806,7 @@ class BatchedEnv(EnvBase):
                     next_var_indices=self.next_var_indices.index_select(0, non_terminal_in_promoted),
                     excluded_queries=self.original_queries.index_select(0, non_terminal_in_promoted),
                     verbose=self.prover_verbose,
+                    max_derived_per_state=self.padding_states,
                 )
                 self.next_var_indices.index_copy_(0, non_terminal_in_promoted, sub_next)
 
