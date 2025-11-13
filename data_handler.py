@@ -62,7 +62,7 @@ class DataHandler:
         prob_facts: bool = False,
         topk_facts: Optional[int] = None,
         topk_facts_threshold: Optional[float] = None,
-        filter_queries_by_rules: bool = False,
+        filter_queries_by_rules: bool = True,
         corruption_mode: bool = False,
     ) -> None:
         """
@@ -530,8 +530,11 @@ class DataHandler:
         ):
             if query_strs:
                 qs = im.state_to_tensor(query_strs)  # [N, 3]
-                qs = qs.view(qs.shape[0], 1, qs.shape[1]).pin_memory()
-                queries_tensor = qs.to(device=device, non_blocking=True)
+                qs = qs.view(qs.shape[0], 1, qs.shape[1])
+                # Only use pin_memory when moving to CUDA; CPU-only runs may fail on some builds
+                if device is not None and isinstance(device, torch.device) and device.type == 'cuda' and torch.cuda.is_available():
+                    qs = qs.pin_memory()
+                queries_tensor = qs.to(device=device, non_blocking=(device.type == 'cuda' if isinstance(device, torch.device) else False))
             else:
                 queries_tensor = torch.empty((0, 1, width), dtype=torch.long, device=device)
             labels_tensor = torch.as_tensor(label_list, dtype=torch.long, device=device)

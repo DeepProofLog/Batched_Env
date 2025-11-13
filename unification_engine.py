@@ -377,7 +377,8 @@ def _unify_with_facts(
     remaining_counts: Tensor,
     pred_indices: Tensor,
     excluded_queries: Optional[Tensor] = None,
-    max_output_per_query: int = 100,
+    max_output_per_query: int = 500,
+    verbose: int = 0,
 ) -> Tuple[Tensor, Tensor]:
     """One-step *fact* unification using predicate ranges (loop-free & vectorised).
 
@@ -394,10 +395,11 @@ def _unify_with_facts(
         remaining_goals:  [A, G, 3] other goals after removing `queries`.
         remaining_counts: [A] number of valid goals in `remaining_goals` per row.
         pred_indices:     [A] predicate id for each query.
-        excluded_queries: [A] bool/0-1 mask; when True for row *i*, drop the trivial
-                          self-match `queries[i] == fact` if the query is ground.
+        excluded_queries: [A, max_atoms, 3] excluded query states; when unifying, drop facts
+                          that match the first atom of the excluded query.
         labels:           (ignored) kept only for API compatibility.
         max_output_per_query: per-owner cap.
+        verbose:          verbosity level for debugging.
 
     Returns:
         states: [A, K, M, 3] packed successors.
@@ -416,8 +418,17 @@ def _unify_with_facts(
     ground_mask = (q_args <= engine.constant_no).all(dim=1)
     drop_ground_mask = None
     if excluded_queries is not None:
-        same_atom = (excluded_queries == queries).all(dim=1)
+        # Extract first atom from excluded_queries (shape [A, max_atoms, 3] -> [A, 3])
+        excluded_first_atoms = excluded_queries[:, 0, :]
+        same_atom = (excluded_first_atoms == queries).all(dim=1)
         drop_ground_mask = same_atom & ground_mask
+        
+        if verbose > 1 and engine.debug_helper:
+            print(f"\n_unify_with_facts: A={A} queries")
+            print(f"  Ground queries: {ground_mask.sum().item()}")
+            print(f"  Non-ground queries: {(~ground_mask).sum().item()}")
+            if drop_ground_mask is not None and drop_ground_mask.any():
+                print(f"  Ground queries to exclude: {drop_ground_mask.sum().item()}")
 
     qi_accum: List[Tensor] = []
     inst_accum: List[Tensor] = []
@@ -451,21 +462,73 @@ def _unify_with_facts(
         if qi_local.numel() > 0:
             q_pairs = queries_ng.index_select(0, qi_local)
             f_pairs = engine.facts_idx.index_select(0, fi)
-
+            
+            # FILTER: For non-ground queries with constant args, only keep facts that match those constants
+            # Check which args in queries are constants (≤ constant_no)
+            q_is_const = q_pairs[:, 1:] <= engine.constant_no
+            f_args = f_pairs[:, 1:]
+            q_args = q_pairs[:, 1:]
+            
+            # For positions where query has a constant, fact must match that constant
+            # matches[i] = True if all constant positions in query match the fact
+            matches = (~q_is_const | (q_args == f_args)).all(dim=1)
+            
+            # Filter to only matching pairs
+            if matches.any():
+                qi_local = qi_local[matches]
+                fi = fi[matches]
+                q_pairs = q_pairs[matches]
+                f_pairs = f_pairs[matches]
+            else:
+                # No matches after filtering
+                qi_local = torch.empty(0, dtype=torch.long, device=device)
+                
+        if qi_local.numel() > 0:
             ok, subs = _unify_one_to_one(q_pairs, f_pairs, engine.constant_no, pad)
             if ok.any():
                 qi_orig = ng_idx.index_select(0, qi_local)
                 qi_ok = qi_orig[ok]
-                subs_ok = subs[ok].view(-1, 2, 2)
+                
+                if verbose > 1:
+                    print(f"  Non-ground unifications: {ok.sum().item()} successful")
+                
+                # Filter out excluded facts for non-ground unification
+                # If a fact matches the excluded query, don't include it
+                if excluded_queries is not None and ok.sum() > 0:
+                    f_ok_indices = fi[ok]
+                    f_ok = engine.facts_idx[f_ok_indices]
+                    excl_atoms = excluded_queries[qi_ok, 0, :]
+                    
+                    if verbose > 1 and engine.debug_helper:
+                        print(f"  Checking exclusions: {f_ok.shape[0]} facts to check")
+                        print(f"  Excluded atom: {engine.debug_helper.atom_to_str(excl_atoms[0])}")
+                    
+                    # Check if each unified fact equals the excluded atom for that query
+                    not_excluded = (f_ok != excl_atoms).any(dim=1)
+                    num_excluded = (~not_excluded).sum().item()
+                    
+                    if verbose > 1:
+                        print(f"  Number excluded: {num_excluded}")
+                    
+                    qi_ok = qi_ok[not_excluded]
+                    ok_indices = torch.nonzero(ok, as_tuple=False).view(-1)[not_excluded]
+                    if qi_ok.numel() == 0:
+                        # All were excluded, skip
+                        qi_ok = torch.empty(0, dtype=torch.long, device=device)
+                    else:
+                        subs_ok = subs[ok_indices].view(-1, 2, 2)
+                else:
+                    subs_ok = subs[ok].view(-1, 2, 2)
+                
+                if qi_ok.numel() > 0:
+                    remaining_sel = remaining_goals.index_select(0, qi_ok)
+                    remain_inst = _apply_substitutions(
+                        remaining_sel, subs_ok.view(subs_ok.shape[0], -1, 2), pad
+                    )
 
-                remaining_sel = remaining_goals.index_select(0, qi_ok)
-                remain_inst = _apply_substitutions(
-                    remaining_sel, subs_ok.view(subs_ok.shape[0], -1, 2), pad
-                )
-
-                qi_accum.append(qi_ok)
-                inst_accum.append(remain_inst)
-                remcount_accum.append(remaining_counts.index_select(0, qi_ok))
+                    qi_accum.append(qi_ok)
+                    inst_accum.append(remain_inst)
+                    remcount_accum.append(remaining_counts.index_select(0, qi_ok))
 
     if not qi_accum:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
@@ -488,6 +551,24 @@ def _unify_with_facts(
     # OPTIMIZED: Use K=max_output_per_query directly to avoid .item() call
     # The actual counts will be clamped later
     K_val = max_output_per_query
+    
+    if verbose > 1:
+        print(f"  After exclusion: {qi.numel()} total unifications")
+        print(f"  Max output per query (cap): {K_val}")
+        for i in range(A):
+            if K_per_owner[i] > 0:
+                actual_count = K_per_owner[i].item()
+                capped_count = min(actual_count, K_val)
+                print(f"    Query {i}: {actual_count} matches (capped to {capped_count})")
+                if actual_count > K_val:
+                    print(f"    WARNING: Query {i} hit the cap! Losing {actual_count - K_val} states")
+    
+    # Print warning even at lower verbosity if cap is hit significantly
+    if verbose > 0 or (K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)) > 100:
+        for i in range(A):
+            if K_per_owner[i] > K_val:
+                print(f"WARNING (_unify_with_facts): Query {i} generated {K_per_owner[i].item()} states, capping to {K_val}")
+    
     # Check if we have no matches at all - can use tensor comparison
     if (K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)) == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
@@ -526,6 +607,7 @@ def _unify_with_rules(
     remaining_goals: Tensor,
     remaining_counts: Tensor,
     pred_indices: Tensor,
+    next_var_indices: Tensor,
     max_output_per_query: int = 100,
 ) -> Tuple[Tensor, Tensor]:
     """One-step *rule* unification using per-call rule-head ranges (vectorised).
@@ -541,6 +623,7 @@ def _unify_with_rules(
         remaining_goals:  [A, G, 3] the other goals after removing `queries`.
         remaining_counts: [A] number of *valid* goals in `remaining_goals` per row.
         pred_indices:     [A] predicate id for each `queries[i]`.
+        next_var_indices: [A] next available runtime variable index for each query.
         max_output_per_query: cap on branching factor per active state.
 
     Returns:
@@ -569,7 +652,37 @@ def _unify_with_rules(
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
     q_pairs = queries.index_select(0, qi)                 # [L, 3]
-    h_pairs = heads_sorted.index_select(0, ri)            # [L, 3]
+    h_pairs_template = heads_sorted.index_select(0, ri)   # [L, 3] with template vars
+    b_pairs_template = bodies_sorted.index_select(0, ri)  # [L, Bmax, 3] with template vars
+    
+    # Rename template variables to fresh runtime variables for each match
+    # Template variables start at constant_no + 1
+    # For each match i, rename template vars to next_var_indices[qi[i]] + offset
+    template_start = engine.constant_no + 1
+    
+    # Get next_var for each match
+    next_var_for_matches = next_var_indices.index_select(0, qi)  # [L]
+    
+    # Rename head arguments
+    h_pairs = h_pairs_template.clone()
+    for arg_idx in [1, 2]:  # Process both arguments
+        args = h_pairs[:, arg_idx]
+        is_template = (args >= template_start) & (args != pad)
+        if is_template.any():
+            # Compute offset: (template_var - template_start)
+            offsets = args - template_start
+            # New var: next_var + offset
+            h_pairs[:, arg_idx] = torch.where(is_template, next_var_for_matches + offsets, args)
+    
+    # Rename body arguments
+    b_pairs = b_pairs_template.clone()
+    for arg_idx in [1, 2]:  # Process both arguments  
+        args = b_pairs[:, :, arg_idx]  # [L, Bmax]
+        is_template = (args >= template_start) & (args != pad)
+        if is_template.any():
+            offsets = args - template_start
+            new_vars = next_var_for_matches.unsqueeze(1) + offsets
+            b_pairs[:, :, arg_idx] = torch.where(is_template, new_vars, args)
 
     ok, subs = _unify_one_to_one(q_pairs, h_pairs, engine.constant_no, pad)
     if not ok.any():
@@ -579,10 +692,12 @@ def _unify_with_rules(
     # Keep successful matches only -------------------------------------------
     qi = qi[ok]
     ri = ri[ok]
+    b_pairs = b_pairs[ok]  # Keep renamed bodies for successful matches
+    h_pairs = h_pairs[ok]  # Keep renamed heads for successful matches
     subs = subs[ok].view(-1, 2, 2)
 
     # 3) Instantiate (rule body ⊕ remaining goals) ---------------------------
-    bodies_all = bodies_sorted.index_select(0, ri)        # [M', Bmax, 3]
+    bodies_all = b_pairs                                  # [M', Bmax, 3] already renamed
     body_lens  = lens_sorted.index_select(0, ri)          # [M']
     remaining_sel = remaining_goals.index_select(0, qi)   # [M', G, 3]
 
@@ -623,8 +738,16 @@ def _unify_with_rules(
     K_per_owner = torch.bincount(qi, minlength=A)
     # OPTIMIZED: Use K=max_output_per_query directly to avoid .item() call
     K_val = max_output_per_query
+    
+    # Print warning if cap is hit significantly
+    max_k = K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)
+    if max_k > 500:
+        for i in range(A):
+            if K_per_owner[i] > K_val:
+                print(f"WARNING (_unify_with_rules): Query {i} generated {K_per_owner[i].item()} states, capping to {K_val}")
+    
     # Check if we have no matches at all
-    if (K_per_owner.max() if K_per_owner.numel() > 0 else torch.tensor(0, device=device)) == 0:
+    if max_k == 0:
         empty = torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device)
         return empty, torch.zeros(A, dtype=torch.long, device=device)
 
@@ -799,7 +922,8 @@ class UnificationEngine:
                            next_var_indices: Tensor,
                            excluded_queries: Optional[Tensor] = None,
                            verbose: int = 0,
-                           debug: bool = False) -> Tuple[Tensor, Tensor, Tensor]:
+                           debug: bool = False,
+                           max_derived_per_state: int = 500) -> Tuple[Tensor, Tensor, Tensor]:
         """
         One-step expansion, strictly ordered:
 
@@ -812,8 +936,12 @@ class UnificationEngine:
         7) pad back
         
         Args:
+            current_states: [B, max_atoms, 3] tensor of current states
+            next_var_indices: [B] tensor of next available variable indices
+            excluded_queries: Optional [B, max_atoms, 3] tensor of queries to exclude from facts
             verbose: If > 0, print debug information with atom/state strings.
             debug: If True, print detailed debug information for unifications, canonicalization, and dedup.
+            max_derived_per_state: Maximum number of derived states per input state. Default 500.
         """
         device = current_states.device
         pad = self.padding_idx
@@ -822,7 +950,8 @@ class UnificationEngine:
         # Helper for verbose printing - now uses DebugHelper
         def print_states(title: str, states_tensor: Tensor, counts: Tensor = None):
             """Print states in human-readable format."""
-            self.debug_helper.print_states(title, states_tensor, counts, pad)
+            if self.debug_helper:
+                self.debug_helper.print_states(title, states_tensor, counts, pad)
 
         # i) Print current states
         if verbose > 0:
@@ -840,7 +969,7 @@ class UnificationEngine:
 
         terminal = empty_states | has_false | only_true
 
-        max_derived_per_state = 128
+        # max_derived_per_state is now passed as a parameter (default 500)
         # Output states can have more atoms than input (e.g., rule body + remaining goals)
         # Use a reasonable maximum based on max rule body size
         max_atoms_output = max(max_atoms, 10)  # At least 10 atoms for derived states
@@ -870,6 +999,57 @@ class UnificationEngine:
         active_states = current_states[active_idx]
         active_valid  = valid_mask[active_idx]
 
+        # Ensure next_var_indices are higher than any variable in the current states
+        # to prevent variable collisions when introducing fresh variables from rules
+        # Extract only the arguments (columns 1 and 2), not predicates (column 0)
+        args_in_states = active_states[:, :, 1:][active_valid]  # Get args where valid
+        max_arg_in_states = args_in_states.max() if args_in_states.numel() > 0 else self.constant_no
+        if max_arg_in_states > self.constant_no:
+            # Update next_var to be at least max_var + 1
+            min_next_var = max_arg_in_states + 1
+            updated_next_var_indices[active_idx] = torch.maximum(
+                updated_next_var_indices[active_idx],
+                torch.full_like(updated_next_var_indices[active_idx], min_next_var)
+            )
+        active_next_var = updated_next_var_indices[active_idx]
+
+        # --- SORT ATOMS BY CONSTRAINT (FEWER VARIABLES FIRST) ---
+        # Count variables in each atom (args > constant_no are variables)
+        # Shape: [A, max_atoms]
+        var_counts = (active_states[:, :, 1:] > self.constant_no).sum(dim=-1)
+        # Set padded positions to a high value so they sort last
+        var_counts = torch.where(active_valid, var_counts, torch.full_like(var_counts, 1000000))
+        
+        # Debug: Print states before sorting
+        if verbose > 0 and A > 0 and self.debug_helper:
+            print("\n=== ATOM SORTING DEBUG ===")
+            for i in range(min(3, A)):
+                print(f"State {i} before sort:")
+                for j in range(max_atoms):
+                    if active_valid[i, j]:
+                        atom_str = self.debug_helper.atom_to_str(active_states[i, j])
+                        print(f"  pos {j}: {atom_str} (vars={var_counts[i, j].item()})")
+        
+        # Get sorting indices for each state (sort by variable count ascending, stable to match string engine)
+        sorted_indices = var_counts.argsort(dim=1, stable=True)
+        
+        # Reorder atoms in each state according to sorted indices
+        batch_indices = torch.arange(A, device=device).unsqueeze(1).expand(-1, max_atoms)
+        active_states = active_states[batch_indices, sorted_indices]
+        active_valid = active_valid[batch_indices, sorted_indices]
+        
+        # Debug: Print states after sorting
+        if verbose > 0 and A > 0 and self.debug_helper:
+            print("\nAfter sorting:")
+            for i in range(min(3, A)):
+                print(f"State {i} after sort:")
+                for j in range(max_atoms):
+                    if active_valid[i, j]:
+                        atom_str = self.debug_helper.atom_to_str(active_states[i, j])
+                        vc = (active_states[i, j, 1:] > self.constant_no).sum().item()
+                        print(f"  pos {j}: {atom_str} (vars={vc})")
+            print("=== END SORTING DEBUG ===\n")
+        
         # split into (query, remaining)
         first_pos = active_valid.long().argmax(dim=1)
         arangeA = torch.arange(A, device=device)
@@ -890,10 +1070,12 @@ class UnificationEngine:
                 remaining_goals[scatter_rows, dst_a] = active_states[scatter_rows, src_a]
 
         preds = queries[:, 0]
+        # Use the updated active_next_var that was adjusted for current state variables
+        # (defined earlier when checking max_vars_in_states)
 
         # ---- 2) rules
         rule_states, rule_counts = _unify_with_rules(
-            self, queries, remaining_goals, remaining_counts, preds
+            self, queries, remaining_goals, remaining_counts, preds, active_next_var
         )
         
         # ii) Print rule unifications
@@ -904,6 +1086,7 @@ class UnificationEngine:
         fact_states, fact_counts = _unify_with_facts(
             self, queries, remaining_goals, remaining_counts, preds,
             excluded_queries=excluded_queries[active_idx] if excluded_queries is not None else None,
+            verbose=verbose,
         )
         
         # iii) Print fact unifications
@@ -988,12 +1171,25 @@ class UnificationEngine:
             dst = active_idx[immediate_idx]
             all_derived[dst, 0, 0] = self.true_tensor.squeeze(0)
             derived_counts[dst] = 1
+        
+        # Collect all owners that have at least one proof
         if is_proof.any():
             proof_owners = torch.unique(owners_for_cands[is_proof])
             all_derived[proof_owners, 0, 0] = self.true_tensor.squeeze(0)
             derived_counts[proof_owners] = 1
-
-        keep_mask = ~is_proof
+            
+            # When a proof is found for an owner, only return True() - discard non-proof states
+            # Vectorized: create mask indicating which candidates belong to owners with proofs
+            has_proof_mask = torch.zeros(A, dtype=torch.bool, device=device)
+            has_proof_mask[proof_owners] = True
+            owners_have_proof = has_proof_mask[owners_for_cands]
+            
+            # Keep only non-proof states from owners that have NO proof
+            keep_mask = ~is_proof & ~owners_have_proof
+        else:
+            # No proofs found, keep all non-proof states
+            keep_mask = ~is_proof
+        
         if not keep_mask.any():
             return (all_derived, derived_counts, updated_next_var_indices)
 
@@ -1036,6 +1232,16 @@ class UnificationEngine:
 
         # ---- pack back per original owner
         K = min(total_slots, max_derived_per_state)
+        
+        # Check if we'll hit the cap and print warning
+        if owners_kept.numel() > 0:
+            states_per_owner = torch.bincount(owners_kept, minlength=B)
+            max_states = states_per_owner.max().item() if states_per_owner.numel() > 0 else 0
+            if max_states > K:
+                for i in range(B):
+                    if states_per_owner[i] > K:
+                        print(f"WARNING (get_derived_states): State {i} generated {states_per_owner[i].item()} derived states, capping to {K}")
+        
         packed_states = torch.full((B, K, max_atoms_comb, 3), pad, dtype=torch.long, device=device)
         packed_counts = torch.zeros(B, dtype=torch.long, device=device)
         if owners_kept.numel() > 0:
@@ -1275,10 +1481,42 @@ class UnificationEngine:
 
     # ---- misc ----
     def is_true_state(self, state: Tensor) -> bool:
-        return self.true_tensor is not None and torch.equal(state.view(-1, 3), self.true_tensor)
+        """
+        Check if state contains only the True predicate (with padding).
+        
+        Args:
+            state: [max_atoms, 3] tensor
+            
+        Returns:
+            True if state has exactly 1 non-padding atom and it equals True predicate
+        """
+        if self.true_tensor is None:
+            return False
+        # Count non-padding atoms
+        non_padding = (state[:, 0] != self.padding_idx).sum()
+        if non_padding != 1:
+            return False
+        # Compare first atom only
+        return torch.equal(state[0], self.true_tensor.squeeze(0))
 
     def is_false_state(self, state: Tensor) -> bool:
-        return self.false_tensor is not None and torch.equal(state.view(-1, 3), self.false_tensor)
+        """
+        Check if state contains only the False predicate (with padding).
+        
+        Args:
+            state: [max_atoms, 3] tensor
+            
+        Returns:
+            True if state has exactly 1 non-padding atom and it equals False predicate
+        """
+        if self.false_tensor is None:
+            return False
+        # Count non-padding atoms
+        non_padding = (state[:, 0] != self.padding_idx).sum()
+        if non_padding != 1:
+            return False
+        # Compare first atom only
+        return torch.equal(state[0], self.false_tensor.squeeze(0))
 
     def get_false_state(self) -> Tensor:
         if self.false_tensor is None:

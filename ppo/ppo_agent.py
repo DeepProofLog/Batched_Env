@@ -559,14 +559,14 @@ class PPOAgent():
                 if self.debug_mode:
                     self._debug_print_optimizer_stats(train_metrics)
                 
-                # # Log training metrics
-                # if logger is not None:
-                #     logger.log_training_step(
-                #         global_step=self.global_step,
-                #         policy_loss=_to_float(train_metrics["policy_loss"]),
-                #         value_loss=_to_float(train_metrics["value_loss"]),
-                #         entropy=_to_float(train_metrics["entropy"]),
-                #     )
+                # Log training metrics
+                if logger is not None:
+                    logger.log_training_step(
+                        global_step=self.global_step,
+                        policy_loss=_to_float(train_metrics["policy_loss"]),
+                        value_loss=_to_float(train_metrics["value_loss"]),
+                        entropy=_to_float(train_metrics["entropy"]),
+                    )
                 
                 training_time = time.time() - training_start_time
                 print(f"Time to train {training_time:.2f}s\n")

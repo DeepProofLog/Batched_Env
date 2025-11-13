@@ -44,7 +44,7 @@ if __name__ == "__main__":
         # General experiment configuration
 
         # Dataset params
-        'dataset_name': 'countries_s3',
+        'dataset_name': 'family',
 
         'eval_neg_samples': 4,
         'test_neg_samples': 100,
@@ -53,7 +53,7 @@ if __name__ == "__main__":
         'valid_depth': None,
         'test_depth': None,
 
-        'load_depth_info': False,
+        'load_depth_info': True,
 
         'n_train_queries': None,
         'n_eval_queries': 500,
@@ -74,10 +74,10 @@ if __name__ == "__main__":
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_steps': 64,
-        'batch_size_env': 256,  # Now used as batch_size for BatchedVecEnv
-        'batch_size_env_eval': 256,  # Now used as batch_size for eval BatchedVecEnv
-        'batch_size': 2048,
+        'n_steps': 64, #64
+        'batch_size_env': 256,  # 256
+        'batch_size_env_eval': 256,  # 256
+        'batch_size': 4096,
         'use_ppo_base': True,
 
         # Env params

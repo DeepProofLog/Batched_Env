@@ -2,11 +2,11 @@ from typing import List, Dict, Tuple
 import time
 import random
 import numpy as np
-from dataset import DataHandler
-from index_manager import IndexManager
+from str_dataset import DataHandler
+from str_index_manager import IndexManager
 from utils import Term, Rule
-from python_unification import get_next_unification_python
-from dataset import get_filtered_queries
+from str_unification import get_next_unification_python
+from str_dataset import get_filtered_queries
 
 def check_provability_random_walk(state: List[Term],
                                   n: int,
@@ -474,17 +474,17 @@ def load_queries(dataset_name: str, set_file: str, data_path: str, root_dir: str
 
 
 if __name__ == "__main__":
-    max_atoms = 5
+    max_atoms = 6
     max_depth_check = 7
-    dataset_name = 'wn18rr'
+    dataset_name = 'family'
     data_path = "./data/"
     root_dir = data_path + dataset_name + '/'
 
     # Set mode to 'depth_check' to run the exhaustive search with branching factor analysis
     # Set mode to 'random_agent' to run the simplified random walk simulation
-    mode = 'depth_check' 
+    mode = 'random_agent' 
 
-    for set_file in ['train','valid','test']:
+    for set_file in ['train']:
         queries, rules, facts_set, index_manager = load_queries(
             dataset_name, set_file, data_path, root_dir
         )
