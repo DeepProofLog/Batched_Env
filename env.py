@@ -54,7 +54,7 @@ class BatchedEnv(EnvBase):
         eval_pruning: bool = False,
         end_proof_action: bool = False,
         skip_unary_actions: bool = False,
-        reward_type: int = 1,
+        reward_type: int = 0,
         verbose: int = 0,
         prover_verbose: int = 0,
         device: Optional[torch.device] = None,
@@ -102,6 +102,13 @@ class BatchedEnv(EnvBase):
         self.end_proof_action = bool(end_proof_action)
         self.skip_unary_actions = bool(skip_unary_actions)
         self.max_skip_unary_iters = 20
+
+        # Validate end_proof_action configuration
+        if self.end_proof_action and self.end_pred_idx is None:
+            raise ValueError(
+                "end_proof_action=True requires end_pred_idx to be set. "
+                "Please provide end_pred_idx parameter (e.g., from index_manager.predicate_str2idx.get('End'))."
+            )
 
         # End tensor (optional)
         self.end_tensor = None
@@ -507,18 +514,25 @@ class BatchedEnv(EnvBase):
                 )
                 
                 if verbose:
-                    self.debug_helper._log(3, f"[compute_derived] after UE shape={all_derived.shape}, counts={derived_counts_subset}")
+                    self.debug_helper._log(3, f"[compute_derived] after UE shape={all_derived.shape}, counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
+                    # Log env 0 specifically
+                    env_0_in_idx = (non_terminal_idx == 0).nonzero(as_tuple=False)
+                    if env_0_in_idx.numel() > 0:
+                        env_0_pos = env_0_in_idx[0].item()
+                        self.debug_helper._log(3, f"[compute_derived] Env 0 has {derived_counts_subset[env_0_pos].item()} derived states")
                 
                 self.next_var_indices.index_copy_(0, non_terminal_idx, updated_var_indices)
 
                 # Step 3: Postprocess A - validity + proof-safe cut
                 # This includes: memory prune non-terminals, padding limits, mark terminals, add non-terminals to memory
+                if verbose:
+                    self.debug_helper._log(3, f"[compute_derived] BEFORE postprocess_A counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
                 all_derived, derived_counts_subset = self._postprocess(
                     non_terminal_idx, all_derived, derived_counts_subset
                 )
                 
                 if verbose:
-                    self.debug_helper._log(3, f"[compute_derived] after postprocess_A counts={derived_counts_subset}")
+                    self.debug_helper._log(3, f"[compute_derived] AFTER postprocess_A counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
                 
                 # Step 4: Terminal handling (early, after A)
                 # For any row where a terminal is present, we'll handle it in skip_unary or final write
@@ -673,6 +687,10 @@ class BatchedEnv(EnvBase):
         """
         if states.numel() == 0:
             return states, counts
+        
+        # Guard: if end_pred_idx is not set, we cannot add END actions
+        if self.end_pred_idx is None:
+            raise ValueError("end_pred_idx is not set; cannot add END actions.")
         
         device = self._device
         pad = self.padding_idx

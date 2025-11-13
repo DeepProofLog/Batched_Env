@@ -51,7 +51,7 @@ class LogicEnv_gym(gym.Env):
                 engine: str = 'python',
                 engine_strategy: str = 'cmp', # 'cmp' (complete) or 'rtf' (rules_then_facts)
                 kge_action: bool = False,
-                reward_type: int = 2,
+                reward_type: int = 0,
                 shaping_beta: float = 0.0,
                 shaping_gamma: Optional[float] = None,
                 kge_inference_engine: Optional[Any] = None,
@@ -385,10 +385,17 @@ class LogicEnv_gym(gym.Env):
         filtered_query = [q for q in query if q.predicate not in self.terminal_predicates]
         self.memory.add(_state_to_hashable(filtered_query))
 
-        sub_index = self.index_manager.get_atom_sub_index(query).to(
+        # Apply skip_unary_actions during reset to match batched environment behavior
+        current_state = query
+        if self.skip_unary_actions:
+            current_state = self._skip_unary_chain(current_state)
+            if self.verbose:
+                print(f"[reset] After skip_unary_chain: {current_state}")
+
+        sub_index = self.index_manager.get_atom_sub_index(current_state).to(
             device=self.device, dtype=self.pt_idx_dtype
         )
-        derived_states, derived_sub_indices, truncated_flag = self.get_next_states(query)
+        derived_states, derived_sub_indices, truncated_flag = self.get_next_states(current_state)
         valid = len(derived_states)
         action_mask = torch.zeros(self.padding_states, dtype=torch.uint8)
         action_mask[:valid] = 1
@@ -401,7 +408,7 @@ class LogicEnv_gym(gym.Env):
         self.tensordict = TensorDict(
             {
                 "sub_index": sub_index.unsqueeze(0), # to match the shape of derived_sub_indices
-                "state": NonTensorData(data=query),
+                "state": NonTensorData(data=current_state),
                 "label": torch.tensor(label, device=self.device),
                 "done": torch.tensor(0, dtype=torch.bool, device=self.device),
                 "reward": torch.zeros((), dtype=self.reward_dtype, device=self.device),
@@ -432,6 +439,15 @@ class LogicEnv_gym(gym.Env):
         
         next_state = derived_states[action]
         next_sub_index = derived_sub_indices[action]
+
+        # Apply skip_unary_actions: automatically follow unary branches
+        if self.skip_unary_actions:
+            if self.verbose >= 2:
+                print(f"[step] Applying skip_unary_chain to: {next_state}")
+            next_state = self._skip_unary_chain(next_state)
+            if self.verbose >= 2:
+                print(f"[step] After skip_unary_chain: {next_state}")
+            next_sub_index = self.index_manager.get_atom_sub_index(next_state)
 
         done_next, reward_next, successful = self.get_done_reward(next_state, self.tensordict['label'].item())
         if self.kge_inference_engine is not None and self.shaping_beta != 0.0:
@@ -488,6 +504,80 @@ class LogicEnv_gym(gym.Env):
         return obs, reward, done, truncated, info
 
 
+    def _skip_unary_chain(self, state: State) -> State:
+        """
+        Automatically follow unary (single-choice) branches until reaching a branching point or terminal state.
+        This modifies the state in-place by following deterministic paths and adds visited states to memory.
+        
+        Returns the final state after following the unary chain.
+        """
+        terminal_predicates = self.terminal_predicates
+        current_state = state.copy() if isinstance(state, list) else [state]
+        counter = 0
+        max_iters = 20
+        
+        while counter < max_iters:
+            # Check if current state is terminal
+            if len(current_state) == 1 and current_state[0].predicate in terminal_predicates:
+                break
+            
+            # Get derived states from current state
+            if self.engine == 'python':
+                derived_states, self.next_var_index = get_next_unification_python(
+                    current_state,
+                    facts_set=self.facts,
+                    facts_indexed=self.index_manager.fact_index,
+                    rules=self.index_manager.rules_by_pred,
+                    excluded_fact=self.current_query,
+                    verbose=self.prover_verbose,
+                    next_var_index=self.next_var_index,
+                    strategy=self.engine_strategy
+                )
+            
+            # Apply memory pruning to derived states
+            if self.memory_pruning:
+                # Add current state to memory before checking derived states
+                self.memory.add(_state_to_hashable([s for s in current_state if s.predicate not in self.terminal_predicates]))
+                
+                # Filter out visited derived states
+                visited_mask = [_state_to_hashable(ds) in self.memory for ds in derived_states]
+                if self.verbose >= 2:
+                    print(f"[skip_unary] Before pruning: {len(derived_states)} states")
+                    if any(visited_mask):
+                        print(f"[skip_unary] Visited mask: {visited_mask}")
+                        for i, (ds, is_visited) in enumerate(zip(derived_states, visited_mask)):
+                            if is_visited:
+                                print(f"[skip_unary]   State {i} (visited): {ds}")
+                derived_states = [ds for ds, is_visited in zip(derived_states, visited_mask) if not is_visited]
+                
+                if self.verbose >= 2:
+                    print(f"[skip_unary] After pruning: {len(derived_states)} states")
+            
+            # Filter out states exceeding atom budget
+            derived_states = [ds for ds in derived_states if len(ds) < self.padding_atoms]
+            
+            # Check if we have exactly one non-terminal derived state
+            if len(derived_states) != 1:
+                break
+            
+            next_candidate = derived_states[0]
+            if not next_candidate or next_candidate[0].predicate in terminal_predicates:
+                break
+            
+            # Continue following the unary chain
+            if self.verbose >= 2:
+                print(f"[skip_unary] Iteration {counter}: {current_state} -> {next_candidate}")
+            
+            current_state = next_candidate.copy()
+            counter += 1
+        
+        if counter >= max_iters:
+            if self.verbose:
+                print(f'[skip_unary] Max iterations reached ({max_iters})')
+            # Return a False state to indicate failure
+            return [Term(predicate='False', args=())]
+        
+        return current_state
     
     def get_next_states(self, state: State) -> Tuple[List[State], torch.Tensor, bool]:
         """Compute candidate next states from a given state.
@@ -533,62 +623,11 @@ class LogicEnv_gym(gym.Env):
                                                             facts_set=self.facts,
                                                             facts_indexed=self.index_manager.fact_index,
                                                             rules=self.index_manager.rules_by_pred,
-                                                            excluded_fact = self.current_query if self.current_label == 1 else None,
+                                                            excluded_fact = self.current_query,
                                                             verbose=self.prover_verbose,
                                                             next_var_index=self.next_var_index,
                                                             strategy= self.engine_strategy
                                                             )
-        if self.skip_unary_actions:
-            current_state = state.copy() if isinstance(state, list) else [state]
-            counter = 0
-            while (len(derived_states) == 1 and 
-                derived_states[0] and
-                derived_states[0][0].predicate not in terminal_predicates):
-                print('\n*********') if self.verbose else None
-                print(f"Skipping unary action: current state: {current_state} -> derived states: {derived_states}") if self.verbose else None
-                print('\n') if self.verbose else None
-                counter += 1
-                current_state = derived_states[0].copy()    
-
-                if self.kge_action and current_state:
-                    filtered_state = [term for term in current_state if not term.predicate.endswith('_kge')]
-                    current_state = [Term(predicate='True', args=())] if not filtered_state else filtered_state
-                    # CAREFUL WHEN THE FIRST ATOM HAS A VAR AND THERE ARE MORE STATES, NEED TO UNIFY
-
-                if self.engine == 'python':
-                    derived_states, self.next_var_index = get_next_unification_python(
-                        current_state,
-                        facts_set=self.facts,
-                        facts_indexed=self.index_manager.fact_index,
-                        rules=self.index_manager.rules_by_pred,
-                        excluded_fact = self.current_query if self.current_label == 1 else None,
-                        verbose=self.prover_verbose,
-                        next_var_index=self.next_var_index,
-                        strategy= self.engine_strategy
-                    )
-                # MEMORY
-                if self.memory_pruning:
-                    self.memory.add(_state_to_hashable([s for s in current_state if s.predicate not in self.terminal_predicates]))
-                    visited_mask = [_state_to_hashable(state) in self.memory for state in derived_states]
-                    if any(visited_mask):
-                        print(f"Memory: {self.memory}") if self.verbose else None
-                        print(f"Visited mask: {visited_mask}. Current state: {current_state} -> Derived states: {derived_states}") if self.verbose else None
-                        derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
-                    
-                # TRUNCATE MAX ATOMS
-                mask_exceeded_max_atoms = [len(state) >= self.padding_atoms for state in derived_states]
-                print(f" Exceeded max atoms: {[len(state) for state in derived_states]}") if self.verbose and any(mask_exceeded_max_atoms) else None
-                derived_states = [state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if not is_exceeded]
-                
-                print('\n') if self.verbose else None
-                print(f"Updated Next States: Current state: {current_state} -> Derived states: {derived_states}") if self.verbose else None
-                print('*********\n') if self.verbose else None
-
-                if counter > 20:
-                    print('Max iterations reached') if self.verbose else None
-                    derived_states = [[Term(predicate='False', args=())]]
-                    truncated_flag = True
-                    break
 
         final_states: List[State] = []
         final_sub_indices: List[torch.Tensor] = []

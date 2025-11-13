@@ -23,7 +23,7 @@ from unification_engine import UnificationEngine
 from debug_helper import DebugHelper
 
 
-DATASET = "wn18rr"
+DATASET = "countries_s3"
 MAX_DERIVED_STATES = 200
 SKIP_QUERY_LEN = MAX_DERIVED_STATES
 
@@ -230,7 +230,10 @@ def run_full_proof(initial_state, get_derived_fn, is_true_fn, is_false_fn,
 
 
 def test_single_query(p: str, h: str, t: str, str_engine_data, tensor_engine_data, split='train', verbose=False):
-    """Test a single query with both engines, comparing at each step."""
+    """Test a single query with both engines, comparing at each step.
+    
+    Returns: (match, str_success, tensor_success, reason, str_reward, tensor_reward)
+    """
     dh_str, im_str, fact_index_str, rules_by_pred = str_engine_data
     dh_non, im_non, engine, debug_helper, next_var_start = tensor_engine_data
     
@@ -572,6 +575,11 @@ def main():
         "canonicalization_mismatch": 0,
         "success_mismatch": 0,
         "steps_mismatch": 0,
+        "str_proven": 0,
+        "tensor_proven": 0,
+        "both_proven": 0,
+        "both_failed": 0,
+        "skipped": 0,
     }
     
     failed_queries = []
@@ -595,6 +603,20 @@ def main():
         )
         
         stats["match"] += 1
+        
+        # Track proof success statistics
+        if reason == "skipped":
+            stats["skipped"] += 1
+        elif str_success is not None and tensor_success is not None:
+            if str_success:
+                stats["str_proven"] += 1
+            if tensor_success:
+                stats["tensor_proven"] += 1
+            if str_success and tensor_success:
+                stats["both_proven"] += 1
+            if not str_success and not tensor_success:
+                stats["both_failed"] += 1
+        
         if not verbose:
             if stats["tested"] % 10 == 0:
                 print(f"  Tested {stats['tested']}/{queries_to_test} queries (current index: {query_idx})... all match so far")
@@ -611,6 +633,26 @@ def main():
     print(f"  - Same canonicalization")
     print(f"  - Same proof success/failure")
     print(f"  - Same number of proof steps")
+    
+    # Print proof success statistics
+    non_skipped = stats["tested"] - stats["skipped"]
+    if non_skipped > 0:
+        str_success_rate = stats["str_proven"] / non_skipped
+        tensor_success_rate = stats["tensor_proven"] / non_skipped
+        print("\n" + "="*60)
+        print("PROOF SUCCESS STATISTICS")
+        print("="*60)
+        print(f"Queries proven (both engines): {stats['both_proven']}/{non_skipped} ({stats['both_proven']/non_skipped*100:.2f}%)")
+        print(f"Queries failed (both engines):  {stats['both_failed']}/{non_skipped} ({stats['both_failed']/non_skipped*100:.2f}%)")
+        print(f"String engine success rate:     {stats['str_proven']}/{non_skipped} ({str_success_rate*100:.2f}%)")
+        print(f"Tensor engine success rate:     {stats['tensor_proven']}/{non_skipped} ({tensor_success_rate*100:.2f}%)")
+        if stats["skipped"] > 0:
+            print(f"Skipped (max states reached):   {stats['skipped']}/{stats['tested']}")
+        print(f"\nAverage success rate: {(str_success_rate + tensor_success_rate) / 2 * 100:.2f}%")
+        print(f"(Success rate = queries proven within max depth)")
+        if str_success_rate > 0.001 and str_success_rate < 0.999:
+            print(f"✓ Success rate is between 0% and 100% (non-trivial: {str_success_rate*100:.2f}%)")
+    
     print("\nBoth string and tensor engines are equivalent!")
     
     return 0

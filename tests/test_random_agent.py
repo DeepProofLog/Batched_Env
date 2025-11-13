@@ -16,6 +16,11 @@ We verify:
   - Config (2) matches config (1) within a small tolerance
   - Config (3) is optional and may warn if it deviates in CPU-only setups
 """
+import os
+import sys
+root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, root_path)
+sys.path.insert(0, os.path.join(root_path, 'str_based'))
 
 import random
 import os
@@ -24,10 +29,10 @@ from typing import List, Dict, Tuple
 import torch
 
 # String-engine stack
-from str_dataset import DataHandler as StrDataHandler
-from str_index_manager import IndexManager as StrIndexManager
-from str_utils import Term as StrTerm, Rule as StrRule
-from str_unification import get_next_unification_python
+from str_based.str_dataset import DataHandler as StrDataHandler
+from str_based.str_index_manager import IndexManager as StrIndexManager
+from str_based.str_utils import Term as StrTerm, Rule as StrRule
+from str_based.str_unification import get_next_unification_python
 
 # Tensor-engine stack
 from data_handler import DataHandler
@@ -297,7 +302,8 @@ def _evaluate_tensor_engine_with_non_str_stack(test_size=30, trials=100, sample_
         padding = torch.zeros(1, 19, 3, dtype=torch.long, device='cpu')
         padding[:, :, 0] = engine.padding_idx
         query_padded = torch.cat([query_padded_tensor, padding], dim=1)
-        excluded = query_tensor.unsqueeze(0)
+        # excluded queries must match [batch, atoms, 3] dimension expected by the engine
+        excluded = query_tensor.unsqueeze(0).unsqueeze(0)
 
         for _ in range(trials):
             res = random_walk_tensor(query_padded, engine, excluded, max_depth=7, max_atoms=20)
@@ -330,7 +336,8 @@ def main():
     queries = dh_for_sampling.train_queries
     assert len(queries) > 0, "No train queries available for sampling"
     # For family: sample a sizeable subset for speed, keep result ~0.75
-    use_all = False if dh_for_sampling.dataset_name == "DATASET_NAME" else True
+    # For countries_s3 prefer smaller sample with more trials; for family, use larger sample with fewer trials
+    use_all = False if dh_for_sampling.dataset_name == DATASET_NAME else True
     if use_all:
         sample_triples = None
         test_size = 300  # subset size for family
@@ -367,12 +374,8 @@ def main():
     print(f"  Avg reward (config 2): {avg2:.3f}")
 
     print("\nRunning config 3: tensor engine + non-str stack...")
-    try:
-        avg3 = _evaluate_tensor_engine_with_non_str_stack(test_size=test_size, trials=trials, sample_triples=sample_triples)
-        print(f"  Avg reward (config 3): {avg3:.3f}")
-    except Exception as e:
-        avg3 = None
-        print(f"  Skipping config 3 check due to runtime error: {e}")
+    avg3 = _evaluate_tensor_engine_with_non_str_stack(test_size=test_size, trials=trials, sample_triples=sample_triples)
+    print(f"  Avg reward (config 3): {avg3:.3f}")
 
     # Compare within tolerance for config 2 only (string stacks must agree)
     tol = 0.10  # 10 percentage points (in probability units)

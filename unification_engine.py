@@ -501,7 +501,13 @@ def _unify_with_facts(
                     
                     if verbose > 1 and engine.debug_helper:
                         print(f"  Checking exclusions: {f_ok.shape[0]} facts to check")
-                        print(f"  Excluded atom: {engine.debug_helper.atom_to_str(excl_atoms[0])}")
+                        print(f"  qi_ok: {qi_ok[:min(10, qi_ok.numel())].tolist()}")
+                        print(f"  Excluded atoms (first 3):")
+                        for i in range(min(3, excl_atoms.shape[0])):
+                            print(f"    [{i}] (env {qi_ok[i].item()}): {engine.debug_helper.atom_to_str(excl_atoms[i])}")
+                        print(f"  Facts (first 3):")
+                        for i in range(min(3, f_ok.shape[0])):
+                            print(f"    [{i}] (env {qi_ok[i].item()}): {engine.debug_helper.atom_to_str(f_ok[i])}")
                     
                     # Check if each unified fact equals the excluded atom for that query
                     not_excluded = (f_ok != excl_atoms).any(dim=1)
@@ -509,6 +515,9 @@ def _unify_with_facts(
                     
                     if verbose > 1:
                         print(f"  Number excluded: {num_excluded}")
+                        if num_excluded > 0:
+                            excluded_indices = torch.nonzero(~not_excluded, as_tuple=False).view(-1)
+                            print(f"  Excluded fact indices: {excluded_indices[:min(5, excluded_indices.numel())].tolist()}")
                     
                     qi_ok = qi_ok[not_excluded]
                     ok_indices = torch.nonzero(ok, as_tuple=False).view(-1)[not_excluded]
@@ -605,42 +614,65 @@ def _unify_with_facts(
     
 
     
-    # If ANY unification leads to all facts, return True() for that owner immediately
+    # If ANY unification leads to all facts, mark those matches as immediate proofs
     # (matching string engine's behavior: return [[Term('True', ())]] on first proof found)
     if all_atoms_are_facts.any():
         # Group by owner to find which owners have proofs
         proof_match_indices = torch.nonzero(all_atoms_are_facts, as_tuple=False).view(-1)
-        proof_owners = qi[proof_match_indices].unique()
+        proof_owners_set = qi[proof_match_indices].unique()
         
         if verbose > 1:
-            print(f"  EARLY EXIT: Found {len(proof_owners)} owners with immediate proofs from fact unification")
-            print(f"    Proof owners: {proof_owners.tolist()}")
+            print(f"  EARLY EXIT: Found {len(proof_owners_set)} owners with immediate proofs from fact unification")
+            print(f"    Proof owners: {proof_owners_set.tolist()}")
         
-        # Return True() states for owners with proofs, empty for others
-        # Create output with one True() state per proof owner
-        true_tensor = torch.tensor([engine.true_pred_idx, 0, 0], dtype=torch.long, device=device)
-        out_true = torch.full((A, 1, 1, 3), pad, dtype=torch.long, device=device)
-        counts_true = torch.zeros(A, dtype=torch.long, device=device)
+        # CRITICAL FIX: Instead of returning early for ALL owners, we need to:
+        # 1. For owners with at least one immediate proof: return ONLY True() (matching string engine)
+        # 2. For owners without immediate proofs: keep all their matches
+        # This allows batched processing where some owners find proofs while others continue exploring
         
-        out_true[proof_owners, 0, 0] = true_tensor
-        counts_true[proof_owners] = 1
+        # Create a mask for matches belonging to owners with proofs
+        # If an owner has at least one proof match, exclude ALL matches for that owner
+        is_proof_owner_match = torch.zeros(qi.shape[0], dtype=torch.bool, device=device)
+        for owner in proof_owners_set:
+            is_proof_owner_match |= (qi == owner)
         
-        return out_true, counts_true
+        # Filter to only non-proof-owner matches
+        non_proof_owner_mask = ~is_proof_owner_match
+        qi_filtered = qi[non_proof_owner_mask]
+        remain_inst_filtered = remain_inst[non_proof_owner_mask]
+        rem_counts_filtered = rem_counts[non_proof_owner_mask]
+        
+        # Update qi, remain_inst, rem_counts to exclude ALL matches for proof owners
+        qi = qi_filtered
+        remain_inst = remain_inst_filtered
+        rem_counts = rem_counts_filtered
+        
+        # Now we'll continue with the normal packing logic below, and add True() ONLY for proof owners at the end
+        # This way, proof owners get ONLY True() (no other states), matching string engine behavior
+    else:
+        # No proofs found, all matches continue normally
+        proof_owners_set = torch.empty(0, dtype=torch.long, device=device)
     
-    # No immediate proofs found - pack and return ALL states (no capping)
+    # Pack and return ALL states (no capping)
     # Pack states into output tensor
     max_cols_val = G if G > 0 else 1
-    states_per_match = remain_inst[:, :max_cols_val]
+    states_per_match = remain_inst[:, :max_cols_val] if remain_inst.numel() > 0 else torch.empty((0, max_cols_val, 3), dtype=torch.long, device=device)
     
     # Determine maximum states per owner for output allocation
-    states_per_owner = torch.bincount(qi, minlength=A)
+    states_per_owner = torch.bincount(qi, minlength=A) if qi.numel() > 0 else torch.zeros(A, dtype=torch.long, device=device)
+    
+    # Add 1 for proof owners (they get a True() state)
+    if all_atoms_are_facts.any():
+        states_per_owner[proof_owners_set] += 1
+    
     max_states_any_owner = states_per_owner.max().item() if states_per_owner.numel() > 0 else 1
+    max_states_any_owner = max(max_states_any_owner, 1)  # At least 1
     
     out = torch.full((A, max_states_any_owner, max_cols_val, 3), pad, dtype=torch.long, device=device)
-    counts_per_q = torch.bincount(qi, minlength=A)
+    counts_per_q = torch.zeros(A, dtype=torch.long, device=device)
     
     if qi.numel() > 0:
-        # Compute positions again after capping
+        # Compute positions for non-proof matches
         sort_vals, sort_idx = torch.sort(qi, stable=True)
         states_sorted = states_per_match[sort_idx]
         
@@ -655,6 +687,16 @@ def _unify_with_facts(
         db = sort_vals
         ds = pos_in_owner
         out[db, ds] = states_sorted
+        counts_per_q = torch.bincount(qi, minlength=A)
+    
+    # Add True() for proof owners at position 0 (or after their other states if any)
+    if all_atoms_are_facts.any():
+        true_tensor = torch.tensor([engine.true_pred_idx, 0, 0], dtype=torch.long, device=device)
+        for owner in proof_owners_set:
+            # Place True() at the next available position for this owner
+            pos = counts_per_q[owner].item()
+            out[owner, pos, 0] = true_tensor
+            counts_per_q[owner] += 1
 
     return out, counts_per_q
 
@@ -1098,6 +1140,13 @@ class UnificationEngine:
             print_states("ii) RULE UNIFICATIONS", rule_states, rule_counts)
 
         # ---- 3) facts
+        if verbose > 1:
+            print(f"\nCalling _unify_with_facts with A={A}, excluded_queries shape={excluded_queries[active_idx].shape if excluded_queries is not None else None}")
+            if excluded_queries is not None and self.debug_helper:
+                for i in range(min(3, A)):
+                    if excluded_queries[active_idx[i], 0, 0].item() != pad:
+                        excl_atom = excluded_queries[active_idx[i], 0]
+                        print(f"  Excluded for env {i}: {self.debug_helper.atom_to_str(excl_atom)}")
         fact_states, fact_counts = _unify_with_facts(
             self, queries, remaining_goals, remaining_counts, preds,
             excluded_queries=excluded_queries[active_idx] if excluded_queries is not None else None,

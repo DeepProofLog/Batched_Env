@@ -2,11 +2,11 @@ from typing import List, Dict, Tuple
 import time
 import random
 import numpy as np
-from str_dataset import DataHandler
-from str_index_manager import IndexManager
-from utils import Term, Rule
-from str_unification import get_next_unification_python
-from str_dataset import get_filtered_queries
+from str_based.str_dataset import DataHandler
+from str_based.str_index_manager import IndexManager
+from str_based.str_utils import Term, Rule
+from str_based.str_unification import get_next_unification_python
+from str_based.str_dataset import get_filtered_queries
 
 def check_provability_random_walk(state: List[Term],
                                   n: int,
