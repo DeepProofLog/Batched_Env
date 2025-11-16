@@ -103,27 +103,9 @@ def atom_to_str_canonical(atom_idx: torch.LongTensor, debug_helper, constant_no:
     return f"{ps}({a_str},{b_str})"
 
 
-def canonicalize_tensor_state(state: torch.Tensor, debug_helper, constant_no: int) -> str:
-    """Convert tensor state to canonical string representation after canonicalizing vars by appearance."""
-    # First canonicalize
-    canonical_state = canonicalize_state_by_appearance(state, constant_no, debug_helper)
-    
-    # Pre-fetch lookup tables once to avoid repeated dict/list access
-    idx2predicate_cache = debug_helper.idx2predicate if debug_helper.idx2predicate else []
-    idx2constant_cache = debug_helper.idx2constant if debug_helper.idx2constant else []
-    
-    # Find number of valid atoms
-    n_atoms = (canonical_state[:, 0] != 0).sum().item()
-    
-    # Build strings in a single pass with pre-allocated list
-    atoms_str = []
-    for i in range(n_atoms):
-        atom_str = atom_to_str_canonical(canonical_state[i], debug_helper, constant_no,
-                                         idx2predicate_cache, idx2constant_cache)
-        atoms_str.append(atom_str)
-    
-    # DO NOT SORT - preserve original atom order for proper comparison
-    return '|'.join(atoms_str)
+# Note: canonicalize_tensor_state is replaced by engine.canonical_state_to_str()
+# The custom implementation above (canonicalize_state_by_appearance + atom_to_str_canonical)
+# is kept for reference but should not be used. Use engine methods instead.
 
 
 def setup_tensor_engine(dataset: str = "countries_s3", base_path: str = "./data/", batched: bool = False) -> Tuple:
@@ -258,7 +240,7 @@ def test_tensor_engine_single_query(
             s = derived[0, i]
             if not engine.is_false_state(s):
                 non_padding = (s[:, 0] != engine.padding_idx).sum().item()
-                if non_padding <= 20:
+                if non_padding <= 100:
                     valid.append(s.unsqueeze(0))
         return valid, updated_next_var
     
@@ -274,7 +256,7 @@ def test_tensor_engine_single_query(
     
     def tensor_canonicalize(state):
         s = state.squeeze(0) if state.dim() > 2 else state
-        return canonicalize_tensor_state(s, debug_helper, engine.constant_no)
+        return engine.canonical_state_to_str(s)
     
     # Run proof
     current_state = query_padded

@@ -129,7 +129,15 @@ def _materialize_data_components(
         embedder = embedder.to(device)
 
     stringifier_params = index_manager.get_stringifier_params()
-    unification_engine = UnificationEngine.from_index_manager(index_manager, stringifier_params=stringifier_params)
+    # Get end_proof_action from args and pass to engine
+    end_proof_action = getattr(args, "end_proof_action", False)
+    end_pred_idx = index_manager.end_pred_idx if end_proof_action else None
+    unification_engine = UnificationEngine.from_index_manager(
+        index_manager, 
+        stringifier_params=stringifier_params,
+        end_pred_idx=end_pred_idx,
+        end_proof_action=end_proof_action
+    )
 
     return data_handler, index_manager, sampler, embedder, unification_engine, stringifier_params
 

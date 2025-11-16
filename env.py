@@ -16,6 +16,120 @@ def _safe_device(device: Optional[torch.device]) -> torch.device:
     return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
+class ExactMemory:
+    """
+    Exact, Python-set-based memory backend used for debugging / equivalence tests.
+    Mirrors the semantics of the string environment's `_state_to_hashable`:
+      - States are treated as order-independent sets of atoms.
+      - Current states are added to memory with terminal predicates removed.
+      - Membership for derived states is checked on the full state (including terminals).
+
+    This backend is intentionally CPU-only and loop-based; it is only enabled
+    when `use_exact_memory=True` (e.g. in tests), and the default batched
+    environment still uses the GPU BloomFilter for training.
+    """
+
+    def __init__(
+        self,
+        batch_size: int,
+        padding_idx: int,
+        true_pred_idx: Optional[int],
+        false_pred_idx: Optional[int],
+        end_pred_idx: Optional[int],
+    ):
+        self.batch_size = int(batch_size)
+        self.padding_idx = int(padding_idx)
+        self.true_pred_idx = true_pred_idx
+        self.false_pred_idx = false_pred_idx
+        self.end_pred_idx = end_pred_idx
+        # Per-env Python set of frozenset(atom-tuples)
+        self._mem = [set() for _ in range(self.batch_size)]
+
+    def reset(self, rows: Tensor) -> None:
+        """Clear memory for selected env indices."""
+        if rows.numel() == 0:
+            return
+        for idx in rows.view(-1).tolist():
+            if 0 <= idx < self.batch_size:
+                self._mem[idx] = set()
+
+    def _state_to_key(self, state: Tensor, ignore_terminals: bool) -> frozenset:
+        """
+        Convert a padded tensor state [M, D] into an order-independent key.
+        """
+        if state.dim() != 2:
+            raise ValueError("ExactMemory expects states with shape [M, D]")
+
+        pad = self.padding_idx
+        preds = state[:, 0]
+        valid = preds != pad
+
+        if ignore_terminals:
+            if self.true_pred_idx is not None:
+                valid = valid & (preds != self.true_pred_idx)
+            if self.false_pred_idx is not None:
+                valid = valid & (preds != self.false_pred_idx)
+            if self.end_pred_idx is not None:
+                valid = valid & (preds != self.end_pred_idx)
+
+        if not valid.any():
+            return frozenset()
+
+        atoms = state[valid]
+        tuples = [tuple(int(x) for x in atom.tolist()) for atom in atoms]
+        return frozenset(tuples)
+
+    def add_current(self, rows: Tensor, current_queries: Tensor) -> None:
+        """
+        Add current_queries[rows] to memory, filtering out terminal atoms
+        to match the string environment's behavior.
+        """
+        if rows.numel() == 0:
+            return
+        for idx in rows.view(-1).tolist():
+            if 0 <= idx < self.batch_size:
+                state = current_queries[idx]
+                key = self._state_to_key(state, ignore_terminals=True)
+                self._mem[idx].add(key)
+
+    def membership(self, states: Tensor, owners: Tensor) -> Tensor:
+        """
+        Exact membership test.
+        states: [A, K, M, D]
+        owners: [A]
+        Returns visited: [A, K] bool tensor.
+        """
+        if states.numel() == 0:
+            return torch.zeros(
+                (states.shape[0], states.shape[1]),
+                dtype=torch.bool,
+                device=states.device,
+            )
+
+        A, K, M, D = states.shape
+        visited = torch.zeros((A, K), dtype=torch.bool, device=states.device)
+        pad = self.padding_idx
+
+        owner_list = owners.view(-1).tolist()
+
+        for a, env_idx in enumerate(owner_list):
+            if not (0 <= env_idx < self.batch_size):
+                continue
+            mem_set = self._mem[env_idx]
+            if not mem_set:
+                continue
+
+            for k in range(K):
+                # Skip padded slots
+                if states[a, k, 0, 0].item() == pad:
+                    continue
+                key = self._state_to_key(states[a, k], ignore_terminals=False)
+                if key in mem_set:
+                    visited[a, k] = True
+
+        return visited
+
+
 class BatchedEnv(EnvBase):
     """
     Vectorized, GPU-first environment with:
@@ -54,6 +168,7 @@ class BatchedEnv(EnvBase):
         eval_pruning: bool = False,
         end_proof_action: bool = False,
         skip_unary_actions: bool = False,
+    canonical_action_order: bool = False,
         reward_type: int = 0,
         verbose: int = 0,
         prover_verbose: int = 0,
@@ -61,6 +176,7 @@ class BatchedEnv(EnvBase):
         # Memory pruning config (Bloom filter)
         memory_bits_pow: int = 18,     # 2**18 bits per env (32 KB) -> good default
         memory_hashes: int = 3,        # k hash functions
+        use_exact_memory: bool = False,
     ):
         # Configure device and batch size
         self.batch_size_int = int(batch_size)
@@ -101,21 +217,26 @@ class BatchedEnv(EnvBase):
         # Action modifiers
         self.end_proof_action = bool(end_proof_action)
         self.skip_unary_actions = bool(skip_unary_actions)
+        self.canonical_action_order = bool(canonical_action_order)
         self.max_skip_unary_iters = 20
 
+        if hasattr(self.unification_engine, "canonical_action_order"):
+            self.unification_engine.canonical_action_order = self.canonical_action_order
+
         # Validate end_proof_action configuration
-        if self.end_proof_action and self.end_pred_idx is None:
-            raise ValueError(
-                "end_proof_action=True requires end_pred_idx to be set. "
-                "Please provide end_pred_idx parameter (e.g., from index_manager.predicate_str2idx.get('End'))."
-            )
+        if self.end_proof_action:
+            if self.end_pred_idx is None:
+                raise ValueError("end_pred_idx must be provided when end_proof_action is enabled.")
+            if self.false_pred_idx is None:
+                raise ValueError("false_pred_idx must be provided when end_proof_action is enabled.")
 
         # End tensor (optional)
         self.end_tensor = None
         if (self.end_pred_idx is not None) and (self.end_pred_idx >= 0):
             self.end_tensor = torch.tensor(
                 [[self.end_pred_idx, self.padding_idx, self.padding_idx]],
-                dtype=torch.long, device=self._device
+                dtype=torch.long,
+                device=self._device,
             )
 
         # -------- Dataset tensors (pre-materialized) --------
@@ -133,46 +254,59 @@ class BatchedEnv(EnvBase):
         arity_plus = self.max_arity + 1
         B = self.batch_size_int
         self.current_queries = torch.full(
-            (B, self.padding_atoms, arity_plus), self.padding_idx, dtype=torch.long, device=self._device
-        )  # [B, A, D] - current query states for each env
-        self.current_labels = torch.zeros(B, dtype=torch.long, device=self._device)  # [B] - labels for each env
-        self.current_depths = torch.zeros(B, dtype=torch.long, device=self._device)  # [B] - current depths for each env
-        self.proof_depths = torch.zeros(B, dtype=torch.long, device=self._device)  # [B] - proof depths for each env
+            (B, self.padding_atoms, arity_plus),
+            self.padding_idx,
+            dtype=torch.long,
+            device=self._device,
+        )
+        self.current_labels = torch.zeros(B, dtype=torch.long, device=self._device)
+        self.current_depths = torch.zeros(B, dtype=torch.long, device=self._device)
+        self.proof_depths = torch.zeros(B, dtype=torch.long, device=self._device)
         self.next_var_indices = torch.full(
             (B,), self.runtime_var_start_index, dtype=torch.long, device=self._device
-        )  # [B] - next variable indices for each env
+        )
         self.original_queries = torch.full(
             (B, arity_plus), self.padding_idx, dtype=torch.long, device=self._device
-        )  # [B, D] - original query atoms for each env
+        )
 
         # Derived states [B, S, A, D]
-        # S: state size (max number of derived states per env)
         self.derived_states_batch = torch.full(
             (B, self.padding_states, self.padding_atoms, arity_plus),
-            self.padding_idx, dtype=torch.long, device=self._device
-        )  # [B, S, A, D] - derived states for each env
-        self.derived_states_counts = torch.zeros(B, dtype=torch.long, device=self._device)  # [B] - number of valid derived states per env
+            self.padding_idx,
+            dtype=torch.long,
+            device=self._device,
+        )
+        self.derived_states_counts = torch.zeros(B, dtype=torch.long, device=self._device)
 
         # -------- Memory pruning (Bloom filter per env) --------
-        # Disable memory pruning in eval to preserve pure evaluation unless requested
         self.eval_pruning = bool(eval_pruning)
         self.memory_pruning = bool(memory_pruning) if mode == 'train' or self.eval_pruning else False
-        self.bloom_filter = BloomFilter(
-            batch_size=batch_size,
-            device=self._device,
-            memory_bits_pow=memory_bits_pow,
-            memory_hashes=memory_hashes,
-            padding_atoms=self.padding_atoms,
-            max_arity=self.max_arity,
-            total_vocab_size=self.total_vocab_size,
-            padding_idx=self.padding_idx,
-        )
+        self.use_exact_memory = bool(use_exact_memory)
+        if self.use_exact_memory:
+            self.memory_backend = ExactMemory(
+                batch_size=batch_size,
+                padding_idx=self.padding_idx,
+                true_pred_idx=self.true_pred_idx,
+                false_pred_idx=self.false_pred_idx,
+                end_pred_idx=self.end_pred_idx,
+            )
+        else:
+            self.memory_backend = BloomFilter(
+                batch_size=batch_size,
+                device=self._device,
+                memory_bits_pow=memory_bits_pow,
+                memory_hashes=memory_hashes,
+                padding_atoms=self.padding_atoms,
+                max_arity=self.max_arity,
+                total_vocab_size=self.total_vocab_size,
+                padding_idx=self.padding_idx,
+            )
 
         # -------- Debug helper --------
         debug_helper_params = {}
         if self.stringifier_params is not None:
             debug_helper_params = self.stringifier_params.copy()
-        
+
         self.debug_helper = DebugHelper(
             verbose=self.verbose,
             debug_prefix=self._debug_prefix,
@@ -192,49 +326,65 @@ class BatchedEnv(EnvBase):
         from torchrl.data import Composite, Bounded
 
         max_vocab_size = int(self.total_vocab_size)
-        B = self.batch_size_int  # batch size
-        A = self.padding_atoms   # atoms size
-        D = self.max_arity + 1   # arity + 1
-        S = self.padding_states  # state size
+        B = self.batch_size_int
+        A = self.padding_atoms
+        D = self.max_arity + 1
+        S = self.padding_states
 
         self.observation_spec = Composite(
             sub_index=Bounded(
-                low=-1, high=max_vocab_size,
-                shape=torch.Size([B, 1, A, D]), dtype=torch.int64, device=self._device,
-            ),  # [B, 1, A, D] - current query state
+                low=-1,
+                high=max_vocab_size,
+                shape=torch.Size([B, 1, A, D]),
+                dtype=torch.int64,
+                device=self._device,
+            ),
             derived_sub_indices=Bounded(
-                low=-1, high=max_vocab_size,
-                shape=torch.Size([B, S, A, D]), dtype=torch.int64, device=self._device,
-            ),  # [B, S, A, D] - derived states
+                low=-1,
+                high=max_vocab_size,
+                shape=torch.Size([B, S, A, D]),
+                dtype=torch.int64,
+                device=self._device,
+            ),
             action_mask=Bounded(
-                low=0, high=1, shape=torch.Size([B, S]), dtype=torch.bool, device=self._device
-            ),  # [B, S] - mask for valid actions
+                low=0,
+                high=1,
+                shape=torch.Size([B, S]),
+                dtype=torch.bool,
+                device=self._device,
+            ),
             shape=torch.Size([B]),
         )
         self.action_spec = Bounded(
-            low=0, high=self.padding_states - 1, shape=torch.Size([B]), dtype=torch.int64, device=self._device
-        )  # [B] - action indices
+            low=0,
+            high=self.padding_states - 1,
+            shape=torch.Size([B]),
+            dtype=torch.int64,
+            device=self._device,
+        )
         self.reward_spec = Bounded(
-            low=-float('inf'), high=float('inf'), shape=torch.Size([B, 1]), dtype=torch.float32, device=self._device
-        )  # [B, 1] - rewards
+            low=-float('inf'),
+            high=float('inf'),
+            shape=torch.Size([B, 1]),
+            dtype=torch.float32,
+            device=self._device,
+        )
         self.done_spec = Bounded(
-            low=0, high=1, shape=torch.Size([B, 1]), dtype=torch.bool, device=self._device
-        )  # [B, 1] - termination flags
+            low=0,
+            high=1,
+            shape=torch.Size([B, 1]),
+            dtype=torch.bool,
+            device=self._device,
+        )
         self.truncated_spec = Bounded(
-            low=0, high=1, shape=torch.Size([B, 1]), dtype=torch.bool, device=self._device
-        )  # [B, 1] - truncation flags
+            low=0,
+            high=1,
+            shape=torch.Size([B, 1]),
+            dtype=torch.bool,
+            device=self._device,
+        )
 
-    # ---------------------------------------------------------------------
-    # Core Env API
-    # ---------------------------------------------------------------------
     def _reset(self, tensordict: Optional[TensorDict] = None) -> TensorDict:
-        """
-        Vectorized reset with optional negative sampling. Resets per-env Bloom
-        filters and inserts the initial state into memory when memory_pruning is on.
-        TD keys are: 
-            "_reset": [B, 1] boolean mask for partial reset
-            
-        """
         device = self._device
         pad = self.padding_idx
         B = self.batch_size_int
@@ -246,16 +396,16 @@ class BatchedEnv(EnvBase):
                 self.debug_helper._log(3, f"[Reset]  td info:")
                 for key in tensordict.keys():
                     self.debug_helper._log(3, f"[Reset]  Key: {key}, Shape: {tensordict[key].shape}, Dtype: {tensordict[key].dtype}, Values: {tensordict[key]}")
-            else: 
+            else:
                 self.debug_helper._log(3, "[Reset]  No tensordict provided.")
 
         # Reset mask
         if tensordict is not None:
             if "_reset" not in tensordict.keys():
                 raise ValueError("_reset key not found in tensordict for partial reset.")
-            reset_mask = tensordict["_reset"].squeeze(-1) # [B] bool
+            reset_mask = tensordict["_reset"].squeeze(-1)  # [B] bool
             assert reset_mask.dtype == torch.bool, "_reset mask must be of boolean dtype"
-            env_idx = torch.arange(reset_mask.shape[0], device=device)[reset_mask] # N Indices to reset
+            env_idx = torch.arange(reset_mask.shape[0], device=device)[reset_mask]  # N Indices to reset
             assert env_idx.numel() > 0, "No environments to reset in partial reset."
             partial_reset = True
         else:
@@ -289,10 +439,10 @@ class BatchedEnv(EnvBase):
             raise ValueError(f"Invalid mode: {self.mode}")
 
         # Gather batch queries/labels/depths
-        batch_q = self._all_queries_padded.index_select(0, idxs)                 # [N, A, D]
-        batch_labels = self._all_labels.index_select(0, idxs)                    # [N]
-        proof_depths = self._all_depths.index_select(0, idxs)                    # [N]
-        batch_first_atoms = self._all_first_atoms.index_select(0, idxs)          # [N, D]
+        batch_q = self._all_queries_padded.index_select(0, idxs)  # [N, A, D]
+        batch_labels = self._all_labels.index_select(0, idxs)  # [N]
+        proof_depths = self._all_depths.index_select(0, idxs)  # [N]
+        batch_first_atoms = self._all_first_atoms.index_select(0, idxs)  # [N, D]
 
         # Vectorized negative sampling
         batch_q, batch_labels, proof_depths = self.sample_negatives(N, batch_q, batch_labels, proof_depths, batch_first_atoms, device, pad, A, D)
@@ -307,18 +457,22 @@ class BatchedEnv(EnvBase):
 
         # Reset per-env memory (current state will be added to memory in _postprocess)
         if self.memory_pruning:
-            self.bloom_filter.reset(env_idx)
+            self.memory_backend.reset(env_idx)
 
         # original_queries = first non-padding atom of current state
         self._update_original_queries_for_indices(env_idx)
+
+        # Apply skip-unary closure to current states (string-env style) when using exact memory.
+        if self.skip_unary_actions and self.use_exact_memory:
+            self._apply_skip_unary_to_current_state(env_idx)
 
         # Compute derived only for reset envs
         # Create a mask that only includes the environments that were actually reset (env_idx)
         actual_reset_mask = torch.zeros(B, dtype=torch.bool, device=device)
         actual_reset_mask[env_idx] = True
-                
+
         self._compute_derived_states(active_mask=actual_reset_mask, clear_inactive=False)
-        
+
         # IMPORTANT: Initialize inactive slots AFTER _compute_derived_states to avoid being overwritten
         if self.mode == 'eval':
             # For inactive slots in the original reset_mask, set them to a terminal state
@@ -327,12 +481,12 @@ class BatchedEnv(EnvBase):
                 original_reset_idx = torch.arange(reset_mask.shape[0], device=device)[reset_mask]
             else:
                 original_reset_idx = torch.arange(B, device=device)
-            
+
             lengths = self._eval_slot_lengths
             inactive_in_reset = original_reset_idx[lengths[original_reset_idx] == 0]
             if inactive_in_reset.numel() > 0:
                 # Set inactive slots to terminated state (FALSE + done=True)
-                false_state_full = self._create_false_state()  # [A, D] padded
+                false_state_full = self.unification_engine.create_false_state(A)  # [A, D] padded
                 false_atom = false_state_full[0]  # Just the first atom [D]
                 false_queries = torch.full((inactive_in_reset.shape[0], A, D), pad, dtype=torch.long, device=device)
                 false_queries[:, 0] = false_atom
@@ -341,7 +495,7 @@ class BatchedEnv(EnvBase):
                 self.current_depths.index_fill_(0, inactive_in_reset, self.max_depth + 1)  # Exceed max_depth to ensure done
                 self.proof_depths.index_fill_(0, inactive_in_reset, -1)  # No proof depth for terminated states
                 self.next_var_indices.index_fill_(0, inactive_in_reset, self.runtime_var_start_index)
-                
+
                 # CRITICAL: Also set derived states for inactive slots to have at least one action
                 # Otherwise they'll trigger "all actions masked" warnings
                 # Create a dummy FALSE derived state
@@ -426,22 +580,39 @@ class BatchedEnv(EnvBase):
         if active_mask.any():
             active_rows = batch_ids[active_mask]
             chosen = self.derived_states_batch[active_rows, actions[active_rows]]
-            self.current_queries.index_copy_(0, active_rows, chosen)        
+            self.current_queries.index_copy_(0, active_rows, chosen)
+
+            # Optional string-env style skip-unary: follow unary chains on the
+            # newly selected current states before expanding successors.
+            if self.skip_unary_actions and self.use_exact_memory:
+                self._apply_skip_unary_to_current_state(active_rows)
+
         self.current_depths = self.current_depths + active_mask.long()
 
         # Note: Current state will be added to memory in _postprocess during _compute_derived_states
 
-        # Reward + done
-        rewards, terminated, truncated, is_success = self._get_done_reward()
-        dones = terminated | truncated
-
-        # Next derived states for envs that are NOT done
-        active_mask = ~dones.squeeze(-1)
+        # Compute derived states (and apply skip_unary if enabled)
+        # This must be done BEFORE checking termination because skip_unary may reach a terminal state
+        active_mask_for_derived = active_mask.clone()
         
         # In eval mode, don't clear inactive (done) envs - they need to keep their terminal state with valid actions
         # In train mode, clearing is OK because envs will be reset immediately
         should_clear_inactive = (self.mode == 'train')
-        self._compute_derived_states(active_mask=active_mask, clear_inactive=should_clear_inactive)
+        self._compute_derived_states(active_mask=active_mask_for_derived, clear_inactive=should_clear_inactive)
+
+        # NOW check termination AFTER skip_unary has been applied
+        if self.verbose >= 2:
+            self.debug_helper._log(2, f"[_step] Before _get_done_reward, current_queries[0,0]: {self.current_queries[0, 0]}")
+        rewards, terminated, truncated, is_success = self._get_done_reward()
+        dones = terminated | truncated
+        if self.verbose >= 2:
+            self.debug_helper._log(2, f"[_step] After _get_done_reward: terminated={terminated}, truncated={truncated}, dones={dones}")
+
+        # Active mask for observation packing (envs that are NOT done after termination check)
+        active_mask = ~dones.squeeze(-1)
+        
+        # Derived states already computed above (before termination check)
+        # so skip_unary has already been applied
         
         if self.verbose >= 3:
             self.debug_helper._log(3, f"[step] After compute_derived: derived_counts={self.derived_states_counts[:min(8, self.batch_size_int)]}")
@@ -465,6 +636,10 @@ class BatchedEnv(EnvBase):
                 current_depths=self.current_depths, proof_depths=self.proof_depths, current_labels=self.current_labels,
                 action_mask=obs.get('action_mask'), done=dones, rewards=rewards, level=1
             )
+        
+        # DEBUG: Check done flag before returning
+        if self.verbose >= 2:
+            self.debug_helper._log(2, f"[_step] Returning td['done']: {td['done']}, terminated: {td['terminated']}")
 
         return td
 
@@ -497,7 +672,7 @@ class BatchedEnv(EnvBase):
                 self.debug_helper._log(3, f"[compute_derived] next_var_indices: {self.next_var_indices[idx[:min(3, idx.numel())]]}")
             
             # Step 1: Mark which rows are end-of-state (terminal: TRUE/FALSE/END)
-            terminal_mask = self._is_terminal_state(idx)
+            terminal_mask = self.unification_engine.is_terminal_state(self.current_queries[idx])
             non_terminal_idx = idx[~terminal_mask]
             
             if verbose:
@@ -538,7 +713,10 @@ class BatchedEnv(EnvBase):
                 # For any row where a terminal is present, we'll handle it in skip_unary or final write
                 
                 # Step 5: Skip-unary loop (for remaining non-terminal rows)
-                if self.skip_unary_actions:
+                # In exact-memory mode we already applied skip-unary directly
+                # to current states in _reset/_step, so we only run the
+                # batched skip-unary here for the Bloom filter backend.
+                if self.skip_unary_actions and not self.use_exact_memory:
                     all_derived, derived_counts_subset = self._skip_unary(non_terminal_idx, all_derived, derived_counts_subset)
                     if verbose:
                         self.debug_helper._log(3, f"[compute_derived] after skip_unary counts={derived_counts_subset}")
@@ -558,7 +736,8 @@ class BatchedEnv(EnvBase):
             # Handle terminal rows: they keep their current state as the only derived state
             if terminal_mask.any():
                 terminal_idx = idx[terminal_mask]
-                terminal_derived, terminal_counts = self._create_terminal_derived(terminal_idx)
+                terminal_derived, terminal_counts = self.unification_engine.create_terminal_derived(
+                    self.current_queries[terminal_idx], self.padding_states, self.padding_atoms)
                 batched_derived.index_copy_(0, terminal_idx, terminal_derived)
                 counts.index_copy_(0, terminal_idx, terminal_counts)
 
@@ -573,7 +752,7 @@ class BatchedEnv(EnvBase):
         need_false = active_mask & (counts == 0)
         dst_rows = torch.arange(active_mask.shape[0], device=self._device)[need_false]
         if dst_rows.numel() > 0:
-            false_state = self._create_false_state()                  # [A, D]
+            false_state = self.unification_engine.create_false_state(self.padding_atoms)  # [A, D]
             expanded = false_state.unsqueeze(0).expand(dst_rows.shape[0], -1, -1)
             batched_derived[dst_rows, 0] = expanded
             counts[dst_rows] = 1
@@ -581,64 +760,6 @@ class BatchedEnv(EnvBase):
         # Write back in-place instead of reassigning
         self.derived_states_batch.copy_(batched_derived)
         self.derived_states_counts.copy_(counts)
-
-    def _is_terminal_state(self, env_indices: Tensor) -> Tensor:
-        """
-        Check if current states for given env indices are terminal (TRUE/FALSE/END).
-        Returns a boolean mask [len(env_indices)] indicating which rows are terminal.
-        """
-        if env_indices.numel() == 0:
-            return torch.zeros(0, dtype=torch.bool, device=self._device)
-        
-        states = self.current_queries.index_select(0, env_indices)  # [N, A, D]
-        non_pad = states[:, :, 0] != self.padding_idx                # [N, A]
-        preds = states[:, :, 0]                                      # [N, A]
-        
-        is_terminal = torch.zeros(env_indices.shape[0], dtype=torch.bool, device=self._device)
-        
-        # Check for TRUE
-        if self.true_pred_idx is not None:
-            true_mask = (preds == self.true_pred_idx) | ~non_pad
-            all_true = true_mask.all(dim=1) & non_pad.any(dim=1)
-            is_terminal |= all_true
-        
-        # Check for FALSE
-        if self.false_pred_idx is not None:
-            any_false = (preds == self.false_pred_idx).any(dim=1)
-            is_terminal |= any_false
-        
-        # Check for END (if end_proof_action is enabled)
-        if self.end_proof_action and self.end_pred_idx is not None:
-            single_pred = non_pad.sum(dim=1) == 1
-            first_pos = non_pad.long().argmax(dim=1)
-            batch_ids = torch.arange(env_indices.shape[0], device=self._device)
-            first_pred = preds[batch_ids, first_pos]
-            is_end = single_pred & (first_pred == self.end_pred_idx)
-            is_terminal |= is_end
-        
-        return is_terminal
-
-    def _create_terminal_derived(self, env_indices: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        For terminal rows, create derived states containing only the current terminal state.
-        Returns (derived_states, counts) where derived_states[i, 0] = current_queries[env_indices[i]].
-        """
-        if env_indices.numel() == 0:
-            return (torch.zeros(0, self.padding_states, self.padding_atoms, self.max_arity + 1, 
-                               dtype=torch.long, device=self._device),
-                    torch.zeros(0, dtype=torch.long, device=self._device))
-        
-        N = env_indices.shape[0]
-        S = self.padding_states
-        A = self.padding_atoms
-        D = self.max_arity + 1
-        
-        derived = torch.full((N, S, A, D), self.padding_idx, dtype=torch.long, device=self._device)
-        current = self.current_queries.index_select(0, env_indices)  # [N, A, D]
-        derived[:, 0] = current  # Place current state as the only action
-        counts = torch.ones(N, dtype=torch.long, device=self._device)
-        
-        return derived, counts
 
     def _fit_to_buffer(self, states: Tensor, counts: Tensor, num_envs: int) -> Tuple[Tensor, Tensor]:
         """
@@ -698,7 +819,7 @@ class BatchedEnv(EnvBase):
         
         # Check which rows have all terminal derived states
         first_preds = states[:, :, 0, 0]  # [A, K]
-        is_term = self._is_terminal_pred(first_preds) | (first_preds == pad)
+        is_term = self.unification_engine.is_terminal_pred(first_preds) | (first_preds == pad)
         
         valid_state_mask = torch.arange(K, device=device).view(1, -1).expand(A, -1) < counts.view(A, 1)
         all_terminal = (is_term | ~valid_state_mask).all(dim=1)  # [A]
@@ -708,8 +829,7 @@ class BatchedEnv(EnvBase):
         
         if reserve_end.any():
             rows = torch.arange(A, device=device)[reserve_end]
-            end_state = torch.full((M, D), pad, dtype=states.dtype, device=device)
-            end_state[0, 0] = self.end_pred_idx
+            end_state = self.unification_engine.create_end_state(M)  # [M, D]
             
             pos = counts[rows]
             expanded_end = end_state.unsqueeze(0).expand(rows.shape[0], -1, -1)
@@ -721,6 +841,181 @@ class BatchedEnv(EnvBase):
     # ---------------------------------------------------------------------
     # Skip-unary closure (batched; bounded loop on subset only)
     # ---------------------------------------------------------------------
+    def _apply_skip_unary_to_current_state(self, env_indices: Tensor):
+        """
+        Apply skip_unary logic to current states immediately after taking an action.
+        This follows unary chains until reaching a branching point or terminal state.
+        Updates self.current_queries in-place for the given environment indices.
+        
+        This is called in _step BEFORE checking termination to ensure that terminal
+        states reached via unary chains (e.g., False()) are detected immediately.
+        """
+        if env_indices.numel() == 0:
+            return
+        
+        device = self._device
+        pad = self.padding_idx
+        max_iters = self.max_skip_unary_iters
+        
+        # Track which envs are still following unary chains
+        active_envs = env_indices.clone()
+        hit_limit = False
+        
+        for iter_count in range(max_iters):
+            if active_envs.numel() == 0:
+                break
+            
+            if self.verbose >= 3:
+                self.debug_helper._log(3, f"[apply_skip_unary] Iteration {iter_count}: {active_envs.numel()} active envs")
+            
+            # Check if current states are terminal
+            terminal_mask = self.unification_engine.is_terminal_state(self.current_queries[active_envs])
+            active_envs = active_envs[~terminal_mask]
+            
+            if active_envs.numel() == 0:
+                break
+            
+            # Get derived states for active envs
+            current_states = self.current_queries.index_select(0, active_envs)  # [N, A, D]
+            next_vars = self.next_var_indices.index_select(0, active_envs)
+            excluded = self.original_queries.index_select(0, active_envs).unsqueeze(1)
+            
+            derived_batch, derived_counts, updated_vars = self.unification_engine.get_derived_states(
+                current_states=current_states,
+                next_var_indices=next_vars,
+                excluded_queries=excluded,
+                verbose=0,
+                max_derived_per_state=self.padding_states,
+            )
+            
+            # Update next_var_indices for envs that got new derived states
+            self.next_var_indices.index_copy_(0, active_envs, updated_vars)
+            
+            if self.verbose >= 2:
+                for i in range(active_envs.shape[0]):
+                    env_idx = active_envs[i]
+                    count = derived_counts[i].item()
+                    self.debug_helper._log(2, f"[apply_skip_unary] Iter {iter_count}: env {env_idx.item()} has {count} derived states BEFORE memory pruning")
+            
+            # Apply memory pruning if enabled (exact/Python or Bloom filter)
+            if self.memory_pruning:
+                # Check membership for all derived states
+                visited = self.memory_backend.membership(
+                    derived_batch,  # [N, K, M, D]
+                    active_envs  # [N]
+                )  # Returns [N, K] bool tensor
+                
+                # Keep only non-visited states
+                for i in range(active_envs.shape[0]):
+                    count = derived_counts[i].item()
+                    if count == 0:
+                        continue
+                    
+                    # Get mask for this env's derived states
+                    not_visited = ~visited[i, :count]
+                    
+                    if not not_visited.any():
+                        # All states were visited, set count to 0
+                        derived_counts[i] = 0
+                    elif not not_visited.all():
+                        # Some states were visited, compact the kept ones
+                        kept_count = not_visited.sum().item()
+                        kept_states = derived_batch[i, :count][not_visited]
+                        derived_batch[i, :kept_count] = kept_states
+                        derived_batch[i, kept_count:] = pad
+                        derived_counts[i] = kept_count
+            
+            # Check which have exactly one non-terminal child
+            is_single = (derived_counts == 1)
+            has_derived = is_single
+            
+            if self.verbose >= 2:
+                for i in range(active_envs.shape[0]):
+                    env_idx = active_envs[i]
+                    count = derived_counts[i].item()
+                    self.debug_helper._log(2, f"[apply_skip_unary] Iter {iter_count}: env {env_idx.item()} has {count} derived states AFTER memory pruning")
+            
+            if not has_derived.any():
+                break
+            
+            # Get first predicate of the single child for rows with count=1
+            first_preds = torch.full((active_envs.shape[0],), pad, dtype=torch.long, device=device)
+            single_mask = is_single
+            if single_mask.any():
+                first_preds[single_mask] = derived_batch[single_mask, 0, 0, 0]
+            
+            # Check if the single child is terminal
+            is_child_terminal = self.unification_engine.is_terminal_pred(first_preds)
+            
+            # Keep only rows with single non-terminal child
+            is_unary_nonterminal = is_single & ~is_child_terminal
+            
+            if not is_unary_nonterminal.any():
+                break
+            
+            # Promote the single child to current state for unary rows
+            unary_envs = active_envs[is_unary_nonterminal]
+            unary_local_idx = torch.arange(active_envs.shape[0], device=device)[is_unary_nonterminal]
+            
+            promoted = derived_batch[unary_local_idx, 0]  # [U, M, D]
+            
+            # Ensure promoted states match padding_atoms dimension
+            if promoted.shape[1] < self.padding_atoms:
+                pad_cols = self.padding_atoms - promoted.shape[1]
+                pad_tail = torch.full(
+                    (promoted.shape[0], pad_cols, promoted.shape[2]),
+                    pad, dtype=promoted.dtype, device=device
+                )
+                promoted = torch.cat([promoted, pad_tail], dim=1)
+            elif promoted.shape[1] > self.padding_atoms:
+                promoted = promoted[:, :self.padding_atoms]
+            
+            # Update current_queries for unary envs
+            self.current_queries.index_copy_(0, unary_envs, promoted)
+            
+            # Add promoted states to memory
+            if self.memory_pruning:
+                self.memory_backend.add_current(unary_envs, self.current_queries)
+            
+            # Continue with rows that were unary
+            active_envs = unary_envs
+            
+            if self.verbose >= 2:
+                for env_idx in active_envs[:min(2, active_envs.numel())]:
+                    state_str = self.debug_helper._format_atoms(self.current_queries[env_idx])
+                    self.debug_helper._log(2, f"[apply_skip_unary] Iter {iter_count}: env {env_idx.item()} state: {state_str[:100]}...")
+        else:
+            # Loop completed without breaking - we hit the iteration limit
+            hit_limit = True
+        
+        # Check if we hit the iteration limit
+        # If so, inject False() state to match str environment behavior
+        if hit_limit and active_envs.numel() > 0:
+            if self.verbose >= 1:
+                self.debug_helper._log(1, f"[apply_skip_unary] Hit max_iters={max_iters}, injecting False() for {active_envs.numel()} envs")
+            
+            if self.false_pred_idx is None:
+                raise RuntimeError("False predicate index is undefined; cannot inject False() state after skip-unary cap")
+            
+            # Build False() state
+            false_state = torch.full(
+                (self.padding_atoms, self.max_arity + 1),
+                pad,
+                dtype=self.current_queries.dtype,
+                device=device
+            )
+            false_state[0, 0] = self.false_pred_idx
+            
+            # Set current state to False() for envs that hit the limit
+            false_expanded = false_state.unsqueeze(0).expand(active_envs.shape[0], -1, -1)
+            self.current_queries.index_copy_(0, active_envs, false_expanded)
+        
+        if self.verbose >= 2 and env_indices.numel() > 0:
+            for i in range(min(3, env_indices.numel())):
+                env_idx = env_indices[i]
+                state_str = self.debug_helper._format_atoms(self.current_queries[env_idx])
+                self.debug_helper._log(2, f"[apply_skip_unary] Final state for env {env_idx.item()}: {state_str}")
+    
     def _skip_unary(self, idx_subset: Tensor, derived_states: Tensor, derived_counts: Tensor) -> Tuple[Tensor, Tensor]:
         """
         Skip-unary loop following proof-safe logic (Step 5):
@@ -750,7 +1045,7 @@ class BatchedEnv(EnvBase):
             
             is_single = (dc == 1)
             fp = ds[:, 0, 0, 0]  # first predicate of the unique child
-            is_term = self._is_terminal_pred(fp)
+            is_term = self.unification_engine.is_terminal_pred(fp)
             return is_single & ~is_term
         
         # Start with rows that have single non-terminal children
@@ -799,7 +1094,7 @@ class BatchedEnv(EnvBase):
             self.current_queries.index_copy_(0, env_rows, promoted)
 
             # Check if promoted states are terminal - if so, stop processing them
-            terminal_mask = self._is_terminal_state(env_rows)
+            terminal_mask = self.unification_engine.is_terminal_state(self.current_queries[env_rows])
             non_terminal_in_promoted = env_rows[~terminal_mask]
             uidx_non_terminal = uidx[~terminal_mask]
             
@@ -810,7 +1105,8 @@ class BatchedEnv(EnvBase):
             if terminal_mask.any():
                 terminal_uidx = uidx[terminal_mask]
                 terminal_env_rows = env_rows[terminal_mask]
-                terminal_derived, terminal_counts = self._create_terminal_derived(terminal_env_rows)
+                terminal_derived, terminal_counts = self.unification_engine.create_terminal_derived(
+                    self.current_queries[terminal_env_rows], K, M)
                 
                 # Adjust to (K, M, D) for scatter back
                 terminal_derived_subset = terminal_derived[:, :K, :M, :]
@@ -870,6 +1166,39 @@ class BatchedEnv(EnvBase):
             if verbose:
                 self.debug_helper._log(3, f"[skip_unary] End of iteration {iters}: {unary_idx.numel()} rows remain unary")
 
+        # If we exited the loop because we hit the iteration cap but still have unary rows,
+        # align with the string environment semantics: mark those rows as False().
+        if unary_idx.numel() > 0:
+            if self.false_pred_idx is None:
+                raise RuntimeError("False predicate index is undefined; cannot inject False() state after skip-unary cap")
+
+            env_rows = idx_subset.index_select(0, unary_idx)
+            if env_rows.dtype != torch.long:
+                env_rows = env_rows.long()
+
+            # Build False() state tensors
+            false_state = torch.full(
+                (self.padding_atoms, self.max_arity + 1),
+                pad,
+                dtype=self.current_queries.dtype,
+                device=device,
+            )
+            false_state[0, 0] = self.false_pred_idx
+            false_batch = false_state.unsqueeze(0).expand(env_rows.shape[0], -1, -1)
+
+            # Overwrite current queries for the exhausted rows
+            self.current_queries.index_copy_(0, env_rows, false_batch)
+
+            # Their derived states become the terminal False() state only
+            terminal_derived, terminal_counts = self.unification_engine.create_terminal_derived(
+                self.current_queries[env_rows], K, M)
+            terminal_subset = terminal_derived[:, :K, :M, :]
+            derived_states.index_copy_(0, unary_idx, terminal_subset)
+            derived_counts.index_copy_(0, unary_idx, terminal_counts)
+
+            if verbose:
+                self.debug_helper._log(2, f"[skip_unary] Iteration cap reached; forced {env_rows.shape[0]} rows to False()")
+
         return derived_states, derived_counts
 
     def _is_terminal_pred(self, pred_indices: Tensor) -> Tensor:
@@ -913,7 +1242,7 @@ class BatchedEnv(EnvBase):
         # Step 0: Add current state to memory before checking derived states
         # This prevents loops (derived states that match current state will be pruned)
         if self.memory_pruning:
-            self.bloom_filter.add_current(env_indices, self.current_queries)
+            self.memory_backend.add_current(env_indices, self.current_queries)
 
         A, K, M, D = states.shape
         has_states = counts > 0
@@ -921,7 +1250,7 @@ class BatchedEnv(EnvBase):
         # Step 1: Mark non-terminal states
         # Get first predicate of each state
         first_preds = states[:, :, 0, 0]  # [A, K]
-        is_terminal_state = self._is_terminal_pred(first_preds)  # [A, K]
+        is_terminal_state = self.unification_engine.is_terminal_pred(first_preds)  # [A, K]
 
         # Step 2: Base validity checks (drop empty, beyond-count, over-budget)
         valid_atom = states[:, :, :, 0] != pad  # [A, K, M]
@@ -958,7 +1287,7 @@ class BatchedEnv(EnvBase):
             # Check membership for all base-valid states
             visited = torch.zeros((A, K), dtype=torch.bool, device=device)
             if base_valid.any():
-                visited = self.bloom_filter.membership(states, owners)  # [A, K]
+                visited = self.memory_backend.membership(states, owners)  # [A, K]
                 visited = visited & base_valid
             
             # Only prune non-terminal visited states (terminals are protected)
@@ -1235,38 +1564,6 @@ class BatchedEnv(EnvBase):
                 (self.max_arity + 1,), pad, dtype=torch.long, device=self._device
             )
         return first_atoms
-
-    def _pad_state(self, state: Tensor, target_atoms: Optional[int] = None) -> Tensor:
-        device = self._device
-        pad = self.padding_idx
-        A = int(target_atoms) if target_atoms is not None else self.padding_atoms
-        D = self.max_arity + 1
-
-        # OPTIMIZATION: State should already be on correct device
-        if state.device != device:
-            state = state.to(device=device)
-        if state.dtype != torch.long:
-            state = state.long()
-            
-        if state.shape[0] >= A:
-            return state[:A]
-        pad_rows = A - state.shape[0]
-        tail = torch.full((pad_rows, D), pad, dtype=torch.long, device=device)
-        return torch.cat([state, tail], dim=0)
-
-    def _create_false_state(self) -> Tensor:
-        if self.false_pred_idx is None:
-            raise ValueError("False predicate index is not defined.")
-        state = torch.full((1, self.max_arity + 1), self.padding_idx, dtype=torch.long, device=self._device)
-        state[0, 0] = int(self.false_pred_idx)
-        return self._pad_state(state)
-
-    def _create_end_state(self, target_atoms: Optional[int] = None) -> Tensor:
-        if self.end_pred_idx is None:
-            raise ValueError("End predicate index is not defined.")
-        state = torch.full((1, self.max_arity + 1), self.padding_idx, dtype=torch.long, device=self._device)
-        state[0, 0] = int(self.end_pred_idx)
-        return self._pad_state(state, target_atoms)
 
     def _update_original_queries_for_indices(self, indices: Tensor):
         """For selected env indices, update original_queries to match the first atom of current_queries."""

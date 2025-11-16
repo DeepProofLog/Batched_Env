@@ -1250,37 +1250,11 @@ class UnificationEngine:
         if verbose > 0 and self.debug_helper:
             self.debug_helper.print_states("[ENGINE] 6. AFTER STANDARDIZE", std_states, surv_counts)
 
-        # ---- 7) pack by owner -> (optional) dedup -> canonical order -> cap K
+        # ---- 7) pack by owner -> (optional) dedup -> cap K
         packed, packed_counts = pack_by_owner(std_states, surv_counts, surv_owners, B, M_comb, pad)
 
         if deduplicate:
             packed, packed_counts = deduplicate_states_packed(packed, packed_counts, pad, self.hash_cache)
-
-        # ---- 7b) Apply canonical ordering AFTER deduplication but BEFORE capping
-        # This ensures we keep the first K states in canonical order, matching string engine behavior
-        if self.canonical_action_order and packed.numel() > 0 and self.debug_helper is not None:
-            # Unpack to flat list for sorting
-            flat_states = []
-            flat_owners = []
-            for b in range(B):
-                for k in range(packed_counts[b].item()):
-                    flat_states.append(packed[b, k])
-                    flat_owners.append(b)
-            
-            if len(flat_states) > 0:
-                flat_states = torch.stack(flat_states, dim=0)
-                flat_owners = torch.tensor(flat_owners, dtype=torch.long, device=device)
-                flat_counts = torch.ones(len(flat_states), dtype=torch.long, device=device)
-                # Note: next_vars are not needed for sorting after dedup since we don't modify them
-                dummy_next_vars = updated_next[flat_owners]
-                
-                flat_states, flat_counts, flat_owners, dummy_next_vars = self.debug_helper._sort_candidates_by_canonical_order(
-                    flat_states, flat_counts, flat_owners, dummy_next_vars,
-                    self.constant_no, pad
-                )
-                
-                # Repack sorted states
-                packed, packed_counts = pack_by_owner(flat_states, flat_counts, flat_owners, B, M_comb, pad)
 
         packed, packed_counts = cap_states_per_owner(packed, packed_counts, max_derived_per_state)
 

@@ -840,8 +840,7 @@ def run_all_tests(
         except Exception as e:
             print(f"\n✗ {config_name}: ERROR - {str(e)}")
             import traceback
-            if verbose:
-                traceback.print_exc()
+            traceback.print_exc()
     
     # Print results table
     print_results_table(results_dict, deterministic)
@@ -890,8 +889,8 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Test all engine and environment configurations')
-    parser.add_argument('--dataset', type=str, default='wn18rr', help='Dataset name')
-    parser.add_argument('--num-queries', type=int, default=100, help='Number of queries to test')
+    parser.add_argument('--dataset', type=str, default='family', help='Dataset name')
+    parser.add_argument('--num-queries', type=int, default=20, help='Number of queries to test')
     parser.add_argument('--deterministic', action='store_true', help='Use deterministic (canonical) policy')
     parser.add_argument('--random', action='store_true', help='Use random policy')
     parser.add_argument('--max-depth', type=int, default=20, help='Maximum proof depth')

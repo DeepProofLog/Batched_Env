@@ -43,6 +43,7 @@ class LogicEnv_gym(gym.Env):
                 endt_action: bool = False,
                 endf_action: bool = False,
                 skip_unary_actions: bool = False,
+                canonical_action_order: bool = False,
                 padding_atoms: int = 10,
                 padding_states: int = 20,
                 verbose: int = 0,
@@ -100,6 +101,7 @@ class LogicEnv_gym(gym.Env):
         self.endt_action = endt_action
         self.endf_action = endf_action
         self.skip_unary_actions = skip_unary_actions # Skip unary actions in the action space
+        self.canonical_action_order = bool(canonical_action_order)
         self.predicate_false_idx = index_manager.predicate_str2idx['False'] 
 
         self.special_predicates = set(getattr(self.index_manager, "special_preds", []))
@@ -532,7 +534,9 @@ class LogicEnv_gym(gym.Env):
                     excluded_fact=self.current_query,
                     verbose=self.prover_verbose,
                     next_var_index=self.next_var_index,
-                    strategy=self.engine_strategy
+                    strategy=self.engine_strategy,
+                    canonical_order=self.canonical_action_order,
+                    index_manager=self.index_manager,
                 )
             
             # Apply memory pruning to derived states
@@ -627,7 +631,9 @@ class LogicEnv_gym(gym.Env):
                                                             excluded_fact = self.current_query,
                                                             verbose=self.prover_verbose,
                                                             next_var_index=self.next_var_index,
-                                                            strategy= self.engine_strategy
+                                                            strategy= self.engine_strategy,
+                                                            canonical_order=self.canonical_action_order,
+                                                            index_manager=self.index_manager
                                                             )
 
         final_states: List[State] = []
@@ -642,7 +648,7 @@ class LogicEnv_gym(gym.Env):
                 continue
 
             # 2. Max Atoms Check
-            if len(d_state) >= self.padding_atoms:
+            if len(d_state) > self.padding_atoms:
                 if self.verbose:
                     print(f"Exceeded max atoms in next states: {len(d_state)}")
                 continue

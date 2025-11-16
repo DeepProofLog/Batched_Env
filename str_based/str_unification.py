@@ -1,5 +1,8 @@
-from typing import List, Dict, Set, Tuple, FrozenSet, Optional
+from typing import List, Dict, Set, Tuple, FrozenSet, Optional, TYPE_CHECKING
 from str_based.str_utils import Term, Rule
+
+if TYPE_CHECKING:
+    from str_based.str_index_manager import IndexManager
 
 def is_variable(arg: str) -> bool:
     """Check if an argument is a variable."""
@@ -222,6 +225,98 @@ def rename_vars_local(next_states: List[List[Term]],
 
 
 
+def _canonical_order_key(state: List[Term], index_manager: 'IndexManager') -> Tuple[int, ...]:
+    """Build a canonical key (tuple of ints) for ordering states deterministically.
+    Atoms are sorted by their indexed representation before generating the key."""
+    predicate_map = index_manager.predicate_str2idx
+    constant_map = index_manager.constant_str2idx
+    pad = index_manager.padding_idx
+    max_arity = index_manager.max_arity
+    constant_no = index_manager.constant_no
+
+    # First, convert all terms to indexed tuples for sorting
+    indexed_terms = []
+    for term in state:
+        pred_idx = predicate_map.get(term.predicate, pad)
+        args = term.args if term.args else ()
+        arg_indices = []
+        for pos in range(max_arity):
+            if pos < len(args):
+                arg = args[pos]
+                if arg in constant_map:
+                    arg_indices.append(constant_map[arg])
+                elif arg is None:
+                    arg_indices.append(pad)
+                elif (isinstance(arg, str) and (arg.startswith('Var_') or is_variable(arg))):
+                    # For sorting, use a placeholder that preserves variable identity
+                    # We'll remap after sorting
+                    arg_indices.append(constant_no + 1 + hash(arg) % 100000)  # temp placeholder
+                else:
+                    arg_indices.append(constant_map.get(arg, pad))
+            else:
+                arg_indices.append(pad)
+        indexed_terms.append((pred_idx, tuple(arg_indices), term))
+    
+    # Sort by (predicate, args) tuple
+    indexed_terms.sort(key=lambda x: (x[0], x[1]))
+    
+    # Now generate the key with proper variable remapping
+    var_map: Dict[str, int] = {}
+    next_var_idx = constant_no + 1
+    key: List[int] = []
+
+    for pred_idx, _, term in indexed_terms:
+        key.append(pred_idx)
+        args = term.args if term.args else ()
+        for pos in range(max_arity):
+            if pos < len(args):
+                arg = args[pos]
+                if arg in constant_map:
+                    key.append(constant_map[arg])
+                elif arg is None:
+                    key.append(pad)
+                elif (isinstance(arg, str) and (arg.startswith('Var_') or is_variable(arg))):
+                    mapped = var_map.get(arg)
+                    if mapped is None:
+                        mapped = next_var_idx
+                        var_map[arg] = mapped
+                        next_var_idx += 1
+                    key.append(mapped)
+                else:
+                    key.append(constant_map.get(arg, pad))
+            else:
+                key.append(pad)
+
+    return tuple(key)
+
+
+def canonicalize_state_to_str(state: List[Term]) -> str:
+    """Return a canonical string representation for a list of Terms."""
+    var_mapping: Dict[str, str] = {}
+    next_var_num = 1
+
+    atoms_str: List[str] = []
+    for term in state:
+        atom_parts: List[str] = [term.predicate, '(']
+        for i, arg in enumerate(term.args):
+            if i > 0:
+                atom_parts.append(',')
+            if isinstance(arg, str) and (arg.startswith('Var') or is_variable(arg)):
+                mapped = var_mapping.get(arg)
+                if mapped is None:
+                    mapped = f"Var_{next_var_num}"
+                    var_mapping[arg] = mapped
+                    next_var_num += 1
+                atom_parts.append(mapped)
+            else:
+                atom_parts.append(str(arg))
+        atom_parts.append(')')
+        atoms_str.append(''.join(atom_parts))
+
+    atoms_str.sort()
+    return '|'.join(atoms_str)
+
+
 def get_next_unification_python(state: List[Term],
                          facts_set: FrozenSet[Term],
                          facts_indexed: Dict[Tuple, Set[Term]],
@@ -230,7 +325,9 @@ def get_next_unification_python(state: List[Term],
                          next_var_index: Optional[int] = None,
                          strategy: str = 'complete', # 'complete' or 'rules_then_facts'
                          verbose: int = 0,
-                         max_derived_states: int = 500) -> Tuple[List[List[Term]], Optional[int]]:
+                         max_derived_states: int = 500,
+                         canonical_order: bool = False,
+                         index_manager: Optional['IndexManager'] = None) -> Tuple[List[List[Term]], Optional[int]]:
     """
     Processes a state and returns all possible next states based on a chosen strategy.
 
@@ -246,9 +343,13 @@ def get_next_unification_python(state: List[Term],
                   'rules_then_facts': A heuristic that prioritizes rule applications
                                       that can be immediately resolved by a fact.
         verbose: Verbosity level for printing debug information.
-        max_derived_states: Maximum number of derived states to return. If more states
-                           are generated, they will be capped and a warning printed.
-                           Default is 500 to match tensor engine behavior.
+    max_derived_states: Maximum number of derived states to return. If more states
+               are generated, they will be capped and a warning printed.
+               Default is 500 to match tensor engine behavior.
+    canonical_order: If True, derived states are sorted deterministically using a
+             canonical key (requires ``index_manager``).
+    index_manager: Index manager that provides predicate/constant mappings for
+               canonical ordering. Required when ``canonical_order`` is True.
 
     Returns:
         A tuple containing:
@@ -417,14 +518,47 @@ def get_next_unification_python(state: List[Term],
         print('No unification possible.') if verbose else None
         return [[Term('False', ())]], next_var_index
 
-    # Apply cap to derived states to match tensor engine behavior
+    # Rename variables to avoid clashes in subsequent unification steps
+    next_states, next_var_index = rename_vars_local(next_states, next_var_index, verbose=0)
+
+    if canonical_order:
+        if index_manager is None:
+            raise ValueError("canonical_order=True requires index_manager to be provided")
+        keys = [_canonical_order_key(s, index_manager) for s in next_states]
+        
+        # DEBUG: Print first few states and keys before sorting ALWAYS
+        if verbose > 0:
+            print(f'\n[STR DEBUG] Before canonical sort: {len(next_states)} states')
+        if len(next_states) > 0:
+            num_to_print = min(3, len(next_states))
+            for i in range(num_to_print):
+                state_str = ' | '.join([str(t) for t in next_states[i]])
+                key = keys[i]
+                if verbose > 0:
+                    print(f'  State {i}: {state_str}')
+                    print(f'    Key: {key[:15]}...')
+        
+        order = sorted(range(len(next_states)), key=lambda idx: keys[idx])
+        if order != list(range(len(next_states))):
+            next_states = [next_states[idx] for idx in order]
+        
+        # DEBUG: Print first few states after sorting ALWAYS
+        if verbose > 0:
+            print(f'[STR DEBUG] After canonical sort:')
+        if len(next_states) > 0:
+            num_to_print = min(3, len(next_states))
+            for i in range(num_to_print):
+                state_str = ' | '.join([str(t) for t in next_states[i]])
+                key = _canonical_order_key(next_states[i], index_manager)
+                if verbose > 0:
+                    print(f'  State {i}: {state_str}')
+                    print(f'    Key: {key[:15]}...')
+
+    # Apply cap to derived states to match tensor engine behavior (after canonical ordering)
     if len(next_states) > max_derived_states:
         if verbose > 0 or len(next_states) > 500:
             print(f'WARNING: Capping derived states from {len(next_states)} to {max_derived_states}')
         next_states = next_states[:max_derived_states]
-
-    # Rename variables to avoid clashes in subsequent unification steps
-    next_states, next_var_index = rename_vars_local(next_states, next_var_index, verbose=0)
 
     print(f'\nNext states: {len(next_states)}, {next_states}') if verbose else None
     print('++++++++++++++\n') if verbose else None

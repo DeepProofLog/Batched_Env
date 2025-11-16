@@ -51,6 +51,9 @@ import torch
 import numpy as np
 from typing import List, Tuple, Dict
 
+# Import canonicalization function for string states
+from str_based.str_unification import canonicalize_state_to_str
+
 # Delay heavy imports to test runtime; tests may be discovered on machines without all deps.
 DATASET = "countries_s3"
 SEED = 12345
@@ -65,58 +68,6 @@ def safe_item(x):
     elif isinstance(x, torch.Tensor):
         return x.item() if x.numel() == 1 else x
     return x
-
-
-def canonicalize_str_state(state) -> str:
-    var_mapping = {}
-    next_var_num = 1
-    canonical_atoms = []
-    for term in state:
-        new_args = []
-        for arg in term.args:
-            if isinstance(arg, str) and arg.startswith('Var'):
-                if arg not in var_mapping:
-                    var_mapping[arg] = f"Var_{next_var_num}"
-                    next_var_num += 1
-                new_args.append(var_mapping[arg])
-            else:
-                new_args.append(arg)
-        canonical_atoms.append(f"{term.predicate}({','.join(new_args)})")
-    return " | ".join(sorted(canonical_atoms))
-
-
-def canonicalize_tensor_state(state: torch.Tensor, debug_helper, constant_no: int) -> str:
-    # state: [A, D]
-    n_atoms = (state[:, 0] != 0).sum().item()
-    if n_atoms == 0:
-        return ""
-    atoms = state[:n_atoms]
-    var_mapping = {}
-    next_var_num = 1
-    canonical_atoms = []
-    for i in range(n_atoms):
-        p, a, b = atoms[i][0].item(), atoms[i][1].item(), atoms[i][2].item()
-        ps = debug_helper.idx2predicate[p] if 0 <= p < len(debug_helper.idx2predicate) else str(p)
-        if ps in ['True', 'False']:
-            canonical_atoms.append(f"{ps}()")
-            continue
-
-        def convert_arg(arg_idx):
-            nonlocal next_var_num
-            if 1 <= arg_idx <= constant_no:
-                return debug_helper.idx2constant[arg_idx] if arg_idx < len(debug_helper.idx2constant) else f"c{arg_idx}"
-            elif arg_idx > constant_no:
-                if arg_idx not in var_mapping:
-                    var_mapping[arg_idx] = f"Var_{next_var_num}"
-                    next_var_num += 1
-                return var_mapping[arg_idx]
-            else:
-                return f"_{arg_idx}"
-
-        a_str = convert_arg(a)
-        b_str = convert_arg(b)
-        canonical_atoms.append(f"{ps}({a_str},{b_str})")
-    return " | ".join(sorted(canonical_atoms))
 
 
 def collect_str_traces(str_env, queries_with_labels, max_depth: int = 50) -> Dict[int, List[Dict]]:
@@ -145,14 +96,14 @@ def collect_str_traces(str_env, queries_with_labels, max_depth: int = 50) -> Dic
             action_mask = obs['action_mask']
             num_actions = int(action_mask.sum())
             # canonicalize derived states and pick first canonical
-            canon_list = [(canonicalize_str_state(ds), i) for i, ds in enumerate(derived)]
+            canon_list = [(canonicalize_state_to_str(ds), i) for i, ds in enumerate(derived)]
             canon_list.sort(key=lambda x: x[0])
             chosen_action = canon_list[0][1] if len(canon_list) > 0 else 0
 
             # record
             per_steps.append({
-                'state': canonicalize_str_state(state),
-                'derived': [canonicalize_str_state(ds) for ds in derived],
+                'state': canonicalize_state_to_str(state),
+                'derived': [canonicalize_state_to_str(ds) for ds in derived],
                 'n_actions': num_actions,
                 'reward': safe_item(str_env.tensordict['reward']),
                 'done': bool(str_env.tensordict['done'].item()),
@@ -166,7 +117,7 @@ def collect_str_traces(str_env, queries_with_labels, max_depth: int = 50) -> Dic
             if done_flag:
                 # record terminal step
                 per_steps.append({
-                    'state': canonicalize_str_state(str_env.tensordict['state']),
+                    'state': canonicalize_state_to_str(str_env.tensordict['state']),
                     'derived': [],
                     'n_actions': 0,
                     'reward': safe_item(reward),
@@ -191,6 +142,9 @@ def collect_batched_traces(batched_env, debug_helper, constant_no: int, batch_qu
 
     traces = {i: [] for i in range(B)}
     done_mask = torch.zeros(B, dtype=torch.bool)
+    
+    # Get engine for canonicalization
+    engine = batched_env.unification_engine
 
     for step in range(max_depth):
         # for each active env, compute canonical derived list and choose first
@@ -206,16 +160,16 @@ def collect_batched_traces(batched_env, debug_helper, constant_no: int, batch_qu
                 # still record terminal info if not already recorded
                 continue
 
-            # canonicalize current state
+            # canonicalize current state using engine method
             cur_state = current_queries[i]
-            cur_canon = canonicalize_tensor_state(cur_state, debug_helper, constant_no)
+            cur_canon = engine.canonical_state_to_str(cur_state)
 
             # build derived canon list
             n_actions = int(action_mask[i].sum())
             canon_list = []
             for a in range(n_actions):
                 ds = torch.from_numpy(derived_batch[i, a])
-                canon = canonicalize_tensor_state(ds, debug_helper, constant_no)
+                canon = engine.canonical_state_to_str(ds)
                 canon_list.append((canon, a))
             canon_list.sort(key=lambda x: x[0])
             chosen = canon_list[0][1] if len(canon_list) > 0 else 0
@@ -247,7 +201,7 @@ def collect_batched_traces(batched_env, debug_helper, constant_no: int, batch_qu
                 done_mask[i] = True
                 # Get the terminal state
                 terminal_state = batched_env.current_queries[i].cpu()
-                terminal_canon = canonicalize_tensor_state(terminal_state, debug_helper, constant_no)
+                terminal_canon = engine.canonical_state_to_str(terminal_state)
                 traces[i].append({
                     'state': terminal_canon,
                     'derived': [],

@@ -80,14 +80,22 @@ class IndexManager:
         const_list = sorted(set(constants))
         pred_list = sorted(set(predicates))
         
-        # Ensure True and False predicates are always present
-        if 'True' not in pred_list:
-            pred_list.append('True')
-        if 'False' not in pred_list:
-            pred_list.append('False')
-        if 'End' not in pred_list:
-            pred_list.append('End')
-        pred_list = sorted(pred_list)  # Re-sort after adding
+        # IMPORTANT: Match str_index_manager.py behavior - add special predicates AFTER regular ones
+        # This ensures canonical ordering keys match between str and batched environments
+        # First assign indices to regular predicates
+        regular_pred_list = pred_list
+        special_pred_list = []
+        
+        # Add special predicates at the end (not in alphabetical order with regular predicates)
+        if 'True' not in regular_pred_list:
+            special_pred_list.append('True')
+        if 'False' not in regular_pred_list:
+            special_pred_list.append('False')
+        if 'End' not in regular_pred_list:
+            special_pred_list.append('End')
+        
+        # Combine: regular predicates first (sorted), then special predicates
+        pred_list = regular_pred_list + special_pred_list
 
         # String <-> index maps (CPU int32 to save RAM)
         self.constant_str2idx: Dict[str, int] = {s: i + 1 for i, s in enumerate(const_list)}
@@ -303,37 +311,6 @@ class IndexManager:
             self.rules_heads_idx = self.rules_heads_idx.to(self.device)
         else:
             self.rules_heads_idx = torch.empty((0,3), dtype=torch.long, device=self.device)
-
-    def build_true_false_preds(self, true_pred: Optional[str], false_pred: Optional[str]) -> None:
-        """Optionally set special predicate indices for TRUE/FALSE atoms (debug/terminals)."""
-        if true_pred is not None:
-            self.true_pred_idx = self.predicate_str2idx.get(true_pred)
-        if false_pred is not None:
-            self.false_pred_idx = self.predicate_str2idx.get(false_pred)
-
-    # -----------------------------
-    # Debug helpers (strings only)
-    # -----------------------------
-    def debug_atom_to_str(self, atom_idx: LongTensor) -> str:
-        """Convert atom indices back to string (for debugging)."""
-        p, a, b = [int(x) for x in atom_idx.tolist()]
-        ps = self.idx2predicate[p] if 0 <= p < len(self.idx2predicate) else str(p)
-        
-        def term_str(t: int) -> str:
-            if 1 <= t <= self.constant_no:
-                return self.idx2constant[t]
-            # template var space
-            if self.constant_no < t <= self.constant_no + self.template_variable_no:
-                tv = t - self.constant_no
-                return self.idx2template_var[tv] if 0 <= tv < len(self.idx2template_var) else f"v{t}"
-            # runtime range
-            return f"_{t}"
-        
-        return f"{ps}({term_str(a)},{term_str(b)})"
-
-    def debug_state_to_str(self, state_idx: LongTensor) -> List[str]:
-        """Convert state indices to strings (for debugging)."""
-        return [self.debug_atom_to_str(atom) for atom in state_idx]
 
 
     def get_stringifier_params(self):

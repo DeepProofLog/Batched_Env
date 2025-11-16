@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple, List, Dict
 from tensordict import TensorDict
 
 
@@ -68,19 +68,32 @@ class DebugHelper:
         ps = self.idx2predicate[p] if self.idx2predicate and 0 <= p < len(self.idx2predicate) else str(p)
 
         def term_str(t: int) -> str:
+            if t == self.padding_idx:
+                return "_0"
             if self.n_constants is not None and 1 <= t <= self.n_constants:
-                return self.idx2constant[t] if self.idx2constant and 0 <= t < len(self.idx2constant) else f"c{t}"
-            if self.n_constants is not None and self.idx2template_var and self.n_constants < t <= self.n_constants + len(self.idx2template_var) - 1:
-                tv = t - self.n_constants
-                return self.idx2template_var[tv] if 0 <= tv < len(self.idx2template_var) else f"v{t}"
-            return f"_{t}"
+                if self.idx2constant and 0 <= t < len(self.idx2constant):
+                    return self.idx2constant[t]
+                return f"c{t}"
+            return f"Var_{t}"
 
-        return f"{ps}({term_str(a)},{term_str(b)})"
+        args: list[str] = []
+        for arg in (a, b):
+            if arg == self.padding_idx:
+                continue
+            args.append(term_str(arg))
+
+        if ps in {"True", "False"}:
+            return f"{ps}()"
+
+        args_str = ", ".join(args)
+        return f"{ps}({args_str})"
 
     def state_to_str(self, state_idx: torch.LongTensor) -> str:
         """Convert a state index tensor to a string representation, excluding padding."""
         if state_idx.numel() == 0:
             return "<empty>"
+        if state_idx.dim() == 3:
+            state_idx = state_idx.squeeze(0)  # Remove batch dimension
         # Filter out padding atoms
         non_pad_mask = state_idx[:, 0] != self.padding_idx
         non_pad_atoms = state_idx[non_pad_mask]
@@ -158,9 +171,14 @@ class DebugHelper:
                 derived_atoms.append(self._format_atoms(derived_states_batch[idx, d]))
             self._log(level, f"    Derived: {derived_atoms}\n")
 
-    def print_states(self, title: str, states_tensor: torch.Tensor, counts: Optional[torch.Tensor] = None, padding_idx: Optional[int] = None) -> None:
+    def print_states(self, title: str, states_tensor: torch.Tensor, 
+                     counts: Optional[torch.Tensor] = None, 
+                     padding_idx: Optional[int] = None,
+                     verbose: Optional[int] = 1) -> None:
         """Print states in human-readable format."""
-        if self.verbose <= 0:
+        if verbose is None:
+            verbose = self.verbose
+        if verbose <= 0:
             return  # Skip all work when not verbose
         
         pad = padding_idx if padding_idx is not None else self.padding_idx
@@ -213,3 +231,185 @@ class DebugHelper:
                 target[rows] = reset_val[rows]
                 merged.set(key, target)
         return merged
+
+    def atom_to_canonical_str(self, atom: Tensor, constant_no: int) -> str:
+        """
+        Convert an atom tensor to a canonical string representation.
+        
+        Args:
+            atom: [3] tensor representing [predicate, arg1, arg2]
+            constant_no: The highest constant index
+            
+        Returns:
+            Canonical string representation of the atom
+        """
+        p = int(atom[0].item())
+        a = int(atom[1].item())
+        b = int(atom[2].item())
+
+        if self.idx2predicate and 0 <= p < len(self.idx2predicate):
+            pred = self.idx2predicate[p]
+        else:
+            pred = str(p)
+
+        if pred in ('True', 'False'):
+            return f"{pred}()"
+
+        def _format_arg(val: int) -> str:
+            if 1 <= val <= constant_no:
+                if self.idx2constant and 0 <= val < len(self.idx2constant):
+                    return self.idx2constant[val]
+                return f"c{val}"
+            if val > constant_no:
+                return f"Var_{val - constant_no}"
+            return f"_{val}"
+
+        return f"{pred}({_format_arg(a)},{_format_arg(b)})"
+
+    def state_to_canonical_str(self, state: Tensor, constant_no: int, padding_idx: int) -> str:
+        """
+        Convert a state tensor to a canonical string representation.
+        
+        Args:
+            state: [M, 3] tensor representing a state (list of atoms)
+            constant_no: The highest constant index
+            padding_idx: The padding index value
+            
+        Returns:
+            Canonical string representation of the state (atoms joined by '|')
+        """
+        valid = state[:, 0] != padding_idx
+        atoms = state[valid]
+        if atoms.numel() == 0:
+            return ''
+        return '|'.join(self.atom_to_canonical_str(atom, constant_no) for atom in atoms)
+
+    def _tensor_state_canonical_key(self, state: Tensor, constant_no: int, padding_idx: int) -> Tuple[int, ...]:
+        """Generate a canonical key for a tensor state independent of absolute variable ids.
+        Atoms are sorted by (pred, arg1, arg2) before generating the key to ensure consistent ordering."""
+        # Filter out padding atoms
+        valid_mask = state[:, 0] != padding_idx
+        valid_atoms = state[valid_mask]
+        
+        if valid_atoms.numel() == 0:
+            return tuple()
+        
+        # Sort atoms by (pred, arg1, arg2) tuple for canonical order
+        # This ensures atoms are in a consistent order regardless of how they were generated
+        atom_tuples = [(int(atom[0].item()), int(atom[1].item()), int(atom[2].item())) for atom in valid_atoms]
+        sorted_indices = sorted(range(len(atom_tuples)), key=lambda i: atom_tuples[i])
+        
+        key: List[int] = []
+        var_map: Dict[int, int] = {}
+        next_var = constant_no + 1
+        
+        for idx in sorted_indices:
+            atom = valid_atoms[idx]
+            pred = int(atom[0].item())
+            key.append(pred)
+            for arg in atom[1:3]:
+                val = int(arg.item())
+                if val == padding_idx or val <= constant_no:
+                    key.append(val)
+                else:
+                    mapped = var_map.get(val)
+                    if mapped is None:
+                        mapped = next_var
+                        var_map[val] = mapped
+                        next_var += 1
+                    key.append(mapped)
+        return tuple(key)
+
+    def _sort_candidates_by_canonical_order(self, states: Tensor,
+                                            counts: Tensor,
+                                            owners: Tensor,
+                                            next_vars: Tensor,
+                                            constant_no: int,
+                                            padding_idx: int) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        if states.numel() == 0:
+            return states, counts, owners, next_vars
+
+        keys = [self._tensor_state_canonical_key(states[i], constant_no, padding_idx) for i in range(states.shape[0])]
+        order = sorted(range(len(keys)), key=lambda idx: (int(owners[idx].item()), keys[idx]))
+        if order == list(range(len(keys))):
+            return states, counts, owners, next_vars
+
+        order_tensor = torch.tensor(order, dtype=torch.long, device=states.device)
+        states = states.index_select(0, order_tensor)
+        counts = counts.index_select(0, order_tensor)
+        owners = owners.index_select(0, order_tensor)
+        next_vars = next_vars.index_select(0, order_tensor)
+        return states, counts, owners, next_vars
+
+    def _canonicalize_tensor_state(self, state: Tensor, constant_no: int, padding_idx: int) -> Tensor:
+        if state.dim() == 3:
+            if state.shape[0] != 1:
+                raise ValueError("Expected single batch dimension for canonicalization")
+            state_2d = state[0]
+        else:
+            state_2d = state
+
+        canonical = state_2d.clone()
+        valid_rows = canonical[:, 0] != padding_idx
+        if not valid_rows.any():
+            return canonical
+
+        var_mapping: Dict[int, int] = {}
+        next_var = constant_no + 1
+
+        rows = torch.nonzero(valid_rows, as_tuple=False).view(-1)
+        for row in rows:
+            for col in (1, 2):
+                val = int(canonical[row, col].item())
+                if val == padding_idx or val <= constant_no:
+                    continue
+                mapped = var_mapping.get(val)
+                if mapped is None:
+                    mapped = next_var
+                    var_mapping[val] = mapped
+                    next_var += 1
+                canonical[row, col] = mapped
+
+        return canonical
+
+    def _tensor_atom_to_canonical_str(self, atom: Tensor, constant_no: int) -> str:
+        p = int(atom[0].item())
+        a = int(atom[1].item())
+        b = int(atom[2].item())
+
+        if self.idx2predicate:
+            pred = self.idx2predicate[p] if 0 <= p < len(self.idx2predicate) else str(p)
+        else:
+            pred = str(p)
+
+        if pred in ('True', 'False'):
+            return f"{pred}()"
+
+        def _format_arg(val: int) -> str:
+            if 1 <= val <= constant_no:
+                if self.idx2constant and 0 <= val < len(self.idx2constant):
+                    return self.idx2constant[val]
+                return f"c{val}"
+            if val > constant_no:
+                return f"Var_{val - constant_no}"
+            return f"_{val}"
+
+        return f"{pred}({_format_arg(a)},{_format_arg(b)})"
+
+    def _tensor_state_to_canonical_str(self, state: Tensor, constant_no: int, padding_idx: int) -> str:
+        valid = state[:, 0] != padding_idx
+        atoms = state[valid]
+        if atoms.numel() == 0:
+            return ''
+        atoms_list = [self._tensor_atom_to_canonical_str(atom, constant_no) for atom in atoms]
+        atoms_list.sort()
+        return '|'.join(atoms_list)
+
+    def canonicalize_state(self, state: Tensor, constant_no: int, padding_idx: int) -> Tensor:
+        """Canonicalize a single tensor state (drop batch dim if present)."""
+        return self._canonicalize_tensor_state(state, constant_no, padding_idx)
+
+    def canonical_state_to_str(self, state: Tensor, constant_no: int, padding_idx: int) -> str:
+        """Canonicalize tensor state and convert to string for comparisons."""
+        canonical = self.canonicalize_state(state, constant_no, padding_idx)
+        return self._tensor_state_to_canonical_str(canonical, constant_no, padding_idx)

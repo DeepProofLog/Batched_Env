@@ -20,6 +20,7 @@ from str_based.str_dataset import DataHandler as StrDataHandler
 from str_based.str_index_manager import IndexManager as StrIndexManager
 from str_based.str_env import LogicEnv_gym as StrEnv
 from str_based.str_utils import Term as StrTerm
+from str_based.str_unification import canonicalize_state_to_str
 
 
 def safe_item(x):
@@ -31,33 +32,8 @@ def safe_item(x):
     return x
 
 
-def canonicalize_str_state(state: List[StrTerm]) -> str:
-    """Convert str state to canonical string with variable renaming by first appearance.
-    
-    IMPORTANT: This function ONLY renames variables to canonical names.
-    It does NOT reorder atoms - atom order must be preserved for proof search!
-    Variables are renamed by order of first appearance (atom by atom, arg by arg).
-    """
-    var_mapping = {}
-    next_var_num = 1
-    
-    # Find variables in order of first appearance (preserve atom order!)
-    for term in state:
-        for arg in term.args:
-            if isinstance(arg, str) and arg.startswith('Var') and arg not in var_mapping:
-                var_mapping[arg] = f"Var_{next_var_num}"
-                next_var_num += 1
-    
-    # Build canonical strings preserving atom order
-    canonical_atoms = []
-    for term in state:
-        new_args = []
-        for arg in term.args:
-            if isinstance(arg, str) and arg.startswith('Var'):
-                new_args.append(var_mapping[arg])
-            else:
-                new_args.append(arg)
-        canonical_atoms.append(f"{term.predicate}({','.join(new_args)})")
+# Note: canonicalize_str_state is replaced by canonicalize_state_to_str from str_unification
+# Use the engine's built-in function instead
     
     # Return with atoms in original order, no spaces for consistency
     return '|'.join(canonical_atoms)
@@ -189,7 +165,7 @@ def test_sb3_env_single_query(
             is_success_state = all(term.predicate == 'True' for term in state)
             trace.append({
                 'step': steps,
-                'state': canonicalize_str_state(state),
+                'state': canonicalize_state_to_str(state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -206,7 +182,7 @@ def test_sb3_env_single_query(
             break
         
         # Canonicalize and sort derived states
-        canon_states = [(canonicalize_str_state(ds), i) for i, ds in enumerate(derived_states)]
+        canon_states = [(canonicalize_state_to_str(ds), i) for i, ds in enumerate(derived_states)]
         canon_states.sort(key=lambda x: x[0])
         
         if deterministic:
@@ -214,12 +190,11 @@ def test_sb3_env_single_query(
             action = canon_states[0][1]
         else:
             # Choose random action
-            valid_actions = [i for i in range(len(action_mask)) if action_mask[i]]
-            action = rng.choice(valid_actions)
+            action = rng.choice(range(num_actions))
         
         trace.append({
             'step': steps,
-            'state': canonicalize_str_state(state),
+            'state': canonicalize_state_to_str(state),
             'derived_states': [c[0] for c in canon_states],
             'num_actions': num_actions,
             'action': action,

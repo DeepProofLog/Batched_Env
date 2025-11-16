@@ -17,42 +17,11 @@ from typing import List, Tuple, Dict
 from str_based.str_dataset import DataHandler as StrDataHandler
 from str_based.str_index_manager import IndexManager as StrIndexManager
 from str_based.str_utils import Term as StrTerm, Rule as StrRule
-from str_based.str_unification import get_next_unification_python
+from str_based.str_unification import get_next_unification_python, canonicalize_state_to_str
 
 
-def canonicalize_str_state(state: List[StrTerm]) -> str:
-    """Convert state to canonical string representation with canonicalized variables.
-    
-    IMPORTANT: This function ONLY renames variables to canonical names.
-    It does NOT reorder atoms - atom order must be preserved for proof search!
-    Variables are renamed by order of first appearance (atom by atom, arg by arg).
-    """
-    # Find variables in order of first appearance (preserve atom order!)
-    var_mapping = {}
-    next_var_num = 1
-    for term in state:
-        for arg in term.args:
-            if isinstance(arg, str) and arg.startswith('Var') and arg not in var_mapping:
-                var_mapping[arg] = f"Var_{next_var_num}"
-                next_var_num += 1
-    
-    # Build canonical strings preserving atom order
-    atoms_str = []
-    for term in state:
-        # Build atom string directly
-        atom_parts = [term.predicate, '(']
-        for i, arg in enumerate(term.args):
-            if i > 0:
-                atom_parts.append(',')
-            if isinstance(arg, str) and arg.startswith('Var'):
-                atom_parts.append(var_mapping[arg])
-            else:
-                atom_parts.append(str(arg))
-        atom_parts.append(')')
-        atoms_str.append(''.join(atom_parts))
-    
-    # Return with atoms in original order
-    return '|'.join(atoms_str)
+# Note: canonicalize_str_state is replaced by canonicalize_state_to_str from str_unification
+# Use the engine's built-in function instead
 
 
 def setup_sb3_engine(dataset: str = "countries_s3", base_path: str = "./data/") -> Tuple:
@@ -145,7 +114,7 @@ def test_sb3_engine_single_query(
         )
         valid = []
         for s in branch_next_states:
-            if s and not any(term.predicate == 'False' for term in s) and len(s) <= 20:
+            if s and not any(term.predicate == 'False' for term in s) and len(s) <= 100:
                 valid.append(s)
         return valid
     
@@ -166,7 +135,7 @@ def test_sb3_engine_single_query(
         if str_is_true(current_state):
             trace.append({
                 'step': steps,
-                'state': canonicalize_str_state(current_state),
+                'state': canonicalize_state_to_str(current_state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -187,7 +156,7 @@ def test_sb3_engine_single_query(
         if not valid_derived:
             trace.append({
                 'step': steps,
-                'state': canonicalize_str_state(current_state),
+                'state': canonicalize_state_to_str(current_state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -203,7 +172,7 @@ def test_sb3_engine_single_query(
             }
         
         # Canonicalize and sort - choose action
-        state_canon = [(canonicalize_str_state(s), s) for s in valid_derived]
+        state_canon = [(canonicalize_state_to_str(s), s) for s in valid_derived]
         state_canon.sort(key=lambda x: x[0])
         
         if deterministic:
@@ -217,7 +186,7 @@ def test_sb3_engine_single_query(
         
         trace.append({
             'step': steps,
-            'state': canonicalize_str_state(current_state),
+            'state': canonicalize_state_to_str(current_state),
             'derived_states': [c[0] for c in state_canon],
             'num_actions': len(valid_derived),
             'action': chosen_idx,
@@ -234,7 +203,7 @@ def test_sb3_engine_single_query(
     success = str_is_true(current_state)
     trace.append({
         'step': steps,
-        'state': canonicalize_str_state(current_state),
+        'state': canonicalize_state_to_str(current_state),
         'derived_states': [],
         'num_actions': 0,
         'action': None,

@@ -32,55 +32,8 @@ def safe_item(x):
     return x
 
 
-def canonicalize_tensor_state(state: torch.Tensor, debug_helper, constant_no: int) -> str:
-    """Convert tensor state to canonical string with variable renaming by first appearance.
-    
-    IMPORTANT: This function ONLY renames variables to canonical names.
-    It does NOT reorder atoms - atom order must be preserved for proof search!
-    """
-    n_atoms = (state[:, 0] != 0).sum().item()
-    
-    if n_atoms == 0:
-        return ""
-    
-    # Extract atoms
-    atoms = state[:n_atoms]
-    
-    # Build canonical representation
-    var_mapping = {}
-    next_var_num = 1
-    canonical_atoms = []
-    
-    for i in range(n_atoms):
-        p, a, b = atoms[i][0].item(), atoms[i][1].item(), atoms[i][2].item()
-        ps = debug_helper.idx2predicate[p] if 0 <= p < len(debug_helper.idx2predicate) else str(p)
-        
-        # Handle special predicates
-        if ps in ['True', 'False']:
-            canonical_atoms.append(f"{ps}()")
-            continue
-        
-        # Convert arguments
-        def convert_arg(arg_idx):
-            nonlocal next_var_num
-            if 1 <= arg_idx <= constant_no:
-                return debug_helper.idx2constant[arg_idx] if arg_idx < len(debug_helper.idx2constant) else f"c{arg_idx}"
-            elif arg_idx > constant_no:
-                # Variable - map to canonical name
-                if arg_idx not in var_mapping:
-                    var_mapping[arg_idx] = f"Var_{next_var_num}"
-                    next_var_num += 1
-                return var_mapping[arg_idx]
-            else:
-                return f"_{arg_idx}"
-        
-        a_str = convert_arg(a)
-        b_str = convert_arg(b)
-        canonical_atoms.append(f"{ps}({a_str},{b_str})")
-    
-    # DO NOT SORT - preserve original atom order for proper comparison
-    # Use no spaces for consistency with engine tests
-    return "|".join(canonical_atoms)
+# Note: canonicalize_tensor_state is replaced by engine.canonical_state_to_str()
+# Use the engine's built-in method instead of this custom implementation
 
 
 def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", seed: int = 42, batch_size: int = 1) -> Tuple:
@@ -236,7 +189,7 @@ def test_tensor_env_single_query(
             is_success_state = batched_env.unification_engine.is_true_state(batched_state)
             trace.append({
                 'step': steps,
-                'state': canonicalize_tensor_state(batched_state, debug_helper, constant_no),
+                'state': batched_env.unification_engine.canonical_state_to_str(batched_state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -250,11 +203,11 @@ def test_tensor_env_single_query(
                 batched_obs_td['is_success'] = torch.tensor([is_success_state])
             break
         
-        # Canonicalize and sort derived states
+        # Canonicalize and sort derived states using engine method
         batched_canon_states = []
         for i in range(num_batched_actions):
             ds = batched_derived_states[i]
-            canon = canonicalize_tensor_state(ds, debug_helper, constant_no)
+            canon = batched_env.unification_engine.canonical_state_to_str(ds)
             batched_canon_states.append((canon, i))
         batched_canon_states.sort(key=lambda x: x[0])
         
@@ -263,12 +216,12 @@ def test_tensor_env_single_query(
             action = batched_canon_states[0][1]
         else:
             # Choose random action
-            valid_actions = [i for i in range(len(batched_action_mask)) if batched_action_mask[i]]
+            valid_actions = [i for i in range(num_batched_actions) if batched_action_mask[i]]
             action = rng.choice(valid_actions)
         
         trace.append({
             'step': steps,
-            'state': canonicalize_tensor_state(batched_state, debug_helper, constant_no),
+            'state': batched_env.unification_engine.canonical_state_to_str(batched_state),
             'derived_states': [c[0] for c in batched_canon_states],
             'num_actions': num_batched_actions,
             'action': action,
@@ -416,7 +369,7 @@ def test_tensor_env_batch(
                 results[i]['success'] = is_success_state
                 results[i]['trace'].append({
                     'step': step,
-                    'state': canonicalize_tensor_state(cur_state, debug_helper, constant_no),
+                    'state': batched_env.unification_engine.canonical_state_to_str(cur_state),
                     'derived_states': [],
                     'num_actions': 0,
                     'action': None,
@@ -425,25 +378,25 @@ def test_tensor_env_batch(
                 })
                 continue
             
-            # Build canonical list
+            # Build canonical list using engine method
             canon_list = []
             for a in range(n_actions):
                 ds = derived_batch[i, a]
-                canon = canonicalize_tensor_state(ds, debug_helper, constant_no)
+                canon = batched_env.unification_engine.canonical_state_to_str(ds)
                 canon_list.append((canon, a))
             canon_list.sort(key=lambda x: x[0])
             
             if deterministic:
                 chosen = canon_list[0][1]
             else:
-                valid = [idx for idx, m in enumerate(action_mask[i]) if m]
-                chosen = rng.choice(valid) if valid else 0
+                valid_actions = [a for a in range(n_actions) if action_mask[i, a]]
+                chosen = rng.choice(valid_actions)
             
             actions[i] = int(chosen)
             
             results[i]['trace'].append({
                 'step': step,
-                'state': canonicalize_tensor_state(cur_state, debug_helper, constant_no),
+                'state': batched_env.unification_engine.canonical_state_to_str(cur_state),
                 'derived_states': [c[0] for c in canon_list],
                 'num_actions': n_actions,
                 'action': chosen,
