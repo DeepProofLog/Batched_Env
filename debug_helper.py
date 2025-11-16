@@ -45,6 +45,7 @@ class DebugHelper:
         
         # Atom stringifier parameters
         self.n_constants = n_constants
+        self.constant_no = n_constants  # Alias
         self.idx2constant = idx2constant
         self.idx2predicate = idx2predicate
         self.idx2template_var = idx2template_var
@@ -232,92 +233,257 @@ class DebugHelper:
                 merged.set(key, target)
         return merged
 
-    def atom_to_canonical_str(self, atom: Tensor, constant_no: int) -> str:
-        """
-        Convert an atom tensor to a canonical string representation.
-        
-        Args:
-            atom: [3] tensor representing [predicate, arg1, arg2]
-            constant_no: The highest constant index
-            
-        Returns:
-            Canonical string representation of the atom
-        """
-        p = int(atom[0].item())
-        a = int(atom[1].item())
-        b = int(atom[2].item())
 
-        if self.idx2predicate and 0 <= p < len(self.idx2predicate):
-            pred = self.idx2predicate[p]
+    # ---- Methods for canonicalization and sorting for comparison with string envs ----
+
+
+    # --- Canonical string representation ---
+
+    def canonical_state_to_str(self, state: Tensor) -> str:
+        """
+        Canonicalize a tensor state and convert to string for comparisons.
+        
+        Unified canonicalization logic (matches string engine):
+        1. Sort atoms alphabetically by (predicate, arg_types)
+           - All variables are treated as equivalent for sorting (type 'VAR')
+           - Constants are distinguished by their values (type 'CONST')
+        2. After sorting, rename variables to Var_1, Var_2, ... in order of first appearance
+        
+        This ensures that structurally identical states produce the same canonical string,
+        regardless of the original variable numbering.
+        """
+        # Handle batch dimension if present
+        if state.dim() == 3:
+            if state.shape[0] != 1:
+                raise ValueError("Expected single batch dimension for canonicalization")
+            state_2d = state[0]
         else:
-            pred = str(p)
+            state_2d = state
 
-        if pred in ('True', 'False'):
-            return f"{pred}()"
+        # Filter out padding atoms
+        valid_mask = state_2d[:, 0] != self.padding_idx
+        if not valid_mask.any():
+            return ''
+        
+        valid_atoms = state_2d[valid_mask]
+        
+        # Step 1: Create sortable keys that don't depend on actual variable indices
+        # Key structure: (predicate_str, tuple of (arg_type, arg_value))
+        atoms_with_data: List[Tuple[tuple, int, int, int, bool, bool]] = []
+        
+        for atom in valid_atoms:
+            pred, arg1, arg2 = int(atom[0].item()), int(atom[1].item()), int(atom[2].item())
+            
+            # Track whether args are variables
+            arg1_is_var = arg1 != self.padding_idx and arg1 > self.constant_no
+            arg2_is_var = arg2 != self.padding_idx and arg2 > self.constant_no
+            
+            # Get predicate string
+            if 0 <= pred < len(self.idx2predicate):
+                pred_str = self.idx2predicate[pred]
+            else:
+                pred_str = f"?p{pred}"
+            
+            # Create normalized sort key
+            # All variables are treated as equal for sorting (only constants have distinguishing values)
+            key_parts = [pred_str]
+            
+            # For arg1
+            if arg1 == self.padding_idx:
+                key_parts.append(('PAD',))
+            elif arg1_is_var:
+                # Variables: use ('VAR',) without the actual index
+                # This ensures all variables are equivalent for sorting
+                key_parts.append(('VAR',))
+            else:
+                # Constants: include the constant value to distinguish them
+                if 0 <= arg1 < len(self.idx2constant):
+                    key_parts.append(('CONST', self.idx2constant[arg1]))
+                else:
+                    key_parts.append(('CONST', f"?c{arg1}"))
+            
+            # For arg2
+            if arg2 == self.padding_idx:
+                key_parts.append(('PAD',))
+            elif arg2_is_var:
+                # Variables: use ('VAR',) without the actual index
+                key_parts.append(('VAR',))
+            else:
+                # Constants: include the constant value
+                if 0 <= arg2 < len(self.idx2constant):
+                    key_parts.append(('CONST', self.idx2constant[arg2]))
+                else:
+                    key_parts.append(('CONST', f"?c{arg2}"))
+            
+            sort_key = tuple(key_parts)
+            atoms_with_data.append((sort_key, pred, arg1, arg2, arg1_is_var, arg2_is_var))
+        
+        # Sort by the normalized key
+        atoms_with_data.sort(key=lambda x: x[0])
+        
+        # Step 2: Rename variables in sorted order
+        var_mapping: Dict[int, int] = {}
+        next_var_num = 1
+        canonical_atoms: List[str] = []
+        
+        for _, pred, arg1, arg2, arg1_is_var, arg2_is_var in atoms_with_data:
+            # Rename variables
+            if arg1_is_var:
+                if arg1 not in var_mapping:
+                    var_mapping[arg1] = next_var_num
+                    next_var_num += 1
+                arg1 = var_mapping[arg1]
+            
+            if arg2_is_var:
+                if arg2 not in var_mapping:
+                    var_mapping[arg2] = next_var_num
+                    next_var_num += 1
+                arg2 = var_mapping[arg2]
+            
+            # Format final string with renamed variables
+            def format_arg_final(val: int, is_var: bool) -> str:
+                if val == self.padding_idx:
+                    return "PAD"
+                if is_var:
+                    return f"Var_{val}"
+                else:
+                    if 0 <= val < len(self.idx2constant):
+                        return self.idx2constant[val]
+                    else:
+                        return f"?c{val}"
+            
+            if 0 <= pred < len(self.idx2predicate):
+                pred_str = self.idx2predicate[pred]
+            else:
+                pred_str = f"?p{pred}"
+            
+            if pred_str in ['True', 'False'] and arg1 == self.padding_idx and arg2 == self.padding_idx:
+                canonical_atoms.append(f"{pred_str}()")
+            else:
+                canonical_atoms.append(f"{pred_str}({format_arg_final(arg1, arg1_is_var)},{format_arg_final(arg2, arg2_is_var)})")
+        
+        return '|'.join(canonical_atoms)
 
-        def _format_arg(val: int) -> str:
-            if 1 <= val <= constant_no:
-                if self.idx2constant and 0 <= val < len(self.idx2constant):
-                    return self.idx2constant[val]
-                return f"c{val}"
-            if val > constant_no:
-                return f"Var_{val - constant_no}"
-            return f"_{val}"
-
-        return f"{pred}({_format_arg(a)},{_format_arg(b)})"
-
-    def state_to_canonical_str(self, state: Tensor, constant_no: int, padding_idx: int) -> str:
+    def canonical_states_to_str(self, states: Tensor, counts: Optional[Tensor] = None, return_indices: bool = False):
         """
-        Convert a state tensor to a canonical string representation.
+        Canonicalize multiple states (batch) to string representations.
         
         Args:
-            state: [M, 3] tensor representing a state (list of atoms)
-            constant_no: The highest constant index
-            padding_idx: The padding index value
-            
+            states: [B, M, 3] or [B, K, M, 3] tensor of states
+            counts: Optional [B] tensor of valid atom counts per state
+            return_indices: If True, return (sorted_canonical_strings, original_indices)
+                           where original_indices[i] gives the original position of the 
+                           state at sorted position i
+        
         Returns:
-            Canonical string representation of the state (atoms joined by '|')
+            List[str] if return_indices=False
+            Tuple[List[str], List[int]] if return_indices=True
         """
-        valid = state[:, 0] != padding_idx
-        atoms = state[valid]
-        if atoms.numel() == 0:
-            return ''
-        return '|'.join(self.atom_to_canonical_str(atom, constant_no) for atom in atoms)
+        results = []
+        if states.dim() == 3:  # [B, M, 3]
+            results = [self.canonical_state_to_str(states[i:i+1]) for i in range(states.shape[0])]
+        elif states.dim() == 4:  # [B, K, M, 3]
+            for i in range(states.shape[0]):
+                count = counts[i].item() if counts is not None else states.shape[1]
+                for j in range(count):
+                    results.append(self.canonical_state_to_str(states[i, j:j+1]))
+        else:
+            raise ValueError(f"Expected 3D or 4D tensor, got {states.dim()}D")
+        
+        # Sort for consistent ordering, with index tracking
+        results_with_idx = [(s, i) for i, s in enumerate(results)]
+        results_with_idx.sort(key=lambda x: x[0])
+        
+        if return_indices:
+            sorted_canonical = [x[0] for x in results_with_idx]
+            original_indices = [x[1] for x in results_with_idx]
+            return sorted_canonical, original_indices
+        else:
+            return [x[0] for x in results_with_idx]
+        return results
+
+
+    # -- Sort candidates by canonical string representation ---
+    def _sort_candidates_by_str_order(self, states: Tensor,
+                                      counts: Tensor,
+                                      owners: Tensor,
+                                      next_vars: Tensor,
+                                      constant_no: int,
+                                      padding_idx: int) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Sort candidates by canonical STRING representation (like test_engines does).
+        
+        This method:
+        1. Canonicalizes each state to its string representation using canonical_state_to_str
+        2. Sorts by (owner, canonical_string)
+        
+        This matches the behavior in test_engines.py where states are sorted by their canonical strings.
+        """
+        if states.numel() == 0:
+            return states, counts, owners, next_vars
+
+        # Generate canonical string for each state
+        canonical_strings = [self.canonical_state_to_str(states[i]) for i in range(states.shape[0])]
+        
+        # Sort by (owner, canonical_string)
+        order = sorted(range(len(canonical_strings)), key=lambda idx: (int(owners[idx].item()), canonical_strings[idx]))
+        
+        # Check if already sorted
+        if order == list(range(len(canonical_strings))):
+            return states, counts, owners, next_vars
+
+        order_tensor = torch.tensor(order, dtype=torch.long, device=states.device)
+        states = states.index_select(0, order_tensor)
+        counts = counts.index_select(0, order_tensor)
+        owners = owners.index_select(0, order_tensor)
+        next_vars = next_vars.index_select(0, order_tensor)
+        return states, counts, owners, next_vars
+
+
+
+
+    # --- NOT USED Sort by canonical key ---
 
     def _tensor_state_canonical_key(self, state: Tensor, constant_no: int, padding_idx: int) -> Tuple[int, ...]:
-        """Generate a canonical key for a tensor state independent of absolute variable ids.
-        Atoms are sorted by (pred, arg1, arg2) before generating the key to ensure consistent ordering."""
-        # Filter out padding atoms
+        """Generate a canonical key for sorting states.
+        
+        To match canonical_state_to_str (which test_envs uses for comparison):
+        1. Renumber variables in original atom order
+        2. Sort atoms by (pred, arg1, arg2)
+        3. Create tuple key
+        
+        This ensures states sort the same way whether we use canonical keys or canonical strings.
+        """
         valid_mask = state[:, 0] != padding_idx
         valid_atoms = state[valid_mask]
         
         if valid_atoms.numel() == 0:
             return tuple()
         
-        # Sort atoms by (pred, arg1, arg2) tuple for canonical order
-        # This ensures atoms are in a consistent order regardless of how they were generated
-        atom_tuples = [(int(atom[0].item()), int(atom[1].item()), int(atom[2].item())) for atom in valid_atoms]
-        sorted_indices = sorted(range(len(atom_tuples)), key=lambda i: atom_tuples[i])
-        
-        key: List[int] = []
+        # Step 1: Renumber variables in original order
         var_map: Dict[int, int] = {}
         next_var = constant_no + 1
+        renumbered_atoms = valid_atoms.clone()
         
-        for idx in sorted_indices:
-            atom = valid_atoms[idx]
-            pred = int(atom[0].item())
-            key.append(pred)
-            for arg in atom[1:3]:
-                val = int(arg.item())
+        for atom in renumbered_atoms:
+            for col in (1, 2):
+                val = int(atom[col].item())
                 if val == padding_idx or val <= constant_no:
-                    key.append(val)
-                else:
-                    mapped = var_map.get(val)
-                    if mapped is None:
-                        mapped = next_var
-                        var_map[val] = mapped
-                        next_var += 1
-                    key.append(mapped)
+                    continue
+                if val not in var_map:
+                    var_map[val] = next_var
+                    next_var += 1
+                atom[col] = var_map[val]
+        
+        # Step 2: Sort atoms
+        atom_tuples = [(int(atom[0].item()), int(atom[1].item()), int(atom[2].item())) for atom in renumbered_atoms]
+        sorted_indices = sorted(range(len(atom_tuples)), key=lambda i: atom_tuples[i])
+        
+        # Step 3: Build key from sorted atoms
+        key: List[int] = []
+        for idx in sorted_indices:
+            atom_tuple = atom_tuples[idx]
+            key.extend(atom_tuple)
+        
         return tuple(key)
 
     def _sort_candidates_by_canonical_order(self, states: Tensor,
@@ -330,6 +496,7 @@ class DebugHelper:
             return states, counts, owners, next_vars
 
         keys = [self._tensor_state_canonical_key(states[i], constant_no, padding_idx) for i in range(states.shape[0])]
+        # sorted() is stable by default (maintains original order for equal keys)
         order = sorted(range(len(keys)), key=lambda idx: (int(owners[idx].item()), keys[idx]))
         if order == list(range(len(keys))):
             return states, counts, owners, next_vars
@@ -340,76 +507,3 @@ class DebugHelper:
         owners = owners.index_select(0, order_tensor)
         next_vars = next_vars.index_select(0, order_tensor)
         return states, counts, owners, next_vars
-
-    def _canonicalize_tensor_state(self, state: Tensor, constant_no: int, padding_idx: int) -> Tensor:
-        if state.dim() == 3:
-            if state.shape[0] != 1:
-                raise ValueError("Expected single batch dimension for canonicalization")
-            state_2d = state[0]
-        else:
-            state_2d = state
-
-        canonical = state_2d.clone()
-        valid_rows = canonical[:, 0] != padding_idx
-        if not valid_rows.any():
-            return canonical
-
-        var_mapping: Dict[int, int] = {}
-        next_var = constant_no + 1
-
-        rows = torch.nonzero(valid_rows, as_tuple=False).view(-1)
-        for row in rows:
-            for col in (1, 2):
-                val = int(canonical[row, col].item())
-                if val == padding_idx or val <= constant_no:
-                    continue
-                mapped = var_mapping.get(val)
-                if mapped is None:
-                    mapped = next_var
-                    var_mapping[val] = mapped
-                    next_var += 1
-                canonical[row, col] = mapped
-
-        return canonical
-
-    def _tensor_atom_to_canonical_str(self, atom: Tensor, constant_no: int) -> str:
-        p = int(atom[0].item())
-        a = int(atom[1].item())
-        b = int(atom[2].item())
-
-        if self.idx2predicate:
-            pred = self.idx2predicate[p] if 0 <= p < len(self.idx2predicate) else str(p)
-        else:
-            pred = str(p)
-
-        if pred in ('True', 'False'):
-            return f"{pred}()"
-
-        def _format_arg(val: int) -> str:
-            if 1 <= val <= constant_no:
-                if self.idx2constant and 0 <= val < len(self.idx2constant):
-                    return self.idx2constant[val]
-                return f"c{val}"
-            if val > constant_no:
-                return f"Var_{val - constant_no}"
-            return f"_{val}"
-
-        return f"{pred}({_format_arg(a)},{_format_arg(b)})"
-
-    def _tensor_state_to_canonical_str(self, state: Tensor, constant_no: int, padding_idx: int) -> str:
-        valid = state[:, 0] != padding_idx
-        atoms = state[valid]
-        if atoms.numel() == 0:
-            return ''
-        atoms_list = [self._tensor_atom_to_canonical_str(atom, constant_no) for atom in atoms]
-        atoms_list.sort()
-        return '|'.join(atoms_list)
-
-    def canonicalize_state(self, state: Tensor, constant_no: int, padding_idx: int) -> Tensor:
-        """Canonicalize a single tensor state (drop batch dim if present)."""
-        return self._canonicalize_tensor_state(state, constant_no, padding_idx)
-
-    def canonical_state_to_str(self, state: Tensor, constant_no: int, padding_idx: int) -> str:
-        """Canonicalize tensor state and convert to string for comparisons."""
-        canonical = self.canonicalize_state(state, constant_no, padding_idx)
-        return self._tensor_state_to_canonical_str(canonical, constant_no, padding_idx)

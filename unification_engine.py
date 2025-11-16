@@ -372,7 +372,7 @@ def preprocess_states(states: Tensor,
     terminal_false = empty | has_false
 
     active = ~(terminal_true | terminal_false)
-    active_idx = torch.nonzero(active, as_tuple=False).view(-1)
+    active_idx = torch.nonzero(active, as_tuple=False).reshape(-1)
     A = active_idx.numel()
 
     if A == 0:
@@ -986,19 +986,22 @@ class UnificationEngine:
                  device: torch.device,
                  pack_base: Optional[int] = None,
                  stringifier_params: Optional[dict] = None,
-                 canonical_action_order: bool = False,
                  end_pred_idx: Optional[int] = None,
-                 end_proof_action: bool = False):
+                 end_proof_action: bool = False,
+                 predicate_no: Optional[int] = None,
+                 max_derived_per_state: Optional[int] = None
+                 ):
         self.device = device
         self.padding_idx = int(padding_idx)
         self.constant_no = int(constant_no)
         self.runtime_var_end_index = int(runtime_var_end_index)
         self.max_arity = int(max_arity)
+        self.predicate_no = int(predicate_no) if predicate_no is not None else None
         self.true_pred_idx = true_pred_idx
         self.false_pred_idx = false_pred_idx
         self.end_pred_idx = end_pred_idx
         self.end_proof_action = bool(end_proof_action)
-        self.canonical_action_order = bool(canonical_action_order)
+        self.max_derived_per_state = int(max_derived_per_state) if max_derived_per_state is not None else None
 
         # Tensors
         self.facts_idx       = facts_idx.to(device=device, dtype=torch.long)
@@ -1037,7 +1040,8 @@ class UnificationEngine:
             preds = self.rules_heads_sorted[:, 0]
             uniq, counts = torch.unique_consecutive(preds, return_counts=True)
             starts = torch.cumsum(torch.cat([torch.zeros(1, dtype=torch.long, device=device), counts[:-1]]), dim=0)
-            num_pred = int(preds.max().item()) + 2
+            # Use predicate_no if available, otherwise fall back to max+2
+            num_pred = self.predicate_no if self.predicate_no is not None else (int(preds.max().item()) + 2)
             self.rule_seg_starts = torch.zeros((num_pred,), dtype=torch.long, device=device)
             self.rule_seg_lens   = torch.zeros((num_pred,), dtype=torch.long, device=device)
             self.rule_seg_starts[uniq] = starts
@@ -1071,12 +1075,14 @@ class UnificationEngine:
         # Initialize DebugHelper for verbose output
         from debug_helper import DebugHelper as DH
         self.debug_helper = DH(**stringifier_params) if stringifier_params else None
+        self.deb = self.debug_helper  # short alias
 
     # ---- factory ----
     @classmethod
     def from_index_manager(cls, im, take_ownership: bool = False, stringifier_params: Optional[dict] = None,
-                           canonical_action_order: bool = False, end_pred_idx: Optional[int] = None,
-                           end_proof_action: bool = False) -> 'UnificationEngine':
+                           end_pred_idx: Optional[int] = None,
+                           end_proof_action: bool = False,
+                           max_derived_per_state: Optional[int] = None):
         engine = cls(
             facts_idx=getattr(im, 'facts_idx', None),
             rules_idx=getattr(im, 'rules_idx', None),
@@ -1092,9 +1098,10 @@ class UnificationEngine:
             device=im.device,
             pack_base=getattr(im, 'total_vocab_size', None),
             stringifier_params=stringifier_params,
-            canonical_action_order=canonical_action_order,
             end_pred_idx=end_pred_idx,
-            end_proof_action=end_proof_action
+            end_proof_action=end_proof_action,
+            predicate_no=getattr(im, 'predicate_no', None),
+            max_derived_per_state=max_derived_per_state
         )
         if take_ownership:
             im.facts_idx = None
@@ -1112,8 +1119,8 @@ class UnificationEngine:
                            current_states: Tensor,         # [B, max_atoms, 3]
                            next_var_indices: Tensor,       # [B]
                            excluded_queries: Optional[Tensor] = None,  # [B, max_atoms, 3]
-                           max_derived_per_state: int = 500,
                            deduplicate: bool = True,
+                           sort_states: bool = True,
                            verbose: int = 0
                            ) -> Tuple[Tensor, Tensor, Tensor]:
         """
@@ -1131,7 +1138,7 @@ class UnificationEngine:
 
         # Preallocate final output (padded). We'll fill progressively.
         max_atoms_out = max(max_atoms + self.max_rule_body_size, 1)
-        final_states  = torch.full((B, max_derived_per_state, max_atoms_out, 3), pad, dtype=torch.long, device=device)
+        final_states  = torch.full((B, self.max_derived_per_state, max_atoms_out, 3), pad, dtype=torch.long, device=device)
         final_counts  = torch.zeros(B, dtype=torch.long, device=device)
         updated_next  = next_var_indices.clone()
 
@@ -1258,7 +1265,8 @@ class UnificationEngine:
 
         # ---- 7b) Apply canonical ordering AFTER deduplication but BEFORE capping
         # This ensures we keep the first K states in canonical order, matching string engine behavior
-        if self.canonical_action_order and packed.numel() > 0 and self.debug_helper is not None:
+        should_sort = sort_states and packed.numel() > 0 and self.debug_helper is not None
+        if should_sort:
             # Unpack to flat list for sorting
             flat_states = []
             flat_owners = []
@@ -1274,15 +1282,14 @@ class UnificationEngine:
                 # Note: next_vars are not needed for sorting after dedup since we don't modify them
                 dummy_next_vars = updated_next[flat_owners]
                 
-                flat_states, flat_counts, flat_owners, dummy_next_vars = self.debug_helper._sort_candidates_by_canonical_order(
+                flat_states, flat_counts, flat_owners, dummy_next_vars = self.debug_helper._sort_candidates_by_str_order(
                     flat_states, flat_counts, flat_owners, dummy_next_vars,
                     self.constant_no, pad
                 )
-                
                 # Repack sorted states
                 packed, packed_counts = pack_by_owner(flat_states, flat_counts, flat_owners, B, M_comb, pad)
 
-        packed, packed_counts = cap_states_per_owner(packed, packed_counts, max_derived_per_state)
+        packed, packed_counts = cap_states_per_owner(packed, packed_counts, self.max_derived_per_state)
 
         # Write packed into final buffers (keeping any terminal/proof already written)
         write_mask = packed_counts > 0
@@ -1305,17 +1312,6 @@ class UnificationEngine:
         return final_states, final_counts, updated_next
 
     # ---- Utility methods for compatibility ----
-    def canonicalize_state(self, state: Tensor) -> Tensor:
-        """Canonicalize a single tensor state (drop batch dim if present)."""
-        if self.debug_helper is None:
-            raise RuntimeError("debug_helper not initialized. Pass stringifier_params to __init__.")
-        return self.debug_helper.canonicalize_state(state, self.constant_no, self.padding_idx)
-
-    def canonical_state_to_str(self, state: Tensor) -> str:
-        """Canonicalize tensor state and convert to string for comparisons."""
-        if self.debug_helper is None:
-            raise RuntimeError("debug_helper not initialized. Pass stringifier_params to __init__.")
-        return self.debug_helper.canonical_state_to_str(state, self.constant_no, self.padding_idx)
 
     def is_true_state(self, state: Tensor) -> bool:
         """
@@ -1395,3 +1391,75 @@ class UnificationEngine:
             is_terminal |= (pred_indices == self.end_pred_idx)
         
         return is_terminal
+
+    def is_terminal_state(self, states: Tensor) -> Tensor:
+        """
+        Check if states are terminal (TRUE/FALSE/END).
+        
+        Args:
+            states: [B, M, 3] tensor of states
+            
+        Returns:
+            Boolean tensor [B] indicating which states are terminal
+        """
+        if states.numel() == 0:
+            return torch.zeros(0, dtype=torch.bool, device=self.device)
+        
+        # Get first atom of each state (first non-padding)
+        non_pad = states[:, :, 0] != self.padding_idx  # [B, M]
+        preds = states[:, :, 0]  # [B, M]
+        
+        is_terminal = torch.zeros(states.shape[0], dtype=torch.bool, device=self.device)
+        
+        # Check for TRUE
+        if self.true_pred_idx is not None:
+            has_true = ((preds == self.true_pred_idx) & non_pad).any(dim=1)
+            is_terminal |= has_true
+        
+        # Check for FALSE
+        if self.false_pred_idx is not None:
+            has_false = ((preds == self.false_pred_idx) & non_pad).any(dim=1)
+            is_terminal |= has_false
+        
+        # Check for END
+        if self.end_proof_action and self.end_pred_idx is not None:
+            has_end = ((preds == self.end_pred_idx) & non_pad).any(dim=1)
+            is_terminal |= has_end
+        
+        return is_terminal
+
+    def create_terminal_derived(self, current_states: Tensor, 
+                               padding_states: int, 
+                               target_atoms: int) -> Tuple[Tensor, Tensor]:
+        """
+        For terminal states, create derived states containing only the current terminal state.
+        
+        Args:
+            current_states: [B, M, 3] current states
+            padding_states: Maximum number of derived states per input
+            target_atoms: Number of atoms per derived state
+            
+        Returns:
+            derived_states: [B, padding_states, target_atoms, 3] with current state at position 0
+            counts: [B] all ones (each terminal state has exactly 1 derived state)
+        """
+        B = current_states.shape[0]
+        D = self.max_arity + 1
+        
+        derived = torch.full((B, padding_states, target_atoms, D), 
+                           self.padding_idx, dtype=torch.long, device=self.device)
+        
+        # Copy current states to first position, handling size differences
+        current = current_states
+        if current.shape[1] < target_atoms:
+            pad_rows = target_atoms - current.shape[1]
+            pad_block = torch.full((B, pad_rows, D), self.padding_idx, 
+                                  dtype=current.dtype, device=current.device)
+            current = torch.cat([current, pad_block], dim=1)
+        elif current.shape[1] > target_atoms:
+            current = current[:, :target_atoms]
+
+        derived[:, 0] = current  # Place current state as the only action
+        counts = torch.ones(B, dtype=torch.long, device=self.device)
+        
+        return derived, counts

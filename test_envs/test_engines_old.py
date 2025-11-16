@@ -308,7 +308,6 @@ def main():
     
     engine = UnificationEngine.from_index_manager(
         im_non, take_ownership=True, stringifier_params=stringifier_params,
-        canonical_action_order=True
     )
 
     debug_helper = DebugHelper(

@@ -15,13 +15,141 @@ from typing import List
 from str_based.str_dataset import DataHandler as StrDataHandler
 from str_based.str_index_manager import IndexManager as StrIndexManager
 from str_based.str_utils import Term as StrTerm, Rule as StrRule
-from str_based.str_unification import get_next_unification_python, canonicalize_state_to_str
+from str_based.str_unification import get_next_unification_python, canonicalize_state_to_str, canonical_states_to_str
 
 # Tensor-engine stack
 from data_handler import DataHandler
 from index_manager import IndexManager
 from unification_engine import UnificationEngine
 from debug_helper import DebugHelper
+
+
+def _parse_args() -> argparse.Namespace:
+
+    parser = argparse.ArgumentParser(description="Compare string and tensor versions")
+    parser.add_argument('--dataset', type=str, default="family",
+                        help='Dataset name to use')
+    parser.add_argument('--max_derived_states', type=int, default=500,
+                        help='Maximum derived states to generate per step (default: 200)')
+    parser.add_argument('--start_query', type=int, default=0,
+                        help='Index of the first query to test (default: 0)')
+    parser.add_argument('--n_queries', type=int, default=100,
+                        help='Number of queries to test (default: None, meaning all)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for shuffling queries (default: 42)')
+    return parser.parse_args()
+
+
+
+def load_str_engine(dataset: str):
+    """Load and configure the string-based engine components.
+    
+    Returns:
+        Tuple of (dh_str, im_str, fact_index_str, rules_by_pred)
+    """
+    dh_str = StrDataHandler(
+        dataset_name=dataset,
+        base_path="./data/",
+        train_file="train.txt",
+        valid_file="valid.txt",
+        test_file="test.txt",
+        rules_file="rules.txt",
+        facts_file="train.txt",
+        train_depth=None,
+    )
+
+    im_str = StrIndexManager(
+        constants=dh_str.constants,
+        predicates=dh_str.predicates,
+        max_total_vars=1000000,
+        rules=dh_str.rules,
+        padding_atoms=20,
+        max_arity=dh_str.max_arity,
+        device=torch.device('cpu'),
+    )
+    fact_index_str = im_str.build_fact_index(dh_str.facts)
+
+    rules_by_pred: dict = {}
+    for r in dh_str.rules:
+        rules_by_pred.setdefault(r.head.predicate, []).append(r)
+    
+    return dh_str, im_str, fact_index_str, rules_by_pred
+
+
+def load_tensor_engine(dataset: str):
+    """Load and configure the tensor-based engine components.
+    
+    Returns:
+        Tuple of (dh_non, im_non, engine)
+    """
+    dh_non = DataHandler(
+        dataset_name=dataset,
+        base_path="./data/",
+        train_file="train.txt",
+        valid_file="valid.txt",
+        test_file="test.txt",
+        rules_file="rules.txt",
+        facts_file="train.txt",
+        train_depth=None,
+    )
+
+    im_non = IndexManager(
+        constants=dh_non.constants,
+        predicates=dh_non.predicates,
+        max_total_runtime_vars=1000000,
+        padding_atoms=20,
+        max_arity=dh_non.max_arity,
+        device=torch.device('cpu'),
+        rules=dh_non.rules,
+    )
+    dh_non.materialize_indices(im=im_non, device=torch.device('cpu'))
+
+    # Create stringifier params for engine initialization
+    stringifier_params = {
+        'verbose': 0,
+        'idx2predicate': im_non.idx2predicate,
+        'idx2constant': im_non.idx2constant,
+        'idx2template_var': im_non.idx2template_var,
+        'padding_idx': im_non.padding_idx,
+        'n_constants': im_non.constant_no
+    }
+    
+    engine = UnificationEngine.from_index_manager(
+        im_non, take_ownership=True, stringifier_params=stringifier_params,
+    )
+    
+    return dh_non, im_non, engine
+
+
+def print_debug_info(step: int, query, str_state, tensor_state, str_derived, tensor_derived, 
+                     str_canonical, tensor_canonical, error_msg: str, debug_helper):
+    """Print detailed debug information when a mismatch occurs."""
+    print(f"\n{'='*60}")
+    print(f"DEBUG INFO - STEP {step}")
+    print(f"{'='*60}")
+    print(f"\nQuery: {query}")
+    print(f"\nCurrent State:")
+    print(f"  Str:     {str_canonical}")
+    print(f"  Tensor:  {tensor_canonical}")
+    
+    print(f"\nAvailable Actions: {len(str_derived)} (str) / {len(tensor_derived)} (tensor)")
+    
+    print(f"\nDerived States (first 20):")
+    print(f"  Str:")
+    for i, state in enumerate(str_derived[:20]):
+        print(f"    [{i}] {state}")
+    if len(str_derived) > 20:
+        print(f"    ... ({len(str_derived) - 20} more)")
+    
+    print(f"  Tensor:")
+    for i, state in enumerate(tensor_derived[:20]):
+        print(f"    [{i}] {debug_helper.state_to_str(state.squeeze(0))}")
+    if len(tensor_derived) > 20:
+        print(f"    ... ({len(tensor_derived) - 20} more)")
+    
+    print(f"\nError Message:")
+    print(f"  {error_msg}")
+    print(f"{'='*60}\n")
 
 
 def run_full_proof(initial_state, get_derived_fn, is_true_fn, is_false_fn, 
@@ -64,7 +192,6 @@ def test_single_query(p: str, h: str, t: str,
                       tensor_engine_data, 
                       facts_str,
                       verbose=False, 
-                      canonicalize: bool = True, 
                       max_derived_states: int = 500,
                       count=None):
     """Test a single query with both engines, comparing at each step.
@@ -72,10 +199,8 @@ def test_single_query(p: str, h: str, t: str,
     Returns: (match, str_success, tensor_success, reason, str_reward, tensor_reward)
     """
     dh_str, im_str, fact_index_str, rules_by_pred = str_engine_data
-    dh_non, im_non, engine, debug_helper, next_var_start = tensor_engine_data
-    
-    state_to_str = debug_helper.state_to_str  # Local alias
-    
+    dh_non, im_non, engine, next_var_start = tensor_engine_data
+        
     if verbose:
         print(f"\n{'-'*60}\nQuery: {p}({h}, {t})")
     
@@ -119,7 +244,7 @@ def test_single_query(p: str, h: str, t: str,
             error_msg += f"Tensor engine:  is_true={tensor_done}\n\n"
             error_msg += f"Current states:\n"
             error_msg += f"  Str:    {str_state}\n"
-            error_msg += f"  Tensor: {debug_helper.state_to_str(tensor_state.squeeze(0))}\n"
+            error_msg += f"  Tensor: {engine.deb.state_to_str(tensor_state.squeeze(0))}\n"
             raise ValueError(error_msg)
         
         # Get derived states string engine
@@ -136,11 +261,13 @@ def test_single_query(p: str, h: str, t: str,
 
         # Get derived states tensor engine
         # Note: deduplicate=False to match string engine behavior which doesn't deduplicate
+        # Note: sort_states=True to use _sort_candidates_by_str_order for test compatibility
         derived, derived_counts, next_var_tracker = engine.get_derived_states(
             tensor_state, next_var_tracker,
             excluded_queries=query_padded, verbose=0,
             max_derived_per_state=max_derived_states,
-            deduplicate=False
+            deduplicate=False,
+            sort_states=True
         )
         # Convert derived states to list of tensors
         num_derived = derived_counts[0].item()
@@ -149,69 +276,58 @@ def test_single_query(p: str, h: str, t: str,
             s = derived[0, i]
             tensor_derived.append(s.unsqueeze(0))
         
-        # Canonicalization comparison using engine methods
-        canon_str = [canonicalize_state_to_str(s) if canonicalize else '|'.join(str(t) for t in s) for s in str_derived]
-        canon_str.sort()
-        
-        canon_tensor = [engine.canonical_state_to_str(s) for s in tensor_derived]
-        canon_tensor.sort()
+        # Canonicalization comparison using standardized canonical_states_to_str
+        canon_str = canonical_states_to_str(str_derived)
+        if len(tensor_derived) > 0:
+            canon_tensor = engine.deb.canonical_states_to_str(torch.stack([s.squeeze(0) for s in tensor_derived]))
+        else:
+            raise ValueError("No derived states from tensor engine")
+
         
         # Check length mismatch
         if len(str_derived) != len(tensor_derived):
+            str_canonical = canonicalize_state_to_str(str_state) if str_state else None
+            tensor_canonical = engine.deb.state_to_str(tensor_state.squeeze(0))
             error_msg = f"\n{'='*60}\nLENGTH MISMATCH at STEP {step} for query: {p}({h}, {t})\n{'='*60}\n"
+            print_debug_info(step, f"{p}({h}, {t})", str_state, tensor_state, str_derived, tensor_derived, 
+                             str_canonical, tensor_canonical, error_msg, engine.deb)
+            raise ValueError(error_msg)
         
         if canon_str != canon_tensor:
+            str_canonical = canonicalize_state_to_str(str_state) if str_state else None
+            tensor_canonical = engine.deb.state_to_str(tensor_state.squeeze(0))
             error_msg = f"\n{'='*60}\nCANONICALIZATION MISMATCH for query {count} at STEP {step}: {p}({h}, {t})\n{'='*60}\n"
-
-        if len(str_derived) != len(tensor_derived) or canon_str != canon_tensor:    
-            show_max = 10
-            error_msg += f"Current state:\n"
-            error_msg += f"  Str:    {str_state}\n"
-            error_msg += f"  Tensor: {debug_helper.state_to_str(tensor_state.squeeze(0))}\n\n"
-            error_msg += f"[CANON] Str:\n"
-            for i, canon in enumerate(canon_str[:show_max]):
-                error_msg += f"  {i}: {canon}\n"
-            # if len(canon_str) > show_max:
-            #     error_msg += f"  ... ({len(canon_str)-show_max} more states)\n"
-            error_msg += f"[CANON] Tensor:\n"
-            for i, canon in enumerate(canon_tensor[:show_max]):
-                error_msg += f"  {i}: {canon}\n"
-            # if len(canon_tensor) > show_max:
-            #     error_msg += f"  ... ({len(canon_tensor)-show_max} more states)\n"
-            error_msg += "\n"
-            
-            error_msg += f"[ORIG] Str derived states:\n"
-            for i, s in enumerate(str_derived[:show_max]):
-                error_msg += f"  {i}: {s}\n"
-            if len(str_derived) > show_max:
-                error_msg += f"  ... ({len(str_derived)-show_max} more states)\n"
-                
-            error_msg += f"\n[ORIG] Tensor derived states:\n"
-            for i, s in enumerate(tensor_derived[:show_max]):
-                error_msg += f"  {i}: {debug_helper.state_to_str(s.squeeze(0))}\n"
-            if len(tensor_derived) > show_max:
-                error_msg += f"  ... ({len(tensor_derived)-show_max} more states)\n"
+            print_debug_info(step, f"{p}({h}, {t})", str_state, tensor_state, str_derived, tensor_derived, 
+                             str_canonical, tensor_canonical, error_msg, engine.deb)
             raise ValueError(error_msg)
         
         if verbose:
             print(f"  ✓ Step {step}:")
             print(f"   [STR] Current state: {str_state}")
-            print(f"\n   [TENSOR] Current state: {debug_helper.state_to_str(tensor_state.squeeze(0))}")
+            print(f"\n   [TENSOR] Current state: {engine.deb.state_to_str(tensor_state.squeeze(0))}")
             print(f"\n\n   [STR] Derived states ({len(str_derived)}):")
             for i, s in enumerate(str_derived):
                 print(f"           {i}: {s}")
             print(f"\n   [TENSOR] Derived states ({len(tensor_derived)}):")
             for i, s in enumerate(tensor_derived):
-                print(f"           {i}: {debug_helper.state_to_str(s.squeeze(0))}")
+                print(f"           {i}: {engine.deb.state_to_str(s.squeeze(0))}")
         
         # Choose first canonical state for both (they should choose the same)
-        str_state_canon = [(canonicalize_state_to_str(s) if canonicalize else '|'.join(str(t) for t in s), s) for s in str_derived]
-        str_state_canon.sort(key=lambda x: x[0])
-        str_state = str_state_canon[0][1]
+        _, str_indices = canonical_states_to_str(str_derived, return_indices=True)
+        str_state = str_derived[str_indices[0]]
+
         
-        tensor_state_canon = [(engine.canonical_state_to_str(s), s) for s in tensor_derived]
-        tensor_state_canon.sort(key=lambda x: x[0])
-        tensor_state = tensor_state_canon[0][1]
+        # Use canonical_states_to_str with return_indices to select the same state as str_engine
+        if len(tensor_derived) > 0:
+            # tensor_derived contains tensors with shape [1, M, 3], squeeze batch dim before stacking
+            tensor_states_squeezed = [s.squeeze(0) for s in tensor_derived]
+            tensor_states_stacked = torch.stack(tensor_states_squeezed, dim=0)  # [N, M, 3]
+            
+            _, tensor_indices = engine.deb.canonical_states_to_str(tensor_states_stacked, return_indices=True)
+            # Keep batch dimension [1, M, 3] for next iteration
+            tensor_state = tensor_derived[tensor_indices[0]]
+        else:
+            raise ValueError("No derived states from tensor engine")
     
     # Reached max depth - check final state
     str_success =  str_state[0].predicate == 'True' and len(str_state[0].args) == 0
@@ -223,7 +339,7 @@ def test_single_query(p: str, h: str, t: str,
         error_msg += f"Tensor engine:  success={tensor_success}\n\n"
         error_msg += f"Final states:\n"
         error_msg += f"  Str:    {str_state}\n"
-        error_msg += f"  Tensor: {debug_helper.state_to_str(tensor_state.squeeze(0))}\n"
+        error_msg += f"  Tensor: {engine.deb.state_to_str(tensor_state.squeeze(0))}\n"
         raise ValueError(error_msg)
     
     if verbose:
@@ -234,100 +350,18 @@ def test_single_query(p: str, h: str, t: str,
 
 def main():
     
-    parser = argparse.ArgumentParser(description="Compare string and tensor engines")
-    parser.add_argument('--dataset', type=str, default="family",
-                        help='Dataset name to use')
-    parser.add_argument('--max_derived_states', type=int, default=500,
-                        help='Maximum derived states to generate per step (default: 200)')
-    parser.add_argument('--start_query', type=int, default=0,
-                        help='Index of the first query to test (default: 0)')
-    parser.add_argument('--canonicalize', default=True, type=bool,
-                        help='Use engine-provided canonicalization for comparisons')
-    parser.add_argument('--n_queries', type=int, default=None,
-                        help='Number of queries to test (default: None, meaning all)')
-    args = parser.parse_args()
+    args = _parse_args()
 
-    # Use args.canonicalize and args.max_derived_states rather than module-level globals
-    
     # Reproducibility
-    random.seed(42)
-    torch.manual_seed(42)
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    SEED = args.seed
 
     print("Loading data...")
 
-    # Str engine setup
-    dh_str = StrDataHandler(
-        dataset_name=args.dataset,
-        base_path="./data/",
-        train_file="train.txt",
-        valid_file="valid.txt",
-        test_file="test.txt",
-        rules_file="rules.txt",
-        facts_file="train.txt",
-        train_depth=None,
-    )
-
-    im_str = StrIndexManager(
-        constants=dh_str.constants,
-        predicates=dh_str.predicates,
-        max_total_vars=1000000,
-        rules=dh_str.rules,
-        padding_atoms=20,
-        max_arity=dh_str.max_arity,
-        device=torch.device('cpu'),
-    )
-    fact_index_str = im_str.build_fact_index(dh_str.facts)
-
-    rules_by_pred: dict = {}
-    for r in dh_str.rules:
-        rules_by_pred.setdefault(r.head.predicate, []).append(r)
-
-    # Tensor engine setup
-    dh_non = DataHandler(
-        dataset_name=args.dataset,
-        base_path="./data/",
-        train_file="train.txt",
-        valid_file="valid.txt",
-        test_file="test.txt",
-        rules_file="rules.txt",
-        facts_file="train.txt",
-        train_depth=None,
-    )
-
-    im_non = IndexManager(
-        constants=dh_non.constants,
-        predicates=dh_non.predicates,
-        max_total_runtime_vars=1000000,
-        padding_atoms=20,
-        max_arity=dh_non.max_arity,
-        device=torch.device('cpu'),
-        rules=dh_non.rules,
-    )
-    dh_non.materialize_indices(im=im_non, device=torch.device('cpu'))
-
-    # Create stringifier params for engine initialization
-    stringifier_params = {
-        'verbose': 0,
-        'idx2predicate': im_non.idx2predicate,
-        'idx2constant': im_non.idx2constant,
-        'idx2template_var': im_non.idx2template_var,
-        'padding_idx': im_non.padding_idx,
-        'n_constants': im_non.constant_no
-    }
-    
-    engine = UnificationEngine.from_index_manager(
-        im_non, take_ownership=True, stringifier_params=stringifier_params,
-        canonical_action_order=True
-    )
-
-    debug_helper = DebugHelper(
-        verbose=0,
-        idx2predicate=im_non.idx2predicate,
-        idx2constant=im_non.idx2constant,
-        idx2template_var=im_non.idx2template_var,
-        padding_idx=engine.padding_idx,
-        n_constants=im_non.constant_no
-    )
+    # Load engines
+    dh_str, im_str, fact_index_str, rules_by_pred = load_str_engine(args.dataset)
+    dh_non, im_non, engine = load_tensor_engine(args.dataset)
 
     # Compute max template variable index for initializing next_var during proof search
     # Template variables are stored in engine.rules_idx
@@ -338,9 +372,8 @@ def main():
             max_template_var = rule_max
     next_var_start_for_proofs = max_template_var + 1
 
-    # Package engine data for testing
     str_engine_data = (dh_str, im_str, fact_index_str, rules_by_pred)
-    tensor_engine_data = (dh_non, im_non, engine, debug_helper, next_var_start_for_proofs)
+    tensor_engine_data = (dh_non, im_non, engine, next_var_start_for_proofs)
 
     # Collect all queries to test
     all_queries = []
@@ -352,7 +385,7 @@ def main():
         all_queries.append(("test", q.predicate, q.args[0], q.args[1]))
 
     # shuffle queries for randomness
-    random.Random(2).shuffle(all_queries)
+    random.Random(SEED).shuffle(all_queries)
     
     # Apply start_query and n_queries filtering
     start_idx = args.start_query
@@ -391,7 +424,6 @@ def main():
         # This will raise an error immediately on any mismatch
         match, str_success, tensor_success, reason = test_single_query(
             p, h, t, str_engine_data, tensor_engine_data, facts_set_str, verbose=False,
-            canonicalize=args.canonicalize, 
             max_derived_states=args.max_derived_states,
             count=query_idx
         )

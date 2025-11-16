@@ -290,13 +290,48 @@ def _canonical_order_key(state: List[Term], index_manager: 'IndexManager') -> Tu
     return tuple(key)
 
 
-def canonicalize_state_to_str(state: List[Term]) -> str:
-    """Return a canonical string representation for a list of Terms."""
+def canonical_state_to_str(state: List[Term]) -> str:
+    """Return a canonical string representation for a list of Terms.
+    
+    Unified canonicalization logic (matches tensor engine):
+    1. Sort atoms alphabetically by (predicate, arg_types)
+       - All variables are treated as equivalent for sorting (type 'VAR')
+       - Constants are distinguished by their values (type 'CONST')
+    2. After sorting, rename variables to Var_1, Var_2, ... in order of first appearance
+    
+    This ensures that structurally identical states produce the same canonical string,
+    regardless of the original variable numbering.
+    """
+    if not state:
+        return ''
+    
+    # Step 1: Create sortable keys that don't depend on actual variable names
+    # Key structure: (predicate, tuple of (arg_type, arg_value_if_constant))
+    # All variables are treated as equal for sorting (only constants have values)
+    atoms_with_keys: List[Tuple[tuple, Term]] = []
+    for term in state:
+        key_parts = [term.predicate]
+        for arg in term.args:
+            if isinstance(arg, str) and (arg.startswith('Var') or is_variable(arg)):
+                # Variables: use ('VAR',) without the actual variable name
+                # This ensures all variables are equivalent for sorting
+                key_parts.append(('VAR',))
+            else:
+                # Constants: use ('CONST', str(arg)) to distinguish different constants
+                key_parts.append(('CONST', str(arg)))
+        sort_key = tuple(key_parts)
+        atoms_with_keys.append((sort_key, term))
+    
+    # Sort by the normalized key
+    atoms_with_keys.sort(key=lambda x: x[0])
+    sorted_terms = [term for _, term in atoms_with_keys]
+    
+    # Step 2: Rename variables in the sorted order
     var_mapping: Dict[str, str] = {}
     next_var_num = 1
-
-    atoms_str: List[str] = []
-    for term in state:
+    canonical_atoms: List[str] = []
+    
+    for term in sorted_terms:
         atom_parts: List[str] = [term.predicate, '(']
         for i, arg in enumerate(term.args):
             if i > 0:
@@ -311,10 +346,42 @@ def canonicalize_state_to_str(state: List[Term]) -> str:
             else:
                 atom_parts.append(str(arg))
         atom_parts.append(')')
-        atoms_str.append(''.join(atom_parts))
+        canonical_atoms.append(''.join(atom_parts))
+    
+    return '|'.join(canonical_atoms)
 
-    atoms_str.sort()
-    return '|'.join(atoms_str)
+
+def canonical_states_to_str(states: List[List[Term]], return_indices: bool = False):
+    """Canonicalize multiple states to string representations.
+    
+    Applies the same canonicalization logic to each state:
+    1. Sort atoms alphabetically
+    2. Rename variables based on sorted order
+    3. Sort the resulting canonical strings for consistent ordering
+    
+    Args:
+        states: List of states to canonicalize
+        return_indices: If True, return (sorted_canonical_strings, original_indices)
+                       where original_indices[i] gives the original position of the 
+                       state at sorted position i
+    
+    Returns:
+        List[str] if return_indices=False
+        Tuple[List[str], List[int]] if return_indices=True
+    """
+    canonical_with_idx = [(canonical_state_to_str(state), i) for i, state in enumerate(states)]
+    canonical_with_idx.sort(key=lambda x: x[0])
+    
+    if return_indices:
+        sorted_canonical = [x[0] for x in canonical_with_idx]
+        original_indices = [x[1] for x in canonical_with_idx]
+        return sorted_canonical, original_indices
+    else:
+        return [x[0] for x in canonical_with_idx]
+
+
+# Backward compatibility alias
+canonicalize_state_to_str = canonical_state_to_str
 
 
 def get_next_unification_python(state: List[Term],
@@ -452,7 +519,8 @@ def get_next_unification_python(state: List[Term],
 
     if strategy == 'complete':
         print('Strategy: complete') if verbose else None
-        next_states = fact_derived_states + rule_derived_states
+        # ORDER MUST MATCH TENSOR ENGINE: rules first, then facts
+        next_states = rule_derived_states + fact_derived_states
 
     elif strategy == 'rules_then_facts':
         print('\nStrategy: rules_then_facts') if verbose else None
@@ -524,35 +592,28 @@ def get_next_unification_python(state: List[Term],
     if canonical_order:
         if index_manager is None:
             raise ValueError("canonical_order=True requires index_manager to be provided")
-        keys = [_canonical_order_key(s, index_manager) for s in next_states]
+        # Sort by canonical string representation (matches tensor engine behavior)
+        canonical_strings = [canonical_state_to_str(s) for s in next_states]
         
-        # DEBUG: Print first few states and keys before sorting ALWAYS
+        # DEBUG: Print first few states before sorting
         if verbose > 0:
             print(f'\n[STR DEBUG] Before canonical sort: {len(next_states)} states')
-        if len(next_states) > 0:
             num_to_print = min(3, len(next_states))
             for i in range(num_to_print):
-                state_str = ' | '.join([str(t) for t in next_states[i]])
-                key = keys[i]
-                if verbose > 0:
-                    print(f'  State {i}: {state_str}')
-                    print(f'    Key: {key[:15]}...')
+                print(f'  State {i}: {canonical_strings[i]}')
         
-        order = sorted(range(len(next_states)), key=lambda idx: keys[idx])
+        # Sort by canonical string
+        order = sorted(range(len(next_states)), key=lambda idx: canonical_strings[idx])
         if order != list(range(len(next_states))):
             next_states = [next_states[idx] for idx in order]
+            canonical_strings = [canonical_strings[idx] for idx in order]
         
-        # DEBUG: Print first few states after sorting ALWAYS
+        # DEBUG: Print first few states after sorting
         if verbose > 0:
             print(f'[STR DEBUG] After canonical sort:')
-        if len(next_states) > 0:
             num_to_print = min(3, len(next_states))
             for i in range(num_to_print):
-                state_str = ' | '.join([str(t) for t in next_states[i]])
-                key = _canonical_order_key(next_states[i], index_manager)
-                if verbose > 0:
-                    print(f'  State {i}: {state_str}')
-                    print(f'    Key: {key[:15]}...')
+                print(f'  State {i}: {canonical_strings[i]}')
 
     # Apply cap to derived states to match tensor engine behavior (after canonical ordering)
     if len(next_states) > max_derived_states:

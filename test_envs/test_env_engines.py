@@ -12,10 +12,6 @@ This module tests all 6 configurations:
 It can run tests with either:
 - Deterministic policy (canonical ordering) - compares all info at every step
 - Random policy - compares average success rates
-
-Expected results:
-- With random actions: ~42% average success rate across all configurations
-- With deterministic policy: All configurations should produce identical results
 """
 import os
 import sys
@@ -29,11 +25,10 @@ from typing import List, Tuple, Dict
 from tensordict import TensorDict
 
 # Import test modules
-from tests.test_sb3_engine import setup_sb3_engine, test_sb3_engine_batch
-from tests.test_tensor_engine import setup_tensor_engine, test_tensor_engine_batch
-from tests.test_sb3_env import setup_sb3_env, test_sb3_env_batch
-from tests.test_tensor_env import setup_tensor_env, test_tensor_env_batch, canonicalize_tensor_state
-
+from test_sb3_engine import setup_sb3_engine, test_sb3_engine_batch
+from test_tensor_engine import setup_tensor_engine, test_tensor_engine_batch
+from test_sb3_env import setup_sb3_env, test_sb3_env_batch
+from test_tensor_env import setup_tensor_env, test_tensor_env_batch, canonicalize_tensor_state
 
 def prepare_queries(dataset: str = "countries_s3", base_path: str = "./data/", 
                     num_queries: int = None, seed: int = 42) -> List[Tuple[str, Tuple[str, str, str]]]:
@@ -451,7 +446,7 @@ def run_all_tests(
     dataset: str = "countries_s3",
     num_queries: int = 100,
     deterministic: bool = True,
-    max_depth: int = 10,
+    max_depth: int = 20,
     seed: int = 42,
     verbose: bool = False,
     debug: bool = False,

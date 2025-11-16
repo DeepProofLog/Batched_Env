@@ -168,7 +168,6 @@ class BatchedEnv(EnvBase):
         eval_pruning: bool = False,
         end_proof_action: bool = False,
         skip_unary_actions: bool = False,
-    canonical_action_order: bool = False,
         reward_type: int = 0,
         verbose: int = 0,
         prover_verbose: int = 0,
@@ -217,11 +216,7 @@ class BatchedEnv(EnvBase):
         # Action modifiers
         self.end_proof_action = bool(end_proof_action)
         self.skip_unary_actions = bool(skip_unary_actions)
-        self.canonical_action_order = bool(canonical_action_order)
         self.max_skip_unary_iters = 20
-
-        if hasattr(self.unification_engine, "canonical_action_order"):
-            self.unification_engine.canonical_action_order = self.canonical_action_order
 
         # Validate end_proof_action configuration
         if self.end_proof_action:
@@ -685,7 +680,6 @@ class BatchedEnv(EnvBase):
                     next_var_indices=self.next_var_indices.index_select(0, non_terminal_idx),
                     excluded_queries=self.original_queries.index_select(0, non_terminal_idx).unsqueeze(1),
                     verbose=self.prover_verbose,
-                    max_derived_per_state=self.padding_states,
                 )
                 
                 if verbose:
@@ -885,7 +879,6 @@ class BatchedEnv(EnvBase):
                 next_var_indices=next_vars,
                 excluded_queries=excluded,
                 verbose=0,
-                max_derived_per_state=self.padding_states,
             )
             
             # Update next_var_indices for envs that got new derived states
@@ -1120,7 +1113,6 @@ class BatchedEnv(EnvBase):
                     next_var_indices=self.next_var_indices.index_select(0, non_terminal_in_promoted),
                     excluded_queries=self.original_queries.index_select(0, non_terminal_in_promoted).unsqueeze(1),
                     verbose=self.prover_verbose,
-                    max_derived_per_state=self.padding_states,
                 )
                 self.next_var_indices.index_copy_(0, non_terminal_in_promoted, sub_next)
 
