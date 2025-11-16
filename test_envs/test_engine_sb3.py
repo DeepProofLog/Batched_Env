@@ -1,8 +1,7 @@
 """
 Test module for SB3 (string-based) engine.
 
-This module contains functions to test the string-based unification engine
-with both deterministic (canonical) and random action selection.
+Simple and modular testing for the string-based unification engine.
 """
 import os
 import sys
@@ -11,17 +10,12 @@ sys.path.insert(0, root_path)
 
 import random
 import torch
-from typing import List, Tuple, Dict
+from typing import Tuple, Dict, List
 
-# String-engine stack
 from str_based.str_dataset import DataHandler as StrDataHandler
 from str_based.str_index_manager import IndexManager as StrIndexManager
-from str_based.str_utils import Term as StrTerm, Rule as StrRule
+from str_based.str_utils import Term as StrTerm
 from str_based.str_unification import get_next_unification_python, canonicalize_state_to_str
-
-
-# Note: canonicalize_str_state is replaced by canonicalize_state_to_str from str_unification
-# Use the engine's built-in function instead
 
 
 def setup_sb3_engine(dataset: str = "countries_s3", base_path: str = "./data/") -> Tuple:

@@ -1,8 +1,7 @@
 """
 Test module for SB3 (string-based) environment.
 
-This module contains functions to test the string-based environment
-with both deterministic (canonical) and random action selection.
+Simple and modular testing for the string-based environment.
 """
 import os
 import sys
@@ -13,9 +12,8 @@ sys.path.insert(0, os.path.join(root_path, 'str_based'))
 import random
 import torch
 import numpy as np
-from typing import List, Tuple, Dict
+from typing import Tuple, Dict, List
 
-# String-engine stack
 from str_based.str_dataset import DataHandler as StrDataHandler
 from str_based.str_index_manager import IndexManager as StrIndexManager
 from str_based.str_env import LogicEnv_gym as StrEnv
@@ -30,13 +28,6 @@ def safe_item(x):
     elif isinstance(x, torch.Tensor):
         return x.item() if x.numel() == 1 else x
     return x
-
-
-# Note: canonicalize_str_state is replaced by canonicalize_state_to_str from str_unification
-# Use the engine's built-in function instead
-    
-    # Return with atoms in original order, no spaces for consistency
-    return '|'.join(canonical_atoms)
 
 
 def setup_sb3_env(dataset: str = "countries_s3", base_path: str = "./data/", seed: int = 42) -> Tuple:
@@ -83,7 +74,7 @@ def setup_sb3_env(dataset: str = "countries_s3", base_path: str = "./data/", see
         mode='eval_with_restart',
         seed=seed,
         max_depth=20,
-        memory_pruning=True,
+        memory_pruning=False,
         padding_atoms=100,
         padding_states=500,
         verbose=0,
@@ -91,9 +82,10 @@ def setup_sb3_env(dataset: str = "countries_s3", base_path: str = "./data/", see
         device=torch.device('cpu'),
         engine='python',
         engine_strategy='complete',
-        skip_unary_actions=True,
+        skip_unary_actions=False,
         endf_action=False,
         reward_type=0,
+        canonical_action_order=True,
     )
     
     return str_env, im_str, dh_str
@@ -181,21 +173,22 @@ def test_sb3_env_single_query(
                 str_info = {'is_success': is_success_state}
             break
         
-        # Canonicalize and sort derived states
-        canon_states = [(canonicalize_state_to_str(ds), i) for i, ds in enumerate(derived_states)]
-        canon_states.sort(key=lambda x: x[0])
-        
+        # States are already in canonical order from environment (canonical_action_order=True)
+        # Just take first action in deterministic mode
         if deterministic:
-            # Choose first canonical action
-            action = canon_states[0][1]
+            # Choose first action (already in canonical order)
+            action = 0
         else:
             # Choose random action
             action = rng.choice(range(num_actions))
         
+        # Build derived states list for trace (already in canonical order)
+        derived_states_canonical = [canonicalize_state_to_str(derived_states[i]) for i in range(num_actions)]
+        
         trace.append({
             'step': steps,
             'state': canonicalize_state_to_str(state),
-            'derived_states': [c[0] for c in canon_states],
+            'derived_states': derived_states_canonical,
             'num_actions': num_actions,
             'action': action,
             'done': False,

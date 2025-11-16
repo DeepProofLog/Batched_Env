@@ -23,6 +23,8 @@ Arguments:
   --start_query: Starting query index (default: 0)
   --n_queries: Number of queries to test (default: all)
   --seed: Random seed for reproducibility (default: 42)
+  --memory_pruning: Enable memory pruning (default: False)
+  --skip_unary_actions: Enable skip unary actions (default: False)
 """
 
 import os
@@ -50,7 +52,27 @@ from index_manager import IndexManager
 from unification_engine import UnificationEngine
 from env import BatchedEnv
 from tensordict import TensorDict
-from test_engines import _parse_args
+
+
+def _parse_args() -> argparse.Namespace:
+
+    parser = argparse.ArgumentParser(description="Compare string and tensor versions")
+    parser.add_argument('--dataset', type=str, default="family",
+                        help='Dataset name to use')
+    parser.add_argument('--max_derived_states', type=int, default=500,
+                        help='Maximum derived states to generate per step (default: 200)')
+    parser.add_argument('--start_query', type=int, default=0,
+                        help='Index of the first query to test (default: 0)')
+    parser.add_argument('--n_queries', type=int, default=500,
+                        help='Number of queries to test (default: None, meaning all)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for shuffling queries (default: 42)')
+    parser.add_argument('--memory_pruning', type=bool, default=True,
+                        help='Enable memory pruning (default: False)') 
+    parser.add_argument('--skip_unary_actions', type=bool, default=True,
+                        help='Enable skip unary actions (default: False)')
+    return parser.parse_args()
+
 
 def safe_item(x):
     """Safely extract scalar from numpy/torch/python scalar."""
@@ -352,7 +374,7 @@ def compare_query(p: str, h: str, t: str,
 
 
 
-def load_str_environment(dataset: str, max_derived_states: int) -> Tuple:
+def load_str_environment(dataset: str, max_derived_states: int, memory_pruning: bool = False, skip_unary_actions: bool = False) -> Tuple:
     """Load and configure the string-based environment.
     
     Returns:
@@ -392,7 +414,7 @@ def load_str_environment(dataset: str, max_derived_states: int) -> Tuple:
         mode='eval_with_restart',
         seed=42,
         max_depth=20,
-        memory_pruning=False,
+        memory_pruning=memory_pruning,
         padding_atoms=100,
         padding_states=max_derived_states,
         verbose=0,
@@ -400,7 +422,7 @@ def load_str_environment(dataset: str, max_derived_states: int) -> Tuple:
         device=torch.device('cpu'),
         engine='python',
         engine_strategy='complete',
-        skip_unary_actions=False,
+        skip_unary_actions=skip_unary_actions,
         endf_action=False,
         canonical_action_order=True,
     )
@@ -408,7 +430,7 @@ def load_str_environment(dataset: str, max_derived_states: int) -> Tuple:
     return str_env, im_str, dh_str
 
 
-def load_tensor_environment(dataset: str, max_derived_states: int) -> Tuple:
+def load_tensor_environment(dataset: str, max_derived_states: int, memory_pruning: bool = False, skip_unary_actions: bool = False) -> Tuple:
     """Load and configure the batched tensor environment.
     
     Returns:
@@ -462,7 +484,7 @@ def load_tensor_environment(dataset: str, max_derived_states: int) -> Tuple:
         unification_engine=engine,
         mode='train',
         max_depth=20,
-        memory_pruning=False,
+        memory_pruning=memory_pruning,
         padding_atoms=100,
         padding_states=max_derived_states,
         true_pred_idx=im_batched.predicate_str2idx.get('True'),
@@ -473,7 +495,7 @@ def load_tensor_environment(dataset: str, max_derived_states: int) -> Tuple:
         device=torch.device('cpu'),
         runtime_var_start_index=im_batched.constant_no + 1,
         total_vocab_size=im_batched.constant_no + 1000000,
-        skip_unary_actions=False,
+        skip_unary_actions=skip_unary_actions,
         end_proof_action=False,
         use_exact_memory=True,
     )
@@ -504,8 +526,8 @@ def main():
     print()
     
     print("Loading environments...")
-    str_env, im_str, dh_str = load_str_environment(dataset, args.max_derived_states)
-    batched_env, engine, dh_batched = load_tensor_environment(dataset, args.max_derived_states)
+    str_env, im_str, dh_str = load_str_environment(dataset, args.max_derived_states, args.memory_pruning, args.skip_unary_actions)
+    batched_env, engine, dh_batched = load_tensor_environment(dataset, args.max_derived_states, args.memory_pruning, args.skip_unary_actions)
     
     # Prepare test data
     all_queries = (

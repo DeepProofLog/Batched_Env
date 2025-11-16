@@ -481,7 +481,7 @@ class BatchedEnv(EnvBase):
             inactive_in_reset = original_reset_idx[lengths[original_reset_idx] == 0]
             if inactive_in_reset.numel() > 0:
                 # Set inactive slots to terminated state (FALSE + done=True)
-                false_state_full = self.unification_engine.create_false_state(A)  # [A, D] padded
+                false_state_full = self.unification_engine.get_false_state()  # [A, D] padded
                 false_atom = false_state_full[0]  # Just the first atom [D]
                 false_queries = torch.full((inactive_in_reset.shape[0], A, D), pad, dtype=torch.long, device=device)
                 false_queries[:, 0] = false_atom
@@ -746,7 +746,7 @@ class BatchedEnv(EnvBase):
         need_false = active_mask & (counts == 0)
         dst_rows = torch.arange(active_mask.shape[0], device=self._device)[need_false]
         if dst_rows.numel() > 0:
-            false_state = self.unification_engine.create_false_state(self.padding_atoms)  # [A, D]
+            false_state = self.unification_engine.get_false_state()  # [A, D]
             expanded = false_state.unsqueeze(0).expand(dst_rows.shape[0], -1, -1)
             batched_derived[dst_rows, 0] = expanded
             counts[dst_rows] = 1

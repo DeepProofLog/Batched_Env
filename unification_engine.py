@@ -741,7 +741,7 @@ def prune_and_collapse(
     padding_idx: int,
     B: int,
     excluded_first_atoms: Optional[Tensor] = None   # [N, 3] first atom of excluded query per candidate (owner-aligned)
-) -> Tuple[Tensor, Tensor, Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """
     Drop ground atoms known to be facts, then collapse owners with proof.
     Proof criterion: after dropping, a candidate has zero atoms (all-True) ->
@@ -751,12 +751,13 @@ def prune_and_collapse(
       survivors:    [N', M, 3]   (pruned candidates of non-proof owners)
       surv_counts:  [N']
       proof_mask_B: [B] bool mask of owners that are proofs
+      surv_owners:  [N'] filtered owners corresponding to survivors
     """
     device = candidates.device
     pad = padding_idx
 
     if candidates.numel() == 0:
-        return candidates, cand_counts, torch.zeros(B, dtype=torch.bool, device=device)
+        return candidates, cand_counts, torch.zeros(B, dtype=torch.bool, device=device), owners
 
     N, M = candidates.shape[:2]
     valid = (candidates[:, :, 0] != pad)           # [N, M]
@@ -795,9 +796,11 @@ def prune_and_collapse(
     if not keep_mask.any():
         return (torch.empty((0, M, 3), dtype=candidates.dtype, device=device),
                 torch.empty((0,), dtype=torch.long, device=device),
-                proof_mask_B)
+                proof_mask_B,
+                torch.empty((0,), dtype=torch.long, device=device))
 
     survivors = candidates[keep_mask]
+    surv_owners = owners[keep_mask]  # Also filter owners to match survivors
     surv_keep = keep[keep_mask]
     pos = torch.cumsum(surv_keep.long(), dim=1) - 1           # [N', M]
     out = torch.full_like(survivors, pad)
@@ -806,7 +809,7 @@ def prune_and_collapse(
         cidx = torch.arange(M, device=device).unsqueeze(0).expand_as(surv_keep)[surv_keep]
         out[ridx, pos[surv_keep]] = survivors[ridx, cidx]
     surv_counts = surv_keep.sum(dim=1)
-    return out, surv_counts, proof_mask_B
+    return out, surv_counts, proof_mask_B, surv_owners
 
 
 @torch.no_grad()
@@ -1214,7 +1217,7 @@ class UnificationEngine:
             excl_first = table.index_select(0, owners)                      # [N, 3]
 
         # ---- 5) prune ground facts and collapse proof owners to TRUE (only here!)
-        surv_states, surv_counts, proof_mask_B = prune_and_collapse(
+        surv_states, surv_counts, proof_mask_B, surv_owners = prune_and_collapse(
             cand_states, cand_counts, owners, self.fact_index, self.constant_no, pad, B, excl_first
         )
 
@@ -1240,7 +1243,13 @@ class UnificationEngine:
                 final_counts[nonproof_idx] = 1
             return final_states, final_counts, updated_next
 
-        surv_owners = owners[ (surv_counts >= 0) & (~proof_mask_B.index_select(0, owners)) ]  # match survivors' owners
+        # surv_owners is already filtered to match surv_states and surv_counts
+        # Just filter by valid counts
+        valid_mask = surv_counts >= 0
+        if valid_mask.any() and valid_mask.sum() < surv_owners.numel():
+            surv_states = surv_states[valid_mask]
+            surv_counts = surv_counts[valid_mask]
+            surv_owners = surv_owners[valid_mask]
 
         # ---- 6) standardize variables (shared base per owner) and update next_var per owner
         if verbose > 0 and self.debug_helper:

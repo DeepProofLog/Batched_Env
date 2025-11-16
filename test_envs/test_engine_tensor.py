@@ -1,9 +1,7 @@
 """
 Test module for tensor-based unification engine.
 
-This module contains functions to test the tensor-based unification engine
-with both deterministic (canonical) and random action selection.
-Supports both non-batched and batched tensor engines.
+Simple and modular testing for the tensor-based unification engine in eval mode.
 """
 import os
 import sys
@@ -12,100 +10,12 @@ sys.path.insert(0, root_path)
 
 import random
 import torch
-from typing import List, Tuple, Dict
+from typing import Tuple, Dict, List
 
-# Tensor-engine stack
 from data_handler import DataHandler
 from index_manager import IndexManager
 from unification_engine import UnificationEngine
 from debug_helper import DebugHelper
-
-
-def canonicalize_state_by_appearance(state: torch.Tensor, constant_no: int, debug_helper=None) -> torch.Tensor:
-    """Canonicalize variables in state by order of first appearance.
-    
-    IMPORTANT: This function ONLY renames variables to canonical names.
-    It does NOT reorder atoms - atom order must be preserved for proof search!
-    """
-    # Find non-padding atoms using vectorized operation
-    non_padding_mask = state[:, 0] != 0
-    n_atoms = non_padding_mask.sum().item()
-    
-    if n_atoms == 0:
-        return state
-    
-    # Extract non-padding atoms - work directly with torch tensors for speed
-    atoms = state[:n_atoms]
-    
-    # Find unique variables in order of first appearance (row-major: atom by atom, arg by arg)
-    # Flatten arguments and filter for variables
-    args = atoms[:, 1:].flatten()  # Process in order: atom0_arg1, atom0_arg2, atom1_arg1, atom1_arg2, ...
-    var_mask = args > constant_no
-    vars_in_order = args[var_mask]
-    
-    # Get unique variables while preserving order - use dict for O(1) lookup
-    seen = {}
-    var_order = []
-    for v in vars_in_order.tolist():
-        if v not in seen:
-            seen[v] = len(var_order)
-            var_order.append(v)
-    
-    # Create mapping tensor for fast vectorized lookup
-    if var_order:
-        max_var = max(var_order)
-        var_map = torch.zeros(max_var + 1, dtype=torch.long, device=state.device)
-        for new_idx, old_var in enumerate(var_order):
-            var_map[old_var] = constant_no + 1 + new_idx
-        
-        # Apply mapping using vectorized operations - preserve atom order!
-        canonical_atoms = atoms.clone()
-        for col in [1, 2]:
-            var_mask = canonical_atoms[:, col] > constant_no
-            if var_mask.any():
-                canonical_atoms[var_mask, col] = var_map[canonical_atoms[var_mask, col]]
-    else:
-        canonical_atoms = atoms.clone()
-    
-    # Return with atom order preserved
-    result = state.clone()
-    result[:n_atoms] = canonical_atoms
-    
-    return result
-
-
-def atom_to_str_canonical(atom_idx: torch.LongTensor, debug_helper, constant_no: int, 
-                          idx2predicate_cache: list, idx2constant_cache: list) -> str:
-    """Convert an atom index tensor to string, using Var_1, Var_2, etc. for variables > constant_no."""
-    p, a, b = atom_idx[0].item(), atom_idx[1].item(), atom_idx[2].item()
-    ps = idx2predicate_cache[p] if 0 <= p < len(idx2predicate_cache) else str(p)
-
-    # Special case for True and False predicates
-    if ps in ['True', 'False']:
-        return f"{ps}()"
-
-    # Convert a
-    if 1 <= a <= constant_no:
-        a_str = idx2constant_cache[a] if 0 <= a < len(idx2constant_cache) else f"c{a}"
-    elif a > constant_no:
-        a_str = f"Var_{a - constant_no}"
-    else:
-        a_str = f"_{a}"
-    
-    # Convert b
-    if 1 <= b <= constant_no:
-        b_str = idx2constant_cache[b] if 0 <= b < len(idx2constant_cache) else f"c{b}"
-    elif b > constant_no:
-        b_str = f"Var_{b - constant_no}"
-    else:
-        b_str = f"_{b}"
-
-    return f"{ps}({a_str},{b_str})"
-
-
-# Note: canonicalize_tensor_state is replaced by engine.canonical_state_to_str()
-# The custom implementation above (canonicalize_state_by_appearance + atom_to_str_canonical)
-# is kept for reference but should not be used. Use engine methods instead.
 
 
 def setup_tensor_engine(dataset: str = "countries_s3", base_path: str = "./data/", batched: bool = False) -> Tuple:
@@ -152,7 +62,10 @@ def setup_tensor_engine(dataset: str = "countries_s3", base_path: str = "./data/
         'n_constants': im_non.constant_no
     }
     
-    engine = UnificationEngine.from_index_manager(im_non, take_ownership=True, stringifier_params=stringifier_params)
+    engine = UnificationEngine.from_index_manager(
+        im_non, take_ownership=True, stringifier_params=stringifier_params,
+        max_derived_per_state=500  # Set max derived states for eval mode
+    )
 
     debug_helper = DebugHelper(
         verbose=0,
@@ -230,8 +143,7 @@ def test_tensor_engine_single_query(
         
         derived, derived_counts, updated_next_var = engine.get_derived_states(
             state, next_var,
-            excluded_queries=excluded_query_tensor, verbose=0,
-            max_derived_per_state=max_derived_states
+            excluded_queries=excluded_query_tensor, verbose=0
         )
         num_derived = derived_counts[0].item()
         
@@ -256,7 +168,7 @@ def test_tensor_engine_single_query(
     
     def tensor_canonicalize(state):
         s = state.squeeze(0) if state.dim() > 2 else state
-        return engine.canonical_state_to_str(s)
+        return debug_helper.canonical_state_to_str(s)
     
     # Run proof
     current_state = query_padded

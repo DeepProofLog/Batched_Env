@@ -1,5 +1,20 @@
 """
 Test to compare derived states between str engine and tensor engine for countries_s3.
+
+Usage:
+  # Test 10 queries
+  python test_engines.py --n_queries 10
+  
+  # Start from specific query (useful for debugging)
+  python test_engines.py --start_query 2047 --n_queries 1
+
+Arguments:
+  --dataset: Dataset name (default: family)
+  --start_query: Starting query index (default: 0)
+  --n_queries: Number of queries to test (default: all)
+  --seed: Random seed for reproducibility (default: 42)
+  --memory_pruning: Enable memory pruning (default: False)
+  --skip_unary_actions: Enable skip unary actions (default: False)
 """
 import os
 import sys
@@ -37,6 +52,10 @@ def _parse_args() -> argparse.Namespace:
                         help='Number of queries to test (default: None, meaning all)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for shuffling queries (default: 42)')
+    parser.add_argument('--memory_pruning', action='store_true',
+                        help='Enable memory pruning (default: False)')
+    parser.add_argument('--skip_unary_actions', action='store_true',
+                        help='Enable skip unary actions (default: False)')
     return parser.parse_args()
 
 
@@ -76,7 +95,7 @@ def load_str_engine(dataset: str):
     return dh_str, im_str, fact_index_str, rules_by_pred
 
 
-def load_tensor_engine(dataset: str):
+def load_tensor_engine(dataset: str, max_derived_states: int):
     """Load and configure the tensor-based engine components.
     
     Returns:
@@ -116,6 +135,7 @@ def load_tensor_engine(dataset: str):
     
     engine = UnificationEngine.from_index_manager(
         im_non, take_ownership=True, stringifier_params=stringifier_params,
+        max_derived_per_state=max_derived_states
     )
     
     return dh_non, im_non, engine
@@ -265,7 +285,6 @@ def test_single_query(p: str, h: str, t: str,
         derived, derived_counts, next_var_tracker = engine.get_derived_states(
             tensor_state, next_var_tracker,
             excluded_queries=query_padded, verbose=0,
-            max_derived_per_state=max_derived_states,
             deduplicate=False,
             sort_states=True
         )
@@ -361,7 +380,7 @@ def main():
 
     # Load engines
     dh_str, im_str, fact_index_str, rules_by_pred = load_str_engine(args.dataset)
-    dh_non, im_non, engine = load_tensor_engine(args.dataset)
+    dh_non, im_non, engine = load_tensor_engine(args.dataset, args.max_derived_states)
 
     # Compute max template variable index for initializing next_var during proof search
     # Template variables are stored in engine.rules_idx

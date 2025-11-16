@@ -1,17 +1,19 @@
 """
 Main test orchestrator for all engine and environment configurations.
 
-This module tests all 6 configurations:
+Tests all 8 configurations with deterministic or random policy:
 1. SB3 engine (string-based unification engine)
-2. Tensor engine (non-batched tensor unification engine)
+2. Tensor engine (tensor unification engine)
 3. Batched tensor engine (batched tensor unification engine)
-4. SB3 engine + SB3 env (string-based environment)
-5. Tensor engine + Tensor env (non-batched tensor environment)
-6. Batched tensor engine + Batched tensor env (batched tensor environment)
+4. SB3 env (string-based environment)
+5. Tensor env (tensor environment)
+6. Batched tensor env (batched tensor environment)
+7. Eval env (environment tested via evaluate_policy)
+8. Rollout env (environment tested via rollout collector with random agent)
 
-It can run tests with either:
-- Deterministic policy (canonical ordering) - compares all info at every step
-- Random policy - compares average success rates
+Usage:
+  python test_envs/test_env_engines.py --dataset family --num-queries 20 --deterministic
+  python test_envs/test_env_engines.py --dataset countries_s3 --num-queries 100 --random
 """
 import os
 import sys
@@ -21,24 +23,26 @@ sys.path.insert(0, root_path)
 import random
 import torch
 import numpy as np
-from typing import List, Tuple, Dict
-from tensordict import TensorDict
+from typing import Tuple, Dict, List
 
 # Import test modules
-from test_sb3_engine import setup_sb3_engine, test_sb3_engine_batch
-from test_tensor_engine import setup_tensor_engine, test_tensor_engine_batch
-from test_sb3_env import setup_sb3_env, test_sb3_env_batch
-from test_tensor_env import setup_tensor_env, test_tensor_env_batch, canonicalize_tensor_state
+from test_envs.test_engine_sb3 import setup_sb3_engine, test_sb3_engine_batch
+from test_envs.test_engine_tensor import setup_tensor_engine, test_tensor_engine_batch
+from test_envs.test_env_sb3 import setup_sb3_env, test_sb3_env_batch
+from test_envs.test_env_tensor import setup_tensor_env, test_tensor_env_batched, test_tensor_env_single_query
+from test_envs.test_env_eval import test_eval_env
+from test_envs.test_env_rollout import test_rollout_env
+
 
 def prepare_queries(dataset: str = "countries_s3", base_path: str = "./data/", 
-                    num_queries: int = None, seed: int = 42) -> List[Tuple[str, Tuple[str, str, str]]]:
+                    n_queries: int = None, seed: int = 42) -> List[Tuple[str, Tuple[str, str, str]]]:
     """
     Prepare list of queries from dataset.
     
     Args:
         dataset: Dataset name
         base_path: Base path to data directory
-        num_queries: If specified, sample this many queries; otherwise use all
+        n_queries: If specified, sample this many queries; otherwise use all
         seed: Random seed for sampling
         
     Returns:
@@ -66,10 +70,12 @@ def prepare_queries(dataset: str = "countries_s3", base_path: str = "./data/",
     for q in dh.test_queries:
         all_queries.append(('test', (q.predicate, q.args[0], q.args[1])))
     
-    # Sample if requested
-    if num_queries is not None and num_queries < len(all_queries):
-        rng = random.Random(seed)
-        all_queries = rng.sample(all_queries, num_queries)
+    # Shuffle and take first n (to match test_envs.py behavior)
+    rng = random.Random(seed)
+    rng.shuffle(all_queries)
+    
+    if n_queries is not None:
+        all_queries = all_queries[:n_queries]
     
     return all_queries
 
@@ -94,12 +100,12 @@ def compare_traces_deterministic(traces_dict: Dict[str, List[Dict]], verbose: bo
     # Get reference traces (first config)
     ref_name = config_names[0]
     ref_traces = traces_dict[ref_name]
-    num_queries = len(ref_traces)
+    n_queries = len(ref_traces)
     
     # Compare each query
     mismatches = []
     
-    for q_idx in range(num_queries):
+    for q_idx in range(n_queries):
         ref_trace = ref_traces[q_idx]['trace']
         ref_success = ref_traces[q_idx]['success']
         
@@ -229,14 +235,14 @@ def debug_compare_step_by_step(traces_dict: Dict[str, List[Dict]], queries: List
     # Get reference traces (first config)
     ref_name = config_names[0]
     ref_traces = traces_dict[ref_name]
-    num_queries = len(ref_traces)
+    n_queries = len(ref_traces)
     
     # Compare each query
-    for q_idx in range(num_queries):
+    for q_idx in range(n_queries):
         split, (pred, head, tail) = queries[q_idx]
         query_str = f"{pred}({head}, {tail})"
         
-        print(f"Query {q_idx}/{num_queries}: {query_str} [{split}]")
+        print(f"Query {q_idx}/{n_queries}: {query_str} [{split}]")
         
         ref_trace = ref_traces[q_idx]['trace']
         ref_success = ref_traces[q_idx]['success']
@@ -422,12 +428,28 @@ def print_results_table(results_dict: Dict[str, Dict], deterministic: bool):
         print(f"  Average success rate: {avg_success:.2f}% ± {std_success:.2f}%")
         print(f"  Min/Max success rate: {min_success:.2f}% / {max_success:.2f}%")
         
+        # Check if rollout_env is in the mix (uses random policy)
+        has_rollout = 'rollout_env' in results_dict
+        
         if deterministic:
-            # All should be identical for deterministic
-            if std_success < 0.01:
-                print(f"  ✓ All configurations have identical success rates (as expected)")
+            # For deterministic mode, most configs should be identical except rollout_env
+            if has_rollout:
+                # Expect variation due to rollout_env using random policy
+                det_configs = {k: v for k, v in results_dict.items() if k != 'rollout_env'}
+                if det_configs:
+                    det_pcts = [(r['successful'] / r['total_queries'] * 100) for r in det_configs.values()]
+                    det_std = np.std(det_pcts)
+                    if det_std < 0.01:
+                        print(f"  ✓ Deterministic configurations have identical success rates")
+                        print(f"    Note: rollout_env uses random policy, expected to differ")
+                    else:
+                        print(f"  ✗ WARNING: Deterministic configurations differ!")
             else:
-                print(f"  ✗ WARNING: Success rates differ between configurations!")
+                # All should be identical
+                if std_success < 0.01:
+                    print(f"  ✓ All configurations have identical success rates (as expected)")
+                else:
+                    print(f"  ✗ WARNING: Success rates differ between configurations!")
         else:
             # Random should be around 42% with some variation
             if 35 <= avg_success <= 50:
@@ -444,7 +466,7 @@ def print_results_table(results_dict: Dict[str, Dict], deterministic: bool):
 
 def run_all_tests(
     dataset: str = "countries_s3",
-    num_queries: int = 100,
+    n_queries: int = 100,
     deterministic: bool = True,
     max_depth: int = 20,
     seed: int = 42,
@@ -457,7 +479,7 @@ def run_all_tests(
     
     Args:
         dataset: Dataset name
-        num_queries: Number of queries to test
+        n_queries: Number of queries to test
         deterministic: If True, use canonical ordering; if False, random actions
         max_depth: Maximum proof depth
         seed: Random seed
@@ -465,7 +487,7 @@ def run_all_tests(
         debug: If True, compare step-by-step and raise error on first mismatch
         configs: List of config names to test. If None, test all.
                  Options: 'sb3_engine', 'tensor_engine', 'batched_tensor_engine',
-                         'sb3_env', 'tensor_env', 'batched_tensor_env'
+                         'sb3_env', 'tensor_env', 'batched_tensor_env', 'eval_env', 'rollout_env'
     """
     # Set all random seeds
     random.seed(seed)
@@ -476,7 +498,7 @@ def run_all_tests(
     print(f"TESTING ALL CONFIGURATIONS")
     print(f"{'='*80}")
     print(f"Dataset: {dataset}")
-    print(f"Queries: {num_queries}")
+    print(f"Queries: {n_queries}")
     print(f"Policy: {'Deterministic (canonical)' if deterministic else 'Random'}")
     print(f"Max depth: {max_depth}")
     print(f"Seed: {seed}")
@@ -484,25 +506,24 @@ def run_all_tests(
     
     # Prepare queries
     print("Preparing queries...")
-    queries = prepare_queries(dataset=dataset, num_queries=num_queries, seed=seed)
+    queries = prepare_queries(dataset=dataset, n_queries=n_queries, seed=seed)
     print(f"  Prepared {len(queries)} queries\n")
     
     # Default to all configs if none specified
     # Order matters: engines first, then environments for proper deterministic comparison
     if configs is None:
         configs = [
-            # Engines first (no environment wrapper)
-            'sb3_engine',
-            'tensor_engine', 
-            'batched_tensor_engine',
+            # Engines first (SKIP)
+            # 'sb3_engine',
+            # 'tensor_engine', 
+            # 'batched_tensor_engine',
             # Environments second (with environment wrapper)
             'sb3_env',
             'tensor_env',
-            'batched_tensor_env'
+            'batched_tensor_env',
+            'eval_env',
+            'rollout_env'
         ]
-        # Add train mode for random policy
-        if not deterministic:
-            configs.append('batched_tensor_env_train')
     
     results_dict = {}
     traces_dict = {}
@@ -573,160 +594,11 @@ def run_all_tests(
                 traces_dict[config_name] = results['traces']
                 
             elif config_name == 'tensor_env':
-                print("Setting up tensor environment (batch_size=1)...")
+                print(f"Setting up tensor environment (batch_size=1 for sequential testing)...")
                 env_data = setup_tensor_env(dataset=dataset, seed=seed, batch_size=1)
-                print("Running tests (one query at a time)...")
-                batched_env, debug_helper, constant_no, im_batched, dh_batched = env_data
-                all_results = []
-                
-                for idx, (split, query_tuple) in enumerate(queries):
-                    p, h, t = query_tuple
-                    query_atom = batched_env.unification_engine.index_manager.atom_to_tensor(p, h, t)
-                    query_padded = torch.full((1, batched_env.padding_atoms, 3), batched_env.padding_idx, 
-                                               dtype=torch.long, device='cpu')
-                    query_padded[0, 0] = query_atom
-                    
-                    label = 1
-                    batched_env._all_queries_padded = query_padded
-                    batched_env._all_labels = torch.tensor([label], dtype=torch.long, device='cpu')
-                    batched_env._all_depths = torch.tensor([1], dtype=torch.long, device='cpu')
-                    batched_env._all_first_atoms = query_atom.unsqueeze(0)
-                    batched_env._num_all = 1
-                    
-                    # Setup eval slots for single query
-                    batched_env._eval_slot_starts = torch.tensor([0], dtype=torch.long, device='cpu')
-                    batched_env._eval_slot_lengths = torch.tensor([1], dtype=torch.long, device='cpu')
-                    batched_env._eval_slot_ptr = torch.tensor([0], dtype=torch.long, device='cpu')
-                    
-                    batched_obs_td = batched_env.reset()
-                    
-                    # Setup RNG
-                    rng = random.Random(seed + idx)
-                    
-                    # Run episode
-                    total_reward = 0.0
-                    steps = 0
-                    trace = []
-                    done_flag = False
-                    
-                    while steps < max_depth and not done_flag:
-                        # Get current state info
-                        batched_state = batched_env.current_queries[0]
-                        batched_derived_states = batched_env.derived_states_batch[0]
-                        
-                        # Extract action mask
-                        batched_action_mask = batched_obs_td['action_mask'][0]
-                        num_batched_actions = int(batched_action_mask.sum())
-                        
-                        if num_batched_actions == 0:
-                            # Terminal state - check if it's a success (True state)
-                            is_success_state = batched_env.unification_engine.is_true_state(batched_state)
-                            trace.append({
-                                'step': steps,
-                                'state': canonicalize_tensor_state(batched_state, debug_helper, constant_no),
-                                'derived_states': [],
-                                'num_actions': 0,
-                                'action': None,
-                                'done': True,
-                                'reward': 0.0
-                            })
-                            # Set done_flag and is_success for proper success detection after loop
-                            done_flag = True
-                            # Check if is_success already in observation, otherwise compute it
-                            if 'is_success' not in batched_obs_td or batched_obs_td['is_success'][0] == 0:
-                                batched_obs_td['is_success'] = torch.tensor([is_success_state])
-                            break
-                        
-                        # Canonicalize and sort derived states
-                        batched_canon_states = []
-                        for i in range(num_batched_actions):
-                            ds = batched_derived_states[i]
-                            canon = canonicalize_tensor_state(ds, debug_helper, constant_no)
-                            batched_canon_states.append((canon, i))
-                        batched_canon_states.sort(key=lambda x: x[0])
-                        
-                        if deterministic:
-                            # Choose first canonical action
-                            action = batched_canon_states[0][1]
-                        else:
-                            # Choose random action
-                            valid_actions = [i for i in range(len(batched_action_mask)) if batched_action_mask[i]]
-                            action = rng.choice(valid_actions)
-                        
-                        trace.append({
-                            'step': steps,
-                            'state': canonicalize_tensor_state(batched_state, debug_helper, constant_no),
-                            'derived_states': [c[0] for c in batched_canon_states],
-                            'num_actions': num_batched_actions,
-                            'action': action,
-                            'done': False,
-                            'reward': 0.0
-                        })
-                        
-                        if verbose and idx < 3 and steps < 3:
-                            print(f"  Query {idx}, Step {steps}: {num_batched_actions} actions, chose {action}")
-                        
-                        # Take step
-                        batched_action_td = TensorDict({
-                            'action': torch.tensor([action], dtype=torch.long, device='cpu')
-                        }, batch_size=[1])
-                        batched_result_td = batched_env.step(batched_action_td)
-                        
-                        # Extract observation, reward, done
-                        if 'next' in batched_result_td.keys():
-                            batched_obs_td = batched_result_td['next']
-                            done_flag = bool(batched_obs_td['done'][0])
-                            batched_reward = float(batched_obs_td.get('reward', batched_result_td.get('reward', torch.tensor([0.0])))[0])
-                        else:
-                            batched_obs_td = batched_result_td
-                            done_flag = bool(batched_result_td['done'][0])
-                            batched_reward = float(batched_result_td.get('reward', torch.tensor([0.0]))[0])
-                        
-                        total_reward += batched_reward
-                        
-                        # Update last trace entry with reward
-                        if trace:
-                            trace[-1]['reward'] = batched_reward
-                        
-                        steps += 1
-                    
-                    # Check final state
-                    # Note: batched_obs_td['is_success'] is set by env.step() when the proof succeeds,
-                    # regardless of whether done_flag is set
-                    success = bool(batched_obs_td.get('is_success', torch.tensor([False]))[0])
-                    
-                    # NOTE: Do NOT add extra terminal state - it's already in the trace
-                    # The last trace entry is the terminal state
-                    
-                    all_results.append({
-                        'success': success,
-                        'steps': steps,
-                        'reward': total_reward,
-                        'trace': trace
-                    })
-                    
-                    if not verbose and (idx + 1) % 50 == 0:
-                        print(f"  Processed {idx + 1}/{len(queries)} queries...")
-                
-                # Aggregate
-                successful = sum(1 for r in all_results if r['success'])
-                total_reward = sum(r['reward'] for r in all_results)
-                total_steps = sum(r['steps'] for r in all_results)
-                results = {
-                    'total_queries': len(queries),
-                    'successful': successful,
-                    'avg_reward': total_reward / len(queries),
-                    'avg_steps': total_steps / len(queries),
-                    'traces': all_results
-                }
-                results_dict[config_name] = results
-                traces_dict[config_name] = all_results
-                
-            elif config_name == 'batched_tensor_env':
-                print("Setting up batched tensor environment (batch_size=200, eval mode)...")
-                env_data = setup_tensor_env(dataset=dataset, seed=seed, batch_size=200)
-                print("Running tests (true batch mode)...")
-                results = test_tensor_env_batch(
+                print("Running tests (looping through all queries)...")
+                from test_envs.test_env_tensor import test_tensor_env
+                results = test_tensor_env(
                     queries, env_data,
                     deterministic=deterministic,
                     max_depth=max_depth,
@@ -736,92 +608,38 @@ def run_all_tests(
                 results_dict[config_name] = results
                 traces_dict[config_name] = results['traces']
                 
-            elif config_name == 'batched_tensor_env_train':
-                print("Setting up batched tensor environment (batch_size=200, train mode)...")
-                # Need to modify setup to pass mode='train'
-                # For now we'll create a custom setup
-                from tests.test_tensor_env import setup_tensor_env as setup_base
-                from data_handler import DataHandler
-                from index_manager import IndexManager
-                from unification_engine import UnificationEngine
-                from env import BatchedEnv
-                from debug_helper import DebugHelper
-                
-                dh_batched = DataHandler(
-                    dataset_name=dataset,
-                    base_path="./data/",
-                    train_file="train.txt",
-                    valid_file="valid.txt",
-                    test_file="test.txt",
-                    rules_file="rules.txt",
-                    facts_file="train.txt",
-                    train_depth=None,
-                )
-                
-                im_batched = IndexManager(
-                    constants=dh_batched.constants,
-                    predicates=dh_batched.predicates,
-                    max_total_runtime_vars=1000000,
-                    padding_atoms=100,
-                    max_arity=dh_batched.max_arity,
-                    device=torch.device('cpu'),
-                    rules=dh_batched.rules,
-                )
-                dh_batched.materialize_indices(im=im_batched, device=torch.device('cpu'))
-                
-                stringifier_params = {
-                    'verbose': 0,
-                    'idx2predicate': im_batched.idx2predicate,
-                    'idx2constant': im_batched.idx2constant,
-                    'idx2template_var': im_batched.idx2template_var,
-                    'padding_idx': im_batched.padding_idx,
-                    'n_constants': im_batched.constant_no
-                }
-                
-                engine = UnificationEngine.from_index_manager(im_batched, take_ownership=True, 
-                                                               stringifier_params=stringifier_params)
-                engine.index_manager = im_batched
-                
-                debug_helper = DebugHelper(
-                    verbose=0,
-                    idx2predicate=im_batched.idx2predicate,
-                    idx2constant=im_batched.idx2constant,
-                    idx2template_var=im_batched.idx2template_var,
-                    padding_idx=engine.padding_idx,
-                    n_constants=im_batched.constant_no
-                )
-                
-                dummy_query = torch.full((200, 100, 3), im_batched.padding_idx, dtype=torch.long, device='cpu')
-                
-                batched_env = BatchedEnv(
-                    batch_size=200,
-                    queries=dummy_query,
-                    labels=torch.ones(200, dtype=torch.long, device='cpu'),
-                    query_depths=torch.ones(200, dtype=torch.long, device='cpu'),
-                    unification_engine=engine,
-                    mode='train',  # TRAIN MODE
-                    max_depth=20,
-                    memory_pruning=True,
-                    eval_pruning=True,
-                    padding_atoms=100,
-                    padding_states=500,
-                    true_pred_idx=im_batched.predicate_str2idx.get('True'),
-                    false_pred_idx=im_batched.predicate_str2idx.get('False'),
-                    end_pred_idx=im_batched.predicate_str2idx.get('End'),
-                    verbose=0,
-                    prover_verbose=0,
-                    device=torch.device('cpu'),
-                    runtime_var_start_index=im_batched.constant_no + 1,
-                    total_vocab_size=im_batched.constant_no + 1000000,
-                    skip_unary_actions=True,
-                    end_proof_action=False,
-                    reward_type=0,
-                )
-                
-                env_data = (batched_env, debug_helper, im_batched.constant_no, im_batched, dh_batched)
-                print("Running tests (true batch mode with train sampling)...")
-                results = test_tensor_env_batch(
+            elif config_name == 'batched_tensor_env':
+                print("Setting up batched tensor environment (eval mode)...")
+                env_data = setup_tensor_env(dataset=dataset, seed=seed, batch_size=len(queries))
+                print("Running tests (TRUE BATCH MODE with eval dataset)...")
+                results = test_tensor_env_batched(
                     queries, env_data,
+                    deterministic=deterministic,
+                    max_depth=max_depth,
+                    seed=seed,
+                    verbose=verbose
+                )
+                results_dict[config_name] = results
+                traces_dict[config_name] = results['traces']
+            
+            elif config_name == 'eval_env':
+                print("Testing with evaluate_policy...")
+                results = test_eval_env(
+                    queries=queries,
+                    dataset=dataset,
+                    deterministic=deterministic,
+                    max_depth=max_depth,
+                    seed=seed,
+                    verbose=verbose
+                )
+                results_dict[config_name] = results
+                traces_dict[config_name] = results['traces']
+            
+            elif config_name == 'rollout_env':
+                print("Testing with rollout collector...")
+                results = test_rollout_env(
+                    queries=queries,
+                    dataset=dataset,
                     deterministic=deterministic,
                     max_depth=max_depth,
                     seed=seed,
@@ -843,8 +661,9 @@ def run_all_tests(
     # Compare traces if deterministic
     if deterministic and len(traces_dict) > 1:
         # Separate engine and environment configs
+        # Note: eval_env and rollout_env don't track detailed traces, so exclude them from comparison
         engine_configs = {k: v for k, v in traces_dict.items() if 'engine' in k}
-        env_configs = {k: v for k, v in traces_dict.items() if 'env' in k}
+        env_configs = {k: v for k, v in traces_dict.items() if 'env' in k and k not in ['eval_env', 'rollout_env']}
         
         if debug:
             # DEBUG MODE: Compare step-by-step and raise error on first mismatch
@@ -855,7 +674,7 @@ def run_all_tests(
                 print(f"{'='*80}")
                 debug_compare_step_by_step(engine_configs, queries)
             
-            # Then compare environments
+            # Then compare environments (excluding eval_env which has no traces)
             if len(env_configs) > 1:
                 print(f"\n{'='*80}")
                 print(f"DEBUG MODE: Comparing environments")
@@ -870,7 +689,7 @@ def run_all_tests(
                 print(f"{'='*80}")
                 compare_traces_deterministic(engine_configs, verbose=verbose)
             
-            # Then compare environments
+            # Then compare environments (excluding eval_env which has no traces)
             if len(env_configs) > 1:
                 print(f"\n{'='*80}")
                 print(f"COMPARING ENVIRONMENT TRACES")
@@ -885,7 +704,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Test all engine and environment configurations')
     parser.add_argument('--dataset', type=str, default='family', help='Dataset name')
-    parser.add_argument('--num-queries', type=int, default=20, help='Number of queries to test')
+    parser.add_argument('--n_queries', type=int, default=200, help='Number of queries to test')
     parser.add_argument('--deterministic', action='store_true', help='Use deterministic (canonical) policy')
     parser.add_argument('--random', action='store_true', help='Use random policy')
     parser.add_argument('--max-depth', type=int, default=20, help='Maximum proof depth')
@@ -896,12 +715,15 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    # Default to random if neither specified
-    deterministic = args.deterministic or not args.random
+    # Default to deterministic if neither specified
+    if not args.deterministic and not args.random:
+        deterministic = True
+    else:
+        deterministic = args.deterministic
     
     run_all_tests(
         dataset=args.dataset,
-        num_queries=args.num_queries,
+        n_queries=args.n_queries,
         deterministic=deterministic,
         max_depth=args.max_depth,
         seed=args.seed,
