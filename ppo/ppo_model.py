@@ -13,18 +13,21 @@ class PolicyNetwork(nn.Module):
     
     def __init__(self, embed_dim: int = 64, hidden_dim: int = 128, num_layers: int = 8, dropout_prob: float = 0.2):
         super().__init__()
+        self.embed_dim = embed_dim
         # Initial transformation from observation embedding to hidden representation
         self.obs_transform = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
-            nn.ReLU(inplace=True),  # Inplace for memory efficiency
+            nn.ReLU(inplace=True),
+            nn.LayerNorm(hidden_dim),
             nn.Dropout(dropout_prob)
         )
         
-        # Residual blocks for deep feature extraction - OPTIMIZED: removed LayerNorm
+        # Residual blocks for deep feature extraction   
         self.res_blocks = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
                 nn.ReLU(inplace=True),
+                nn.LayerNorm(hidden_dim),
                 nn.Dropout(dropout_prob)
             ) for _ in range(num_layers)
         ])
@@ -65,7 +68,12 @@ class PolicyNetwork(nn.Module):
 
         # Compute similarity (dot product) between observation and action embeddings
         # Use bmm instead of matmul for better performance
-        logits = torch.bmm(encoded_obs.unsqueeze(1), encoded_actions.transpose(1, 2)).squeeze(1)      
+        logits = torch.bmm(encoded_obs.unsqueeze(1), encoded_actions.transpose(1, 2)).squeeze(1)
+        
+        # Scale logits by 1/sqrt(embed_dim) to prevent overconfident predictions
+        # This is similar to scaled dot-product attention
+        logits = logits / (self.embed_dim ** 0.5)
+        
         # Mask invalid actions with -inf (avoid .to() call by ensuring mask is on correct device)
         logits = logits.masked_fill(~action_mask, float("-inf"))
         
@@ -80,15 +88,17 @@ class ValueNetwork(nn.Module):
         # Initial transformation from observation embedding to hidden dimension
         self.input_layer = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
-            nn.ReLU(inplace=True),  # Inplace for memory efficiency
+            nn.ReLU(inplace=True),
+            nn.LayerNorm(hidden_dim),
             nn.Dropout(dropout_prob)
         )
         
-        # Residual blocks for deep feature extraction - OPTIMIZED: removed LayerNorm
+        # Residual blocks for deep feature extraction
         self.res_blocks = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
                 nn.ReLU(inplace=True),
+                nn.LayerNorm(hidden_dim),
                 nn.Dropout(dropout_prob)
             ) for _ in range(num_layers)
         ])
@@ -284,7 +294,7 @@ class ActorCriticModel(nn.Module):
         return logits, values
 
 
-class OptimizedActorModule(nn.Module):
+class ActorModule(nn.Module):
     """Lightweight actor wrapper that outputs logits and optionally samples actions."""
 
     def __init__(self, actor_critic_model: ActorCriticModel, deterministic: bool = True):
@@ -334,7 +344,7 @@ class OptimizedActorModule(nn.Module):
         return out
 
 
-class OptimizedValueModule(nn.Module):
+class ValueModule(nn.Module):
     """Value wrapper that produces 'state_value' entries compatible with the collector."""
 
     def __init__(self, actor_critic_model: ActorCriticModel):
@@ -376,6 +386,6 @@ def create_torch_modules(
         index_manager=index_manager,
     )
 
-    actor_module = OptimizedActorModule(core_model)
-    value_module = OptimizedValueModule(core_model)
+    actor_module = ActorModule(core_model)
+    value_module = ValueModule(core_model)
     return actor_module, value_module

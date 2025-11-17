@@ -16,11 +16,11 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 from sampler import Sampler
 from embeddings import get_embedder
-from ppo.ppo_model_torchrl import create_torchrl_modules
+from ppo.torchrl_model import create_torchrl_modules
 from ppo.ppo_model import create_torch_modules
 from env import BatchedEnv
-from ppo.ppo_agent_torchrl import PPOAgentTorchRL
-from ppo.ppo_agent import PPOAgent
+from ppo.torchrl_ppo import PPOAgentTorchRL
+from ppo.ppo import PPOAgent
 from ppo.ppo_rollout import RolloutCollector
 from unification_engine import UnificationEngine
 

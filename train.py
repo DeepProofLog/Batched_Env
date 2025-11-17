@@ -25,9 +25,9 @@ from embeddings import get_embedder
 from env import BatchedEnv
 from index_manager import IndexManager
 from model_eval import evaluate_ranking_metrics
-from ppo.ppo_agent_torchrl import PPOAgentTorchRL
-from ppo.ppo_agent import PPOAgent
-from ppo.ppo_model_torchrl import create_torchrl_modules
+from ppo.torchrl_ppo import PPOAgentTorchRL
+from ppo.ppo import PPOAgent
+from ppo.torchrl_model import create_torchrl_modules
 from ppo.ppo_model import create_torch_modules
 from sampler import Sampler
 from unification_engine import UnificationEngine

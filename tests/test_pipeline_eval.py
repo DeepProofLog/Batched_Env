@@ -18,7 +18,7 @@ from embeddings import get_embedder
 from env import BatchedEnv
 from index_manager import IndexManager
 from model_eval import evaluate_ranking_metrics, evaluate_policy
-from ppo.ppo_model_torchrl import create_torchrl_modules
+from ppo.torchrl_model import create_torchrl_modules
 from sampler import Sampler
 from unification_engine import UnificationEngine
 
