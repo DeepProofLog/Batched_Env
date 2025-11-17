@@ -438,12 +438,14 @@ class DataHandler:
         filtered_queries = []
         filtered_queries_str = []
         filtered_depths = []
+        filtered_labels = []
         
         for i, (query, query_str) in enumerate(zip(self.train_queries, self.train_queries_str)):
             if query.predicate in rule_head_predicates:
                 filtered_queries.append(query)
                 filtered_queries_str.append(query_str)
                 filtered_depths.append(self.train_depths[i] if i < len(self.train_depths) else -1)
+                filtered_labels.append(self.train_labels[i] if i < len(self.train_labels) else 1)
         
         removed = len(self.train_queries) - len(filtered_queries)
         if removed > 0:
@@ -451,6 +453,7 @@ class DataHandler:
             self.train_queries = filtered_queries
             self.train_queries_str = filtered_queries_str
             self.train_depths = filtered_depths
+            self.train_labels = filtered_labels
     
     def _load_domain_mapping(self, dataset_path: str) -> None:
         """Load domain mapping for countries/ablation datasets."""

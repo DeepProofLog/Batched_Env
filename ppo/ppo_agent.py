@@ -424,7 +424,7 @@ class PPOAgent():
             epoch_ent_f = float((epoch_ent / epoch_updates).item())
             epoch_kl_f = float((epoch_kl / epoch_updates).item())
             epoch_clip_f = float((epoch_clip / epoch_updates).item())
-            print(f"Epoch {epoch+1}. Losses: policy {epoch_pl_f:.4f}, value {epoch_vl_f:.4f}, entropy {epoch_ent_f:.4f}, KL {epoch_kl_f:.4f}, clip {epoch_clip_f:.4f}")
+            print(f"Epoch {epoch+1}. Losses: policy {epoch_pl_f:.7f}, value {epoch_vl_f:7f}, entropy {epoch_ent_f:7f}, KL {epoch_kl_f:7f}, clip {epoch_clip_f:7f}")
 
         total_metrics = torch.stack((
             total_policy_loss,

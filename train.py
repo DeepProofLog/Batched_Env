@@ -136,7 +136,8 @@ def _materialize_data_components(
         index_manager, 
         stringifier_params=stringifier_params,
         end_pred_idx=end_pred_idx,
-        end_proof_action=end_proof_action
+        end_proof_action=end_proof_action,
+        max_derived_per_state=args.padding_states
     )
 
     return data_handler, index_manager, sampler, embedder, unification_engine, stringifier_params

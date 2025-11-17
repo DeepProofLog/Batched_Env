@@ -70,7 +70,7 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 200000,
+        'timesteps_train': 100000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
@@ -97,7 +97,7 @@ if __name__ == "__main__":
         'atom_embedding_size': 100,
         'learn_embeddings': True,
         'padding_atoms': 6,
-        'padding_states': 40,  # if -1, auto-computed from dataset
+        'padding_states': 20,  # if -1, auto-computed from dataset
         'max_total_vars': 1000000,
 
         # Other params

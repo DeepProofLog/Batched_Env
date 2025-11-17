@@ -325,32 +325,25 @@ class RolloutCollector:
             if "state_value" in critic_out.keys():
                 step_td.set("state_value", critic_out["state_value"].to(self.env._device))
 
-            # Step environments using step_and_maybe_reset
-            # Returns (step_td_with_next, next_obs_td)
-            # step_td_with_next contains the current step with reward/done in "next" key
-            # next_obs_td contains the observation for the next step (already reset if episode ended)
-            step_td_complete, next_obs_td = self.env.step_and_maybe_reset(step_td)
+            # Step environments using step_and_maybe_reset (TorchRL method)
+            # This calls step() and automatically resets done environments
+            # Returns (step_result_td, next_obs_td)
+            # - step_result_td: contains current step data with "next" key (reward, done, next obs)
+            # - next_obs_td: observation for next iteration (already reset if done)
+            step_td_with_next, next_obs_td = self.env.step_and_maybe_reset(step_td)
 
             # Debug: check what keys are in the returned tensordicts
             if step == 0 and self.verbose >= 2:
-                self._vlog(2, f"step_td_complete keys: {step_td_complete.keys()}")
-                if "next" in step_td_complete.keys():
-                    self._vlog(2, f"step_td_complete['next'] keys: {step_td_complete['next'].keys()}")
+                self._vlog(2, f"step_td_with_next keys: {step_td_with_next.keys()}")
+                if "next" in step_td_with_next.keys():
+                    next_data = step_td_with_next["next"]
+                    self._vlog(2, f"step_td_with_next['next'] keys: {next_data.keys()}")
+                    if "reward" in next_data.keys():
+                        self._vlog(2, f"  reward shape: {next_data['reward'].shape}, sample: {next_data['reward'][:2]}")
                 self._vlog(2, f"next_obs_td keys: {next_obs_td.keys()}")
 
-            # The step_td_complete already has the "next" key with reward/done
-            # We just need to copy that to our step_td
-            if "next" in step_td_complete.keys():
-                step_td.set("next", step_td_complete["next"])
-            else:
-                # Fallback: construct next from step_td_complete directly
-                step_td.set("next", TensorDict({
-                    "sub_index": step_td_complete["sub_index"].clone(),
-                    "derived_sub_indices": step_td_complete["derived_sub_indices"].clone(),
-                    "action_mask": step_td_complete["action_mask"].clone(),
-                    "reward": step_td_complete["reward"].clone(),
-                    "done": step_td_complete["done"].clone(),
-                }, batch_size=[self.n_envs]))
+            # Copy the step result to our step_td (preserves current obs + action, adds next with reward/done)
+            step_td = step_td_with_next
 
             experiences.append(step_td)
 
@@ -363,8 +356,15 @@ class RolloutCollector:
 
             # Check for completed episodes and extract info
             done_mask = next_state_data["done"].squeeze(-1).to(torch.bool)
+            if step == 0 and self.verbose >= 1:
+                self._vlog(1, f"Step {step}: done_mask.any()={done_mask.any()}, done_count={done_mask.sum()}")
+                if "reward" in next_state_data.keys():
+                    rew = next_state_data["reward"]
+                    self._vlog(1, f"  rewards: mean={rew.mean():.4f}, nonzero={(rew != 0).sum()}")
             if done_mask.any():
                 done_rows = done_mask.nonzero(as_tuple=False).view(-1)
+                if self.verbose >= 1:
+                    self._vlog(1, f"Step {step}: {done_rows.numel()} episodes completed")
                 label_tensor = next_state_data.get("label", None)
                 depth_tensor = next_state_data.get("query_depth", None)
                 success_tensor = next_state_data.get("is_success", None)

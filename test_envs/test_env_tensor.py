@@ -326,6 +326,17 @@ def test_tensor_env(
     total_reward = sum(r['reward'] for r in all_results)
     total_steps = sum(r['steps'] for r in all_results)
     
+    # Compute average actions (branching factor)
+    total_actions = 0
+    total_action_steps = 0
+    for r in all_results:
+        for step in r['trace']:
+            if 'num_actions' in step:
+                total_actions += step['num_actions']
+                total_action_steps += 1
+    
+    avg_actions = total_actions / total_action_steps if total_action_steps > 0 else 0.0
+    
     if verbose or True:
         print(f"\nSequential evaluation complete:")
         print(f"  Total queries: {len(queries)}")
@@ -338,6 +349,7 @@ def test_tensor_env(
         'successful': successful,
         'avg_reward': total_reward / len(queries) if queries else 0.0,
         'avg_steps': total_steps / len(queries) if queries else 0.0,
+        'avg_actions': avg_actions,
         'traces': all_results
     }
 
@@ -539,6 +551,17 @@ def test_tensor_env_batched(
     total_reward = sum(r['reward'] for r in all_results)
     total_steps = sum(r['steps'] for r in all_results)
     
+    # Compute average actions (branching factor)
+    total_actions = 0
+    total_action_steps = 0
+    for r in all_results:
+        for step in r['trace']:
+            if 'num_actions' in step:
+                total_actions += step['num_actions']
+                total_action_steps += 1
+    
+    avg_actions = total_actions / total_action_steps if total_action_steps > 0 else 0.0
+    
     if verbose or True:
         print(f"\n  TRUE BATCHED evaluation complete:")
         print(f"    Total queries: {len(queries)}")
@@ -551,5 +574,6 @@ def test_tensor_env_batched(
         'successful': successful,
         'avg_reward': total_reward / len(queries) if queries else 0.0,
         'avg_steps': total_steps / len(queries) if queries else 0.0,
+        'avg_actions': avg_actions,
         'traces': all_results
     }

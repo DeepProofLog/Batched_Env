@@ -21,6 +21,7 @@ import warnings
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 try:
     from torch.amp import GradScaler as _TorchGradScaler, autocast as _torch_autocast
@@ -481,6 +482,14 @@ class PPOAgentTorchRL:
         # Compute advantages (and value targets) with TorchRL GAE
         advantages, value_targets = self.compute_advantages(experiences, n_steps, n_envs)
 
+        # Debug: Print statistics about advantages and rewards
+        if self.debug_mode:
+            with torch.no_grad():
+                rewards = batch_td_time.get("next").get("reward")
+                print(f"[DIAGNOSTIC] Rewards - mean: {rewards.mean():.6f}, std: {rewards.std():.6f}, min: {rewards.min():.6f}, max: {rewards.max():.6f}")
+                print(f"[DIAGNOSTIC] Advantages - mean: {advantages.mean():.6f}, std: {advantages.std():.6f}, min: {advantages.min():.6f}, max: {advantages.max():.6f}")
+                print(f"[DIAGNOSTIC] Value targets - mean: {value_targets.mean():.6f}, std: {value_targets.std():.6f}")
+
         # Attach to the stacked TD then flatten to [T*B]
         batch_td_time.set("advantage", advantages)
         batch_td_time.set("value_target", value_targets)
@@ -508,6 +517,22 @@ class PPOAgentTorchRL:
 
 
         action_space_stats = self._validate_action_space(flat_td)
+
+        # Debug: Check action distribution before training
+        if self.debug_mode:
+            with torch.no_grad():
+                # Sample a few states to check action probabilities
+                sample_td = flat_td[:min(10, len(flat_td))]
+                sample_out = self.actor(sample_td)
+                if "action_mask" in sample_td.keys():
+                    mask = sample_td["action_mask"]
+                    logits = sample_out["logits"]
+                    masked_logits = torch.where(mask.bool(), logits, torch.tensor(float('-inf'), device=logits.device))
+                    probs = F.softmax(masked_logits, dim=-1)
+                    max_probs = probs.max(dim=-1)[0]
+                    valid_actions_per_state = mask.sum(dim=-1)
+                    print(f"[DIAGNOSTIC] Action space - Valid actions per state: mean={valid_actions_per_state.float().mean():.2f}, min={valid_actions_per_state.min()}, max={valid_actions_per_state.max()}")
+                    print(f"[DIAGNOSTIC] Max action probability: mean={max_probs.mean():.4f}, min={max_probs.min():.4f}, max={max_probs.max():.4f}")
 
         actor_params = [p for p in self.actor.parameters() if p.requires_grad]
         critic_params = [p for p in self.critic.parameters() if p.requires_grad]

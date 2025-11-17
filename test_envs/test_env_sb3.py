@@ -273,10 +273,22 @@ def test_sb3_env_batch(
     total_reward = sum(r['reward'] for r in results)
     total_steps = sum(r['steps'] for r in results)
     
+    # Compute average actions (branching factor)
+    total_actions = 0
+    total_action_steps = 0
+    for r in results:
+        for step in r['trace']:
+            if 'num_actions' in step:
+                total_actions += step['num_actions']
+                total_action_steps += 1
+    
+    avg_actions = total_actions / total_action_steps if total_action_steps > 0 else 0.0
+    
     return {
         'total_queries': len(queries),
         'successful': successful,
         'avg_reward': total_reward / len(queries) if queries else 0.0,
         'avg_steps': total_steps / len(queries) if queries else 0.0,
+        'avg_actions': avg_actions,
         'traces': results
     }

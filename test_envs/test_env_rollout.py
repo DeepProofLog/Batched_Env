@@ -11,6 +11,7 @@ sys.path.insert(0, root_path)
 import random
 import torch
 import torch.nn as nn
+import numpy as np
 from typing import Tuple, Dict, List
 from tensordict import TensorDict
 
@@ -85,7 +86,8 @@ def test_rollout_env(
     deterministic: bool = True,
     max_depth: int = 20,
     seed: int = 42,
-    verbose: bool = False
+    verbose: bool = False,
+    collect_action_stats: bool = False
 ) -> Dict:
     """
     Test environment using PPO rollout collector.
@@ -94,9 +96,10 @@ def test_rollout_env(
         queries: List of (split, (predicate, head, tail))
         dataset: Dataset name
         deterministic: If True, use deterministic actor; if False, random
-        max_depth: Maximum proof depth (controls n_steps for rollout)
+        max_depth: Maximum proof depth
         seed: Random seed
         verbose: Print detailed information
+        collect_action_stats: If True, collect action statistics (branching factor)
         
     Returns:
         Dict with keys:
@@ -104,6 +107,7 @@ def test_rollout_env(
             - successful: int
             - avg_reward: float
             - avg_steps: float
+            - avg_actions: float (0.0 if collect_action_stats=False)
             - traces: List of trace dicts
     """
     print("Setting up environment for rollout collector...")
@@ -173,6 +177,7 @@ def test_rollout_env(
     slot_done = [False for _ in range(n_total)]
     slot_success = [False for _ in range(n_total)]
     slot_episode_count = [0 for _ in range(n_total)]  # Track how many episodes completed per slot
+    slot_action_counts = [[] for _ in range(n_total)] if collect_action_stats else None  # Track num_actions per step per slot
     
     # Process experiences step by step to track per-slot episodes
     for step_idx, step_td in enumerate(experiences):
@@ -185,6 +190,14 @@ def test_rollout_env(
         rewards = next_td.get('reward', torch.zeros(n_total))
         dones = next_td.get('done', torch.zeros(n_total, dtype=torch.bool))
         is_success = next_td.get('is_success', torch.zeros(n_total, dtype=torch.bool))
+        
+        # Extract action mask for statistics if requested
+        if collect_action_stats:
+            action_mask = step_td.get('action_mask')
+            if action_mask is not None:
+                num_actions = action_mask.sum(dim=-1).cpu().numpy()
+            else:
+                num_actions = np.zeros(n_total)
         
         # Squeeze extra dimensions if present
         if rewards.dim() > 1:
@@ -200,6 +213,9 @@ def test_rollout_env(
                 slot_rewards[i] += float(rewards[i])
                 slot_steps[i] += 1
                 
+                if collect_action_stats:
+                    slot_action_counts[i].append(int(num_actions[i]))
+                
                 if bool(dones[i]):
                     slot_done[i] = True
                     slot_success[i] = bool(is_success[i])
@@ -212,30 +228,48 @@ def test_rollout_env(
     # Create traces from per-slot results
     traces = []
     for i in range(n_total):
-        traces.append({
+        trace = {
             'success': slot_success[i],
             'steps': slot_steps[i],
             'reward': slot_rewards[i],
-            'trace': []  # No detailed trace from rollout collector
-        })
+            'trace': []
+        }
+        
+        # Add action statistics if collected
+        if collect_action_stats and slot_action_counts:
+            for step, num_actions in enumerate(slot_action_counts[i]):
+                trace['trace'].append({
+                    'step': step,
+                    'num_actions': num_actions,
+                    'done': step == len(slot_action_counts[i]) - 1  # Last step is terminal
+                })
+        
+        traces.append(trace)
     
     # Calculate statistics
     successful = sum(1 for t in traces if t['success'])
     total_reward = sum(t['reward'] for t in traces)
     total_steps = sum(t['steps'] for t in traces)
     
+    # Compute average actions (branching factor)
+    if collect_action_stats and slot_action_counts:
+        total_actions = 0
+        total_action_steps = 0
+        for counts in slot_action_counts:
+            total_actions += sum(counts)
+            total_action_steps += len(counts)
+        avg_actions = total_actions / total_action_steps if total_action_steps > 0 else 0.0
+    else:
+        avg_actions = 0.0
+    
     if verbose:
         print(f"  Rollout summary: {successful}/{n_total} successful")
-        print(f"  Completed episodes: {n_completed}/{n_total}")
-        if n_completed > 0:
-            print(f"  Rewards (first 5): {[f'{r:.2f}' for r in rewards_list[:5]]}")
-            print(f"  Steps (first 5): {lengths_list[:5]}")
-            print(f"  Success (first 5): {success_list[:5]}")
     
     return {
         'total_queries': n_total,
         'successful': successful,
         'avg_reward': total_reward / n_total if n_total > 0 else 0.0,
         'avg_steps': total_steps / n_total if n_total > 0 else 0.0,
+        'avg_actions': avg_actions,
         'traces': traces
     }

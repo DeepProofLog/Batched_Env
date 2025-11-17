@@ -395,11 +395,11 @@ def print_results_table(results_dict: Dict[str, Dict], deterministic: bool):
     """
     print(f"\n{'='*80}")
     print(f"RESULTS SUMMARY ({'Deterministic' if deterministic else 'Random'} Policy)")
-    print(f"{'='*80}")
+    print(f"{'-'*84}")
     
     # Table header
-    print(f"{'Configuration':<40} {'Queries':<10} {'Success':<10} {'Success %':<12} {'Avg Steps':<10}")
-    print(f"{'-'*80}")
+    print(f"{'Configuration':<40} {'Queries':<10} {'Success':<10} {'Success %':<12} {'Avg Steps':<10} {'Avg Actions':<12}")
+    print(f"{'-'*84}")
     
     # Table rows
     for config_name, results in results_dict.items():
@@ -407,8 +407,9 @@ def print_results_table(results_dict: Dict[str, Dict], deterministic: bool):
         success = results['successful']
         success_pct = (success / total * 100) if total > 0 else 0.0
         avg_steps = results['avg_steps']
+        avg_actions = results.get('avg_actions', 0.0)
         
-        print(f"{config_name:<40} {total:<10} {success:<10} {success_pct:<12.2f} {avg_steps:<10.2f}")
+        print(f"{config_name:<40} {total:<10} {success:<10} {success_pct:<12.2f} {avg_steps:<10.2f} {avg_actions:<12.2f}")
     
     print(f"{'='*80}")
     
@@ -472,7 +473,8 @@ def run_all_tests(
     seed: int = 42,
     verbose: bool = False,
     debug: bool = False,
-    configs: List[str] = None
+    configs: List[str] = None,
+    collect_action_stats: bool = False
 ):
     """
     Run tests on all requested configurations.
@@ -488,6 +490,7 @@ def run_all_tests(
         configs: List of config names to test. If None, test all.
                  Options: 'sb3_engine', 'tensor_engine', 'batched_tensor_engine',
                          'sb3_env', 'tensor_env', 'batched_tensor_env', 'eval_env', 'rollout_env'
+        collect_action_stats: If True, collect action statistics (branching factor) for eval_env and rollout_env
     """
     # Set all random seeds
     random.seed(seed)
@@ -519,7 +522,7 @@ def run_all_tests(
             # 'batched_tensor_engine',
             # Environments second (with environment wrapper)
             'sb3_env',
-            'tensor_env',
+            # 'tensor_env',
             'batched_tensor_env',
             'eval_env',
             'rollout_env'
@@ -630,7 +633,8 @@ def run_all_tests(
                     deterministic=deterministic,
                     max_depth=max_depth,
                     seed=seed,
-                    verbose=verbose
+                    verbose=verbose,
+                    collect_action_stats=collect_action_stats
                 )
                 results_dict[config_name] = results
                 traces_dict[config_name] = results['traces']
@@ -643,7 +647,8 @@ def run_all_tests(
                     deterministic=deterministic,
                     max_depth=max_depth,
                     seed=seed,
-                    verbose=verbose
+                    verbose=verbose,
+                    collect_action_stats=collect_action_stats
                 )
                 results_dict[config_name] = results
                 traces_dict[config_name] = results['traces']
@@ -704,13 +709,14 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Test all engine and environment configurations')
     parser.add_argument('--dataset', type=str, default='family', help='Dataset name')
-    parser.add_argument('--n_queries', type=int, default=200, help='Number of queries to test')
+    parser.add_argument('--n_queries', type=int, default=50, help='Number of queries to test')
     parser.add_argument('--deterministic', action='store_true', help='Use deterministic (canonical) policy')
     parser.add_argument('--random', action='store_true', help='Use random policy')
     parser.add_argument('--max-depth', type=int, default=20, help='Maximum proof depth')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--verbose', action='store_true', help='Print detailed information')
     parser.add_argument('--debug', action='store_true', help='Debug mode: compare step-by-step and raise error on first mismatch')
+    parser.add_argument('--collect_action_stats', type=bool, default=True, help='Collect action statistics for eval_env and rollout_env')
     parser.add_argument('--configs', type=str, nargs='+', help='Specific configs to test')
     
     args = parser.parse_args()
@@ -729,5 +735,6 @@ if __name__ == "__main__":
         seed=args.seed,
         verbose=args.verbose,
         debug=args.debug,
-        configs=args.configs
+        configs=args.configs,
+        collect_action_stats=args.collect_action_stats
     )

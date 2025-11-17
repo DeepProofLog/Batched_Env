@@ -37,7 +37,7 @@ if _cudnn_conv_backend is not None and hasattr(_cudnn_conv_backend, "fp32_precis
 
 USE_TORCHRL = False
 
-def test_vectorized_batched_pipeline(n_tests=1, device='None', use_torchrl=True):
+def test_rollout_pipeline(n_tests=8, device='None', use_torchrl=True):
     """
     Test the full pipeline with a vectorized batched environment.
     
@@ -53,7 +53,7 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None', use_torchrl=True)
         dataset_name="countries_s3",
         max_depth=20,  # Reduce max depth so episodes complete faster
         batch_size_model=2048,  # PPO batch size
-        batch_size_env=256,    # Number of queries in the env (keep at 256 for 8GB GPU)
+        batch_size_env=256,    # Number of queries in the env
         n_steps=64,    # Steps per rollout
         n_epochs=5,    # PPO epochs
         data_path="data",
@@ -206,7 +206,13 @@ def test_vectorized_batched_pipeline(n_tests=1, device='None', use_torchrl=True)
     train_split = dh.get_materialized_split('train')
     valid_split = dh.get_materialized_split('valid')
 
-    unification_engine = UnificationEngine.from_index_manager(im, stringifier_params=None)
+    unification_engine = UnificationEngine.from_index_manager(
+        im, 
+        stringifier_params=None,
+        max_derived_per_state=args.padding_states,
+        end_pred_idx=im.predicate_str2idx.get('End', None) if args.end_proof_action else None,
+        end_proof_action=args.end_proof_action
+    )
     print(f"  UnificationEngine ready")
     
     # Create a single BatchedVecEnv with batch_size for vectorized processing
@@ -411,4 +417,4 @@ if __name__ == '__main__':
     # use cuda if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # device = 'cpu'
-    test_vectorized_batched_pipeline(n_tests=8, device=device, use_torchrl=USE_TORCHRL)
+    test_rollout_pipeline(n_tests=8, device=device, use_torchrl=USE_TORCHRL)

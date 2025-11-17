@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import sys
+import os
 import random
 from types import SimpleNamespace
 
 import numpy as np
 import torch
+
+# Ensure repository root is on sys.path so local imports resolve when running from tests/ directory
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from data_handler import DataHandler
 from embeddings import get_embedder
@@ -99,7 +104,13 @@ def _build_eval_components(device: torch.device):
     embedder = embedder_getter.embedder
     embed_dim = getattr(embedder, "embed_dim", getattr(embedder, "embedding_dim", args.atom_embedding_size))
 
-    unification_engine = UnificationEngine.from_index_manager(index_manager, stringifier_params=None)
+    unification_engine = UnificationEngine.from_index_manager(
+        index_manager, 
+        stringifier_params=None,
+        max_derived_per_state=args.padding_states,
+        end_pred_idx=index_manager.end_pred_idx,
+        end_proof_action=args.end_proof_action
+    )
     valid_split = data_handler.get_materialized_split("valid")
 
     batch_limit = min(valid_split.queries.shape[0], args.batch_size * 3)

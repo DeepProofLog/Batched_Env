@@ -418,8 +418,13 @@ class BatchedEnv(EnvBase):
 
         # Sample indices
         if self.mode == 'train':
-            perm = torch.randperm(self._num_all, device=device)
-            idxs = perm[:N]
+            if N <= self._num_all:
+                # Sample without replacement when we have enough queries
+                perm = torch.randperm(self._num_all, device=device)
+                idxs = perm[:N]
+            else:
+                # Sample with replacement when batch size exceeds dataset size
+                idxs = torch.randint(0, self._num_all, (N,), device=device)
         elif self.mode == 'eval':
             assert hasattr(self, "_eval_slot_starts") and self._eval_slot_starts is not None and \
                    hasattr(self, "_eval_slot_lengths") and self._eval_slot_lengths is not None and \
@@ -823,7 +828,10 @@ class BatchedEnv(EnvBase):
         
         if reserve_end.any():
             rows = torch.arange(A, device=device)[reserve_end]
-            end_state = self.unification_engine.create_end_state(M)  # [M, D]
+            # Create END state: first atom is END, rest are padding
+            end_state = torch.full((M, D), pad, dtype=torch.long, device=device)
+            end_atom = self.unification_engine.get_end_state()  # [1, 3]
+            end_state[0] = end_atom[0]  # Copy END atom to first position
             
             pos = counts[rows]
             expanded_end = end_state.unsqueeze(0).expand(rows.shape[0], -1, -1)
