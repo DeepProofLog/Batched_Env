@@ -135,7 +135,8 @@ def load_tensor_engine(dataset: str, max_derived_states: int):
     
     engine = UnificationEngine.from_index_manager(
         im_non, take_ownership=True, stringifier_params=stringifier_params,
-        max_derived_per_state=max_derived_states
+        max_derived_per_state=max_derived_states,
+        sort_states=True
     )
     
     return dh_non, im_non, engine
@@ -284,9 +285,7 @@ def test_single_query(p: str, h: str, t: str,
         # Note: sort_states=True to use _sort_candidates_by_str_order for test compatibility
         derived, derived_counts, next_var_tracker = engine.get_derived_states(
             tensor_state, next_var_tracker,
-            excluded_queries=query_padded, verbose=0,
-            deduplicate=False,
-            sort_states=True
+            excluded_queries=query_padded, verbose=0
         )
         # Convert derived states to list of tensors
         num_derived = derived_counts[0].item()

@@ -1,4 +1,4 @@
-
+# NEW ENV
 import torch
 from torch import Tensor
 from typing import Dict, List, Optional, Tuple
@@ -643,7 +643,7 @@ class BatchedEnv(EnvBase):
                     current_states=self.current_queries.index_select(0, non_terminal_idx),
                     next_var_indices=self.next_var_indices.index_select(0, non_terminal_idx),
                     excluded_queries=self.original_queries.index_select(0, non_terminal_idx).unsqueeze(1),
-                    verbose=self.prover_verbose,
+                    verbose=self.prover_verbose
                 )
                 
                 if verbose:
@@ -845,7 +845,7 @@ class BatchedEnv(EnvBase):
                 current_states=current_states,
                 next_var_indices=next_vars,
                 excluded_queries=excluded,
-                verbose=0,
+                verbose=0
             )
             
             # Update next_var_indices for envs that got new derived states
@@ -868,26 +868,53 @@ class BatchedEnv(EnvBase):
                     derived_batch,  # [N, K, M, D]
                     active_envs  # [N]
                 )  # Returns [N, K] bool tensor
+
+                # Number of successor states per env
+                K = derived_batch.shape[1]
+
+                # Keep only non-visited states - vectorized to avoid .item() sync
+                N = active_envs.shape[0]
                 
-                # Keep only non-visited states
-                for i in range(active_envs.shape[0]):
-                    count = derived_counts[i].item()
-                    if count == 0:
-                        continue
+                # Create mask for valid derived states [N, K]
+                k_indices = torch.arange(K, device=device).unsqueeze(0)  # [1, K]
+                valid_mask = k_indices < derived_counts.unsqueeze(1)  # [N, K]
+                
+                # Combine with not-visited mask
+                keep_mask = valid_mask & (~visited)  # [N, K]
+                
+                # Count how many to keep per env
+                new_counts = keep_mask.sum(dim=1)  # [N]
+                
+                # Compact the kept states vectorized - use scatter to avoid for loop
+                needs_compaction = (new_counts < derived_counts) & (derived_counts > 0)
+                if needs_compaction.any():
+                    # Create a cumulative sum to get target positions for kept states
+                    # For each env, we need to pack kept states to the front
+                    # Use a fully vectorized approach with masked_select and scatter
                     
-                    # Get mask for this env's derived states
-                    not_visited = ~visited[i, :count]
+                    # Create position indices for all states [N, K]
+                    cumsum_mask = keep_mask.cumsum(dim=1) - 1  # Cumulative positions for kept items
                     
-                    if not not_visited.any():
-                        # All states were visited, set count to 0
-                        derived_counts[i] = 0
-                    elif not not_visited.all():
-                        # Some states were visited, compact the kept ones
-                        kept_count = not_visited.sum().item()
-                        kept_states = derived_batch[i, :count][not_visited]
-                        derived_batch[i, :kept_count] = kept_states
-                        derived_batch[i, kept_count:] = pad
-                        derived_counts[i] = kept_count
+                    # Only process envs that need compaction
+                    batch_indices = torch.arange(N, device=device).unsqueeze(1).expand(-1, K)
+                    
+                    # Create source and target flat indices
+                    valid_compaction = keep_mask & needs_compaction.unsqueeze(1)
+                    if valid_compaction.any():
+                        # Get flat indices for source (where data currently is)
+                        src_batch, src_k = torch.where(valid_compaction)
+                        # Get flat indices for target (where data should go)
+                        tgt_positions = cumsum_mask[valid_compaction]
+                        
+                        # Copy data using advanced indexing
+                        derived_batch[src_batch, tgt_positions] = derived_batch[src_batch, src_k]
+                    
+                    # Zero out the tail for envs that were compacted
+                    tail_mask = torch.arange(K, device=device).unsqueeze(0) >= new_counts.unsqueeze(1)
+                    tail_mask = tail_mask & needs_compaction.unsqueeze(1)
+                    derived_batch[tail_mask] = pad
+                
+                derived_counts = new_counts
             
             # Check which have exactly one non-terminal child
             is_single = (derived_counts == 1)
@@ -1082,7 +1109,7 @@ class BatchedEnv(EnvBase):
                     current_states=self.current_queries.index_select(0, non_terminal_in_promoted),
                     next_var_indices=self.next_var_indices.index_select(0, non_terminal_in_promoted),
                     excluded_queries=self.original_queries.index_select(0, non_terminal_in_promoted).unsqueeze(1),
-                    verbose=self.prover_verbose,
+                    verbose=self.prover_verbose
                 )
                 self.next_var_indices.index_copy_(0, non_terminal_in_promoted, sub_next)
 
@@ -1294,10 +1321,8 @@ class BatchedEnv(EnvBase):
             # Create FALSE state with correct M dimension to match compact
             false_state = torch.full((M, D), pad, dtype=states.dtype, device=device)
             false_state[0, 0] = self.false_pred_idx
-            num_false = needs_false.sum().item()
-            # Expand to [num_false, M, D]
-            false_expanded = false_state.unsqueeze(0).expand(num_false, -1, -1)
-            compact[needs_false, 0] = false_expanded
+            # Use advanced indexing to assign without .item() sync
+            compact[needs_false, 0] = false_state.unsqueeze(0)
             counts_out[needs_false] = 1
 
         # Note: We do NOT add derived states to memory here.
@@ -1611,9 +1636,10 @@ class BatchedEnv(EnvBase):
             per_slot_lengths = per_slot_lengths.to(device=self._device, dtype=torch.long)
             if per_slot_lengths.numel() != self.batch_size_int:
                 raise ValueError(f"per_slot_lengths must be [B], got {per_slot_lengths.shape}")
-            total = int(per_slot_lengths.sum().item())
+            # Avoid .item() sync - validate using tensor ops only
+            total = per_slot_lengths.sum()
             if total != self._num_all:
-                raise ValueError(f"Sum(per_slot_lengths)={total} must equal #items M={self._num_all}.")
+                raise ValueError(f"Sum(per_slot_lengths)={total.item()} must equal #items M={self._num_all}.")
 
             # starts[i] = sum_{j<i} lengths[j]
             starts = torch.zeros_like(per_slot_lengths)

@@ -27,17 +27,6 @@ from utils_config import (
     select_device_with_min_memory,
 )
 
-# Use new API for TF32 settings to avoid deprecation warnings
-# Valid precision values: 'ieee', 'tf32', None (for default)
-_cuda_matmul_backend = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
-if _cuda_matmul_backend is not None and hasattr(_cuda_matmul_backend, "fp32_precision"):
-    _cuda_matmul_backend.fp32_precision = "tf32"
-
-_cudnn_conv_backend = getattr(getattr(torch.backends, "cudnn", None), "conv", None)
-if _cudnn_conv_backend is not None and hasattr(_cudnn_conv_backend, "fp32_precision"):
-    _cudnn_conv_backend.fp32_precision = "tf32"
-
-
 if __name__ == "__main__":
 
     DEFAULT_CONFIG = {
@@ -74,10 +63,12 @@ if __name__ == "__main__":
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
+        'use_amp': True,
+        'use_compile': True,
         'n_steps': 64, #64
         'batch_size_env': 256,  # 256
         'batch_size_env_eval': 256,  # 256
-        'batch_size': 256,
+        'batch_size': 2048,
 
         # Env params
         'reward_type': 0,

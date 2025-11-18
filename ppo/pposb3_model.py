@@ -8,10 +8,52 @@ but work entirely on GPU with torch tensors and tensordicts.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 from tensordict import TensorDict
 from stable_baselines3.common.distributions import CategoricalDistribution
 from debug_config import DebugConfig
+
+
+class CustomCombinedExtractor(nn.Module):
+    """
+    Feature extractor that converts index-based observations into embeddings.
+    This mimics the sb3 BaseFeaturesExtractor pattern.
+    
+    Returns a tuple of (obs_embeddings, action_embeddings, action_mask) which
+    can be used by both policy and value networks.
+    """
+    
+    def __init__(self, embedder):
+        super().__init__()
+        self.embedder = embedder
+        self.embed_dim = embedder.embedding_dim
+    
+    def forward(self, obs: TensorDict) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Extract embeddings from observations.
+        
+        Args:
+            obs: TensorDict containing 'sub_index', 'derived_sub_indices', 'action_mask'
+        
+        Returns:
+            Tuple of (obs_embeddings, action_embeddings, action_mask)
+        """
+        # Get tensors from TensorDict
+        obs_sub_indices = obs.get("sub_index")  # (batch, 1, pad_atoms, 3)
+        action_sub_indices = obs.get("derived_sub_indices")  # (batch, pad_states, pad_atoms, 3)
+        action_mask = obs.get("action_mask")  # (batch, pad_states)
+        
+        # Ensure correct dtype
+        if obs_sub_indices.dtype != torch.int32:
+            obs_sub_indices = obs_sub_indices.to(torch.int32)
+        if action_sub_indices.dtype != torch.int32:
+            action_sub_indices = action_sub_indices.to(torch.int32)
+        
+        # Get embeddings from embedder
+        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices)
+        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices)
+        
+        return obs_embeddings, action_embeddings, action_mask
 
 
 class PolicyNetwork(nn.Module):
@@ -64,19 +106,34 @@ class PolicyNetwork(nn.Module):
             nn.Linear(hidden_dim, embed_dim)
         )
     
-    def _encode_embeddings(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Apply shared residual stack to embeddings."""
-        original_shape = embeddings.shape
-        flat_embeddings = embeddings.reshape(-1, original_shape[-1])
+    def _encode_embeddings(self, embeddings: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        """Apply shared residual stack to embeddings. 
         
-        x = self.obs_transform(flat_embeddings)
+        Args:
+            embeddings: Input embeddings to encode
+            mask: Optional boolean mask (batch, n_items) indicating valid items.
+                  If provided, only valid items are processed through the network.
+        """
+        batch_size, n_items, embed_dim = embeddings.shape
+        # Flatten mask to 1D
+        mask_flat = mask.bool().reshape(-1)
+        
+        # Extract only valid embeddings
+        flat_embeddings = embeddings.reshape(-1, embed_dim)
+        valid_embeddings = flat_embeddings[mask_flat]
+        
+        # Process valid embeddings through network
+        x = self.obs_transform(valid_embeddings)
         for block in self.res_blocks:
             residual = x
             x = block(x)
             x = x + residual
+        encoded_valid = self.out_transform(x)
         
-        encoded = self.out_transform(x)
-        return encoded.view(*original_shape[:-1], -1)
+        # Create output tensor and scatter valid results (match dtype for AMP)
+        encoded_flat = torch.zeros_like(flat_embeddings, dtype=encoded_valid.dtype)
+        encoded_flat[mask_flat] = encoded_valid
+        return encoded_flat.view(batch_size, n_items, embed_dim)
     
     def forward(
         self,
@@ -96,8 +153,10 @@ class PolicyNetwork(nn.Module):
             Masked logits (batch, n_actions)
         """
         # Process embeddings through residual network
+        # Encode observations (always process all)
         encoded_obs = self._encode_embeddings(obs_embeddings)
-        encoded_actions = self._encode_embeddings(action_embeddings)
+        # Encode actions (skip invalid actions using mask for efficiency)
+        encoded_actions = self._encode_embeddings(action_embeddings, mask=action_mask)
         
         # If obs has an extra dimension, squeeze it
         if encoded_obs.dim() == 3 and encoded_obs.shape[1] == 1:
@@ -189,6 +248,27 @@ class ValueNetwork(nn.Module):
         
         value = self.output_layer(x)
         return value.squeeze(-1)
+    
+    def forward_with_encoded_obs(self, encoded_embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        Compute value estimates from already-encoded observation embeddings.
+        This skips the initial encoding step for efficiency when obs are pre-encoded.
+        
+        Args:
+            encoded_embeddings: Pre-encoded observation embeddings (batch, embed_dim)
+        
+        Returns:
+            Value estimates (batch,)
+        """
+        # Process through network (skipping initial encoding)
+        x = self.input_layer(encoded_embeddings)
+        for block in self.res_blocks:
+            residual = x
+            x = block(x)
+            x = x + residual
+        
+        value = self.output_layer(x)
+        return value.squeeze(-1)
 
 
 class ActorCriticPolicy(nn.Module):
@@ -217,14 +297,29 @@ class ActorCriticPolicy(nn.Module):
         dropout_prob: float = 0.0,
         device: torch.device = None,
         debug_config: Optional[DebugConfig] = None,
+        use_compile: bool = False,
+        use_amp: bool = False,
+        share_features_extractor: bool = True,
     ):
         super().__init__()
         
-        self.embedder = embedder
         self.embed_dim = embed_dim
         self.device = device if device is not None else torch.device('cpu')
         self.debug_config = debug_config or DebugConfig()
         self._debug_step_counter = 0
+        self.use_amp = use_amp
+        self.use_compile = use_compile
+        self.share_features_extractor = share_features_extractor
+        
+        # Create features extractor(s) - following sb3 pattern
+        self.features_extractor = CustomCombinedExtractor(embedder)
+        if share_features_extractor:
+            self.pi_features_extractor = self.features_extractor
+            self.vf_features_extractor = self.features_extractor
+        else:
+            # Create separate extractors for policy and value
+            self.pi_features_extractor = self.features_extractor
+            self.vf_features_extractor = CustomCombinedExtractor(embedder)
         
         # Create policy and value networks
         self.policy_net = PolicyNetwork(
@@ -248,33 +343,45 @@ class ActorCriticPolicy(nn.Module):
         
         # Move to device
         self.to(self.device)
+        
+        # Apply torch.compile if requested (PyTorch 2.0+)
+        if use_compile:
+            try:
+                import time
+                compile_start = time.time()
+                # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph issues
+                # with dynamic operations like masked indexing
+                self.policy_net = torch.compile(self.policy_net, mode='default')
+                self.value_net = torch.compile(self.value_net, mode='default')
+                compile_time = time.time() - compile_start
+                print(f"[OPTIMIZATION] torch.compile() enabled for policy and value networks (init: {compile_time:.3f}s)")
+            except Exception as e:
+                print(f"[WARNING] torch.compile() failed: {e}. Continuing without compilation.")
     
-    def _extract_features(self, obs: TensorDict) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def extract_features(
+        self, 
+        obs: TensorDict,
+        features_extractor: Optional[CustomCombinedExtractor] = None
+    ) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], ...]:
         """
-        Extract embeddings and action mask from observations.
+        Extract features from observations. Following sb3 pattern with share_features_extractor.
         
         Args:
-            obs: TensorDict containing 'sub_index', 'derived_sub_indices', 'action_mask'
+            obs: TensorDict containing observations
+            features_extractor: Optional extractor to use (ignored if not sharing)
         
         Returns:
-            Tuple of (obs_embeddings, action_embeddings, action_mask)
+            If share_features_extractor: single tuple of (obs_emb, action_emb, mask)
+            Otherwise: tuple of two tuples for policy and value
         """
-        # Get tensors from TensorDict
-        obs_sub_indices = obs.get("sub_index")  # (batch, 1, pad_atoms, 3)
-        action_sub_indices = obs.get("derived_sub_indices")  # (batch, pad_states, pad_atoms, 3)
-        action_mask = obs.get("action_mask")  # (batch, pad_states)
-        
-        # Ensure correct dtype
-        if obs_sub_indices.dtype != torch.int32:
-            obs_sub_indices = obs_sub_indices.to(torch.int32)
-        if action_sub_indices.dtype != torch.int32:
-            action_sub_indices = action_sub_indices.to(torch.int32)
-        
-        # Get embeddings
-        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices)  # (batch, 1, embed_dim)
-        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices)  # (batch, pad_states, embed_dim)
-        
-        return obs_embeddings, action_embeddings, action_mask
+        if self.share_features_extractor:
+            extractor = self.features_extractor if features_extractor is None else features_extractor
+            return extractor(obs)
+        else:
+            # Extract features separately for policy and value
+            pi_features = self.pi_features_extractor(obs)
+            vf_features = self.vf_features_extractor(obs)
+            return pi_features, vf_features
     
     def forward(
         self,
@@ -291,12 +398,24 @@ class ActorCriticPolicy(nn.Module):
         Returns:
             Tuple of (actions, values, log_probs)
         """
-        # Extract features
-        obs_embeddings, action_embeddings, action_mask = self._extract_features(obs)
+        # Extract features following sb3 pattern
+        features = self.extract_features(obs)
         
-        # Get logits and values
+        if self.share_features_extractor:
+            obs_embeddings, action_embeddings, action_mask = features
+        else:
+            (obs_embeddings, action_embeddings, action_mask), (obs_embeddings_vf, _, _) = features
+        
+        # Mark step boundary for CUDA graphs when using torch.compile()
+        if self.use_compile:
+            torch.compiler.cudagraph_mark_step_begin()
+        
+        # Get logits and values from compiled networks
         logits = self.policy_net(obs_embeddings, action_embeddings, action_mask)
-        values = self.value_net(obs_embeddings)
+        if self.share_features_extractor:
+            values = self.value_net(obs_embeddings)
+        else:
+            values = self.value_net(obs_embeddings_vf)
         
         # Sample actions using the pre-created distribution
         distribution = self.action_dist.proba_distribution(action_logits=logits)
@@ -330,12 +449,42 @@ class ActorCriticPolicy(nn.Module):
         Returns:
             Tuple of (values, log_probs, entropy)
         """
-        # Extract features
-        obs_embeddings, action_embeddings, action_mask = self._extract_features(obs)
+        # Extract features following sb3 pattern
+        features = self.extract_features(obs)
         
-        # Get logits and values
-        logits = self.policy_net(obs_embeddings, action_embeddings, action_mask)
-        values = self.value_net(obs_embeddings)
+        if self.share_features_extractor:
+            obs_embeddings, action_embeddings, action_mask = features
+            # OPTIMIZATION: Encode observation embeddings once and reuse for both policy and value
+            # This avoids redundant computation through residual blocks
+            encoded_obs = self.policy_net._encode_embeddings(obs_embeddings)
+            if encoded_obs.dim() == 3 and encoded_obs.shape[1] == 1:
+                encoded_obs = encoded_obs.squeeze(1)
+            obs_embeddings_vf = encoded_obs
+        else:
+            (obs_embeddings, action_embeddings, action_mask), (obs_embeddings_vf, _, _) = features
+            # Encode obs for policy
+            encoded_obs = self.policy_net._encode_embeddings(obs_embeddings)
+            if encoded_obs.dim() == 3 and encoded_obs.shape[1] == 1:
+                encoded_obs = encoded_obs.squeeze(1)
+        
+        # Encode actions with masking
+        encoded_actions = self.policy_net._encode_embeddings(action_embeddings, mask=action_mask)
+        
+        # Compute logits using encoded embeddings
+        logits = torch.bmm(
+            encoded_obs.unsqueeze(1),
+            encoded_actions.transpose(1, 2)
+        ).squeeze(1)
+        logits = logits / (self.embed_dim ** 0.5)
+        logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
+        
+        # Compute values - use appropriate obs embeddings based on sharing
+        if self.share_features_extractor:
+            values = self.value_net.forward_with_encoded_obs(encoded_obs)
+        else:
+            # Encode value obs separately if not sharing
+            encoded_obs_vf = self.value_net.input_layer(obs_embeddings_vf.squeeze(1) if obs_embeddings_vf.dim() == 3 else obs_embeddings_vf)
+            values = self.value_net.forward_with_encoded_obs(encoded_obs_vf)
         
         # Use pre-created distribution for computing log probabilities and entropy
         distribution = self.action_dist.proba_distribution(action_logits=logits)
@@ -369,7 +518,7 @@ class ActorCriticPolicy(nn.Module):
         Returns:
             Value estimates (batch,)
         """
-        obs_embeddings, _, _ = self._extract_features(obs)
+        obs_embeddings, _, _ = self.extract_features(obs, self.vf_features_extractor)
         return self.value_net(obs_embeddings)
     
     def _debug_forward(self, logits, actions, action_log_probs, action_mask, distribution):
@@ -456,6 +605,9 @@ def create_actor_critic(
     dropout_prob: float = 0.0,
     device: torch.device = None,
     debug_config: Optional[DebugConfig] = None,
+    use_compile: bool = False,
+    use_amp: bool = False,
+    share_features_extractor: bool = True,
 ) -> ActorCriticPolicy:
     """
     Factory function to create an actor-critic policy.
@@ -468,6 +620,9 @@ def create_actor_critic(
         dropout_prob: Dropout probability
         device: PyTorch device
         debug_config: Debug configuration
+        use_compile: Whether to use torch.compile() for optimization (requires PyTorch 2.0+)
+        use_amp: Whether to use automatic mixed precision training
+        share_features_extractor: Whether to share the feature extractor between policy and value (default: True)
     
     Returns:
         ActorCriticPolicy instance
@@ -480,4 +635,7 @@ def create_actor_critic(
         dropout_prob=dropout_prob,
         debug_config=debug_config,
         device=device,
+        use_compile=use_compile,
+        use_amp=use_amp,
+        share_features_extractor=share_features_extractor,
     )

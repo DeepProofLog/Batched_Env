@@ -109,7 +109,8 @@ def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", 
         stringifier_params=stringifier_params,
         end_pred_idx=im_batched.end_pred_idx if end_proof_action else None,
         end_proof_action=end_proof_action,
-        max_derived_per_state=max_derived_per_state  # Set max derived states for eval mode
+        max_derived_per_state=max_derived_per_state,  # Set max derived states for eval mode
+        sort_states=True
     )
     engine.index_manager = im_batched
     

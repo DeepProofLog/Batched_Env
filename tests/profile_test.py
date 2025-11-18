@@ -22,9 +22,10 @@ def profile_test():
     profiler = cProfile.Profile()
     profiler.enable()
     
-    # Run test with smaller batch
-
-    test_pipeline()
+    # Run test with device parameter
+    from types import SimpleNamespace
+    args = SimpleNamespace(device=device)
+    test_pipeline(args=args)
 
     profiler.disable()
     

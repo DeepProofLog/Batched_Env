@@ -436,6 +436,9 @@ def train(
     use_amp = getattr(args, "use_amp", device.type == "cuda")
     setattr(args, "use_amp", use_amp)
 
+    # Set AMP on policy
+    policy.use_amp = use_amp
+
     # Create PPO agent with SB3-style implementation
     ppo_agent = PPO(
         policy=policy,
@@ -534,6 +537,9 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
 
     embed_dim = getattr(embedder, "embed_dim", getattr(embedder, "atom_embedding_size", args.atom_embedding_size))
     
+    use_amp = getattr(args, "use_amp", device.type == "cuda")
+    use_compile = getattr(args, "use_compile", False)
+    
     # Create actor-critic policy using PPO SB3-style implementation
     policy = create_actor_critic(
         embedder=embedder,
@@ -542,6 +548,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         num_layers=8,
         dropout_prob=0.2,
         device=device,
+        use_compile=use_compile,
+        use_amp=use_amp,
     )
 
     # Note: PPO creates its own optimizer internally, no need to create one here

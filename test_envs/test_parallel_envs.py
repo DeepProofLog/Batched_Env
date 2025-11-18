@@ -471,6 +471,7 @@ def load_tensor_environment(dataset: str, max_derived_states: int, memory_prunin
         im_batched, take_ownership=True,
         stringifier_params=stringifier_params,
         max_derived_per_state=max_derived_states,
+        sort_states=True
     )
     engine.index_manager = im_batched
     

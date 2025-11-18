@@ -46,6 +46,7 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
     Test the new PPO SB3-style implementation.
     
     Args:
+        test_mode: If 'rollout_only', only tests rollout collection without training.
         args: SimpleNamespace with configuration parameters. If None, uses defaults.
     """
     # Default configuration
@@ -58,9 +59,10 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
         dataset='countries_s3',
         batch_size=256,
         n_steps=64,
-        n_epochs=6,
+        n_epochs=10,
         seed=42,
         device=None,
+        rollout_device='cpu',
         total_timesteps=None,
         # Environment settings
         max_depth=20,
@@ -124,6 +126,17 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
     else:
         args.device = torch.device(args.device)
     
+    # Handle rollout and training devices (for CPU rollout / GPU training separation)
+    if not hasattr(args, 'rollout_device') or args.rollout_device is None:
+        args.rollout_device = args.device  # Default to same as main device
+    else:
+        args.rollout_device = torch.device(args.rollout_device)
+    
+    if not hasattr(args, 'training_device') or args.training_device is None:
+        args.training_device = args.device  # Default to same as main device
+    else:
+        args.training_device = torch.device(args.training_device)
+    
     # Handle total_timesteps
     if args.total_timesteps is None:
         args.total_timesteps = args.n_steps * args.batch_size
@@ -145,6 +158,8 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
     print(f"Max depth: {config.max_depth}")
     print(f"Seed: {config.seed}")
     print(f"Device: {config.device}")
+    print(f"Rollout device: {config.rollout_device}")
+    print(f"Training device: {config.training_device}")
     print(f"{'='*80}\n")
     
     # Create debug configuration early (before env creation)
@@ -189,9 +204,9 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
         max_total_runtime_vars=1000000,
         padding_atoms=config.padding_atoms,
         max_arity=dh.max_arity,
-        device=config.device,
+        device=config.rollout_device,
     )
-    dh.materialize_indices(im=im, device=config.device)
+    dh.materialize_indices(im=im, device=config.rollout_device)
     
     train_split = dh.get_materialized_split('train')
     
@@ -204,10 +219,10 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
     )
     
     sampler = Sampler.from_data(
-        all_known_triples_idx=dh.all_known_triples_idx.to(config.device),
+        all_known_triples_idx=dh.all_known_triples_idx.to(config.rollout_device),
         num_entities=im.constant_no,
         num_relations=im.predicate_no,
-        device=config.device,
+        device=config.rollout_device,
         default_mode=['tail'] if config.dataset == 'countries_s3' else ['head', 'tail'],
         seed=config.seed,
     )
@@ -227,7 +242,7 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
         reward_type=config.reward_type,
         verbose=config.verbose,
         prover_verbose=config.prover_verbose,
-        device=config.device,
+        device=config.rollout_device,
         skip_unary_actions=config.skip_unary_actions,
         end_proof_action=config.end_proof_action,
         true_pred_idx=im.predicate_str2idx.get('True'),
@@ -262,18 +277,21 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
         constant_str2idx=im.constant_str2idx,
         predicate_str2idx=im.predicate_str2idx,
         constant_images_no=0,
-        device=config.device
+        device=config.training_device
     )
     
-    # Create actor-critic policy
+    # Create actor-critic policy with optimizations
+    use_cuda = config.training_device.type == 'cuda'
     policy = create_actor_critic(
         embedder=embedder_getter.embedder,
         embed_dim=config.atom_embedding_size,
         hidden_dim=config.hidden_dim,
         num_layers=config.num_layers,
         dropout_prob=config.dropout_prob,
-        device=config.device,
+        device=config.training_device,
         debug_config=debug_cfg,
+        use_amp=use_cuda,  # Enable AMP for CUDA
+        use_compile=use_cuda,  # Enable torch.compile() for CUDA
     )
     
     # Wrap policy to return TensorDict for evaluate_policy compatibility
@@ -307,7 +325,8 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
         vf_coef=config.vf_coef,
         max_grad_norm=config.max_grad_norm,
         learning_rate=config.learning_rate,
-        device=config.device,
+        device=config.training_device,
+        rollout_device=config.rollout_device,
         verbose=1,
         debug_config=debug_cfg,
     )
@@ -443,6 +462,8 @@ if __name__ == "__main__":
     parser.add_argument('--max_depth', type=int, default=None, help='Maximum proof depth')
     parser.add_argument('--seed', type=int, default=None, help='Random seed')
     parser.add_argument('--device', type=str, default=None, help='Device (cpu or cuda, None=auto)')
+    parser.add_argument('--rollout_device', type=str, default=None, help='Device for rollout collection (cpu or cuda, None=same as device)')
+    parser.add_argument('--training_device', type=str, default=None, help='Device for PPO training (cpu or cuda, None=same as device)')
     parser.add_argument('--total_timesteps', type=int, default=None, help='Total timesteps to train')
     
     # Environment settings
@@ -487,4 +508,4 @@ if __name__ == "__main__":
         if value is not None:
             setattr(args, key, value)
     
-    test_rollout_pipeline(test_mode=None, args=args)
+    test_rollout_pipeline(args=args)

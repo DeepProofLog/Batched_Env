@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from typing import Optional, Dict, Any, Union
 from tensordict import TensorDict
 import time
+import contextlib
 
 from ppo.pposb3_rollout import RolloutBuffer
 from ppo.pposb3_model import ActorCriticPolicy
@@ -38,7 +39,8 @@ class PPO:
         vf_coef: Value function coefficient
         max_grad_norm: Maximum gradient norm for clipping
         learning_rate: Learning rate
-        device: PyTorch device
+        device: PyTorch device for training
+        rollout_device: PyTorch device for rollout collection (defaults to device)
         verbose: Verbosity level
     """
     
@@ -58,6 +60,7 @@ class PPO:
         max_grad_norm: float = 0.5,
         learning_rate: float = 3e-4,
         device: torch.device = None,
+        rollout_device: torch.device = None,
         verbose: int = 1,
         debug_config: Optional[DebugConfig] = None,
     ):
@@ -75,14 +78,27 @@ class PPO:
         self.max_grad_norm = max_grad_norm
         self.learning_rate = learning_rate
         self.device = device if device is not None else torch.device('cpu')
+        self.rollout_device = rollout_device if rollout_device is not None else self.device
         self.verbose = verbose
         self.debug_config = debug_config or DebugConfig()
         
-        # Initialize optimizer
-        self.optimizer = torch.optim.Adam(
-            self.policy.parameters(),
-            lr=self.learning_rate
-        )
+        # Initialize optimizer with fused option for better performance
+        try:
+            # Try to use fused Adam for significant speedup
+            self.optimizer = torch.optim.Adam(
+                self.policy.parameters(),
+                lr=self.learning_rate,
+                fused=True if self.device.type == 'cuda' else False
+            )
+            if self.device.type == 'cuda':
+                print("[OPTIMIZATION] Using fused Adam optimizer")
+        except Exception as e:
+            # Fallback to standard Adam if fused is not available
+            print(f"[WARNING] Fused Adam not available: {e}. Using standard Adam.")
+            self.optimizer = torch.optim.Adam(
+                self.policy.parameters(),
+                lr=self.learning_rate
+            )
         
         # Get number of environments
         self.n_envs = int(env.batch_size[0]) if isinstance(env.batch_size, torch.Size) else int(env.batch_size)
@@ -146,7 +162,12 @@ class PPO:
         with torch.no_grad():
             while n_steps < self.n_steps:
                 # Get actions, values, and log probs from policy
-                actions, values, log_probs = self.policy(self._last_obs)
+                # Move observation to training device if different from rollout device
+                obs_for_policy = self._last_obs
+                if self.rollout_device != self.device:
+                    obs_for_policy = obs_for_policy.to(self.device)
+                
+                actions, values, log_probs = self.policy(obs_for_policy)
                 
                 # Collect action statistics if requested
                 if collect_action_stats:
@@ -158,9 +179,9 @@ class PPO:
                 
                 # Wrap actions in TensorDict for environment
                 action_td = TensorDict(
-                    {"action": actions},
+                    {"action": actions.to(self.rollout_device)},
                     batch_size=self.n_envs,
-                    device=self.device
+                    device=self.rollout_device
                 )
                 
                 # Take step in environment using step_and_maybe_reset
@@ -175,7 +196,7 @@ class PPO:
                 dones = next_info['done'].squeeze(-1).float().to(self.device)
                 is_success = next_info.get('is_success')
                 if is_success is not None:
-                    is_success = is_success.squeeze(-1)
+                    is_success = is_success.squeeze(-1).to(self.device)
                 
                 # Update timesteps
                 self.num_timesteps += self.n_envs
@@ -210,11 +231,12 @@ class PPO:
                         done_lengths = self.episode_lengths[done_mask]
                         done_successes = is_success[done_mask]
                         
+                        # Avoid .item() sync - let TensorDict infer batch_size from tensors
                         new_td = TensorDict({
                             'r': done_rewards,
                             'l': done_lengths,
                             's': done_successes
-                        }, batch_size=int(done_mask.sum().item()), device=self.device)
+                        }, batch_size=done_rewards.shape[0], device=self.device)
                         
                         # Check if buffer is empty (batch_size is torch.Size, so check first dimension)
                         if len(self.ep_info_buffer.keys()) == 0 or self.ep_info_buffer.batch_size[0] == 0:
@@ -229,7 +251,11 @@ class PPO:
         
         # Compute returns and advantages
         with torch.no_grad():
-            values = self.policy.predict_values(self._last_obs)
+            # Move observation to training device if different from rollout device
+            obs_for_values = self._last_obs
+            if self.rollout_device != self.device:
+                obs_for_values = obs_for_values.to(self.device)
+            values = self.policy.predict_values(obs_for_values)
         
         self.rollout_buffer.compute_returns_and_advantage(
             last_values=values,
@@ -237,7 +263,7 @@ class PPO:
         )
         
         total_rollout_time = time.time() - rollout_start_time
-        print(f"Rollout collection complete. Collected {n_steps}x{self.n_envs}={n_steps * self.n_envs} Timesteps in {total_rollout_time:.2f}s.")
+        print(f"Rollout collection complete. Collected {n_steps}x{self.n_envs}={n_steps * self.n_envs} Timesteps in {total_rollout_time:.2f}s.\n\n")
         
         # Debug rollout statistics
         if self.debug_config.is_enabled('agent') and self.debug_config.debug_agent_rollout_stats:
@@ -364,6 +390,16 @@ class PPO:
         
         return result
     
+    @staticmethod
+    def _explained_variance(values: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if values.numel() == 0:
+            return targets.new_zeros(())
+        var_y = torch.var(targets)
+        # OPTIMIZED: Replace expensive torch.allclose with simple threshold check
+        if var_y < 1e-8:
+            return var_y.new_zeros(())
+        return 1 - torch.var(targets - values) / var_y
+    
     def train(self) -> Dict[str, float]:
         """
         Train the policy using collected rollouts.
@@ -371,153 +407,226 @@ class PPO:
         Returns:
             Dictionary of training metrics
         """
+        training_start_time = time.time()
         self.policy.train()
-        
-        # Initialize logging
-        total_policy_loss = 0.0
-        total_value_loss = 0.0
-        total_entropy_loss = 0.0
-        total_loss = 0.0
+
+        device = self.device
+
+        # Accumulators kept as tensors on device
+        total_policy_loss = torch.zeros((), device=device)
+        total_value_loss = torch.zeros((), device=device)
+        total_entropy_loss = torch.zeros((), device=device)
+        total_loss = torch.zeros((), device=device)
         n_updates = 0
-        
+
         clip_fractions = []
         approx_kl_divs = []
-        
-        print(f"Training for {self.n_epochs} epochs...")
-        
+
+        # AMP setup
+        use_amp = getattr(self.policy, "use_amp", False) and device.type == "cuda"
+        scaler = torch.amp.GradScaler("cuda") if use_amp else None
+        autocast_ctx = torch.amp.autocast("cuda") if use_amp else contextlib.nullcontext()
+
+        if use_amp and self.verbose:
+            print(f"[OPTIMIZATION] Using automatic mixed precision (AMP))")
+
+        print(f"Training for {self.n_epochs} epochs... (AMP={use_amp})")
+
+        # --------------------
+        # Epoch loop
+        # --------------------
         for epoch in range(self.n_epochs):
             epoch_start_time = time.time()
-            epoch_policy_loss = 0.0
-            epoch_value_loss = 0.0
-            epoch_entropy = 0.0
+            epoch_policy_loss = torch.zeros((), device=device)
+            epoch_value_loss = torch.zeros((), device=device)
+            epoch_entropy = torch.zeros((), device=device)
             epoch_n_batches = 0
-            
-            # Iterate over minibatches
+
+            # Minibatch loop
             for batch_data in self.rollout_buffer.get(batch_size=self.batch_size):
                 obs, actions, old_values, old_log_probs, advantages, returns = batch_data
-                
+                actions = actions.squeeze(-1)
+
                 # Normalize advantages
                 adv_mean = advantages.mean()
                 adv_std = advantages.std()
                 if adv_std > 1e-8:
                     advantages = (advantages - adv_mean) / (adv_std + 1e-8)
                 else:
-                    # If std is too small, just center the advantages
                     advantages = advantages - adv_mean
-                
-                # Evaluate actions with current policy
-                values, log_probs, entropy = self.policy.evaluate_actions(obs, actions.squeeze(-1))
-                
-                # Check for NaN/Inf in outputs
-                if torch.isnan(log_probs).any() or torch.isinf(log_probs).any():
-                    raise RuntimeError("NaN or Inf detected in log_probs during PPO.train()")
-                if torch.isnan(values).any() or torch.isinf(values).any():
-                    raise RuntimeError("NaN or Inf detected in values during PPO.train()")
 
-                
-                # Policy loss (PPO clipped objective)
-                ratio = torch.exp(log_probs - old_log_probs)
-                policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * torch.clamp(ratio, 1 - self.clip_range, 1 + self.clip_range)
-                policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
-                
-                # Value loss
-                # Ensure values and returns have the same shape
-                values_flat = values.flatten()
-                returns_flat = returns.flatten()
-                
-                if self.clip_range_vf is not None:
-                    # Clipped value loss
-                    values_clipped = old_values + torch.clamp(
-                        values_flat - old_values,
-                        -self.clip_range_vf,
-                        self.clip_range_vf
-                    )
-                    value_loss_1 = F.mse_loss(values_flat, returns_flat)
-                    value_loss_2 = F.mse_loss(values_clipped, returns_flat)
-                    value_loss = torch.max(value_loss_1, value_loss_2)
-                else:
-                    value_loss = F.mse_loss(values_flat, returns_flat)
-                
-                # Entropy loss
-                entropy_loss = -entropy.mean()
-                
-                # Total loss
-                loss = policy_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
-                
-                # Optimize
-                self.optimizer.zero_grad()
-                loss.backward()
-                
-                # Gradient clipping
-                if self.max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.policy.parameters(),
-                        self.max_grad_norm
-                    )
-                
-                self.optimizer.step()
-                
-                # Logging
-                epoch_policy_loss += policy_loss.item()
-                epoch_value_loss += value_loss.item()
-                epoch_entropy += entropy.mean().item()
-                epoch_n_batches += 1
-                
-                # Compute approximate KL divergence and clip fraction
-                with torch.no_grad():
+                # --------------------
+                # Forward + loss
+                # --------------------
+                with autocast_ctx:
+                    values, log_probs, entropy = self.policy.evaluate_actions(obs, actions)
+
+                    # Optionally, you can guard these checks with a debug flag if needed
+                    if torch.isnan(log_probs).any() or torch.isinf(log_probs).any():
+                        raise RuntimeError("NaN or Inf detected in log_probs during PPO.train()")
+                    if torch.isnan(values).any() or torch.isinf(values).any():
+                        raise RuntimeError("NaN or Inf detected in values during PPO.train()")
+
+                    # PPO clipped policy loss
                     log_ratio = log_probs - old_log_probs
-                    approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).item()
-                    approx_kl_divs.append(approx_kl_div)
-                    
-                    clip_fraction = torch.mean((torch.abs(ratio - 1) > self.clip_range).float()).item()
-                    clip_fractions.append(clip_fraction)
-            
+                    ratio = log_ratio.exp()
+
+                    policy_loss_1 = advantages * ratio
+                    policy_loss_2 = advantages * torch.clamp(
+                        ratio,
+                        1.0 - self.clip_range,
+                        1.0 + self.clip_range,
+                    )
+                    policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+
+                    # Value loss
+                    values_flat = values.flatten()
+                    returns_flat = returns.flatten()
+
+                    if self.clip_range_vf is not None:
+                        # Clipped value loss
+                        values_clipped = old_values + torch.clamp(
+                            values_flat - old_values,
+                            -self.clip_range_vf,
+                            self.clip_range_vf,
+                        )
+                        value_loss_1 = F.mse_loss(values_flat, returns_flat)
+                        value_loss_2 = F.mse_loss(values_clipped, returns_flat)
+                        value_loss = torch.max(value_loss_1, value_loss_2)
+                    else:
+                        value_loss = F.mse_loss(values_flat, returns_flat)
+
+                    # Entropy loss
+                    entropy_mean = entropy.mean()
+                    entropy_loss = -entropy_mean
+                    # Total loss
+                    loss = policy_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
+
+                # --------------------
+                # Backward + step
+                # --------------------
+                # set_to_none=True is a bit faster / more memory friendly
+                self.optimizer.zero_grad(set_to_none=True)
+
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                    if self.max_grad_norm is not None:
+                        scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            self.policy.parameters(),
+                            self.max_grad_norm,
+                        )
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    if self.max_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.policy.parameters(),
+                            self.max_grad_norm,
+                        )
+                    self.optimizer.step()
+
+                # --------------------
+                # Accumulate stats as tensors (no .item() here)
+                # --------------------
+                epoch_policy_loss += policy_loss.detach()
+                epoch_value_loss += value_loss.detach()
+                epoch_entropy += entropy_mean.detach()
+                epoch_n_batches += 1
+
+                # Approx KL + clip fraction (reuse log_ratio / ratio)
+                with torch.no_grad():
+                    approx_kl_divs.append(((ratio - 1.0) - log_ratio).mean())
+                    clip_fractions.append(
+                        (ratio - 1.0).abs().gt(self.clip_range).float().mean()
+                    )
+
             epoch_time = time.time() - epoch_start_time
             
             # Epoch logging
-            total_policy_loss += epoch_policy_loss
-            total_value_loss += epoch_value_loss
-            total_entropy_loss += epoch_entropy
-            n_updates += epoch_n_batches
-            
-            avg_policy_loss = epoch_policy_loss / epoch_n_batches if epoch_n_batches > 0 else 0.0
-            avg_value_loss = epoch_value_loss / epoch_n_batches if epoch_n_batches > 0 else 0.0
-            avg_entropy = epoch_entropy / epoch_n_batches if epoch_n_batches > 0 else 0.0
-            print(f"  Epoch {epoch + 1}/{self.n_epochs}: "
+            if epoch_n_batches > 0:
+                total_policy_loss += epoch_policy_loss
+                total_value_loss += epoch_value_loss
+                total_entropy_loss += epoch_entropy
+                n_updates += epoch_n_batches
+
+                # Only print per-epoch details in higher verbosity
+                avg_policy_loss = (epoch_policy_loss / epoch_n_batches).item()
+                avg_value_loss = (epoch_value_loss / epoch_n_batches).item()
+                avg_entropy = (epoch_entropy / epoch_n_batches).item()
+                print(
+                    f"  Epoch {epoch + 1}/{self.n_epochs}: "
                     f"policy_loss={avg_policy_loss:.7f}, "
                     f"value_loss={avg_value_loss:.7f}, "
                     f"entropy={avg_entropy:.7f}, "
-                    f"time={epoch_time:.2f}s")
+                    f"time={epoch_time:.2f}s"
+                )
         
-        total_loss = total_policy_loss + self.vf_coef * total_value_loss + self.ent_coef * total_entropy_loss
-        
-        # Prepare logging dict
-        # Note: total_entropy_loss is accumulated as -entropy (line 283), so we negate it here to get actual entropy
+        # --------------------
+        # Final metrics
+        # --------------------
+        if n_updates == 0:
+            metrics = {
+                "train/policy_loss": 0.0,
+                "train/value_loss": 0.0,
+                "train/entropy": 0.0,
+                "train/total_loss": 0.0,
+                "train/approx_kl": 0.0,
+                "train/clip_fraction": 0.0,
+                "train/n_updates": 0,
+            }
+            self.logger_dict.update(metrics)
+            return metrics
+
+        total_loss = (
+            total_policy_loss
+            + self.vf_coef * total_value_loss
+            + self.ent_coef * total_entropy_loss
+        )
+
+        with torch.no_grad():
+            mean_losses = torch.stack(
+                [total_policy_loss, total_value_loss, total_entropy_loss, total_loss]
+            ) / float(n_updates)
+            mean_pol, mean_val, mean_ent, mean_total = mean_losses.cpu().tolist()
+
+            mean_kl = (
+                torch.stack(approx_kl_divs).mean().cpu().item()
+                if approx_kl_divs
+                else 0.0
+            )
+            mean_clip_frac = (
+                torch.stack(clip_fractions).mean().cpu().item()
+                if clip_fractions
+                else 0.0
+            )
+
         metrics = {
-            'train/policy_loss': total_policy_loss / n_updates if n_updates > 0 else 0.0,
-            'train/value_loss': total_value_loss / n_updates if n_updates > 0 else 0.0,
-            'train/entropy': -total_entropy_loss / n_updates if n_updates > 0 else 0.0,  # Negate to get actual entropy
-            'train/total_loss': total_loss / n_updates if n_updates > 0 else 0.0,
-            'train/approx_kl': sum(approx_kl_divs) / len(approx_kl_divs) if approx_kl_divs else 0.0,
-            'train/clip_fraction': sum(clip_fractions) / len(clip_fractions) if clip_fractions else 0.0,
-            'train/n_updates': n_updates,
+            "train/policy_loss": float(mean_pol),
+            "train/value_loss": float(mean_val),
+            # total_entropy_loss was accumulated as -entropy
+            "train/entropy": float(-mean_ent),
+            "train/total_loss": float(mean_total),
+            "train/approx_kl": mean_kl,
+            "train/clip_fraction": mean_clip_frac,
+            "train/n_updates": int(n_updates),
         }
-        
+
+        # Compute explained variance
+        explained_var = self._explained_variance(
+            self.rollout_buffer.flat_values, self.rollout_buffer.flat_returns
+        ).item()
+        metrics["train/explained_variance"] = explained_var
+
         self.logger_dict.update(metrics)
-        
-        # Debug training statistics
+
+        # Optional: debug hook (uses last batch tensors)
         if self.debug_config.is_enabled('agent') and self.debug_config.debug_agent_train_stats:
             self._debug_train_stats(metrics, advantages, values, returns)
         
-        print(f"Training complete. Average losses:")
-        print(f"  Policy loss: {metrics['train/policy_loss']:.7f}")
-        print(f"  Value loss: {metrics['train/value_loss']:.7f}")
-        print(f"  Entropy: {metrics['train/entropy']:.7f}")
-        print(f"  Total loss: {metrics['train/total_loss']:.7f}")
-        print(f"  Approx KL: {metrics['train/approx_kl']:.7f}")
-        print(f"  Clip fraction: {metrics['train/clip_fraction']:.7f}")
-        
+        training_time = time.time() - training_start_time
+        print(f"Training complete in {training_time:.2f}s over {self.n_epochs} epochs")
         return metrics
     
     def learn(
@@ -575,8 +684,10 @@ class PPO:
                 # num_timesteps increases by n_envs per cicle (while loop until total_timesteps)
                 # fps is measured as how long it takes, to do rollouts + training every num_timesteps
                 fps = int(self.num_timesteps / elapsed_time) if elapsed_time > 0 else 0
-                
+                # from metrics, get relevant info such as explained variance
+                explained_variance = metrics.get("train/explained_variance", 0.0)
                 print(f"\nIteration {iteration} summary:")
+                print(f"  Explained variance: {explained_variance:.4f}")
                 print(f"  Timesteps: {self.num_timesteps}/{total_timesteps}")
                 print(f"  FPS: {fps}")
                 print(f"  Rollout time: {rollout_time:.2f}s")
@@ -598,6 +709,7 @@ class PPO:
         print(f"Training complete!")
         print(f"Total time: {total_time:.2f}s")
         print(f"Final timesteps: {self.num_timesteps}")
+        print(f"Explained variance: {self.logger_dict.get('train/explained_variance', 0.0):.4f}")
         print(f"{'='*80}\n")
         
         return self

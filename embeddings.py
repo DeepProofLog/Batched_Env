@@ -82,13 +82,35 @@ class EmbedderNonLearnable:
     def __init__(self, constant_idx2emb: torch.Tensor, predicate_idx2emb: torch.Tensor, device="cpu"):
         """
         Initialize the embedding function.
+        
+        OPTIMIZATION: Use nn.Embedding instead of F.embedding for faster lookups.
+        nn.Embedding is optimized for GPU and supports better caching.
         """
         self.embed_dim = constant_idx2emb.size(1)
-        self.constant_idx2emb = constant_idx2emb.to(device)
-        self.predicate_idx2emb = predicate_idx2emb.to(device)
+        self.device = device
+        
         # Set padding embedding (index 0) to zeros
-        self.constant_idx2emb[0] = 0
-        self.predicate_idx2emb[0] = 0
+        constant_idx2emb = constant_idx2emb.clone()
+        predicate_idx2emb = predicate_idx2emb.clone()
+        constant_idx2emb[0] = 0
+        predicate_idx2emb[0] = 0
+        
+        # Create nn.Embedding layers (non-trainable) for optimized lookup
+        self.constant_embedding = nn.Embedding.from_pretrained(
+            constant_idx2emb, 
+            freeze=True, 
+            padding_idx=0
+        ).to(device)
+        
+        self.predicate_embedding = nn.Embedding.from_pretrained(
+            predicate_idx2emb, 
+            freeze=True, 
+            padding_idx=0
+        ).to(device)
+        
+        # Keep tensor references for compatibility
+        self.constant_idx2emb = self.constant_embedding.weight
+        self.predicate_idx2emb = self.predicate_embedding.weight
         
     def get_embeddings_batch(self, sub_indices: torch.Tensor) -> torch.Tensor:
         """
@@ -99,36 +121,32 @@ class EmbedderNonLearnable:
             
         Returns:
             Tensor of embeddings with shape [..., embedding_dim]
+        
+        OPTIMIZATION: Uses nn.Embedding for faster lookup compared to F.embedding.
+        Also ensures indices are contiguous and properly typed for best performance.
         """
-        # Not consider cache atom embedding for now
-        # unique_indices = atom_indices.unique()
-        # indices_in_dict = torch.tensor([idx in self.atom_idx2emb for idx in unique_indices])
-        # precomputed_embeddings = torch.stack(
-        #     [self.atom_idx2emb[idx.item()] for idx in unique_indices[indices_in_dict]]
-        # )
-        # computed_embeddings = torch.stack(
-        #     [compute_embedding(idx.item()) for idx in unique_indices[~indices_in_dict]]
-        # )
-
-        # IF I GET "index out of range in self" ERROR, IT IS BECAUSE THE INDICES ARE OUT OF RANGE. ONCE I IMPLEMENT THE LOCAL INDICES, THIS WILL BE SOLVED
-        # Look up the embeddings of predicates and args.
-        # pred_arg_embeddings = F.embedding(sub_indices, self.embedding_table, padding_idx=0)
+        # OPTIMIZATION: Ensure indices are int32/int64 and contiguous
+        if sub_indices.dtype not in [torch.int32, torch.int64]:
+            sub_indices = sub_indices.to(torch.int64)
         
-        # OPTIMIZATION: Use contiguous slicing and avoid creating unnecessary intermediate tensors
-        predicate_indices = sub_indices[..., 0]
-        constant_indices_flat = sub_indices[..., 1:].contiguous()
+        # Extract predicate and constant indices
+        predicate_indices = sub_indices[..., 0].contiguous()
+        constant_indices = sub_indices[..., 1:].contiguous()
         
-        # Use F.embedding with proper padding for efficient lookup
-        predicate_embeddings = F.embedding(predicate_indices, self.predicate_idx2emb, padding_idx=0).unsqueeze(-2)
-        constant_embeddings = F.embedding(constant_indices_flat, self.constant_idx2emb, padding_idx=0)
+        # Use nn.Embedding for optimized lookup
+        predicate_embeddings = self.predicate_embedding(predicate_indices).unsqueeze(-2)
+        constant_embeddings = self.constant_embedding(constant_indices)
         
-        # TransE composition
-        atom_embeddings = transE_embedding(predicate_embeddings, constant_embeddings)
-
-        # # Sum pred & args embeddings to get atom embeddings.
-        # pred_arg_embeddings = torch.cat([predicate_embeddings, constant_embeddings], dim=-2)
-        # atom_embeddings = pred_arg_embeddings.sum(dim=-2)
-        # Sum atom embeddings to get state embeddings.
+        # TransE composition (fused computation)
+        # Directly compute: predicate + (constant_1 - constant_2) and sum
+        constant_1 = constant_embeddings[..., 0, :]
+        constant_2 = constant_embeddings[..., 1, :]
+        predicate_emb_squeezed = predicate_embeddings.squeeze(-2)
+        
+        # Compute atom embeddings: predicate + (constant_1 - constant_2)
+        atom_embeddings = predicate_emb_squeezed + (constant_1 - constant_2)
+        
+        # Sum atom embeddings to get state embeddings
         state_embeddings = atom_embeddings.sum(dim=-2)
 
         return state_embeddings
@@ -136,8 +154,11 @@ class EmbedderNonLearnable:
     def to(self, device):
         """Move embedding table to specified device."""
         self.device = device
-        self.constant_idx2emb = self.constant_idx2emb.to(device)
-        self.predicate_idx2emb = self.predicate_idx2emb.to(device)
+        self.constant_embedding = self.constant_embedding.to(device)
+        self.predicate_embedding = self.predicate_embedding.to(device)
+        # Update references
+        self.constant_idx2emb = self.constant_embedding.weight
+        self.predicate_idx2emb = self.predicate_embedding.weight
         return self
 
 # ------------------ End Load embeddings functions------------------

@@ -86,7 +86,8 @@ def setup_tensor_engine(
     
     engine = UnificationEngine.from_index_manager(
         im_non, take_ownership=True, stringifier_params=stringifier_params,
-        max_derived_per_state=max_derived_per_state  # Set max derived states for eval mode
+        max_derived_per_state=max_derived_per_state,  # Set max derived states for eval mode
+        sort_states=True
     )
 
     debug_helper = DebugHelper(

@@ -372,7 +372,7 @@ def preprocess_states(states: Tensor,
     terminal_false = empty | has_false
 
     active = ~(terminal_true | terminal_false)
-    active_idx = torch.nonzero(active, as_tuple=False).reshape(-1)
+    active_idx = torch.nonzero(active, as_tuple=True)[0]
     A = active_idx.numel()
 
     if A == 0:
@@ -452,7 +452,7 @@ def unify_with_facts(  # PURE: no pruning/proof detection here
     cnt_accum: List[Tensor] = []
 
     # Case 1: ground queries -> O(1) membership test
-    g_idx = torch.nonzero(ground, as_tuple=False).view(-1)
+    g_idx = torch.nonzero(ground, as_tuple=True)[0]
     if g_idx.numel() > 0:
         gq = queries.index_select(0, g_idx)
         hits = fact_index.contains(gq)            # [|g_idx|]
@@ -468,13 +468,15 @@ def unify_with_facts(  # PURE: no pruning/proof detection here
     # Case 2: non-ground -> pair by predicate range then unify
     ng_mask = ~ground
     if ng_mask.any():
-        ng_idx  = torch.nonzero(ng_mask, as_tuple=False).view(-1)
+        ng_idx  = torch.nonzero(ng_mask, as_tuple=True)[0]
         q_ng    = queries.index_select(0, ng_idx)
         p_ng    = preds.index_select(0, ng_idx)
 
         if predicate_range_map is None or predicate_range_map.numel() == 0:
             # Fallback: pair with all facts (less efficient, but simple)
-            seg_starts = torch.zeros((int(facts_idx[:,0].max().item())+2,), dtype=torch.long, device=device)
+            # Single .item() call in initialization path
+            max_pred_idx = int(facts_idx[:,0].max().item()) if facts_idx.numel() > 0 else 0
+            seg_starts = torch.zeros((max_pred_idx + 2,), dtype=torch.long, device=device)
             seg_lens   = torch.zeros_like(seg_starts)
             # compute ranges on-the-fly
             order = torch.argsort(facts_idx[:,0])
@@ -542,10 +544,11 @@ def unify_with_facts(  # PURE: no pruning/proof detection here
     states_per_match = remain_inst[:, :G] if remain_inst.numel() > 0 else torch.empty((0, G, 3), dtype=torch.long, device=device)
     states_per_owner = torch.bincount(qi, minlength=A) if qi.numel() > 0 else torch.zeros(A, dtype=torch.long, device=device)
 
-    if states_per_owner.max() == 0:
+    max_count = states_per_owner.max()
+    if max_count == 0:
         return torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device), torch.zeros(A, dtype=torch.long, device=device)
 
-    Kf = int(states_per_owner.max().item())
+    Kf = int(max_count.item())
     out = torch.full((A, Kf, G, 3), pad, dtype=torch.long, device=device)
     if qi.numel() > 0:
         owner_sorted, perm = torch.sort(qi, stable=True)
@@ -654,9 +657,10 @@ def unify_with_rules(
 
     # Pack per owner
     K_per_owner = torch.bincount(qi, minlength=A)            # [A]
-    if K_per_owner.max() == 0:
+    max_count = K_per_owner.max()
+    if max_count == 0:
         return torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device), torch.zeros(A, dtype=torch.long, device=device)
-    Kr = int(K_per_owner.max().item())
+    Kr = int(max_count.item())
     out = torch.full((A, Kr, M, 3), pad, dtype=torch.long, device=device)
 
     owner_sorted, perm = torch.sort(qi, stable=True)
@@ -922,10 +926,11 @@ def pack_by_owner(
         return torch.full((B, 0, M, 3), pad, dtype=states.dtype, device=device), torch.zeros(B, dtype=torch.long, device=device)
 
     per_owner = torch.bincount(owners, minlength=B)   # [B]
-    if per_owner.max() == 0:
+    max_count = per_owner.max()
+    if max_count == 0:
         return torch.full((B, 0, M, 3), pad, dtype=states.dtype, device=device), torch.zeros(B, dtype=torch.long, device=device)
 
-    K = int(per_owner.max().item())
+    K = int(max_count.item())
     out = torch.full((B, K, M, 3), pad, dtype=states.dtype, device=device)
     counts_out = per_owner.clone()
 
@@ -992,7 +997,9 @@ class UnificationEngine:
                  end_pred_idx: Optional[int] = None,
                  end_proof_action: bool = False,
                  predicate_no: Optional[int] = None,
-                 max_derived_per_state: Optional[int] = None
+                 max_derived_per_state: Optional[int] = None,
+                 deduplicate: bool = False,
+                 sort_states: bool = False
                  ):
         self.device = device
         self.padding_idx = int(padding_idx)
@@ -1005,6 +1012,8 @@ class UnificationEngine:
         self.end_pred_idx = end_pred_idx
         self.end_proof_action = bool(end_proof_action)
         self.max_derived_per_state = int(max_derived_per_state) if max_derived_per_state is not None else None
+        self.deduplicate = deduplicate
+        self.sort_states = sort_states
 
         # Tensors
         self.facts_idx       = facts_idx.to(device=device, dtype=torch.long)
@@ -1015,13 +1024,13 @@ class UnificationEngine:
         # Derived sizes
         self.max_rule_body_size = int(rule_lens.max().item()) if rule_lens.numel() > 0 else 1
 
-        # Pack base (>= any index + 1)
-        max_idx = 1
+        # Pack base (>= any index + 1) - batch max computation to reduce syncs
+        max_vals = []
         for t in (self.facts_idx, self.rules_idx, self.rules_heads_idx):
             if t.numel() > 0:
-                mx = int(t.max().item())
-                if mx > max_idx:
-                    max_idx = mx
+                max_vals.append(t.max())
+        # Single .item() call for all max values
+        max_idx = max([int(v.item()) for v in max_vals]) if max_vals else 1
         self.pack_base = int(pack_base if pack_base is not None else (max(max_idx, self.runtime_var_end_index) + 2))
 
         # Facts index
@@ -1043,8 +1052,8 @@ class UnificationEngine:
             preds = self.rules_heads_sorted[:, 0]
             uniq, counts = torch.unique_consecutive(preds, return_counts=True)
             starts = torch.cumsum(torch.cat([torch.zeros(1, dtype=torch.long, device=device), counts[:-1]]), dim=0)
-            # Use predicate_no if available, otherwise fall back to max+2
-            num_pred = self.predicate_no if self.predicate_no is not None else (int(preds.max().item()) + 2)
+            # Use predicate_no if available, otherwise fall back to max+2 (single .item() in init)
+            num_pred = self.predicate_no if self.predicate_no is not None else (int(preds.max().item()) + 2 if preds.numel() > 0 else 2)
             self.rule_seg_starts = torch.zeros((num_pred,), dtype=torch.long, device=device)
             self.rule_seg_lens   = torch.zeros((num_pred,), dtype=torch.long, device=device)
             self.rule_seg_starts[uniq] = starts
@@ -1085,7 +1094,9 @@ class UnificationEngine:
     def from_index_manager(cls, im, take_ownership: bool = False, stringifier_params: Optional[dict] = None,
                            end_pred_idx: Optional[int] = None,
                            end_proof_action: bool = False,
-                           max_derived_per_state: Optional[int] = None):
+                           max_derived_per_state: Optional[int] = None,
+                           deduplicate: bool = False,
+                           sort_states: bool = False):
         engine = cls(
             facts_idx=getattr(im, 'facts_idx', None),
             rules_idx=getattr(im, 'rules_idx', None),
@@ -1104,7 +1115,9 @@ class UnificationEngine:
             end_pred_idx=end_pred_idx,
             end_proof_action=end_proof_action,
             predicate_no=getattr(im, 'predicate_no', None),
-            max_derived_per_state=max_derived_per_state
+            max_derived_per_state=max_derived_per_state,
+            deduplicate=deduplicate,
+            sort_states=sort_states
         )
         if take_ownership:
             im.facts_idx = None
@@ -1122,8 +1135,6 @@ class UnificationEngine:
                            current_states: Tensor,         # [B, max_atoms, 3]
                            next_var_indices: Tensor,       # [B]
                            excluded_queries: Optional[Tensor] = None,  # [B, max_atoms, 3]
-                           deduplicate: bool = True,
-                           sort_states: bool = True,
                            verbose: int = 0
                            ) -> Tuple[Tensor, Tensor, Tensor]:
         """
@@ -1223,7 +1234,7 @@ class UnificationEngine:
 
         # Write TRUE for proof owners
         if self.true_atom is not None and proof_mask_B.any():
-            dst = torch.nonzero(proof_mask_B, as_tuple=False).view(-1)
+            dst = torch.nonzero(proof_mask_B, as_tuple=True)[0]
             final_states[dst, 0, 0] = self.true_atom
             final_counts[dst] = 1
 
@@ -1238,7 +1249,7 @@ class UnificationEngine:
         if surv_states.numel() == 0:
             # No survivors for non-proof owners -> FALSE
             if self.false_atom is not None:
-                nonproof_idx = torch.nonzero(nonproof_mask_B, as_tuple=False).view(-1)
+                nonproof_idx = torch.nonzero(nonproof_mask_B, as_tuple=True)[0]
                 final_states[nonproof_idx, 0, 0] = self.false_atom
                 final_counts[nonproof_idx] = 1
             return final_states, final_counts, updated_next
@@ -1269,12 +1280,12 @@ class UnificationEngine:
         # ---- 7) pack by owner -> (optional) dedup -> canonical order -> cap K
         packed, packed_counts = pack_by_owner(std_states, surv_counts, surv_owners, B, M_comb, pad)
 
-        if deduplicate:
+        if self.deduplicate:
             packed, packed_counts = deduplicate_states_packed(packed, packed_counts, pad, self.hash_cache)
 
         # ---- 7b) Apply canonical ordering AFTER deduplication but BEFORE capping
         # This ensures we keep the first K states in canonical order, matching string engine behavior
-        should_sort = sort_states and packed.numel() > 0 and self.debug_helper is not None
+        should_sort = self.sort_states and packed.numel() > 0 and self.debug_helper is not None
         if should_sort:
             # Unpack to flat list for sorting
             flat_states = []
@@ -1303,7 +1314,7 @@ class UnificationEngine:
         # Write packed into final buffers (keeping any terminal/proof already written)
         write_mask = packed_counts > 0
         if write_mask.any():
-            dst = torch.nonzero(write_mask, as_tuple=False).view(-1)
+            dst = torch.nonzero(write_mask, as_tuple=True)[0]
             # Avoid overwriting TRUE already set for proof owners
             dst = dst[~proof_mask_B.index_select(0, dst)]
             if dst.numel() > 0:
@@ -1314,7 +1325,7 @@ class UnificationEngine:
         need_false = (final_counts == 0) & (torch.isin(torch.arange(B, device=device), pre.active_idx))
         need_false &= ~proof_mask_B
         if need_false.any() and self.false_atom is not None:
-            idx = torch.nonzero(need_false, as_tuple=False).view(-1)
+            idx = torch.nonzero(need_false, as_tuple=True)[0]
             final_states[idx, 0, 0] = self.false_atom
             final_counts[idx] = 1
 
