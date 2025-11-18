@@ -262,16 +262,21 @@ class RolloutCollector:
         print("="*80 + "\n")
 
     
-    def collect(self, critic: torch.nn.Module, rollout_callback: Optional[Callable] = None) -> Tuple[List[TensorDict], Dict[str, Any]]:
+    def collect(self, critic: torch.nn.Module, rollout_callback: Optional[Callable] = None, return_processed_results: bool = False, collect_action_stats: bool = False) -> Tuple[List[TensorDict], Dict[str, Any]]:
         """Collect one rollout batch by manually stepping through environments.
         
         Args:
             critic: Critic network for value estimation
             rollout_callback: Optional callback for each step
+            return_processed_results: If True, return processed dict instead of experiences and stats
+            collect_action_stats: If True, collect action statistics (requires return_processed_results)
             
         Returns:
-            experiences: List of TensorDicts (one per step)
-            stats: Dictionary with episode_info
+            If return_processed_results=False:
+                experiences: List of TensorDicts (one per step)
+                stats: Dictionary with episode_info
+            If return_processed_results=True:
+                Dictionary with keys: total_queries, successful, avg_reward, avg_steps, avg_actions, traces
         """
         experiences: List[TensorDict] = []
         running_returns = torch.zeros(self.n_envs, dtype=torch.float32, device=self.env._device)
@@ -435,6 +440,108 @@ class RolloutCollector:
         # Print action space diagnostics if enabled
         if self.debug_action_space:
             self.print_action_space_diagnostics()
+        
+        # Process experiences to extract per-slot results (THIS IS OPTIONAL)
+        if return_processed_results:
+            n_total = self.n_envs
+            
+            # Track per-slot cumulative rewards, steps, and episode counts
+            slot_rewards = [0.0 for _ in range(n_total)]
+            slot_steps = [0 for _ in range(n_total)]
+            slot_done = [False for _ in range(n_total)]
+            slot_success = [False for _ in range(n_total)]
+            slot_episode_count = [0 for _ in range(n_total)]
+            slot_action_counts = [[] for _ in range(n_total)] if collect_action_stats else None
+            
+            # Process experiences step by step to track per-slot episodes
+            for step_idx, step_td in enumerate(experiences):
+                # Access the 'next' dict which contains reward, done, etc
+                next_td = step_td.get('next')
+                if next_td is None:
+                    continue
+                
+                # Extract values - they have batch dimension [n_envs]
+                rewards = next_td.get('reward', torch.zeros(n_total))
+                dones = next_td.get('done', torch.zeros(n_total, dtype=torch.bool))
+                is_success = next_td.get('is_success', torch.zeros(n_total, dtype=torch.bool))
+                
+                # Extract action mask for statistics if requested
+                if collect_action_stats:
+                    action_mask = step_td.get('action_mask')
+                    if action_mask is not None:
+                        num_actions = action_mask.sum(dim=-1).cpu().numpy()
+                    else:
+                        num_actions = np.zeros(n_total)
+                
+                # Squeeze extra dimensions if present
+                if rewards.dim() > 1:
+                    rewards = rewards.squeeze()
+                if dones.dim() > 1:
+                    dones = dones.squeeze()
+                if is_success.dim() > 1:
+                    is_success = is_success.squeeze()
+                
+                # Update per-slot tracking (only for first episode per slot)
+                for i in range(n_total):
+                    if slot_episode_count[i] == 0:  # Only track first episode per slot
+                        slot_rewards[i] += float(rewards[i])
+                        slot_steps[i] += 1
+                        
+                        if collect_action_stats:
+                            slot_action_counts[i].append(int(num_actions[i]))
+                        
+                        if bool(dones[i]):
+                            slot_done[i] = True
+                            slot_success[i] = bool(is_success[i])
+                            slot_episode_count[i] = 1
+            
+            # Create traces from per-slot results
+            traces = []
+            for i in range(n_total):
+                trace = {
+                    'success': slot_success[i],
+                    'steps': slot_steps[i],
+                    'reward': slot_rewards[i],
+                    'trace': []
+                }
+                
+                # Add action statistics if collected
+                if collect_action_stats and slot_action_counts:
+                    for step, num_actions in enumerate(slot_action_counts[i]):
+                        trace['trace'].append({
+                            'step': step,
+                            'num_actions': num_actions,
+                            'done': step == len(slot_action_counts[i]) - 1
+                        })
+                
+                traces.append(trace)
+            
+            # Calculate statistics
+            successful = sum(1 for t in traces if t['success'])
+            total_reward = sum(t['reward'] for t in traces)
+            total_steps = sum(t['steps'] for t in traces)
+            
+            # Compute average actions (branching factor)
+            if collect_action_stats and slot_action_counts:
+                total_actions = 0
+                total_action_steps = 0
+                for counts in slot_action_counts:
+                    total_actions += sum(counts)
+                    total_action_steps += len(counts)
+                avg_actions = total_actions / total_action_steps if total_action_steps > 0 else 0.0
+            else:
+                avg_actions = 0.0
+            
+            results_dict = {
+                'total_queries': n_total,
+                'successful': successful,
+                'avg_reward': total_reward / n_total if n_total > 0 else 0.0,
+                'avg_steps': total_steps / n_total if n_total > 0 else 0.0,
+                'avg_actions': avg_actions,
+                'traces': traces
+            }
+            
+            return results_dict
         
         return experiences, stats
     

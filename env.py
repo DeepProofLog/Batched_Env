@@ -123,7 +123,9 @@ class ExactMemory:
                 # Skip padded slots
                 if states[a, k, 0, 0].item() == pad:
                     continue
-                key = self._state_to_key(states[a, k], ignore_terminals=False)
+                # CRITICAL: Must ignore_terminals=True to match how states are added to memory
+                # This ensures consistency between add_current() and membership()
+                key = self._state_to_key(states[a, k], ignore_terminals=True)
                 if key in mem_set:
                     visited[a, k] = True
 
@@ -165,7 +167,7 @@ class BatchedEnv(EnvBase):
         # Env related params
         max_depth: int = 10,
         memory_pruning: bool = True,
-        eval_pruning: bool = False,
+        eval_pruning: bool = True,
         end_proof_action: bool = False,
         skip_unary_actions: bool = False,
         reward_type: int = 0,
@@ -295,6 +297,9 @@ class BatchedEnv(EnvBase):
                 max_arity=self.max_arity,
                 total_vocab_size=self.total_vocab_size,
                 padding_idx=self.padding_idx,
+                true_pred_idx=self.true_pred_idx,
+                false_pred_idx=self.false_pred_idx,
+                end_pred_idx=self.end_pred_idx,
             )
 
         # -------- Debug helper --------
@@ -900,6 +905,10 @@ class BatchedEnv(EnvBase):
             
             # Apply memory pruning if enabled (exact/Python or Bloom filter)
             if self.memory_pruning:
+                # CRITICAL: Add current state to memory BEFORE checking derived states
+                # This prevents cycles where a derived state equals the current state
+                self.memory_backend.add_current(active_envs, self.current_queries)
+                
                 # Check membership for all derived states
                 visited = self.memory_backend.membership(
                     derived_batch,  # [N, K, M, D]
@@ -974,9 +983,8 @@ class BatchedEnv(EnvBase):
             # Update current_queries for unary envs
             self.current_queries.index_copy_(0, unary_envs, promoted)
             
-            # Add promoted states to memory
-            if self.memory_pruning:
-                self.memory_backend.add_current(unary_envs, self.current_queries)
+            # Note: Promoted states will be added to memory in the next iteration
+            # when we call add_current at the start of the loop before checking derived states
             
             # Continue with rows that were unary
             active_envs = unary_envs
@@ -1530,7 +1538,9 @@ class BatchedEnv(EnvBase):
             )
             queries = torch.cat([queries, atom_tail], dim=1)
         elif cur_atoms > self.padding_atoms:
-            raise ValueError("Query atom count exceeds padding_atoms.")
+            raise ValueError("Query atom count exceeds padding_atoms."
+                             f" Shape of queries: {queries.shape}."
+                             f" Got {cur_atoms}, expected at most {self.padding_atoms}.")
 
         return queries
 

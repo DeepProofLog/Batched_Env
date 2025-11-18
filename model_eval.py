@@ -123,6 +123,7 @@ def evaluate_policy(
     target_episodes: Optional[Sequence[int]] = None,
     deterministic: bool = True,   # kept for API symmetry; use inside your actor if needed
     track_logprobs: bool = False, # left in for easy toggling; not required for ranking
+    collect_action_stats: bool = False,  # Track action counts for first episode per slot
     info_callback: Optional[Callable[[TensorDict], None]] = None,
     verbose: int = 0,
 ) -> Dict[str, torch.Tensor]:
@@ -151,6 +152,10 @@ def evaluate_policy(
     ep_return  = torch.zeros(B, dtype=torch.float32, device=device)
     ep_length  = torch.zeros(B, dtype=torch.long,   device=device)
     ep_logprob = torch.zeros(B, dtype=torch.float32, device=device)
+    
+    # Action statistics tracking (for first episode only per slot)
+    action_counts = [] if collect_action_stats else None
+    episode_completed = [False] * B if collect_action_stats else None
 
     # Full reset to start
     td = env.reset().to(device, non_blocking=True)
@@ -224,6 +229,16 @@ def evaluate_policy(
         ep_length[active] += 1
         if track_logprobs:
             ep_logprob += log_probs * active
+        
+        # Collect action statistics for first episode only per slot
+        if collect_action_stats:
+            action_mask = policy_td.get("action_mask")
+            if action_mask is not None:
+                num_actions = action_mask.sum(dim=-1).cpu().numpy()
+                for i in range(B):
+                    # Only collect if: (1) first episode not completed AND (2) active AND (3) has valid actions
+                    if not episode_completed[i] and active[i] and num_actions[i] > 0:
+                        action_counts.append(int(num_actions[i]))
 
 
         # Close finished episodes (only for active rows)
@@ -250,6 +265,12 @@ def evaluate_policy(
             ep_length[rows] = 0
             ep_count[rows]  += 1
             ep_logprob[rows] = 0.0
+            
+            # Mark first episode as completed for these slots
+            if collect_action_stats:
+                for idx in rows.tolist():
+                    if cols[rows == idx].item() == 0:  # First episode (col 0)
+                        episode_completed[idx] = True
 
         td = next_td  # observation for next step
         prev_done = done_curr.clone()
@@ -261,13 +282,19 @@ def evaluate_policy(
     if actor_was_training:
         actor.train()
 
-    return {
+    result = {
         "rewards": rewards.cpu(),
         "lengths": lengths.cpu(),
         "logps":   logps.cpu(),
         "success": success.cpu(),
         "mask":    mask.cpu(),
     }
+    
+    # Add action statistics if collected
+    if collect_action_stats and action_counts:
+        result["action_counts"] = action_counts
+    
+    return result
 
 
 # ------------------------------------------------------------

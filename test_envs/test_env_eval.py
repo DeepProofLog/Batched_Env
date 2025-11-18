@@ -11,37 +11,23 @@ sys.path.insert(0, root_path)
 import torch
 import torch.nn as nn
 from typing import Tuple, Dict, List
+from types import SimpleNamespace
 from tensordict import TensorDict
 
-from test_envs.test_env_tensor import setup_tensor_env
+from test_envs.test_env_tensor import setup_tensor_env, get_default_tensor_env_config
 from model_eval import evaluate_policy
 
 
 class DeterministicActorForEval(nn.Module):
     """Simple deterministic actor that always chooses action 0 (or first valid action)."""
     
-    def __init__(self, collect_action_stats: bool = False):
+    def __init__(self):
         super().__init__()
-        self.collect_action_stats = collect_action_stats
-        self.action_counts = [] if collect_action_stats else None
-        self.step_count = 0
     
     def forward(self, td: TensorDict) -> TensorDict:
         """Select action 0 for all batch items."""
         batch_size = td.batch_size[0] if isinstance(td.batch_size, torch.Size) else td.batch_size
         action = torch.zeros(batch_size, dtype=torch.long, device=td.device)
-        
-        if self.collect_action_stats:
-            action_mask = td.get("action_mask")
-            if action_mask is not None:
-                # Only count actions where mask has valid actions (sum > 0)
-                # This filters out inactive/reset states
-                num_actions = action_mask.sum(dim=-1).cpu().numpy()
-                for n in num_actions:
-                    if n > 0:  # Only count if there are valid actions
-                        self.action_counts.append(int(n))
-            self.step_count += 1
-        
         td["action"] = action
         return td
 
@@ -49,13 +35,10 @@ class DeterministicActorForEval(nn.Module):
 class RandomActorForEval(nn.Module):
     """Random actor that chooses valid actions uniformly at random."""
     
-    def __init__(self, seed: int = 42, collect_action_stats: bool = False):
+    def __init__(self, seed: int = 42):
         super().__init__()
         import random
         self.rng = random.Random(seed)
-        self.collect_action_stats = collect_action_stats
-        self.action_counts = [] if collect_action_stats else None
-        self.step_count = 0
     
     def forward(self, td: TensorDict) -> TensorDict:
         """Select random valid action for each batch item."""
@@ -69,13 +52,6 @@ class RandomActorForEval(nn.Module):
                 valid_actions = torch.where(mask)[0].tolist()
                 if valid_actions:
                     actions[i] = self.rng.choice(valid_actions)
-                    
-                    if self.collect_action_stats:
-                        # Only count if there are valid actions (active state)
-                        self.action_counts.append(len(valid_actions))
-        
-        if self.collect_action_stats:
-            self.step_count += 1
         
         td["action"] = actions
         return td
@@ -83,23 +59,14 @@ class RandomActorForEval(nn.Module):
 
 def test_eval_env(
     queries: List[Tuple[str, Tuple[str, str, str]]],
-    dataset: str,
-    deterministic: bool = True,
-    max_depth: int = 20,
-    seed: int = 42,
-    verbose: bool = False,
-    collect_action_stats: bool = False
+    config: SimpleNamespace
 ) -> Dict:
     """
     Test environment using evaluate_policy function.
     
     Args:
         queries: List of (split, (predicate, head, tail))
-        dataset: Dataset name
-        deterministic: If True, use deterministic actor; if False, random
-        seed: Random seed
-        verbose: Print detailed information
-        collect_action_stats: If True, collect action statistics (branching factor)
+        config: Configuration namespace with dataset, deterministic, seed, verbose, collect_action_stats, etc.
         
     Returns:
         Dict with keys:
@@ -111,22 +78,30 @@ def test_eval_env(
             - traces: List of trace dicts
     """
     print("Setting up environment for evaluate_policy...")
-    env_data = setup_tensor_env(dataset=dataset, seed=seed, batch_size=len(queries))
+    
+    dataset = config.dataset
+    deterministic = config.deterministic
+    seed = config.seed
+    verbose = config.verbose
+    collect_action_stats = config.collect_action_stats
+    
+    env_data = setup_tensor_env(dataset=dataset, seed=seed, batch_size=len(queries), config=config)
     batched_env, debug_helper, constant_no, im_batched, dh_batched = env_data
     
+    device = getattr(batched_env, '_device', torch.device('cpu'))
     # Prepare queries for eval mode
     all_query_tensors = []
     for split, (p, h, t) in queries:
         query_atom = im_batched.atom_to_tensor(p, h, t)
         query_padded = torch.full((batched_env.padding_atoms, 3), batched_env.padding_idx,
-                                   dtype=torch.long, device='cpu')
+                                   dtype=torch.long, device=device)
         query_padded[0] = query_atom
         all_query_tensors.append(query_padded)
     
     queries_tensor = torch.stack(all_query_tensors, dim=0)
-    labels_tensor = torch.ones(len(queries), dtype=torch.long, device='cpu')
-    depths_tensor = torch.ones(len(queries), dtype=torch.long, device='cpu')
-    per_slot_lengths = torch.ones(len(queries), dtype=torch.long, device='cpu')
+    labels_tensor = torch.ones(len(queries), dtype=torch.long, device=device)
+    depths_tensor = torch.ones(len(queries), dtype=torch.long, device=device)
+    per_slot_lengths = torch.ones(len(queries), dtype=torch.long, device=device)
     
     batched_env.set_eval_dataset(
         queries=queries_tensor,
@@ -137,9 +112,9 @@ def test_eval_env(
     
     # Use deterministic or random actor
     if deterministic:
-        actor = DeterministicActorForEval(collect_action_stats=collect_action_stats)
+        actor = DeterministicActorForEval()
     else:
-        actor = RandomActorForEval(seed=seed, collect_action_stats=collect_action_stats)
+        actor = RandomActorForEval(seed=seed)
     
     print(f"Running evaluate_policy with {'deterministic' if deterministic else 'random'} actor...")
     eval_results = evaluate_policy(
@@ -147,6 +122,7 @@ def test_eval_env(
         env=batched_env,
         n_eval_episodes=len(queries),
         deterministic=deterministic,
+        collect_action_stats=collect_action_stats,
         verbose=verbose
     )
     
@@ -181,12 +157,11 @@ def test_eval_env(
             })
     
     # Compute average actions if collected
-    if collect_action_stats and hasattr(actor, 'action_counts') and actor.action_counts:
-        avg_actions = sum(actor.action_counts) / len(actor.action_counts)
+    action_counts = eval_results.get('action_counts', None)
+    if collect_action_stats and action_counts:
+        avg_actions = sum(action_counts) / len(action_counts)
         if verbose:
-            print(f"  Action stats: {len(actor.action_counts)} samples, avg={avg_actions:.2f}")
-            print(f"  Forward calls: {actor.step_count}")
-            print(f"  Action count samples (first 20): {actor.action_counts[:20]}")
+            print(f"  Action stats: {len(action_counts)} samples, avg={avg_actions:.2f}")
     else:
         avg_actions = 0.0
     

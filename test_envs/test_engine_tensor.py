@@ -11,6 +11,7 @@ sys.path.insert(0, root_path)
 import random
 import torch
 from typing import Tuple, Dict, List
+from types import SimpleNamespace
 
 from data_handler import DataHandler
 from index_manager import IndexManager
@@ -18,7 +19,21 @@ from unification_engine import UnificationEngine
 from debug_helper import DebugHelper
 
 
-def setup_tensor_engine(dataset: str = "countries_s3", base_path: str = "./data/", batched: bool = False) -> Tuple:
+def get_default_tensor_engine_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        padding_atoms=20,
+        max_total_runtime_vars=1_000_000,
+        max_derived_per_state=500,
+        device='cpu'
+    )
+
+
+def setup_tensor_engine(
+    dataset: str = "countries_s3",
+    base_path: str = "./data/",
+    batched: bool = False,
+    config: SimpleNamespace = None
+) -> Tuple:
     """
     Setup the tensor-based engine with dataset.
     
@@ -30,6 +45,13 @@ def setup_tensor_engine(dataset: str = "countries_s3", base_path: str = "./data/
     Returns:
         (dh, im, engine, debug_helper, next_var_start)
     """
+    cfg = config or get_default_tensor_engine_config()
+    device_value = getattr(cfg, 'device', 'cpu')
+    device = device_value if isinstance(device_value, torch.device) else torch.device(device_value)
+    padding_atoms = getattr(cfg, 'padding_atoms', 20)
+    max_total_runtime_vars = getattr(cfg, 'max_total_runtime_vars', 1_000_000)
+    max_derived_per_state = getattr(cfg, 'max_derived_per_state', 500)
+
     dh_non = DataHandler(
         dataset_name=dataset,
         base_path=base_path,
@@ -44,13 +66,13 @@ def setup_tensor_engine(dataset: str = "countries_s3", base_path: str = "./data/
     im_non = IndexManager(
         constants=dh_non.constants,
         predicates=dh_non.predicates,
-        max_total_runtime_vars=1000000,
-        padding_atoms=20,
+        max_total_runtime_vars=max_total_runtime_vars,
+        padding_atoms=padding_atoms,
         max_arity=dh_non.max_arity,
-        device=torch.device('cpu'),
+        device=device,
         rules=dh_non.rules,
     )
-    dh_non.materialize_indices(im=im_non, device=torch.device('cpu'))
+    dh_non.materialize_indices(im=im_non, device=device)
 
     # Create stringifier params for engine initialization
     stringifier_params = {
@@ -64,7 +86,7 @@ def setup_tensor_engine(dataset: str = "countries_s3", base_path: str = "./data/
     
     engine = UnificationEngine.from_index_manager(
         im_non, take_ownership=True, stringifier_params=stringifier_params,
-        max_derived_per_state=500  # Set max derived states for eval mode
+        max_derived_per_state=max_derived_per_state  # Set max derived states for eval mode
     )
 
     debug_helper = DebugHelper(
@@ -270,10 +292,7 @@ def test_tensor_engine_single_query(
 def test_tensor_engine_batch(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     engine_data: Tuple,
-    deterministic: bool = True,
-    max_depth: int = 10,
-    seed: int = 42,
-    verbose: bool = False
+    config: SimpleNamespace
 ) -> Dict:
     """
     Test multiple queries using the tensor engine.
@@ -281,10 +300,7 @@ def test_tensor_engine_batch(
     Args:
         queries: List of (split, (predicate, head, tail))
         engine_data: Tuple from setup_tensor_engine()
-        deterministic: If True, use canonical ordering; if False, random actions
-        max_depth: Maximum proof depth
-        seed: Random seed for reproducible random actions
-        verbose: Print detailed information
+        config: Configuration namespace with deterministic, max_depth, seed, verbose, etc.
         
     Returns:
         Dict with keys:
@@ -294,6 +310,10 @@ def test_tensor_engine_batch(
             - avg_steps: float
             - traces: List of trace dicts
     """
+    deterministic = config.deterministic
+    max_depth = config.max_depth
+    seed = config.seed
+    verbose = config.verbose
     results = []
     
     for idx, (split, query_tuple) in enumerate(queries):

@@ -13,6 +13,7 @@ import random
 import torch
 import numpy as np
 from typing import Tuple, Dict, List
+from types import SimpleNamespace
 from tensordict import TensorDict
 
 from data_handler import DataHandler
@@ -20,6 +21,23 @@ from index_manager import IndexManager
 from unification_engine import UnificationEngine
 from env import BatchedEnv
 from debug_helper import DebugHelper
+
+
+def get_default_tensor_env_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        max_total_runtime_vars=1000000,
+        padding_atoms=100,
+        padding_states=500,
+        memory_pruning=False,
+        reward_type=0,
+        verbose=0,
+        prover_verbose=0,
+        skip_unary_actions=False,
+        end_proof_action=False,
+        use_exact_memory=True,
+        max_derived_per_state=500,
+        device='cpu'
+    )
 
 
 def safe_item(x):
@@ -31,13 +49,29 @@ def safe_item(x):
     return x
 
 
-def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", seed: int = 42, batch_size: int = 1) -> Tuple:
+def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", seed: int = 42,
+                     batch_size: int = 1, config: SimpleNamespace = None) -> Tuple:
     """
     Setup the batched tensor environment with dataset.
     
     Returns:
         (batched_env, debug_helper, constant_no, im_batched, dh_batched)
     """
+    cfg = config or get_default_tensor_env_config()
+    max_total_runtime_vars = getattr(cfg, 'max_total_runtime_vars', 1000000)
+    padding_atoms = getattr(cfg, 'padding_atoms', 100)
+    padding_states = getattr(cfg, 'padding_states', 500)
+    memory_pruning = getattr(cfg, 'memory_pruning', False)
+    reward_type = getattr(cfg, 'reward_type', 0)
+    verbose = getattr(cfg, 'verbose', 0)
+    prover_verbose = getattr(cfg, 'prover_verbose', 0)
+    skip_unary_actions = getattr(cfg, 'skip_unary_actions', False)
+    end_proof_action = getattr(cfg, 'end_proof_action', False)
+    use_exact_memory = getattr(cfg, 'use_exact_memory', True)
+    max_derived_per_state = getattr(cfg, 'max_derived_per_state', 500)
+    device_value = getattr(cfg, 'device', 'cpu')
+    device = device_value if isinstance(device_value, torch.device) else torch.device(device_value)
+    
     dh_batched = DataHandler(
         dataset_name=dataset,
         base_path=base_path,
@@ -48,17 +82,18 @@ def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", 
         facts_file="train.txt",
         train_depth=None,
     )
+    # Data is loaded automatically in DataHandler.__init__
     
     im_batched = IndexManager(
         constants=dh_batched.constants,
         predicates=dh_batched.predicates,
-        max_total_runtime_vars=1000000,
-        padding_atoms=100,
+        max_total_runtime_vars=max_total_runtime_vars,
+        padding_atoms=padding_atoms,
         max_arity=dh_batched.max_arity,
-        device=torch.device('cpu'),
+        device=device,
         rules=dh_batched.rules,
     )
-    dh_batched.materialize_indices(im=im_batched, device=torch.device('cpu'))
+    dh_batched.materialize_indices(im=im_batched, device=device)
     
     stringifier_params = {
         'verbose': 0,
@@ -72,7 +107,9 @@ def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", 
     engine = UnificationEngine.from_index_manager(
         im_batched, take_ownership=True, 
         stringifier_params=stringifier_params,
-        max_derived_per_state=500  # Set max derived states for eval mode
+        end_pred_idx=im_batched.end_pred_idx if end_proof_action else None,
+        end_proof_action=end_proof_action,
+        max_derived_per_state=max_derived_per_state  # Set max derived states for eval mode
     )
     engine.index_manager = im_batched
     
@@ -85,31 +122,45 @@ def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", 
         n_constants=im_batched.constant_no
     )
     
-    dummy_query = torch.full((batch_size, 100, 3), im_batched.padding_idx, dtype=torch.long, device='cpu')
+    # Use actual train queries instead of dummy queries
+    # Get first batch_size train queries
+    train_queries = dh_batched.train_queries[:batch_size]
+    
+    # Convert queries to tensor format
+    query_tensors = []
+    for q in train_queries:
+        query_atom = im_batched.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+        query_padded = torch.full((padding_atoms, 3), im_batched.padding_idx, dtype=torch.long, device=device)
+        query_padded[0] = query_atom
+        query_tensors.append(query_padded)
+    
+    # Stack into [batch_size, padding_atoms, 3] tensor
+    queries_tensor = torch.stack(query_tensors, dim=0)
     
     batched_env = BatchedEnv(
         batch_size=batch_size,
-        queries=dummy_query,
-        labels=torch.ones(batch_size, dtype=torch.long, device='cpu'),
-        query_depths=torch.ones(batch_size, dtype=torch.long, device='cpu'),
+        queries=queries_tensor,
+        labels=torch.ones(len(train_queries), dtype=torch.long, device=device),
+        query_depths=torch.ones(len(train_queries), dtype=torch.long, device=device),
         unification_engine=engine,
         mode='train',  # Start in train mode, set_eval_dataset will switch to eval
         max_depth=20,
-        memory_pruning=False,
-        padding_atoms=100,
-        padding_states=500,
+        memory_pruning=memory_pruning,
+        eval_pruning=memory_pruning,  # CRITICAL: Enable memory pruning in eval mode too
+        use_exact_memory=use_exact_memory,
+        skip_unary_actions=skip_unary_actions,
+        end_proof_action=end_proof_action,
+        reward_type=reward_type,
+        padding_atoms=padding_atoms,
+        padding_states=padding_states,
         true_pred_idx=im_batched.predicate_str2idx.get('True'),
         false_pred_idx=im_batched.predicate_str2idx.get('False'),
         end_pred_idx=im_batched.predicate_str2idx.get('End'),
-        verbose=0,
-        prover_verbose=0,
-        device=torch.device('cpu'),
+        verbose=verbose,
+        prover_verbose=prover_verbose,
+        device=device,
         runtime_var_start_index=im_batched.constant_no + 1,
-        total_vocab_size=im_batched.constant_no + 1000000,
-        skip_unary_actions=False,
-        end_proof_action=False,
-        reward_type=0,
-        use_exact_memory=True,
+        total_vocab_size=im_batched.constant_no + max_total_runtime_vars,
     )
     
     return batched_env, debug_helper, im_batched.constant_no, im_batched, dh_batched
@@ -150,15 +201,16 @@ def test_tensor_env_single_query(
         print(f"\nQuery: {p}({h}, {t}) [split={split}, deterministic={deterministic}]")
     
     # Setup query
+    device = getattr(batched_env, '_device', torch.device('cpu'))
     query_atom = batched_env.unification_engine.index_manager.atom_to_tensor(p, h, t)
     query_padded = torch.full((1, batched_env.padding_atoms, 3), batched_env.padding_idx, 
-                               dtype=torch.long, device='cpu')
+                               dtype=torch.long, device=device)
     query_padded[0, 0] = query_atom
     
     label = 1
     batched_env._all_queries_padded = query_padded
-    batched_env._all_labels = torch.tensor([label], dtype=torch.long, device='cpu')
-    batched_env._all_depths = torch.tensor([1], dtype=torch.long, device='cpu')
+    batched_env._all_labels = torch.tensor([label], dtype=torch.long, device=device)
+    batched_env._all_depths = torch.tensor([1], dtype=torch.long, device=device)
     batched_env._all_first_atoms = query_atom.unsqueeze(0)
     batched_env._num_all = 1
     
@@ -229,7 +281,7 @@ def test_tensor_env_single_query(
         
         # Take step
         batched_action_td = TensorDict({
-            'action': torch.tensor([action], dtype=torch.long, device='cpu')
+            'action': torch.tensor([action], dtype=torch.long, device=device)
         }, batch_size=[1])
         batched_result_td = batched_env.step(batched_action_td)
         
@@ -357,10 +409,7 @@ def test_tensor_env(
 def test_tensor_env_batched(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     base_env_data: Tuple,
-    deterministic: bool = True,
-    max_depth: int = 20,
-    seed: int = 42,
-    verbose: bool = False
+    config: SimpleNamespace
 ) -> Dict:
     """
     Test multiple queries using the batched tensor environment in TRUE BATCH MODE using eval mode.
@@ -371,10 +420,7 @@ def test_tensor_env_batched(
     Args:
         queries: List of (split, (predicate, head, tail))
         base_env_data: Tuple from setup_tensor_env()
-        deterministic: If True, use canonical ordering; if False, random actions
-        max_depth: Maximum proof depth
-        seed: Random seed for reproducible random actions
-        verbose: Print detailed information
+        config: Configuration namespace with deterministic, max_depth, seed, verbose, etc.
         
     Returns:
         Dict with keys:
@@ -384,6 +430,10 @@ def test_tensor_env_batched(
             - avg_steps: float
             - traces: List of trace dicts (one per query)
     """
+    deterministic = config.deterministic
+    max_depth = config.max_depth
+    seed = config.seed
+    verbose = config.verbose
     # Extract dataset info from base_env_data
     _, _, _, im_batched, dh_batched = base_env_data
     
@@ -394,26 +444,28 @@ def test_tensor_env_batched(
         dataset=dh_batched.dataset_name,
         base_path="./data/",
         seed=seed,
-        batch_size=batch_size
+        batch_size=batch_size,
+        config=config
     )
+    device = getattr(batched_env, '_device', torch.device('cpu'))
     
     # Prepare all queries as tensors
     all_query_tensors = []
     for split, (p, h, t) in queries:
         query_atom = im_batched_new.atom_to_tensor(p, h, t)
         query_padded = torch.full((batched_env.padding_atoms, 3), batched_env.padding_idx,
-                                   dtype=torch.long, device='cpu')
+                                   dtype=torch.long, device=device)
         query_padded[0] = query_atom
         all_query_tensors.append(query_padded)
     
     # Stack into [M, A, D] tensor
     queries_tensor = torch.stack(all_query_tensors, dim=0)
-    labels_tensor = torch.ones(batch_size, dtype=torch.long, device='cpu')
-    depths_tensor = torch.ones(batch_size, dtype=torch.long, device='cpu')
+    labels_tensor = torch.ones(batch_size, dtype=torch.long, device=device)
+    depths_tensor = torch.ones(batch_size, dtype=torch.long, device=device)
     
     # Use per_slot_lengths for proper slot-based scheduling in eval mode
     # Each slot gets exactly 1 query (queries are laid out sequentially: slot0's query, slot1's query, ...)
-    per_slot_lengths = torch.ones(batch_size, dtype=torch.long, device='cpu')
+    per_slot_lengths = torch.ones(batch_size, dtype=torch.long, device=device)
     
     # Load dataset into eval mode
     batched_env.set_eval_dataset(
@@ -446,7 +498,7 @@ def test_tensor_env_batched(
         action_mask = obs_td['action_mask']  # [B, S]
         
         # Select actions for each slot
-        actions = torch.zeros(batch_size, dtype=torch.long, device='cpu')
+        actions = torch.zeros(batch_size, dtype=torch.long, device=device)
         
         for slot_idx in range(batch_size):
             if slot_done[slot_idx]:
@@ -516,7 +568,7 @@ def test_tensor_env_batched(
             obs_td = result_td
         
         # Update rewards and done flags
-        rewards = obs_td.get('reward', torch.zeros(batch_size, device='cpu'))
+        rewards = obs_td.get('reward', torch.zeros(batch_size, device=device))
         dones = obs_td['done']
         
         for slot_idx in range(batch_size):
@@ -535,7 +587,7 @@ def test_tensor_env_batched(
     
     # Collect results from all slots
     all_results = []
-    is_success = obs_td.get('is_success', torch.zeros(batch_size, dtype=torch.bool, device='cpu'))
+    is_success = obs_td.get('is_success', torch.zeros(batch_size, dtype=torch.bool, device=device))
     
     for slot_idx in range(batch_size):
         success = bool(is_success[slot_idx])

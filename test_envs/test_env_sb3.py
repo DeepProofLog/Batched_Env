@@ -13,12 +13,27 @@ import random
 import torch
 import numpy as np
 from typing import Tuple, Dict, List
+from types import SimpleNamespace
 
 from str_based.str_dataset import DataHandler as StrDataHandler
 from str_based.str_index_manager import IndexManager as StrIndexManager
 from str_based.str_env import LogicEnv_gym as StrEnv
 from str_based.str_utils import Term as StrTerm
 from str_based.str_unification import canonicalize_state_to_str
+
+
+def get_default_sb3_env_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        padding_atoms=100,
+        padding_states=500,
+        skip_unary_actions=False,
+        end_proof_action=False,
+        reward_type=0,
+        memory_pruning=False,
+        verbose=0,
+        prover_verbose=0,
+        device='cpu'
+    )
 
 
 def safe_item(x):
@@ -30,13 +45,22 @@ def safe_item(x):
     return x
 
 
-def setup_sb3_env(dataset: str = "countries_s3", base_path: str = "./data/", seed: int = 42) -> Tuple:
+def setup_sb3_env(
+    dataset: str = "countries_s3",
+    base_path: str = "./data/",
+    seed: int = 42,
+    config: SimpleNamespace = None
+) -> Tuple:
     """
     Setup the string-based (SB3) environment with dataset.
     
     Returns:
         (str_env, im_str, dh_str)
     """
+    cfg = config or get_default_sb3_env_config()
+    device_value = getattr(cfg, 'device', 'cpu')
+    device = device_value if isinstance(device_value, torch.device) else torch.device(device_value)
+
     dh_str = StrDataHandler(
         dataset_name=dataset,
         base_path=base_path,
@@ -51,11 +75,11 @@ def setup_sb3_env(dataset: str = "countries_s3", base_path: str = "./data/", see
     im_str = StrIndexManager(
         constants=dh_str.constants,
         predicates=dh_str.predicates,
-        max_total_vars=1000000,
+        max_total_vars=getattr(cfg, 'max_total_runtime_vars', 1000000),
         rules=dh_str.rules,
-        padding_atoms=100,
+        padding_atoms=getattr(cfg, 'padding_atoms', 100),
         max_arity=dh_str.max_arity,
-        device=torch.device('cpu'),
+        device=device,
     )
     
     facts_set = set(dh_str.facts)
@@ -74,17 +98,17 @@ def setup_sb3_env(dataset: str = "countries_s3", base_path: str = "./data/", see
         mode='eval_with_restart',
         seed=seed,
         max_depth=20,
-        memory_pruning=False,
-        padding_atoms=100,
-        padding_states=500,
-        verbose=0,
-        prover_verbose=0,
-        device=torch.device('cpu'),
+        memory_pruning=getattr(cfg, 'memory_pruning', False),
+        padding_atoms=getattr(cfg, 'padding_atoms', 100),
+        padding_states=getattr(cfg, 'padding_states', 500),
+        verbose=getattr(cfg, 'verbose', 0),
+        prover_verbose=getattr(cfg, 'prover_verbose', 0),
+        device=device,
         engine='python',
         engine_strategy='complete',
-        skip_unary_actions=False,
-        endf_action=False,
-        reward_type=0,
+        skip_unary_actions=getattr(cfg, 'skip_unary_actions', False),
+        endf_action=getattr(cfg, 'end_proof_action', False),
+        reward_type=getattr(cfg, 'reward_type', 0),
         canonical_action_order=True,
     )
     
@@ -231,10 +255,7 @@ def test_sb3_env_single_query(
 def test_sb3_env_batch(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     env_data: Tuple,
-    deterministic: bool = True,
-    max_depth: int = 20,
-    seed: int = 42,
-    verbose: bool = False
+    config: SimpleNamespace
 ) -> Dict:
     """
     Test multiple queries using the SB3 environment.
@@ -242,10 +263,7 @@ def test_sb3_env_batch(
     Args:
         queries: List of (split, (predicate, head, tail))
         env_data: Tuple from setup_sb3_env()
-        deterministic: If True, use canonical ordering; if False, random actions
-        max_depth: Maximum proof depth
-        seed: Random seed for reproducible random actions
-        verbose: Print detailed information
+        config: Configuration namespace with deterministic, max_depth, seed, verbose, etc.
         
     Returns:
         Dict with keys:
@@ -255,6 +273,10 @@ def test_sb3_env_batch(
             - avg_steps: float
             - traces: List of trace dicts
     """
+    deterministic = config.deterministic
+    max_depth = config.max_depth
+    seed = config.seed
+    verbose = config.verbose
     results = []
     
     for idx, (split, query_tuple) in enumerate(queries):

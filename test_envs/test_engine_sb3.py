@@ -11,6 +11,7 @@ sys.path.insert(0, root_path)
 import random
 import torch
 from typing import Tuple, Dict, List
+from types import SimpleNamespace
 
 from str_based.str_dataset import DataHandler as StrDataHandler
 from str_based.str_index_manager import IndexManager as StrIndexManager
@@ -18,13 +19,31 @@ from str_based.str_utils import Term as StrTerm
 from str_based.str_unification import get_next_unification_python, canonicalize_state_to_str
 
 
-def setup_sb3_engine(dataset: str = "countries_s3", base_path: str = "./data/") -> Tuple:
+def get_default_sb3_engine_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        padding_atoms=100,
+        max_total_runtime_vars=1_000_000,
+        device='cpu'
+    )
+
+
+def setup_sb3_engine(
+    dataset: str = "countries_s3",
+    base_path: str = "./data/",
+    config: SimpleNamespace = None
+) -> Tuple:
     """
     Setup the string-based (SB3) engine with dataset.
     
     Returns:
         (dh_str, im_str, fact_index_str, rules_by_pred, facts_set)
     """
+    cfg = config or get_default_sb3_engine_config()
+    device_value = getattr(cfg, 'device', 'cpu')
+    device = device_value if isinstance(device_value, torch.device) else torch.device(device_value)
+    padding_atoms = getattr(cfg, 'padding_atoms', 100)
+    max_total_vars = getattr(cfg, 'max_total_runtime_vars', 1_000_000)
+
     dh_str = StrDataHandler(
         dataset_name=dataset,
         base_path=base_path,
@@ -39,11 +58,11 @@ def setup_sb3_engine(dataset: str = "countries_s3", base_path: str = "./data/") 
     im_str = StrIndexManager(
         constants=dh_str.constants,
         predicates=dh_str.predicates,
-        max_total_vars=1000000,
+        max_total_vars=max_total_vars,
         rules=dh_str.rules,
-        padding_atoms=20,
+        padding_atoms=padding_atoms,
         max_arity=dh_str.max_arity,
-        device=torch.device('cpu'),
+        device=device,
     )
     fact_index_str = im_str.build_fact_index(dh_str.facts)
 
@@ -218,10 +237,7 @@ def test_sb3_engine_single_query(
 def test_sb3_engine_batch(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     engine_data: Tuple,
-    deterministic: bool = True,
-    max_depth: int = 10,
-    seed: int = 42,
-    verbose: bool = False
+    config: SimpleNamespace
 ) -> Dict:
     """
     Test multiple queries using the SB3 engine.
@@ -229,10 +245,7 @@ def test_sb3_engine_batch(
     Args:
         queries: List of (split, (predicate, head, tail))
         engine_data: Tuple from setup_sb3_engine()
-        deterministic: If True, use canonical ordering; if False, random actions
-        max_depth: Maximum proof depth
-        seed: Random seed for reproducible random actions
-        verbose: Print detailed information
+        config: Configuration namespace with deterministic, max_depth, seed, verbose, etc.
         
     Returns:
         Dict with keys:
@@ -242,6 +255,10 @@ def test_sb3_engine_batch(
             - avg_steps: float
             - traces: List of trace dicts
     """
+    deterministic = config.deterministic
+    max_depth = config.max_depth
+    seed = config.seed
+    verbose = config.verbose
     results = []
     
     for idx, (split, query_tuple) in enumerate(queries):

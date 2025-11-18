@@ -18,9 +18,15 @@ class BloomFilter:
         max_arity: int,
         total_vocab_size: int,
         padding_idx: int,
+        true_pred_idx: Optional[int] = None,
+        false_pred_idx: Optional[int] = None,
+        end_pred_idx: Optional[int] = None,
     ):
         self.batch_size = batch_size
         self._device = device
+        self.true_pred_idx = true_pred_idx
+        self.false_pred_idx = false_pred_idx
+        self.end_pred_idx = end_pred_idx
         self.mem_bits_pow = int(memory_bits_pow)
         self.mem_bits = 1 << self.mem_bits_pow
         self.mem_mask = self.mem_bits - 1
@@ -113,12 +119,29 @@ class BloomFilter:
     def add_current(self, rows: Tensor, current_queries: Tensor):
         """
         Insert current_queries[rows] into the Bloom filter for each env row.
+        Filters out terminal predicates to match ExactMemory and str_env behavior.
         rows: 1D Long tensor of env indices, shape [N]
         current_queries: [B, M, D]
         """
         if rows.numel() == 0:
             return
-        states = current_queries.index_select(0, rows)              # [N, M, D]
+        states = current_queries.index_select(0, rows).clone()      # [N, M, D]
+        
+        # Filter out terminal predicates (match str_env and ExactMemory behavior)
+        # Replace terminal atoms with padding to exclude them from the hash
+        pad = self.padding_idx
+        preds = states[:, :, 0]  # [N, M]
+        is_terminal = torch.zeros_like(preds, dtype=torch.bool)
+        if self.true_pred_idx is not None:
+            is_terminal |= (preds == self.true_pred_idx)
+        if self.false_pred_idx is not None:
+            is_terminal |= (preds == self.false_pred_idx)
+        if self.end_pred_idx is not None:
+            is_terminal |= (preds == self.end_pred_idx)
+        
+        # Zero out terminal atoms by setting all components to padding
+        states[is_terminal] = pad
+        
         h1, h2 = self._state_hash64(states)                              # [N], [N]
         salt = self._mem_salt.index_select(0, rows)                      # [N]
         h2s = (h2 ^ salt) & ((1 << 63) - 1)
