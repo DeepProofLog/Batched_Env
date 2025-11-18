@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from typing import Tuple, Optional
 from tensordict import TensorDict
 from stable_baselines3.common.distributions import CategoricalDistribution
+from debug_config import DebugConfig
 
 
 class PolicyNetwork(nn.Module):
@@ -112,7 +113,7 @@ class PolicyNetwork(nn.Module):
         # Scale logits by 1/sqrt(embed_dim) like in scaled dot-product attention
         # This prevents the dot products from growing too large and causing
         # the softmax to become too peaked (low entropy)
-        # logits = logits / (self.embed_dim ** 0.5)
+        logits = logits / (self.embed_dim ** 0.5)
         
         # Apply action mask
         logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
@@ -215,12 +216,15 @@ class ActorCriticPolicy(nn.Module):
         num_layers: int = 4,
         dropout_prob: float = 0.0,
         device: torch.device = None,
+        debug_config: Optional[DebugConfig] = None,
     ):
         super().__init__()
         
         self.embedder = embedder
         self.embed_dim = embed_dim
         self.device = device if device is not None else torch.device('cpu')
+        self.debug_config = debug_config or DebugConfig()
+        self._debug_step_counter = 0
         
         # Create policy and value networks
         self.policy_net = PolicyNetwork(
@@ -304,6 +308,11 @@ class ActorCriticPolicy(nn.Module):
         # Compute log probabilities
         action_log_probs = distribution.log_prob(actions)
         
+        # Debug output
+        if self.debug_config.is_enabled('model') and self._debug_step_counter % self.debug_config.debug_sample_frequency == 0:
+            self._debug_forward(logits, actions, action_log_probs, action_mask, distribution)
+        self._debug_step_counter += 1
+        
         return actions, values, action_log_probs
     
     def evaluate_actions(
@@ -335,6 +344,10 @@ class ActorCriticPolicy(nn.Module):
         # Compute entropy - the distribution handles masked actions correctly
         entropy = distribution.entropy()
         
+        # Debug output for training
+        if self.debug_config.is_enabled('model', level=2):
+            self._debug_evaluate(logits, actions, action_log_probs, entropy, action_mask, values, distribution)
+        
         # Check for NaN/Inf in results (after distribution computation)
         if torch.isnan(action_log_probs).any() or torch.isinf(action_log_probs).any():
             raise RuntimeError("NaN or Inf detected in action_log_probs in evaluate_actions()." \
@@ -358,6 +371,81 @@ class ActorCriticPolicy(nn.Module):
         """
         obs_embeddings, _, _ = self._extract_features(obs)
         return self.value_net(obs_embeddings)
+    
+    def _debug_forward(self, logits, actions, action_log_probs, action_mask, distribution):
+        """Debug output for forward pass (action selection during rollout)."""
+        n_envs = min(self.debug_config.debug_sample_envs or logits.shape[0], logits.shape[0])
+        
+        print(f"\n{self.debug_config.debug_prefix} [MODEL FORWARD - Step {self._debug_step_counter}]")
+        
+        # Action mask statistics
+        if self.debug_config.debug_model_action_mask:
+            valid_actions = action_mask.sum(dim=-1)
+            print(f"  Valid actions per env: mean={valid_actions.float().mean():.2f}, "
+                  f"min={valid_actions.min()}, max={valid_actions.max()}")
+        
+        # Show logits for first few environments
+        if self.debug_config.debug_model_logits:
+            for i in range(n_envs):
+                valid_mask = action_mask[i].bool()
+                valid_logits = logits[i][valid_mask]
+                if len(valid_logits) > 0:
+                    print(f"  Env {i}: logits range=[{valid_logits.min():.3f}, {valid_logits.max():.3f}], "
+                          f"mean={valid_logits.mean():.3f}, std={valid_logits.std():.3f}")
+        
+        # Show distribution parameters
+        if self.debug_config.debug_model_distribution:
+            probs = distribution.distribution.probs
+            for i in range(n_envs):
+                valid_mask = action_mask[i].bool()
+                valid_probs = probs[i][valid_mask]
+                if len(valid_probs) > 0:
+                    entropy_i = distribution.entropy()[i]
+                    print(f"  Env {i}: prob range=[{valid_probs.min():.4f}, {valid_probs.max():.4f}], "
+                          f"entropy={entropy_i:.4f}")
+        
+        # Show selected actions
+        if self.debug_config.debug_model_actions:
+            for i in range(n_envs):
+                action_i = actions[i].item()
+                log_prob_i = action_log_probs[i].item()
+                prob_i = torch.exp(torch.tensor(log_prob_i)).item()
+                print(f"  Env {i}: selected action={action_i}, log_prob={log_prob_i:.4f}, prob={prob_i:.4f}")
+    
+    def _debug_evaluate(self, logits, actions, action_log_probs, entropy, action_mask, values, distribution):
+        """Debug output for evaluate_actions (during training)."""
+        batch_size = logits.shape[0]
+        n_show = min(self.debug_config.debug_sample_envs or 5, batch_size)
+        
+        print(f"\n{self.debug_config.debug_prefix} [MODEL EVALUATE]")
+        
+        # Overall statistics
+        valid_actions_per_env = action_mask.sum(dim=-1).float()
+        print(f"  Batch size: {batch_size}")
+        print(f"  Valid actions: mean={valid_actions_per_env.mean():.2f}, "
+              f"min={valid_actions_per_env.min():.0f}, max={valid_actions_per_env.max():.0f}")
+        
+        # Entropy analysis (key for debugging low entropy)
+        if self.debug_config.debug_model_entropy:
+            print(f"  Entropy: mean={entropy.mean():.4f}, min={entropy.min():.4f}, max={entropy.max():.4f}")
+            print(f"  Log prob: mean={action_log_probs.mean():.4f}, min={action_log_probs.min():.4f}, max={action_log_probs.max():.4f}")
+            
+            # Analyze distribution concentration
+            probs = distribution.distribution.probs
+            for i in range(n_show):
+                valid_mask = action_mask[i].bool()
+                valid_probs = probs[i][valid_mask]
+                if len(valid_probs) > 0:
+                    max_prob = valid_probs.max().item()
+                    action_i = actions[i].item()
+                    selected_prob = probs[i, action_i].item()
+                    print(f"  Env {i}: entropy={entropy[i]:.4f}, max_prob={max_prob:.4f}, "
+                          f"selected_action={action_i}, selected_prob={selected_prob:.4f}, "
+                          f"n_valid={valid_mask.sum()}")
+        
+        # Values statistics
+        if self.debug_config.debug_model_values:
+            print(f"  Values: mean={values.mean():.4f}, min={values.min():.4f}, max={values.max():.4f}")
 
 
 def create_actor_critic(
@@ -367,6 +455,7 @@ def create_actor_critic(
     num_layers: int = 4,
     dropout_prob: float = 0.0,
     device: torch.device = None,
+    debug_config: Optional[DebugConfig] = None,
 ) -> ActorCriticPolicy:
     """
     Factory function to create an actor-critic policy.
@@ -378,6 +467,7 @@ def create_actor_critic(
         num_layers: Number of residual blocks
         dropout_prob: Dropout probability
         device: PyTorch device
+        debug_config: Debug configuration
     
     Returns:
         ActorCriticPolicy instance
@@ -388,5 +478,6 @@ def create_actor_critic(
         hidden_dim=hidden_dim,
         num_layers=num_layers,
         dropout_prob=dropout_prob,
+        debug_config=debug_config,
         device=device,
     )

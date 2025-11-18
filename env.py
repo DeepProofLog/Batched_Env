@@ -62,11 +62,18 @@ class BatchedEnv(EnvBase):
         memory_bits_pow: int = 22,     # 2**22 bits per env (512 KB) -> higher precision
         memory_hashes: int = 7,        # k hash functions -> more hashes reduce false positives
         use_exact_memory: bool = False,
+        debug_config=None,  # DebugConfig instance
     ):
         # Configure device and batch size
         self.batch_size_int = int(batch_size)
         device = _safe_device(device)
         super().__init__(device=device, batch_size=torch.Size([batch_size]))
+        
+        # Import here to avoid circular dependency
+        if debug_config is None:
+            from debug_config import DebugConfig
+            debug_config = DebugConfig()
+        self.debug_config = debug_config
 
         # Core params
         self._device = device
@@ -515,6 +522,10 @@ class BatchedEnv(EnvBase):
             sample_counts = self.derived_states_counts[:min(4, B)]
             self.debug_helper._log(2, f"[step] derived_states_counts (first 4): {sample_counts.tolist()}")
         
+        # Enhanced debug output for action space analysis
+        if self.debug_config.is_enabled('env') and self.debug_config.debug_env_action_spaces:
+            self._debug_action_space(obs, dones, is_success)
+        
         td = TensorDict(
             {**obs, "reward": rewards, "done": dones, "terminated": terminated, "truncated": truncated},
             batch_size=self.batch_size, device=self._device
@@ -531,6 +542,65 @@ class BatchedEnv(EnvBase):
             self.debug_helper._log(2, f"[_step] Returning td['done']: {td['done']}, terminated: {td['terminated']}")
 
         return td
+
+    def step_and_maybe_reset(self, tensordict: TensorDict) -> Tuple[TensorDict, TensorDict]:
+        """
+        Execute a step and automatically reset environments that are done.
+        
+        This is the recommended method for rollout collection as it ensures
+        environments are immediately reset when episodes complete, preventing
+        steps through terminal states.
+        
+        Args:
+            tensordict: Input tensordict with action
+            
+        Returns:
+            Tuple of (step_result_td, next_obs_td):
+                - step_result_td: Full step result with 'next' key containing observations/rewards/done
+                - next_obs_td: Observation for next iteration (already reset for done envs)
+        """
+        # Execute the step
+        step_result = self.step(tensordict)
+        
+        # Extract next observation from the "next" key (TorchRL convention)
+        if "next" in step_result.keys():
+            next_obs = step_result.get("next")
+        else:
+            # If no "next" key, the obs might be directly in step_result
+            next_obs = step_result
+        
+        # Check which environments are done
+        done = next_obs.get("done")
+        if done is not None:
+            done_mask = done.squeeze(-1).bool()
+            
+            # Reset done environments
+            if done_mask.any():
+                # Create reset tensordict with _reset mask for partial reset
+                reset_td = TensorDict(
+                    {"_reset": done_mask.unsqueeze(-1)},
+                    batch_size=self.batch_size,
+                    device=self._device
+                )
+                # Reset only the done environments
+                reset_obs = self.reset(reset_td)
+                
+                # Merge reset observations into next_obs for done environments
+                next_obs_merged = next_obs.clone()
+                for key in reset_obs.keys():
+                    if key in next_obs_merged.keys():
+                        # Replace values for done environments
+                        obs_val = next_obs_merged.get(key)
+                        reset_val = reset_obs.get(key)
+                        if obs_val.shape[0] == done_mask.shape[0]:
+                            obs_val = obs_val.clone()
+                            obs_val[done_mask] = reset_val[done_mask]
+                            next_obs_merged.set(key, obs_val)
+                
+                return step_result, next_obs_merged
+        
+        # No resets needed, return as-is
+        return step_result, next_obs
 
     # ---------------------------------------------------------------------
     # Derived-state computation
@@ -1348,6 +1418,10 @@ class BatchedEnv(EnvBase):
         counts = self.derived_states_counts.view(B, 1)
         action_mask = action_indices < counts # [B, S]
         
+        # Debug action mask creation
+        if self.debug_config.is_enabled('env', level=2):
+            self._debug_observation_creation(action_mask, counts)
+        
         # If everything is masked we need to surface the underlying issue immediately.
         # HOWEVER: If all environments are done, this is normal and we should just return dummy obs
         all_false = (~action_mask).all(dim=1)
@@ -1593,3 +1667,92 @@ class BatchedEnv(EnvBase):
         N = N_active
 
         return env_idx, N, idxs
+    
+    # ---------------------------------------------------------------------
+    # Debug methods for action space analysis
+    # ---------------------------------------------------------------------
+    def _debug_action_space(self, obs, dones, is_success):
+        """Debug output to understand why action space shrinks."""
+        B = self.batch_size_int
+        n_show = min(self.debug_config.debug_sample_envs or 5, B)
+        
+        print(f"\n{self.debug_config.debug_prefix} [ENV ACTION SPACE]")
+        
+        action_mask = obs['action_mask']
+        valid_actions = action_mask.sum(dim=-1)
+        
+        # Overall statistics
+        print(f"  Valid actions: mean={valid_actions.float().mean():.2f}, "
+              f"min={valid_actions.min():.0f}, max={valid_actions.max():.0f}")
+        
+        # Per-environment analysis
+        for i in range(n_show):
+            n_valid = valid_actions[i].item()
+            depth = self.current_depths[i].item()
+            is_done = dones[i].item() if dones.dim() > 1 else dones[i].squeeze().item()
+            success = is_success[i].item() if is_success.dim() > 1 else is_success[i].squeeze().item()
+            
+            # Get current state info
+            current_pred_idx = self.current_queries[i, 0, 0].item()
+            
+            # Check if terminal
+            is_terminal = ""
+            if current_pred_idx == self.true_pred_idx:
+                is_terminal = " [TRUE]"
+            elif current_pred_idx == self.false_pred_idx:
+                is_terminal = " [FALSE]"
+            elif self.end_pred_idx is not None and current_pred_idx == self.end_pred_idx:
+                is_terminal = " [END]"
+            elif depth >= self.max_depth:
+                is_terminal = " [MAX_DEPTH]"
+            
+            # Get string representation if possible
+            state_str = ""
+            if hasattr(self, 'debug_helper') and self.debug_helper is not None:
+                try:
+                    state_str = self.debug_helper.state_to_str(self.current_queries[i])
+                    if len(state_str) > 80:
+                        state_str = state_str[:77] + "..."
+                except:
+                    state_str = f"pred_idx={current_pred_idx}"
+            else:
+                state_str = f"pred_idx={current_pred_idx}"
+            
+            print(f"  Env {i}: n_valid={n_valid}, depth={depth}/{self.max_depth}, "
+                  f"done={is_done}, success={success}{is_terminal}")
+            print(f"    State: {state_str}")
+            
+            # Show why actions are limited
+            if n_valid == 1:
+                print(f"    → Only 1 action: likely terminal or dead-end state")
+            elif n_valid < 3 and not is_terminal:
+                print(f"    → Few actions: memory pruning or limited successors")
+    
+    def _debug_observation_creation(self, action_mask, counts):
+        """Debug observation creation to trace action masking."""
+        B = self.batch_size_int
+        n_show = min(self.debug_config.debug_sample_envs or 5, B)
+        
+        print(f"\n{self.debug_config.debug_prefix} [ENV OBSERVATION CREATION]")
+        
+        for i in range(n_show):
+            n_derived = self.derived_states_counts[i].item()
+            n_valid = action_mask[i].sum().item()
+            
+            print(f"  Env {i}: derived_states={n_derived}, valid_actions={n_valid}")
+            
+            # Check for memory pruning effect
+            if n_derived > 0 and n_valid < n_derived:
+                print(f"    → Some derived states were masked (memory pruning?)")
+            
+            # Show a few derived states if available
+            if n_derived > 0 and hasattr(self, 'debug_helper') and self.debug_helper is not None:
+                try:
+                    n_to_show = min(3, n_derived)
+                    for j in range(n_to_show):
+                        derived_str = self.debug_helper.state_to_str(self.derived_states_batch[i, j])
+                        if len(derived_str) > 60:
+                            derived_str = derived_str[:57] + "..."
+                        print(f"      Action {j}: {derived_str}")
+                except:
+                    pass

@@ -33,6 +33,7 @@ from sampler import Sampler
 from embeddings import get_embedder
 from env import BatchedEnv
 from unification_engine import UnificationEngine
+from debug_config import DebugConfig
 
 # Import new PPO implementation
 from ppo.pposb3 import PPO
@@ -96,6 +97,11 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
         max_grad_norm=0.5,
         learning_rate=3e-4,
         ppo_batch_size=2048,
+        # Debug settings
+        debug_mode=None,  # Can be 'entropy', 'agent', 'model', 'full', or None
+        debug_agent=0,
+        debug_model=0,
+        debug_rollouts=0,
     )
 
     defaults.dataset_name = defaults.dataset  # backward compatibility
@@ -140,6 +146,26 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
     print(f"Seed: {config.seed}")
     print(f"Device: {config.device}")
     print(f"{'='*80}\n")
+    
+    # Create debug configuration early (before env creation)
+    if config.debug_mode == 'entropy':
+        debug_cfg = DebugConfig.create_entropy_debug()
+    elif config.debug_mode == 'agent':
+        debug_cfg = DebugConfig.create_agent_debug()
+    elif config.debug_mode == 'model':
+        debug_cfg = DebugConfig.create_model_debug()
+    elif config.debug_mode == 'full':
+        debug_cfg = DebugConfig.create_full_debug()
+    else:
+        # Use manual settings
+        debug_cfg = DebugConfig(
+            debug_agent=config.debug_agent,
+            debug_model=config.debug_model,
+            debug_rollouts=config.debug_rollouts,
+        )
+    
+    if debug_cfg.is_enabled('agent') or debug_cfg.is_enabled('model') or debug_cfg.is_enabled('env'):
+        print(f"  Debug configuration: {debug_cfg}\n")
     
     # ============================================================
     # 1. Load dataset and create environment
@@ -213,6 +239,7 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
         sampler=sampler,
         corruption_mode=config.corruption_mode,
         train_neg_ratio=config.train_neg_ratio,
+        debug_config=debug_cfg,
     )
     
     end_time = time()
@@ -246,6 +273,7 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
         num_layers=config.num_layers,
         dropout_prob=config.dropout_prob,
         device=config.device,
+        debug_config=debug_cfg,
     )
     
     # Wrap policy to return TensorDict for evaluate_policy compatibility
@@ -281,6 +309,7 @@ def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
         learning_rate=config.learning_rate,
         device=config.device,
         verbose=1,
+        debug_config=debug_cfg,
     )
     
     # Setup and test initial rollout
@@ -422,6 +451,14 @@ if __name__ == "__main__":
     parser.add_argument('--memory_pruning', type=lambda x: x.lower() == 'true', default=None, help='Enable memory pruning')
     parser.add_argument('--reward_type', type=int, default=None, help='Reward type')
     parser.add_argument('--verbose', type=int, default=None, help='Verbose level')
+    
+    # Debug settings
+    parser.add_argument('--debug_mode', type=str, default=None, 
+                        choices=['entropy', 'agent', 'model', 'full'],
+                        help='Debug mode preset (entropy/agent/model/full)')
+    parser.add_argument('--debug_agent', type=int, default=None, help='Agent debug level (0-2)')
+    parser.add_argument('--debug_model', type=int, default=None, help='Model debug level (0-2)')
+    parser.add_argument('--debug_rollouts', type=int, default=None, help='Rollout debug level (0-2)')
     
     # Embedder settings
     parser.add_argument('--atom_embedder', type=str, default=None, help='Atom embedder type')

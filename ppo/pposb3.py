@@ -14,6 +14,7 @@ import time
 
 from ppo.pposb3_rollout import RolloutBuffer
 from ppo.pposb3_model import ActorCriticPolicy
+from debug_config import DebugConfig
 
 
 class PPO:
@@ -58,6 +59,7 @@ class PPO:
         learning_rate: float = 3e-4,
         device: torch.device = None,
         verbose: int = 1,
+        debug_config: Optional[DebugConfig] = None,
     ):
         self.policy = policy
         self.env = env
@@ -74,6 +76,7 @@ class PPO:
         self.learning_rate = learning_rate
         self.device = device if device is not None else torch.device('cpu')
         self.verbose = verbose
+        self.debug_config = debug_config or DebugConfig()
         
         # Initialize optimizer
         self.optimizer = torch.optim.Adam(
@@ -160,13 +163,12 @@ class PPO:
                     device=self.device
                 )
                 
-                # Take step in environment (returns TensorDict)
-                # TorchRL's EnvBase wraps the output in a 'next' key
-                step_result = self.env.step(action_td)
+                # Take step in environment using step_and_maybe_reset
+                # This automatically resets done environments
+                step_result, obs = self.env.step_and_maybe_reset(action_td)
                 
-                # Extract next state info
+                # Extract next state info from step result
                 next_info = step_result['next']
-                obs = next_info  # Next observation (contains all obs keys)
                 
                 # Get reward, done, and success (all have shape [n_envs, 1])
                 rewards = next_info['reward'].squeeze(-1).to(self.device)
@@ -236,6 +238,10 @@ class PPO:
         
         total_rollout_time = time.time() - rollout_start_time
         print(f"Rollout collection complete. Collected {n_steps}x{self.n_envs}={n_steps * self.n_envs} Timesteps in {total_rollout_time:.2f}s.")
+        
+        # Debug rollout statistics
+        if self.debug_config.is_enabled('agent') and self.debug_config.debug_agent_rollout_stats:
+            self._debug_rollout_stats(action_stats)
         
         # Store action stats for later retrieval
         if collect_action_stats:
@@ -500,6 +506,10 @@ class PPO:
         
         self.logger_dict.update(metrics)
         
+        # Debug training statistics
+        if self.debug_config.is_enabled('agent') and self.debug_config.debug_agent_train_stats:
+            self._debug_train_stats(metrics, advantages, values, returns)
+        
         print(f"Training complete. Average losses:")
         print(f"  Policy loss: {metrics['train/policy_loss']:.7f}")
         print(f"  Value loss: {metrics['train/value_loss']:.7f}")
@@ -620,3 +630,85 @@ class PPO:
     def get_logger_dict(self) -> Dict[str, Any]:
         """Get the current logger dictionary."""
         return self.logger_dict.copy()
+    
+    def _debug_rollout_stats(self, action_stats):
+        """Debug output for rollout statistics."""
+        import numpy as np
+        
+        print(f"\n{self.debug_config.debug_prefix} [AGENT ROLLOUT STATS]")
+        
+        if action_stats:
+            # Convert to numpy for easier stats
+            action_counts = np.concatenate(action_stats, axis=0)  # Shape: (total_steps, n_envs)
+            
+            # Per-step statistics
+            avg_actions_per_step = action_counts.mean(axis=1)  # Average across envs per step
+            print(f"  Actions available per step:")
+            print(f"    Mean: {avg_actions_per_step.mean():.2f}")
+            print(f"    Min: {avg_actions_per_step.min():.2f}")
+            print(f"    Max: {avg_actions_per_step.max():.2f}")
+            print(f"    Std: {avg_actions_per_step.std():.2f}")
+            
+            # Overall statistics
+            print(f"  Overall action availability:")
+            print(f"    Mean: {action_counts.mean():.2f}")
+            print(f"    Min: {action_counts.min():.0f}")
+            print(f"    Max: {action_counts.max():.0f}")
+            
+            # Distribution analysis (helps understand entropy issues)
+            hist, bins = np.histogram(action_counts.flatten(), bins=10)
+            print(f"  Distribution of available actions:")
+            for i in range(len(hist)):
+                print(f"    [{bins[i]:.1f}-{bins[i+1]:.1f}]: {hist[i]} ({100*hist[i]/hist.sum():.1f}%)")
+        
+        # Episode statistics from buffer
+        if len(self.ep_info_buffer.keys()) > 0 and self.ep_info_buffer.batch_size[0] > 0:
+            print(f"  Episodes completed: {self.ep_info_buffer.batch_size[0]}")
+            print(f"    Avg reward: {self.ep_info_buffer['r'].mean().item():.2f}")
+            print(f"    Avg length: {self.ep_info_buffer['l'].float().mean().item():.2f}")
+            if 's' in self.ep_info_buffer.keys():
+                print(f"    Success rate: {self.ep_info_buffer['s'].float().mean().item()*100:.2f}%")
+    
+    def _debug_train_stats(self, metrics, advantages, values, returns):
+        """Debug output for training statistics."""
+        print(f"\n{self.debug_config.debug_prefix} [AGENT TRAIN STATS]")
+        
+        # Core metrics
+        print(f"  Training metrics:")
+        print(f"    Policy loss: {metrics['train/policy_loss']:.6f}")
+        print(f"    Value loss: {metrics['train/value_loss']:.6f}")
+        print(f"    Entropy: {metrics['train/entropy']:.6f}")
+        print(f"    Total loss: {metrics['train/total_loss']:.6f}")
+        print(f"    Approx KL: {metrics['train/approx_kl']:.6f}")
+        print(f"    Clip fraction: {metrics['train/clip_fraction']:.4f}")
+        
+        # Advantage statistics
+        print(f"  Advantages:")
+        print(f"    Mean: {advantages.mean().item():.4f}")
+        print(f"    Std: {advantages.std().item():.4f}")
+        print(f"    Min: {advantages.min().item():.4f}")
+        print(f"    Max: {advantages.max().item():.4f}")
+        
+        # Value statistics
+        print(f"  Values:")
+        print(f"    Mean: {values.mean().item():.4f}")
+        print(f"    Std: {values.std().item():.4f}")
+        print(f"    Min: {values.min().item():.4f}")
+        print(f"    Max: {values.max().item():.4f}")
+        
+        # Return statistics
+        print(f"  Returns:")
+        print(f"    Mean: {returns.mean().item():.4f}")
+        print(f"    Std: {returns.std().item():.4f}")
+        print(f"    Min: {returns.min().item():.4f}")
+        print(f"    Max: {returns.max().item():.4f}")
+        
+        # Entropy analysis (key for debugging low entropy)
+        if metrics['train/entropy'] < 0.1:
+            print(f"\n  ⚠️  WARNING: Low entropy detected ({metrics['train/entropy']:.6f})")
+            print(f"      This suggests the policy is very confident/deterministic.")
+            print(f"      Check:")
+            print(f"        - Are there enough valid actions? (see rollout stats)")
+            print(f"        - Is the action space too small?")
+            print(f"        - Are logits too extreme? (see model debug)")
+            print(f"        - Is entropy coefficient too low? (current: {self.ent_coef})")
