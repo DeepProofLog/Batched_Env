@@ -175,8 +175,8 @@ class BatchedEnv(EnvBase):
         prover_verbose: int = 0,
         device: Optional[torch.device] = None,
         # Memory pruning config (Bloom filter)
-        memory_bits_pow: int = 18,     # 2**18 bits per env (32 KB) -> good default
-        memory_hashes: int = 3,        # k hash functions
+        memory_bits_pow: int = 22,     # 2**22 bits per env (512 KB) -> higher precision
+        memory_hashes: int = 7,        # k hash functions -> more hashes reduce false positives
         use_exact_memory: bool = False,
     ):
         # Configure device and batch size

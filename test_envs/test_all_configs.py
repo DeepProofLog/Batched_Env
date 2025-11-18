@@ -44,8 +44,8 @@ def create_default_test_config() -> SimpleNamespace:
         SimpleNamespace with default configuration parameters.
     """
     return SimpleNamespace(
-        dataset="family",
-        n_queries=400,
+        dataset="countries_s3",
+        n_queries=800,
         deterministic=True,
         max_depth=20,
         seed=42,
@@ -231,11 +231,11 @@ class Configs:
     def get_default_env_configs(cls) -> List[str]:
         return [
             'sb3_env',
-            'tensor_env',
+            # 'tensor_env',
             'batched_tensor_env',
             # 'eval_env',
             # 'rollout_env',
-            # 'rolloutsb3_env'
+            'rolloutsb3_env'
         ]
 
 

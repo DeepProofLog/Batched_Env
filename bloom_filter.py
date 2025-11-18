@@ -93,13 +93,32 @@ class BloomFilter:
     def membership(self, states: Tensor, owners: Tensor) -> Tensor:
         """
         Membership test for a batch of states belonging to per-env Bloom rows.
+        Filters out terminal predicates to match add_current() behavior.
         states: [A, K, M, D]
         owners: [A] env indices in full batch
         Returns:
             visited: [A, K] bool
         """
         A, K, M, D = states.shape
-        h1, h2 = self._state_hash64(states)                               # [A, K], [A, K]
+        
+        # Filter out terminal predicates (must match add_current behavior)
+        states_filtered = states.clone()
+        pad = self.padding_idx
+        preds = states_filtered[:, :, :, 0]  # [A, K, M]
+        is_terminal = torch.zeros_like(preds, dtype=torch.bool)
+        if self.true_pred_idx is not None:
+            is_terminal |= (preds == self.true_pred_idx)
+        if self.false_pred_idx is not None:
+            is_terminal |= (preds == self.false_pred_idx)
+        if self.end_pred_idx is not None:
+            is_terminal |= (preds == self.end_pred_idx)
+        
+        # Zero out terminal atoms by setting all components to padding
+        # Expand mask to cover all D dimensions: [A, K, M] -> [A, K, M, D]
+        is_terminal_expanded = is_terminal.unsqueeze(-1).expand_as(states_filtered)
+        states_filtered = torch.where(is_terminal_expanded, pad, states_filtered)
+        
+        h1, h2 = self._state_hash64(states_filtered)                      # [A, K], [A, K]
         salt = self._mem_salt.index_select(0, owners).view(A, 1)          # [A,1]
         # double hashing with salt
         h2s = (h2 ^ salt) & ((1 << 63) - 1)
@@ -127,7 +146,7 @@ class BloomFilter:
             return
         states = current_queries.index_select(0, rows).clone()      # [N, M, D]
         
-        # Filter out terminal predicates (match str_env and ExactMemory behavior)
+        # Filter out terminal predicates (match ExactMemory and str_env behavior)
         # Replace terminal atoms with padding to exclude them from the hash
         pad = self.padding_idx
         preds = states[:, :, 0]  # [N, M]
@@ -140,7 +159,9 @@ class BloomFilter:
             is_terminal |= (preds == self.end_pred_idx)
         
         # Zero out terminal atoms by setting all components to padding
-        states[is_terminal] = pad
+        # Use torch.where for consistent behavior with membership()
+        is_terminal_expanded = is_terminal.unsqueeze(-1).expand(states.shape[0], states.shape[1], states.shape[2])
+        states = torch.where(is_terminal_expanded, pad, states)
         
         h1, h2 = self._state_hash64(states)                              # [N], [N]
         salt = self._mem_salt.index_select(0, rows)                      # [N]
@@ -148,6 +169,14 @@ class BloomFilter:
         idxs = (h1.unsqueeze(-1) + self._hash_idx.view(1, -1) * h2s.unsqueeze(-1)) & self.mem_mask  # [N, k]
         word_idx = (idxs >> 6).long()                                    # [N, k]
         bit_off = (idxs & self._word_mask).long()                        # [N, k]
+        
+        # DEBUG: Print first state being added
+        if False and rows.numel() > 0:  # Disabled
+            print(f"[BloomFilter.add_current] Adding {rows.numel()} states")
+            print(f"  First state shape: {states[0].shape}")
+            print(f"  First state h1={h1[0].item()}, h2={h2[0].item()}, salt={salt[0].item()}")
+            print(f"  First state idxs: {idxs[0].tolist()}")
+        
         # Build masks and OR into Bloom
         row_exp = rows.view(-1, 1).expand_as(word_idx)                   # [N, k]
         old = self._mem_bloom[row_exp, word_idx]
