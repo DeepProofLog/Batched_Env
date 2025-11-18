@@ -44,7 +44,7 @@ if __name__ == "__main__":
         # General experiment configuration
 
         # Dataset params
-        'dataset_name': 'family',
+        'dataset_name': 'countries_s3',
 
         'eval_neg_samples': 4,
         'test_neg_samples': 100,
@@ -70,15 +70,14 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 100000,
+        'timesteps_train': 400000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
         'n_steps': 64, #64
         'batch_size_env': 256,  # 256
         'batch_size_env_eval': 256,  # 256
-        'batch_size': 32,
-        'use_ppo_base': True,
+        'batch_size': 256,
 
         # Env params
         'reward_type': 0,

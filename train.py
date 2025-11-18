@@ -25,10 +25,8 @@ from embeddings import get_embedder
 from env import BatchedEnv
 from index_manager import IndexManager
 from model_eval import evaluate_ranking_metrics
-from ppo.torchrl_ppo import PPOAgentTorchRL
-from ppo.ppo import PPOAgent
-from ppo.torchrl_model import create_torchrl_modules
-from ppo.ppo_model import create_torch_modules
+from ppo.pposb3 import PPO
+from ppo.pposb3_model import create_actor_critic
 from sampler import Sampler
 from unification_engine import UnificationEngine
 from utils import (
@@ -202,7 +200,7 @@ def _extract_query_triples(split, limit: Optional[int]) -> torch.Tensor:
 
 
 def _evaluate_split(
-    actor: nn.Module,
+    policy: nn.Module,
     env: Optional[BatchedEnv],
     sampler: Sampler,
     split,
@@ -225,7 +223,7 @@ def _evaluate_split(
     queries = queries.to(device)
 
     metrics = evaluate_ranking_metrics(
-        actor=actor,
+        actor=policy.policy_net,
         env=env,
         queries=queries,
         sampler=sampler,
@@ -258,16 +256,16 @@ def _evaluate_split(
 
 def _evaluate(
     args: Any,
-    actor: nn.Module,
+    policy: nn.Module,
     sampler: Sampler,
     data_handler: DataHandler,
     eval_env: Optional[BatchedEnv],
     test_env: Optional[BatchedEnv],
 ) -> Tuple[dict, dict, dict]:
-    actor.eval()
+    policy.eval()
 
     metrics_valid = _evaluate_split(
-        actor,
+        policy,
         eval_env,
         sampler,
         data_handler.get_materialized_split("valid"),
@@ -280,7 +278,7 @@ def _evaluate(
         print_eval_info("VALID", metrics_valid)
 
     metrics_test = _evaluate_split(
-        actor,
+        policy,
         test_env,
         sampler,
         data_handler.get_materialized_split("test"),
@@ -306,24 +304,6 @@ def _resolve_ckpt_to_load(root: Path, restore_best: bool) -> Optional[Path]:
     keyword = "best_eval" if restore_best else "last_epoch"
     matches = sorted(root.glob(f"*{keyword}*.pt"))
     return matches[-1] if matches else None
-
-
-def _load_checkpoint(
-    actor: nn.Module,
-    critic: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    checkpoint_path: Path,
-    device: torch.device,
-) -> Tuple[int, int, dict]:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    actor.load_state_dict(checkpoint["actor_state_dict"])
-    critic.load_state_dict(checkpoint["critic_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    epoch = checkpoint.get("epoch", 0)
-    timestep = checkpoint.get("timestep", 0)
-    metrics = checkpoint.get("metrics", {})
-    print(f"Loaded checkpoint from {checkpoint_path}")
-    return epoch, timestep, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -404,20 +384,17 @@ class TrainingLogger:
 
 def train(
     args: Any,
-    actor: nn.Module,
-    critic: nn.Module,
-    optimizer: torch.optim.Optimizer,
+    policy: nn.Module,
     train_env: BatchedEnv,
     eval_env: Optional[BatchedEnv],
     sampler: Sampler,
     data_handler: DataHandler,
     model_path: Path,
     device: torch.device,
-    use_ppo_base: bool = True,
-) -> Tuple[nn.Module, nn.Module]:
+) -> nn.Module:
     if args.timesteps_train <= 0:
         print("No training requested (timesteps_train <= 0). Skipping optimization.")
-        return actor, critic
+        return policy
 
     logger = TrainingLogger(model_path, use_tensorboard=True)
 
@@ -456,54 +433,38 @@ def train(
     )
     callback_manager.on_training_start()
 
-    agent_cls = PPOAgent if use_ppo_base else PPOAgentTorchRL
     use_amp = getattr(args, "use_amp", device.type == "cuda")
     setattr(args, "use_amp", use_amp)
 
-    ppo_agent = agent_cls(
-        actor=actor,
-        critic=critic,
-        optimizer=optimizer,
-        train_env=train_env,
-        eval_env=eval_env,
-        sampler=sampler,
-        data_handler=data_handler,
-        index_manager=None,
-        args=args,
-        n_envs=args.batch_size_env,
+    # Create PPO agent with SB3-style implementation
+    ppo_agent = PPO(
+        policy=policy,
+        env=train_env,
         n_steps=args.n_steps,
         n_epochs=args.n_epochs,
         batch_size=args.batch_size,
         gamma=args.gamma,
         gae_lambda=0.95,
         clip_range=args.clip_range,
+        clip_range_vf=None,
         ent_coef=args.ent_coef,
-        value_coef=0.5,
+        vf_coef=0.5,
         max_grad_norm=0.5,
+        learning_rate=args.lr,
         device=device,
-        model_save_path=model_path,
-        eval_best_metric=getattr(args, "eval_best_metric", "mrr_mean"),
-        verbose_cb=getattr(args, "verbose_cb", False),
-        debug_mode=getattr(args, "debug_ppo", False),
-        min_multiaction_ratio=getattr(args, "min_multiaction_ratio", 0.05),
-        use_amp=use_amp,
+        verbose=1,
     )
 
-    actor, critic = ppo_agent.train(
+    # Train the agent
+    ppo_agent.learn(
         total_timesteps=args.timesteps_train,
-        eval_callback=callback_manager,
-        rollout_callback=callback_manager.rollout_callback,
-        callback_manager=callback_manager,
-        logger=logger,
+        log_interval=1,
+        reset_num_timesteps=True,
     )
 
     logger.close()
 
-    if args.restore_best_val_model and ppo_agent.best_model_path is not None:
-        print(f"Restoring best model from {ppo_agent.best_model_path}")
-        ppo_agent.load_checkpoint(ppo_agent.best_model_path)
-
-    return actor, critic
+    return policy
 
 
 # ---------------------------------------------------------------------------
@@ -572,42 +533,22 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     )
 
     embed_dim = getattr(embedder, "embed_dim", getattr(embedder, "atom_embedding_size", args.atom_embedding_size))
-    use_ppo_base = getattr(args, "use_ppo_base", False)
-    if use_ppo_base:
-        actor, critic = create_torch_modules(
-            embedder=embedder,
-            num_actions=args.padding_states,
-            embed_dim=embed_dim,
-            hidden_dim=128,
-            num_layers=8,
-            dropout_prob=0.2,
-            device=device,
-            enable_kge_action=False,
-            kge_inference_engine=None,
-            index_manager=index_manager,
-        )
-    else:
-        actor, critic = create_torchrl_modules(
-            embedder=embedder,
-            num_actions=args.padding_states,
-            embed_dim=embed_dim,
-            hidden_dim=128,
-            num_layers=8,
-            dropout_prob=0.2,
-            device=device,
-            enable_kge_action=False,
-            kge_inference_engine=None,
-            index_manager=index_manager,
-        )
+    
+    # Create actor-critic policy using PPO SB3-style implementation
+    policy = create_actor_critic(
+        embedder=embedder,
+        embed_dim=embed_dim,
+        hidden_dim=128,
+        num_layers=8,
+        dropout_prob=0.2,
+        device=device,
+    )
 
-    # Wrap models with DataParallel for multi-GPU training
+    # Note: PPO creates its own optimizer internally, no need to create one here
+    # Wrap policy with DataParallel for multi-GPU training if needed
     if torch.cuda.is_available() and torch.cuda.device_count() > 1:
         print(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
-        actor = torch.nn.DataParallel(actor)
-        critic = torch.nn.DataParallel(critic)
-
-    params = {id(p): p for p in list(actor.parameters()) + list(critic.parameters())}
-    optimizer = torch.optim.Adam(params.values(), lr=args.lr)
+        policy = torch.nn.DataParallel(policy)
 
     model_path = _model_dir(args, date)
     model_path.mkdir(parents=True, exist_ok=True)
@@ -616,30 +557,28 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         ckpt = _resolve_ckpt_to_load(model_path, restore_best=args.restore_best_val_model)
         if ckpt is None:
             raise FileNotFoundError(f"No checkpoint found in {model_path}")
-        _load_checkpoint(actor, critic, optimizer, ckpt, device)
+        # Load checkpoint into policy
+        checkpoint = torch.load(ckpt, map_location=device)
+        policy.load_state_dict(checkpoint['policy_state_dict'])
+        print(f"Loaded model from {ckpt}")
     else:
-        actor, critic = train(
+        policy = train(
             args,
-            actor,
-            critic,
-            optimizer,
+            policy,
             train_env,
             eval_env,
             sampler,
             data_handler,
             model_path,
             device,
-            use_ppo_base=use_ppo_base,
         )
 
-    actor.apply(_freeze_dropout_layernorm)
-    critic.apply(_freeze_dropout_layernorm)
-    actor.eval()
-    critic.eval()
+    policy.apply(_freeze_dropout_layernorm)
+    policy.eval()
 
     metrics_train, metrics_valid, metrics_test = _evaluate(
         args,
-        actor,
+        policy,
         sampler,
         data_handler,
         eval_env,

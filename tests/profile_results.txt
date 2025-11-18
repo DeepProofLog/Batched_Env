@@ -1,48 +1,48 @@
-         972707 function calls (888506 primitive calls) in 55.760 seconds
+         720181 function calls (685926 primitive calls) in 33.976 seconds
 
    Ordered by: cumulative time
-   List reduced from 1405 to 15 due to restriction <15>
+   List reduced from 818 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        1    0.002    0.002   55.760   55.760 test_pipeline_rollout.py:40(test_rollout_pipeline)
-        1    0.023    0.023   52.217   52.217 ppo_agent_torchrl.py:470(learn)
-       40    0.001    0.000   22.770    0.569 _tensor.py:570(backward)
-       40    0.001    0.000   22.770    0.569 __init__.py:243(backward)
-       40    0.001    0.000   22.766    0.569 graph.py:832(_engine_run_backward)
-       40   22.766    0.569   22.766    0.569 {method 'run_backward' of 'torch._C._EngineBase' objects}
-12981/171    0.034    0.000   13.819    0.081 module.py:1771(_wrapped_call_impl)
-12981/171    0.055    0.000   13.818    0.081 module.py:1779(_call_impl)
-  486/171    0.006    0.000   13.813    0.081 common.py:265(wrapper)
-  445/210    0.003    0.000   12.935    0.062 utils.py:353(wrapper)
-      210    0.003    0.000   12.856    0.061 common.py:1138(forward)
-      210    0.001    0.000   12.640    0.060 common.py:1128(_call_module)
-       40    0.002    0.000   12.222    0.306 optimizer.py:497(wrapper)
-       40    0.001    0.000   12.212    0.305 optimizer.py:62(_use_grad)
-       40    0.001    0.000   12.210    0.305 adam.py:213(step)
+        1    0.001    0.001   33.976   33.976 grad_mode.py:287(__exit__)
+        1    0.005    0.005   32.118   32.118 pposb3.py:502(learn)
+        1    0.239    0.239   28.351   28.351 pposb3.py:344(train)
+       24    0.000    0.000   13.186    0.549 _tensor.py:570(backward)
+       24    0.001    0.000   13.185    0.549 __init__.py:243(backward)
+       24    0.001    0.000   13.183    0.549 graph.py:832(_engine_run_backward)
+       24   13.182    0.549   13.182    0.549 {method 'run_backward' of 'torch._C._EngineBase' objects}
+11163/328    0.034    0.000    9.234    0.028 module.py:1771(_wrapped_call_impl)
+11163/328    0.096    0.000    9.232    0.028 module.py:1779(_call_impl)
+       24    0.001    0.000    7.086    0.295 optimizer.py:497(wrapper)
+       24    0.001    0.000    7.079    0.295 optimizer.py:62(_use_grad)
+       24    0.000    0.000    7.078    0.295 adam.py:213(step)
+       24    0.000    0.000    7.004    0.292 optimizer.py:133(maybe_fallback)
+       24    0.000    0.000    7.004    0.292 adam.py:885(adam)
+       24    1.321    0.055    7.001    0.292 adam.py:345(_single_tensor_adam)
 
 
 
 
-         972707 function calls (888506 primitive calls) in 55.760 seconds
+         720181 function calls (685926 primitive calls) in 33.976 seconds
 
    Ordered by: internal time
-   List reduced from 1405 to 15 due to restriction <15>
+   List reduced from 818 to 15 due to restriction <15>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-       40   22.766    0.569   22.766    0.569 {method 'run_backward' of 'torch._C._EngineBase' objects}
-     2205    6.027    0.003    6.027    0.003 {built-in method torch._C._nn.linear}
-     2000    2.924    0.001    2.924    0.001 {method 'sqrt' of 'torch._C.TensorBase' objects}
-       40    1.961    0.049   12.092    0.302 adam.py:345(_single_tensor_adam)
-     4000    1.860    0.000    1.860    0.000 {method 'mul_' of 'torch._C.TensorBase' objects}
-       40    1.835    0.046    1.835    0.046 {built-in method torch._foreach_mul_}
-     4120    1.813    0.000    1.813    0.000 {built-in method torch._C._linalg.linalg_vector_norm}
-     2000    1.728    0.001    1.728    0.001 {method 'addcdiv_' of 'torch._C.TensorBase' objects}
-       40    1.708    0.043    1.708    0.043 {built-in method torch._foreach_norm}
-      315    1.501    0.005    1.510    0.005 embeddings.py:731(forward)
-     2000    1.342    0.001    1.342    0.001 {method 'lerp_' of 'torch._C.TensorBase' objects}
-     2000    1.332    0.001    1.332    0.001 {method 'addcmul_' of 'torch._C.TensorBase' objects}
-      630    1.275    0.002    1.275    0.002 {built-in method torch.embedding}
-     1890    1.117    0.001    1.117    0.001 {built-in method torch.relu}
-     1575    0.986    0.001    0.986    0.001 {built-in method torch.layer_norm}
+       24   13.182    0.549   13.182    0.549 {method 'run_backward' of 'torch._C._EngineBase' objects}
+     2170    4.472    0.002    4.472    0.002 {built-in method torch._C._nn.linear}
+     1200    1.734    0.001    1.734    0.001 {method 'sqrt' of 'torch._C.TensorBase' objects}
+       24    1.321    0.055    7.001    0.292 adam.py:345(_single_tensor_adam)
+      208    1.115    0.005    1.122    0.005 embeddings.py:731(forward)
+     1200    1.101    0.001    1.101    0.001 {method 'addcdiv_' of 'torch._C.TensorBase' objects}
+      416    0.855    0.002    0.855    0.002 {built-in method torch.embedding}
+     1200    0.842    0.001    0.842    0.001 {method 'addcmul_' of 'torch._C.TensorBase' objects}
+     1200    0.830    0.001    0.830    0.001 {method 'lerp_' of 'torch._C.TensorBase' objects}
+     1860    0.799    0.000    0.799    0.000 {built-in method torch.relu}
+      206    0.679    0.003    6.491    0.032 pposb3_model.py:65(_encode_embeddings)
+     1550    0.644    0.000    0.644    0.000 {built-in method torch.layer_norm}
+     1200    0.585    0.000    0.585    0.000 {method 'add_' of 'torch._C.TensorBase' objects}
+     1200    0.578    0.000    0.578    0.000 {method 'mul_' of 'torch._C.TensorBase' objects}
+       24    0.575    0.024    0.575    0.024 {built-in method torch._foreach_norm}
 
 

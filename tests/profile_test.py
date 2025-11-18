@@ -11,7 +11,7 @@ import torch
 import cProfile
 import pstats
 import io
-from tests.test_pipeline_rollout import test_rollout_pipeline as test_pipeline
+from tests.test_rollout import test_rollout_pipeline as test_pipeline
 
 def profile_test():
     """Profile the test with cProfile"""
@@ -24,7 +24,7 @@ def profile_test():
     
     # Run test with smaller batch
 
-    test_pipeline(n_tests=8, device=device)
+    test_pipeline()
 
     profiler.disable()
     

@@ -97,7 +97,8 @@ class PPO:
         self.num_timesteps = 0
         self._last_obs = None
         self._last_episode_starts = None
-        self.ep_info_buffer = []
+        self.ep_info_buffer = TensorDict({}, batch_size=torch.Size([0]), device=self.device)
+        self.episode_lengths = torch.zeros(self.n_envs, dtype=torch.int32, device=self.device)
         
         # Logging
         self.logger_dict = {}
@@ -111,6 +112,7 @@ class PPO:
         
         self._last_obs = obs
         self._last_episode_starts = torch.ones(self.n_envs, dtype=torch.float32, device=self.device)
+        self.episode_lengths = torch.zeros(self.n_envs, dtype=torch.int32, device=self.device)
     
     def collect_rollouts(self, collect_action_stats: bool = False) -> bool:
         """
@@ -133,8 +135,10 @@ class PPO:
         n_steps = 0
         rollout_start_time = time.time()
         
-        if self.verbose >= 1:
-            print(f"Collecting rollouts for {self.n_steps} steps...")
+        # Reset episode lengths
+        self.episode_lengths.fill_(0)
+        
+        print(f"Collecting rollouts for {self.n_steps} steps...")
         
         with torch.no_grad():
             while n_steps < self.n_steps:
@@ -198,14 +202,28 @@ class PPO:
                 
                 # Collect episode info
                 if is_success is not None:
-                    for i, done in enumerate(dones):
-                        if done:
-                            success = float(is_success[i])
-                            self.ep_info_buffer.append({
-                                'r': float(rewards[i]),
-                                'l': 1,  # Length (simplified)
-                                's': success
-                            })
+                    done_mask = dones.bool()
+                    if done_mask.any():
+                        done_rewards = rewards[done_mask]
+                        done_lengths = self.episode_lengths[done_mask]
+                        done_successes = is_success[done_mask]
+                        
+                        new_td = TensorDict({
+                            'r': done_rewards,
+                            'l': done_lengths,
+                            's': done_successes
+                        }, batch_size=int(done_mask.sum().item()), device=self.device)
+                        
+                        # Check if buffer is empty (batch_size is torch.Size, so check first dimension)
+                        if len(self.ep_info_buffer.keys()) == 0 or self.ep_info_buffer.batch_size[0] == 0:
+                            self.ep_info_buffer = new_td
+                        else:
+                            self.ep_info_buffer = torch.cat([self.ep_info_buffer, new_td], dim=0)
+                
+                # Update episode lengths (vectorized)
+                done_mask = dones.bool()
+                self.episode_lengths[done_mask] = 0
+                self.episode_lengths[~done_mask] += 1
         
         # Compute returns and advantages
         with torch.no_grad():
@@ -217,8 +235,7 @@ class PPO:
         )
         
         total_rollout_time = time.time() - rollout_start_time
-        if self.verbose >= 1:
-            print(f"Rollout collection complete. Collected {n_steps}x{self.n_envs}={n_steps * self.n_envs} Timesteps in {total_rollout_time:.2f}s.")
+        print(f"Rollout collection complete. Collected {n_steps}x{self.n_envs}={n_steps * self.n_envs} Timesteps in {total_rollout_time:.2f}s.")
         
         # Store action stats for later retrieval
         if collect_action_stats:
@@ -360,8 +377,7 @@ class PPO:
         clip_fractions = []
         approx_kl_divs = []
         
-        if self.verbose >= 1:
-            print(f"Training for {self.n_epochs} epochs...")
+        print(f"Training for {self.n_epochs} epochs...")
         
         for epoch in range(self.n_epochs):
             epoch_start_time = time.time()
@@ -388,14 +404,10 @@ class PPO:
                 
                 # Check for NaN/Inf in outputs
                 if torch.isnan(log_probs).any() or torch.isinf(log_probs).any():
-                    if self.verbose >= 1:
-                        print(f"Warning: NaN or Inf in log_probs!")
-                    log_probs = torch.nan_to_num(log_probs, nan=0.0, posinf=0.0, neginf=-10.0)
-                
+                    raise RuntimeError("NaN or Inf detected in log_probs during PPO.train()")
                 if torch.isnan(values).any() or torch.isinf(values).any():
-                    if self.verbose >= 1:
-                        print(f"Warning: NaN or Inf in values!")
-                    values = torch.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+                    raise RuntimeError("NaN or Inf detected in values during PPO.train()")
+
                 
                 # Policy loss (PPO clipped objective)
                 ratio = torch.exp(log_probs - old_log_probs)
@@ -463,15 +475,14 @@ class PPO:
             total_entropy_loss += epoch_entropy
             n_updates += epoch_n_batches
             
-            if self.verbose >= 1:
-                avg_policy_loss = epoch_policy_loss / epoch_n_batches if epoch_n_batches > 0 else 0.0
-                avg_value_loss = epoch_value_loss / epoch_n_batches if epoch_n_batches > 0 else 0.0
-                avg_entropy = epoch_entropy / epoch_n_batches if epoch_n_batches > 0 else 0.0
-                print(f"  Epoch {epoch + 1}/{self.n_epochs}: "
-                      f"policy_loss={avg_policy_loss:.4f}, "
-                      f"value_loss={avg_value_loss:.4f}, "
-                      f"entropy={avg_entropy:.4f}, "
-                      f"time={epoch_time:.2f}s")
+            avg_policy_loss = epoch_policy_loss / epoch_n_batches if epoch_n_batches > 0 else 0.0
+            avg_value_loss = epoch_value_loss / epoch_n_batches if epoch_n_batches > 0 else 0.0
+            avg_entropy = epoch_entropy / epoch_n_batches if epoch_n_batches > 0 else 0.0
+            print(f"  Epoch {epoch + 1}/{self.n_epochs}: "
+                    f"policy_loss={avg_policy_loss:.7f}, "
+                    f"value_loss={avg_value_loss:.7f}, "
+                    f"entropy={avg_entropy:.7f}, "
+                    f"time={epoch_time:.2f}s")
         
         total_loss = total_policy_loss + self.vf_coef * total_value_loss + self.ent_coef * total_entropy_loss
         
@@ -489,14 +500,13 @@ class PPO:
         
         self.logger_dict.update(metrics)
         
-        if self.verbose >= 1:
-            print(f"Training complete. Average losses:")
-            print(f"  Policy loss: {metrics['train/policy_loss']:.4f}")
-            print(f"  Value loss: {metrics['train/value_loss']:.4f}")
-            print(f"  Entropy: {metrics['train/entropy']:.4f}")
-            print(f"  Total loss: {metrics['train/total_loss']:.4f}")
-            print(f"  Approx KL: {metrics['train/approx_kl']:.4f}")
-            print(f"  Clip fraction: {metrics['train/clip_fraction']:.4f}")
+        print(f"Training complete. Average losses:")
+        print(f"  Policy loss: {metrics['train/policy_loss']:.7f}")
+        print(f"  Value loss: {metrics['train/value_loss']:.7f}")
+        print(f"  Entropy: {metrics['train/entropy']:.7f}")
+        print(f"  Total loss: {metrics['train/total_loss']:.7f}")
+        print(f"  Approx KL: {metrics['train/approx_kl']:.7f}")
+        print(f"  Clip fraction: {metrics['train/clip_fraction']:.7f}")
         
         return metrics
     
@@ -526,17 +536,15 @@ class PPO:
         iteration = 0
         start_time = time.time()
         
-        if self.verbose >= 1:
-            print(f"\n{'='*80}")
-            print(f"Starting PPO training for {total_timesteps} timesteps")
-            print(f"{'='*80}\n")
+        print(f"\n{'='*80}")
+        print(f"Starting PPO training for {total_timesteps} timesteps")
+        print(f"{'='*80}\n")
         
         while self.num_timesteps < total_timesteps:
             iteration += 1
             
-            if self.verbose >= 1:
-                print(f"\n--- Iteration {iteration} ---")
-                print(f"Timesteps: {self.num_timesteps}/{total_timesteps}")
+            print(f"\n--- Iteration {iteration} ---")
+            print(f"Timesteps: {self.num_timesteps}/{total_timesteps}")
             
             # Collect rollouts
             rollout_start = time.time()
@@ -554,32 +562,33 @@ class PPO:
             # Log
             if log_interval > 0 and iteration % log_interval == 0:
                 elapsed_time = time.time() - start_time
+                # num_timesteps increases by n_envs per cicle (while loop until total_timesteps)
+                # fps is measured as how long it takes, to do rollouts + training every num_timesteps
                 fps = int(self.num_timesteps / elapsed_time) if elapsed_time > 0 else 0
                 
-                if self.verbose >= 1:
-                    print(f"\nIteration {iteration} summary:")
-                    print(f"  Timesteps: {self.num_timesteps}/{total_timesteps}")
-                    print(f"  FPS: {fps}")
-                    print(f"  Rollout time: {rollout_time:.2f}s")
-                    print(f"  Train time: {train_time:.2f}s")
+                print(f"\nIteration {iteration} summary:")
+                print(f"  Timesteps: {self.num_timesteps}/{total_timesteps}")
+                print(f"  FPS: {fps}")
+                print(f"  Rollout time: {rollout_time:.2f}s")
+                print(f"  Train time: {train_time:.2f}s")
+                
+                # Check if ep_info_buffer has data (keys and non-zero batch size)
+                # batch_size is always a torch.Size object (tuple-like)
+                has_ep_info = len(self.ep_info_buffer.keys()) > 0 and len(self.ep_info_buffer.batch_size) > 0 and self.ep_info_buffer.batch_size[0] > 0
+                if has_ep_info:
+                    print(f"  Episode reward mean: {self.ep_info_buffer['r'].mean().item():.2f}")
+                    print(f"  Episode length mean: {self.ep_info_buffer['l'].float().mean().item():.2f}")
+                    print(f"  Success rate: {self.ep_info_buffer['s'].float().mean().item()*100:.2f}%")
                     
-                    if self.ep_info_buffer:
-                        ep_rewards = [ep['r'] for ep in self.ep_info_buffer]
-                        ep_lengths = [ep['l'] for ep in self.ep_info_buffer]
-                        ep_successes = [ep['s'] for ep in self.ep_info_buffer if 's' in ep]
-                        
-                        print(f"  Episode reward mean: {sum(ep_rewards)/len(ep_rewards):.2f}")
-                        print(f"  Episode length mean: {sum(ep_lengths)/len(ep_lengths):.2f}")
-                        if ep_successes:
-                            print(f"  Success rate: {sum(ep_successes)/len(ep_successes)*100:.2f}%")
+                    # Clear buffer after logging
+                    self.ep_info_buffer = TensorDict({}, batch_size=torch.Size([0]), device=self.device)
         
-        if self.verbose >= 1:
-            total_time = time.time() - start_time
-            print(f"\n{'='*80}")
-            print(f"Training complete!")
-            print(f"Total time: {total_time:.2f}s")
-            print(f"Final timesteps: {self.num_timesteps}")
-            print(f"{'='*80}\n")
+        total_time = time.time() - start_time
+        print(f"\n{'='*80}")
+        print(f"Training complete!")
+        print(f"Total time: {total_time:.2f}s")
+        print(f"Final timesteps: {self.num_timesteps}")
+        print(f"{'='*80}\n")
         
         return self
     

@@ -228,3 +228,124 @@ class BloomFilter:
         self._mem_bloom[owner_exp2, word_idx_valid] = old | torch.bitwise_left_shift(
             torch.ones_like(bit_off_valid, dtype=torch.long), bit_off_valid
         )
+
+
+
+
+
+
+
+class ExactMemory:
+    """
+    Exact, Python-set-based memory backend used for debugging / equivalence tests.
+    Mirrors the semantics of the string environment's `_state_to_hashable`:
+      - States are treated as order-independent sets of atoms.
+      - Current states are added to memory with terminal predicates removed.
+      - Membership for derived states is checked on the full state (including terminals).
+
+    This backend is intentionally CPU-only and loop-based; it is only enabled
+    when `use_exact_memory=True` (e.g. in tests), and the default batched
+    environment still uses the GPU BloomFilter for training.
+    """
+
+    def __init__(
+        self,
+        batch_size: int,
+        padding_idx: int,
+        true_pred_idx: Optional[int],
+        false_pred_idx: Optional[int],
+        end_pred_idx: Optional[int],
+    ):
+        self.batch_size = int(batch_size)
+        self.padding_idx = int(padding_idx)
+        self.true_pred_idx = true_pred_idx
+        self.false_pred_idx = false_pred_idx
+        self.end_pred_idx = end_pred_idx
+        # Per-env Python set of frozenset(atom-tuples)
+        self._mem = [set() for _ in range(self.batch_size)]
+
+    def reset(self, rows: Tensor) -> None:
+        """Clear memory for selected env indices."""
+        if rows.numel() == 0:
+            return
+        for idx in rows.view(-1).tolist():
+            if 0 <= idx < self.batch_size:
+                self._mem[idx] = set()
+
+    def _state_to_key(self, state: Tensor, ignore_terminals: bool) -> frozenset:
+        """
+        Convert a padded tensor state [M, D] into an order-independent key.
+        """
+        if state.dim() != 2:
+            raise ValueError("ExactMemory expects states with shape [M, D]")
+
+        pad = self.padding_idx
+        preds = state[:, 0]
+        valid = preds != pad
+
+        if ignore_terminals:
+            if self.true_pred_idx is not None:
+                valid = valid & (preds != self.true_pred_idx)
+            if self.false_pred_idx is not None:
+                valid = valid & (preds != self.false_pred_idx)
+            if self.end_pred_idx is not None:
+                valid = valid & (preds != self.end_pred_idx)
+
+        if not valid.any():
+            return frozenset()
+
+        atoms = state[valid]
+        tuples = [tuple(int(x) for x in atom.tolist()) for atom in atoms]
+        return frozenset(tuples)
+
+    def add_current(self, rows: Tensor, current_queries: Tensor) -> None:
+        """
+        Add current_queries[rows] to memory, filtering out terminal atoms
+        to match the string environment's behavior.
+        """
+        if rows.numel() == 0:
+            return
+        for idx in rows.view(-1).tolist():
+            if 0 <= idx < self.batch_size:
+                state = current_queries[idx]
+                key = self._state_to_key(state, ignore_terminals=True)
+                self._mem[idx].add(key)
+
+    def membership(self, states: Tensor, owners: Tensor) -> Tensor:
+        """
+        Exact membership test.
+        states: [A, K, M, D]
+        owners: [A]
+        Returns visited: [A, K] bool tensor.
+        """
+        if states.numel() == 0:
+            return torch.zeros(
+                (states.shape[0], states.shape[1]),
+                dtype=torch.bool,
+                device=states.device,
+            )
+
+        A, K, M, D = states.shape
+        visited = torch.zeros((A, K), dtype=torch.bool, device=states.device)
+        pad = self.padding_idx
+
+        owner_list = owners.view(-1).tolist()
+
+        for a, env_idx in enumerate(owner_list):
+            if not (0 <= env_idx < self.batch_size):
+                continue
+            mem_set = self._mem[env_idx]
+            if not mem_set:
+                continue
+
+            for k in range(K):
+                # Skip padded slots
+                if states[a, k, 0, 0].item() == pad:
+                    continue
+                # CRITICAL: Must ignore_terminals=True to match how states are added to memory
+                # This ensures consistency between add_current() and membership()
+                key = self._state_to_key(states[a, k], ignore_terminals=True)
+                if key in mem_set:
+                    visited[a, k] = True
+
+        return visited

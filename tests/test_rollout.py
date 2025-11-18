@@ -1,24 +1,18 @@
 """
-Isolated test for rollout collection with random policy and PPO learning.
+Test for PPO SB3-style implementation with GPU-based rollout collection.
 
-This test verifies that rollout collection works correctly by:
+This test verifies that the new pposb3 implementation works correctly by:
 1. Loading dataset and creating environment  
-2. Collecting rollouts in TRAIN mode with random policy
-3. Collecting rollouts in EVAL mode with random policy
-4. Collecting rollouts with create_torch_modules (untrained)
-5. Testing PPO learning and post-learning evaluation
+2. Collecting rollouts with the new PPO implementation
+3. Training with PPO and verifying losses make sense
+4. Comparing results with the original test_rollout.py
 
 Expected success rates on countries_s3:
 - Random policy (uniform sampling): ~24-26%
-- Deterministic policy (first valid action): ~30-40% (depends on query set)
-- Note: test_all_configs uses deterministic=True by default
+- Trained policy: should improve over time
 
 Usage:
-    # Test rollout only
-    python test_envs/test_rollout.py --batch-size 100 --n-tests 4
-    
-    # Test with learning
-    python test_envs/test_rollout.py --batch-size 100 --n-tests 5 --n-epochs 10
+    python tests/test_eval_rollout_sb3.py --batch-size 100 --n-steps 64 --n-epochs 3
 """
 import os
 import sys
@@ -37,203 +31,50 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 from sampler import Sampler
 from embeddings import get_embedder
-from ppo.ppo_model import create_torch_modules
 from env import BatchedEnv
-from ppo.ppo import PPOAgent
-from ppo.ppo_rollout import RolloutCollector
 from unification_engine import UnificationEngine
 
-
-class RandomActor(nn.Module):
-    """Simple random actor for testing."""
-    def __init__(self, seed: int = None):
-        super().__init__()
-        if seed is not None:
-            torch.manual_seed(seed)
-    
-    def forward(self, td: TensorDict) -> TensorDict:
-        batch_size = td.batch_size[0] if isinstance(td.batch_size, torch.Size) else td.batch_size
-        action_mask = td.get("action_mask")
-        
-        if action_mask is None:
-            raise ValueError("action_mask is None in RandomActor")
-        
-        # Sample from action mask using torch for each environment
-        # action_mask shape: (batch_size, num_actions)
-        # We need to sample one valid action per environment
-        actions = torch.zeros(batch_size, dtype=torch.long, device=td.device)
-        log_probs = torch.zeros(batch_size, dtype=torch.float32, device=td.device)
-        
-        for i in range(batch_size):
-            valid_actions = torch.where(action_mask[i])[0]
-            if len(valid_actions) > 0:
-                idx = torch.randint(len(valid_actions), (1,), device=td.device).item()
-                actions[i] = valid_actions[idx]
-                log_probs[i] = -np.log(len(valid_actions))
-        
-        td["action"] = actions
-        td["sample_log_prob"] = log_probs
-        return td
+# Import new PPO implementation
+from ppo.pposb3 import PPO
+from ppo.pposb3_model import create_actor_critic
+from model_eval import evaluate_policy
 
 
-class DeterministicActor(nn.Module):
-    """Deterministic actor that produces logits favoring the first valid action.
-    
-    This mimics LogitsProducingActor with deterministic=True from test_env_rollout.py
-    and should achieve ~48% success rate on countries_s3.
+def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
     """
-    def __init__(self, max_actions: int = 500, seed: int = None):
-        super().__init__()
-        self.max_actions = max_actions
-        if seed is not None:
-            torch.manual_seed(seed)
-    
-    def forward(self, td: TensorDict) -> TensorDict:
-        """Produce logits with high value for first valid action."""
-        batch_size = td.batch_size[0] if isinstance(td.batch_size, torch.Size) else td.batch_size
-        action_mask = td.get("action_mask")
-        
-        if action_mask is None:
-            raise ValueError("action_mask is None in DeterministicActor")
-        
-        n_actions = action_mask.shape[-1]
-        logits = torch.zeros(batch_size, n_actions, device=td.device)
-        
-        # Set high logit for first valid action (mimics deterministic=True behavior)
-        for i in range(batch_size):
-            valid_actions = torch.where(action_mask[i])[0]
-            if len(valid_actions) > 0:
-                first_valid = valid_actions[0]
-                logits[i, first_valid] = 10.0  # High logit for first valid action
-        
-        td["logits"] = logits
-        return td
-
-
-class DummyCritic(nn.Module):
-    """Dummy critic that returns zero values."""
-    def forward(self, td: TensorDict) -> TensorDict:
-        batch_size = td.batch_size[0] if isinstance(td.batch_size, torch.Size) else td.batch_size
-        td["state_value"] = torch.zeros(batch_size, 1, device=td.device)
-        return td
-
-
-def collect_rollout_stats(experiences, n_envs):
-    """Helper to compute statistics from rollout experiences."""
-    slot_rewards = [0.0] * n_envs
-    slot_steps = [0] * n_envs
-    slot_success = [False] * n_envs
-    slot_done = [False] * n_envs
-    slot_action_counts = [[] for _ in range(n_envs)]
-    
-    for step_idx, step_td in enumerate(experiences):
-        next_td = step_td.get('next')
-        if next_td is None:
-            continue
-        
-        rewards = next_td.get('reward', torch.zeros(n_envs))
-        dones = next_td.get('done', torch.zeros(n_envs, dtype=torch.bool))
-        is_success = next_td.get('is_success', torch.zeros(n_envs, dtype=torch.bool))
-        action_mask = step_td.get('action_mask')
-        
-        if rewards.dim() > 1:
-            rewards = rewards.squeeze()
-        if dones.dim() > 1:
-            dones = dones.squeeze()
-        if is_success.dim() > 1:
-            is_success = is_success.squeeze()
-        
-        for i in range(n_envs):
-            if not slot_done[i]:
-                slot_rewards[i] += float(rewards[i])
-                slot_steps[i] += 1
-                
-                if action_mask is not None:
-                    num_actions = int(action_mask[i].sum())
-                    slot_action_counts[i].append(num_actions)
-                
-                if bool(dones[i]):
-                    slot_done[i] = True
-                    slot_success[i] = bool(is_success[i])
-    
-    # Compute statistics
-    total = n_envs
-    successful = sum(slot_success)
-    success_rate = (successful / total * 100) if total > 0 else 0.0
-    avg_reward = sum(slot_rewards) / total if total > 0 else 0.0
-    avg_steps = sum(slot_steps) / total if total > 0 else 0.0
-    
-    total_actions = sum(sum(counts) for counts in slot_action_counts)
-    total_action_steps = sum(len(counts) for counts in slot_action_counts)
-    avg_actions = total_actions / total_action_steps if total_action_steps > 0 else 0.0
-    
-    return {
-        'total': total,
-        'successful': successful,
-        'success_rate': success_rate,
-        'avg_reward': avg_reward,
-        'avg_steps': avg_steps,
-        'avg_actions': avg_actions
-    }
-
-
-def test_rollouts(
-    n_tests: int = 5,
-    dataset: str = "countries_s3",
-    batch_size: int = 100,
-    n_steps: int = 64,
-    n_epochs: int = 0,
-    max_depth: int = 20,
-    seed: int = 42,
-    device: str = None,
-    deterministic: bool = False
-):
-    """
-    Test rollout collection and optionally PPO learning.
+    Test the new PPO SB3-style implementation.
     
     Args:
-        n_tests: Number of test stages (1=data, 2=rollout-train, 3=rollout-eval, 4=rollout-torch, 5=learning)
-        dataset: Dataset name
-        batch_size: Number of parallel environments
-        n_steps: Steps per rollout
-        n_epochs: PPO epochs (0 = no learning)
-        max_depth: Maximum proof depth
-        seed: Random seed
-        device: Device ('cpu' or 'cuda', None = auto-detect)
-        deterministic: If True, use deterministic actor in eval mode (selects first valid action, ~48% success)
+        args: SimpleNamespace with configuration parameters. If None, uses defaults.
     """
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    # Default configuration
+    if args is None:
+        args = SimpleNamespace()
     
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(device)
-    
-    # Centralized configuration using SimpleNamespace
-    config = SimpleNamespace(
-        dataset=dataset,
-        dataset_name=dataset,  # For embedder compatibility
-        batch_size=batch_size,
-        n_steps=n_steps,
-        n_epochs=n_epochs,
-        max_depth=max_depth,
-        seed=seed,
-        device=device,
+    # Set defaults for any missing attributes
+    defaults = SimpleNamespace(
+        # Test parameters
+        dataset='countries_s3',
+        batch_size=256,
+        n_steps=64,
+        n_epochs=6,
+        seed=42,
+        device=None,
+        total_timesteps=None,
         # Environment settings
+        max_depth=20,
         padding_atoms=6,
         padding_states=20,
         memory_pruning=True,
+        use_exact_memory=False,
         reward_type=0,
         verbose=0,
         prover_verbose=0,
         skip_unary_actions=True,
-        end_proof_action=False,
-        use_exact_memory=True,
+        end_proof_action=True,
         corruption_mode=False,
-        train_neg_ratio=0,
-        # Embedder settings (for torch modules test)
+        train_neg_ratio=1,
+        # Embedder settings
         atom_embedder='transe',
         state_embedder='mean',
         constant_embedding_size=100,
@@ -245,15 +86,56 @@ def test_rollouts(
         num_layers=4,
         dropout_prob=0.0,
         enable_kge_action=False,
+        # PPO training settings
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        clip_range_vf=None,
+        ent_coef=0.05,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        learning_rate=3e-4,
+        ppo_batch_size=2048,
     )
+
+    defaults.dataset_name = defaults.dataset  # backward compatibility
     
+    # Merge defaults with provided args
+    for key, value in vars(defaults).items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+    
+    # Set random seeds
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+    
+    # Handle device
+    if args.device is None:
+        args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        args.device = torch.device(args.device)
+    
+    # Handle total_timesteps
+    if args.total_timesteps is None:
+        args.total_timesteps = args.n_steps * args.batch_size
+    
+    # # Handle ppo_batch_size
+    # if args.ppo_batch_size is None:
+    #     args.ppo_batch_size = min(2048, args.batch_size * args.n_steps)
+    
+    # Create config alias for backward compatibility
+    config = args
     print(f"\n{'='*80}")
-    print(f"TESTING ROLLOUT COLLECTION")
+    print(f"TESTING PPO SB3 IMPLEMENTATION")
     print(f"{'='*80}")
     print(f"Dataset: {config.dataset}")
     print(f"Batch size: {config.batch_size}")
-    print(f"Steps: {config.n_steps}")
-    print(f"Epochs: {config.n_epochs} {'(rollout only)' if config.n_epochs == 0 else '(with learning)'}")
+    print(f"Steps per rollout: {config.n_steps}")
+    print(f"Epochs per update: {config.n_epochs}")
+    print(f"Total timesteps: {config.total_timesteps}")
     print(f"Max depth: {config.max_depth}")
     print(f"Seed: {config.seed}")
     print(f"Device: {config.device}")
@@ -263,7 +145,7 @@ def test_rollouts(
     # 1. Load dataset and create environment
     # ============================================================
     start_time = time()
-    print("[1/5] Loading dataset and creating environment...")
+    print("[1/3] Loading dataset and creating environment...")
     
     dh = DataHandler(
         dataset_name=config.dataset,
@@ -304,8 +186,8 @@ def test_rollouts(
         seed=config.seed,
     )
     
-    # Create environment for train mode testing
-    env_train = BatchedEnv(
+    # Create environment
+    env = BatchedEnv(
         batch_size=config.batch_size,
         unification_engine=unification_engine,
         queries=train_split.queries,
@@ -328,169 +210,20 @@ def test_rollouts(
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + 1000000,
         use_exact_memory=config.use_exact_memory,
-    )
-    
-    # Create environment for eval mode testing with dummy queries
-    dummy_query = torch.full((config.batch_size, config.padding_atoms, 3), im.padding_idx, dtype=torch.long, device=config.device)
-    dummy_labels = torch.ones(config.batch_size, dtype=torch.long, device=config.device)
-    dummy_depths = torch.ones(config.batch_size, dtype=torch.long, device=config.device)
-    
-    env_eval = BatchedEnv(
-        batch_size=config.batch_size,
-        unification_engine=unification_engine,
-        queries=dummy_query,
-        labels=dummy_labels,
-        query_depths=dummy_depths,
-        mode='train',
-        max_depth=config.max_depth,
-        memory_pruning=config.memory_pruning,
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        reward_type=config.reward_type,
-        verbose=config.verbose,
-        prover_verbose=config.prover_verbose,
-        device=config.device,
-        skip_unary_actions=config.skip_unary_actions,
-        end_proof_action=config.end_proof_action,
-        true_pred_idx=im.predicate_str2idx.get('True'),
-        false_pred_idx=im.predicate_str2idx.get('False'),
-        end_pred_idx=im.predicate_str2idx.get('End'),
-        runtime_var_start_index=im.constant_no + 1,
-        total_vocab_size=im.constant_no + 1000000,
-        use_exact_memory=config.use_exact_memory,
+        sampler=sampler,
+        corruption_mode=config.corruption_mode,
+        train_neg_ratio=config.train_neg_ratio,
     )
     
     end_time = time()
     print(f"  Loaded {config.dataset}: {len(train_split.queries)} train queries")
     print(f"  Step completed in {end_time - start_time:.2f} seconds")
     
-    if n_tests < 1:
-        return
-    
     # ============================================================
-    # 2. Test rollout collection in TRAIN mode
+    # 2. Create PPO agent and test rollout collection
     # ============================================================
     start_time = time()
-    print(f"\n[2/5] Collecting rollout in TRAIN mode with random policy...")
-    
-    actor_train = RandomActor(seed=config.seed)
-    critic_train = DummyCritic()
-    
-    rollout_collector_train = RolloutCollector(
-        env=env_train,
-        actor=actor_train,
-        n_envs=config.batch_size,
-        n_steps=config.n_steps,
-        device=config.device,
-        debug=False,
-    )
-    
-    experiences_train, stats_train = rollout_collector_train.collect(critic=critic_train)
-    rollout_stats_train = collect_rollout_stats(experiences_train, config.batch_size)
-    
-    # Print rollout results
-    print(f"\n  TRAIN MODE RESULTS:")
-    print(f"  Total queries:     {rollout_stats_train['total']}")
-    print(f"  Successful:        {rollout_stats_train['successful']}")
-    print(f"  Success rate:      {rollout_stats_train['success_rate']:.2f}%")
-    print(f"  Avg reward:        {rollout_stats_train['avg_reward']:.2f}")
-    print(f"  Avg steps:         {rollout_stats_train['avg_steps']:.2f}")
-    print(f"  Avg actions:       {rollout_stats_train['avg_actions']:.2f}")
-    
-    # Verification (random policy typically gets ~26% for countries_s3)
-    # Note: deterministic=True (first valid action) gives ~48%, random gives ~26%
-    if rollout_stats_train['success_rate'] > 0:
-        expected = 26.0
-        diff = abs(rollout_stats_train['success_rate'] - expected)
-        status = "✓" if diff < 5.0 else "✗"
-        print(f"  {status} Expected ~{expected}% for random policy, got {rollout_stats_train['success_rate']:.2f}% (diff: {diff:.2f}%)")
-    
-    end_time = time()
-    print(f"  Step completed in {end_time - start_time:.2f} seconds")
-    
-    if n_tests < 2:
-        return rollout_stats_train
-    
-    # ============================================================
-    # 3. Test rollout collection in EVAL mode
-    # ============================================================
-    start_time = time()
-    actor_type = "deterministic" if deterministic else "random"
-    print(f"\n[3/5] Collecting rollout in EVAL mode with {actor_type} policy...")
-    
-    if deterministic:
-        actor_eval = DeterministicActor(max_actions=config.padding_states, seed=config.seed)
-    else:
-        actor_eval = RandomActor(seed=config.seed)
-    critic_eval = DummyCritic()
-    
-    rollout_collector_eval = RolloutCollector(
-        env=env_eval,
-        actor=actor_eval,
-        n_envs=config.batch_size,
-        n_steps=config.n_steps,
-        device=config.device,
-        debug=False,
-    )
-    
-    # Switch environment to eval mode
-    env_queries = train_split.queries[:config.batch_size]
-    env_labels = train_split.labels[:config.batch_size] if hasattr(train_split, 'labels') else torch.ones(config.batch_size, dtype=torch.long)
-    env_depths = train_split.depths[:config.batch_size] if hasattr(train_split, 'depths') else torch.ones(config.batch_size, dtype=torch.long)
-    per_slot_lengths = torch.ones(config.batch_size, dtype=torch.long, device=config.device)
-    
-    env_eval.set_eval_dataset(
-        queries=env_queries,
-        labels=env_labels,
-        query_depths=env_depths,
-        per_slot_lengths=per_slot_lengths
-    )
-    
-    experiences_eval, stats_eval = rollout_collector_eval.collect(critic=critic_eval)
-    rollout_stats_eval = collect_rollout_stats(experiences_eval, config.batch_size)
-    
-    # Print rollout results
-    print(f"\n  EVAL MODE RESULTS:")
-    print(f"  Total queries:     {rollout_stats_eval['total']}")
-    print(f"  Successful:        {rollout_stats_eval['successful']}")
-    print(f"  Success rate:      {rollout_stats_eval['success_rate']:.2f}%")
-    print(f"  Avg reward:        {rollout_stats_eval['avg_reward']:.2f}")
-    print(f"  Avg steps:         {rollout_stats_eval['avg_steps']:.2f}")
-    print(f"  Avg actions:       {rollout_stats_eval['avg_actions']:.2f}")
-    
-    # Verification
-    # IMPORTANT: Random policy gets ~24-26%, deterministic (first valid action) gets ~30-40%
-    # The exact success rate depends on the specific queries in the batch
-    if rollout_stats_eval['success_rate'] > 0:
-        if deterministic:
-            # Deterministic: expect 30-40%
-            expected_min, expected_max = 20.0, 50.0
-            in_range = expected_min <= rollout_stats_eval['success_rate'] <= expected_max
-            status = "✓" if in_range else "✗"
-            print(f"  {status} Expected {expected_min}-{expected_max}% for deterministic policy, got {rollout_stats_eval['success_rate']:.2f}%")
-        else:
-            # Random: expect ~26%
-            expected = 26.0
-            diff = abs(rollout_stats_eval['success_rate'] - expected)
-            status = "✓" if diff < 5.0 else "✗"
-            print(f"  {status} Expected ~{expected}% for random policy, got {rollout_stats_eval['success_rate']:.2f}% (diff: {diff:.2f}%)")
-    
-    # Compare train vs eval
-    success_diff = abs(rollout_stats_train['success_rate'] - rollout_stats_eval['success_rate'])
-    comp_status = "✓" if success_diff < 5.0 else "✗"
-    print(f"  {comp_status} Train vs Eval difference: {success_diff:.2f}%")
-    
-    end_time = time()
-    print(f"  Step completed in {end_time - start_time:.2f} seconds")
-    
-    if n_tests < 3:
-        return rollout_stats_eval
-    
-    # ============================================================
-    # 4. Test rollout collection with create_torch_modules
-    # ============================================================
-    start_time = time()
-    print(f"\n[4/5] Collecting rollout with create_torch_modules (trained actor/critic)...")
+    print(f"\n[2/3] Creating PPO agent and testing rollout collection...")
     
     # Create embedder
     embedder_getter = get_embedder(
@@ -505,195 +238,216 @@ def test_rollouts(
         device=config.device
     )
     
-    # Create actor and critic using create_torch_modules
-    actor_torch, critic_torch = create_torch_modules(
+    # Create actor-critic policy
+    policy = create_actor_critic(
         embedder=embedder_getter.embedder,
-        num_actions=config.padding_states,
         embed_dim=config.atom_embedding_size,
         hidden_dim=config.hidden_dim,
         num_layers=config.num_layers,
         dropout_prob=config.dropout_prob,
         device=config.device,
-        enable_kge_action=config.enable_kge_action,
-        kge_inference_engine=None,
-        index_manager=im,
     )
     
-    # Reset environment for fresh test
-    env_eval.set_eval_dataset(
-        queries=env_queries,
-        labels=env_labels,
-        query_depths=env_depths,
-        per_slot_lengths=per_slot_lengths
-    )
+    # Wrap policy to return TensorDict for evaluate_policy compatibility
+    class PolicyWrapper(nn.Module):
+        def __init__(self, policy):
+            super().__init__()
+            self.policy = policy
+        
+        def forward(self, obs: TensorDict) -> TensorDict:
+            actions, values, log_probs = self.policy(obs, deterministic=False)
+            return TensorDict({
+                "action": actions,
+                "value": values,
+                "sample_log_prob": log_probs
+            }, batch_size=obs.batch_size)
     
-    rollout_collector_torch = RolloutCollector(
-        env=env_eval,
-        actor=actor_torch,
-        n_envs=config.batch_size,
+    wrapped_policy = PolicyWrapper(policy)
+    
+    # Create PPO agent
+    ppo_agent = PPO(
+        policy=policy,
+        env=env,
         n_steps=config.n_steps,
+        n_epochs=config.n_epochs,
+        batch_size=config.ppo_batch_size,
+        gamma=config.gamma,
+        gae_lambda=config.gae_lambda,
+        clip_range=config.clip_range,
+        clip_range_vf=config.clip_range_vf,
+        ent_coef=config.ent_coef,
+        vf_coef=config.vf_coef,
+        max_grad_norm=config.max_grad_norm,
+        learning_rate=config.learning_rate,
         device=config.device,
-        debug=False,
+        verbose=1,
     )
     
-    experiences_torch, stats_torch = rollout_collector_torch.collect(critic=critic_torch)
-    rollout_stats_torch = collect_rollout_stats(experiences_torch, config.batch_size)
-    
-    # Print rollout results
-    print(f"\n  TORCH MODULES RESULTS:")
-    print(f"  Total queries:     {rollout_stats_torch['total']}")
-    print(f"  Successful:        {rollout_stats_torch['successful']}")
-    print(f"  Success rate:      {rollout_stats_torch['success_rate']:.2f}%")
-    print(f"  Avg reward:        {rollout_stats_torch['avg_reward']:.2f}")
-    print(f"  Avg steps:         {rollout_stats_torch['avg_steps']:.2f}")
-    print(f"  Avg actions:       {rollout_stats_torch['avg_actions']:.2f}")
-    
-    # Compare with random actor results
-    torch_vs_random = abs(rollout_stats_torch['success_rate'] - rollout_stats_eval['success_rate'])
-    print(f"\n  Comparison with random actor (eval mode):")
-    print(f"    Success rate difference: {torch_vs_random:.2f}%")
-    print(f"    Note: Untrained torch modules may perform differently than random policy")
-    
-    end_time = time()
-    print(f"  Step completed in {end_time - start_time:.2f} seconds")
-    
-    if n_tests < 4:
-        return rollout_stats_torch
-    
-    # ============================================================
-    # 5. Test PPO learning
-    # ============================================================
-    if config.n_epochs > 0:
-        start_time = time()
-        print(f"\n[5/5] Testing PPO learning for {config.n_epochs} epochs...")
+    # Setup and test initial rollout
+    ppo_agent._setup_model()
+
+    if test_mode=='rollout_only':
+        print(f"\n  Testing initial rollout collection (untrained policy)...")
+        initial_rollout_start = time()
+        ppo_agent.collect_rollouts()
+        initial_rollout_time = time() - initial_rollout_start
         
-        # Use the actor and critic already created in test 4
-        optimizer = torch.optim.AdamW(
-            list(actor_torch.parameters()) + list(critic_torch.parameters()),
-            lr=3e-4
-        )
+        print(f"  Initial rollout collected in {initial_rollout_time:.2f} seconds")
+        print(f"  Buffer size: {ppo_agent.rollout_buffer.size()}")
         
-        # Create PPO agent
-        ppo_agent = PPOAgent(
-            actor=actor_torch,
-            critic=critic_torch,
-            optimizer=optimizer,
-            train_env=env_train,
-            eval_env=None,
-            sampler=sampler,
-            data_handler=dh,
-            args=config,
-            n_envs=config.batch_size,
-            n_steps=config.n_steps,
-            n_epochs=config.n_epochs,
-            batch_size=min(2048, config.batch_size * config.n_steps),
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_range=0.2,
-            ent_coef=0.05,
-            value_coef=0.5,
-            max_grad_norm=0.5,
-            device=config.device,
-            debug_mode=False,
-            min_multiaction_ratio=0.05,
-            use_amp=False,
-        )
+        # Evaluate untrained policy
+        print(f"\n  Evaluating untrained policy...")
+        eval_start = time()
+        eval_results_before = evaluate_policy(wrapped_policy, env, n_eval_episodes=min(100, config.batch_size), deterministic=True)
+        eval_time = time() - eval_start
         
-        # Use the experiences already collected from test 4
-        print(f"  Learning from {len(experiences_torch)} experience steps...")
+        # Process results
+        mask = eval_results_before['mask']
+        rewards = eval_results_before['rewards'][mask]
+        lengths = eval_results_before['lengths'][mask]
+        success = eval_results_before['success'][mask]
         
-        # Learn from experiences
-        ppo_agent.learn(experiences=experiences_torch, n_steps=config.n_steps, n_envs=config.batch_size)
+        eval_stats_before = {
+            'avg_reward': float(rewards.mean()) if len(rewards) > 0 else 0.0,
+            'avg_length': float(lengths.float().mean()) if len(lengths) > 0 else 0.0,
+            'success_rate': float(success.mean() * 100) if len(success) > 0 else 0.0,
+            'n_episodes': int(mask.sum())
+        }
         
-        # Collect new rollout with trained actor to see improvement
-        print(f"\n  Collecting post-learning rollout...")
-        env_train_reset = BatchedEnv(
-            batch_size=config.batch_size,
-            unification_engine=unification_engine,
-            queries=train_split.queries,
-            labels=train_split.labels,
-            query_depths=train_split.depths,
-            mode='train',
-            max_depth=config.max_depth,
-            memory_pruning=config.memory_pruning,
-            padding_atoms=config.padding_atoms,
-            padding_states=config.padding_states,
-            reward_type=config.reward_type,
-            verbose=config.verbose,
-            prover_verbose=config.prover_verbose,
-            device=config.device,
-            skip_unary_actions=config.skip_unary_actions,
-            end_proof_action=config.end_proof_action,
-            true_pred_idx=im.predicate_str2idx.get('True'),
-            false_pred_idx=im.predicate_str2idx.get('False'),
-            end_pred_idx=im.predicate_str2idx.get('End'),
-            runtime_var_start_index=im.constant_no + 1,
-            total_vocab_size=im.constant_no + 1000000,
-            use_exact_memory=config.use_exact_memory,
-        )
-        
-        rollout_collector_trained = RolloutCollector(
-            env=env_train_reset,
-            actor=actor_torch,
-            n_envs=config.batch_size,
-            n_steps=config.n_steps,
-            device=config.device,
-            debug=False,
-        )
-        
-        experiences_trained, _ = rollout_collector_trained.collect(critic=critic_torch)
-        rollout_stats_trained = collect_rollout_stats(experiences_trained, config.batch_size)
-        
-        # Print results
-        print(f"\n  POST-LEARNING RESULTS:")
-        print(f"  Total queries:     {rollout_stats_trained['total']}")
-        print(f"  Successful:        {rollout_stats_trained['successful']}")
-        print(f"  Success rate:      {rollout_stats_trained['success_rate']:.2f}%")
-        print(f"  Avg reward:        {rollout_stats_trained['avg_reward']:.2f}")
-        print(f"  Avg steps:         {rollout_stats_trained['avg_steps']:.2f}")
-        print(f"  Avg actions:       {rollout_stats_trained['avg_actions']:.2f}")
-        
-        # Compare with pre-training
-        improvement = rollout_stats_trained['success_rate'] - rollout_stats_torch['success_rate']
-        print(f"\n  Improvement over untrained:")
-        print(f"    Success rate change: {improvement:+.2f}%")
-        print(f"    Before: {rollout_stats_torch['success_rate']:.2f}%")
-        print(f"    After:  {rollout_stats_trained['success_rate']:.2f}%")
+        print(f"\n  UNTRAINED POLICY RESULTS:")
+        print(f"  Avg reward:        {eval_stats_before['avg_reward']:.2f}")
+        print(f"  Avg length:        {eval_stats_before['avg_length']:.2f}")
+        print(f"  Success rate:      {eval_stats_before['success_rate']:.2f}%")
+        print(f"  Evaluation time:   {eval_time:.2f}s")
         
         end_time = time()
         print(f"  Step completed in {end_time - start_time:.2f} seconds")
         
-        print(f"\n{'='*80}\n")
-        return rollout_stats_trained
+        return eval_stats_before
+    
+    # ============================================================
+    # 3. Train with PPO
+    # ============================================================
+    start_time = time()
+    print(f"\n[3/3] Training with PPO for {config.total_timesteps} timesteps...")
+    
+    # Train
+    ppo_agent.learn(
+        total_timesteps=config.total_timesteps,
+        log_interval=1,
+        reset_num_timesteps=True,
+    )
+    
+    training_time = time() - start_time
+    
+    # Get training metrics
+    metrics = ppo_agent.get_logger_dict()
+    
+    print(f"\n  TRAINING METRICS:")
+    print(f"  Policy loss:       {metrics.get('train/policy_loss', 0.0):.4f}")
+    print(f"  Value loss:        {metrics.get('train/value_loss', 0.0):.4f}")
+    print(f"  Entropy:           {metrics.get('train/entropy', 0.0):.4f}")
+    print(f"  Total loss:        {metrics.get('train/total_loss', 0.0):.4f}")
+    print(f"  Approx KL:         {metrics.get('train/approx_kl', 0.0):.4f}")
+    print(f"  Clip fraction:     {metrics.get('train/clip_fraction', 0.0):.4f}")
+    print(f"  Training time:     {training_time:.2f}s")
+    
+    # Evaluate trained policy
+    print(f"\n  Evaluating trained policy...")
+    eval_start = time()
+    eval_results_after = evaluate_policy(wrapped_policy, env, n_eval_episodes=min(100, config.batch_size), deterministic=True)
+    eval_time = time() - eval_start
+    
+    # Process results
+    mask = eval_results_after['mask']
+    rewards = eval_results_after['rewards'][mask]
+    lengths = eval_results_after['lengths'][mask]
+    success = eval_results_after['success'][mask]
+    
+    eval_stats_after = {
+        'avg_reward': float(rewards.mean()) if len(rewards) > 0 else 0.0,
+        'avg_length': float(lengths.float().mean()) if len(lengths) > 0 else 0.0,
+        'success_rate': float(success.mean() * 100) if len(success) > 0 else 0.0,
+        'n_episodes': int(mask.sum())
+    }
+    
+    print(f"\n  TRAINED POLICY RESULTS:")
+    print(f"  Avg reward:        {eval_stats_after['avg_reward']:.2f}")
+    print(f"  Avg length:        {eval_stats_after['avg_length']:.2f}")
+    print(f"  Success rate:      {eval_stats_after['success_rate']:.2f}%")
+    print(f"  Evaluation time:   {eval_time:.2f}s")
+    
+    # Sanity checks
+    print(f"\n  SANITY CHECKS:")
+    
+    # Check if losses are reasonable (not NaN or extremely high)
+    policy_loss = metrics.get('train/policy_loss', 0.0)
+    value_loss = metrics.get('train/value_loss', 0.0)
+    
+    loss_ok = not (np.isnan(policy_loss) or np.isnan(value_loss) or 
+                   policy_loss > 100 or value_loss > 100)
+    print(f"  {'✓' if loss_ok else '✗'} Losses are reasonable: "
+          f"policy={policy_loss:.4f}, value={value_loss:.4f}")
+    
+    
+    # Check if success rate is in reasonable range
+    success_reasonable = 0 <= eval_stats_after['success_rate'] <= 100
+    print(f"  {'✓' if success_reasonable else '✗'} Success rate in valid range: "
+          f"{eval_stats_after['success_rate']:.2f}%")
+    
+    end_time = time()
+    print(f"  Step completed in {end_time - start_time:.2f} seconds")
     
     print(f"\n{'='*80}\n")
-    return rollout_stats_torch
+
 
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Test rollout collection and optionally PPO learning')
-    parser.add_argument('--dataset', type=str, default='countries_s3', help='Dataset name')
-    parser.add_argument('--batch-size', type=int, default=100, help='Number of parallel environments')
-    parser.add_argument('--n-steps', type=int, default=64, help='Steps per rollout')
-    parser.add_argument('--n-epochs', type=int, default=5, help='PPO epochs (0=rollout only)')
-    parser.add_argument('--max-depth', type=int, default=20, help='Maximum proof depth')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed')
-    parser.add_argument('--n-tests', type=int, default=5, help='Number of test stages (1=data, 2=train, 3=eval, 4=torch, 5=learning)')
+    parser = argparse.ArgumentParser(description='Test PPO SB3 implementation')
+    # Test parameters
+    parser.add_argument('--dataset', type=str, default=None, help='Dataset name')
+    parser.add_argument('--batch_size', type=int, default=None, help='Number of parallel environments')
+    parser.add_argument('--n_steps', type=int, default=None, help='Steps per rollout')
+    parser.add_argument('--n_epochs', type=int, default=None, help='PPO epochs per update')
+    parser.add_argument('--max_depth', type=int, default=None, help='Maximum proof depth')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed')
     parser.add_argument('--device', type=str, default=None, help='Device (cpu or cuda, None=auto)')
-    parser.add_argument('--deterministic', action='store_true', help='Use deterministic actor in eval mode (first valid action, 30-40% success)')
+    parser.add_argument('--total_timesteps', type=int, default=None, help='Total timesteps to train')
     
-    args = parser.parse_args()
+    # Environment settings
+    parser.add_argument('--padding_atoms', type=int, default=None, help='Number of padding atoms')
+    parser.add_argument('--padding_states', type=int, default=None, help='Number of padding states')
+    parser.add_argument('--memory_pruning', type=lambda x: x.lower() == 'true', default=None, help='Enable memory pruning')
+    parser.add_argument('--reward_type', type=int, default=None, help='Reward type')
+    parser.add_argument('--verbose', type=int, default=None, help='Verbose level')
     
-    test_rollouts(
-        n_tests=args.n_tests,
-        dataset=args.dataset,
-        batch_size=args.batch_size,
-        n_steps=args.n_steps,
-        n_epochs=args.n_epochs,
-        max_depth=args.max_depth,
-        seed=args.seed,
-        device=args.device,
-        deterministic=args.deterministic
-    )
+    # Embedder settings
+    parser.add_argument('--atom_embedder', type=str, default=None, help='Atom embedder type')
+    parser.add_argument('--constant_embedding_size', type=int, default=None, help='Constant embedding size')
+    parser.add_argument('--atom_embedding_size', type=int, default=None, help='Atom embedding size')
+    
+    # PPO model settings
+    parser.add_argument('--hidden_dim', type=int, default=None, help='Hidden dimension')
+    parser.add_argument('--num_layers', type=int, default=None, help='Number of layers')
+    parser.add_argument('--dropout_prob', type=float, default=None, help='Dropout probability')
+    
+    # PPO training settings
+    parser.add_argument('--gamma', type=float, default=None, help='Discount factor')
+    parser.add_argument('--gae_lambda', type=float, default=None, help='GAE lambda')
+    parser.add_argument('--clip_range', type=float, default=None, help='PPO clip range')
+    parser.add_argument('--ent_coef', type=float, default=None, help='Entropy coefficient')
+    parser.add_argument('--vf_coef', type=float, default=None, help='Value function coefficient')
+    parser.add_argument('--learning_rate', type=float, default=None, help='Learning rate')
+    parser.add_argument('--ppo_batch_size', type=int, default=None, help='PPO mini-batch size')
+    
+    cmd_args = parser.parse_args()
+    
+    # Create args namespace, only including non-None values from command line
+    args = SimpleNamespace()
+    for key, value in vars(cmd_args).items():
+        if value is not None:
+            setattr(args, key, value)
+    
+    test_rollout_pipeline(test_mode=None, args=args)

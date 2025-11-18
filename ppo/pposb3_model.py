@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, Optional
 from tensordict import TensorDict
+from stable_baselines3.common.distributions import CategoricalDistribution
 
 
 class PolicyNetwork(nn.Module):
@@ -111,7 +112,7 @@ class PolicyNetwork(nn.Module):
         # Scale logits by 1/sqrt(embed_dim) like in scaled dot-product attention
         # This prevents the dot products from growing too large and causing
         # the softmax to become too peaked (low entropy)
-        logits = logits / (self.embed_dim ** 0.5)
+        # logits = logits / (self.embed_dim ** 0.5)
         
         # Apply action mask
         logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
@@ -236,6 +237,11 @@ class ActorCriticPolicy(nn.Module):
             dropout_prob=dropout_prob
         )
         
+        # Create action distribution (more efficient to create once)
+        # Note: action_space.n is not available here, but CategoricalDistribution
+        # will determine the number of actions from the logits shape at runtime
+        self.action_dist = CategoricalDistribution(action_dim=-1)
+        
         # Move to device
         self.to(self.device)
     
@@ -288,17 +294,15 @@ class ActorCriticPolicy(nn.Module):
         logits = self.policy_net(obs_embeddings, action_embeddings, action_mask)
         values = self.value_net(obs_embeddings)
         
-        # Sample actions
+        # Sample actions using the pre-created distribution
+        distribution = self.action_dist.proba_distribution(action_logits=logits)
         if deterministic:
-            actions = logits.argmax(dim=-1)
+            actions = distribution.mode()
         else:
-            # Create categorical distribution
-            dist = torch.distributions.Categorical(logits=logits)
-            actions = dist.sample()
+            actions = distribution.sample()
         
         # Compute log probabilities
-        log_probs = F.log_softmax(logits, dim=-1)
-        action_log_probs = log_probs.gather(1, actions.unsqueeze(-1)).squeeze(-1)
+        action_log_probs = distribution.log_prob(actions)
         
         return actions, values, action_log_probs
     
@@ -324,19 +328,21 @@ class ActorCriticPolicy(nn.Module):
         logits = self.policy_net(obs_embeddings, action_embeddings, action_mask)
         values = self.value_net(obs_embeddings)
         
-        # Compute log probabilities and entropy
-        log_probs = F.log_softmax(logits, dim=-1)
-        action_log_probs = log_probs.gather(1, actions.unsqueeze(-1)).squeeze(-1)
+        # Use pre-created distribution for computing log probabilities and entropy
+        distribution = self.action_dist.proba_distribution(action_logits=logits)
+        action_log_probs = distribution.log_prob(actions)
         
-        # Compute entropy (handle masked actions carefully)
-        probs = F.softmax(logits, dim=-1)
-        # Replace inf/nan values before computing entropy
-        log_probs_safe = torch.where(
-            torch.isinf(log_probs) | torch.isnan(log_probs),
-            torch.zeros_like(log_probs),
-            log_probs
-        )
-        entropy = -(probs * log_probs_safe).sum(dim=-1)
+        # Compute entropy - the distribution handles masked actions correctly
+        entropy = distribution.entropy()
+        
+        # Check for NaN/Inf in results (after distribution computation)
+        if torch.isnan(action_log_probs).any() or torch.isinf(action_log_probs).any():
+            raise RuntimeError("NaN or Inf detected in action_log_probs in evaluate_actions()." \
+                                "Check action masks and logits."
+                               f"\n action_log_probs: {action_log_probs}"
+                               f"\n logits: {logits}"
+                               f"\n action_mask: {action_mask}"
+                               f"\n actions: {actions}")
         
         return values, action_log_probs, entropy
     

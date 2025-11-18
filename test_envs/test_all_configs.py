@@ -43,7 +43,7 @@ def create_default_test_config() -> SimpleNamespace:
     Returns:
         SimpleNamespace with default configuration parameters.
     """
-    return SimpleNamespace(
+    args = SimpleNamespace(
         dataset="countries_s3",
         n_queries=800,
         deterministic=True,
@@ -56,10 +56,10 @@ def create_default_test_config() -> SimpleNamespace:
         padding_atoms=6,
         padding_states=40,
         max_derived_per_state=40,
-        skip_unary_actions=False,
+        skip_unary_actions=True,
         end_proof_action=False,
         memory_pruning=True,
-        use_exact_memory=False,
+        use_exact_memory=True,
         reward_type=0,
         prover_verbose=0,
         max_total_runtime_vars=1_000_000,
@@ -75,7 +75,13 @@ def create_default_test_config() -> SimpleNamespace:
         vf_coef=0.5,
         learning_rate=1e-4,
     )
-
+    if args.end_proof_action and args.random_policy:
+        print("random results will be very low if end_proof_action is enabled"
+              "and random policy is used (with deterministic it is never chosen")
+    if not args.use_exact_memory:
+        print("Using BloomFilter for memory instead of ExactMemory"
+              "will give different results in deterministic settings")
+    return args
 
 def clone_config(config: SimpleNamespace) -> SimpleNamespace:
     """Create a shallow clone of a SimpleNamespace to avoid shared state."""
