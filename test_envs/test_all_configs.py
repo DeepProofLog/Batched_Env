@@ -56,7 +56,7 @@ def create_default_test_config() -> SimpleNamespace:
         padding_atoms=6,
         padding_states=40,
         max_derived_per_state=40,
-        skip_unary_actions=False,
+        skip_unary_actions=True,
         end_proof_action=False,
         memory_pruning=True,
         use_exact_memory=True,
@@ -816,16 +816,28 @@ def run_all_tests(
         }
         
         if cfg.debug:
-            if len(engine_configs) > 1:
-                print(f"\n{'='*80}")
-                print(f"DEBUG MODE: Comparing engines")
-                print(f"{'='*80}")
-                debug_compare_step_by_step(engine_configs, queries)
-            if len(env_configs_with_traces) > 1:
-                print(f"\n{'='*80}")
-                print(f"DEBUG MODE: Comparing environments")
-                print(f"{'='*80}")
-                debug_compare_step_by_step(env_configs_with_traces, queries)
+            # Re-run tests for debug
+            debug_traces = {}
+            
+            # Iterate over configs that were already run and have traces
+            for config_name in env_configs_with_traces.keys():
+                print(f"\nTesting: {config_name}")
+                
+                # Setup environment and run test
+                if config_name == 'sb3_env':
+                    env_data = setup_sb3_env(dataset=cfg.dataset, config=cfg)
+                    results = test_sb3_env_batch(queries, env_data, cfg)
+                elif config_name == 'batched_tensor_env':
+                    env_data = setup_tensor_env(dataset=cfg.dataset, config=cfg)
+                    results = test_tensor_env_batched(queries, env_data, cfg)
+                else:
+                    continue
+                
+                traces = results['traces']
+                debug_traces[config_name] = traces
+                
+            # Compare traces
+            debug_compare_step_by_step(debug_traces, queries)
         else:
             if len(engine_configs) > 1:
                 print(f"\n{'='*80}")

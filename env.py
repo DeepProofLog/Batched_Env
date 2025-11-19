@@ -894,6 +894,20 @@ class BatchedEnv(EnvBase):
                 k_indices = torch.arange(K, device=device).unsqueeze(0)  # [1, K]
                 valid_mask = k_indices < derived_counts.unsqueeze(1)  # [N, K]
                 
+                # CRITICAL: Reject (not truncate) any state exceeding atom budget
+                # This matches _postprocess logic and sb3_env behavior
+                valid_atom = derived_batch[:, :, :, 0] != pad  # [N, K, M]
+                atom_counts = valid_atom.sum(dim=2)  # [N, K]
+                within_atom_budget = atom_counts <= self.padding_atoms  # [N, K]
+                
+                if self.verbose >= 2:
+                    rejected = valid_mask & (~within_atom_budget)
+                    if rejected.any():
+                        num_rejected = rejected.sum().item()
+                        self.debug_helper._log(2, f"[apply_skip_unary] Rejecting {num_rejected} states exceeding atom budget")
+
+                valid_mask = valid_mask & within_atom_budget
+                
                 # Combine with not-visited mask
                 keep_mask = valid_mask & (~visited)  # [N, K]
                 

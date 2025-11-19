@@ -342,9 +342,9 @@ class ExactMemory:
                 # Skip padded slots
                 if states[a, k, 0, 0].item() == pad:
                     continue
-                # CRITICAL: Must ignore_terminals=True to match how states are added to memory
-                # This ensures consistency between add_current() and membership()
-                key = self._state_to_key(states[a, k], ignore_terminals=True)
+                # CRITICAL: Must ignore_terminals=False to match sb3_env behavior
+                # sb3_env checks full derived state (with terminals) against memory (which has terminals removed)
+                key = self._state_to_key(states[a, k], ignore_terminals=False)
                 if key in mem_set:
                     visited[a, k] = True
 
