@@ -65,7 +65,7 @@ if __name__ == "__main__":
         'save_model': True,
         'use_amp': True,
         'use_compile': True,
-        'n_steps': 64, #64
+        'n_steps': 256, #64
         'batch_size_env': 256,  # 256
         'batch_size_env_eval': 256,  # 256
         'batch_size': 2048,

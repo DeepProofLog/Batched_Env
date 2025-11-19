@@ -106,6 +106,15 @@ class PolicyNetwork(nn.Module):
             nn.Linear(hidden_dim, embed_dim)
         )
     
+    def _forward_mlp(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the MLP (obs_transform -> res_blocks -> out_transform)."""
+        x = self.obs_transform(x)
+        for block in self.res_blocks:
+            residual = x
+            x = block(x)
+            x = x + residual
+        return self.out_transform(x)
+
     def _encode_embeddings(self, embeddings: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """Apply shared residual stack to embeddings. 
         
@@ -115,6 +124,13 @@ class PolicyNetwork(nn.Module):
                   If provided, only valid items are processed through the network.
         """
         batch_size, n_items, embed_dim = embeddings.shape
+        
+        if mask is None:
+            # Process all embeddings if no mask provided
+            flat_embeddings = embeddings.reshape(-1, embed_dim)
+            encoded_valid = self._forward_mlp(flat_embeddings)
+            return encoded_valid.view(batch_size, n_items, embed_dim)
+
         # Flatten mask to 1D
         mask_flat = mask.bool().reshape(-1)
         
@@ -123,12 +139,7 @@ class PolicyNetwork(nn.Module):
         valid_embeddings = flat_embeddings[mask_flat]
         
         # Process valid embeddings through network
-        x = self.obs_transform(valid_embeddings)
-        for block in self.res_blocks:
-            residual = x
-            x = block(x)
-            x = x + residual
-        encoded_valid = self.out_transform(x)
+        encoded_valid = self._forward_mlp(valid_embeddings)
         
         # Create output tensor and scatter valid results (match dtype for AMP)
         encoded_flat = torch.zeros_like(flat_embeddings, dtype=encoded_valid.dtype)
@@ -248,27 +259,7 @@ class ValueNetwork(nn.Module):
         
         value = self.output_layer(x)
         return value.squeeze(-1)
-    
-    def forward_with_encoded_obs(self, encoded_embeddings: torch.Tensor) -> torch.Tensor:
-        """
-        Compute value estimates from already-encoded observation embeddings.
-        This skips the initial encoding step for efficiency when obs are pre-encoded.
-        
-        Args:
-            encoded_embeddings: Pre-encoded observation embeddings (batch, embed_dim)
-        
-        Returns:
-            Value estimates (batch,)
-        """
-        # Process through network (skipping initial encoding)
-        x = self.input_layer(encoded_embeddings)
-        for block in self.res_blocks:
-            residual = x
-            x = block(x)
-            x = x + residual
-        
-        value = self.output_layer(x)
-        return value.squeeze(-1)
+
 
 
 class ActorCriticPolicy(nn.Module):
@@ -348,13 +339,24 @@ class ActorCriticPolicy(nn.Module):
         if use_compile:
             try:
                 import time
+                import torch._inductor.config
+                
+                # Disable max_autotune_gemm to avoid "Not enough SMs" warning on some GPUs
+                if hasattr(torch._inductor.config, 'max_autotune_gemm'):
+                    torch._inductor.config.max_autotune_gemm = False
+                
                 compile_start = time.time()
                 # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph issues
                 # with dynamic operations like masked indexing
-                self.policy_net = torch.compile(self.policy_net, mode='default')
+                
+                # Compile only the heavy MLP part of policy network to allow dynamic masking in _encode_embeddings
+                # This avoids graph breaks in the masking logic while optimizing the computation
+                self.policy_net._forward_mlp = torch.compile(self.policy_net._forward_mlp, mode='default')
+                
+                # Value network handles fixed size inputs (usually), so we can compile it entirely
                 self.value_net = torch.compile(self.value_net, mode='default')
                 compile_time = time.time() - compile_start
-                print(f"[OPTIMIZATION] torch.compile() enabled for policy and value networks (init: {compile_time:.3f}s)")
+                print(f"[OPTIMIZATION] torch.compile() enabled for policy (MLP only) and value networks (init: {compile_time:.3f}s)")
             except Exception as e:
                 print(f"[WARNING] torch.compile() failed: {e}. Continuing without compilation.")
     
@@ -454,37 +456,12 @@ class ActorCriticPolicy(nn.Module):
         
         if self.share_features_extractor:
             obs_embeddings, action_embeddings, action_mask = features
-            # OPTIMIZATION: Encode observation embeddings once and reuse for both policy and value
-            # This avoids redundant computation through residual blocks
-            encoded_obs = self.policy_net._encode_embeddings(obs_embeddings)
-            if encoded_obs.dim() == 3 and encoded_obs.shape[1] == 1:
-                encoded_obs = encoded_obs.squeeze(1)
-            obs_embeddings_vf = encoded_obs
+            logits = self.policy_net(obs_embeddings, action_embeddings, action_mask)
+            values = self.value_net(obs_embeddings)
         else:
             (obs_embeddings, action_embeddings, action_mask), (obs_embeddings_vf, _, _) = features
-            # Encode obs for policy
-            encoded_obs = self.policy_net._encode_embeddings(obs_embeddings)
-            if encoded_obs.dim() == 3 and encoded_obs.shape[1] == 1:
-                encoded_obs = encoded_obs.squeeze(1)
-        
-        # Encode actions with masking
-        encoded_actions = self.policy_net._encode_embeddings(action_embeddings, mask=action_mask)
-        
-        # Compute logits using encoded embeddings
-        logits = torch.bmm(
-            encoded_obs.unsqueeze(1),
-            encoded_actions.transpose(1, 2)
-        ).squeeze(1)
-        logits = logits / (self.embed_dim ** 0.5)
-        logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
-        
-        # Compute values - use appropriate obs embeddings based on sharing
-        if self.share_features_extractor:
-            values = self.value_net.forward_with_encoded_obs(encoded_obs)
-        else:
-            # Encode value obs separately if not sharing
-            encoded_obs_vf = self.value_net.input_layer(obs_embeddings_vf.squeeze(1) if obs_embeddings_vf.dim() == 3 else obs_embeddings_vf)
-            values = self.value_net.forward_with_encoded_obs(encoded_obs_vf)
+            logits = self.policy_net(obs_embeddings, action_embeddings, action_mask)
+            values = self.value_net(obs_embeddings_vf)
         
         # Use pre-created distribution for computing log probabilities and entropy
         distribution = self.action_dist.proba_distribution(action_logits=logits)
