@@ -16,20 +16,22 @@ import torch.nn as nn
 
 from callbacks import (
     EvaluationCallback,
+    MRREvaluationCallback,
     RolloutProgressCallback,
     TorchRLCallbackManager,
     TrainingMetricsCallback,
+    TrainingCheckpointCallback,
 )
 from data_handler import DataHandler
 from embeddings import get_embedder
 from env import BatchedEnv
 from index_manager import IndexManager
 from model_eval import evaluate_ranking_metrics
-from ppo.ppo import PPO
-from ppo.model import create_actor_critic
+from ppo import PPO
+from model import create_actor_critic
 from sampler import Sampler
 from unification_engine import UnificationEngine
-from utils import (
+from utils.utils import (
     _freeze_dropout_layernorm,
     _set_seeds,
     _warn_non_reproducible,
@@ -222,8 +224,38 @@ def _evaluate_split(
     device = getattr(env, "_device", torch.device("cpu"))
     queries = queries.to(device)
 
+    # Wrap policy to provide correct interface
+    class PolicyWrapper:
+        def __init__(self, policy):
+            self.policy = policy
+            self.training = policy.training
+        
+        def __call__(self, obs_td, deterministic=True):
+            with torch.no_grad():
+                actions, _, log_probs = self.policy(obs_td, deterministic=deterministic)
+            from tensordict import TensorDict
+            return TensorDict({
+                "action": actions,
+                "sample_log_prob": log_probs
+            }, batch_size=obs_td.batch_size)
+        
+        def eval(self):
+            self.policy.eval()
+            self.training = False
+            return self
+        
+        def train(self):
+            self.policy.train()
+            self.training = True
+            return self
+        
+        def parameters(self):
+            return self.policy.parameters()
+    
+    wrapped_policy = PolicyWrapper(policy)
+    
     metrics = evaluate_ranking_metrics(
-        actor=policy.policy_net,
+        actor=wrapped_policy,
         env=env,
         queries=queries,
         sampler=sampler,
@@ -405,31 +437,68 @@ def train(
         verbose=True,
     )
 
-    eval_callback = EvaluationCallback(
-        eval_env=eval_env,
-        sampler=sampler,
-        eval_data=data_handler.valid_queries,
-        eval_data_depths=getattr(data_handler, "valid_depths", None),
-        n_corruptions=args.eval_neg_samples,
-        eval_freq=1,
-        best_metric=getattr(args, "eval_best_metric", "mrr_mean"),
-        save_path=model_path,
-        verbose=True,
-        collect_detailed=getattr(args, "depth_info", False),
-        verbose_cb=getattr(args, "verbose_cb", False),
-    )
+    # Choose evaluation callback based on best_metric
+    eval_best_metric = getattr(args, "eval_best_metric", "mrr_mean")
+    use_mrr_callback = eval_best_metric in ["mrr_mean", "mrr", "hits1_mean", "hits3_mean", "hits10_mean"]
+    
+    if use_mrr_callback and eval_env is not None:
+        # Extract query triples for MRR evaluation
+        valid_split = data_handler.get_materialized_split("valid")
+        eval_queries = _extract_query_triples(valid_split, args.n_eval_queries)
+        
+        eval_callback = MRREvaluationCallback(
+            eval_env=eval_env,
+            sampler=sampler,
+            eval_data=eval_queries,  # Tensor of triples [N, 3]
+            eval_data_depths=getattr(data_handler, "valid_depths", None),
+            n_corruptions=args.eval_neg_samples,
+            eval_freq=1,
+            best_metric=eval_best_metric,
+            save_path=model_path,
+            model_name="rl_model",
+            verbose=True,
+            collect_detailed=True,
+            verbose_cb=getattr(args, "verbose_cb", False),
+            corruption_scheme=args.corruption_scheme,
+        )
+    elif eval_env is not None:
+        # Fall back to standard evaluation callback
+        eval_callback = EvaluationCallback(
+            eval_env=eval_env,
+            sampler=sampler,
+            eval_data=data_handler.valid_queries,
+            eval_data_depths=getattr(data_handler, "valid_depths", None),
+            n_corruptions=args.eval_neg_samples,
+            eval_freq=1,
+            best_metric=eval_best_metric,
+            save_path=model_path,
+            verbose=True,
+            collect_detailed=True,
+            verbose_cb=getattr(args, "verbose_cb", False),
+        )
+    else:
+        eval_callback = None
 
     train_callback = TrainingMetricsCallback(
         log_interval=1,
         verbose=True,
         verbose_cb=getattr(args, "verbose_cb", False),
-        collect_detailed=getattr(args, "depth_info", False),
+                    collect_detailed=True,    )
+    
+    checkpoint_callback = TrainingCheckpointCallback(
+        save_path=model_path if args.save_model else None,
+        model_name="rl_model",
+        monitor_metric="ep_rew",
+        save_freq=5,  # Save every 5 iterations
+        maximize=True,
+        verbose=True,
     )
 
     callback_manager = TorchRLCallbackManager(
         rollout_callback=rollout_callback,
-        eval_callback=eval_callback if eval_env is not None else None,
+        eval_callback=eval_callback,
         train_callback=train_callback,
+        checkpoint_callback=checkpoint_callback,
     )
     callback_manager.on_training_start()
 
@@ -463,6 +532,7 @@ def train(
         total_timesteps=args.timesteps_train,
         log_interval=1,
         reset_num_timesteps=True,
+        callback_manager=callback_manager,
     )
 
     logger.close()
@@ -501,6 +571,12 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     valid_split = data_handler.get_materialized_split("valid")
     test_split = data_handler.get_materialized_split("test")
 
+    # Determine rollout device (where environments run)
+    rollout_device = device
+    if hasattr(args, 'rollout_device') and args.rollout_device is not None:
+        rollout_device = torch.device(args.rollout_device)
+        print(f"Using separate rollout device: {rollout_device}")
+    
     train_env = _make_env_from_split(
         train_split,
         mode="train",
@@ -510,7 +586,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         sampler=sampler,
         unification_engine=unification_engine,
         stringifier_params=stringifier_params,
-        device=device,
+        device=rollout_device,
     )
     eval_env = _make_env_from_split(
         valid_split,
@@ -521,7 +597,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         sampler=sampler,
         unification_engine=unification_engine,
         stringifier_params=stringifier_params,
-        device=device,
+        device=rollout_device,
     )
     test_env = _make_env_from_split(
         test_split,
@@ -539,6 +615,14 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     
     use_amp = getattr(args, "use_amp", device.type == "cuda")
     use_compile = getattr(args, "use_compile", False)
+    
+    # Set torch optimizations EARLY to avoid warnings
+    # Set float32 matmul precision for better performance
+    torch.set_float32_matmul_precision('high')
+    
+    # Disable max_autotune_gemm if not enough SMs (prevents warning)
+    if hasattr(torch._inductor, 'config') and hasattr(torch._inductor.config, 'max_autotune_gemm'):
+        torch._inductor.config.max_autotune_gemm = False
     
     # Create actor-critic policy using PPO SB3-style implementation
     policy = create_actor_critic(

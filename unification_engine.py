@@ -1044,7 +1044,7 @@ class UnificationEngine:
 
         # Pre-sort rules by predicate and build heads predicate ranges
         if self.rules_heads_idx.numel() > 0:
-            order = torch.argsort(self.rules_heads_idx[:, 0])
+            order = torch.argsort(self.rules_heads_idx[:, 0], stable=True)
             self.rules_heads_sorted  = self.rules_heads_idx.index_select(0, order)
             self.rules_idx_sorted    = self.rules_idx.index_select(0, order)
             self.rule_lens_sorted    = self.rule_lens.index_select(0, order)
@@ -1085,7 +1085,7 @@ class UnificationEngine:
             self.end_tensor = None
         
         # Initialize DebugHelper for verbose output
-        from debug_helper import DebugHelper as DH
+        from utils.debug_helper import DebugHelper as DH
         self.debug_helper = DH(**stringifier_params) if stringifier_params else None
         self.deb = self.debug_helper  # short alias
 

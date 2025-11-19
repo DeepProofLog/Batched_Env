@@ -71,7 +71,7 @@ class BatchedEnv(EnvBase):
         
         # Import here to avoid circular dependency
         if debug_config is None:
-            from debug_config import DebugConfig
+            from utils.debug_config import DebugConfig
             debug_config = DebugConfig()
         self.debug_config = debug_config
 
@@ -515,7 +515,7 @@ class BatchedEnv(EnvBase):
 
         # Pack observation
         obs = self._create_observation_dict()
-        obs['is_success'] = is_success.squeeze(-1)
+        obs['is_success'] = is_success
         
         # DEBUG: Print derived counts to diagnose constrained action space
         if self.verbose >= 2:
@@ -527,7 +527,16 @@ class BatchedEnv(EnvBase):
             self._debug_action_space(obs, dones, is_success)
         
         td = TensorDict(
-            {**obs, "reward": rewards, "done": dones, "terminated": terminated, "truncated": truncated},
+            {
+                **obs, 
+                "reward": rewards, 
+                "done": dones, 
+                "terminated": terminated, 
+                "truncated": truncated,
+                "label": self.current_labels,
+                "query_depth": self.proof_depths,
+                "length": self.current_depths
+            },
             batch_size=self.batch_size, device=self._device
         )
         if self.verbose >= 1:

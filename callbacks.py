@@ -7,6 +7,8 @@ Provides comprehensive training callbacks similar to Stable-Baselines3:
 - Training metrics formatting and logging
 - Timing information
 - Detailed metrics collection module for both training and evaluation
+- MRR evaluation callbacks with corruption-based metrics
+- Model checkpoint management
 """
 
 import json
@@ -112,57 +114,69 @@ def print_formatted_metrics(
     """
     print("-" * 52)
     
-    # Priority metrics (MRR, AUC, etc.) if provided in extra_metrics
-    if extra_metrics:
-        priority_keys = []
-        for key in ["mrr_mean", "_mrr", "auc_pr", "auc_pr_mean", "success_rate"]:
-            if key in extra_metrics:
-                priority_keys.append(key)
-        
-        if priority_keys:
-            print(f"| {prefix + '/':<23} | {'':<24} |")
-            for key in priority_keys:
-                value = extra_metrics[key]
-                value_str = f"{value:.3f}" if isinstance(value, (int, float)) else str(value)
-                print(f"|    {key:<20} | {value_str:<24} |")
-    
     # Rollout/episode metrics from DetailedMetricsCollector
     if metrics:
         if not extra_metrics or not any(k in extra_metrics for k in ["mrr_mean", "_mrr", "auc_pr"]):
             print(f"| {prefix + '/':<23} | {'':<24} |")
         
-        # 1. Overall episode stats
-        for key in ["ep_len", "ep_rew"]:
+        # 1. Overall episode stats (mean only, no +/- std)
+        for key in ["ep_len_mean", "ep_rew_mean"]:
             if key in metrics:
                 print(f"|    {key:<20} | {metrics[key]:<24} |")
         
-        # 2. Aggregate by label
-        for key in ["len_pos", "len_neg", "proven_pos", "proven_neg", "rwd_pos", "rwd_neg"]:
+        # 2. Aggregate by label (length)
+        for key in ["len_pos", "len_neg"]:
             if key in metrics:
                 print(f"|    {key:<20} | {metrics[key]:<24} |")
         
-        # 3. Detailed breakdown by depth (if present)
-        # Group by metric type for cleaner display
+        # 3. Overall length with std
+        # if "length mean +/- std" in metrics:
+        #     print(f"|    {'length mean +/- std':<20} | {metrics['length mean +/- std']:<24} |")
+        
+        # 4. Detailed breakdown by depth (if present) - grouped by type
+        # First: length by depth
         len_depth_keys = sorted(
             [k for k in metrics.keys() if k.startswith("len_d_")],
             key=_sort_metric_key
         )
+        for key in len_depth_keys:
+            print(f"|    {key:<20} | {metrics[key]:<24} |")
+        
+        # Second: proven/success by depth (sorted)
         proven_depth_keys = sorted(
             [k for k in metrics.keys() if k.startswith("proven_d_")],
             key=_sort_metric_key
         )
-        rwd_depth_keys = sorted(
-            [k for k in metrics.keys() if k.startswith("rwd_d_")],
-            key=_sort_metric_key
-        )
-        
-        for key in len_depth_keys:
-            print(f"|    {key:<20} | {metrics[key]:<24} |")
         for key in proven_depth_keys:
             print(f"|    {key:<20} | {metrics[key]:<24} |")
-        for key in rwd_depth_keys:
+        
+        # Third: proven by label (aggregate)
+        for key in ["proven_neg", "proven_pos"]:
+            if key in metrics:
+                print(f"|    {key:<20} | {metrics[key]:<24} |")
+        
+        # Fourth: reward by depth (sorted)
+        # Only use reward_d_ keys, ignore rwd_d_ to avoid duplication
+        reward_depth_keys = sorted(
+            [k for k in metrics.keys() if k.startswith("reward_d_")],
+            key=_sort_metric_key
+        )
+        for key in reward_depth_keys:
             print(f"|    {key:<20} | {metrics[key]:<24} |")
-    
+        
+        # Fifth: reward by label
+        for key in ["reward_label_neg", "reward_label_pos"]:
+            if key in metrics:
+                print(f"|    {key:<20} | {metrics[key]:<24} |")
+        
+        # Sixth: overall reward
+        # if "reward_overall" in metrics:
+        #     print(f"|    {'reward_overall':<20} | {metrics['reward_overall']:<24} |")
+        
+        # Seventh: success rate
+        if "success_rate" in metrics:
+            print(f"|    {'success_rate':<20} | {metrics['success_rate']:<24} |")
+
     # Additional metrics (time, train losses, etc.)
     if extra_metrics:
         # Time metrics
@@ -176,8 +190,8 @@ def print_formatted_metrics(
         
         # Other metrics (losses, entropy, etc. for training; hits, episode breakdown for evaluation)
         # Only show under "train/" prefix if we're actually in training context (prefix != "eval")
-        other_keys = [k for k in extra_metrics.keys() 
-                     if k not in time_keys and k not in ["mrr_mean", "_mrr", "auc_pr", "auc_pr_mean", "success_rate"]]
+        other_keys = sorted([k for k in extra_metrics.keys() if k not in time_keys])
+        
         if other_keys:
             # Don't add "train/" prefix during evaluation
             if prefix == "eval":
@@ -364,14 +378,29 @@ class DetailedMetricsCollector:
         # ----------------------------------------------------------------
         all_rewards = []
         all_lengths = []
+        all_successes = []
         for episodes in self._episode_stats.values():
             all_rewards.extend([ep["reward"] for ep in episodes if ep.get("reward") is not None])
             all_lengths.extend([ep["length"] for ep in episodes if ep.get("length") is not None])
+            all_successes.extend([ep.get("success", 0.0) for ep in episodes])
         
+        # Mean values for backward compatibility
         if all_rewards:
-            metrics["ep_rew"] = f"{np.mean(all_rewards):.2f}"
+            metrics["ep_rew_mean"] = f"{np.mean(all_rewards):.2f}"
         if all_lengths:
-            metrics["ep_len"] = f"{np.mean(all_lengths):.1f}"
+            metrics["ep_len_mean"] = f"{np.mean(all_lengths):.2f}"
+        
+        # Overall statistics with std
+        # if all_rewards:
+        #     metrics["reward_overall"] = _format_stat_string(
+        #         np.mean(all_rewards), np.std(all_rewards), len(all_rewards)
+        #     )
+        # if all_lengths:
+        #     metrics["length mean +/- std"] = _format_stat_string(
+        #         np.mean(all_lengths), np.std(all_lengths), len(all_lengths)
+        #     )
+        if all_successes:
+            metrics["success_rate"] = f"{np.mean(all_successes):.3f}"
         
         # ----------------------------------------------------------------
         # 2. Aggregate by label (positive/negative)
@@ -405,9 +434,12 @@ class DetailedMetricsCollector:
                     np.mean(successes), np.std(successes), len(successes)
                 )
             
-            # Reward by label
+            # Reward by label (with both naming conventions)
             if rewards:
                 metrics[f"rwd_{label_str}"] = _format_stat_string(
+                    np.mean(rewards), np.std(rewards), len(rewards)
+                )
+                metrics[f"reward_label_{label_str}"] = _format_stat_string(
                     np.mean(rewards), np.std(rewards), len(rewards)
                 )
         
@@ -445,10 +477,13 @@ class DetailedMetricsCollector:
                         np.mean(successes), np.std(successes), len(successes)
                     )
                 
-                # Reward by depth and label
+                # Reward by depth and label (with both naming conventions)
                 rewards = [ep["reward"] for ep in episodes if ep.get("reward") is not None]
                 if rewards:
-                    metrics[f"rwd_d_{depth_key}_{label_str}"] = _format_stat_string(
+                    # metrics[f"rwd_d_{depth_key}_{label_str}"] = _format_stat_string(
+                    #     np.mean(rewards), np.std(rewards), len(rewards)
+                    # )
+                    metrics[f"reward_d_{depth_key}_{label_str}"] = _format_stat_string(
                         np.mean(rewards), np.std(rewards), len(rewards)
                     )
         
@@ -545,26 +580,17 @@ class EvaluationCallback:
     def on_evaluation_end(self, iteration: int, global_step: int, eval_metrics: Dict[str, Any]):
         """Called when evaluation is complete."""        
         # Get global statistics from DetailedMetricsCollector
-        # These include: ep_len, ep_rew, len_pos, len_neg, proven_pos, proven_neg, rwd_pos, rwd_neg
         rollout_metrics = self.compute_metrics()
         
-        # Convert episode_len_* metrics from eval_metrics (the breakdown stats)
-        # from mean/std pairs to formatted strings
-        self._convert_episode_len_metrics(eval_metrics)
-        
-        # Merge: rollout_metrics take priority for display, then eval_metrics
-        # This ensures we show both global stats AND the detailed breakdown
-        merged_metrics = {}
-        merged_metrics.update(eval_metrics)  # Start with eval metrics
-        merged_metrics.update(rollout_metrics)  # Override with global stats
+        # Merge metrics for best model tracking
+        merged_metrics = {**rollout_metrics, **eval_metrics}
         
         # Check if this is a new best
         metric_value = merged_metrics.get(self.best_metric, float('-inf'))
         if isinstance(metric_value, str):
-            # Try to extract numerical value if it's a formatted string
             try:
                 metric_value = float(metric_value.split()[0])
-            except:
+            except (ValueError, TypeError):
                 metric_value = float('-inf')
         
         is_new_best = metric_value > self.best_metric_value
@@ -576,53 +602,17 @@ class EvaluationCallback:
         
         # Print formatted metrics using the common function
         if self.verbose:
-            # Only include priority evaluation metrics (MRR, hits, AUC, etc.)
-            # Exclude the detailed breakdown metrics that are already captured in rollout_metrics
-            priority_eval_keys = [
-                "mrr_mean", "hits1_mean", "hits3_mean", "hits10_mean", 
-                "average_precision", "auc_pr", "auc_pr_mean", "success_rate",
-                "head_mrr_mean", "tail_mrr_mean"
-            ]
-            extra_metrics = {k: v for k, v in merged_metrics.items() 
-                           if k not in rollout_metrics and k in priority_eval_keys}
-            
-            # Use the common print function
             print_formatted_metrics(
                 metrics=rollout_metrics,
                 prefix="eval",
-                extra_metrics=extra_metrics,
+                extra_metrics=eval_metrics,
                 global_step=global_step,
             )
         return is_new_best
     
-    def _convert_episode_len_metrics(self, metrics: Dict[str, Any]):
-        """Convert episode_len_* mean/std pairs to formatted strings."""
-        # Convert episode_len metrics to formatted strings
-        # We don't always have count information from _episode_stats (e.g., when info_callback
-        # doesn't populate it), so we'll show metrics without counts
-        
-        metric_prefixes = [
-            'episode_len_pos',
-            'episode_len_neg',
-            'episode_len_pos_true',
-            'episode_len_pos_false',
-            'episode_len_neg_true',
-            'episode_len_neg_false',
-        ]
-        
-        for metric_base in metric_prefixes:
-            mean_key = f'{metric_base}_mean'
-            std_key = f'{metric_base}_std'
-            
-            if mean_key in metrics and std_key in metrics:
-                mean_val = metrics[mean_key]
-                std_val = metrics[std_key]
-                # Format as "mean +/- std" without count
-                formatted = f"{mean_val:.3f} +/- {std_val:.2f}"
-                metrics[f'ep_len_{metric_base.replace("episode_len_", "")}'] = formatted
-                # Remove the old _mean and _std keys
-                del metrics[mean_key]
-                del metrics[std_key]
+
+    
+
 
 
 # ============================================================================
@@ -745,6 +735,9 @@ class TrainingMetricsCallback:
             global_step=None,  # Already in extra_metrics as total_timesteps
         )
         
+        # Reset metrics after printing to avoid accumulation across iterations
+        self.metrics_collector.reset()
+        
         # Reset stats for next iteration
         self.metrics_collector.reset()
     
@@ -838,18 +831,21 @@ class TorchRLCallbackManager:
     def __init__(
         self,
         rollout_callback: Optional[RolloutProgressCallback] = None,
-        eval_callback: Optional[EvaluationCallback] = None,
+        eval_callback: Optional[Union[EvaluationCallback, "MRREvaluationCallback"]] = None,
         train_callback: Optional[TrainingMetricsCallback] = None,
+        checkpoint_callback: Optional["TrainingCheckpointCallback"] = None,
     ):
         """
         Args:
             rollout_callback: Callback for rollout progress
-            eval_callback: Callback for evaluation
+            eval_callback: Callback for evaluation (standard or MRR-based)
             train_callback: Callback for training metrics
+            checkpoint_callback: Callback for saving model checkpoints
         """
         self.rollout_callback = rollout_callback
         self.eval_callback = eval_callback
         self.train_callback = train_callback  # Expose publicly for direct access
+        self.checkpoint_callback = checkpoint_callback
     
     def on_training_start(self):
         """Called at the start of training."""
@@ -880,8 +876,11 @@ class TorchRLCallbackManager:
             mode: 'train' or 'eval'
         """
         def _tensor_batch_to_list(batch: Dict[str, torch.Tensor]) -> List[Dict[str, Any]]:
-            reward_tensor = batch.get("reward")
-            length_tensor = batch.get("length")
+            # Handle both old keys (r, l, s) and new keys (reward, length, is_success)
+            reward_tensor = batch.get("r") if "r" in batch else batch.get("reward")
+            length_tensor = batch.get("l") if "l" in batch else batch.get("length")
+            success_tensor = batch.get("s") if "s" in batch else batch.get("is_success")
+            
             if reward_tensor is None or length_tensor is None:
                 return []
 
@@ -898,7 +897,7 @@ class TorchRLCallbackManager:
             lengths = _to_list(length_tensor)
             labels = _to_list(batch.get("label"))
             depths = _to_list(batch.get("query_depth"))
-            successes = _to_list(batch.get("is_success"))
+            successes = _to_list(success_tensor)
 
             result: List[Dict[str, Any]] = []
             for idx in range(count):
@@ -958,11 +957,7 @@ class TorchRLCallbackManager:
             True if this is a new best model
         """
         if self.eval_callback:
-            # Compute depth-based metrics from accumulated episode stats
-            depth_metrics = self.eval_callback.compute_metrics()
-            # Merge depth metrics into eval_metrics
-            merged_metrics = {**eval_metrics, **depth_metrics}
-            return self.eval_callback.on_evaluation_end(iteration, global_step, merged_metrics)
+            return self.eval_callback.on_evaluation_end(iteration, global_step, eval_metrics)
         return False
     
     def on_iteration_end(
@@ -970,7 +965,559 @@ class TorchRLCallbackManager:
         iteration: int,
         global_step: int,
         n_envs: int = 1,
+        metrics: Optional[Dict[str, Any]] = None,
     ):
         """Called at the end of a training iteration."""
         if self.train_callback:
             self.train_callback.on_iteration_end(iteration, global_step, n_envs)
+        
+        # Handle checkpoint callback
+        if self.checkpoint_callback and metrics:
+            self.checkpoint_callback.on_iteration_end(iteration, global_step, metrics)
+
+
+# ============================================================================
+# MRR Evaluation Callback (adapted from SB3)
+# ============================================================================
+
+
+class MRREvaluationCallback(EvaluationCallback):
+    """
+    Enhanced evaluation callback with MRR metrics using corruption-based evaluation.
+    
+    This callback extends the standard EvaluationCallback by computing MRR, Hits@K
+    metrics through evaluate_ranking_metrics. It's adapted for TorchRL environments.
+    
+    Key features:
+    - Computes MRR, Hits@1/3/10 metrics via evaluate_ranking_metrics
+    - Tracks best model based on configurable metric (MRR or Hits@K)
+    - Integrates with DetailedMetricsCollector for depth breakdowns
+    - Compatible with TorchRL batched environments
+    
+    NOTE: This callback requires the policy to be passed during evaluation.
+          It will call evaluate_ranking_metrics from model_eval.py.
+    """
+    
+    def __init__(
+        self,
+        eval_env,
+        sampler,
+        eval_data: torch.Tensor,  # Should be [N, 3] tensor of triples for MRR eval
+        eval_data_depths: Optional[List[int]] = None,
+        n_corruptions: Optional[int] = 10,
+        eval_freq: int = 1,
+        best_metric: str = "mrr_mean",
+        save_path: Optional[Path] = None,
+        model_name: str = "model",
+        verbose: bool = True,
+        collect_detailed: bool = True,
+        verbose_cb: bool = False,
+        corruption_scheme: Optional[List[str]] = None,
+    ):
+        """
+        Args:
+            eval_env: BatchedEnv for evaluation
+            sampler: Negative sampler for corruption-based evaluation
+            eval_data: Tensor of evaluation query triples [N, 3] or [N, 1, 3]
+            eval_data_depths: Optional depth information for queries
+            n_corruptions: Number of corruptions per query (None = all)
+            eval_freq: Evaluate every N iterations
+            best_metric: Metric to track for best model ('mrr_mean' or 'hits1_mean', 'hits3_mean', 'hits10_mean')
+            save_path: Path to save best model
+            model_name: Name prefix for saved models
+            verbose: Whether to print detailed evaluation info
+            collect_detailed: If True, collect detailed breakdown by depth
+            verbose_cb: If True, print debug information during callback collection
+            corruption_scheme: List of corruption modes (e.g., ['head', 'tail'])
+        """
+        # Convert eval_data to list format if needed for parent class compatibility
+        if isinstance(eval_data, torch.Tensor):
+            # Parent class expects a list but we'll store the tensor separately
+            eval_data_list = [None] * eval_data.shape[0]  # Dummy list for parent
+        else:
+            eval_data_list = eval_data
+        
+        super().__init__(
+            eval_env=eval_env,
+            sampler=sampler,
+            eval_data=eval_data_list,
+            eval_data_depths=eval_data_depths,
+            n_corruptions=0,  # Parent doesn't use this for MRR
+            eval_freq=eval_freq,
+            best_metric=best_metric,
+            save_path=save_path,
+            verbose=verbose,
+            collect_detailed=collect_detailed,
+            verbose_cb=verbose_cb,
+        )
+        
+        # Store the actual tensor for MRR evaluation
+        self.eval_queries_tensor = eval_data if isinstance(eval_data, torch.Tensor) else None
+        self.n_corruptions = n_corruptions
+        self.model_name = model_name
+        self.corruption_scheme = corruption_scheme or ["head", "tail"]
+        self.best_epoch_step = None
+        
+        # Metric configuration
+        metric_options = {
+            "mrr_mean": {"display_name": "MRR", "log_key": "mrr_mean"},
+            "hits1_mean": {"display_name": "Hits@1", "log_key": "hits1_mean"},
+            "hits3_mean": {"display_name": "Hits@3", "log_key": "hits3_mean"},
+            "hits10_mean": {"display_name": "Hits@10", "log_key": "hits10_mean"},
+        }
+        
+        metric_key = best_metric.lower()
+        if metric_key not in metric_options:
+            allowed = ", ".join(sorted(metric_options.keys()))
+            raise ValueError(f"Unsupported best_metric '{best_metric}'. Allowed: {allowed}.")
+        
+        self._metric_options = metric_options
+        self.best_metric = metric_key
+        self._metric_display_name = metric_options[metric_key]["display_name"]
+        self._metric_log_key = metric_options[metric_key]["log_key"]
+        
+        # For collecting eval episode info
+        self._eval_episode_buffer = []
+    
+    def _collect_eval_episode_info(self, step_td):
+        """Callback to collect episode info during evaluation."""
+        
+        def _get_val(td, key, default=None):
+            if key in td.keys():
+                return td.get(key)
+            if "next" in td.keys():
+                nxt = td.get("next")
+                if key in nxt.keys():
+                    return nxt.get(key)
+            return default
+
+        # Extract episode info if done
+        done = _get_val(step_td, "done")
+        
+        if done is not None and done.any():
+            # print(f"DEBUG: done detected! reward={_get_val(step_td, 'reward')}")
+            reward = _get_val(step_td, "reward")
+            if reward is not None:
+                # Get additional info
+                label = _get_val(step_td, "label")
+                query_depth = _get_val(step_td, "query_depth")
+                is_success = _get_val(step_td, "is_success")
+                length = _get_val(step_td, "length")
+                
+                # Store for each done environment
+                batch_size = done.shape[0]
+                for i in range(batch_size):
+                    if done[i]:
+                        info = {
+                            "episode": {
+                                "r": float(reward[i].item()) if reward is not None else 0.0,
+                                "l": int(length[i].item()) if length is not None else 1,
+                            }
+                        }
+                        if label is not None:
+                            info["label"] = int(label[i].item())
+                        if query_depth is not None:
+                            info["query_depth"] = int(query_depth[i].item())
+                        if is_success is not None:
+                            info["is_success"] = bool(is_success[i].item())
+                        self._eval_episode_buffer.append(info)
+    
+    def on_evaluation_start(self, iteration: int, global_step: int):
+        """Called at start of evaluation - reset eval episode buffer."""
+        if self.verbose:
+            print(f"[MRREvaluationCallback] Starting evaluation at iter {iteration}, step {global_step}. Resetting collector.")
+        self._eval_episode_buffer = []
+        # Reset metrics collector for eval mode
+        self.metrics_collector.reset()
+    
+    def on_evaluation_end(self, iteration: int, global_step: int, eval_metrics: Dict[str, Any]) -> bool:
+        """Called when MRR evaluation is complete."""
+        # Process any collected eval episode info
+        if self._eval_episode_buffer:
+            self.accumulate_episode_stats(self._eval_episode_buffer)
+        
+        # Get rollout metrics from DetailedMetricsCollector
+        rollout_metrics = self.compute_metrics()
+        
+        # Merge metrics for best model tracking
+        merged_metrics = {**rollout_metrics, **eval_metrics}
+        
+        # Extract metric value
+        metric_value = merged_metrics.get(self._metric_log_key, float('-inf'))
+        if isinstance(metric_value, str):
+            try:
+                metric_value = float(metric_value.split()[0])
+            except (ValueError, TypeError):
+                metric_value = float('-inf')
+        
+        # Check if this is a new best
+        is_new_best = metric_value > self.best_metric_value
+        if is_new_best:
+            self.best_metric_value = metric_value
+            self.best_epoch_step = global_step
+            if self.verbose:
+                print(f"✓ New best {self._metric_display_name}: {metric_value:.4f} at step {global_step}")
+            
+            # Save model if path is provided
+            if self.save_path is not None:
+                self._save_best_model(iteration, global_step, metric_value)
+        
+        # Print formatted metrics
+        if self.verbose:
+            print_formatted_metrics(
+                metrics=rollout_metrics,
+                prefix="eval",
+                extra_metrics=eval_metrics,
+                global_step=global_step,
+            )
+        
+        return is_new_best
+    
+    def evaluate_mrr(self, policy: nn.Module) -> Dict[str, Any]:
+        """
+        Perform MRR evaluation using evaluate_ranking_metrics.
+        
+        Args:
+            policy: The full ActorCriticPolicy to evaluate
+        
+        Returns:
+            Dictionary of MRR metrics
+        """
+        if self.eval_queries_tensor is None or self.eval_queries_tensor.shape[0] == 0:
+            return {}
+        
+        # Import here to avoid circular imports
+        from model_eval import evaluate_ranking_metrics, evaluate_policy
+        
+        try:
+            # Use the policy's _predict_actions method which handles embeddings correctly
+            # Create a wrapper that matches the expected interface
+            class PolicyWrapper:
+                def __init__(self, policy):
+                    self.policy = policy
+                    self.training = policy.training
+                
+                def eval(self):
+                    self.policy.eval()
+                    return self
+                
+                def train(self):
+                    self.policy.train()
+                    return self
+                
+                def __call__(self, obs_td, deterministic=True):
+                    # obs_td is a TensorDict from evaluate_policy
+                    # Call policy's forward which returns (actions, values, log_probs)
+                    with torch.no_grad():
+                        actions, _, log_probs = self.policy(obs_td, deterministic=deterministic)
+                    # Return TensorDict with action key as evaluate_policy expects
+                    from tensordict import TensorDict
+                    return TensorDict({
+                        "action": actions,
+                        "sample_log_prob": log_probs
+                    }, batch_size=obs_td.batch_size)
+            
+            wrapped_policy = PolicyWrapper(policy)
+            
+            # Convert depths to tensor if available
+            query_depths_tensor = None
+            if self.eval_data_depths is not None:
+                # Handle None values in list (replace with -1)
+                depths_clean = [d if d is not None else -1 for d in self.eval_data_depths]
+                # Ensure device matches queries
+                device = self.eval_queries_tensor.device if self.eval_queries_tensor is not None else torch.device('cpu')
+                query_depths_tensor = torch.tensor(depths_clean, dtype=torch.long, device=device)
+
+            # Do MRR evaluation (internally calls evaluate_policy which collects episode stats)
+            metrics = evaluate_ranking_metrics(
+                actor=wrapped_policy,
+                env=self.eval_env,
+                queries=self.eval_queries_tensor,
+                sampler=self.sampler,
+                query_depths=query_depths_tensor,
+                n_corruptions=self.n_corruptions,
+                corruption_modes=self.corruption_scheme,
+                deterministic=True,
+                verbose=False,
+                info_callback=self._collect_eval_episode_info,  # Pass callback to collect stats
+            )
+            
+            # Transform keys to match expected format
+            transformed_metrics = {
+                'mrr_mean': metrics.get('MRR', 0.0),
+                'hits1_mean': metrics.get('Hits@1', 0.0),
+                'hits3_mean': metrics.get('Hits@3', 0.0),
+                'hits10_mean': metrics.get('Hits@10', 0.0),
+            }
+            
+            # Add per-mode metrics if available
+            if 'per_mode' in metrics:
+                per_mode = metrics['per_mode']
+                for mode, mode_metrics in per_mode.items():
+                    transformed_metrics[f'{mode}_mrr_mean'] = mode_metrics.get('MRR', 0.0)
+                    transformed_metrics[f'{mode}_hits1_mean'] = mode_metrics.get('Hits@1', 0.0)
+                    transformed_metrics[f'{mode}_hits3_mean'] = mode_metrics.get('Hits@3', 0.0)
+                    transformed_metrics[f'{mode}_hits10_mean'] = mode_metrics.get('Hits@10', 0.0)
+            
+            return transformed_metrics
+        except Exception as e:
+            if self.verbose:
+                print(f"Warning: MRR evaluation failed: {e}")
+            return {}
+    
+    def _save_best_model(self, iteration: int, global_step: int, metric_value: float):
+        """Save the best model checkpoint."""
+        if self.save_path is None:
+            return
+        
+        save_dir = Path(self.save_path)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save checkpoint info
+        info = {
+            'metric': self._metric_log_key,
+            'metric_name': self._metric_display_name,
+            'best_value': float(metric_value),
+            'timesteps': int(global_step),
+            'iteration': int(iteration),
+        }
+        info_path = save_dir / f'info_best_eval_{self.model_name}.json'
+        with open(info_path, 'w') as f:
+            json.dump(info, f, indent=4)
+        
+        if self.verbose:
+            print(f"  Saved checkpoint info to {info_path}")
+
+
+# ============================================================================
+# Training Checkpoint Callback
+# ============================================================================
+
+
+class TrainingCheckpointCallback:
+    """
+    Callback to save model checkpoints during training.
+    
+    Tracks a monitored metric (e.g., 'rollout/ep_rew_mean') and saves
+    checkpoints at regular intervals. Adapted from SB3's checkpoint callback.
+    """
+    
+    def __init__(
+        self,
+        save_path: Optional[Path] = None,
+        model_name: str = "model",
+        monitor_metric: str = "ep_rew",
+        save_freq: int = 1,
+        maximize: bool = True,
+        verbose: bool = True,
+    ):
+        """
+        Args:
+            save_path: Path to save model checkpoints
+            model_name: Name prefix for saved models
+            monitor_metric: Metric name to monitor (without 'rollout/' prefix)
+            save_freq: Save checkpoint every N iterations
+            maximize: If True, higher values are better
+            verbose: Print messages when saving
+        """
+        self.save_path = Path(save_path) if save_path else None
+        self.model_name = model_name
+        self.monitor_metric = monitor_metric
+        self.save_freq = save_freq
+        self.maximize = maximize
+        self.verbose = verbose
+        
+        self.best_value = -float('inf') if maximize else float('inf')
+        self.best_step = None
+        self.current_value = None
+    
+    def should_save(self, iteration: int) -> bool:
+        """Check if we should save at this iteration."""
+        return (iteration % self.save_freq == 0) or (iteration == 0)
+    
+    def on_iteration_end(
+        self,
+        iteration: int,
+        global_step: int,
+        metrics: Dict[str, Any],
+    ):
+        """Called at the end of each training iteration."""
+        # Extract monitored metric
+        if self.monitor_metric not in metrics:
+            if self.verbose and iteration == 0:
+                print(f"Warning: Monitored metric '{self.monitor_metric}' not found in metrics.")
+            return
+        
+        self.current_value = metrics[self.monitor_metric]
+        
+        # Check for improvement
+        improved = (
+            (self.maximize and self.current_value > self.best_value) or
+            (not self.maximize and self.current_value < self.best_value)
+        )
+        
+        if improved:
+            self.best_value = self.current_value
+            self.best_step = global_step
+            if self.verbose:
+                print(f"  Training metric '{self.monitor_metric}' improved to {self.current_value:.4f}")
+        
+        # Save checkpoint
+        if self.save_path is not None and self.should_save(iteration):
+            self._save_checkpoint(iteration, global_step)
+    
+    def _save_checkpoint(self, iteration: int, global_step: int):
+        """Save a training checkpoint."""
+        save_dir = Path(self.save_path)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save checkpoint info
+        info = {
+            'metric': self.monitor_metric,
+            'current_value': float(self.current_value) if self.current_value is not None else None,
+            'best_value': float(self.best_value),
+            'timesteps': int(global_step),
+            'iteration': int(iteration),
+        }
+        info_path = save_dir / f'info_last_epoch_{self.model_name}.json'
+        with open(info_path, 'w') as f:
+            json.dump(info, f, indent=4)
+        
+        if self.verbose and iteration % (self.save_freq * 5) == 0:  # Print less frequently
+            print(f"  Saved checkpoint info to {info_path}")
+
+
+# ============================================================================
+# Depth-based Proof Statistics Tracker
+# ============================================================================
+
+
+class _EvalDepthRewardTracker:
+    """
+    Utility class to track reward and success metrics by depth and label.
+    
+    This is a standalone tracker that can be used by evaluation callbacks
+    to accumulate depth-based statistics independently.
+    """
+    
+    def __init__(self) -> None:
+        self._rewards_by_depth: Dict[str, List[float]] = defaultdict(list)
+        self._success_values_by_depth: defaultdict[Tuple[int, str], List[float]] = defaultdict(list)
+        self._success_values_by_label: defaultdict[int, List[float]] = defaultdict(list)
+        self._last_episode_id: Dict[int, int] = {}
+    
+    def __call__(self, infos: List[Dict[str, Any]]) -> None:
+        """Accumulate statistics from info dicts."""
+        for env_idx, info in enumerate(infos):
+            if not info or "episode" not in info:
+                continue
+            
+            label = info.get("label")
+            if label is None:
+                continue
+            
+            try:
+                label_value = int(label)
+            except (TypeError, ValueError):
+                continue
+            
+            depth_key = _format_depth_key(info.get("query_depth"))
+            success_flag = bool(info.get("is_success", False))
+            episode_data = info.get("episode")
+            
+            if not isinstance(episode_data, dict):
+                continue
+            
+            # Check for duplicate episodes
+            episode_idx = info.get("episode_idx")
+            if episode_idx is not None:
+                if self._last_episode_id.get(env_idx) == episode_idx:
+                    continue
+                self._last_episode_id[env_idx] = episode_idx
+            else:
+                episode_id = id(episode_data)
+                if self._last_episode_id.get(env_idx) == episode_id:
+                    continue
+                self._last_episode_id[env_idx] = episode_id
+            
+            # Accumulate success values
+            self._success_values_by_depth[(label_value, depth_key)].append(1.0 if success_flag else 0.0)
+            self._success_values_by_label[label_value].append(1.0 if success_flag else 0.0)
+            
+            # Only track rewards for positive labels
+            if label_value != 1:
+                continue
+            
+            reward = episode_data.get("r")
+            if reward is None:
+                continue
+            self._rewards_by_depth[depth_key].append(float(reward))
+    
+    def metrics(self) -> Dict[str, Union[float, int]]:
+        """Compute and return accumulated metrics."""
+        def reward_sort_key(item: Tuple[str, List[float]]) -> Tuple[float, str]:
+            depth_str = item[0]
+            if depth_str == "unknown":
+                return (float("inf"), depth_str)
+            try:
+                return (float(int(depth_str)), depth_str)
+            except ValueError:
+                return (float("inf"), depth_str)
+        
+        def success_sort_key(item: Tuple[Tuple[int, str], List[float]]) -> Tuple[int, Union[int, float]]:
+            (label, depth_str), _ = item
+            label_order = 0 if label == 1 else 1 if label == 0 else 2
+            if depth_str == "unknown":
+                depth_order: Union[int, float] = float("inf")
+            else:
+                try:
+                    depth_order = int(depth_str)
+                except (TypeError, ValueError):
+                    depth_order = float("inf")
+            return (label_order, depth_order)
+        
+        metrics: Dict[str, Union[float, int]] = {}
+        
+        # Reward metrics by depth
+        for depth_key, rewards in sorted(self._rewards_by_depth.items(), key=reward_sort_key):
+            if not rewards:
+                continue
+            rewards_arr = np.asarray(rewards, dtype=np.float32)
+            count = rewards_arr.size
+            mean_reward = float(rewards_arr.mean())
+            std_reward = float(rewards_arr.std()) if count > 1 else 0.0
+            base = f"reward_d_{depth_key}_pos"
+            metrics[f"{base}_mean"] = mean_reward
+            metrics[f"{base}_std"] = std_reward
+            metrics[f"{base}_count"] = int(count)
+        
+        # Success metrics by depth and label
+        for (label, depth_key), values in sorted(self._success_values_by_depth.items(), key=success_sort_key):
+            if not values:
+                continue
+            values_arr = np.asarray(values, dtype=np.float32)
+            count = values_arr.size
+            mean_success = float(values_arr.mean())
+            std_success = float(values_arr.std()) if count > 1 else 0.0
+            label_str = "pos" if label == 1 else "neg" if label == 0 else f"label{label}"
+            base = f"proven_d_{depth_key}_{label_str}"
+            metrics[f"{base}_mean"] = mean_success
+            metrics[f"{base}_std"] = std_success
+            metrics[f"{base}_count"] = int(count)
+        
+        # Success metrics by label (aggregate)
+        for label in (1, 0):
+            values = self._success_values_by_label.get(label, [])
+            if not values:
+                continue
+            values_arr = np.asarray(values, dtype=np.float32)
+            count = values_arr.size
+            mean_success = float(values_arr.mean())
+            std_success = float(values_arr.std()) if count > 1 else 0.0
+            label_str = "pos" if label == 1 else "neg"
+            base = f"proven_{label_str}"
+            metrics[f"{base}_mean"] = mean_success
+            metrics[f"{base}_std"] = std_success
+            metrics[f"{base}_count"] = int(count)
+        
+        return metrics

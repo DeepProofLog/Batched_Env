@@ -308,11 +308,12 @@ def evaluate_ranking_metrics(
     *,
     queries: torch.Tensor,                     # [N, A, D] padded positives
     sampler: Any,                              # must provide corrupt() and/or corrupt_all()
+    query_depths: Optional[torch.Tensor] = None, # [N] depths for positives
     n_corruptions: Optional[int] = 10,         # if None -> use corrupt_all (ragged)
     corruption_modes: Sequence[str] = ("head", "tail"),
     deterministic: bool = True,
     verbose: bool = False,
-    score_fn: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
+    info_callback: Optional[Callable] = None,  # Callback for episode info collection
 ) -> Dict[str, Any]:
     """
     Link-prediction style eval (MRR/Hits@K) on a single batched env.
@@ -332,13 +333,6 @@ def evaluate_ranking_metrics(
     N      = int(queries.shape[0])
     A, D   = int(queries.shape[1]), int(queries.shape[2])
 
-    def default_score(succ: torch.Tensor, lens: torch.Tensor) -> torch.Tensor:
-        if succ.numel() == 0:
-            return succ
-        max_len = torch.clamp(lens.max(), min=1)
-        return 2.0 * succ.float() - (lens.float() / (max_len + 1.0))
-    score_fn = score_fn or default_score
-
     def finalize(ranks: List[int]) -> Dict[str, float]:
         arr = np.asarray(ranks, dtype=np.int64)
         if arr.size == 0:
@@ -351,6 +345,9 @@ def evaluate_ranking_metrics(
         }
 
     per_mode_ranks: Dict[str, List[int]] = {m: [] for m in corruption_modes}
+
+    if verbose:
+        print(f"[evaluate_ranking_metrics] N={N}, n_corruptions={n_corruptions}, modes={corruption_modes}")
 
     actor_was_training = actor.training
     actor.eval()
@@ -419,8 +416,20 @@ def evaluate_ranking_metrics(
                     ]) for i in range(Q)
                 ])  # [sum_i E_i]
 
-                # Depths (optional; set -1)
-                flat_depths = torch.full((flat_queries.shape[0],), -1, dtype=torch.long, device=device)
+                # Depths
+                if query_depths is not None:
+                    pos_depths = query_depths[start:start + Q].to(device)
+                    depth_list = []
+                    for i in range(Q):
+                        d = pos_depths[i]
+                        # Positive gets d
+                        pos_d = torch.tensor([d], dtype=torch.long, device=device)
+                        # Negatives get -1
+                        neg_d = torch.full((per_slot_lengths[i] - 1,), -1, dtype=torch.long, device=device)
+                        depth_list.append(torch.cat([pos_d, neg_d]))
+                    flat_depths = torch.cat(depth_list, dim=0)
+                else:
+                    flat_depths = torch.full((flat_queries.shape[0],), -1, dtype=torch.long, device=device)
 
                 # ----------------------------
                 # Wire dataset into the env
@@ -451,27 +460,44 @@ def evaluate_ranking_metrics(
                     env,
                     target_episodes=targets,
                     deterministic=deterministic,
-                    track_logprobs=False,
+                    track_logprobs=True,  # Required for ranking
+                    info_callback=info_callback,
                 )
-                succ = out["success"].to(device)   # [B, T]
-                lens = out["lengths"].to(device)   # [B, T]
+                # succ = out["success"].to(device)   # [B, T] (unused for ranking now)
+                # lens = out["lengths"].to(device)   # [B, T] (unused for ranking now)
+                logps_out = out["logps"].to(device)  # [B, T]
                 msk  = out["mask"].to(device)      # [B, T]
-                Tmax = succ.shape[1]
+                Tmax = logps_out.shape[1]
 
                 # Only first Q slots matter; each has E_i valid columns
                 ranks_this = []
                 for i in range(Q):
                     Ei = per_slot_lengths[i]
                     cols = slice(0, min(Ei, Tmax))
-                    s_i = succ[i, cols]
-                    l_i = lens[i, cols]
-                    m_i = msk[i, cols]
-                    # scores (higher is better)
-                    scores = score_fn(s_i, l_i)
-                    scores = torch.where(m_i, scores, torch.full_like(scores, -1e9))
-                    pos_score = scores[0]
-                    better = (scores[1:] > pos_score).sum().item()
-                    rank = 1 + int(better)
+                    
+                    l_i = logps_out[i, cols].cpu().numpy()
+                    m_i = msk[i, cols].cpu().numpy()
+                    
+                    # Ranking logic from sb3/model_eval.py
+                    # Use log_probs for ranking, with random tie-breaking
+                    lp_batch = np.where(m_i, l_i, -np.inf)
+                    random_keys = np.random.rand(*lp_batch.shape)
+                    
+                    # lexsort sorts ascending. We want descending sort by logprob.
+                    # So we sort by (-lp, -random).
+                    # This puts largest lp (most positive) last? No.
+                    # lexsort((secondary, primary))
+                    # We want largest lp first.
+                    # If we sort by (-lp), the smallest (most negative) comes first.
+                    # Wait. -lp makes large lp small (negative).
+                    # So sorting ascending by -lp puts largest lp (most negative -lp) first.
+                    # Yes.
+                    sorted_indices = np.lexsort((-random_keys, -lp_batch))
+                    
+                    # Find rank of the positive (index 0)
+                    # sorted_indices is the permutation.
+                    # We want to find where 0 ended up.
+                    rank = np.where(sorted_indices == 0)[0][0] + 1
                     ranks_this.append(rank)
 
                 per_mode_ranks[mode].extend(ranks_this)

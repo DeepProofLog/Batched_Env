@@ -23,8 +23,6 @@ from utils.utils_config import (
     coerce_config_value,
     update_config_value,
     parse_assignment,
-    get_available_gpus,
-    select_device_with_min_memory,
 )
 
 if __name__ == "__main__":
@@ -35,7 +33,7 @@ if __name__ == "__main__":
         # Dataset params
         'dataset_name': 'countries_s3',
 
-        'eval_neg_samples': 4,
+        'eval_neg_samples': 3,
         'test_neg_samples': 100,
 
         'train_depth': None,
@@ -59,19 +57,19 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 400000,
+        'timesteps_train': 256,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
         'use_amp': True,
         'use_compile': True,
         'n_steps': 256, #64
-        'batch_size_env': 256,  # 256
-        'batch_size_env_eval': 256,  # 256
-        'batch_size': 2048,
+        'batch_size_env': 1,  # 256
+        'batch_size_env_eval': 1,  # 256
+        'batch_size': 256,
 
         # Env params
-        'reward_type': 0,
+        'reward_type': 4,
         'train_neg_ratio': 1,
         'end_proof_action': True,
         'skip_unary_actions': True,
@@ -84,7 +82,7 @@ if __name__ == "__main__":
         # Embedding params
         'atom_embedder': 'transe',
         'state_embedder': 'mean',
-        'atom_embedding_size': 100,
+        'atom_embedding_size': 256,
         'learn_embeddings': True,
         'padding_atoms': 6,
         'padding_states': 20,  # if -1, auto-computed from dataset
@@ -92,14 +90,15 @@ if __name__ == "__main__":
 
         # Other params
         'device': 'cuda:1',  # 'cpu', 'cuda:1' (auto-select), or 'cuda:all'
+        'rollout_device': None,  # Device for rollout collection, None means same as device
         'min_gpu_memory_gb': 2.0,
         'extended_eval_info': True,
         'eval_best_metric': 'mrr',
         'plot_trajectories': False,
         'plot': False,
-        'depth_info': False,
+        'depth_info': True,  # Enable depth info by default to see metrics by depth
         'verbose_cb': False,  # Verbose callback debugging
-        'verbose_env': 0,  # Environment verbosity level (0=quiet, 1=verbose)
+        'verbose_env': 1,  # Environment verbosity level (0=quiet, 1=verbose)
         'verbose_prover': 0,  # Prover verbosity level (0=quiet, 1=verbose)
         'data_path': './data/',
         'models_path': 'models/',

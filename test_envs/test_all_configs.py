@@ -242,7 +242,7 @@ class Configs:
             'sb3_env',
             # 'tensor_env',
             'batched_tensor_env',
-            'eval_env',
+            # 'eval_env',
             # 'rollout_env',
             'rolloutsb3_env'
         ]

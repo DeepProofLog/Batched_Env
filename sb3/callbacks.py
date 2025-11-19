@@ -951,13 +951,14 @@ class ScalarAnnealingCallback(BaseCallback):
         return initial + normalized * (final - initial)
 
 class DepthProofStatsCallback(BaseCallback):
-    """Track episode rewards per query depth during training rollouts."""
+    """Track episode rewards, lengths, and success per query depth during training rollouts."""
 
     def __init__(self, prefix: str = "rollout", track_negative: bool = False, verbose: int = 0):
         super().__init__(verbose)
         self.prefix = prefix
         self.track_negative = track_negative
         self._stats: defaultdict[tuple[int, str], List[float]] = defaultdict(list)
+        self._lengths: defaultdict[tuple[int, str], List[float]] = defaultdict(list)
         self._success_values: defaultdict[tuple[int, str], List[float]] = defaultdict(list)
         self._success_values_by_label: defaultdict[int, List[float]] = defaultdict(list)
         self._last_episode_id: Dict[int, int] = {}
@@ -967,24 +968,47 @@ class DepthProofStatsCallback(BaseCallback):
 
     def _reset(self) -> None:
         self._stats = defaultdict(list)
+        self._lengths = defaultdict(list)
         self._success_values = defaultdict(list)
         self._success_values_by_label = defaultdict(list)
         self._last_episode_id = {}
 
     def _on_step(self) -> bool:
-        infos = self.locals.get("infos", [])
-        for env_idx, info in enumerate(infos):
+        # Vectorized check: only process envs that are 'done'
+        dones = self.locals.get("dones")
+        if dones is None:
+            return True
+            
+        # np.where returns a tuple, we want the first element (indices)
+        done_indices = np.where(dones)[0]
+        if len(done_indices) == 0:
+            return True
+
+        infos = self.locals.get("infos")
+        # We can't easily vectorize the extraction from a list of dicts, 
+        # but iterating only over done_indices is much faster than iterating over all envs.
+        for env_idx in done_indices:
+            info = infos[env_idx]
             if not info or "episode" not in info:
                 continue
+            
             label = info.get("label")
             if label is None:
                 continue
+            
+            # If we are not tracking negatives and this is a negative query, skip
             if not self.track_negative and label != 1:
                 continue
+
             episode_data = info.get("episode")
-            reward = episode_data.get("r") if isinstance(episode_data, dict) else None
+            # Monitor wrapper provides 'r' (reward) and 'l' (length)
+            reward = episode_data.get("r")
+            length = episode_data.get("l")
+            
             if reward is None:
                 continue
+
+            # Avoid double counting using episode_idx if available, else object id
             episode_idx = info.get("episode_idx")
             if episode_idx is not None:
                 if self._last_episode_id.get(env_idx) == episode_idx:
@@ -995,77 +1019,102 @@ class DepthProofStatsCallback(BaseCallback):
                 if self._last_episode_id.get(env_idx) == episode_id:
                     continue
                 self._last_episode_id[env_idx] = episode_id
+
             depth_key = _format_depth_key(info.get("query_depth"))
             success_flag = bool(info.get("is_success", False))
-            self._success_values[(label, depth_key)].append(1.0 if success_flag else 0.0)
-            self._success_values_by_label[label].append(1.0 if success_flag else 0.0)
+            
+            # Store stats
             key = (label, depth_key)
+            self._success_values[key].append(1.0 if success_flag else 0.0)
+            self._success_values_by_label[label].append(1.0 if success_flag else 0.0)
             self._stats[key].append(float(reward))
+            if length is not None:
+                self._lengths[key].append(float(length))
+                
         return True
 
     def _log_stats(self) -> None:
         if not self._stats:
             self._reset()
             return
-        for (label, depth_key), rewards in self._stats.items():
+
+        # Helper for sorting keys
+        def _sort_key(item):
+            (label, depth_key), _ = item
+            label_order = 0 if label == 1 else 1 if label == 0 else 2
+            if depth_key == "unknown":
+                depth_order = float("inf")
+            else:
+                try:
+                    depth_order = int(depth_key)
+                except (TypeError, ValueError):
+                    depth_order = float("inf")
+            return (label_order, depth_order)
+
+        # 1. Log Rewards by Depth
+        for (label, depth_key), rewards in sorted(self._stats.items(), key=_sort_key):
             if not rewards:
                 continue
             label_str = "pos" if label == 1 else "neg"
+            
             rewards_arr = np.asarray(rewards, dtype=np.float32)
             count = rewards_arr.size
             mean_reward = float(rewards_arr.mean()) if count else 0.0
             std_reward = float(rewards_arr.std()) if count > 1 else 0.0
             reward_display = _format_stat_string(mean_reward, std_reward, count)
-            if self.logger is not None and label_str != "neg":  # for negatives we dont have depth info
+            
+            if self.logger is not None:
                 self.logger.record(
                     f"{self.prefix}/reward_d_{depth_key}_{label_str}",
                     reward_display
                 )
-            if self.verbose > 0:
-                print(
-                    f"Depth {depth_key} ({label_str}) -> rwd: {reward_display}"
+
+        # 2. Log Lengths by Depth
+        for (label, depth_key), lengths in sorted(self._lengths.items(), key=_sort_key):
+            if not lengths:
+                continue
+            label_str = "pos" if label == 1 else "neg"
+            
+            lengths_arr = np.asarray(lengths, dtype=np.float32)
+            count = lengths_arr.size
+            mean_length = float(lengths_arr.mean()) if count else 0.0
+            std_length = float(lengths_arr.std()) if count > 1 else 0.0
+            length_display = _format_stat_string(mean_length, std_length, count)
+            
+            if self.logger is not None:
+                self.logger.record(
+                    f"{self.prefix}/len_d_{depth_key}_{label_str}",
+                    length_display
                 )
-        if self.logger is not None:
-            def _success_sort(item: Tuple[tuple[int, str], List[float]]) -> Tuple[int, Union[int, float]]:
-                (label, depth_key), _ = item
-                label_order = 0 if label == 1 else 1 if label == 0 else 2
-                if depth_key == "unknown":
-                    depth_order: Union[int, float] = float("inf")
-                else:
-                    try:
-                        depth_order = int(depth_key)
-                    except (TypeError, ValueError):
-                        depth_order = float("inf")
-                return (label_order, depth_order)
 
-            for (label, depth_key), values in sorted(self._success_values.items(), key=_success_sort):
-                if not values:
-                    continue
-                values_arr = np.asarray(values, dtype=np.float32)
-                count = values_arr.size
-                mean_success = float(values_arr.mean())
-                std_success = float(values_arr.std()) if count > 1 else 0.0
-                success_display = _format_stat_string(mean_success, std_success, count)
-                label_str = "pos" if label == 1 else "neg"
-                key = f"{self.prefix}/proven_d_{depth_key}_{label_str}"
-                self.logger.record(key, success_display)
-                if self.verbose > 0:
-                    success_count = int(values_arr.sum())
-                    print(f"Depth {depth_key} ({label_str}) -> proven: {success_display} | successes: {success_count}")
+        # 3. Log Success by Depth
+        for (label, depth_key), values in sorted(self._success_values.items(), key=_sort_key):
+            if not values:
+                continue
+            values_arr = np.asarray(values, dtype=np.float32)
+            count = values_arr.size
+            mean_success = float(values_arr.mean())
+            std_success = float(values_arr.std()) if count > 1 else 0.0
+            success_display = _format_stat_string(mean_success, std_success, count)
+            label_str = "pos" if label == 1 else "neg"
+            key = f"{self.prefix}/proven_d_{depth_key}_{label_str}"
+            self.logger.record(key, success_display)
 
-            for label in (1, 0):
-                if label == 0 and not self.track_negative:
-                    continue
-                values = self._success_values_by_label.get(label, [])
-                if not values:
-                    continue
-                values_arr = np.asarray(values, dtype=np.float32)
-                count = values_arr.size
-                mean_success = float(values_arr.mean())
-                std_success = float(values_arr.std()) if count > 1 else 0.0
-                success_display = _format_stat_string(mean_success, std_success, count)
-                total_key = f"{self.prefix}/proven_{'pos' if label == 1 else 'neg'}"
-                self.logger.record(total_key, success_display)
+        # 4. Log Overall Success by Label
+        for label in (1, 0):
+            if label == 0 and not self.track_negative:
+                continue
+            values = self._success_values_by_label.get(label, [])
+            if not values:
+                continue
+            values_arr = np.asarray(values, dtype=np.float32)
+            count = values_arr.size
+            mean_success = float(values_arr.mean())
+            std_success = float(values_arr.std()) if count > 1 else 0.0
+            success_display = _format_stat_string(mean_success, std_success, count)
+            total_key = f"{self.prefix}/proven_{'pos' if label == 1 else 'neg'}"
+            self.logger.record(total_key, success_display)
+
         self._reset()
 
     def _on_rollout_end(self) -> None:

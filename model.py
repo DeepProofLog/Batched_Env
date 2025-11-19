@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from typing import Tuple, Optional, Dict
 from tensordict import TensorDict
 from stable_baselines3.common.distributions import CategoricalDistribution
-from debug_config import DebugConfig
+from utils.debug_config import DebugConfig
 
 
 class CustomCombinedExtractor(nn.Module):

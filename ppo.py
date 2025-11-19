@@ -13,9 +13,9 @@ from tensordict import TensorDict
 import time
 import contextlib
 
-from ppo.rollout import RolloutBuffer
-from ppo.model import ActorCriticPolicy
-from debug_config import DebugConfig
+from rollout import RolloutBuffer
+from model import ActorCriticPolicy
+from utils.debug_config import DebugConfig
 
 
 class PPO:
@@ -188,8 +188,14 @@ class PPO:
                 # This automatically resets done environments
                 step_result, obs = self.env.step_and_maybe_reset(action_td)
                 
+                # DEBUG: Check keys
+                # print(f"step_result keys: {step_result.keys()}")
+
                 # Extract next state info from step result
-                next_info = step_result['next']
+                if "next" in step_result.keys():
+                    next_info = step_result['next']
+                else:
+                    next_info = step_result
                 
                 # Get reward, done, and success (all have shape [n_envs, 1])
                 rewards = next_info['reward'].squeeze(-1).to(self.device)
@@ -223,7 +229,7 @@ class PPO:
                     elapsed_time = time.time() - rollout_start_time
                     print(f"  Rollout progress: {int(progress)}% complete ({n_steps}/{self.n_steps} steps) - Time: {elapsed_time:.2f}s")
                 
-                # Collect episode info
+                # Collect episode info with label and depth
                 if is_success is not None:
                     done_mask = dones.bool()
                     if done_mask.any():
@@ -231,18 +237,34 @@ class PPO:
                         done_lengths = self.episode_lengths[done_mask]
                         done_successes = is_success[done_mask]
                         
-                        # Avoid .item() sync - let TensorDict infer batch_size from tensors
-                        new_td = TensorDict({
+                        # Extract label and depth from observation
+                        done_labels = next_info.get('label')
+                        done_depths = next_info.get('query_depth')
+                        
+                        # Build episode info dict (use 'r', 'l', 's' for compatibility)
+                        ep_info = {
                             'r': done_rewards,
                             'l': done_lengths,
                             's': done_successes
-                        }, batch_size=done_rewards.shape[0], device=self.device)
+                        }
+                        
+                        if done_labels is not None:
+                            ep_info['label'] = done_labels[done_mask]
+                        if done_depths is not None:
+                            ep_info['query_depth'] = done_depths[done_mask]
+                        
+                        # Avoid .item() sync - let TensorDict infer batch_size from tensors
+                        new_td = TensorDict(ep_info, batch_size=done_rewards.shape[0], device=self.device)
                         
                         # Check if buffer is empty (batch_size is torch.Size, so check first dimension)
                         if len(self.ep_info_buffer.keys()) == 0 or self.ep_info_buffer.batch_size[0] == 0:
                             self.ep_info_buffer = new_td
                         else:
                             self.ep_info_buffer = torch.cat([self.ep_info_buffer, new_td], dim=0)
+                        
+                        # Accumulate for callbacks if provided
+                        if hasattr(self, '_callback_manager') and self._callback_manager is not None:
+                            self._callback_manager.accumulate_episode_stats(ep_info, mode="train")
                 
                 # Update episode lengths (vectorized)
                 done_mask = dones.bool()
@@ -634,6 +656,7 @@ class PPO:
         total_timesteps: int,
         log_interval: int = 1,
         reset_num_timesteps: bool = True,
+        callback_manager=None,
     ) -> "PPO":
         """
         Train the agent for a given number of timesteps.
@@ -642,6 +665,7 @@ class PPO:
             total_timesteps: Total number of timesteps to train for
             log_interval: Logging interval (in iterations)
             reset_num_timesteps: Whether to reset timestep counter
+            callback_manager: Optional TorchRLCallbackManager for callbacks
         
         Returns:
             Self
@@ -678,6 +702,14 @@ class PPO:
             metrics = self.train()
             train_time = time.time() - train_start
             
+            # Prepare rollout metrics for callbacks
+            rollout_metrics = {}
+            has_ep_info = len(self.ep_info_buffer.keys()) > 0 and len(self.ep_info_buffer.batch_size) > 0 and self.ep_info_buffer.batch_size[0] > 0
+            if has_ep_info:
+                rollout_metrics['ep_rew'] = self.ep_info_buffer['r'].mean().item()
+                rollout_metrics['ep_len'] = self.ep_info_buffer['l'].float().mean().item()
+                rollout_metrics['success_rate'] = self.ep_info_buffer['s'].float().mean().item()
+            
             # Log
             if log_interval > 0 and iteration % log_interval == 0:
                 elapsed_time = time.time() - start_time
@@ -695,14 +727,44 @@ class PPO:
                 
                 # Check if ep_info_buffer has data (keys and non-zero batch size)
                 # batch_size is always a torch.Size object (tuple-like)
-                has_ep_info = len(self.ep_info_buffer.keys()) > 0 and len(self.ep_info_buffer.batch_size) > 0 and self.ep_info_buffer.batch_size[0] > 0
                 if has_ep_info:
-                    print(f"  Episode reward mean: {self.ep_info_buffer['r'].mean().item():.2f}")
-                    print(f"  Episode length mean: {self.ep_info_buffer['l'].float().mean().item():.2f}")
-                    print(f"  Success rate: {self.ep_info_buffer['s'].float().mean().item()*100:.2f}%")
+                    print(f"  Episode reward mean: {rollout_metrics['ep_rew']:.2f}")
+                    print(f"  Episode length mean: {rollout_metrics['ep_len']:.2f}")
+                    print(f"  Success rate: {rollout_metrics['success_rate']*100:.2f}%")
+            
+            # Store callback manager for use during rollout
+            self._callback_manager = callback_manager
+            
+            # Call callbacks
+            if callback_manager is not None:
+                # Iteration end callback (with metrics for checkpointing)
+                callback_manager.on_iteration_end(iteration, self.num_timesteps, self.n_envs, rollout_metrics)
+                
+                # Evaluation callback
+                if callback_manager.should_evaluate(iteration):
+                    eval_start = time.time()
+                    print("\n" + "="*80)
+                    print("Starting evaluation")
+                    print("="*80)
                     
-                    # Clear buffer after logging
-                    self.ep_info_buffer = TensorDict({}, batch_size=torch.Size([0]), device=self.device)
+                    callback_manager.on_evaluation_start(iteration, self.num_timesteps)
+                    
+                    # Perform MRR evaluation if using MRREvaluationCallback
+                    eval_metrics = {}
+                    if hasattr(callback_manager.eval_callback, 'evaluate_mrr'):
+                        # MRR evaluation - pass the full policy
+                        eval_metrics = callback_manager.eval_callback.evaluate_mrr(self.policy)
+                    
+                    # Call evaluation end
+                    is_best = callback_manager.on_evaluation_end(iteration, self.num_timesteps, eval_metrics)
+                    
+                    eval_time = time.time() - eval_start
+                    print(f"Evaluation took {eval_time:.2f}s")
+                    print("="*80 + "\n")
+            
+            # Clear buffer after callbacks
+            if has_ep_info:
+                self.ep_info_buffer = TensorDict({}, batch_size=torch.Size([0]), device=self.device)
         
         total_time = time.time() - start_time
         print(f"\n{'='*80}")

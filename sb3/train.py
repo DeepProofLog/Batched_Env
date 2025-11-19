@@ -33,11 +33,23 @@ from stable_baselines3.common.callbacks import (
     CallbackList,
     StopTrainingOnNoModelImprovement,
 )
-from kge_integration import (
-    _init_kge_engine,
-    _attach_kge_to_policy,
-)
 
+
+def _attach_kge_to_policy(
+    model: PPO,
+    im: IndexManager,
+    engine,
+    device: torch.device,
+    args: Any,
+) -> None:
+    """ Placeholder for KGE attachment logic. """
+    policy = model.policy
+    policy.enable_kge_action = False
+    policy.enable_logit_fusion = False
+    policy.kge_inference_engine = None
+    policy.index_manager = None
+    policy.kge_indices_tensor = torch.empty(0, dtype=torch.int32, device=device)
+    return None
 # ------------------------------
 # Initialization helpers
 # ------------------------------
@@ -443,7 +455,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     print(f"Device: {device}. CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
 
     # Build pieces
-    kge_engine = _init_kge_engine(args)
+    kge_engine = None
     dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
     env, eval_env, callback_env = create_environments(
         args,
