@@ -321,7 +321,8 @@ def print_state_transition(state, derived_states, reward, done, action=None, tru
         label: Additional label for display (optional).
     """
     if action is not None:
-        print('\nState', state, '( action', action.item(), ')')
+        action_val = action.item() if hasattr(action, 'item') else action
+        print('\nState', state, '( action', action_val, ')')
         print('Reward', reward.item(), 'Done', done.item())
         if truncated is not None or truncated!=False: print(f" Truncated {truncated}")
         print('     Derived states:', *derived_states[:100])

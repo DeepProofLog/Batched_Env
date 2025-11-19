@@ -856,7 +856,7 @@ class BatchedEnv(EnvBase):
                     env_idx = active_envs[i]
                     count = derived_counts[i].item()
                     self.debug_helper._log(2, f"[apply_skip_unary] Iter {iter_count}: env {env_idx.item()} has {count} derived states BEFORE memory pruning")
-            
+
             # Apply memory pruning if enabled (exact/Python or Bloom filter)
             if self.memory_pruning:
                 # CRITICAL: Add current state to memory BEFORE checking derived states
@@ -868,6 +868,12 @@ class BatchedEnv(EnvBase):
                     derived_batch,  # [N, K, M, D]
                     active_envs  # [N]
                 )  # Returns [N, K] bool tensor
+                
+                if self.verbose >= 2:
+                     for i in range(active_envs.shape[0]):
+                        env_idx = active_envs[i]
+                        v = visited[i]
+                        self.debug_helper._log(2, f"[apply_skip_unary] Env {env_idx.item()} visited mask: {v.tolist()}")
 
                 # Number of successor states per env
                 K = derived_batch.shape[1]
@@ -949,6 +955,23 @@ class BatchedEnv(EnvBase):
             unary_local_idx = torch.arange(active_envs.shape[0], device=device)[is_unary_nonterminal]
             
             promoted = derived_batch[unary_local_idx, 0]  # [U, M, D]
+            
+            # Check atom budget
+            valid_atom = promoted[:, :, 0] != pad
+            atom_counts = valid_atom.sum(dim=1)
+            within_budget = atom_counts <= self.padding_atoms
+            
+            if not within_budget.all():
+                if self.verbose >= 2:
+                    self.debug_helper._log(2, f"[apply_skip_unary] Rejecting {(~within_budget).sum().item()} states exceeding atom budget")
+                
+                # Filter everything
+                valid_mask = within_budget
+                if not valid_mask.any():
+                    break
+                
+                unary_envs = unary_envs[valid_mask]
+                promoted = promoted[valid_mask]
             
             # Ensure promoted states match padding_atoms dimension
             if promoted.shape[1] < self.padding_atoms:
@@ -1070,6 +1093,23 @@ class BatchedEnv(EnvBase):
             if promoted.dtype != self.current_queries.dtype:
                 promoted = promoted.long()
             
+            # Check atom budget
+            valid_atom = promoted[:, :, 0] != pad
+            atom_counts = valid_atom.sum(dim=1)
+            within_budget = atom_counts <= self.padding_atoms
+            
+            if not within_budget.all():
+                if verbose:
+                    self.debug_helper._log(3, f"[skip_unary] Rejecting {(~within_budget).sum().item()} states exceeding atom budget")
+                
+                valid_mask = within_budget
+                if not valid_mask.any():
+                    break
+                
+                uidx = uidx[valid_mask]
+                env_rows = env_rows[valid_mask]
+                promoted = promoted[valid_mask]
+
             # Ensure promoted states respect env atom budget
             if promoted.shape[1] > self.padding_atoms:
                 promoted = promoted[:, :self.padding_atoms]

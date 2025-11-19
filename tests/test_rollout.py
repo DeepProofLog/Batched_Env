@@ -41,7 +41,7 @@ from ppo.pposb3_model import create_actor_critic
 from model_eval import evaluate_policy
 
 
-def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):
+def test_rollout_pipeline(test_mode='rollout_only', args: SimpleNamespace = None):
     """
     Test the new PPO SB3-style implementation.
     

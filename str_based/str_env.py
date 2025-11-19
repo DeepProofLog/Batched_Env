@@ -520,6 +520,12 @@ class LogicEnv_gym(gym.Env):
         max_iters = 20
         
         while counter < max_iters:
+            # DEBUG: Trace specific query
+            is_target = False
+            if str(self.current_query) == "aunt(905, 912)":
+                is_target = True
+                print(f"[STR_DEBUG] Iter {counter} State: {current_state}")
+
             # Check if current state is terminal
             if len(current_state) == 1 and current_state[0].predicate in terminal_predicates:
                 break
@@ -540,6 +546,11 @@ class LogicEnv_gym(gym.Env):
                     index_manager=self.index_manager,
                 )
             
+            if is_target:
+                print(f"[STR_DEBUG] Derived states (raw): {len(derived_states)}")
+                for i, ds in enumerate(derived_states):
+                    print(f"  {i}: {ds}")
+
             # Apply memory pruning to derived states
             if self.memory_pruning:
                 # Add current state to memory before checking derived states
@@ -560,7 +571,12 @@ class LogicEnv_gym(gym.Env):
                     print(f"[skip_unary] After pruning: {len(derived_states)} states")
             
             # Filter out states exceeding atom budget
-            derived_states = [ds for ds in derived_states if len(ds) < self.padding_atoms]
+            derived_states = [ds for ds in derived_states if len(ds) <= self.padding_atoms]
+            
+            if is_target:
+                print(f"[STR_DEBUG] After filtering: {len(derived_states)}")
+                for i, ds in enumerate(derived_states):
+                    print(f"  {i}: {ds}")
             
             # Check if we have exactly one non-terminal derived state
             if len(derived_states) != 1:
@@ -681,9 +697,17 @@ class LogicEnv_gym(gym.Env):
 
         if len(derived_states) > max_num_states:
             print(f"Exceeded max next states: {len(derived_states)}") if self.verbose else None
-            indices = sorted(range(len(derived_states)), key=lambda k: len(derived_states[k]))
-            derived_states = [derived_states[i] for i in indices[:max_num_states]]
-            final_sub_indices = [final_sub_indices[i] for i in indices[:max_num_states]]
+            
+            if self.canonical_action_order:
+                # If canonical order is enforced, we trust the order from the engine (lexicographical)
+                # and just truncate. Sorting by length would break the canonical order.
+                indices = list(range(max_num_states))
+            else:
+                # Otherwise, prefer shorter states as a heuristic
+                indices = sorted(range(len(derived_states)), key=lambda k: len(derived_states[k]))[:max_num_states]
+            
+            derived_states = [derived_states[i] for i in indices]
+            final_sub_indices = [final_sub_indices[i] for i in indices]
 
         # END ACTION MODULE
         if self.endt_action or self.endf_action:

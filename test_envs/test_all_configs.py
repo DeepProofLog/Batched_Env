@@ -44,7 +44,7 @@ def create_default_test_config() -> SimpleNamespace:
         SimpleNamespace with default configuration parameters.
     """
     args = SimpleNamespace(
-        dataset="family",
+        dataset="countries_s3",
         n_queries=800,
         deterministic=True,
         max_depth=20,
@@ -56,9 +56,9 @@ def create_default_test_config() -> SimpleNamespace:
         padding_atoms=6,
         padding_states=40,
         max_derived_per_state=40,
-        skip_unary_actions=False,
+        skip_unary_actions=True,
         end_proof_action=False,
-        memory_pruning=False,
+        memory_pruning=True,
         use_exact_memory=True,
         reward_type=0,
         prover_verbose=0,
@@ -239,9 +239,9 @@ class Configs:
             'sb3_env',
             # 'tensor_env',
             'batched_tensor_env',
-            # 'eval_env',
+            'eval_env',
             # 'rollout_env',
-            # 'rolloutsb3_env'
+            'rolloutsb3_env'
         ]
 
 
