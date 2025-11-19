@@ -15,9 +15,9 @@ from typing import List, Optional
 import numpy as np
 import torch
 
-from utils import FileLogger
+from utils.utils import FileLogger
 from train import main
-from utils_config import (
+from utils.utils_config import (
     load_experiment_configs,
     parse_scalar,
     coerce_config_value,

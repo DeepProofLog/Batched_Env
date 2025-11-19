@@ -6,8 +6,8 @@ from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
 from unification_engine import UnificationEngine
-from memory import BloomFilter, ExactMemory
-from debug_helper import DebugHelper
+from utils.memory import BloomFilter, ExactMemory
+from utils.debug_helper import DebugHelper
 
 
 def _safe_device(device: Optional[torch.device]) -> torch.device:
