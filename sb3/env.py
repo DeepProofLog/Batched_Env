@@ -9,10 +9,10 @@ import numpy as np
 import torch
 from tensordict import NonTensorData, TensorDict
 
-from dataset import DataHandler
-from index_manager import IndexManager
-from unification import get_next_unification_python
-from utils import Term, print_state_transition
+from sb3.dataset import DataHandler
+from sb3.index_manager import IndexManager
+from sb3.unification import get_next_unification_python
+from sb3.utils import Term, print_state_transition
 
 State = List[Term]
 

@@ -5,7 +5,7 @@ import re
 import ast
 from collections import defaultdict
 
-from utils import is_variable, Term, Rule, get_atom_from_string
+from sb3.utils import is_variable, Term, Rule, get_atom_from_string
 
 
 

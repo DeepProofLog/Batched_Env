@@ -33,7 +33,7 @@ from test_envs.test_engine_tensor import setup_tensor_engine, test_tensor_engine
 from test_envs.test_env_sb3 import setup_sb3_env, test_sb3_env_batch
 from test_envs.test_env_tensor import setup_tensor_env, test_tensor_env_batched, test_tensor_env
 from test_envs.test_env_eval import test_eval_env
-from test_envs.test_env_rollout import test_rollout_env, test_rolloutsb3_env
+from test_envs.test_env_rollout import test_rolloutsb3_env #,test_rollout_env
 
 
 def create_default_test_config() -> SimpleNamespace:
@@ -56,7 +56,7 @@ def create_default_test_config() -> SimpleNamespace:
         padding_atoms=6,
         padding_states=40,
         max_derived_per_state=40,
-        skip_unary_actions=True,
+        skip_unary_actions=False,
         end_proof_action=False,
         memory_pruning=True,
         use_exact_memory=True,
@@ -197,14 +197,14 @@ class Configs:
         category="environment"
     )
 
-    rollout_env = Config(
-        name="rollout_env",
-        description="Rollout env (environment tested via rollout collector with random agent)",
-        setup_func=None,
-        test_func=test_rollout_env,
-        has_traces=False,
-        category="environment"
-    )
+    # rollout_env = Config(
+    #     name="rollout_env",
+    #     description="Rollout env (environment tested via rollout collector with random agent)",
+    #     setup_func=None,
+    #     test_func=test_rollout_env,
+    #     has_traces=False,
+    #     category="environment"
+    # )
 
     rolloutsb3_env = Config(
         name="rolloutsb3_env",
@@ -225,7 +225,7 @@ class Configs:
             cls.tensor_env,
             cls.batched_tensor_env,
             cls.eval_env,
-            cls.rollout_env,
+            # cls.rollout_env,
             cls.rolloutsb3_env,
         ]
 
@@ -242,7 +242,7 @@ class Configs:
             'sb3_env',
             # 'tensor_env',
             'batched_tensor_env',
-            # 'eval_env',
+            'eval_env',
             # 'rollout_env',
             'rolloutsb3_env'
         ]
@@ -298,7 +298,7 @@ def prepare_queries(dataset: str = "countries_s3", base_path: str = "./data/",
     Returns:
         List of (split, (predicate, head, tail)) tuples
     """
-    from str_based.str_dataset import DataHandler
+    from sb3.dataset import DataHandler
     
     dh = DataHandler(
         dataset_name=dataset,

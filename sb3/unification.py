@@ -1,5 +1,5 @@
 from typing import List, Dict, Set, Tuple, FrozenSet, Optional, TYPE_CHECKING
-from utils import Term, Rule
+from sb3.utils import Term, Rule
 
 if TYPE_CHECKING:
     from index_manager import IndexManager

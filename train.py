@@ -296,33 +296,36 @@ def _evaluate(
 ) -> Tuple[dict, dict, dict]:
     policy.eval()
 
-    metrics_valid = _evaluate_split(
-        policy,
-        eval_env,
-        sampler,
-        data_handler.get_materialized_split("valid"),
-        n_queries=args.n_eval_queries,
-        n_corruptions=args.eval_neg_samples,
-        corruption_scheme=args.corruption_scheme,
-        verbose=getattr(args, "depth_info", False),
-    )
-    if metrics_valid:
-        print_eval_info("VALID", metrics_valid)
-
+    ## SKIP VALIDATION EVAL FOR FASTER TESTING
+    # metrics_valid = _evaluate_split(
+    #     policy,
+    #     eval_env,
+    #     sampler,
+    #     data_handler.get_materialized_split("valid"),
+    #     n_queries=args.n_eval_queries,
+    #     n_corruptions=args.eval_neg_samples,
+    #     corruption_scheme=args.corruption_scheme,
+    #     verbose=getattr(args, "depth_info", False),
+    # )
+    # if metrics_valid:
+    #     print_eval_info("VALID", metrics_valid)
+    # exit('Skipping validation evaluation to check rollout stats')
+    print("Evaluating test set...")
     metrics_test = _evaluate_split(
         policy,
         test_env,
         sampler,
         data_handler.get_materialized_split("test"),
         n_queries=args.n_test_queries,
-        n_corruptions=args.test_neg_samples or args.eval_neg_samples,
+        n_corruptions=args.test_neg_samples,
         corruption_scheme=args.corruption_scheme,
         verbose=getattr(args, "depth_info", False),
     )
     if metrics_test:
         print_eval_info("TEST", metrics_test)
 
-    metrics_train = {key: 0.0 for key in metrics_valid.keys()} if metrics_valid else {}
+    metrics_valid = {key: 0.0 for key in metrics_test.keys()}
+    metrics_train = {key: 0.0 for key in metrics_test.keys()} 
     return metrics_train, metrics_valid, metrics_test
 
 

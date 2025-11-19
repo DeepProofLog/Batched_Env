@@ -20,7 +20,7 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 from unification_engine import UnificationEngine
 from env import BatchedEnv
-from debug_helper import DebugHelper
+from utils.debug_helper import DebugHelper
 
 
 def get_default_tensor_env_config() -> SimpleNamespace:

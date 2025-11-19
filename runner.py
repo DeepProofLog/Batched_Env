@@ -34,7 +34,7 @@ if __name__ == "__main__":
         'dataset_name': 'countries_s3',
 
         'eval_neg_samples': 3,
-        'test_neg_samples': 100,
+        'test_neg_samples': None,
 
         'train_depth': None,
         'valid_depth': None,
@@ -57,16 +57,16 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 256,
+        'timesteps_train': 128,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
         'use_amp': True,
         'use_compile': True,
-        'n_steps': 256, #64
+        'n_steps': 128, #64
         'batch_size_env': 1,  # 256
         'batch_size_env_eval': 1,  # 256
-        'batch_size': 256,
+        'batch_size': 128,
 
         # Env params
         'reward_type': 4,
@@ -77,7 +77,6 @@ if __name__ == "__main__":
         'memory_pruning': True,
         'eval_pruning': False,
         'corruption_mode': True,
-        'min_multiaction_ratio': 0.05,
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -98,7 +97,7 @@ if __name__ == "__main__":
         'plot': False,
         'depth_info': True,  # Enable depth info by default to see metrics by depth
         'verbose_cb': False,  # Verbose callback debugging
-        'verbose_env': 1,  # Environment verbosity level (0=quiet, 1=verbose)
+        'verbose_env': 0,  # Environment verbosity level (0=quiet, 1=verbose)
         'verbose_prover': 0,  # Prover verbosity level (0=quiet, 1=verbose)
         'data_path': './data/',
         'models_path': 'models/',

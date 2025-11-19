@@ -34,7 +34,7 @@ if __name__ == "__main__":
         'dataset_name': 'countries_s3',
 
         'eval_neg_samples': 3,
-        'test_neg_samples': 100, # 5
+        'test_neg_samples': None, # 5
 
         'train_depth': None, # {-1,3}
         'valid_depth': None,
@@ -42,7 +42,7 @@ if __name__ == "__main__":
 
         'n_train_queries': None,
         'n_eval_queries': 500,
-        'n_test_queries': None,
+        'n_test_queries': 500,
 
         'prob_facts': False,
         'topk_facts': None,
@@ -58,14 +58,14 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 2000,
+        'timesteps_train': 128,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
         'n_envs': 1,
-        'n_steps': 512,
+        'n_steps': 128,
         'n_eval_envs': 1,
-        'batch_size': 256,
+        'batch_size': 128,
 
         # Env params
         'reward_type': 4,

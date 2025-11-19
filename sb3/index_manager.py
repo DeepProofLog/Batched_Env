@@ -2,7 +2,7 @@ from typing import List, Tuple, Dict, Set, Union
 import itertools
 import torch
 import numpy as np
-from utils import is_variable, Term, Rule
+from sb3.utils import is_variable, Term, Rule
 from functools import lru_cache
 import torch
 

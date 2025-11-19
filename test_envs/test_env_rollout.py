@@ -17,10 +17,10 @@ from types import SimpleNamespace
 from tensordict import TensorDict
 
 from test_envs.test_env_tensor import setup_tensor_env
-from ppo.rollout import RolloutCollector
-from ppo.ppo import PPO
-from ppo.model import create_actor_critic
-from ppo.rollout import RolloutBuffer
+# from rollout import RolloutCollector
+from ppo import PPO
+from model import create_actor_critic
+from rollout import RolloutBuffer
 
 
 class LogitsProducingActor(nn.Module):
