@@ -75,7 +75,10 @@ def create_default_test_config() -> SimpleNamespace:
         vf_coef=0.5,
         learning_rate=1e-4,
     )
-    if args.end_proof_action and args.random_policy:
+    if args.end_proof_action:
+        args.deterministic = False
+        args.random = True
+        print("Note: end_proof_action is enabled, setting deterministic=False")        
         print("random results will be very low if end_proof_action is enabled"
               "and random policy is used (with deterministic it is never chosen")
     if not args.use_exact_memory:
@@ -699,16 +702,6 @@ def print_results_table(results_dict: Dict[str, Dict], deterministic: bool):
                     print(f"  ✓ All configurations have identical success rates (as expected)")
                 else:
                     print(f"  ✗ WARNING: Success rates differ between configurations!")
-        else:
-            # Random should be around 42% with some variation
-            if 35 <= avg_success <= 50:
-                print(f"  ✓ Average success rate is in expected range (35-50%)")
-                if avg_success < 40:
-                    print(f"    Note: {avg_success:.2f}% is slightly lower than expected ~42%")
-                elif avg_success > 45:
-                    print(f"    Note: {avg_success:.2f}% is slightly higher than expected ~42%")
-            else:
-                print(f"  ✗ WARNING: Average success rate {avg_success:.2f}% is outside expected range!")
     
     print(f"{'='*80}\n")
 

@@ -13,8 +13,8 @@ from tensordict import TensorDict
 import time
 import contextlib
 
-from ppo.pposb3_rollout import RolloutBuffer
-from ppo.pposb3_model import ActorCriticPolicy
+from ppo.rollout import RolloutBuffer
+from ppo.model import ActorCriticPolicy
 from debug_config import DebugConfig
 
 

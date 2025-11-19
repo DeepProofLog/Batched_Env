@@ -25,8 +25,8 @@ from embeddings import get_embedder
 from env import BatchedEnv
 from index_manager import IndexManager
 from model_eval import evaluate_ranking_metrics
-from ppo.pposb3 import PPO
-from ppo.pposb3_model import create_actor_critic
+from ppo.ppo import PPO
+from ppo.model import create_actor_critic
 from sampler import Sampler
 from unification_engine import UnificationEngine
 from utils import (

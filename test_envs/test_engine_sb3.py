@@ -13,10 +13,10 @@ import torch
 from typing import Tuple, Dict, List
 from types import SimpleNamespace
 
-from str_based.str_dataset import DataHandler as StrDataHandler
-from str_based.str_index_manager import IndexManager as StrIndexManager
-from str_based.str_utils import Term as StrTerm
-from str_based.str_unification import get_next_unification_python, canonicalize_state_to_str
+from sb3.dataset import DataHandler as StrDataHandler
+from sb3.index_manager import IndexManager as StrIndexManager
+from sb3.utils import Term as StrTerm
+from sb3.unification import get_next_unification_python, canonicalize_state_to_str
 
 
 def get_default_sb3_engine_config() -> SimpleNamespace:
