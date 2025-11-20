@@ -1,7 +1,7 @@
 import torch
-from utils import Term
-from dataset import DataHandler
-from index_manager import IndexManager
+from sb3_utils import Term
+from sb3_dataset import DataHandler
+from sb3_index_manager import IndexManager
 from pykeen.triples import TriplesFactory
 from pykeen.sampling import BasicNegativeSampler
 from typing_extensions import TypeAlias 

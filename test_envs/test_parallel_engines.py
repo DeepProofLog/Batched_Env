@@ -27,10 +27,10 @@ import torch
 from typing import List
 
 # String-engine stack
-from sb3.dataset import DataHandler as StrDataHandler
-from sb3.index_manager import IndexManager as StrIndexManager
-from sb3.utils import Term as StrTerm, Rule as StrRule
-from sb3.unification import get_next_unification_python, canonicalize_state_to_str, canonical_states_to_str
+from sb3.sb3_dataset import DataHandler as StrDataHandler
+from sb3.sb3_index_manager import IndexManager as StrIndexManager
+from sb3.sb3_utils import Term as StrTerm, Rule as StrRule
+from sb3.sb3_unification import get_next_unification_python, canonicalize_state_to_str, canonical_states_to_str
 
 # Tensor-engine stack
 from data_handler import DataHandler

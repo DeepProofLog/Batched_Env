@@ -15,11 +15,11 @@ import numpy as np
 from typing import Tuple, Dict, List
 from types import SimpleNamespace
 
-from sb3.dataset import DataHandler as StrDataHandler
-from sb3.index_manager import IndexManager as StrIndexManager
-from sb3.env import LogicEnv_gym as StrEnv
-from sb3.utils import Term as StrTerm
-from sb3.unification import canonicalize_state_to_str
+from sb3.sb3_dataset import DataHandler as StrDataHandler
+from sb3.sb3_index_manager import IndexManager as StrIndexManager
+from sb3.sb3_env import LogicEnv_gym as StrEnv
+from sb3.sb3_utils import Term as StrTerm
+from sb3.sb3_unification import canonicalize_state_to_str
 
 
 def get_default_sb3_env_config() -> SimpleNamespace:

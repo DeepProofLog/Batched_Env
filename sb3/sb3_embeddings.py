@@ -7,7 +7,7 @@ import pickle
 from typing import Tuple, Optional
 import math
 
-from dataset import DataHandler
+from sb3.sb3_dataset import DataHandler
 from index_manager import IndexManager
 
 

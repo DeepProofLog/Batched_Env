@@ -298,7 +298,7 @@ def prepare_queries(dataset: str = "countries_s3", base_path: str = "./data/",
     Returns:
         List of (split, (predicate, head, tail)) tuples
     """
-    from sb3.dataset import DataHandler
+    from sb3.sb3_dataset import DataHandler
     
     dh = DataHandler(
         dataset_name=dataset,

@@ -1,0 +1,221 @@
+/home/castellanoontiv/.local/lib/python3.12/site-packages/numpy/_core/numeric.py:387: RuntimeWarning: invalid value encountered in cast
+  multiarray.copyto(a, fill_value, casting='unsafe')
+/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/stable_baselines3/common/callbacks.py:418: UserWarning: Training and eval env are not of the same type<stable_baselines3.common.vec_env.dummy_vec_env.DummyVecEnv object at 0x7fb97d76aea0> != <sb3_custom_dummy_env.CustomDummyVecEnv object at 0x7fb980cb7770>
+  warnings.warn("Training and eval env are not of the same type" f"{self.training_env} != {self.eval_env}")
+Using device: cuda
+
+Config:
+  n_envs: 1
+  n_steps: 128
+  timesteps_train: 512
+  seed: 0
+
+Log file: ./runs/_tmp_log-comparison-sb3-countries_s3-n_envs1-2025_11_20_01_03_46-seed_0.csv
+
+================================================================================
+STARTING SB3 COMPARISON RUN
+================================================================================
+
+Warning: This setting is not reproducible when creating 2 models from scratch, but it is when loading pretrained models. You can use
+  export CUBLAS_WORKSPACE_CONFIG=:16:8; export PYTHONHASHSEED=0
+to make runs reproducible.
+Device: cuda. CUDA available: True, Device count: 1
+Number of queries with depth None in train: 111 / 111
+Number of queries with depth None in valid: 24 / 24
+Number of queries with depth None in test: 24 / 24
+Dataset countries_s3 loaded:
+  Rules: 2
+  Facts: 983
+  Train queries: 111
+  Valid queries: 24
+  Test queries: 24
+Using cuda device
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Improved rollout/ep_rew_mean to -0.1538 in train
+Time to collect_rollouts 1.91
+Training model
+Time to train 1.97
+-------------------------------------------------
+| rollout/                |                     |
+|    ep_len_mean          | 9.62                |
+|    ep_rew_mean          | -0.154              |
+|    len_d_2_pos          | 20.000 +/- 0.00 (2) |
+|    len_d_unknown_neg    | 12.500 +/- 7.91 (6) |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (5)  |
+|    proven_d_2_pos       | 0.000 +/- 0.00 (2)  |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (6)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (5)  |
+|    proven_neg           | 0.000 +/- 0.00 (6)  |
+|    proven_pos           | 0.000 +/- 0.00 (7)  |
+|    reward_d_2_pos       | 0.000 +/- 0.00 (2)  |
+|    reward_d_unknown_neg | 0.500 +/- 0.50 (6)  |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (5) |
+| time/                   |                     |
+|    fps                  | 32                  |
+|    iterations           | 1                   |
+|    total_timesteps      | 128                 |
+| train/                  |                     |
+|    approx_kl            | 106.85834           |
+|    clip_fraction        | 0.403               |
+|    clip_range           | 0.2                 |
+|    entropy_loss         | -0.00337            |
+|    explained_variance   | -3.22               |
+|    learning_rate        | 0.0003              |
+|    loss                 | 6.27                |
+|    n_updates            | 10                  |
+|    policy_gradient_loss | 0.14                |
+|    value_loss           | 16.3                |
+-------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Improved rollout/ep_rew_mean to 0.0000 in train
+Time to collect_rollouts 0.87
+Training model
+Time to train 1.34
+-------------------------------------------------
+| rollout/                |                     |
+|    ep_len_mean          | 7.21                |
+|    ep_rew_mean          | 0                   |
+|    len_d_1_pos          | 2.000 +/- 0.00 (2)  |
+|    len_d_2_pos          | 3.000 +/- 0.00 (1)  |
+|    len_d_unknown_neg    | 9.000 +/- 8.02 (11) |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (7)  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (2)  |
+|    proven_d_2_pos       | 1.000 +/- 0.00 (1)  |
+|    proven_d_unknown_neg | 0.091 +/- 0.29 (11) |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (7)  |
+|    proven_neg           | 0.091 +/- 0.29 (11) |
+|    proven_pos           | 0.300 +/- 0.46 (10) |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (2)  |
+|    reward_d_2_pos       | 1.000 +/- 0.00 (1)  |
+|    reward_d_unknown_neg | 0.545 +/- 0.66 (11) |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (7) |
+| time/                   |                     |
+|    fps                  | 41                  |
+|    iterations           | 2                   |
+|    total_timesteps      | 256                 |
+| train/                  |                     |
+|    approx_kl            | 97.29588            |
+|    clip_fraction        | 0.352               |
+|    clip_range           | 0.2                 |
+|    entropy_loss         | -0.0049             |
+|    explained_variance   | -13                 |
+|    learning_rate        | 0.0003              |
+|    loss                 | 2.77                |
+|    n_updates            | 20                  |
+|    policy_gradient_loss | 0.0751              |
+|    value_loss           | 8.99                |
+-------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Improved rollout/ep_rew_mean to 0.1176 in train
+Time to collect_rollouts 0.96
+Training model
+Time to train 1.36
+-------------------------------------------------
+| rollout/                |                     |
+|    ep_len_mean          | 7.41                |
+|    ep_rew_mean          | 0.118               |
+|    len_d_1_pos          | 2.000 +/- 0.00 (1)  |
+|    len_d_2_pos          | 7.750 +/- 4.26 (4)  |
+|    len_d_3_pos          | 12.000 +/- 0.00 (1) |
+|    len_d_unknown_neg    | 10.250 +/- 7.92 (8) |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (3)  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (1)  |
+|    proven_d_2_pos       | 1.000 +/- 0.00 (4)  |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)  |
+|    proven_d_unknown_neg | 0.125 +/- 0.33 (8)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (3)  |
+|    proven_neg           | 0.125 +/- 0.33 (8)  |
+|    proven_pos           | 0.667 +/- 0.47 (9)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (1)  |
+|    reward_d_2_pos       | 1.000 +/- 0.00 (4)  |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)  |
+|    reward_d_unknown_neg | 0.375 +/- 0.70 (8)  |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (3) |
+| time/                   |                     |
+|    fps                  | 45                  |
+|    iterations           | 3                   |
+|    total_timesteps      | 384                 |
+| train/                  |                     |
+|    approx_kl            | 71.28671            |
+|    clip_fraction        | 0.388               |
+|    clip_range           | 0.2                 |
+|    entropy_loss         | -0.0033             |
+|    explained_variance   | -4.79               |
+|    learning_rate        | 0.0003              |
+|    loss                 | 2.27                |
+|    n_updates            | 30                  |
+|    policy_gradient_loss | 0.122               |
+|    value_loss           | 4.61                |
+-------------------------------------------------
+Collecting rollouts
+Collecting rollouts: 0/128 steps
+Collecting rollouts: 25/128 steps
+Collecting rollouts: 50/128 steps
+Collecting rollouts: 75/128 steps
+Collecting rollouts: 100/128 steps
+Collecting rollouts: 125/128 steps
+Improved rollout/ep_rew_mean to 0.1299 in train
+Time to collect_rollouts 0.98
+Training model
+Time to train 1.35
+--------------------------------------------------
+| rollout/                |                      |
+|    ep_len_mean          | 6.53                 |
+|    ep_rew_mean          | 0.13                 |
+|    len_d_1_pos          | 2.000 +/- 0.00 (1)   |
+|    len_d_2_pos          | 8.000 +/- 4.00 (2)   |
+|    len_d_unknown_neg    | 6.692 +/- 7.42 (13)  |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (10)  |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (1)   |
+|    proven_d_2_pos       | 1.000 +/- 0.00 (2)   |
+|    proven_d_unknown_neg | 0.000 +/- 0.00 (13)  |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (10)  |
+|    proven_neg           | 0.000 +/- 0.00 (13)  |
+|    proven_pos           | 0.231 +/- 0.42 (13)  |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (1)   |
+|    reward_d_2_pos       | 1.000 +/- 0.00 (2)   |
+|    reward_d_unknown_neg | 0.846 +/- 0.36 (13)  |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (10) |
+| time/                   |                      |
+|    fps                  | 47                   |
+|    iterations           | 4                    |
+|    total_timesteps      | 512                  |
+| train/                  |                      |
+|    approx_kl            | 112.1561             |
+|    clip_fraction        | 0.335                |
+|    clip_range           | 0.2                  |
+|    entropy_loss         | -0.00447             |
+|    explained_variance   | -3.34                |
+|    learning_rate        | 0.0003               |
+|    loss                 | 2.14                 |
+|    n_updates            | 40                   |
+|    policy_gradient_loss | 0.112                |
+|    value_loss           | 4.1                  |
+--------------------------------------------------
+Warning: `model_path` is not set. Cannot restore model.
+Traceback (most recent call last):
+  File "/home/castellanoontiv/Batched_env/sb3/sb3_runner_simple.py", line 185, in <module>
+    metrics_train, metrics_valid, metrics_test = main(
+                                                 ^^^^^
+  File "/home/castellanoontiv/Batched_env/sb3/sb3_train.py", line 537, in main
+    model.policy.apply(_freeze_dropout_layernorm)
+    ^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'policy'

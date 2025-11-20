@@ -3,8 +3,8 @@ from typing import Any, Callable, List, Optional, Tuple
 import torch
 from pathlib import Path
 
-from index_manager import IndexManager
-from utils import (
+from sb3_index_manager import IndexManager
+from sb3_utils import (
     get_device, 
     print_eval_info, 
     profile_code, 
@@ -13,7 +13,7 @@ from utils import (
     _warn_non_reproducible,
     _maybe_enable_wandb,
 )
-from callbacks import (
+from sb3_callbacks import (
     SB3TrainCheckpoint,
     CustomEvalCallbackMRR,
     CustomEvalCallback,
@@ -22,12 +22,12 @@ from callbacks import (
     AnnealingTarget,
     _EvalDepthRewardTracker
 )
-from custom_dummy_env import create_environments
-from dataset import DataHandler
-from model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
-from embeddings import get_embedder
-from neg_sampling import get_sampler
-from model_eval import eval_corruptions
+from sb3_custom_dummy_env import create_environments
+from sb3_dataset import DataHandler
+from sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
+from sb3_embeddings import get_embedder
+from sb3_neg_sampling import get_sampler
+from sb3_model_eval import eval_corruptions
 from stable_baselines3.common.callbacks import (
     StopTrainingOnRewardThreshold,
     CallbackList,
@@ -358,9 +358,13 @@ def _train_if_needed(
     # exit(0)
     # Restore desired checkpoint
     if args.restore_best_val_model:
-        model = eval_cb.restore_best_ckpt(model.get_env())
+        restored_model = eval_cb.restore_best_ckpt(model.get_env())
+        if restored_model is not None:
+            model = restored_model
     else:
-        model = train_ckpt_cb.restore_last_ckpt(model.get_env())
+        restored_model = train_ckpt_cb.restore_last_ckpt(model.get_env())
+        if restored_model is not None:
+            model = restored_model
 
     if run is not None:
         run.finish()
