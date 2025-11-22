@@ -224,7 +224,7 @@ def _make_eval_callback(
         metrics_section = {
             k: v
             for k, v in metrics.items()
-            if k.startswith(("len_", "reward_", "length"))
+            if k.startswith(("len_", "reward_", "length", "proven_"))
             or k == "success_rate"
             or isinstance(v, str)
         }

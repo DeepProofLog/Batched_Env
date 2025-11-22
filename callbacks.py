@@ -113,35 +113,31 @@ def print_formatted_metrics(
     # Collect all metrics into a dictionary for sorting
     final_output = {}
     
+    # Add main metrics if present
+    if metrics:
+        for k, v in metrics.items():
+            if isinstance(v, (float, int, np.number)):
+                final_output[k] = f"{v:.3f}" if isinstance(v, (float, np.floating)) else str(v)
+            else:
+                final_output[k] = str(v)
+    
     # Add extra metrics if present
     if extra_metrics:
-        # Other metrics (losses, entropy, etc. for training; hits, episode breakdown for evaluation)
-        # Only show under "train/" prefix if we're actually in training context (prefix != "eval")
-        time_keys = ["fps", "iterations", "total_timesteps"]
-        other_keys = sorted([k for k in extra_metrics.keys() if k not in time_keys])
-        
-        if other_keys:
-            # Don't add "train/" prefix during evaluation
-            if prefix == "eval":
-                print(f"| {prefix + '/':<23} | {'':<24} |")
+        for k, v in extra_metrics.items():
+            if isinstance(v, (float, int, np.number)):
+                final_output[k] = f"{v:.3f}" if isinstance(v, (float, np.floating)) else str(v)
             else:
-                print(f"| {'train/':<23} | {'':<24} |")
-            for key in other_keys:
-                value = extra_metrics[key]
-                try:
-                    num_val = float(value)
-                    if num_val.is_integer():
-                        value_str = str(int(num_val))
-                    else:
-                        value_str = f"{num_val:.3f}"
-                except (ValueError, TypeError):
-                    value_str = str(value)
-                print(f"|    {key:<20} | {value_str:<24} |")
+                final_output[k] = str(v)
     
-    # Global step if provided
-    if global_step is not None:
-        if not extra_metrics or "total_timesteps" not in extra_metrics:
-            print(f"|    {'total_timesteps':<20} | {global_step:<24} |")
+    # Global step if provided and not already in final_output
+    if global_step is not None and "total_timesteps" not in final_output:
+        final_output["total_timesteps"] = str(global_step)
+    
+    # Print all metrics sorted alphabetically
+    if final_output:
+        print(f"| {prefix + '/':<23} | {'':<24} |")
+        for key in sorted(final_output.keys()):
+            print(f"|    {key:<20} | {final_output[key]:<24} |")
     
     print("-" * 52)
     print()
