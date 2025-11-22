@@ -39,12 +39,8 @@ def _format_depth_key(depth_value: Any) -> str:
     if depth_value == -1:
         return "unknown"
     if depth_value is None:
-        return "none"
-    try:
-        return str(int(depth_value))
-    except (TypeError, ValueError):
         return "unknown"
-
+    return str(depth_value)
 
 def _format_stat_string(mean: Optional[float], std: Optional[float], count: int) -> str:
     """
@@ -114,82 +110,14 @@ def print_formatted_metrics(
     """
     print("-" * 52)
     
-    # Rollout/episode metrics from DetailedMetricsCollector
-    if metrics:
-        if not extra_metrics or not any(k in extra_metrics for k in ["mrr_mean", "_mrr", "auc_pr"]):
-            print(f"| {prefix + '/':<23} | {'':<24} |")
-        
-        # 1. Overall episode stats (mean only, no +/- std)
-        for key in ["ep_len_mean", "ep_rew_mean"]:
-            if key in metrics:
-                print(f"|    {key:<20} | {metrics[key]:<24} |")
-        
-        # 2. Aggregate by label (length)
-        for key in ["len_pos", "len_neg"]:
-            if key in metrics:
-                print(f"|    {key:<20} | {metrics[key]:<24} |")
-        
-        # 3. Overall length with std
-        # if "length mean +/- std" in metrics:
-        #     print(f"|    {'length mean +/- std':<20} | {metrics['length mean +/- std']:<24} |")
-        
-        # 4. Detailed breakdown by depth (if present) - grouped by type
-        # First: length by depth
-        len_depth_keys = sorted(
-            [k for k in metrics.keys() if k.startswith("len_d_")],
-            key=_sort_metric_key
-        )
-        for key in len_depth_keys:
-            print(f"|    {key:<20} | {metrics[key]:<24} |")
-        
-        # Second: proven/success by depth (sorted)
-        proven_depth_keys = sorted(
-            [k for k in metrics.keys() if k.startswith("proven_d_")],
-            key=_sort_metric_key
-        )
-        for key in proven_depth_keys:
-            print(f"|    {key:<20} | {metrics[key]:<24} |")
-        
-        # Third: proven by label (aggregate)
-        for key in ["proven_neg", "proven_pos"]:
-            if key in metrics:
-                print(f"|    {key:<20} | {metrics[key]:<24} |")
-        
-        # Fourth: reward by depth (sorted)
-        # Only use reward_d_ keys, ignore rwd_d_ to avoid duplication
-        reward_depth_keys = sorted(
-            [k for k in metrics.keys() if k.startswith("reward_d_")],
-            key=_sort_metric_key
-        )
-        for key in reward_depth_keys:
-            print(f"|    {key:<20} | {metrics[key]:<24} |")
-        
-        # Fifth: reward by label
-        for key in ["reward_label_neg", "reward_label_pos"]:
-            if key in metrics:
-                print(f"|    {key:<20} | {metrics[key]:<24} |")
-        
-        # Sixth: overall reward
-        # if "reward_overall" in metrics:
-        #     print(f"|    {'reward_overall':<20} | {metrics['reward_overall']:<24} |")
-        
-        # Seventh: success rate
-        if "success_rate" in metrics:
-            print(f"|    {'success_rate':<20} | {metrics['success_rate']:<24} |")
-
-    # Additional metrics (time, train losses, etc.)
+    # Collect all metrics into a dictionary for sorting
+    final_output = {}
+    
+    # Add extra metrics if present
     if extra_metrics:
-        # Time metrics
-        time_keys = [k for k in extra_metrics.keys() if k in ["fps", "iterations", "total_timesteps"]]
-        if time_keys:
-            print(f"| {'time/':<23} | {'':<24} |")
-            for key in time_keys:
-                value = extra_metrics[key]
-                value_str = str(value)
-                print(f"|    {key:<20} | {value_str:<24} |")
-        
         # Other metrics (losses, entropy, etc. for training; hits, episode breakdown for evaluation)
         # Only show under "train/" prefix if we're actually in training context (prefix != "eval")
+        time_keys = ["fps", "iterations", "total_timesteps"]
         other_keys = sorted([k for k in extra_metrics.keys() if k not in time_keys])
         
         if other_keys:
@@ -289,9 +217,7 @@ class DetailedMetricsCollector:
             
             label = info.get("label")
             if label is None:
-                if self.verbose:
-                    print(f"[DetailedMetricsCollector] Info {env_idx}: No label")
-                continue
+                raise ValueError("DetailedMetricsCollector: 'label' is missing from info; cannot compute metrics")
             
             episode_data = info.get("episode")
             if not isinstance(episode_data, dict):
@@ -316,18 +242,21 @@ class DetailedMetricsCollector:
                     continue
                 self._last_episode_id[env_idx] = episode_id
             
-            # Extract episode statistics
-            reward = episode_data.get("r")
-            length = episode_data.get("l")
-            depth_value = info.get("query_depth")
-            success_flag = bool(info.get("is_success", False))
-            
             try:
                 label_value = int(label)
             except (TypeError, ValueError):
                 if self.verbose:
                     print(f"[DetailedMetricsCollector] Info {env_idx}: Invalid label {label}")
                 continue
+
+            # Extract episode statistics
+            reward = episode_data.get("r")
+            length = episode_data.get("l")
+            depth_value = info.get("query_depth")
+            # For negatives, bucket into "none" like SB3 (no depth for neg samples)
+            if label_value == 0:
+                depth_value = -1
+            success_flag = bool(info.get("is_success", False))
             
             # Format depth for consistent naming
             depth_key = _format_depth_key(depth_value)
@@ -384,21 +313,18 @@ class DetailedMetricsCollector:
             all_lengths.extend([ep["length"] for ep in episodes if ep.get("length") is not None])
             all_successes.extend([ep.get("success", 0.0) for ep in episodes])
         
-        # Mean values for backward compatibility
+        # Overall statistics with std and means (align to SB3-style rollout)
         if all_rewards:
-            metrics["ep_rew_mean"] = f"{np.mean(all_rewards):.2f}"
+            metrics["ep_rew_mean"] = float(np.mean(all_rewards))
+        if all_rewards:
+            metrics["reward_overall"] = _format_stat_string(
+                np.mean(all_rewards), np.std(all_rewards), len(all_rewards)
+            )
         if all_lengths:
-            metrics["ep_len_mean"] = f"{np.mean(all_lengths):.2f}"
-        
-        # Overall statistics with std
-        # if all_rewards:
-        #     metrics["reward_overall"] = _format_stat_string(
-        #         np.mean(all_rewards), np.std(all_rewards), len(all_rewards)
-        #     )
-        # if all_lengths:
-        #     metrics["length mean +/- std"] = _format_stat_string(
-        #         np.mean(all_lengths), np.std(all_lengths), len(all_lengths)
-        #     )
+            metrics["ep_len_mean"] = float(np.mean(all_lengths))
+            metrics["length mean +/- std"] = _format_stat_string(
+                np.mean(all_lengths), np.std(all_lengths), len(all_lengths)
+            )
         if all_successes:
             metrics["success_rate"] = f"{np.mean(all_successes):.3f}"
         

@@ -22,6 +22,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
     """
     facts_set = set(data_handler.facts)
     shaping_gamma = args.pbrs_gamma if args.pbrs_gamma is not None else args.gamma
+    env_verbose = getattr(args, "verbose_env", 0)
+    prover_verbose = getattr(args, "verbose_prover", 0)
 
     def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0):
         def _init():
@@ -51,6 +53,7 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
                 shaping_beta=args.pbrs_beta,
                 shaping_gamma=shaping_gamma,
                 kge_inference_engine=kge_engine,
+                canonical_action_order=args.canonical_action_order,
                 verbose=verbose,
                 prover_verbose=prover_verbose,
             )
@@ -75,8 +78,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.train_queries),
         query_depths=data_handler.train_queries_depths,
         facts=facts_set,
-        verbose=0,
-        prover_verbose=0,
+        verbose=env_verbose,
+        prover_verbose=prover_verbose,
     ) for i in range(args.n_envs)]
 
     eval_env_fns = [make_env(
@@ -86,8 +89,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.valid_queries),
         query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
-        verbose=0,
-        prover_verbose=0,
+        verbose=env_verbose,
+        prover_verbose=prover_verbose,
     ) for i in range(args.n_eval_envs)]
     
     callback_env_fns = [make_env(
@@ -97,8 +100,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.valid_queries),
         query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
-        verbose=0,
-        prover_verbose=0,
+        verbose=env_verbose,
+        prover_verbose=prover_verbose,
     ) for i in range(1)]
 
 

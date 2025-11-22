@@ -59,6 +59,7 @@ class DataHandler:
         train_depth: Optional[Set[int]] = None,
         valid_depth: Optional[Set[int]] = None,
         test_depth: Optional[Set[int]] = None,
+        load_depth_info: bool = True,
         prob_facts: bool = False,
         topk_facts: Optional[int] = None,
         topk_facts_threshold: Optional[float] = None,
@@ -132,6 +133,7 @@ class DataHandler:
         
         # Probabilistic facts
         self._probabilistic_facts: List[Term] = []
+        self.load_depth_info = bool(load_depth_info)
         
         # Load data if dataset specified
         if dataset_name is not None:
@@ -150,6 +152,7 @@ class DataHandler:
                 train_depth=train_depth,
                 valid_depth=valid_depth,
                 test_depth=test_depth,
+                load_depth_info=self.load_depth_info,
                 prob_facts=prob_facts,
                 topk_facts=topk_facts,
                 topk_facts_threshold=topk_facts_threshold,
@@ -176,6 +179,7 @@ class DataHandler:
         train_depth: Optional[Set[int]] = None,
         valid_depth: Optional[Set[int]] = None,
         test_depth: Optional[Set[int]] = None,
+        load_depth_info: bool = True,
         prob_facts: bool = False,
         topk_facts: Optional[int] = None,
         topk_facts_threshold: Optional[float] = None,
@@ -210,16 +214,23 @@ class DataHandler:
         valid_path = join(dataset_path, valid_file)
         test_path = join(dataset_path, test_file)
         
+        train_limit = None if filter_queries_by_rules else n_train_queries
         if os.path.exists(train_path):
-            self._load_queries_from_file(train_path, 'train', n_train_queries, train_depth)
+            self._load_queries_from_file(train_path, 'train', train_limit, train_depth, load_depth_info=load_depth_info)
         if os.path.exists(valid_path):
-            self._load_queries_from_file(valid_path, 'valid', n_eval_queries, valid_depth)
+            self._load_queries_from_file(valid_path, 'valid', n_eval_queries, valid_depth, load_depth_info=load_depth_info)
         if os.path.exists(test_path):
-            self._load_queries_from_file(test_path, 'test', n_test_queries, test_depth)
+            self._load_queries_from_file(test_path, 'test', n_test_queries, test_depth, load_depth_info=load_depth_info)
         
         # Filter queries by rules if requested
         if filter_queries_by_rules and self.rules:
             self._filter_queries_by_rules()
+            # Re-apply limits after filtering to mimic SB3 behavior
+            if n_train_queries is not None:
+                self.train_queries = self.train_queries[:n_train_queries]
+                self.train_queries_str = self.train_queries_str[:n_train_queries]
+                self.train_depths = self.train_depths[:n_train_queries]
+                self.train_labels = self.train_labels[:n_train_queries]
         
         # Load domain mapping for countries/ablation datasets
         if corruption_mode and ('countries' in dataset_name or 'ablation' in dataset_name):
@@ -272,13 +283,27 @@ class DataHandler:
         split: Literal['train', 'valid', 'test'],
         limit: Optional[int] = None,
         depth_filter: Optional[Set[int]] = None,
+        load_depth_info: bool = True,
     ) -> None:
-        """Load queries from file with optional depth filtering."""
+        """Load queries from file with optional depth filtering and sidecar depth support."""
         queries = []
         queries_str = []
         depths = []
+
+        # Prefer sidecar *_depths.txt when available
+        source_path = filepath
+        if load_depth_info:
+            depth_path = None
+            if filepath.endswith("_depths.txt") and os.path.exists(filepath):
+                depth_path = filepath
+            else:
+                candidate = filepath.replace(".txt", "_depths.txt")
+                if os.path.exists(candidate):
+                    depth_path = candidate
+            if depth_path is not None:
+                source_path = depth_path
         
-        with open(filepath, 'r') as f:
+        with open(source_path, 'r') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('%'):

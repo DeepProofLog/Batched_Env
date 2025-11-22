@@ -85,6 +85,7 @@ def _materialize_data_components(
         train_depth=getattr(args, "train_depth", None),
         valid_depth=getattr(args, "valid_depth", None),
         test_depth=getattr(args, "test_depth", None),
+        load_depth_info=getattr(args, "load_depth_info", True),
         prob_facts=getattr(args, "prob_facts", False),
         topk_facts=getattr(args, "topk_facts", None),
         topk_facts_threshold=getattr(args, "topk_facts_threshold", None),

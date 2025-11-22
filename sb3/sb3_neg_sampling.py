@@ -725,11 +725,13 @@ def get_negatives_from_states_separate(
         if B == 1: return head_neg_subs.squeeze(0), tail_neg_subs.squeeze(0)
         else: return head_neg_subs, tail_neg_subs
 
-def get_sampler(data_handler: DataHandler, 
-                index_manager: IndexManager,
-                corruption_scheme: Optional[Collection[Target]] = None,
-                device: torch.device = torch.device("cpu"),
-                )-> Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain]:
+def get_sampler(
+    data_handler: DataHandler, 
+    index_manager: IndexManager,
+    corruption_scheme: Optional[Collection[Target]] = None,
+    device: torch.device = torch.device("cpu"),
+    corruption_mode: bool = True,
+) -> Union[BasicNegativeSamplerCustom, BasicNegativeSamplerDomain]:
 
     all_triples_for_filtering = data_handler.all_known_triples 
     np_facts = np.array([[f.args[0], f.predicate, f.args[1]] for f in all_triples_for_filtering], dtype=str)
@@ -741,7 +743,16 @@ def get_sampler(data_handler: DataHandler,
 
     mapped_triples_cpu = triples_factory.mapped_triples.cpu()
 
-    if 'countries' in data_handler.dataset_name or 'ablation' in data_handler.dataset_name:
+    if not corruption_mode:
+        sampler = BasicNegativeSamplerCustom(
+            mapped_triples=mapped_triples_cpu,
+            num_entities=len(index_manager.constant_str2idx),
+            num_relations=len(index_manager.predicate_str2idx),
+            corruption_scheme=corruption_scheme,
+        )
+    elif ('countries' in data_handler.dataset_name or 'ablation' in data_handler.dataset_name):
+        if data_handler.domain2entity is None:
+            data_handler.domain2entity = {}
         # Build domain2idx, skipping entities that aren't in the index
         domain2idx = {}
         skipped_entities = []
@@ -766,13 +777,13 @@ def get_sampler(data_handler: DataHandler,
                     entity2domain[index_manager.constant_str2idx[e]] = domain
         
         sampler = BasicNegativeSamplerDomain(
-                                            mapped_triples=mapped_triples_cpu,
-                                            domain2idx=domain2idx,
-                                            entity2domain=entity2domain,
-                                            filtered=True,
-                                            corruption_scheme=corruption_scheme,
-                                            device=device # --- ADD THIS ---
-                                            )
+            mapped_triples=mapped_triples_cpu,
+            domain2idx=domain2idx,
+            entity2domain=entity2domain,
+            filtered=True,
+            corruption_scheme=corruption_scheme,
+            device=device # --- ADD THIS ---
+        )
     else:
         sampler = BasicNegativeSamplerCustom(   
             mapped_triples=mapped_triples_cpu, # Use CPU version for init

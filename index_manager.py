@@ -91,8 +91,9 @@ class IndexManager:
             special_pred_list.append('True')
         if 'False' not in regular_pred_list:
             special_pred_list.append('False')
-        if 'End' not in regular_pred_list:
-            special_pred_list.append('End')
+        # Align naming with SB3 (Endf)
+        if 'Endf' not in regular_pred_list:
+            special_pred_list.append('Endf')
         
         # Combine: regular predicates first (sorted), then special predicates
         pred_list = regular_pred_list + special_pred_list
@@ -125,7 +126,7 @@ class IndexManager:
         # Special predicate indices
         self.true_pred_idx: Optional[int] = self.predicate_str2idx.get('True')
         self.false_pred_idx: Optional[int] = self.predicate_str2idx.get('False')
-        self.end_pred_idx: Optional[int] = self.predicate_str2idx.get('End')
+        self.end_pred_idx: Optional[int] = self.predicate_str2idx.get('Endf')
 
         # Runtime var range [start, end]
         self.runtime_var_start_index: int = self.constant_no + self.template_variable_no + 1
@@ -312,6 +313,19 @@ class IndexManager:
         else:
             self.rules_heads_idx = torch.empty((0,3), dtype=torch.long, device=self.device)
 
+    def adjust_runtime_start_for_head_vars(self, head_var_count: int) -> None:
+        """
+        Move the runtime variable window so that head variables do not offset the
+        starting index. SB3 effectively begins fresh variables after the *body-only*
+        variables, whereas this manager initially offsets by all template vars.
+        """
+        # SB3 starts fresh variables immediately after constants, regardless of
+        # how many template variables appear in the rules. Mirroring that behavior
+        # prevents body/head variables from shifting the runtime window.
+        new_start = self.constant_no + 1
+        if new_start != self.runtime_var_start_index:
+            self.runtime_var_start_index = new_start
+            self.runtime_var_end_index = self.runtime_var_start_index + self.runtime_variable_no - 1
 
     def get_stringifier_params(self):
         """Return the parameters needed for atom stringification."""

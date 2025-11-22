@@ -133,6 +133,8 @@ class BatchedEnv(EnvBase):
         self._all_labels = self._ensure_vector(labels, self._all_queries_padded.shape[0], "labels")
         self._all_depths = self._ensure_vector(query_depths, self._all_queries_padded.shape[0], "query_depths")
         self._num_all = int(self._all_queries_padded.shape[0])
+        # Deterministic round-robin pointer for train query sampling (parity with SB3)
+        self._train_ptr = 0
 
         # Sampling pointer for eval mode
         self.counter = 0
@@ -156,6 +158,7 @@ class BatchedEnv(EnvBase):
         self.original_queries = torch.full(
             (B, arity_plus), self.padding_idx, dtype=torch.long, device=self._device
         )
+        self._train_neg_counters = torch.zeros(B, dtype=torch.long, device=self._device)
 
         # Derived states [B, S, A, D]
         self.derived_states_batch = torch.full(
@@ -314,13 +317,10 @@ class BatchedEnv(EnvBase):
 
         # Sample indices
         if self.mode == 'train':
-            if N <= self._num_all:
-                # Sample without replacement when we have enough queries
-                perm = torch.randperm(self._num_all, device=device)
-                idxs = perm[:N]
-            else:
-                # Sample with replacement when batch size exceeds dataset size
-                idxs = torch.randint(0, self._num_all, (N,), device=device)
+            # Deterministic round-robin sampling to mirror SB3's fixed ordering
+            start = self._train_ptr
+            idxs = (torch.arange(N, device=device) + start) % self._num_all
+            self._train_ptr = int((start + N) % self._num_all)
         elif self.mode == 'eval':
             assert hasattr(self, "_eval_slot_starts") and self._eval_slot_starts is not None and \
                    hasattr(self, "_eval_slot_lengths") and self._eval_slot_lengths is not None and \
@@ -341,7 +341,7 @@ class BatchedEnv(EnvBase):
         batch_first_atoms = self._all_first_atoms.index_select(0, idxs)  # [N, D]
 
         # Vectorized negative sampling
-        batch_q, batch_labels, proof_depths = self.sample_negatives(N, batch_q, batch_labels, proof_depths, batch_first_atoms, device, pad, A, D)
+        batch_q, batch_labels, proof_depths = self.sample_negatives(N, batch_q, batch_labels, proof_depths, batch_first_atoms, env_idx, device, pad, A, D)
 
         # Write into runtime buffers
         self.current_queries.index_copy_(0, env_idx, batch_q)
@@ -411,43 +411,39 @@ class BatchedEnv(EnvBase):
             )
         return self._create_observation()
 
-    def sample_negatives(self, N, batch_q, batch_labels, proof_depths, batch_first_atoms, device, pad, A, D):
+    def sample_negatives(self, N, batch_q, batch_labels, proof_depths, batch_first_atoms, env_idx, device, pad, A, D):
         """
-        Vectorized negative sampling with duplicate avoidance.
+        Vectorized negative sampling with deterministic per-env scheduling that mirrors SB3.
         """
-        if (self.mode == 'train') and self.corruption_mode and (self.train_neg_ratio > 0):
-            p_neg = float(self.train_neg_ratio) / (1.0 + float(self.train_neg_ratio))
-            neg_mask = torch.rand(N, device=device) < p_neg
-            neg_rows = torch.arange(N, device=device)[neg_mask]
-            if neg_rows.numel() > 0:
-                atoms = batch_first_atoms.index_select(0, neg_rows)               # [U, D]
-                corrupted = self.sampler.corrupt(atoms, num_negatives=1, device=device)
-                if corrupted.dim() == 3:
-                    corrupted = corrupted[:, 0]                                    # [U, D]
-                neg_states = torch.full((neg_rows.shape[0], A, D), pad, dtype=torch.long, device=device)
-                neg_states[:, 0] = corrupted
-                batch_q = batch_q.clone()
-                batch_q.index_copy_(0, neg_rows, neg_states)
-                batch_labels = batch_labels.clone()
-                batch_labels.index_fill_(0, neg_rows, 0)
-                # define the depths as -1 for corrupted states
-                proof_depths = proof_depths.clone()
-                proof_depths.index_fill_(0, neg_rows, -1)
+        if not ((self.mode == 'train') and self.corruption_mode and (self.train_neg_ratio > 0)):
+            return batch_q, batch_labels, proof_depths
 
-                # Ensure no duplicate negatives (vectorized)
-                flattened = batch_q.view(N, -1)
-                equal_matrix = (flattened.unsqueeze(0) == flattened.unsqueeze(1)).all(dim=2)  # [N, N]
-                duplicate_mask = equal_matrix.sum(dim=1) > 1  # [N]
-                duplicate_neg_mask = duplicate_mask[neg_rows]
-                duplicate_neg_rows = neg_rows[duplicate_neg_mask]
-                if duplicate_neg_rows.numel() > 0:
-                    atoms_to_resample = batch_first_atoms.index_select(0, duplicate_neg_rows)
-                    new_corrupted = self.sampler.corrupt(atoms_to_resample, num_negatives=1, device=device)
-                    if new_corrupted.dim() == 3:
-                        new_corrupted = new_corrupted[:, 0]
-                    new_neg_states = torch.full((duplicate_neg_rows.shape[0], A, D), pad, dtype=torch.long, device=device)
-                    new_neg_states[:, 0] = new_corrupted
-                    batch_q.index_copy_(0, duplicate_neg_rows, new_neg_states)
+        ratio = int(round(float(self.train_neg_ratio)))
+        if ratio <= 0:
+            return batch_q, batch_labels, proof_depths
+
+        cycle = ratio + 1
+        local_counters = self._train_neg_counters.index_select(0, env_idx)  # [N]
+        neg_mask = (local_counters % cycle) != 0
+
+        neg_rows = torch.arange(N, device=device)[neg_mask]
+        if neg_rows.numel() > 0:
+            atoms = batch_first_atoms.index_select(0, neg_rows)
+            corrupted = self.sampler.corrupt(atoms, num_negatives=1, device=device)
+            if corrupted.dim() == 3:
+                corrupted = corrupted[:, 0]
+            neg_states = batch_q.index_select(0, neg_rows).clone()
+            neg_states[:, 0, : D] = corrupted
+            batch_q = batch_q.clone()
+            batch_q.index_copy_(0, neg_rows, neg_states)
+            batch_labels = batch_labels.clone()
+            batch_labels.index_fill_(0, neg_rows, 0)
+            proof_depths = proof_depths.clone()
+            proof_depths.index_fill_(0, neg_rows, -1)
+
+        # Update per-env counters (mod cycle) for processed env rows
+        new_counters = (local_counters + 1) % cycle
+        self._train_neg_counters.index_copy_(0, env_idx, new_counters)
 
         return batch_q, batch_labels, proof_depths
 
@@ -585,6 +581,9 @@ class BatchedEnv(EnvBase):
             
             # Reset done environments
             if done_mask.any():
+                if self.verbose >= 1:
+                    self.debug_helper._log(1, f"[step_and_maybe_reset] Resetting {done_mask.sum().item()} done environments")
+                
                 # Create reset tensordict with _reset mask for partial reset
                 reset_td = TensorDict(
                     {"_reset": done_mask.unsqueeze(-1)},
@@ -594,7 +593,12 @@ class BatchedEnv(EnvBase):
                 # Reset only the done environments
                 reset_obs = self.reset(reset_td)
                 
+                if self.verbose >= 1:
+                    self.debug_helper._log(1, f"[step_and_maybe_reset] Reset complete, new query[0]: {self.current_queries[0, 0] if done_mask[0] else 'not reset'}")
+                
                 # Merge reset observations into next_obs for done environments
+                # IMPORTANT: Keep step_result unchanged (with done=True) so episode tracking works
+                # But return reset observations for the environments that were reset
                 next_obs_merged = next_obs.clone()
                 for key in reset_obs.keys():
                     if key in next_obs_merged.keys():
@@ -606,6 +610,8 @@ class BatchedEnv(EnvBase):
                             obs_val[done_mask] = reset_val[done_mask]
                             next_obs_merged.set(key, obs_val)
                 
+                # Return step_result unchanged (keeps done=True for episode tracking)
+                # But next_obs_merged has the reset observations
                 return step_result, next_obs_merged
         
         # No resets needed, return as-is

@@ -134,11 +134,14 @@ class LogicEnv_gym(gym.Env):
         self.eval_idx = 0
         self.consult_janus_eval = False
         self.next_var_index = self.index_manager.variable_start_index
+        # Deterministic round-robin pointer for train sampling (parity with batched)
+        self.train_idx = 0
 
         self.current_query_depth_value = None
 
         if self.mode == 'train':
             self.train_neg_ratio = train_neg_ratio
+        if self.corruption_mode:
             assert (
                 self.sampler.num_negs_per_pos < 3
             ), f"Sampler num_negs_per_pos should <3, but is {self.sampler.num_negs_per_pos}"
@@ -297,13 +300,13 @@ class LogicEnv_gym(gym.Env):
 
     def _sample_train_query(self) -> Tuple[Term, int, Optional[int]]:
         """Sample a training query, optionally performing corruption sampling."""
-        state, _, depth = self.get_random_queries(
-            self.queries,
-            n=1,
-            labels=self.labels,
-            depths=self.query_depths,
-            return_depth=True,
-        )
+        # Deterministic round-robin over training queries for parity
+        if len(self.queries) == 0:
+            raise ValueError("No training queries available.")
+        idx = self.train_idx % len(self.queries)
+        self.train_idx = (self.train_idx + 1) % len(self.queries)
+        state = self.queries[idx]
+        depth = self.query_depths[idx] if idx < len(self.query_depths) else None
         label = 1
 
         if not self.corruption_mode:
@@ -406,6 +409,11 @@ class LogicEnv_gym(gym.Env):
             valid = len(derived_states)
             action_mask.zero_()
             action_mask[:valid] = 1
+        if self.verbose:
+            mask_list = action_mask.tolist()
+            derived_preview = derived_sub_indices[:valid].cpu().numpy() if hasattr(derived_sub_indices, "cpu") else derived_sub_indices[:valid]
+            print(f"[SB3Env reset] action_mask valid={int(action_mask.sum().item())} mask={mask_list}")
+            print(f"[SB3Env reset] derived_sub_indices (first {valid}): {derived_preview}")
 
         self.tensordict = TensorDict(
             {
@@ -468,6 +476,12 @@ class LogicEnv_gym(gym.Env):
         self.current_depth += 1
         exceeded_max_depth = (self.current_depth >= self.max_depth)
         if exceeded_max_depth: print('\nMax depth reached', self.current_depth.item()) if self.verbose else None
+
+        if self.verbose:
+            mask_list = action_mask.tolist()
+            derived_preview = derived_sub_indices_next[:valid].cpu().numpy() if hasattr(derived_sub_indices_next, "cpu") else derived_sub_indices_next[:valid]
+            print(f"[SB3Env step] action_mask valid={int(action_mask.sum().item())} mask={mask_list}")
+            print(f"[SB3Env step] derived_sub_indices (first {valid}): {derived_preview}")
 
         done_next = done_next | exceeded_max_depth | truncate_flag
         truncated = bool(exceeded_max_depth) or bool(truncate_flag)

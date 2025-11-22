@@ -2,11 +2,13 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple, Type, Union
 
 import gymnasium as gym
+import numpy as np
 import torch
 import torch._dynamo
 import torch.nn.functional as F
 from gymnasium import spaces
 from torch import nn
+from trace_utils import TraceRecorder
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.buffers import RolloutBuffer
@@ -25,7 +27,14 @@ from stable_baselines3.common.vec_env import VecEnv
 class PPO_custom(PPO):
     """PPO variant with custom rollout collection for richer logging."""
     def __init__(self, *args, **kwargs):
+        self.trace_recorder = kwargs.pop("trace_recorder", None)
+        self.trace_prefix = kwargs.pop("trace_prefix", "sb3")
+        trace_dir = kwargs.pop("trace_dir", None)
         super().__init__(*args, **kwargs)
+        if trace_dir and self.trace_recorder is None:
+            self.trace_recorder = TraceRecorder(trace_dir, prefix=self.trace_prefix)
+        self._trace_episode_ids = np.zeros(self.n_envs, dtype=np.int64) if self.trace_recorder is not None else None
+        self._trace_lengths = np.zeros(self.n_envs, dtype=np.int64) if self.trace_recorder is not None else None
         self._start_time = time.time()
 
     def collect_rollouts(
@@ -47,7 +56,8 @@ class PPO_custom(PPO):
         callback.on_rollout_start()
         # print('Entering rollout loop')
         while n_steps < n_rollout_steps:
-            if n_steps % (n_rollout_steps // 5) == 0:
+            step_chunk = max(n_rollout_steps // 5, 1)
+            if n_steps % step_chunk == 0:
                 print(f"Collecting rollouts: {n_steps}/{n_rollout_steps} steps")
 
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
@@ -57,7 +67,14 @@ class PPO_custom(PPO):
             with torch.no_grad():
                 # Convert observations to tensor and pass to policy
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, values, log_probs = self.policy(obs_tensor)
+                actions, values, log_probs = self.policy(obs_tensor, deterministic=True)
+                dist_logits = None
+                try:
+                    dist = getattr(self.policy.action_dist, "distribution", None)
+                    if dist is not None and hasattr(dist, "logits"):
+                        dist_logits = dist.logits.detach().clone()
+                except Exception:
+                    dist_logits = None
 
             actions = actions.cpu().numpy()
 
@@ -99,6 +116,36 @@ class PPO_custom(PPO):
                 values,
                 log_probs,
             )
+            if self.trace_recorder is not None:
+                lengths = self._trace_lengths + 1
+                for idx in range(env.num_envs):
+                    obs_dict = self._last_obs
+                    trace_obs = {
+                        "sub_index": obs_dict["sub_index"][idx],
+                        "derived_sub_indices": obs_dict["derived_sub_indices"][idx],
+                        "action_mask": obs_dict["action_mask"][idx],
+                    }
+                    self.trace_recorder.log_step(
+                        phase="train",
+                        iteration=self._n_updates,
+                        step=n_steps - 1,
+                        env=int(idx),
+                        action=int(actions[idx]),
+                        reward=float(rewards[idx]),
+                        done=bool(dones[idx]),
+                        length=int(lengths[idx]),
+                        episode=int(self._trace_episode_ids[idx]),
+                        value=float(values[idx]),
+                        log_prob=float(log_probs[idx]),
+                        logits=dist_logits[idx] if dist_logits is not None else None,
+                        **trace_obs,
+                    )
+                # advance counters after logging
+                self._trace_lengths = lengths
+                for idx, done in enumerate(dones):
+                    if done:
+                        self._trace_episode_ids[idx] += 1
+                        self._trace_lengths[idx] = 0
             self._last_obs = new_obs 
             self._last_episode_starts = dones
 
@@ -167,6 +214,8 @@ class PPO_custom(PPO):
                 self.logger.dump(self.num_timesteps)
 
         callback.on_training_end()
+        if self.trace_recorder is not None:
+            self.trace_recorder.flush(f"{self.trace_prefix}_trace.jsonl")
         return self
 
 

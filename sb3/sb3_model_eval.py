@@ -582,6 +582,18 @@ def eval_corruptions(
             f"`kge_inference_engine` must be provided for mode: '{evaluation_mode}'"
         )
 
+    # Smoke/debug runs may disable corruption sampling (corruption_mode=False),
+    # which yields a minimal sampler without the required helper. Short-circuit
+    # to an empty result so SB3 smoke runs can complete without crashing.
+    if sampler is None or not hasattr(sampler, "get_negatives_from_states_separate"):
+        if verbose:
+            print(
+                "[eval_corruptions] Skipping corruption evaluation because the "
+                "sampler lacks get_negatives_from_states_separate "
+                "(likely corruption_mode=False)."
+            )
+        return _finalize_and_get_results(_init_global_metrics())
+
     env = _ensure_vec_env(env)
     num_envs = env.num_envs
     if n_corruptions == -1:
@@ -595,6 +607,8 @@ def eval_corruptions(
         )
 
     global_metrics = _init_global_metrics()
+
+    rng = np.random.RandomState(0)  # deterministic tie-breaking without altering global state
 
     aggregated_plot_data: Optional[
         Dict[str, List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]]
@@ -683,8 +697,16 @@ def eval_corruptions(
                         success_only=hybrid_success_only,
                     )
 
+                # Only reward successful proofs for the labeled positives.
+                # Negatives that accidentally succeed are treated as failures
+                # to match the tensor_env ranking eval.
+                labels = np.zeros_like(proof_successful, dtype=bool)
+                labels[:, 0] = True  # Positive is always slot 0
+                success_mask = proof_successful & labels
+
                 log_probs = log_probs.copy()
-                log_probs[~proof_successful] -= 100.0
+                log_probs[~success_mask] -= 100.0
+                proof_successful = success_mask
 
                 if (
                     plot
@@ -720,6 +742,7 @@ def eval_corruptions(
                 log_probs,
                 rewards,
                 lengths,
+                rng,
             )
 
         if verbose:
@@ -790,6 +813,7 @@ def _extract_and_accumulate_metrics(
     log_probs: np.ndarray,
     rewards: Optional[np.ndarray] = None,
     lengths: Optional[np.ndarray] = None,
+    rng: Optional[np.random.RandomState] = None,
 ) -> None:
     """Extract metrics from an evaluation pass and update accumulators.
 
@@ -847,10 +871,12 @@ def _extract_and_accumulate_metrics(
             batch_metrics['neg_len_false'].extend(neg_len_false.tolist())
             global_metrics['neg_len_false'].extend(neg_len_false.tolist())
 
-    # Ranking metrics (avoid ties by random keys for stable tie‑breakers)
+    # Ranking metrics (random tie-breaking; seeded via rng for reproducibility)
     if mask.shape[1] > 1:
         lp_batch = np.where(mask, log_probs, -np.inf)
-        random_keys = np.random.rand(*lp_batch.shape)
+        if rng is None:
+            rng = np.random.RandomState(0)
+        random_keys = rng.rand(*lp_batch.shape)
         sorted_indices = np.lexsort((-random_keys, -lp_batch), axis=1)
         ranks = np.where(sorted_indices == 0)[1] + 1
         mrr, h1, h3, h10 = 1.0/ranks, (ranks == 1).astype(float), (ranks <= 3).astype(float), (ranks <= 10).astype(float)

@@ -3,22 +3,22 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-import math
 import numpy as np
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
+from callbacks import _format_stat_string, _format_depth_key
+
 DEBUG_EVAL = os.environ.get("NGG_DEBUG_EVAL", "").lower() in {"1", "true", "yes"}
 
 
 # ------------------------------------------------------------
-# Small utilities (single batched env only)
+# Utility
 # ------------------------------------------------------------
 
 def infer_batch_size(env: EnvBase) -> int:
-    """Return the env's batch size (B) for a single TorchRL batched env."""
     bs = getattr(env, "batch_size", None)
     if bs is None:
         td0 = env.reset()
@@ -28,90 +28,8 @@ def infer_batch_size(env: EnvBase) -> int:
     return int(bs)
 
 
-def compute_episode_targets(
-    batch_size: int,
-    n_eval_episodes: Optional[int],
-    target_episodes: Optional[Sequence[int]],
-) -> Tuple[torch.Tensor, int, int]:
-    """
-    Returns:
-      targets [B], max_t, total
-    """
-    if target_episodes is not None:
-        t = torch.as_tensor(target_episodes, dtype=torch.long)
-        if t.numel() < batch_size:
-            t = torch.cat([t, torch.zeros(batch_size - t.numel(), dtype=torch.long)], 0)
-        elif t.numel() > batch_size:
-            t = t[:batch_size]
-        targets = t
-    else:
-        n_total = int(n_eval_episodes or 0)
-        if n_total <= 0:
-            raise ValueError("Provide n_eval_episodes > 0 or target_episodes per slot.")
-        base, rem = divmod(n_total, batch_size)
-        targets = torch.full((batch_size,), base, dtype=torch.long)
-        if rem:
-            targets[:rem] += 1
-
-    max_t = int(targets.max().item()) if targets.numel() else 0
-    total = int(targets.sum().item())
-    return targets, max_t, total
-
-
-
-def _merge_rows(dst: TensorDict, src: TensorDict, mask: torch.Tensor) -> TensorDict:
-    """
-    For every key present in src, overwrite rows where mask==True into dst.
-    Assumes first dimension is the batch dimension.
-    """
-    if not mask.any():
-        return dst
-    for k in src.keys():
-        sv = src.get(k)
-        if k in dst.keys():
-            dv = dst.get(k)
-            # If batched on first dim, scatter rows; else replace whole tensor
-            if dv.shape[:1] == mask.shape[:1]:
-                dv = dv.clone()
-                dv[mask] = sv[mask]
-                dst.set(k, dv)
-            else:
-                dst.set(k, sv)
-        else:
-            dst.set(k, sv)
-    return dst
-
-
-def step_and_maybe_reset(
-    env: EnvBase,
-    action_td: TensorDict,
-    *,
-    reset_rows: torch.Tensor,          # boolean [B]: which rows STILL need episodes and finished now
-) -> Tuple[TensorDict, TensorDict]:
-    """
-    One step, then partial reset ONLY for rows that still need work.
-    Returns (step_result_td, next_observation_td).
-    """
-    step_td = env.step(action_td)  # -> contains reward/done/terminated/truncated + next obs under "next" key
-    
-    # Extract next observation from the "next" key (TorchRL convention)
-    if "next" in step_td.keys():
-        next_obs = step_td.get("next")
-    else:
-        # If no "next" key, the obs might be directly in step_td (older TorchRL or custom env)
-        next_obs = step_td
-    
-    if reset_rows.any():
-        reset_td = env.reset(TensorDict({"_reset": reset_rows.view(-1, 1)}, batch_size=env.batch_size))
-        # Build next obs by merging reset obs into step output
-        next_td = _merge_rows(next_obs.clone(), reset_td, reset_rows)
-    else:
-        next_td = next_obs
-    return step_td, next_td
-
-
 # ------------------------------------------------------------
-# 1) Policy evaluation — single batched env
+# Policy evaluation — single batched env
 # ------------------------------------------------------------
 
 @torch.inference_mode()
@@ -121,43 +39,47 @@ def evaluate_policy(
     *,
     n_eval_episodes: Optional[int] = None,
     target_episodes: Optional[Sequence[int]] = None,
-    deterministic: bool = True,   # kept for API symmetry; use inside your actor if needed
-    track_logprobs: bool = False, # left in for easy toggling; not required for ranking
-    collect_action_stats: bool = False,  # Track action counts for first episode per slot
+    deterministic: bool = True,
+    track_logprobs: bool = False,
+    collect_action_stats: bool = False,
     info_callback: Optional[Callable[[TensorDict], None]] = None,
     verbose: int = 0,
 ) -> Dict[str, torch.Tensor]:
     """
     Evaluate a policy on a single TorchRL env with internal batch dimension.
     Uses step_and_maybe_reset semantics (no invalid-action patching).
+    Returns rewards/lengths/logps/success/mask tensors shaped [B, T].
     """
     device = getattr(env, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     B = infer_batch_size(env)
-    targets, T, total = compute_episode_targets(B, n_eval_episodes, target_episodes)
-    targets = targets.to(device)  # Move targets to device
+    if target_episodes is not None:
+        targets = torch.as_tensor(target_episodes, dtype=torch.long, device=device)
+        if targets.numel() != B:
+            # Pad or trim to match batch size
+            if targets.numel() < B:
+                pad = torch.zeros(B - targets.numel(), dtype=torch.long, device=device)
+                targets = torch.cat([targets, pad], dim=0)
+            else:
+                targets = targets[:B]
+    else:
+        targets = torch.full((B,), n_eval_episodes if n_eval_episodes is not None else 1, dtype=torch.long, device=device)
 
     actor_was_training = actor.training
     actor.eval()
     verbose_level = max(int(verbose), 1 if DEBUG_EVAL else 0)
 
-    # Output buffers
+    T = int(targets.max().item()) if targets.numel() > 0 else 0
     rewards  = torch.zeros((B, T), dtype=torch.float32, device=device)
     lengths  = torch.zeros((B, T), dtype=torch.long,   device=device)
     logps    = torch.zeros((B, T), dtype=torch.float32, device=device)
     success  = torch.zeros((B, T), dtype=torch.float32, device=device)
     mask     = torch.zeros((B, T), dtype=torch.bool,    device=device)
 
-    # Per-slot accumulators
     ep_count   = torch.zeros(B, dtype=torch.long, device=device)
     ep_return  = torch.zeros(B, dtype=torch.float32, device=device)
     ep_length  = torch.zeros(B, dtype=torch.long,   device=device)
     ep_logprob = torch.zeros(B, dtype=torch.float32, device=device)
-    
-    # Action statistics tracking (for first episode only per slot)
-    action_counts = [] if collect_action_stats else None
-    episode_completed = [False] * B if collect_action_stats else None
 
-    # Full reset to start
     td = env.reset().to(device, non_blocking=True)
 
     def _get_step_value(step_td: TensorDict, key: str, default: torch.Tensor) -> torch.Tensor:
@@ -169,17 +91,12 @@ def evaluate_policy(
         return default
 
     if verbose_level > 0:
-        init_done_vals = _get_step_value(
-            td,
-            "done",
-            torch.zeros(B, 1, dtype=torch.bool, device=device),
-        ).view(-1).tolist()
-        print("[evaluate_policy] initial done flags:", init_done_vals)
+        init_done = _get_step_value(td, "done", torch.zeros(B, 1, dtype=torch.bool, device=device)).view(-1).tolist()
+        print("[evaluate_policy] initial done flags:", init_done)
 
     prev_done = torch.zeros(B, dtype=torch.bool, device=device)
 
     while bool((ep_count < targets).any()):
-        # 1) Policy
         actor_device = next(actor.parameters(), torch.zeros((), device=device)).device if isinstance(actor, nn.Module) else device
         policy_td = td.clone().to(actor_device)
         out = actor(policy_td)
@@ -187,118 +104,87 @@ def evaluate_policy(
         action = policy_out.get("action").view(-1).long().to(device)
         action_td = TensorDict({"action": action.to(device)}, batch_size=env.batch_size).to(device)
 
-        log_probs = policy_out.get("sample_log_prob", torch.zeros(B, device=device)).view(-1)
-        # 2) Step + maybe partial reset ONLY where we still need episodes
+        log_probs = policy_out.get("sample_log_prob", torch.zeros(B, device=device)).view(-1).to(device)
         done_prev = prev_done
         need_more = ep_count < targets
-        if verbose_level > 1:
-            print(
-                "[evaluate_policy] pre-step done=",
-                done_prev.tolist(),
-                "need_more=",
-                need_more.tolist(),
-            )
-        reset_rows = done_prev & need_more  # rows that finished an episode and still need work
-        if verbose_level > 1 and reset_rows.any():
-            print(
-                "[evaluate_policy] reset_rows=",
-                reset_rows.nonzero(as_tuple=False).view(-1).tolist(),
-                "ep_count=",
-                ep_count.tolist(),
-                "targets=",
-                targets.tolist(),
-            )
+        reset_rows = done_prev & need_more
 
         step_td, next_td = step_and_maybe_reset(env, action_td, reset_rows=reset_rows)
+
+        rew = _get_step_value(step_td, "reward", torch.zeros(B, device=device)).view(-1)
+        done_curr = _get_step_value(step_td, "done", torch.zeros(B, 1, dtype=torch.bool, device=device)).view(-1)
+        success_curr = _get_step_value(step_td, "is_success", torch.zeros(B, 1, dtype=torch.bool, device=device)).view(-1)
+        length_curr = _get_step_value(step_td, "length", torch.zeros(B, 1, device=device, dtype=torch.long)).view(-1)
+
+        ep_return += rew
+        ep_length += 1
+        ep_logprob += log_probs
+
+        finished_rows = done_curr & need_more
+        if finished_rows.any():
+            rows = finished_rows.nonzero(as_tuple=False).view(-1)
+            curr_ep_idx = ep_count[rows]
+            rewards[rows, curr_ep_idx] = ep_return[rows]
+            lengths[rows, curr_ep_idx] = ep_length[rows]
+            logps[rows, curr_ep_idx] = ep_logprob[rows]
+            success[rows, curr_ep_idx] = success_curr[rows].float()
+            mask[rows, curr_ep_idx] = True
+            ep_count[rows] += 1
+            ep_return[rows] = 0
+            ep_length[rows] = 0
+            ep_logprob[rows] = 0
+        prev_done = done_curr
+        td = next_td.to(device)
+
         if info_callback is not None:
             info_callback(step_td)
-
-        # 3) Accumulate
-        r = _get_step_value(step_td, "reward", torch.zeros(B, 1, device=device)).view(-1)
-        done_curr = _get_step_value(
-            step_td,
-            "done",
-            torch.zeros(B, 1, dtype=torch.bool, device=device),
-        ).view(-1).bool()
-        if verbose_level > 1:
-            print("[evaluate_policy] post-step done=", done_curr.tolist())
-        suc = _get_step_value(step_td, "is_success", torch.zeros(B, device=device)).view(-1).float()
-
-        active = ep_count < targets
-        ep_return[active] += r[active]
-        ep_length[active] += 1
-        if track_logprobs:
-            ep_logprob += log_probs * active
-        
-        # Collect action statistics for first episode only per slot
-        if collect_action_stats:
-            action_mask = policy_td.get("action_mask")
-            if action_mask is not None:
-                num_actions = action_mask.sum(dim=-1).cpu().numpy()
-                for i in range(B):
-                    # Only collect if: (1) first episode not completed AND (2) active AND (3) has valid actions
-                    if not episode_completed[i] and active[i] and num_actions[i] > 0:
-                        action_counts.append(int(num_actions[i]))
-
-
-        # Close finished episodes (only for active rows)
-        finished_now = done_curr & active
-        if finished_now.any():
-            if DEBUG_EVAL:
-                print(
-                    "[evaluate_policy] finished_rows=",
-                    finished_now.nonzero(as_tuple=False).view(-1).tolist(),
-                    "ep_count=",
-                    ep_count.tolist(),
-                    "targets=",
-                    targets.tolist(),
-                )
-            rows = finished_now.nonzero(as_tuple=False).view(-1)
-            cols = ep_count[rows]
-            rewards[rows, cols] = ep_return[rows]
-            lengths[rows, cols] = ep_length[rows]
-            success[rows, cols] = suc[rows]
-            mask[rows, cols]    = True
-            logps[rows, cols] = ep_logprob[rows]
-
-            ep_return[rows] = 0.0
-            ep_length[rows] = 0
-            ep_count[rows]  += 1
-            ep_logprob[rows] = 0.0
-            
-            # Mark first episode as completed for these slots
-            if collect_action_stats:
-                for idx in rows.tolist():
-                    if cols[rows == idx].item() == 0:  # First episode (col 0)
-                        episode_completed[idx] = True
-
-        td = next_td  # observation for next step
-        prev_done = done_curr.clone()
-        prev_done[reset_rows] = False
-
-        if not (ep_count < targets).any():
-            break
 
     if actor_was_training:
         actor.train()
 
-    result = {
+    return {
         "rewards": rewards.cpu(),
         "lengths": lengths.cpu(),
         "logps":   logps.cpu(),
         "success": success.cpu(),
         "mask":    mask.cpu(),
     }
-    
-    # Add action statistics if collected
-    if collect_action_stats and action_counts:
-        result["action_counts"] = action_counts
-    
-    return result
+
+
+def step_and_maybe_reset(
+    env: EnvBase,
+    action_td: TensorDict,
+    *,
+    reset_rows: torch.Tensor,
+) -> Tuple[TensorDict, TensorDict]:
+    step_td = env.step(action_td)
+    next_obs = step_td.get("next", step_td)
+    if reset_rows.any():
+        reset_td = env.reset(TensorDict({"_reset": reset_rows.view(-1, 1)}, batch_size=env.batch_size))
+        next_td = _merge_rows(next_obs.clone(), reset_td, reset_rows)
+    else:
+        next_td = next_obs
+    return step_td, next_td
+
+
+def _merge_rows(dst: TensorDict, src: TensorDict, mask: torch.Tensor) -> TensorDict:
+    mask = mask.view(-1)
+    for k in src.keys():
+        if k not in dst.keys():
+            dst.set(k, src.get(k))
+            continue
+        dv, sv = dst.get(k), src.get(k)
+        if dv.shape[0] == mask.shape[0]:
+            merged = dv.clone()
+            merged[mask] = sv[mask]
+            dst.set(k, merged)
+        else:
+            dst.set(k, sv)
+    return dst
 
 
 # ------------------------------------------------------------
-# 2) Ranking metrics — handles ragged negatives (corrupt_all)
+# Ranking metrics — SB3-style aggregation
 # ------------------------------------------------------------
 
 @torch.inference_mode()
@@ -306,32 +192,29 @@ def evaluate_ranking_metrics(
     actor: nn.Module,
     env:   EnvBase,
     *,
-    queries: torch.Tensor,                     # [N, A, D] padded positives
-    sampler: Any,                              # must provide corrupt() and/or corrupt_all()
-    query_depths: Optional[torch.Tensor] = None, # [N] depths for positives
-    n_corruptions: Optional[int] = 10,         # if None -> use corrupt_all (ragged)
+    queries: torch.Tensor,
+    sampler: Any,
+    query_depths: Optional[torch.Tensor] = None,
+    n_corruptions: Optional[int] = 10,
     corruption_modes: Sequence[str] = ("head", "tail"),
     deterministic: bool = True,
     verbose: bool = False,
-    info_callback: Optional[Callable] = None,  # Callback for episode info collection
+    info_callback: Optional[Callable] = None,
 ) -> Dict[str, Any]:
-    """
-    Link-prediction style eval (MRR/Hits@K) on a single batched env.
-
-    Packing per minibatch × corruption mode:
-      - Pin one root to one env slot.
-      - For slot i, run E_i = 1 + (#negatives for that root) episodes.
-      - Provide per-slot lengths to env via set_eval_dataset(..., per_slot_lengths=...).
-      - Provide per-slot episode targets to evaluate_policy(target_episodes=...).
-    """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    B      = infer_batch_size(env)
+    env_device = getattr(env, "_device", None)
+    actor_device = None
+    try:
+        actor_device = next(actor.parameters()).device
+    except StopIteration:
+        actor_device = None
+    device = env_device or actor_device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    B = infer_batch_size(env)
     if queries.ndim == 2:
-        queries = queries.unsqueeze(1)  # [N, 3] -> [N, 1, 3]
+        queries = queries.unsqueeze(1)
     elif queries.ndim != 3:
         raise ValueError(f"Expected queries with 2 or 3 dims, got shape {tuple(queries.shape)}")
-    N      = int(queries.shape[0])
-    A, D   = int(queries.shape[1]), int(queries.shape[2])
+    N = int(queries.shape[0])
+    A, D = int(queries.shape[1]), int(queries.shape[2])
 
     def finalize(ranks: List[int]) -> Dict[str, float]:
         arr = np.asarray(ranks, dtype=np.int64)
@@ -345,172 +228,147 @@ def evaluate_ranking_metrics(
         }
 
     per_mode_ranks: Dict[str, List[int]] = {m: [] for m in corruption_modes}
-
-    if verbose:
-        print(f"[evaluate_ranking_metrics] N={N}, n_corruptions={n_corruptions}, modes={corruption_modes}")
+    episode_records: List[Tuple[bool, str, float, float, float]] = []
 
     actor_was_training = actor.training
     actor.eval()
+    rng = np.random.RandomState(0)
 
     with torch.inference_mode():
         for start in range(0, N, B):
             Q = min(B, N - start)
-            pos = queries[start:start + Q].to(device)   # [Q, A, D]
-            
-            # For single-atom queries (link prediction), squeeze to [Q, 3] for sampler
-            if A == 1 and D == 3:
-                pos_triples = pos.squeeze(1)  # [Q, 3]
-            else:
-                pos_triples = pos
+            pos = queries[start:start + Q].to(device)
+            pos_triples = pos.squeeze(1) if (A == 1 and D == 3) else pos
 
             for mode in corruption_modes:
-                # ----------------------------
-                # Negatives (fixed-K or ragged)
-                # ----------------------------
+                # negatives
                 if n_corruptions is None:
-                    if not hasattr(sampler, "corrupt_all"):
-                        raise NotImplementedError("n_corruptions=None requires sampler.corrupt_all(...)")
-                    
-                    # corrupt_all returns (heads_list, tails_list) where each list contains [K_i, 3] tensors
                     heads_list, tails_list = sampler.corrupt_all(pos_triples, mode=mode)
-                    
-                    # Extract the appropriate list based on mode
-                    if mode == 'head':
-                        raw_lists = heads_list
-                    elif mode == 'tail':
-                        raw_lists = tails_list
-                    else:
-                        raise ValueError(f"Unsupported mode for corrupt_all: {mode}")
-                    
-                    # Convert [K_i, 3] to [K_i, 1, 3] to match padded format if needed
-                    if A == 1 and D == 3:
-                        ragged_lists = [t.unsqueeze(1).to(device) for t in raw_lists]  # [K_i, 3] -> [K_i, 1, 3]
-                    else:
-                        ragged_lists = [t.to(device) for t in raw_lists]
+                    raw_lists = heads_list if mode == "head" else tails_list
+                    ragged_lists = [t.unsqueeze(1).to(device) if (A == 1 and D == 3) else t.to(device) for t in raw_lists]
                     lengths_i = [int(t.shape[0]) for t in ragged_lists]
                 else:
                     K = int(n_corruptions)
-                    neg = sampler.corrupt(pos_triples, num_negatives=K, mode=mode).to(device)  # [Q, K, 3]
-                    # Convert [Q, K, 3] to [Q, K, 1, 3] to match padded format if needed
+                    neg = sampler.corrupt(pos_triples, num_negatives=K, mode=mode).to(device)
                     if A == 1 and D == 3:
-                        neg = neg.unsqueeze(2)  # [Q, K, 3] -> [Q, K, 1, 3]
+                        neg = neg.unsqueeze(2)
                     ragged_lists = [neg[i] for i in range(Q)]
                     lengths_i = [K for _ in range(Q)]
 
-                # ----------------------------
-                # Build per-slot sequences
-                # ----------------------------
-                # For each slot i: sequence = [positive] + all its negatives
-                per_slot_lengths = [1 + li for li in lengths_i]          # E_i
-                # Flatten as concatenation of per-slot sequences (slot 0 block, slot 1 block, ...)
+                per_slot_lengths = [1 + li for li in lengths_i]
+                slot_starts = []
+                running = 0
+                for li in per_slot_lengths:
+                    slot_starts.append(running)
+                    running += li
                 flat_list = []
                 for i in range(Q):
-                    flat_list.append(pos[i].unsqueeze(0))                # [1, A, D]
+                    flat_list.append(pos[i].unsqueeze(0))
                     if per_slot_lengths[i] > 1:
-                        flat_list.append(ragged_lists[i])                # [K_i, A, D]
-                flat_queries = torch.cat(flat_list, dim=0)               # [sum_i E_i, A, D]
-                flat_labels  = torch.cat([
-                    torch.cat([
-                        torch.tensor([1], dtype=torch.long, device=device),
-                        torch.zeros(per_slot_lengths[i]-1, dtype=torch.long, device=device)
-                    ]) for i in range(Q)
-                ])  # [sum_i E_i]
+                        flat_list.append(ragged_lists[i])
+                flat_queries = torch.cat(flat_list, dim=0)
+                flat_labels = torch.cat([
+                    torch.cat([torch.tensor([1], dtype=torch.long, device=device),
+                               torch.zeros(per_slot_lengths[i]-1, dtype=torch.long, device=device)])
+                    for i in range(Q)
+                ])
 
-                # Depths
                 if query_depths is not None:
                     pos_depths = query_depths[start:start + Q].to(device)
                     depth_list = []
                     for i in range(Q):
                         d = pos_depths[i]
-                        # Positive gets d
                         pos_d = torch.tensor([d], dtype=torch.long, device=device)
-                        # Negatives get -1
                         neg_d = torch.full((per_slot_lengths[i] - 1,), -1, dtype=torch.long, device=device)
                         depth_list.append(torch.cat([pos_d, neg_d]))
                     flat_depths = torch.cat(depth_list, dim=0)
                 else:
                     flat_depths = torch.full((flat_queries.shape[0],), -1, dtype=torch.long, device=device)
 
-                # ----------------------------
-                # Wire dataset into the env
-                # ----------------------------
-                # Provide per-slot lengths for the first Q slots; others are 0.
-                slot_lengths = torch.tensor(
-                    per_slot_lengths + [0] * (B - Q),
-                    dtype=torch.long, device=device
+                slot_lengths = torch.tensor(per_slot_lengths + [0] * (B - Q), dtype=torch.long, device=device)
+                env.set_eval_dataset(
+                    queries=flat_queries,
+                    labels=flat_labels,
+                    query_depths=flat_depths,
+                    per_slot_lengths=slot_lengths,
                 )
-                if hasattr(env, "set_eval_dataset") and callable(getattr(env, "set_eval_dataset")):
-                    env.set_eval_dataset(
-                        queries=flat_queries,
-                        labels=flat_labels,
-                        query_depths=flat_depths,
-                        per_slot_lengths=slot_lengths,
-                    )
-                else:
-                    raise RuntimeError("Your env must implement set_eval_dataset(...). See snippet below.")
 
-                # Targets = per-slot episode quotas (same as per-slot lengths)
                 targets = slot_lengths.clone().tolist()
-
-                # ----------------------------
-                # Run evaluation
-                # ----------------------------
                 out = evaluate_policy(
                     actor,
                     env,
                     target_episodes=targets,
                     deterministic=deterministic,
-                    track_logprobs=True,  # Required for ranking
+                    track_logprobs=True,
                     info_callback=info_callback,
                 )
-                # succ = out["success"].to(device)   # [B, T] (unused for ranking now)
-                # lens = out["lengths"].to(device)   # [B, T] (unused for ranking now)
-                logps_out = out["logps"].to(device)  # [B, T]
-                msk  = out["mask"].to(device)      # [B, T]
-                Tmax = logps_out.shape[1]
+                logps_out = out["logps"].to(device)
+                msk = out["mask"].to(device)
+                success = out.get("success")
+                lengths_out = out.get("lengths")
+                rewards_out = out.get("rewards")
 
-                # Only first Q slots matter; each has E_i valid columns
+                labels_matrix = torch.zeros_like(logps_out, dtype=torch.bool)
+                for i, Ei in enumerate(per_slot_lengths):
+                    if Ei == 0:
+                        continue
+                    labels_matrix[i, 0] = True
+                    labels_matrix[i, 1:Ei] = False
+
+                valid_mask = torch.zeros_like(msk, dtype=torch.bool)
+                for i, Ei in enumerate(per_slot_lengths):
+                    if Ei == 0:
+                        continue
+                    valid_mask[i, : min(Ei, valid_mask.shape[1])] = True
+
+                Tmax = logps_out.shape[1]
+                if success is not None:
+                    success_mask = success.to(device).bool() & labels_matrix
+                else:
+                    success_mask = labels_matrix
+
+                logps_out = logps_out.clone()
+                logps_out[~success_mask] -= 100.0
+
                 ranks_this = []
                 for i in range(Q):
                     Ei = per_slot_lengths[i]
                     cols = slice(0, min(Ei, Tmax))
-                    
                     l_i = logps_out[i, cols].cpu().numpy()
                     m_i = msk[i, cols].cpu().numpy()
-                    
-                    # Ranking logic from sb3/model_eval.py
-                    # Use log_probs for ranking, with random tie-breaking
                     lp_batch = np.where(m_i, l_i, -np.inf)
-                    random_keys = np.random.rand(*lp_batch.shape)
-                    
-                    # lexsort sorts ascending. We want descending sort by logprob.
-                    # So we sort by (-lp, -random).
-                    # This puts largest lp (most positive) last? No.
-                    # lexsort((secondary, primary))
-                    # We want largest lp first.
-                    # If we sort by (-lp), the smallest (most negative) comes first.
-                    # Wait. -lp makes large lp small (negative).
-                    # So sorting ascending by -lp puts largest lp (most negative -lp) first.
-                    # Yes.
+                    random_keys = rng.rand(*lp_batch.shape)
                     sorted_indices = np.lexsort((-random_keys, -lp_batch))
-                    
-                    # Find rank of the positive (index 0)
-                    # sorted_indices is the permutation.
-                    # We want to find where 0 ended up.
                     rank = np.where(sorted_indices == 0)[0][0] + 1
                     ranks_this.append(rank)
 
                 per_mode_ranks[mode].extend(ranks_this)
 
+                if lengths_out is not None and rewards_out is not None:
+                    lengths_out = lengths_out.to(device)
+                    rewards_out = rewards_out.to(device)
+                    for i in range(Q):
+                        base_idx = slot_starts[i] if i < len(slot_starts) else 0
+                        depth_val = int(flat_depths[base_idx].item()) if per_slot_lengths[i] > 0 else -1
+                        for j in range(min(per_slot_lengths[i], lengths_out.shape[1])):
+                            if not valid_mask[i, j]:
+                                continue
+                            is_pos = bool(labels_matrix[i, j].item())
+                            depth_key = _format_depth_key(depth_val if is_pos else -1)
+                            episode_records.append((
+                                is_pos,
+                                depth_key,
+                                float(lengths_out[i, j].item()),
+                                float(rewards_out[i, j].item()),
+                                float(success_mask[i, j].item() if success_mask is not None else 0.0),
+                            ))
+
                 if verbose:
-                    print(f"[batch {start//B:03d} | mode={mode}] Q={Q} "
-                          f"mean_rank={np.mean(ranks_this):.2f}  "
-                          f"MRR={np.mean(1/np.asarray(ranks_this)):.3f}")
+                    print(f"[batch {start//B:03d} | mode={mode}] Q={Q} mean_rank={np.mean(ranks_this):.2f}  MRR={np.mean(1/np.asarray(ranks_this)):.3f}")
 
     if actor_was_training:
         actor.train()
 
-    # aggregate metrics
     per_mode = {m: finalize(per_mode_ranks[m]) for m in corruption_modes}
     agg = {"MRR": 0.0, "Hits@1": 0.0, "Hits@3": 0.0, "Hits@10": 0.0}
     for m in corruption_modes:
@@ -519,4 +377,46 @@ def evaluate_ranking_metrics(
     for k in agg:
         agg[k] /= float(len(corruption_modes)) if corruption_modes else 1.0
     agg["per_mode"] = per_mode
+    agg["_mrr"] = agg["MRR"]
+
+    if episode_records:
+        lengths_all = [e[2] for e in episode_records]
+        rewards_all = [e[3] for e in episode_records]
+        succ_all = [e[4] for e in episode_records]
+        if lengths_all:
+            agg["length mean +/- std"] = _format_stat_string(np.mean(lengths_all), np.std(lengths_all), len(lengths_all))
+            agg["ep_len_mean"] = float(np.mean(lengths_all))
+        if rewards_all:
+            agg["reward_overall"] = _format_stat_string(np.mean(rewards_all), np.std(rewards_all), len(rewards_all))
+            agg["ep_rew_mean"] = float(np.mean(rewards_all))
+        if succ_all:
+            agg["success_rate"] = float(np.mean(succ_all))
+
+        for lbl_bool, lbl_key in [(True, "pos"), (False, "neg")]:
+            items = [e for e in episode_records if e[0] == lbl_bool]
+            lens = [e[2] for e in items]
+            rews = [e[3] for e in items]
+            succs = [e[4] for e in items]
+            if lens:
+                agg[f"len_{lbl_key}"] = _format_stat_string(np.mean(lens), np.std(lens), len(lens))
+            if succs:
+                agg[f"proven_{lbl_key}"] = _format_stat_string(np.mean(succs), np.std(succs), len(succs))
+            if rews:
+                agg[f"reward_label_{lbl_key}"] = _format_stat_string(np.mean(rews), np.std(rews), len(rews))
+
+        depth_buckets: Dict[Tuple[str, str], List[Tuple[float, float, float]]] = {}
+        for is_pos, depth_key, length_val, reward_val, succ_val in episode_records:
+            lbl_key = "pos" if is_pos else "neg"
+            depth_buckets.setdefault((depth_key, lbl_key), []).append((length_val, reward_val, succ_val))
+        for (depth_key, lbl_key), vals in depth_buckets.items():
+            lens = [v[0] for v in vals]
+            rews = [v[1] for v in vals]
+            succs = [v[2] for v in vals]
+            if lens:
+                agg[f"len_d_{depth_key}_{lbl_key}"] = _format_stat_string(np.mean(lens), np.std(lens), len(lens))
+            if succs:
+                agg[f"proven_d_{depth_key}_{lbl_key}"] = _format_stat_string(np.mean(succs), np.std(succs), len(succs))
+            if rews:
+                agg[f"reward_d_{depth_key}_{lbl_key}"] = _format_stat_string(np.mean(rews), np.std(rews), len(rews))
+
     return agg

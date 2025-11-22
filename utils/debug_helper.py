@@ -156,8 +156,13 @@ class DebugHelper:
             # Include action mask info if provided
             if action_mask is not None:
                 mask_for_idx = action_mask[idx].tolist()
-                valid_actions = sum(1 for m in mask_for_idx if m)
-                self._log(level, f"    Action mask: valid actions: {valid_actions}")
+                valid_indices = [i for i, m in enumerate(mask_for_idx) if m]
+                preview = valid_indices[: min(len(valid_indices), 10)]
+                self._log(
+                    level,
+                    f"    Action mask: valid actions: {len(valid_indices)}"
+                    f"{' -> ' + str(preview) if preview else ''}",
+                )
 
             # Include done/rewards info if provided
             if done is not None:

@@ -22,6 +22,7 @@ from sb3_callbacks import (
     AnnealingTarget,
     _EvalDepthRewardTracker
 )
+from sb3_callbacks import SB3RolloutLogger
 from sb3_custom_dummy_env import create_environments
 from sb3_dataset import DataHandler
 from sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
@@ -33,6 +34,7 @@ from stable_baselines3.common.callbacks import (
     CallbackList,
     StopTrainingOnNoModelImprovement,
 )
+from model_new import get_sb3_policy_state_dict_aligned
 
 
 def _attach_kge_to_policy(
@@ -89,9 +91,8 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         if args.n_eval_queries is None
         else min(args.n_eval_queries, len(dh.valid_queries))
     )
-    assert (
-        args.n_eval_queries > 1
-    ), "Number of evaluation queries must be greater than 1 for callbacks."
+    if args.n_eval_queries <= 1 and not getattr(args, "allow_small_eval", False):
+        raise AssertionError("Number of evaluation queries must be greater than 1 for callbacks.")
     args.n_test_queries = (
         len(dh.test_queries)
         if args.n_test_queries is None
@@ -118,10 +119,12 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         index_manager=im,
         corruption_scheme=args.corruption_scheme,
         device=device,
+        corruption_mode=args.corruption_mode,
     )
     sampler = dh.sampler
 
     # Embedder
+    torch.manual_seed(args.seed_run_i)
     embedder_getter = get_embedder(args, dh, im, device)
     embedder = embedder_getter.embedder
 
@@ -213,6 +216,13 @@ def _build_callbacks(
     model_name: str,
 ):
     callbacks = []
+    # Rollout progress + rollout metrics (console)
+    rollout_cb = SB3RolloutLogger(
+        total_steps=args.n_steps * args.n_envs,
+        n_envs=args.n_envs,
+        update_interval=max(1, (args.n_steps * args.n_envs) // 5),
+        verbose=True,
+    )
     reward_threshold_cb = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
     # timing_callback = EpochTimingCallback(verbose=1)
     # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=7, verbose=1)
@@ -264,7 +274,7 @@ def _build_callbacks(
 
     depth_stats_cb = DepthProofStatsCallback(prefix="rollout", track_negative=True)
 
-    callbacks.extend([eval_cb, train_ckpt_cb, depth_stats_cb])
+    callbacks.extend([rollout_cb, eval_cb, train_ckpt_cb, depth_stats_cb])
 
     # Add annealing callbacks if configured
     annealing_specs = getattr(args, "annealing_specs", {}) or {}
@@ -383,7 +393,7 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
         "data": data_handler.test_queries,
         "sampler": sampler,
         "n_corruptions": args.test_neg_samples,
-        "verbose": 2,
+        "verbose": 0,
         "kge_inference_engine": kge_engine,
         "evaluation_mode": eval_mode,
         "plot": args.plot,
@@ -497,7 +507,23 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         ent_coef=args.ent_coef,
         clip_range=args.clip_range,
         gamma=args.gamma,
-        policy_kwargs=policy_kwargs)
+        policy_kwargs=policy_kwargs,
+        trace_dir=getattr(args, "trace_dir", None),
+        trace_prefix="sb3",
+    )
+    # Align initial weights with batched policy initialization
+    total_vocab_size = getattr(index_manager, "total_vocab_size", index_manager.variable_end_index + 1)
+    aligned_sd = get_sb3_policy_state_dict_aligned(
+        embedder=embedder,
+        padding_atoms=args.padding_atoms,
+        padding_states=args.padding_states,
+        max_arity=index_manager.max_arity,
+        total_vocab_size=total_vocab_size,
+        init_seed=args.seed,
+    )
+    model.policy.load_state_dict(aligned_sd)
+    if getattr(args, "trace_dir", None):
+        print(f"[TRACE] SB3 trace recorder: {model.trace_recorder}")
     
     # Optional policy KGE wiring
     _attach_kge_to_policy(
@@ -549,7 +575,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         args,
     )
 
-    model.policy = torch.compile(model.policy, mode="reduce-overhead", fullgraph=False)
+    if getattr(args, "use_compile", False):
+        model.policy = torch.compile(model.policy, mode="reduce-overhead", fullgraph=False)
     model.policy.set_training_mode(False)
 
     # ------- Evaluate -------

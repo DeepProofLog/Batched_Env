@@ -453,7 +453,8 @@ class Sampler:
                     vals = torch.arange(1, self.num_entities + 1, device=device, dtype=torch.long)
                     vals = vals[vals != h]
                 H = torch.stack([torch.full_like(vals, r), vals, torch.full_like(vals, t)], dim=-1)
-                heads_list.append(H)
+                keep = self._filter_keep_mask(H)
+                heads_list.append(H[keep])
             
             if mode in ('tail', 'both'):
                 if use_domain and r < len(self.allowed_tails_per_rel) and self.allowed_tails_per_rel[r] is not None:
@@ -464,7 +465,8 @@ class Sampler:
                     vals = torch.arange(1, self.num_entities + 1, device=device, dtype=torch.long)
                     vals = vals[vals != t]
                 T = torch.stack([torch.full_like(vals, r), torch.full_like(vals, h), vals], dim=-1)
-                tails_list.append(T)
+                keep = self._filter_keep_mask(T)
+                tails_list.append(T[keep])
 
         if mode == 'head':
             return heads_list, None

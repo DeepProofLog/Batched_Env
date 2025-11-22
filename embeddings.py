@@ -1190,13 +1190,9 @@ class EmbedderLearnable(nn.Module):
         # Handle image constants
         self.n_image_constants = n_image_constants
         num_regular_constants = n_constants + n_vars - n_image_constants
-        
-        # Calculate total vocabulary size for embedding table
-        # Need to accommodate: padding (0), constants (1..n_constants), 
-        # template vars (n_constants+1..n_constants+template_var_no),
-        # runtime vars (runtime_var_start..runtime_var_end)
-        # The embedding table should be sized to the max index + 1
-        total_constant_vocab = n_constants + n_vars + 1  # +1 for padding at index 0
+        # Build vocabulary size directly from counts; ConstantEmbeddings adds
+        # its own padding slot, so we do not offset here.
+        total_constant_vocab = n_constants + n_vars
         
         # Initialize embedder
         self.constant_embedder = ConstantEmbeddings(
@@ -1214,7 +1210,7 @@ class EmbedderLearnable(nn.Module):
         )
 
         self.atom_embedder = Emb_Atom_Factory(
-            name=atom_embedder, #if n_image_constants == 0 else 'concat',
+            name=atom_embedder,  # if n_image_constants == 0 else 'concat',
             embedding_dim=atom_embedding_size,
             max_arity=max_arity,
             regularization=kge_regularization,
@@ -1230,6 +1226,8 @@ class EmbedderLearnable(nn.Module):
             dropout_rate=kge_dropout_rate,
             device=device
         )
+        # Expose a consistent dimensionality attribute used elsewhere
+        self.embed_dim = atom_embedding_size
         
         # Move entire module to device
         self.to(device)   
@@ -1298,19 +1296,15 @@ class get_embedder():
                         constant_images_no, device):
 
         if args.learn_embeddings:
-            # Calculate the actual maximum indices to size embedding tables correctly
+            # Calculate vocabulary sizes directly from index ranges
             max_constant_idx = max(constant_str2idx.values()) if constant_str2idx else constant_no
             max_predicate_idx = max(predicate_str2idx.values()) if predicate_str2idx else predicate_no
-            max_var_idx = runtime_var_end_index
-            
-            # Total constant vocabulary includes constants + all variables
-            total_constant_vocab = max(max_constant_idx, max_var_idx) + 1
-            total_predicate_vocab = max_predicate_idx + 1
+            n_vars = max(0, runtime_var_end_index - max_constant_idx) if runtime_var_end_index is not None else 0
             
             return EmbedderLearnable(
-                n_constants=total_constant_vocab - 1,  # -1 because ConstantEmbeddings adds +1
-                n_predicates=total_predicate_vocab - 1,  # -1 because PredicateEmbeddings adds +1
-                n_vars=0,  # Already included in total_constant_vocab
+                n_constants=max_constant_idx,
+                n_predicates=max_predicate_idx,
+                n_vars=n_vars,
                 max_arity=data_handler.max_arity,
                 padding_atoms = args.padding_atoms,
                 atom_embedder=args.atom_embedder,

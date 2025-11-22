@@ -132,7 +132,7 @@ if __name__ == "__main__":
         'eval_best_metric': 'mrr',
         'plot': False,
         'data_path': './data/',
-        'models_path': 'models/',
+        'models_path': './models/',
         'rules_file': 'rules.txt',
         'facts_file': 'train.txt',
         'use_logger': True,

@@ -17,23 +17,81 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_norm
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.callbacks import EvalCallback
+from callbacks import (
+    _format_stat_string as _format_stat_string_shared,
+    _format_depth_key as _format_depth_key_shared,
+    print_formatted_metrics as print_formatted_metrics_shared,
+    RolloutProgressCallback,
+    DetailedMetricsCollector,
+)
 
 
-def _format_depth_key(depth_value: Any) -> str:
-    """Normalize depth IDs so metrics share consistent naming."""
-    if depth_value in (None, -1):
-        return "unknown"
-    try:
-        return str(int(depth_value))
-    except (TypeError, ValueError):
-        return "unknown"
+# Reuse shared formatting helpers for consistent logging
+_format_depth_key = _format_depth_key_shared
+_format_stat_string = _format_stat_string_shared
 
 
-def _format_stat_string(mean: Optional[float], std: Optional[float], count: int) -> str:
-    """Return metric display as 'mean +/- std (count)' with fixed precision."""
-    if mean is None or std is None or count == 0:
-        return "N/A"
-    return f"{mean:.3f} +/- {std:.2f} ({count})"
+class SB3RolloutLogger(BaseCallback):
+    """
+    Adapter that reuses the shared RolloutProgressCallback to print rollout
+    progress in the SB3 training loop.
+    """
+
+    def __init__(self, total_steps: int, n_envs: int, update_interval: int = 25, verbose: bool = True):
+        super().__init__(verbose=0)
+        self.helper = RolloutProgressCallback(
+            total_steps=total_steps,
+            n_envs=n_envs,
+            update_interval=update_interval,
+            verbose=verbose,
+        )
+        self._step_in_rollout = 0
+        self._n_envs = n_envs
+
+    def _on_rollout_start(self) -> None:
+        self._step_in_rollout = 0
+        self.helper.on_rollout_start()
+
+    def _on_step(self) -> bool:
+        # Fired every env step; increment total collected count.
+        self._step_in_rollout += self.training_env.num_envs
+        step_idx = max(0, (self._step_in_rollout // self._n_envs) - 1)
+        self.helper.on_step(step_idx)
+        return True
+
+
+class SB3TrainingMetricsLogger(BaseCallback):
+    """
+    Collect episode stats during rollout and print a concise summary using the
+    shared DetailedMetricsCollector/print_formatted_metrics helpers.
+    """
+
+    def __init__(self, verbose: bool = True):
+        super().__init__(verbose=0)
+        self.collector = DetailedMetricsCollector(collect_detailed=True, verbose=False)
+        self.verbose_print = verbose
+
+    def _on_rollout_start(self) -> None:
+        self.collector.reset()
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos")
+        if infos is not None and isinstance(infos, (list, tuple)):
+            self.collector.accumulate(list(infos))
+        return True
+
+    def _on_rollout_end(self) -> None:
+        if not self.verbose_print:
+            return True
+        metrics = self.collector.compute_metrics()
+        if metrics:
+            print_formatted_metrics_shared(
+                metrics=metrics,
+                prefix="rollout",
+                extra_metrics={},
+                global_step=getattr(self.model, "num_timesteps", None),
+            )
+        return True
 
 
 class CustomEvalCallback(EvalCallback):
@@ -62,7 +120,7 @@ class CustomEvalCallback(EvalCallback):
     :param verbose: Verbosity level: 0 for no output, 1 for indicating information about evaluation results
     :param warn: Passed to ``evaluate_policy`` (warns if ``eval_env`` has not been
         wrapped with a Monitor wrapper)
-    """
+        """
 
     def __init__(
         self,
@@ -77,8 +135,8 @@ class CustomEvalCallback(EvalCallback):
         render: bool = False,
         verbose: int = 1,
         warn: bool = True,
-        name = 'rl_model',
-        ):
+        name: str = "rl_model",
+    ):
 
         super().__init__(
             eval_env=eval_env,
@@ -130,6 +188,9 @@ class CustomEvalCallback(EvalCallback):
 
     def _on_step(self) -> bool:
         continue_training = True
+        # Skip the very first on_step call to avoid immediate eval at n_calls==0
+        if self.n_calls == 0:
+            return True
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
             start = time.time()
             print('---------------evaluation started---------------')
@@ -189,6 +250,19 @@ class CustomEvalCallback(EvalCallback):
                 success_rate = float(np.mean(self._is_success_buffer))
             self.logger.record("eval/success_rate", success_rate)
             self.logger.record("eval/total_timesteps", self.num_timesteps, exclude="tensorboard")
+
+            # Unified formatted console metrics
+            extra_print_metrics = {
+                "reward_overall": overall_reward_display,
+                "length mean +/- std": overall_length_display,
+                "success_rate": success_rate,
+            }
+            extra_print_metrics.update(label_log_entries)
+            extra_print_metrics.update(depth_log_entries)
+            extra_print_metrics.update(success_log_entries)
+            print_formatted_metrics_shared(
+                metrics={}, prefix="eval", extra_metrics=extra_print_metrics, global_step=self.num_timesteps
+            )
 
             # If a new best model is found, save it
             if mean_reward > self.best_mean_reward:
@@ -635,6 +709,8 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
         This method is called by the model after each call to `env.step()`.
         """
         continue_training = True
+        if self.n_calls == 0:
+            return True
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
             start = time.time()
             print('---------------evaluation started---------------')

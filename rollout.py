@@ -274,17 +274,24 @@ class RolloutBuffer:
             
             yield (
                 batch_obs,
-                self.flat_actions[batch_indices].squeeze(-1),  # Remove extra dimension for compatibility
-                self.flat_values[batch_indices],
-                self.flat_log_probs[batch_indices],
-                self.flat_advantages[batch_indices],
-                self.flat_returns[batch_indices],
+                self._format_actions(self.flat_actions[batch_indices]),
+                self.flat_values[batch_indices].squeeze(-1),
+                self.flat_log_probs[batch_indices].squeeze(-1),
+                self.flat_advantages[batch_indices].squeeze(-1),
+                self.flat_returns[batch_indices].squeeze(-1),
             )
             
             start_idx = end_idx
-    
+
     def size(self) -> int:
         """Return current size of buffer."""
         if self.full:
             return self.buffer_size * self.n_envs
         return self.pos * self.n_envs
+
+    @staticmethod
+    def _format_actions(actions: torch.Tensor) -> torch.Tensor:
+        """Match SB3 behavior by squeezing the last dimension when it is singular."""
+        if actions.dim() > 1 and actions.shape[-1] == 1:
+            return actions.squeeze(-1)
+        return actions

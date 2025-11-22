@@ -491,31 +491,29 @@ class DataHandler:
         
         # Calculate exclusion statistics
         exclude_train = len([q for q in self.train_queries if q.predicate not in rules_head_predicates])
-        # exclude_valid = len([q for q in self.valid_queries if q.predicate not in rules_head_predicates])    
-        # exclude_test = len([q for q in self.test_queries if q.predicate not in rules_head_predicates])
+        exclude_valid = len([q for q in self.valid_queries if q.predicate not in rules_head_predicates])
+        exclude_test = len([q for q in self.test_queries if q.predicate not in rules_head_predicates])
         
         # Log exclusion information
         if exclude_train > 0 and self.train_queries:
             print(f"Number of train queries excluded: {exclude_train}. Ratio excluded: {round(exclude_train/len(self.train_queries),3)}")
-        # if exclude_valid > 0 and self.valid_queries:
-        #     print(f"Number of valid queries excluded: {exclude_valid}. Ratio excluded: {round(exclude_valid/len(self.valid_queries),3)}")
-        # if exclude_test > 0 and self.test_queries:
-        #     print(f"Number of test queries excluded: {exclude_test}. Ratio excluded: {round(exclude_test/len(self.test_queries),3)}")
+        if exclude_valid > 0 and self.valid_queries:
+            print(f"Number of valid queries excluded: {exclude_valid}. Ratio excluded: {round(exclude_valid/len(self.valid_queries),3)}")
+        if exclude_test > 0 and self.test_queries:
+            print(f"Number of test queries excluded: {exclude_test}. Ratio excluded: {round(exclude_test/len(self.test_queries),3)}")
         
-        # Filter the queries and keep depth alignment
-        train_filtered = [(q, d) for q, d in zip(self.train_queries, self.train_queries_depths)
-                          if q.predicate in rules_head_predicates]
-        if n_train_queries is not None:
-            train_filtered = train_filtered[:n_train_queries]
-        if train_filtered:
-            self.train_queries, self.train_queries_depths = map(list, zip(*train_filtered))
-        else:
-            self.train_queries, self.train_queries_depths = [], []
+        # Filter the queries and keep depth alignment for each split
+        def _filter_split(queries, depths, limit):
+            filtered = [(q, d) for q, d in zip(queries, depths) if q.predicate in rules_head_predicates]
+            if limit is not None:
+                filtered = filtered[:limit]
+            if filtered:
+                return tuple(map(list, zip(*filtered)))
+            return [], []
 
-        self.valid_queries = self.valid_queries[:n_eval_queries]
-        self.valid_queries_depths = self.valid_queries_depths[:n_eval_queries]
-        self.test_queries = self.test_queries[:n_test_queries]
-        self.test_queries_depths = self.test_queries_depths[:n_test_queries]
+        self.train_queries, self.train_queries_depths = _filter_split(self.train_queries, self.train_queries_depths, n_train_queries)
+        self.valid_queries, self.valid_queries_depths = _filter_split(self.valid_queries, self.valid_queries_depths, n_eval_queries)
+        self.test_queries, self.test_queries_depths   = _filter_split(self.test_queries, self.test_queries_depths, n_test_queries)
 
         self.all_known_triples = self.train_queries + self.valid_queries + self.test_queries
         # self.valid_queries = self.test_queries.copy() # Use test queries as valid queries
