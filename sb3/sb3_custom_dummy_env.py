@@ -14,7 +14,7 @@ from stable_baselines3.common.vec_env.util import dict_to_obs, obs_space_info
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
-from sb3_env import LogicEnv_gym
+from .sb3_env import LogicEnv_gym
 
 def create_environments(args, data_handler, index_manager, kge_engine=None, detailed_eval_env=False):
     """
@@ -25,7 +25,7 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
     env_verbose = getattr(args, "verbose_env", 0)
     prover_verbose = getattr(args, "verbose_prover", 0)
 
-    def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0):
+    def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0, env_id: Optional[int] = None, train_stride: int = 1, use_shared_train_ptr: bool = False):
         def _init():
             env = LogicEnv_gym(
                 index_manager=index_manager,
@@ -48,6 +48,9 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
                 padding_states=args.padding_states,
                 device='cpu',
                 engine=args.engine,
+                train_stride=train_stride,
+                initial_train_idx=env_id or 0,
+                use_shared_train_ptr=use_shared_train_ptr,
                 kge_action=args.kge_action,
                 reward_type=args.reward_type,
                 shaping_beta=args.pbrs_beta,
@@ -71,6 +74,10 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
     eval_env_seeds = rng_eval.integers(0, 2**10, size=args.n_eval_envs)
     callback_env_seeds = rng_callback.integers(0, 2**10, size=1)
 
+    # Reset shared training pointer for string envs to mirror batched round-robin
+    LogicEnv_gym._global_train_ptr = 0
+    LogicEnv_gym._global_train_len = len(data_handler.train_queries)
+
     env_fns = [make_env(
         mode='train',
         seed=int(env_seeds[i]),
@@ -80,6 +87,9 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         facts=facts_set,
         verbose=env_verbose,
         prover_verbose=prover_verbose,
+        env_id=i,
+        train_stride=1,
+        use_shared_train_ptr=True,
     ) for i in range(args.n_envs)]
 
     eval_env_fns = [make_env(

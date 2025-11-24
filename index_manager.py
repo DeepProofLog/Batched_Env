@@ -63,6 +63,7 @@ class IndexManager:
         padding_atoms: int = 10,
         device: Optional[torch.device] = None,
         rules: Optional[List] = None,  # For backward compatibility
+        include_kge_predicates: bool = False,
     ) -> None:
         """
         Initialize IndexManager with vocabulary.
@@ -94,6 +95,13 @@ class IndexManager:
         # Align naming with SB3 (Endf)
         if 'Endf' not in regular_pred_list:
             special_pred_list.append('Endf')
+            
+        # Add KGE predicates to match SB3 behavior
+        if include_kge_predicates:
+            kge_preds = sorted([f"{p}_kge" for p in regular_pred_list])
+            for p in kge_preds:
+                if p not in regular_pred_list:
+                    special_pred_list.append(p)
         
         # Combine: regular predicates first (sorted), then special predicates
         pred_list = regular_pred_list + special_pred_list
@@ -103,6 +111,7 @@ class IndexManager:
         self.idx2constant: List[str] = ["<PAD>"] + const_list
 
         self.predicate_str2idx: Dict[str, int] = {s: i + 1 for i, s in enumerate(pred_list)}
+        print(f"DEBUG [Batched IndexManager]: First 10 predicates: {dict(list(self.predicate_str2idx.items())[:10])}")
         self.idx2predicate: List[str] = ["<PAD>"] + pred_list
 
         # Template vars appear only in rules; we'll allocate lazily when rules are materialized
@@ -157,6 +166,21 @@ class IndexManager:
         # For backward compatibility with old code
         self.constants = set(const_list)
         self.predicates = set(pred_list)
+        
+        # DEBUG: Print first 20 constants to verify ordering
+        const_sample = list(self.constant_str2idx.items())[:20]
+        print(f"[DEBUG IndexManager Batched] First 20 constants:")
+        for const_str, const_idx in const_sample:
+            print(f"  {const_str} -> {const_idx}")
+        
+        # DEBUG: Print variable allocation
+        print(f"[DEBUG IndexManager Batched] Variable allocation:")
+        print(f"  constant_no: {self.constant_no}")
+        print(f"  template_variable_no: {self.template_variable_no}")
+        print(f"  runtime_variable_no: {self.runtime_variable_no}")
+        print(f"  runtime_var_start_index: {self.runtime_var_start_index}")
+        print(f"  runtime_var_end_index: {self.runtime_var_end_index}")
+        
         if rules is not None:
             self.rules = rules
             # Pre-index rules by predicate for unification
@@ -280,10 +304,14 @@ class IndexManager:
             self.predicate_range_map = torch.zeros((self.predicate_no + 1, 2), dtype=torch.int32)
             return
 
-        # Sort by predicate for fast slicing
+        # Sort by (predicate, head, tail) lexicographically for deterministic ordering
         facts_cpu = facts_idx.detach().to("cpu").to(dtype=torch.long)
-        order = torch.argsort(facts_cpu[:, 0], stable=True)
-        facts_sorted = facts_cpu.index_select(0, order)
+        # Create a composite key for lexicographic sorting: pred*V^2 + head*V + tail
+        # where V is large enough to avoid collisions (total_vocab_size)
+        V = self.total_vocab_size
+        sort_keys = facts_cpu[:, 0] * (V ** 2) + facts_cpu[:, 1] * V + facts_cpu[:, 2]
+        order = torch.argsort(sort_keys, stable=True)
+        facts_sorted = facts_cpu[order]
 
         # Build ranges
         pr = torch.zeros((self.predicate_no + 1, 2), dtype=torch.int32)  # include padding row 0
@@ -322,10 +350,12 @@ class IndexManager:
         # SB3 starts fresh variables immediately after constants, regardless of
         # how many template variables appear in the rules. Mirroring that behavior
         # prevents body/head variables from shifting the runtime window.
+        old_start = self.runtime_var_start_index
         new_start = self.constant_no + 1
         if new_start != self.runtime_var_start_index:
             self.runtime_var_start_index = new_start
             self.runtime_var_end_index = self.runtime_var_start_index + self.runtime_variable_no - 1
+            print(f"[DEBUG] Adjusted runtime_var_start: {old_start} -> {new_start} (template_vars={self.template_variable_no})")
 
     def get_stringifier_params(self):
         """Return the parameters needed for atom stringification."""

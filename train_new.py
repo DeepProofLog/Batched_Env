@@ -77,6 +77,8 @@ def _materialize_data_components(args, device, embed_device=None):
         filter_queries_by_rules=getattr(args, "filter_queries_by_rules", True),
     )
     print(f"[DATA] Loaded {len(data_handler.train_queries)} train, {len(data_handler.valid_queries)} valid, {len(data_handler.test_queries)} test queries")
+    print(f"DEBUG: Batched DataHandler n_train_queries={args.n_train_queries}")
+    print(f"DEBUG: Batched DataHandler predicates ({len(data_handler.predicates)}): {sorted(list(data_handler.predicates))}")
 
     print("\n[INDEX] Building index manager...")
     index_manager = IndexManager(
@@ -86,6 +88,7 @@ def _materialize_data_components(args, device, embed_device=None):
         max_arity=data_handler.max_arity,
         padding_atoms=args.padding_atoms,
         device=device,
+        include_kge_predicates=getattr(args, 'kge_action', False),
     )
     print(f"[INDEX] Constants: {index_manager.constant_no}, Predicates: {index_manager.predicate_no}")
 
@@ -110,7 +113,8 @@ def _materialize_data_components(args, device, embed_device=None):
     print(f"[SAMPLER] Initialized with mode: {sampler.default_mode}")
 
     print("\n[EMBEDDER] Creating embedder...")
-    torch.manual_seed(args.seed)
+    # Reseed to align embedder init with SB3 regardless of prior torch usage
+    torch.manual_seed(args.seed_run_i)
     embedder_getter = get_embedder(
         args=args,
         data_handler=data_handler,
@@ -854,6 +858,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     use_compile = False
     
     print("\n[MODEL] Creating policy...")
+    torch.manual_seed(args.seed_run_i)
     hidden_dim = getattr(args, "model_hidden_dim", 128)
     num_layers = getattr(args, "model_num_layers", 8)
     dropout_prob = getattr(args, "model_dropout", 0.2)
@@ -864,15 +869,18 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         num_layers=num_layers,
         dropout_prob=dropout_prob,
         device=device,
-        use_compile=use_compile,
-        use_amp=use_amp,
         padding_atoms=args.padding_atoms,
         padding_states=args.padding_states,
         max_arity=index_manager.max_arity,
         total_vocab_size=index_manager.total_vocab_size,
         init_seed=args.seed,
-        match_sb3_init=True,
+        match_sb3_init=False,
     )
+    torch.save(policy.state_dict(), "batched_init.pt")
+    
+    # Verify weights
+    total_params = sum(p.sum() for p in policy.parameters())
+    print(f"DEBUG: Batched Policy Weight Sum: {total_params.item()}")
     print(f"[MODEL] Policy created on device: {device}")
 
     model_path = _model_dir(args, date)

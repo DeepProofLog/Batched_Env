@@ -19,6 +19,8 @@ import os
 import sys
 root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, root_path)
+# add also the path in sb3 folder
+sys.path.insert(0, os.path.join(root_path, 'sb3'))
 
 import random
 import torch
@@ -56,7 +58,7 @@ def create_default_test_config() -> SimpleNamespace:
         padding_atoms=6,
         padding_states=40,
         max_derived_per_state=40,
-        skip_unary_actions=True,
+        skip_unary_actions=False,
         end_proof_action=False,
         memory_pruning=True,
         use_exact_memory=True,

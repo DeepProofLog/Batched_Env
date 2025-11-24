@@ -414,14 +414,21 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         self.features_extractor_kwargs = kwargs.pop("features_extractor_kwargs", {})
         self._init_kge_settings(kwargs)
         self._init_top_k_settings(kwargs)
+        
+        # Pop custom model args to avoid passing them to super
+        hidden_dim = kwargs.pop('hidden_dim', 128)
+        num_layers = kwargs.pop('num_layers', 8)
+        dropout_prob = kwargs.pop('dropout_prob', 0.2)
 
+        # CRITICAL: Pass net_arch=[] to prevent super().__init__() from creating
+        # default MLP networks that would consume RNG state differently than batched
         super(CustomActorCriticPolicy, self).__init__(
             observation_space,
             action_space,
             lr_schedule,
             features_extractor_class = features_extractor_class,
             share_features_extractor = share_features_extractor,
-            net_arch=net_arch,
+            net_arch=[],  # Empty to prevent default MLP creation
             activation_fn=activation_fn,
             features_extractor_kwargs= self.features_extractor_kwargs,
             *args,
@@ -429,6 +436,33 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         )
         # Disable orthogonal initialization
         self.ortho_init = False
+        print(f"DEBUG: CustomActorCriticPolicy init seed: {torch.initial_seed()}")
+
+        # Initialize CustomNetwork
+        # No need to reset seed again since we prevented default MLPs
+        embed_dim = self.features_extractor.embedding_dim if hasattr(self.features_extractor, 'embedding_dim') else 200
+        self.custom_network = CustomNetwork(
+            embed_dim=embed_dim,
+            last_layer_dim_pi=hidden_dim, # Using hidden_dim as latent dim for consistency
+            last_layer_dim_vf=1,
+            # Pass through kwargs for CustomNetwork specific params if needed, 
+            # but CustomNetwork mainly needs embed_dim and hidden_dim/layers which we can pass directly or via kwargs
+        )
+        # Re-initialize policy and value networks within CustomNetwork with correct params
+        
+        self.custom_network.policy_network = PolicyNetwork(
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout_prob=dropout_prob
+        )
+        self.custom_network.value_network = ValueNetwork(
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout_prob=dropout_prob
+        )
+        self.custom_network.to(self.device)
 
         self._register_special_predicates()
         self._setup_kge_bias_module()
@@ -438,6 +472,47 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             # Get the integer index for the 'Endf' predicate
             self.endf_pred_idx = 7 # this is just temporary, substitute by line below
             # self.endf_pred_idx = self.index_manager.predicate_str2idx.get('Endf', None)
+
+    def forward(self, obs: Dict[str, torch.Tensor], deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass using CustomNetwork.
+        """
+        features = self.extract_features(obs)
+        # CustomNetwork expects tuple of (obs_embeddings, action_embeddings, action_mask)
+        # extract_features returns this tuple directly from CustomCombinedExtractor
+        
+        # Get logits and values
+        logits, values = self.custom_network(features)
+        
+        # Sample actions
+        distribution = self.action_dist.proba_distribution(action_logits=logits)
+        if deterministic:
+            actions = distribution.mode()
+        else:
+            actions = distribution.sample()
+        
+        log_probs = distribution.log_prob(actions)
+        return actions, values, log_probs
+
+    def evaluate_actions(self, obs: Dict[str, torch.Tensor], actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Evaluate actions using CustomNetwork.
+        """
+        features = self.extract_features(obs)
+        logits, values = self.custom_network(features)
+        distribution = self.action_dist.proba_distribution(action_logits=logits)
+        log_probs = distribution.log_prob(actions)
+        entropy = distribution.entropy()
+        return values, log_probs, entropy
+
+    def predict_values(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Predict values using CustomNetwork.
+        """
+        features = self.extract_features(obs)
+        # CustomNetwork.forward returns (logits, values)
+        _, values = self.custom_network(features)
+        return values
 
     def _init_kge_settings(self, kwargs: Dict[str, object]) -> None:
         """Extract and document kwargs related to KGE-assisted policies."""
@@ -1004,108 +1079,108 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
             idx_tensor = torch.tensor(bad_idx, device=actions.device)
             print(f"{prefix} Actions for bad batch entries:", actions[idx_tensor])
 
-    def forward(self, obs: torch.Tensor, deterministic: bool = False, verbose: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Forward pass in actor and critic networks."""
-        del verbose
-        features = self.extract_features(obs)
-        action_context = self._extract_action_context(features)
+    # def forward(self, obs: torch.Tensor, deterministic: bool = False, verbose: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    #     """Forward pass in actor and critic networks."""
+    #     del verbose
+    #     features = self.extract_features(obs)
+    #     action_context = self._extract_action_context(features)
         
-        if self.share_features_extractor:
-            latent_pi, latent_vf = self.mlp_extractor(features)
-        else:
-            pi_features, vf_features = features
-            latent_pi = self.mlp_extractor.forward_actor(pi_features) # (batch_size=n_envs,n_states=1,embedding_dim)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features) # (batch_size=n_envs,n_states=1)
+    #     if self.share_features_extractor:
+    #         latent_pi, latent_vf = self.mlp_extractor(features)
+    #     else:
+    #         pi_features, vf_features = features
+    #         latent_pi = self.mlp_extractor.forward_actor(pi_features) # (batch_size=n_envs,n_states=1,embedding_dim)
+    #         latent_vf = self.mlp_extractor.forward_critic(vf_features) # (batch_size=n_envs,n_states=1)
 
-        special_action_mask = self._build_special_action_mask(obs, action_context)
-        # Get value for the state
-        values = latent_vf # (batch_size=n_envs,n_states=1)
-        # Get action probabilities and create distribution
-        shaped_logits = self._apply_kge_logit_shaping(obs, action_context, latent_pi)
-        action_logits = self._filter_action_logits_top_k(
-            shaped_logits,
-            action_context,
-            protected_action_mask=special_action_mask,
-        )
+    #     special_action_mask = self._build_special_action_mask(obs, action_context)
+    #     # Get value for the state
+    #     values = latent_vf # (batch_size=n_envs,n_states=1)
+    #     # Get action probabilities and create distribution
+    #     shaped_logits = self._apply_kge_logit_shaping(obs, action_context, latent_pi)
+    #     action_logits = self._filter_action_logits_top_k(
+    #         shaped_logits,
+    #         action_context,
+    #         protected_action_mask=special_action_mask,
+    #     )
 
-        distribution = self.action_dist.proba_distribution(action_logits=action_logits)
+    #     distribution = self.action_dist.proba_distribution(action_logits=action_logits)
         
-        # Sample a single action from the distribution
-        actions = distribution.get_actions(deterministic=deterministic)
-        # Get log probability of the chosen action
-        log_prob = distribution.log_prob(actions)
+    #     # Sample a single action from the distribution
+    #     actions = distribution.get_actions(deterministic=deterministic)
+    #     # Get log probability of the chosen action
+    #     log_prob = distribution.log_prob(actions)
 
-        self._debug_log_prob_anomalies(
-            log_prob=log_prob,
-            action_logits=action_logits,
-            prefix="[LogProb]",
-            message="Detected nan/inf during forward.",
-            logits_heading="Corresponding action logits row snapshot:",
-            actions=actions,
-            show_shapes=True,
-            show_actions=True,
-        )
+    #     self._debug_log_prob_anomalies(
+    #         log_prob=log_prob,
+    #         action_logits=action_logits,
+    #         prefix="[LogProb]",
+    #         message="Detected nan/inf during forward.",
+    #         logits_heading="Corresponding action logits row snapshot:",
+    #         actions=actions,
+    #         show_shapes=True,
+    #         show_actions=True,
+    #     )
 
-        if self.enable_kge_action:
-            log_prob = self.get_kge_log_probs(obs, actions, log_prob)
+    #     if self.enable_kge_action:
+    #         log_prob = self.get_kge_log_probs(obs, actions, log_prob)
         
-        if self.inference_second_action:
-            log_prob = self._get_second_best_log_prob(obs, actions, action_logits, distribution, log_prob)
+    #     if self.inference_second_action:
+    #         log_prob = self._get_second_best_log_prob(obs, actions, action_logits, distribution, log_prob)
         
-        return actions, values, log_prob
+    #     return actions, values, log_prob
 
 
-    def evaluate_actions(self, obs: PyTorchObs, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """Evaluate actions according to current policy."""
-        features = self.extract_features(obs)
-        action_context = self._extract_action_context(features)
+    # def evaluate_actions(self, obs: PyTorchObs, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    #     """Evaluate actions according to current policy."""
+    #     features = self.extract_features(obs)
+    #     action_context = self._extract_action_context(features)
         
-        if self.share_features_extractor:
-            latent_pi, latent_vf = self.mlp_extractor(features)
-        else:
-            pi_features, vf_features = features
-            latent_pi = self.mlp_extractor.forward_actor(pi_features)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+    #     if self.share_features_extractor:
+    #         latent_pi, latent_vf = self.mlp_extractor(features)
+    #     else:
+    #         pi_features, vf_features = features
+    #         latent_pi = self.mlp_extractor.forward_actor(pi_features)
+    #         latent_vf = self.mlp_extractor.forward_critic(vf_features)
 
-        # Create action distribution using logits
-        raw_action_logits = self._apply_kge_logit_shaping(obs, action_context, latent_pi)
-        actions_long = actions.long()
-        special_action_mask = self._build_special_action_mask(obs, action_context)
-        action_logits = self._filter_action_logits_top_k(
-            raw_action_logits,
-            action_context,
-            forced_action_indices=actions_long,
-            protected_action_mask=special_action_mask,
-        )
+    #     # Create action distribution using logits
+    #     raw_action_logits = self._apply_kge_logit_shaping(obs, action_context, latent_pi)
+    #     actions_long = actions.long()
+    #     special_action_mask = self._build_special_action_mask(obs, action_context)
+    #     action_logits = self._filter_action_logits_top_k(
+    #         raw_action_logits,
+    #         action_context,
+    #         forced_action_indices=actions_long,
+    #         protected_action_mask=special_action_mask,
+    #     )
 
-        distribution = self.action_dist.proba_distribution(action_logits=action_logits)
+    #     distribution = self.action_dist.proba_distribution(action_logits=action_logits)
         
-        # Get log probability of the given actions
-        log_prob = distribution.log_prob(actions)
-        values = latent_vf
-        entropy = distribution.entropy()
+    #     # Get log probability of the given actions
+    #     log_prob = distribution.log_prob(actions)
+    #     values = latent_vf
+    #     entropy = distribution.entropy()
 
-        self._debug_log_prob_anomalies(
-            log_prob=log_prob,
-            action_logits=action_logits,
-            prefix="[LogProb][Eval]",
-            message="Detected nan/inf when evaluating actions.",
-            logits_heading="Action logits summary for affected rows:",
-        )
+    #     self._debug_log_prob_anomalies(
+    #         log_prob=log_prob,
+    #         action_logits=action_logits,
+    #         prefix="[LogProb][Eval]",
+    #         message="Detected nan/inf when evaluating actions.",
+    #         logits_heading="Action logits summary for affected rows:",
+    #     )
 
-        if self.enable_kge_action:
-            log_prob = self.get_kge_log_probs(obs, actions, log_prob)
+    #     if self.enable_kge_action:
+    #         log_prob = self.get_kge_log_probs(obs, actions, log_prob)
 
-        if self.inference_second_action:
-            log_prob = self._get_second_best_log_prob(obs, actions, action_logits, distribution, log_prob)
+    #     if self.inference_second_action:
+    #         log_prob = self._get_second_best_log_prob(obs, actions, action_logits, distribution, log_prob)
 
-        return values, log_prob, entropy
+    #     return values, log_prob, entropy
 
-    def predict_values(self, obs: PyTorchObs) -> torch.Tensor:
-        """Get estimated values according to current policy."""
-        features = self.extract_features(obs)
-        latent_vf = self.mlp_extractor.forward_critic(features)
-        return latent_vf
+    # def predict_values(self, obs: PyTorchObs) -> torch.Tensor:
+    #     """Get estimated values according to current policy."""
+    #     features = self.extract_features(obs)
+    #     latent_vf = self.mlp_extractor.forward_critic(features)
+    #     return latent_vf
 
     def get_distribution(self, obs: PyTorchObs) -> Distribution:
         """Get current policy distribution given observations."""

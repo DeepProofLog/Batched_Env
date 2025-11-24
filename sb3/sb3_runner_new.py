@@ -57,7 +57,7 @@ def _shared_default_config():
         # Training params
         'seed': 0,
         'seed_run_i': 0,
-        'timesteps_train': 20000, #128 for testing
+        'timesteps_train': 2000, #128 for testing
         'restore_best_val_model': False,
         'load_model': False,
         'save_model': False,
@@ -234,7 +234,13 @@ def main():
     parser.add_argument("--batch_size_env", type=int, default=None, help="Alias for n_envs to ease parity scripts")
     parser.add_argument("--canonical_action_order", type=int, default=int(DEFAULT_CONFIG['canonical_action_order']), help="Deterministically order derived states")
     parser.add_argument("--n_queries", type=int, default=None, help="Limit train/valid/test queries to this number")
+    parser.add_argument("--n_train_queries", type=int, default=None, help="Limit training queries to this number")
+    parser.add_argument("--n_eval_queries", type=int, default=None, help="Limit eval queries to this number")
+    parser.add_argument("--n_test_queries", type=int, default=None, help="Limit test queries to this number")
     parser.add_argument("--trace_dir", type=str, default=None, help="Optional directory to dump rollout traces for parity debugging")
+    parser.add_argument("--train_neg_ratio", type=int, default=DEFAULT_CONFIG['train_neg_ratio'], help="Training negative ratio")
+    parser.add_argument("--eval_neg_samples", type=int, default=DEFAULT_CONFIG['eval_neg_samples'], help="Evaluation negative samples")
+    parser.add_argument("--allow_small_eval", action="store_true", help="Permit eval with <=1 query (parity/debugging)")
     
     args = parser.parse_args()
 
@@ -255,8 +261,17 @@ def main():
         config['n_train_queries'] = args.n_queries
         config['n_eval_queries'] = args.n_queries
         config['n_test_queries'] = args.n_queries
+    if args.n_train_queries is not None:
+        config['n_train_queries'] = args.n_train_queries
+    if args.n_eval_queries is not None:
+        config['n_eval_queries'] = args.n_eval_queries
+    if args.n_test_queries is not None:
+        config['n_test_queries'] = args.n_test_queries
     if args.trace_dir:
         config['trace_dir'] = args.trace_dir
+    config['train_neg_ratio'] = args.train_neg_ratio
+    if args.eval_neg_samples is not None:
+        config['eval_neg_samples'] = args.eval_neg_samples
     if args.smoke:
         print("Using smoke test settings")
         config['n_steps'] = min(16, config['n_steps'])
@@ -272,6 +287,8 @@ def main():
         config['allow_small_eval'] = True
         config['train_neg_ratio'] = 0.0
         config['corruption_mode'] = False
+    if args.allow_small_eval or (config.get('n_eval_queries') is not None and config['n_eval_queries'] <= 1):
+        config['allow_small_eval'] = True
 
     if 'countries' in config['dataset_name']:
         config['corruption_scheme'] = ['tail']
@@ -284,15 +301,7 @@ def main():
 
     # Avoid nonsensical settings where timesteps < rollout_size
     rollout_size = config['n_steps'] * config['n_envs']
-    # if config['timesteps_train'] > 0 and rollout_size > config['timesteps_train']:
-    #     new_n_steps = max(1, config['timesteps_train'] // config['n_envs'])
-    #     if new_n_steps < 1:
-    #         new_n_steps = 1
-    #     print(f"Adjusting n_steps from {config['n_steps']} to {new_n_steps} "
-    #           f"to respect timesteps_train={config['timesteps_train']} with n_envs={config['n_envs']}")
-    #     config['n_steps'] = new_n_steps
-    #     rollout_size = config['n_steps'] * config['n_envs']
-    # Keep eval_freq aligned with rollout size
+
     config['eval_freq'] = rollout_size
     print(f"Using device: {device}")
     print(f"\nConfig:")

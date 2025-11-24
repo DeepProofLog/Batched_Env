@@ -489,6 +489,7 @@ def test_tensor_env_batched(
     slot_rewards = [0.0 for _ in range(batch_size)]
     slot_steps = [0 for _ in range(batch_size)]
     slot_done = [False for _ in range(batch_size)]
+    slot_success = [False for _ in range(batch_size)]
     
     # Run episode until all slots are done
     global_step = 0
@@ -513,6 +514,8 @@ def test_tensor_env_batched(
                 # Terminal state
                 slot_done[slot_idx] = True
                 cur_state = current_queries[slot_idx]
+                slot_success[slot_idx] = bool(batched_env.unification_engine.is_true_state(cur_state))
+                batched_env.derived_states_counts[slot_idx] = 0
                 slot_traces[slot_idx].append({
                     'step': slot_steps[slot_idx],
                     'state': debug_helper.canonical_state_to_str(cur_state),
@@ -571,6 +574,10 @@ def test_tensor_env_batched(
         # Update rewards and done flags
         rewards = obs_td.get('reward', torch.zeros(batch_size, device=device))
         dones = obs_td['done']
+        is_success_obs = obs_td.get(
+            'is_success',
+            torch.zeros(batch_size, dtype=torch.bool, device=device)
+        )
         
         for slot_idx in range(batch_size):
             if not slot_done[slot_idx]:
@@ -583,15 +590,16 @@ def test_tensor_env_batched(
                 
                 if dones[slot_idx]:
                     slot_done[slot_idx] = True
+                    slot_success[slot_idx] = bool(safe_item(is_success_obs[slot_idx]))
+                    batched_env.derived_states_counts[slot_idx] = 0
         
         global_step += 1
     
     # Collect results from all slots
     all_results = []
-    is_success = obs_td.get('is_success', torch.zeros(batch_size, dtype=torch.bool, device=device))
     
     for slot_idx in range(batch_size):
-        success = bool(is_success[slot_idx])
+        success = bool(slot_success[slot_idx])
         all_results.append({
             'success': success,
             'steps': slot_steps[slot_idx],

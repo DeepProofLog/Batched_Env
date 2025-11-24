@@ -64,6 +64,10 @@ def main():
     extra_args = []
     if args.n_queries is not None:
         extra_args += ["--n_queries", str(args.n_queries)]
+        if args.n_queries == 1:
+            print("Forcing batch_size_env=1 and n_envs=1 because n_queries=1")
+            args.batch_size_env = 1
+            args.n_envs = 1
     if args.n_steps is not None:
         extra_args += ["--n_steps", str(args.n_steps)]
     batch_env = args.batch_size_env if args.batch_size_env is not None else args.n_envs

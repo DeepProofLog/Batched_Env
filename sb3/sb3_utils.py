@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover - optional dependency path
 # Logic utils       
 # ----------------------
 
-@dataclass(frozen=True, order=False, slots=True)
+@dataclass(frozen=True, order=True, slots=True)
 class Term:
     """
     Represents a logical term (predicate and arguments) using a frozen dataclass.

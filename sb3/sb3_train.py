@@ -3,8 +3,8 @@ from typing import Any, Callable, List, Optional, Tuple
 import torch
 from pathlib import Path
 
-from sb3_index_manager import IndexManager
-from sb3_utils import (
+from .sb3_index_manager import IndexManager
+from .sb3_utils import (
     get_device, 
     print_eval_info, 
     profile_code, 
@@ -13,7 +13,7 @@ from sb3_utils import (
     _warn_non_reproducible,
     _maybe_enable_wandb,
 )
-from sb3_callbacks import (
+from .sb3_callbacks import (
     SB3TrainCheckpoint,
     CustomEvalCallbackMRR,
     CustomEvalCallback,
@@ -22,13 +22,13 @@ from sb3_callbacks import (
     AnnealingTarget,
     _EvalDepthRewardTracker
 )
-from sb3_callbacks import SB3RolloutLogger
-from sb3_custom_dummy_env import create_environments
-from sb3_dataset import DataHandler
-from sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
-from sb3_embeddings import get_embedder
-from sb3_neg_sampling import get_sampler
-from sb3_model_eval import eval_corruptions
+from .sb3_callbacks import SB3RolloutLogger
+from .sb3_custom_dummy_env import create_environments
+from .sb3_dataset import DataHandler
+from .sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
+from .sb3_embeddings import get_embedder
+from .sb3_neg_sampling import get_sampler
+from .sb3_model_eval import eval_corruptions
 from stable_baselines3.common.callbacks import (
     StopTrainingOnRewardThreshold,
     CallbackList,
@@ -79,6 +79,8 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         topk_facts=args.topk_facts,
         topk_facts_threshold=args.topk_facts_threshold,
     )
+    print(f"DEBUG: SB3 DataHandler n_train_queries={args.n_train_queries}")
+    print(f"DEBUG: SB3 DataHandler predicates ({len(dh.predicates)}): {sorted(list(dh.predicates))}")
 
     # Respect caps from args while ensuring >1 eval query for callbacks
     args.n_train_queries = (
@@ -110,6 +112,7 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         max_arity=dh.max_arity,
         device="cpu",
         padding_atoms=args.padding_atoms,
+        include_kge_predicates=args.kge_action,
     )
     im.build_fact_index(dh.facts)
 
@@ -124,6 +127,7 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     sampler = dh.sampler
 
     # Embedder
+    # Seed is already set at the beginning of main(), but reseed to align with torchrl stack
     torch.manual_seed(args.seed_run_i)
     embedder_getter = get_embedder(args, dh, im, device)
     embedder = embedder_getter.embedder
@@ -448,6 +452,15 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
         metrics_train = {k: 0 for k in metrics_test.keys()}
         metrics_valid = {k: 0 for k in metrics_test.keys()}
 
+    # Mirror torchrl trace logging: record eval metrics when trace recorder is available
+    trace_recorder = getattr(model, "trace_recorder", None)
+    if trace_recorder is not None:
+        if metrics_valid:
+            trace_recorder.log_eval("valid", metrics_valid)
+        if metrics_test:
+            trace_recorder.log_eval("test", metrics_test)
+        trace_recorder.flush(f"{model.trace_prefix}_trace.jsonl")
+
     return metrics_train, metrics_valid, metrics_test
 
 
@@ -493,8 +506,14 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         'kge_logit_gain_initial': getattr(args, 'kge_logit_init_value', 1.0),
         'kge_logit_transform': getattr(args, 'kge_logit_transform', 'log'),
         'kge_logit_eps': getattr(args, 'kge_logit_eps', 1e-6),
+        'hidden_dim': getattr(args, "model_hidden_dim", 128),
+        'num_layers': getattr(args, "model_num_layers", 8),
+        'dropout_prob': getattr(args, "model_dropout", 0.2),
     }
 
+    # Seed is already set at the beginning of main()
+    # Reseed before policy creation to align with torchrl stack
+    torch.manual_seed(args.seed_run_i)
     model = PPO(
         CustomActorCriticPolicy,
         env,
@@ -510,18 +529,24 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         policy_kwargs=policy_kwargs,
         trace_dir=getattr(args, "trace_dir", None),
         trace_prefix="sb3",
+        seed=args.seed_run_i,
     )
-    # Align initial weights with batched policy initialization
-    total_vocab_size = getattr(index_manager, "total_vocab_size", index_manager.variable_end_index + 1)
-    aligned_sd = get_sb3_policy_state_dict_aligned(
-        embedder=embedder,
-        padding_atoms=args.padding_atoms,
-        padding_states=args.padding_states,
-        max_arity=index_manager.max_arity,
-        total_vocab_size=total_vocab_size,
-        init_seed=args.seed,
-    )
-    model.policy.load_state_dict(aligned_sd)
+    torch.save(model.policy.state_dict(), "sb3_init.pt")
+    
+    # Verify weights
+    total_params = sum(p.sum() for p in model.policy.parameters())
+    print(f"DEBUG: SB3 Policy Weight Sum: {total_params.item()}")
+    # Shold not Align initial weights with batched policy initialization
+    # total_vocab_size = getattr(index_manager, "total_vocab_size", index_manager.variable_end_index + 1)
+    # aligned_sd = get_sb3_policy_state_dict_aligned(
+    #     embedder=embedder,
+    #     padding_atoms=args.padding_atoms,
+    #     padding_states=args.padding_states,
+    #     max_arity=index_manager.max_arity,
+    #     total_vocab_size=total_vocab_size,
+    #     init_seed=args.seed,
+    # )
+    # model.policy.load_state_dict(aligned_sd)
     if getattr(args, "trace_dir", None):
         print(f"[TRACE] SB3 trace recorder: {model.trace_recorder}")
     

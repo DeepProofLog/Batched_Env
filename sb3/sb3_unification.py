@@ -1,8 +1,8 @@
 from typing import List, Dict, Set, Tuple, FrozenSet, Optional, TYPE_CHECKING
-from sb3_utils import Term, Rule
+from .sb3_utils import Term, Rule
 
 if TYPE_CHECKING:
-    from sb3_index_manager import IndexManager
+    from .sb3_index_manager import IndexManager
 
 def is_variable(arg: str) -> bool:
     """Check if an argument is a variable."""

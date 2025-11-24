@@ -80,22 +80,21 @@ def test_policy_logits_align_with_sb3_initialization():
     embed_dim = 8
 
     torch.manual_seed(123)
-    embedder = _DummyEmbedder(vocab_size=vocab_size, embed_dim=embed_dim).to(device)
+    embedder_new = _DummyEmbedder(vocab_size=vocab_size, embed_dim=embed_dim).to(device)
 
-    # New policy with weights copied from a freshly created sb3 policy
-    torch.manual_seed(123)
+    # New policy should match SB3 initialization purely from seeded RNG (no explicit copy)
     policy_new = create_actor_critic(
-        embedder=embedder,
+        embedder=embedder_new,
         embed_dim=embed_dim,
         hidden_dim=128,
-        num_layers=2,
-        dropout_prob=0.0,
+        num_layers=8,
+        dropout_prob=0.2,
         device=device,
         padding_atoms=padding_atoms,
         padding_states=padding_states,
         max_arity=max_arity,
         total_vocab_size=vocab_size,
-        match_sb3_init=True,
+        match_sb3_init=False,
     )
 
     # Standalone sb3 policy with the same seed
@@ -112,19 +111,41 @@ def test_policy_logits_align_with_sb3_initialization():
         return 0.0
 
     torch.manual_seed(123)
+    embedder_sb3 = _DummyEmbedder(vocab_size=vocab_size, embed_dim=embed_dim).to(device)
     sb3_policy = CustomActorCriticPolicy(
         observation_space=obs_space,
         action_space=action_space,
         lr_schedule=_lr_schedule,
         features_extractor_class=CustomCombinedExtractor,
-        features_extractor_kwargs={"embedder": embedder, "features_dim": embed_dim},
+        features_extractor_kwargs={"embedder": embedder_sb3, "features_dim": embed_dim},
         enable_top_k=False,
         enable_kge_action=False,
         share_features_extractor=True,
+        dropout_prob=0.2,
     ).to(device)
 
-    obs_td, sb3_obs = _build_obs(batch_size=2, padding_atoms=padding_atoms, padding_states=padding_states, max_arity=max_arity, vocab_size=vocab_size, device=device)
-    actions = torch.tensor([0, 1], device=device)
+    # Disable dropout to make the forward passes deterministic for comparison
+    policy_new.eval()
+    sb3_policy.eval()
+
+    # State dicts should match exactly (ignore unused custom_network mirror)
+    max_diff = 0.0
+    max_key = None
+    for k, v in policy_new.state_dict().items():
+        if k.startswith("custom_network"):
+            continue
+        assert k in sb3_policy.state_dict()
+        diff = (v - sb3_policy.state_dict()[k]).abs().max().item()
+        if diff > max_diff:
+            max_diff = diff
+            max_key = k
+    assert max_diff == 0.0, f"max diff {max_diff} at {max_key}"
+
+    # Allow overriding batch size via CLI: pytest ... --parity-batch=20
+    # parity_batch = int(pytest.config.getoption("--parity-batch", default=2)) if hasattr(pytest, "config") else 2
+    batch_size = 20 #parity_batch
+    obs_td, sb3_obs = _build_obs(batch_size=batch_size, padding_atoms=padding_atoms, padding_states=padding_states, max_arity=max_arity, vocab_size=vocab_size, device=device)
+    actions = torch.arange(batch_size, device=device) % padding_states
 
     with torch.no_grad():
         values_new, logp_new, _ = policy_new.evaluate_actions(obs_td, actions)
@@ -139,3 +160,12 @@ def test_policy_logits_align_with_sb3_initialization():
     assert logp_new.shape == logp_sb3.shape
     assert torch.isfinite(values_new).all() and torch.isfinite(values_sb3).all()
     assert torch.isfinite(logp_new).all() and torch.isfinite(logp_sb3).all()
+    max_value_diff = (values_new - values_sb3).abs().max().item()
+    max_logp_diff = (logp_new - logp_sb3).abs().max().item()
+    assert max_value_diff < 1e-5, f"max value diff: {max_value_diff}"
+    assert max_logp_diff < 1e-5, f"max logp diff: {max_logp_diff}"
+    print(f"VALUES: \n{values_new} \nvs \n{values_sb3}")
+    print(f"LOGP: \n{logp_new} \nvs \n{logp_sb3}")
+
+if __name__ == "__main__":
+    test_policy_logits_align_with_sb3_initialization()

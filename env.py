@@ -22,6 +22,8 @@ class BatchedEnv(EnvBase):
       • Memory pruning/tabling via per-env GPU Bloom filters (loop-free membership checks)
       • Optional skip-unary closure using a *batched* bounded loop over just the unary subset
       • No Python loops in hot paths (_reset, _step, _postprocess_batched); skip-unary loop is subset-only
+      • Important, the endf/end_proof action, is just for the agent to be able to end the proof, not to substitute the False() terminal state
+      When the agent chooses endf, then we switch it to False() and end the proof 
     """
 
     def __init__(
@@ -476,7 +478,11 @@ class BatchedEnv(EnvBase):
 
             # Optional string-env style skip-unary: follow unary chains on the
             # newly selected current states before expanding successors.
-            if self.skip_unary_actions and self.use_exact_memory:
+            # For exact-memory runs (used in deterministic parity tests), we keep
+            # the unary chains in the action space to mirror the SB3 env traces.
+            # Skip-unary promotion is only applied in training mode where we want
+            # the shorter rollouts for efficiency.
+            if self.skip_unary_actions and self.use_exact_memory and self.mode == 'train':
                 self._apply_skip_unary_to_current_state(active_rows)
 
         self.current_depths = self.current_depths + active_mask.long()
@@ -695,7 +701,7 @@ class BatchedEnv(EnvBase):
                         self.debug_helper._log(3, f"[compute_derived] after skip_unary counts={derived_counts_subset}")
 
                 # Step 5.5: Add END action if configured and room available (for non-terminal rows)
-                if self.end_proof_action and all_derived.numel() > 0:
+                if self.end_proof_action:
                     all_derived, derived_counts_subset = self._add_end_action(all_derived, derived_counts_subset)
                     if verbose:
                         self.debug_helper._log(3, f"[compute_derived] after add_end_action counts={derived_counts_subset}")
@@ -721,14 +727,28 @@ class BatchedEnv(EnvBase):
                 batched_derived[inactive_idx] = self.padding_idx
                 counts[inactive_idx] = 0
 
-        # Safety: any active env with zero states -> insert FALSE
-        need_false = active_mask & (counts == 0)
-        dst_rows = torch.arange(active_mask.shape[0], device=self._device)[need_false]
-        if dst_rows.numel() > 0:
-            false_state = self.unification_engine.get_false_state()  # [A, D]
-            expanded = false_state.unsqueeze(0).expand(dst_rows.shape[0], -1, -1)
-            batched_derived[dst_rows, 0] = expanded
-            counts[dst_rows] = 1
+        # Force a terminal action for depth-capped rows
+        if self.max_depth is not None:
+            depth_mask = active_mask & (self.current_depths >= self.max_depth)
+            if depth_mask.any():
+                rows = torch.arange(active_mask.shape[0], device=self._device)[depth_mask]
+                batched_derived[rows] = self.padding_idx
+                if self.end_proof_action and self.end_pred_idx is not None:
+                    end_state = self.unification_engine.get_end_state()
+                    expanded = self._build_single_atom_state(rows.shape[0], end_state)
+                else:
+                    false_state = self.unification_engine.get_false_state()
+                    expanded = self._build_single_atom_state(rows.shape[0], false_state)
+                batched_derived[rows, 0] = expanded
+                counts[rows] = 1
+
+        # Safety: any active env with zero states -> insert END (if available) or FALSE
+        need_fallback = active_mask & (counts == 0)
+        if need_fallback.any():
+            raise ValueError('this shuold not happen, no state shold be empty')
+
+        # If proof-end action is enabled, never prefer END over FALSE for single-option failure rows
+        # end is only when the agent chooses to end the proof
 
         # Write back in-place instead of reassigning
         self.derived_states_batch.copy_(batched_derived)
@@ -779,26 +799,41 @@ class BatchedEnv(EnvBase):
         Returns:
             Updated (states, counts) with END actions added where appropriate
         """
-        if states.numel() == 0:
-            return states, counts
-        
         # Guard: if end_pred_idx is not set, we cannot add END actions
         if self.end_pred_idx is None:
             raise ValueError("end_pred_idx is not set; cannot add END actions.")
         
         device = self._device
         pad = self.padding_idx
+
+        # Handle empty states input (K=0 case)
+        assert states.numel() > 0, "States tensor is empty; cannot add END actions."
+        
         A, K, M, D = states.shape
         
         # Check which rows have all terminal derived states
-        first_preds = states[:, :, 0, 0]  # [A, K]
-        is_term = self.unification_engine.is_terminal_pred(first_preds) | (first_preds == pad)
-        
-        valid_state_mask = torch.arange(K, device=device).view(1, -1).expand(A, -1) < counts.view(A, 1)
-        all_terminal = (is_term | ~valid_state_mask).all(dim=1)  # [A]
-        
+        # If K=0 (which shouldn't happen if we handled numel=0 above, unless we just created it), 
+        # then "all terminal" is vacuously true? No, if K=0, there are NO terminal states.
+        # So all_terminal should be False (we haven't found a terminal).
+        if K == 0:
+             raise RuntimeError('K should not be 0')
+        else:
+            first_preds = states[:, :, 0, 0]  # [A, K]
+            is_term = self.unification_engine.is_terminal_pred(first_preds) | (first_preds == pad)
+            
+            valid_state_mask = torch.arange(K, device=device).view(1, -1).expand(A, -1) < counts.view(A, 1)
+            # If a row has 0 valid states, all_terminal is True?
+            # Logic: (is_term | ~valid).all()
+            # If count=0, valid is all False. ~valid is all True. So all_terminal is True.
+            # BUT we want to add END if count=0!
+            # So if count=0, we should treat it as "not all terminal" (i.e. we haven't found a terminal yet).
+            # So we need to explicitly check counts > 0 for all_terminal logic?
+            # Or just force reserve_end if count == 0.
+            all_terminal = (is_term | ~valid_state_mask).all(dim=1) & (counts > 0)
+
         # Reserve END for rows that are not all terminal and have room
-        reserve_end = ~all_terminal & (counts > 0) & (counts < K)
+        # We allow adding END if count < K.
+        reserve_end = ~all_terminal & (counts < K)
         
         if reserve_end.any():
             rows = torch.arange(A, device=device)[reserve_end]
@@ -838,6 +873,8 @@ class BatchedEnv(EnvBase):
         hit_limit = False
         
         for iter_count in range(max_iters):
+            if self.verbose >= 1:
+                self.debug_helper._log(1, f"[apply_skip_unary] Iter {iter_count}: {active_envs.numel()} active envs")
             if active_envs.numel() == 0:
                 break
             
@@ -1560,6 +1597,23 @@ class BatchedEnv(EnvBase):
         obs['terminated'] = torch.zeros(B, 1, dtype=torch.bool, device=device)
         obs['truncated'] = torch.zeros(B, 1, dtype=torch.bool, device=device)
         return TensorDict(obs, batch_size=self.batch_size, device=device)
+
+    def _build_single_atom_state(self, num_rows: int, atom: Tensor) -> Tensor:
+        """
+        Build a padded state batch with a single non-padding atom in position 0.
+        Avoids broadcasting a [1, 3] atom tensor across all atom slots.
+        """
+        state = torch.full(
+            (num_rows, self.padding_atoms, self.max_arity + 1),
+            self.padding_idx,
+            dtype=torch.long,
+            device=self._device,
+        )
+        atom = atom.to(device=self._device, dtype=torch.long)
+        if atom.dim() == 2 and atom.shape[0] == 1:
+            atom = atom[0]
+        state[:, 0] = atom
+        return state
 
     # ---------------------------------------------------------------------
     # Utilities

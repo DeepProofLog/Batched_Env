@@ -484,7 +484,7 @@ class DataHandler:
         """Load domain mapping for countries/ablation datasets."""
         from collections import defaultdict
         
-        domain_file = join(dataset_path, "domain2constants.txt")
+        domain_file = join(dataset_path, "domain2constants_old.txt")
         if not os.path.exists(domain_file):
             print(f"Warning: Domain file {domain_file} not found")
             return

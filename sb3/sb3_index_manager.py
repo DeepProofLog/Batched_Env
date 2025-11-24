@@ -2,7 +2,7 @@ from typing import List, Tuple, Dict, Set, Union
 import itertools
 import torch
 import numpy as np
-from sb3_utils import is_variable, Term, Rule
+from .sb3_utils import is_variable, Term, Rule
 from functools import lru_cache
 
 class IndexManager():
@@ -20,7 +20,8 @@ class IndexManager():
                  constant_images_no: int = 0,
                  padding_atoms: int = 10,
                  max_arity: int = 2,
-                 device: torch.device = torch.device("cpu")):
+                 device: torch.device = torch.device("cpu"),
+                 include_kge_predicates: bool = False):
 
         self.device = device
         self.idx_dtype = torch.int32
@@ -29,7 +30,9 @@ class IndexManager():
         
         # Dynamically create a KGE-specific version for each predicate
         self.kge_preds = {f"{p}_kge" for p in self.predicates}
-        self.special_preds = ['True', 'False', 'Endf'] + sorted(list(self.kge_preds))
+        self.special_preds = ['True', 'False', 'Endf']
+        if include_kge_predicates:
+            self.special_preds += sorted(list(self.kge_preds))
         self.padding_idx = 0
 
         self.max_total_vars = max_total_vars # Max *pre-assigned* variables
@@ -73,6 +76,19 @@ class IndexManager():
         self.unified_term_map.update(self.constant_str2idx)
         self.unified_term_map.update(self.variable_str2idx)
 
+        # DEBUG: Print first 20 constants to verify ordering
+        const_sample = list(self.constant_str2idx.items())[:20]
+        print(f"[DEBUG IndexManager SB3] First 20 constants:")
+        for const_str, const_idx in const_sample:
+            print(f"  {const_str} -> {const_idx}")
+        
+        # DEBUG: Print variable allocation
+        print(f"[DEBUG IndexManager SB3] Variable allocation:")
+        print(f"  constant_no: {self.constant_no}")
+        print(f"  variable_start_index: {self.variable_start_index}")
+        print(f"  variable_end_index: {self.variable_end_index}")
+        print(f"  max_total_vars: {self.max_total_vars}")
+
         self.fact_index: Dict[Tuple, Set[Term]] = {}
 
     # def reset_next_var_index(self):
@@ -98,8 +114,8 @@ class IndexManager():
                 self.constant_str2idx[term] = current_idx
                 self.constant_idx2str[current_idx] = term
                 current_idx += 1
-
-        self.constant_no = current_idx - 1
+                
+        self.constant_no = len(self.constant_str2idx)
 
         # --- Predicates (Regular + Special) ---
         current_idx = 1
@@ -115,6 +131,7 @@ class IndexManager():
                 self.predicate_str2idx[term] = current_idx
                 self.predicate_idx2str[current_idx] = term
                 current_idx += 1
+        print(f"DEBUG [SB3 IndexManager]: First 10 predicates: {dict(list(self.predicate_str2idx.items())[:10])}")
 
         self.predicate_no = current_idx - 1
 
@@ -298,7 +315,7 @@ class IndexManager():
         
         return ", ".join(terms)
 
-    def build_fact_index(self, facts: List[Term]) -> Dict[Tuple, Set[Term]]:
+    def build_fact_index(self, facts: List[Term]) -> Dict[Tuple, List[Term]]:
         """Build an inverted index over facts supporting partial-argument lookup.
 
         The index key format is:
@@ -316,8 +333,8 @@ class IndexManager():
 
         Returns
         -------
-        Dict[Tuple, Set[Term]]
-            Mapping from subset-keys to the set of matching facts.
+        Dict[Tuple, List[Term]]
+            Mapping from subset-keys to the list of matching facts (sorted for determinism).
         """
         self.fact_index.clear()
         for fact in facts:
@@ -329,6 +346,13 @@ class IndexManager():
                     sorted_subset = tuple(sorted(subset_args_with_pos, key=lambda x: x[0]))
                     key = (predicate,) + sorted_subset
                     if key not in self.fact_index:
-                        self.fact_index[key] = set()
-                    self.fact_index[key].add(fact)
+                        self.fact_index[key] = []
+                    self.fact_index[key].append(fact)
+        
+        # Sort all fact lists lexicographically for deterministic ordering
+        # This matches the batched implementation's sorted fact retrieval
+        for key in self.fact_index:
+            # Sort by (predicate, arg0, arg1) lexicographically
+            self.fact_index[key].sort(key=lambda f: (f.predicate, f.args[0] if len(f.args) > 0 else '', f.args[1] if len(f.args) > 1 else ''))
+        
         return self.fact_index

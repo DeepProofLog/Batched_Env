@@ -636,6 +636,11 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         num_layers=8,
         dropout_prob=0.2,
         device=device,
+        padding_atoms=args.padding_atoms,
+        padding_states=args.padding_states,
+        max_arity=index_manager.max_arity,
+        total_vocab_size=index_manager.total_vocab_size,
+        init_seed=args.seed,
         use_compile=use_compile,
         use_amp=use_amp,
     )

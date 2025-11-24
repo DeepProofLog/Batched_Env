@@ -1065,7 +1065,8 @@ class ConstantEmbeddings(nn.Module):
         
         # OPTIMIZATION: Create embedding directly on target device to avoid CPU->GPU transfer
         # and use faster uniform initialization instead of normal
-        self.embedder = nn.Embedding(num_constants+1, embedding_dim, padding_idx=0, device=device)
+        # FIX: Initialize on CPU to match SB3 RNG behavior (SB3 moves to device later)
+        self.embedder = nn.Embedding(num_constants+1, embedding_dim, padding_idx=0)
         
         self.regularization = regularization
         self.device = device
@@ -1086,7 +1087,8 @@ class PredicateEmbeddings(nn.Module):
         
         # OPTIMIZATION: Create embedding directly on target device to avoid CPU->GPU transfer
         # and use faster uniform initialization instead of normal
-        self.embedder = nn.Embedding(num_predicates+1, embedding_dim, padding_idx=0, device=device)
+        # FIX: Initialize on CPU to match SB3 RNG behavior
+        self.embedder = nn.Embedding(num_predicates+1, embedding_dim, padding_idx=0)
         
         self.regularization = regularization
         self.device = device
@@ -1297,8 +1299,9 @@ class get_embedder():
 
         if args.learn_embeddings:
             # Calculate vocabulary sizes directly from index ranges
-            max_constant_idx = max(constant_str2idx.values()) if constant_str2idx else constant_no
-            max_predicate_idx = max(predicate_str2idx.values()) if predicate_str2idx else predicate_no
+            # FIX: Use passed-in counts to match SB3 behavior exactly
+            max_constant_idx = constant_no
+            max_predicate_idx = predicate_no
             n_vars = max(0, runtime_var_end_index - max_constant_idx) if runtime_var_end_index is not None else 0
             
             return EmbedderLearnable(

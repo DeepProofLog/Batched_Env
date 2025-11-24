@@ -5,14 +5,18 @@ This file is a simplified version of model.py that removes all batched-specific
 optimizations and matches the SB3 implementation as closely as possible.
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from functools import partial
 from typing import Tuple, Optional, Dict
 import gymnasium as gym
 import numpy as np
 from tensordict import TensorDict
 from stable_baselines3.common.distributions import CategoricalDistribution
+from stable_baselines3.common.policies import BasePolicy
+from stable_baselines3.common.torch_layers import MlpExtractor
 from sb3.sb3_model import (
     CustomActorCriticPolicy as SB3ActorCriticPolicy,
     CustomCombinedExtractor as SB3CombinedExtractor,
@@ -29,6 +33,9 @@ class CustomCombinedExtractor(nn.Module):
         super().__init__()
         self.embedder = embedder
         self.embed_dim = embedder.embedding_dim
+        # Match SB3 CombinedExtractor contract
+        self._features_dim = 1
+        self.features_dim = 1
     
     def forward(self, obs: TensorDict) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -206,6 +213,40 @@ class ValueNetwork(nn.Module):
         return value.squeeze(-1)
 
 
+class CustomNetwork(nn.Module):
+    """
+    Minimal wrapper matching SB3's CustomNetwork: holds policy/value towers and
+    exposes forward_actor/forward_critic helpers while tracking latent dims.
+    """
+
+    def __init__(
+        self,
+        last_layer_dim_pi: int = 64,
+        last_layer_dim_vf: int = 1,
+        embed_dim: int = 200,
+    ):
+        super().__init__()
+        self.latent_dim_pi = last_layer_dim_pi
+        self.latent_dim_vf = last_layer_dim_vf
+
+        self.policy_network = PolicyNetwork(embed_dim)
+        self.value_network = ValueNetwork(embed_dim)
+
+    def forward(self, features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        obs_embeddings, action_embeddings, action_mask = features
+        probs = self.policy_network(obs_embeddings, action_embeddings, action_mask)
+        value = self.value_network(obs_embeddings).squeeze(-1)
+        return probs, value
+
+    def forward_actor(self, features: torch.Tensor) -> torch.Tensor:
+        obs_embeddings, action_embeddings, action_mask = features
+        return self.policy_network(obs_embeddings, action_embeddings, action_mask)
+
+    def forward_critic(self, features: torch.Tensor) -> torch.Tensor:
+        obs_embeddings, _, _ = features
+        return self.value_network(obs_embeddings).squeeze(-1)
+
+
 class ActorCriticPolicy(nn.Module):
     """
     Combined actor-critic policy that exactly matches SB3's ActorCriticPolicy.
@@ -217,48 +258,81 @@ class ActorCriticPolicy(nn.Module):
     def __init__(
         self,
         embedder,
-        embed_dim: int = 100,
-        hidden_dim: int = 256,
-        num_layers: int = 4,
-        dropout_prob: float = 0.0,
-        device: torch.device = None,
+        embed_dim: int,
+        hidden_dim: int,
+        num_layers: int,
+        dropout_prob: float,
+        device: torch.device,
         share_features_extractor: bool = True,
+        init_seed: Optional[int] = None,
+        action_dim: Optional[int] = None,
     ):
         super().__init__()
         
         self.embed_dim = embed_dim
         self.device = device if device is not None else torch.device('cpu')
         self.share_features_extractor = share_features_extractor
-        
-        # Create features extractor(s) - following sb3 pattern exactly
+
+        # Features extractor(s) – mirror SB3 CombinedExtractor contract and ordering
         self.features_extractor = CustomCombinedExtractor(embedder)
         if share_features_extractor:
             self.pi_features_extractor = self.features_extractor
             self.vf_features_extractor = self.features_extractor
         else:
-            # Create separate extractors for policy and value
             self.pi_features_extractor = self.features_extractor
             self.vf_features_extractor = CustomCombinedExtractor(embedder)
-        
-        # Create policy and value networks
-        self.policy_net = PolicyNetwork(
+
+        # --- Base SB3-style scaffold (consumes RNG in the same order) ---
+        # Build CustomNetwork as SB3 does inside _build_mlp_extractor (defaults)
+        self.mlp_extractor = CustomNetwork(
+            last_layer_dim_pi=self.features_extractor._features_dim,
+            last_layer_dim_vf=1,
+            embed_dim=getattr(self.features_extractor, "embed_dim", embed_dim),
+        )
+        # Dummy action/value heads created during _build in SB3
+        latent_pi = getattr(self.mlp_extractor, "latent_dim_pi", 1)
+        latent_vf = getattr(self.mlp_extractor, "latent_dim_vf", 1)
+        action_dim = int(action_dim) if action_dim is not None else -1
+        self.action_net = nn.Linear(latent_pi, action_dim if action_dim > 0 else 1)
+        self.value_net = nn.Linear(latent_vf, 1)
+
+        # SB3-style orthogonal initialization sequence (match ActorCriticPolicy._build)
+        module_gains = {
+            self.features_extractor: math.sqrt(2.0),
+            self.mlp_extractor: math.sqrt(2.0),
+            self.action_net: 0.01,
+            self.value_net: 1.0,
+        }
+        if not self.share_features_extractor:
+            del module_gains[self.features_extractor]
+            module_gains[self.pi_features_extractor] = math.sqrt(2.0)
+            module_gains[self.vf_features_extractor] = math.sqrt(2.0)
+        for module, gain in module_gains.items():
+            module.apply(partial(BasePolicy.init_weights, gain=gain))
+
+        # Action distribution - now aligned with SB3 action_dim
+        self.action_dist = CategoricalDistribution(action_dim)
+
+        # Separate custom_network mirror (unused in forward but present in sb3 state_dict)
+        self.custom_network = CustomNetwork(
+            last_layer_dim_pi=hidden_dim,
+            last_layer_dim_vf=1,
+            embed_dim=getattr(self.features_extractor, "embed_dim", embed_dim),
+        )
+        self.custom_network.policy_network = PolicyNetwork(
             embed_dim=embed_dim,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
-            dropout_prob=dropout_prob
+            dropout_prob=dropout_prob,
         )
-        
-        self.value_net = ValueNetwork(
+        self.custom_network.value_network = ValueNetwork(
             embed_dim=embed_dim,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
-            dropout_prob=dropout_prob
+            dropout_prob=dropout_prob,
         )
-        
-        # Create action distribution - matches SB3
-        self.action_dist = CategoricalDistribution(action_dim=-1)
-        
-        # Move to device
+
+        # Move everything to device
         self.to(self.device)
     
     def extract_features(
@@ -295,20 +369,13 @@ class ActorCriticPolicy(nn.Module):
         """
         # Extract features following sb3 pattern
         features = self.extract_features(obs)
-        
         if self.share_features_extractor:
-            obs_embeddings, action_embeddings, action_mask = features
+            logits, values = self.mlp_extractor(features)
         else:
             (obs_embeddings, action_embeddings, action_mask), (obs_embeddings_vf, _, _) = features
-        
-        # Get logits and values - exactly as in SB3
-        logits = self.policy_net(obs_embeddings, action_embeddings, action_mask)
-        if self.share_features_extractor:
-            values = self.value_net(obs_embeddings)
-        else:
-            values = self.value_net(obs_embeddings_vf)
-        
-        # Sample actions using the distribution - matches SB3
+            logits = self.mlp_extractor.forward_actor((obs_embeddings, action_embeddings, action_mask))
+            values = self.mlp_extractor.forward_critic((obs_embeddings_vf, None, None))
+
         distribution = self.action_dist.proba_distribution(action_logits=logits)
         if deterministic:
             actions = distribution.mode()
@@ -337,19 +404,14 @@ class ActorCriticPolicy(nn.Module):
         """
         # Extract features
         features = self.extract_features(obs)
-        
+
         if self.share_features_extractor:
-            obs_embeddings, action_embeddings, action_mask = features
+            logits, values = self.mlp_extractor(features)
         else:
             (obs_embeddings, action_embeddings, action_mask), (obs_embeddings_vf, _, _) = features
-        
-        # Get logits and values
-        logits = self.policy_net(obs_embeddings, action_embeddings, action_mask)
-        if self.share_features_extractor:
-            values = self.value_net(obs_embeddings)
-        else:
-            values = self.value_net(obs_embeddings_vf)
-        
+            logits = self.mlp_extractor.forward_actor((obs_embeddings, action_embeddings, action_mask))
+            values = self.mlp_extractor.forward_critic((obs_embeddings_vf, None, None))
+
         # Create distribution and evaluate - exactly as in SB3
         distribution = self.action_dist.proba_distribution(action_logits=logits)
         action_log_probs = distribution.log_prob(actions)
@@ -361,8 +423,13 @@ class ActorCriticPolicy(nn.Module):
         """
         Predict values for observations - matches SB3.
         """
-        obs_embeddings, _, _ = self.extract_features(obs, self.vf_features_extractor)
-        return self.value_net(obs_embeddings)
+        features = self.extract_features(obs, self.vf_features_extractor)
+        if self.share_features_extractor:
+            _, values = self.mlp_extractor(features)
+        else:
+            (_, _, _), (obs_embeddings_vf, _, _) = features
+            values = self.mlp_extractor.forward_critic((obs_embeddings_vf, None, None))
+        return values
 
 
 def create_actor_critic(
@@ -376,7 +443,7 @@ def create_actor_critic(
     padding_states: Optional[int] = None,
     max_arity: Optional[int] = None,
     total_vocab_size: Optional[int] = None,
-    match_sb3_init: bool = True,
+    match_sb3_init: bool = False,
     init_seed: Optional[int] = None,
     **kwargs
 ) -> ActorCriticPolicy:
@@ -392,6 +459,8 @@ def create_actor_critic(
         dropout_prob=dropout_prob,
         device=device,
         share_features_extractor=kwargs.get('share_features_extractor', True),
+        init_seed=init_seed,
+        action_dim=int(padding_states) if padding_states is not None else None,
     )
     if match_sb3_init and all(v is not None for v in (padding_atoms, padding_states, max_arity, total_vocab_size)):
         _copy_weights_from_sb3(
@@ -461,6 +530,7 @@ def _build_sb3_state_dict(
     def _make_policy():
         if init_seed is not None:
             torch.manual_seed(init_seed)
+            print(f"DEBUG: _make_policy seed (after manual): {torch.initial_seed()}")
 
         obs_space = gym.spaces.Dict(
             {
@@ -502,6 +572,7 @@ def _build_sb3_state_dict(
 
     if init_seed is not None:
         with torch.random.fork_rng(devices=[]):
+            print(f"DEBUG: _build_sb3_state_dict seed (before manual): {torch.initial_seed()}")
             return _make_policy()
     return _make_policy()
 

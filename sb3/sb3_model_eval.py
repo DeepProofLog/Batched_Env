@@ -697,16 +697,8 @@ def eval_corruptions(
                         success_only=hybrid_success_only,
                     )
 
-                # Only reward successful proofs for the labeled positives.
-                # Negatives that accidentally succeed are treated as failures
-                # to match the tensor_env ranking eval.
-                labels = np.zeros_like(proof_successful, dtype=bool)
-                labels[:, 0] = True  # Positive is always slot 0
-                success_mask = proof_successful & labels
-
                 log_probs = log_probs.copy()
-                log_probs[~success_mask] -= 100.0
-                proof_successful = success_mask
+                log_probs[~proof_successful] -= 100.0
 
                 if (
                     plot
