@@ -2,7 +2,7 @@
 Test module for tensor-based batched environment.
 
 Simple and modular testing for the batched tensor environment.
-Uses the tensor engine in eval mode with one query instead of creating from scratch.
+Uses true batching with reset/step calls - NOT calling single query functions.
 """
 import os
 import sys
@@ -167,7 +167,7 @@ def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", 
     return batched_env, debug_helper, im_batched.constant_no, im_batched, dh_batched
 
 
-def test_tensor_env_single_query(
+def run_tensor_env_single_query(
     query_tuple: Tuple[str, str, str],
     env_data: Tuple,
     split: str = 'train',
@@ -178,6 +178,9 @@ def test_tensor_env_single_query(
 ) -> Dict:
     """
     Test a single query using the batched tensor environment (batch_size=1).
+    
+    NOTE: This is kept for backward compatibility but run_tensor_env should be preferred
+    as it uses proper batched operations.
     
     Args:
         query_tuple: (predicate, head, tail)
@@ -323,100 +326,16 @@ def test_tensor_env_single_query(
     }
 
 
-
-def test_tensor_env(
-    queries: List[Tuple[str, Tuple[str, str, str]]],
-    base_env_data: Tuple,
-    deterministic: bool = True,
-    max_depth: int = 20,
-    seed: int = 42,
-    verbose: bool = False
-) -> Dict:
-    """
-    Test multiple queries sequentially using the tensor environment (batch_size=1).
-    
-    This function loops through all queries one-by-one, testing each with test_tensor_env_single_query.
-    This is the proper way to test the tensor_env config (non-batched mode).
-    
-    Args:
-        queries: List of (split, (predicate, head, tail))
-        base_env_data: Tuple from setup_tensor_env() with batch_size=1
-        deterministic: If True, use canonical ordering; if False, random actions
-        max_depth: Maximum proof depth
-        seed: Random seed for reproducible random actions
-        verbose: Print detailed information
-        
-    Returns:
-        Dict with keys:
-            - total_queries: int
-            - successful: int
-            - avg_reward: float
-            - avg_steps: float
-            - traces: List of trace dicts (one per query)
-    """
-    all_results = []
-    
-    if verbose:
-        print(f"Testing {len(queries)} queries sequentially...")
-    
-    for idx, (split, query_tuple) in enumerate(queries):
-        if verbose and idx < 3:
-            print(f"\nQuery {idx+1}/{len(queries)}: {query_tuple[0]}({query_tuple[1]}, {query_tuple[2]}) [split={split}]")
-        
-        result = test_tensor_env_single_query(
-            query_tuple=query_tuple,
-            env_data=base_env_data,
-            split=split,
-            deterministic=deterministic,
-            max_depth=max_depth,
-            verbose=verbose and idx < 3,
-            seed=seed + idx  # Different seed per query for random mode
-        )
-        all_results.append(result)
-    
-    # Aggregate statistics
-    successful = sum(1 for r in all_results if r['success'])
-    total_reward = sum(r['reward'] for r in all_results)
-    total_steps = sum(r['steps'] for r in all_results)
-    
-    # Compute average actions (branching factor)
-    total_actions = 0
-    total_action_steps = 0
-    for r in all_results:
-        for step in r['trace']:
-            if 'num_actions' in step:
-                total_actions += step['num_actions']
-                total_action_steps += 1
-    
-    avg_actions = total_actions / total_action_steps if total_action_steps > 0 else 0.0
-    
-    if verbose or True:
-        print(f"\nSequential evaluation complete:")
-        print(f"  Total queries: {len(queries)}")
-        print(f"  Successful: {successful}/{len(queries)} ({100*successful/len(queries):.1f}%)")
-        print(f"  Avg steps: {total_steps/len(queries):.2f}")
-        print(f"  Avg reward: {total_reward/len(queries):.2f}")
-    
-    return {
-        'total_queries': len(queries),
-        'successful': successful,
-        'avg_reward': total_reward / len(queries) if queries else 0.0,
-        'avg_steps': total_steps / len(queries) if queries else 0.0,
-        'avg_actions': avg_actions,
-        'traces': all_results
-    }
-
-
-def test_tensor_env_batched(
+def run_tensor_env(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     base_env_data: Tuple,
     config: SimpleNamespace
 ) -> Dict:
     """
-    Test multiple queries using the batched tensor environment in TRUE BATCH MODE using eval mode.
-    All queries are loaded into eval mode and processed in parallel batch slots.
+    Test multiple queries using the batched tensor environment in TRUE BATCH MODE.
     
-    This is the proper way to test the batched tensor environment - all queries run in parallel.
+    Uses proper reset/step calls with batch_size = len(queries).
+    All queries are loaded into eval mode and processed in parallel batch slots.
     
     Args:
         queries: List of (split, (predicate, head, tail))
@@ -435,6 +354,7 @@ def test_tensor_env_batched(
     max_depth = config.max_depth
     seed = config.seed
     verbose = config.verbose
+    
     # Extract dataset info from base_env_data
     _, _, _, im_batched, dh_batched = base_env_data
     
@@ -459,16 +379,16 @@ def test_tensor_env_batched(
         query_padded[0] = query_atom
         all_query_tensors.append(query_padded)
     
-    # Stack into [M, A, D] tensor
+    # Stack into [batch_size, padding_atoms, 3] tensor
     queries_tensor = torch.stack(all_query_tensors, dim=0)
     labels_tensor = torch.ones(batch_size, dtype=torch.long, device=device)
     depths_tensor = torch.ones(batch_size, dtype=torch.long, device=device)
     
     # Use per_slot_lengths for proper slot-based scheduling in eval mode
-    # Each slot gets exactly 1 query (queries are laid out sequentially: slot0's query, slot1's query, ...)
+    # Each slot gets exactly 1 query
     per_slot_lengths = torch.ones(batch_size, dtype=torch.long, device=device)
     
-    # Load dataset into eval mode
+    # Load dataset into eval mode using set_eval_dataset
     batched_env.set_eval_dataset(
         queries=queries_tensor,
         labels=labels_tensor,
@@ -476,7 +396,7 @@ def test_tensor_env_batched(
         per_slot_lengths=per_slot_lengths
     )
     
-    # Reset to load first batch of queries
+    # Reset to load queries into batch slots
     obs_td = batched_env.reset()
     if 'next' in obs_td.keys():
         obs_td = obs_td['next']
@@ -491,7 +411,7 @@ def test_tensor_env_batched(
     slot_done = [False for _ in range(batch_size)]
     slot_success = [False for _ in range(batch_size)]
     
-    # Run episode until all slots are done
+    # Run episode using step loop until all slots are done
     global_step = 0
     while global_step < max_depth and not all(slot_done):
         # Get current state info for all slots
@@ -511,7 +431,7 @@ def test_tensor_env_batched(
             n_actions = int(mask.sum())
             
             if n_actions == 0:
-                # Terminal state
+                # Terminal state - no more actions available
                 slot_done[slot_idx] = True
                 cur_state = current_queries[slot_idx]
                 slot_success[slot_idx] = bool(batched_env.unification_engine.is_true_state(cur_state))
@@ -530,7 +450,7 @@ def test_tensor_env_batched(
             
             # Choose action
             if deterministic:
-                chosen = 0
+                chosen = 0  # First action (canonical order)
             else:
                 valid_actions = [a for a in range(n_actions) if mask[a]]
                 chosen = rng.choice(valid_actions)

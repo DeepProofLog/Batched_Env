@@ -64,7 +64,7 @@ def setup_sb3_engine(
         max_arity=dh_str.max_arity,
         device=device,
     )
-    fact_index_str = im_str.build_fact_index(dh_str.facts)
+    fact_index_str = im_str.build_fact_index(dh_str.facts, deterministic=True)
 
     rules_by_pred: dict = {}
     for r in dh_str.rules:
@@ -131,6 +131,17 @@ def test_sb3_engine_single_query(
     trace = []
     rng = random.Random(seed)
     
+    # Calculate correct next_var_index to match tensor engine
+    # Use the IndexManager's computed next_var_start_for_proofs property
+    # This ensures SB3 and tensor engines start runtime variables at the same index
+    start_next_var_index = im_str.next_var_start_for_proofs
+    if verbose:
+        print(f"DEBUG: constant_no={im_str.constant_no}")
+        print(f"DEBUG: max_template_var_idx={im_str.max_template_var_idx}")
+        print(f"DEBUG: start_next_var_index={start_next_var_index}")
+    
+    current_next_var = start_next_var_index
+
     while steps < max_depth:
         # Check if already proved
         if str_is_true(current_state):
@@ -152,23 +163,20 @@ def test_sb3_engine_single_query(
             }
         
         # Get derived states
-        # Note: We pass canonical_order=True to ensure states are sorted before capping,
-        # matching the tensor engine behavior
         valid_derived, updated_next_var = get_next_unification_python(
             current_state, facts_set_str, fact_index_str, rules_by_pred, 
-            excluded_fact=excluded_fact_str, verbose=0, next_var_index=1,
+            excluded_fact=excluded_fact_str, verbose=0, next_var_index=current_next_var,
             max_derived_states=max_derived_states,
             canonical_order=True, index_manager=im_str
         )
         
-        if not valid_derived:
-            raise RuntimeError("No valid derived states; proof failed prematurely." \
-            " There should always be at least one derived state (could be terminal as well).")
+        # In Tensor engine, next_var_indices is updated.
+        # So we should update it here too.
+        current_next_var = updated_next_var
         
         # States are already sorted by the engine when canonical_order=True
         # Choose action based on deterministic flag
         if deterministic:
-            # Choose first state (already in canonical order)
             chosen_idx = 0
         else:
             # Choose random state

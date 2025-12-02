@@ -675,8 +675,9 @@ class BatchedEnv(EnvBase):
                 
                 self.next_var_indices.index_copy_(0, non_terminal_idx, updated_var_indices)
 
-                # Save raw counts for skip-unary check (before pruning)
+                # Save raw counts and derived states for skip-unary (before pruning)
                 raw_counts = derived_counts_subset.clone()
+                raw_derived = all_derived.clone() if self.skip_unary_actions else None
 
                 # Step 3: Postprocess A - validity + proof-safe cut
                 # This includes: memory prune non-terminals, padding limits, mark terminals, add non-terminals to memory
@@ -693,12 +694,13 @@ class BatchedEnv(EnvBase):
                 # For any row where a terminal is present, we'll handle it in skip_unary or final write
                 
                 # Step 5: Skip-unary loop (for remaining non-terminal rows)
-                # In exact-memory mode we already applied skip-unary directly
-                # to current states in _reset/_step, so we only run the
-                # batched skip-unary here for the Bloom filter backend.
+                # CRITICAL: Pass raw_derived (pre-pruning) to _skip_unary so it can properly
+                # identify unary rows before memory pruning affects the states.
+                # This matches SB3 behavior where skip_unary runs before memory pruning.
                 if self.skip_unary_actions:
                     all_derived, derived_counts_subset = self._skip_unary(
-                        non_terminal_idx, all_derived, derived_counts_subset, raw_counts=raw_counts
+                        non_terminal_idx, all_derived, derived_counts_subset, 
+                        raw_counts=raw_counts, raw_derived=raw_derived
                     )
                     if verbose:
                         self.debug_helper._log(3, f"[compute_derived] after skip_unary counts={derived_counts_subset}")
@@ -857,7 +859,8 @@ class BatchedEnv(EnvBase):
     # ---------------------------------------------------------------------
 
     
-    def _skip_unary(self, idx_subset: Tensor, derived_states: Tensor, derived_counts: Tensor, raw_counts: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+    def _skip_unary(self, idx_subset: Tensor, derived_states: Tensor, derived_counts: Tensor, 
+                    raw_counts: Optional[Tensor] = None, raw_derived: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
         """
         Skip-unary loop following proof-safe logic (Step 5):
         While a row (current state) is non-terminal and has exactly one non-terminal child:
@@ -874,6 +877,8 @@ class BatchedEnv(EnvBase):
             derived_counts: [A] number of valid derived states (post-processed)
             raw_counts: [A] number of raw derived states (before pruning). 
                         If provided, used for the FIRST iteration check to match sb3_env behavior.
+            raw_derived: [A, K, M, D] raw derived states (before memory pruning).
+                        If provided with raw_counts, used to identify unary rows before pruning.
         """
         if derived_states.numel() == 0:
             return derived_states, derived_counts
@@ -886,42 +891,60 @@ class BatchedEnv(EnvBase):
         iters = 0
         
         # Helper: identify rows with single non-terminal child
-        def _unary_nonterminal_rows(ds, dc, rc=None):
-            """Returns mask [A] for rows that have exactly one non-terminal child."""
+        def _unary_nonterminal_rows(ds, dc, rc=None, rd=None):
+            """Returns mask [A] for rows that have exactly one non-terminal child.
+            
+            When rc (raw_counts) is provided along with rd (raw_derived), we check
+            the RAW state for the unary condition, matching SB3's behavior where
+            skip_unary is evaluated before memory pruning.
+            """
             if ds.numel() == 0:
                 return torch.zeros(A, dtype=torch.bool, device=device)
             
             # Use raw counts if provided (for first iteration), otherwise derived counts
             counts_to_check = rc if rc is not None else dc
-            
             is_single = (counts_to_check == 1)
             
-            # For the predicate check, we look at the first child in ds.
-            # If rc=1 but dc=0 (pruned), ds has no valid child, so we can't skip.
-            # So we must also ensure dc >= 1 (actually dc=1 if rc=1 and we are here)
-            is_single = is_single & (dc >= 1)
+            # CRITICAL: When raw_derived is provided, use it for the terminal check
+            # This is because the post-processed ds might have False() injected
+            # after memory pruning, but we want to check the original derived state.
+            states_to_check = rd if rd is not None else ds
             
-            fp = ds[:, 0, 0, 0]  # first predicate of the unique child
+            # For the predicate check, we look at the first child
+            fp = states_to_check[:, 0, 0, 0]  # first predicate of the unique child
             is_term = self.unification_engine.is_terminal_pred(fp)
-            return is_single & ~is_term
+            
+            # Only process if we have a valid non-terminal state to follow
+            # If rd is provided, we allow dc=0 (pruned) as long as rc=1 and non-terminal in rd
+            if rd is not None and rc is not None:
+                return is_single & ~is_term
+            else:
+                # Original behavior: require dc >= 1
+                is_single = is_single & (dc >= 1)
+                return is_single & ~is_term
         
         # Start with rows that have single non-terminal children
-        # IMPORTANT: Use raw_counts for the first check if provided
-        unary_mask = _unary_nonterminal_rows(derived_states, derived_counts, raw_counts)
+        # IMPORTANT: Use raw_counts and raw_derived for the first check if provided
+        unary_mask = _unary_nonterminal_rows(derived_states, derived_counts, raw_counts, raw_derived)
         unary_idx = torch.arange(A, device=device)[unary_mask]
 
         if self.verbose >= 2:
+            # For debug logging, show the raw derived state if available
+            ds_for_log = raw_derived if raw_derived is not None else derived_states
             for i in range(min(3, unary_idx.numel())):
                 row = unary_idx[i]
                 env_idx = idx_subset[row].item()
                 current_state = self.current_queries[env_idx]
                 current_str = self.debug_helper._format_atoms(current_state)
-                derived_state = derived_states[row, 0]
+                derived_state = ds_for_log[row, 0]
                 derived_str = self.debug_helper._format_atoms(derived_state)
                 self.debug_helper._log(2, f"[skip_unary]  Unary in idx {env_idx}: current={current_str}, derived={derived_str}")
 
         if verbose:
             self.debug_helper._log(3, f"[skip_unary] Starting with {unary_idx.numel()} unary rows")
+
+        # For the first iteration, if raw_derived is provided, use it to get the promoted state
+        first_iteration_derived = raw_derived if raw_derived is not None else derived_states
 
         # Bounded iterations
         while unary_idx.numel() > 0 and iters < self.max_skip_unary_iters:
@@ -934,9 +957,15 @@ class BatchedEnv(EnvBase):
                 self.debug_helper._log(3, f"[skip_unary] Iteration {iters}: processing {uidx.numel()} rows")
 
             # Promote the single child to current state (will be added to memory in _postprocess)
-            promoted = derived_states[uidx, 0]  # [U, M, D]
+            # CRITICAL: For first iteration, use raw_derived if available (before memory pruning)
+            source_derived = first_iteration_derived if iters == 0 else derived_states
+            promoted = source_derived[uidx, 0]  # [U, M, D]
             if promoted.dtype != self.current_queries.dtype:
                 promoted = promoted.long()
+            
+            # After first iteration, clear first_iteration_derived reference
+            if iters == 0:
+                first_iteration_derived = derived_states
             
             # Check atom budget
             valid_atom = promoted[:, :, 0] != pad

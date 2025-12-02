@@ -111,7 +111,7 @@ class IndexManager:
         self.idx2constant: List[str] = ["<PAD>"] + const_list
 
         self.predicate_str2idx: Dict[str, int] = {s: i + 1 for i, s in enumerate(pred_list)}
-        print(f"DEBUG [Batched IndexManager]: First 10 predicates: {dict(list(self.predicate_str2idx.items())[:10])}")
+        # print(f"DEBUG [Batched IndexManager]: First 10 predicates: {dict(list(self.predicate_str2idx.items())[:10])}")
         self.idx2predicate: List[str] = ["<PAD>"] + pred_list
 
         # Template vars appear only in rules; we'll allocate lazily when rules are materialized

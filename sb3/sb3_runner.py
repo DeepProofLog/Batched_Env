@@ -9,17 +9,32 @@ from itertools import product
 from typing import Optional, List
 
 import numpy as np
-from sb3_utils import FileLogger
-from sb3_train import main
-from sb3_utils_config import (
-    load_experiment_configs,
-    parse_scalar,
-    coerce_config_value,
-    update_config_value,
-    parse_assignment,
-    get_available_gpus,
-    select_best_gpu,
-)
+try:
+    # Try relative import first (when sb3/ is in sys.path)
+    from sb3_utils import FileLogger
+    from sb3_train import main
+    from sb3_utils_config import (
+        load_experiment_configs,
+        parse_scalar,
+        coerce_config_value,
+        update_config_value,
+        parse_assignment,
+        get_available_gpus,
+        select_best_gpu,
+    )
+except ImportError:
+    # Fallback to package import (when imported as sb3.sb3_runner)
+    from sb3.sb3_utils import FileLogger
+    from sb3.sb3_train import main
+    from sb3.sb3_utils_config import (
+        load_experiment_configs,
+        parse_scalar,
+        coerce_config_value,
+        update_config_value,
+        parse_assignment,
+        get_available_gpus,
+        select_best_gpu,
+    )
 torch.set_float32_matmul_precision('high')
 # import gc
 # gc.disable()  

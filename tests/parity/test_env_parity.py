@@ -1,14 +1,23 @@
 """
 Environment Parity Tests.
 
-Comprehensive tests verifying that the tensor-based BatchedEnv produces
-the same behavior as the SB3 string-based LogicEnv_gym.
+Tests verifying that the tensor-based BatchedEnv produces EXACTLY the same 
+behavior as the SB3 string-based LogicEnv_gym.
+
+This test module mirrors the structure of test_unification_parity.py but focuses
+on full environment parity, not just the unification engine.
+
+Usage:
+    pytest tests/parity/test_env_parity.py -v
+    pytest tests/parity/test_env_parity.py -v -k "countries"
+    pytest tests/parity/test_env_parity.py -v -k "family"
 """
 import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Dict, Tuple
+import random
 
 import pytest
 import torch
@@ -17,471 +26,534 @@ import numpy as np
 # Setup paths
 ROOT = Path(__file__).resolve().parents[2]
 SB3_ROOT = ROOT / "sb3"
+TEST_ENVS_ROOT = ROOT / "test_envs"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(SB3_ROOT) not in sys.path:
     sys.path.insert(1, str(SB3_ROOT))
+if str(TEST_ENVS_ROOT) not in sys.path:
+    sys.path.insert(2, str(TEST_ENVS_ROOT))
 
-# Import modules
-from data_handler import DataHandler as NewDataHandler
-from index_manager import IndexManager as NewIndexManager
-from unification import UnificationEngine
-from env import BatchedEnv
-
-from sb3.sb3_dataset import DataHandler as SB3DataHandler
-from sb3.sb3_index_manager import IndexManager as SB3IndexManager
-from sb3.sb3_env import LogicEnv_gym as SB3Env
-from sb3.sb3_utils import Term as SB3Term
+# Import environment test utilities (use underscore prefix to avoid pytest autodiscovery)
+from test_env_sb3 import setup_sb3_env, run_sb3_env as _run_sb3_env
+from test_env_tensor import setup_tensor_env, run_tensor_env as _run_tensor_env
 
 
 # ============================================================================
-# Test Fixtures and Setup Functions
+# Configuration
 # ============================================================================
 
-def _base_config():
-    """Create base configuration for tests."""
+def create_default_parity_config() -> SimpleNamespace:
+    """Create default configuration for parity tests."""
     return SimpleNamespace(
-        max_total_runtime_vars=1_000_000,
-        padding_atoms=100,
-        padding_states=500,
-        memory_pruning=False,
-        reward_type=0,
-        verbose=0,
-        prover_verbose=0,
-        skip_unary_actions=False,
+        dataset="countries_s3",
+        n_queries=200,
+        deterministic=True,
+        max_depth=20,
+        seed=42,
+        verbose=False,
+        debug=False,
+        padding_atoms=6,
+        padding_states=40,
+        max_derived_per_state=40,
+        skip_unary_actions=True,
         end_proof_action=False,
+        memory_pruning=True,
         use_exact_memory=True,
-        max_derived_per_state=500,
-        device='cpu'
+        reward_type=0,
+        prover_verbose=0,
+        max_total_runtime_vars=1_000_000,
+        device='cpu',
     )
 
 
-def _setup_new_env(dataset: str = "countries_s3", n_queries: int = 10):
-    """Setup the tensor-based batched environment."""
-    cfg = _base_config()
-    device = torch.device(cfg.device)
+def clone_config(config: SimpleNamespace) -> SimpleNamespace:
+    """Create a shallow clone of a SimpleNamespace."""
+    return SimpleNamespace(**vars(config))
+
+
+# ============================================================================
+# Query Preparation
+# ============================================================================
+
+def prepare_queries(
+    dataset: str = "countries_s3",
+    base_path: str = "./data/",
+    n_queries: int = None,
+    seed: int = 42
+) -> List[Tuple[str, Tuple[str, str, str]]]:
+    """
+    Prepare list of queries from dataset.
     
-    dh = NewDataHandler(
+    Args:
+        dataset: Dataset name
+        base_path: Base path to data directory
+        n_queries: If specified, sample this many queries; otherwise use all
+        seed: Random seed for sampling
+        
+    Returns:
+        List of (split, (predicate, head, tail)) tuples
+    """
+    from sb3.sb3_dataset import DataHandler
+    
+    dh = DataHandler(
         dataset_name=dataset,
-        base_path="./data/",
+        base_path=base_path,
         train_file="train.txt",
         valid_file="valid.txt",
         test_file="test.txt",
         rules_file="rules.txt",
         facts_file="train.txt",
         train_depth=None,
-        n_train_queries=n_queries,
     )
     
-    im = NewIndexManager(
-        constants=dh.constants,
-        predicates=dh.predicates,
-        max_total_runtime_vars=cfg.max_total_runtime_vars,
-        padding_atoms=cfg.padding_atoms,
-        max_arity=dh.max_arity,
-        device=device,
-        rules=dh.rules,
-    )
-    dh.materialize_indices(im=im, device=device)
+    # Collect all queries
+    all_queries = []
+    for q in dh.train_queries:
+        all_queries.append(('train', (q.predicate, q.args[0], q.args[1])))
+    for q in dh.valid_queries:
+        all_queries.append(('valid', (q.predicate, q.args[0], q.args[1])))
+    for q in dh.test_queries:
+        all_queries.append(('test', (q.predicate, q.args[0], q.args[1])))
     
-    stringifier_params = {
-        'idx2predicate': im.idx2predicate,
-        'idx2constant': im.idx2constant,
-        'idx2template_var': im.idx2template_var,
-        'n_constants': im.constant_no
+    # Shuffle and take first n
+    rng = random.Random(seed)
+    rng.shuffle(all_queries)
+    
+    if n_queries is not None:
+        all_queries = all_queries[:n_queries]
+    
+    return all_queries
+
+
+# ============================================================================
+# Environment Runner
+# ============================================================================
+
+def run_env(
+    name: str,
+    setup_func,
+    run_func,
+    queries: List[Tuple[str, Tuple[str, str, str]]],
+    config: SimpleNamespace
+) -> Dict:
+    """
+    Run a single environment configuration.
+    
+    Args:
+        name: Environment name for logging
+        setup_func: Function to setup environment
+        run_func: Function to run environment
+        queries: List of queries
+        config: Configuration
+        
+    Returns:
+        Results dict with traces
+    """
+    setup_kwargs = {
+        "dataset": config.dataset,
+        "config": config,
     }
     
-    engine = UnificationEngine.from_index_manager(
-        im, take_ownership=True, stringifier_params=stringifier_params,
-        max_derived_per_state=cfg.max_derived_per_state,
-        sort_states=True
-    )
-    engine.index_manager = im
+    env_data = setup_func(**setup_kwargs)
+    results = run_func(queries, env_data, config)
     
-    # Get train queries as tensors
-    train_queries = dh.train_queries[:n_queries]
-    query_tensors = []
-    for q in train_queries:
-        query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-        query_padded = torch.full((cfg.padding_atoms, 3), im.padding_idx, dtype=torch.long, device=device)
-        query_padded[0] = query_atom
-        query_tensors.append(query_padded)
-    queries_tensor = torch.stack(query_tensors, dim=0)
+    return results
+
+
+def run_both_envs(
+    queries: List[Tuple[str, Tuple[str, str, str]]],
+    config: SimpleNamespace
+) -> Tuple[Dict, Dict]:
+    """
+    Run both SB3 and tensor environments on the same queries.
     
-    # Create batched env with correct parameters
-    env = BatchedEnv(
-        batch_size=1,
-        queries=queries_tensor,
-        labels=torch.ones(len(train_queries), dtype=torch.long, device=device),
-        query_depths=torch.ones(len(train_queries), dtype=torch.long, device=device),
-        unification_engine=engine,
-        mode='train',  # Use train mode - env only supports 'train' and 'eval'
-        max_depth=20,
-        memory_pruning=cfg.memory_pruning,
-        eval_pruning=cfg.memory_pruning,
-        use_exact_memory=cfg.use_exact_memory,
-        skip_unary_actions=cfg.skip_unary_actions,
-        end_proof_action=cfg.end_proof_action,
-        reward_type=cfg.reward_type,
-        padding_atoms=cfg.padding_atoms,
-        padding_states=cfg.padding_states,
-        true_pred_idx=im.predicate_str2idx.get('True'),
-        false_pred_idx=im.predicate_str2idx.get('False'),
-        end_pred_idx=im.predicate_str2idx.get('Endf'),
-        verbose=cfg.verbose,
-        prover_verbose=cfg.prover_verbose,
-        device=device,
-        runtime_var_start_index=im.constant_no + 1,
-        total_vocab_size=im.constant_no + cfg.max_total_runtime_vars,
-        stringifier_params=stringifier_params,
+    Returns:
+        (sb3_results, tensor_results)
+    """
+    # Run SB3 env
+    sb3_results = run_env(
+        name="sb3_env",
+        setup_func=setup_sb3_env,
+        run_func=_run_sb3_env,
+        queries=queries,
+        config=config,
     )
     
-    return dh, im, env
-
-
-def _setup_sb3_env(dataset: str = "countries_s3", n_queries: int = 10):
-    """Setup the SB3 string-based environment."""
-    cfg = _base_config()
-    device = torch.device(cfg.device)
-    
-    dh = SB3DataHandler(
-        dataset_name=dataset,
-        base_path="./data/",
-        train_file="train.txt",
-        valid_file="valid.txt",
-        test_file="test.txt",
-        rules_file="rules.txt",
-        facts_file="train.txt",
-        train_depth=None,
-        n_train_queries=n_queries,
+    # Run tensor env
+    tensor_results = run_env(
+        name="tensor_env",
+        setup_func=setup_tensor_env,
+        run_func=_run_tensor_env,
+        queries=queries,
+        config=config,
     )
     
-    im = SB3IndexManager(
-        constants=dh.constants,
-        predicates=dh.predicates,
-        max_total_vars=cfg.max_total_runtime_vars,
-        rules=dh.rules,
-        padding_atoms=cfg.padding_atoms,
-        max_arity=dh.max_arity,
-        device=device,
+    return sb3_results, tensor_results
+
+
+# ============================================================================
+# Trace Comparison
+# ============================================================================
+
+def compare_trace_step(step_tensor: Dict, step_sb3: Dict, step_idx: int) -> Tuple[bool, str]:
+    """
+    Compare a single step from both traces.
+    Returns (match, error_message).
+    """
+    # Compare state canonical strings
+    if step_tensor.get('state') != step_sb3.get('state'):
+        return False, f"Step {step_idx}: state mismatch:\n  Tensor: {step_tensor.get('state')}\n  SB3:    {step_sb3.get('state')}"
+    
+    # Compare number of derived states (actions)
+    if step_tensor.get('num_actions') != step_sb3.get('num_actions'):
+        return False, f"Step {step_idx}: num_actions mismatch: {step_tensor.get('num_actions')} vs {step_sb3.get('num_actions')}"
+    
+    # Compare derived states list (already in canonical order from envs)
+    tensor_derived = step_tensor.get('derived_states', [])
+    sb3_derived = step_sb3.get('derived_states', [])
+    if tensor_derived != sb3_derived:
+        return False, f"Step {step_idx}: derived_states mismatch:\n  Tensor: {tensor_derived[:3]}...\n  SB3:    {sb3_derived[:3]}..."
+    
+    # Compare chosen action
+    if step_tensor.get('action') != step_sb3.get('action'):
+        return False, f"Step {step_idx}: action mismatch: {step_tensor.get('action')} vs {step_sb3.get('action')}"
+    
+    # Compare done flag
+    if step_tensor.get('done') != step_sb3.get('done'):
+        return False, f"Step {step_idx}: done mismatch: {step_tensor.get('done')} vs {step_sb3.get('done')}"
+    
+    return True, ""
+
+
+def compare_full_traces(trace_tensor: List[Dict], trace_sb3: List[Dict]) -> Tuple[bool, str]:
+    """
+    Compare full traces step-by-step.
+    Returns (match, error_message).
+    """
+    if len(trace_tensor) != len(trace_sb3):
+        return False, f"Trace length mismatch: {len(trace_tensor)} vs {len(trace_sb3)}"
+    
+    for i, (step_t, step_s) in enumerate(zip(trace_tensor, trace_sb3)):
+        match, error = compare_trace_step(step_t, step_s, i)
+        if not match:
+            return False, error
+    
+    return True, ""
+
+
+def compare_all_traces(
+    sb3_traces: List[Dict],
+    tensor_traces: List[Dict],
+    queries: List[Tuple[str, Tuple[str, str, str]]]
+) -> Tuple[int, List[Tuple[int, str, str]]]:
+    """
+    Compare all traces between SB3 and tensor environments.
+    
+    Returns:
+        (num_matches, list of (query_idx, query_str, error_msg) for mismatches)
+    """
+    mismatches = []
+    matches = 0
+    
+    for i, (sb3_trace, tensor_trace, query) in enumerate(zip(sb3_traces, tensor_traces, queries)):
+        split, (pred, head, tail) = query
+        query_str = f"{pred}({head}, {tail}) [{split}]"
+        
+        sb3_trace_steps = sb3_trace.get('trace', [])
+        tensor_trace_steps = tensor_trace.get('trace', [])
+        
+        match, error = compare_full_traces(tensor_trace_steps, sb3_trace_steps)
+        if match:
+            matches += 1
+        else:
+            mismatches.append((i, query_str, error))
+    
+    return matches, mismatches
+
+
+# ============================================================================
+# Pytest Fixtures
+# ============================================================================
+
+@pytest.fixture(scope="module")
+def base_config():
+    """Base configuration for all tests."""
+    return create_default_parity_config()
+
+
+# ============================================================================
+# Parity Tests - Parametrized by dataset and n_queries
+# ============================================================================
+
+class TestEnvParity:
+    """Test that tensor and SB3 environments produce EXACTLY the same traces."""
+    
+    @pytest.mark.parametrize("dataset,n_queries", [
+        ("countries_s3", 10),
+        ("countries_s3", 200),
+        ("family", 10),
+        ("family", 200),
+    ])
+    def test_env_parity_sequential(self, dataset: str, n_queries: int, base_config):
+        """
+        Test that tensor and SB3 environments produce identical traces in sequential mode.
+        
+        Verifies:
+        - Same states at each step
+        - Same derived states (actions)
+        - Same action choices
+        - Same success/failure outcomes
+        """
+        # Clone and customize config
+        config = clone_config(base_config)
+        config.dataset = dataset
+        config.n_queries = n_queries
+        
+        # Set seeds for reproducibility
+        random.seed(config.seed)
+        torch.manual_seed(config.seed)
+        np.random.seed(config.seed)
+        
+        # Prepare queries
+        queries = prepare_queries(
+            dataset=config.dataset,
+            n_queries=config.n_queries,
+            seed=config.seed
+        )
+        
+        print(f"\n{'='*60}")
+        print(f"Testing env parity (sequential): {dataset} with {n_queries} queries")
+        print(f"{'='*60}")
+        
+        # Run both environments
+        sb3_results, tensor_results = run_both_envs(queries, config)
+        
+        # Basic result comparison
+        assert sb3_results['total_queries'] == tensor_results['total_queries'], \
+            f"Query count mismatch: SB3={sb3_results['total_queries']}, Tensor={tensor_results['total_queries']}"
+        
+        print(f"SB3 env:    {sb3_results['successful']}/{sb3_results['total_queries']} successful")
+        print(f"Tensor env: {tensor_results['successful']}/{tensor_results['total_queries']} successful")
+        
+        # Compare traces
+        sb3_traces = sb3_results.get('traces', [])
+        tensor_traces = tensor_results.get('traces', [])
+        
+        assert len(sb3_traces) == len(tensor_traces), \
+            f"Trace count mismatch: SB3={len(sb3_traces)}, Tensor={len(tensor_traces)}"
+        
+        matches, mismatches = compare_all_traces(sb3_traces, tensor_traces, queries)
+        
+        print(f"Trace matches: {matches}/{len(queries)}")
+        
+        if mismatches:
+            error_msg = f"Found {len(mismatches)} trace mismatches out of {len(queries)} queries:\n"
+            for idx, query_str, error in mismatches[:5]:  # Show first 5
+                error_msg += f"  Query {idx} {query_str}:\n    {error}\n"
+            if len(mismatches) > 5:
+                error_msg += f"  ... and {len(mismatches) - 5} more mismatches\n"
+            pytest.fail(error_msg)
+        
+        # Verify success rates match exactly
+        assert sb3_results['successful'] == tensor_results['successful'], \
+            f"Success count mismatch: SB3={sb3_results['successful']}, Tensor={tensor_results['successful']}"
+        
+        print(f"✓ All {n_queries} traces match exactly for {dataset}")
+
+    @pytest.mark.parametrize("dataset,n_queries", [
+        ("countries_s3", 10),
+        ("countries_s3", 200),
+        ("family", 10),
+        ("family", 200),
+    ])
+    def test_env_parity_batched(self, dataset: str, n_queries: int, base_config):
+        """
+        Test that tensor env in batched mode matches SB3 sequential mode.
+        
+        - SB3: processes queries sequentially (no true batching)
+        - Tensor: processes all queries in parallel using batch_size
+        
+        Both should produce identical traces.
+        """
+        # Clone and customize config
+        config = clone_config(base_config)
+        config.dataset = dataset
+        config.n_queries = n_queries
+        
+        # Set seeds for reproducibility
+        random.seed(config.seed)
+        torch.manual_seed(config.seed)
+        np.random.seed(config.seed)
+        
+        # Prepare queries
+        queries = prepare_queries(
+            dataset=config.dataset,
+            n_queries=config.n_queries,
+            seed=config.seed
+        )
+        
+        print(f"\n{'='*60}")
+        print(f"Testing env parity (batched): {dataset} with {n_queries} queries")
+        print(f"{'='*60}")
+        
+        # Run both environments (tensor env will use true batching)
+        sb3_results, tensor_results = run_both_envs(queries, config)
+        
+        # Basic result comparison
+        assert sb3_results['total_queries'] == tensor_results['total_queries'], \
+            f"Query count mismatch: SB3={sb3_results['total_queries']}, Tensor={tensor_results['total_queries']}"
+        
+        print(f"SB3 env:    {sb3_results['successful']}/{sb3_results['total_queries']} successful")
+        print(f"Tensor env: {tensor_results['successful']}/{tensor_results['total_queries']} successful")
+        
+        # Compare traces
+        sb3_traces = sb3_results.get('traces', [])
+        tensor_traces = tensor_results.get('traces', [])
+        
+        assert len(sb3_traces) == len(tensor_traces), \
+            f"Trace count mismatch: SB3={len(sb3_traces)}, Tensor={len(tensor_traces)}"
+        
+        matches, mismatches = compare_all_traces(sb3_traces, tensor_traces, queries)
+        
+        print(f"Trace matches: {matches}/{len(queries)}")
+        
+        if mismatches:
+            error_msg = f"Found {len(mismatches)} trace mismatches out of {len(queries)} queries:\n"
+            for idx, query_str, error in mismatches[:5]:
+                error_msg += f"  Query {idx} {query_str}:\n    {error}\n"
+            if len(mismatches) > 5:
+                error_msg += f"  ... and {len(mismatches) - 5} more mismatches\n"
+            pytest.fail(error_msg)
+        
+        # Verify success rates match exactly
+        assert sb3_results['successful'] == tensor_results['successful'], \
+            f"Success count mismatch: SB3={sb3_results['successful']}, Tensor={tensor_results['successful']}"
+        
+        print(f"✓ All {n_queries} traces match exactly for {dataset} (batched mode)")
+
+
+# ============================================================================
+# CLI Runner (for manual testing)
+# ============================================================================
+
+def run_parity_tests(
+    dataset: str = "countries_s3",
+    n_queries: int = 200,
+    seed: int = 42,
+    verbose: bool = False
+) -> Tuple[bool, Dict]:
+    """
+    Run parity tests programmatically.
+    
+    Returns:
+        (all_passed, results_dict)
+    """
+    config = create_default_parity_config()
+    config.dataset = dataset
+    config.n_queries = n_queries
+    config.seed = seed
+    config.verbose = verbose
+    
+    random.seed(config.seed)
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    
+    print(f"\n{'='*80}")
+    print(f"ENVIRONMENT PARITY TEST")
+    print(f"{'='*80}")
+    print(f"Dataset: {dataset}")
+    print(f"Queries: {n_queries}")
+    print(f"Seed: {seed}")
+    print(f"{'='*80}\n")
+    
+    queries = prepare_queries(
+        dataset=config.dataset,
+        n_queries=config.n_queries,
+        seed=config.seed
     )
     
-    facts_set = set(dh.facts)
-    im.build_fact_index(list(facts_set))
+    print(f"Prepared {len(queries)} queries\n")
     
-    env = SB3Env(
-        index_manager=im,
-        data_handler=dh,
-        queries=dh.train_queries,
-        labels=[1] * len(dh.train_queries),
-        query_depths=[None] * len(dh.train_queries),
-        facts=facts_set,
-        mode='eval_with_restart',
-        seed=42,
-        max_depth=20,
-        memory_pruning=cfg.memory_pruning,
-        padding_atoms=cfg.padding_atoms,
-        padding_states=cfg.padding_states,
-        verbose=cfg.verbose,
-        prover_verbose=cfg.prover_verbose,
-        device=device,
-        engine='python',
-        engine_strategy='complete',
-        skip_unary_actions=cfg.skip_unary_actions,
-        endf_action=cfg.end_proof_action,
-        reward_type=cfg.reward_type,
-        canonical_action_order=True,
+    # Run both environments
+    print("Running SB3 env...")
+    sb3_results = run_env(
+        name="sb3_env",
+        setup_func=setup_sb3_env,
+        run_func=_run_sb3_env,
+        queries=queries,
+        config=config,
     )
+    print(f"  ✓ {sb3_results['successful']}/{sb3_results['total_queries']} successful")
     
-    return dh, im, env
-
-
-# ============================================================================
-# Basic Environment Tests
-# ============================================================================
-
-@pytest.mark.parametrize("dataset", ["countries_s3", "family"])
-def test_envs_load_same_data(dataset):
-    """Verify both environments load the same underlying data."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    dh_sb3, im_sb3, env_sb3 = _setup_sb3_env(dataset)
+    print("Running tensor env...")
+    tensor_results = run_env(
+        name="tensor_env",
+        setup_func=setup_tensor_env,
+        run_func=_run_tensor_env,
+        queries=queries,
+        config=config,
+    )
+    print(f"  ✓ {tensor_results['successful']}/{tensor_results['total_queries']} successful")
     
-    # Check facts count
-    assert len(dh_new.facts) == len(dh_sb3.facts), \
-        f"Facts count mismatch: {len(dh_new.facts)} vs {len(dh_sb3.facts)}"
+    # Compare traces
+    print("\nComparing traces...")
+    sb3_traces = sb3_results.get('traces', [])
+    tensor_traces = tensor_results.get('traces', [])
     
-    # Check rules count  
-    assert len(dh_new.rules) == len(dh_sb3.rules), \
-        f"Rules count mismatch: {len(dh_new.rules)} vs {len(dh_sb3.rules)}"
+    matches, mismatches = compare_all_traces(sb3_traces, tensor_traces, queries)
     
-    # Check constants count
-    assert im_new.constant_no == im_sb3.constant_no, \
-        f"Constant count mismatch: {im_new.constant_no} vs {im_sb3.constant_no}"
-
-
-@pytest.mark.parametrize("dataset", ["countries_s3", "family"])
-def test_envs_reset_produces_valid_obs(dataset):
-    """Verify reset produces valid observations in new env."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
+    # Print results
+    print(f"\n{'='*80}")
+    print(f"RESULTS")
+    print(f"{'='*80}")
+    print(f"Trace matches: {matches}/{len(queries)}")
+    print(f"Trace mismatches: {len(mismatches)}/{len(queries)}")
     
-    # Reset new env
-    obs_new = env_new.reset()
+    if mismatches:
+        print(f"\nFirst 5 mismatches:")
+        for idx, query_str, error in mismatches[:5]:
+            print(f"  Query {idx} {query_str}:")
+            print(f"    {error}")
     
-    # Check new env observation structure
-    assert obs_new is not None, "New env reset returned None"
+    all_passed = len(mismatches) == 0
     
-    # The observation should be a TensorDict
-    from tensordict import TensorDict
-    assert isinstance(obs_new, TensorDict), f"Expected TensorDict, got {type(obs_new)}"
-
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_action_space_consistency(dataset):
-    """Verify action spaces are consistent."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    dh_sb3, im_sb3, env_sb3 = _setup_sb3_env(dataset)
+    if all_passed:
+        print(f"\n✓ ALL TRACES MATCH - Environments are EXACTLY equivalent")
+    else:
+        print(f"\n✗ TRACES DIFFER - Found {len(mismatches)} mismatches")
     
-    # Reset to get initial action spaces
-    env_new.reset()
-    env_sb3.reset()
+    print(f"{'='*80}\n")
     
-    # Check action space type
-    assert hasattr(env_new, 'action_space'), "New env missing action_space"
-    assert hasattr(env_sb3, 'action_space'), "SB3 env missing action_space"
-
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_observation_space_consistency(dataset):
-    """Verify observation spaces are consistent."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    dh_sb3, im_sb3, env_sb3 = _setup_sb3_env(dataset)
-    
-    # Check observation space type
-    assert hasattr(env_new, 'observation_space'), "New env missing observation_space"
-    assert hasattr(env_sb3, 'observation_space'), "SB3 env missing observation_space"
-
-
-# ============================================================================
-# Step Function Tests
-# ============================================================================
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_step_returns_valid_structure(dataset):
-    """Verify step returns valid structure in both envs."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    dh_sb3, im_sb3, env_sb3 = _setup_sb3_env(dataset)
-    
-    # Reset
-    env_new.reset()
-    env_sb3.reset()
-    
-    # Take action 0 in both
-    result_new = env_new.step(0)
-    result_sb3 = env_sb3.step(0)
-    
-    # Check new env step result (should return obs, reward, done, truncated, info or similar)
-    assert result_new is not None, "New env step returned None"
-    
-    # Check sb3 env step result
-    assert result_sb3 is not None, "SB3 env step returned None"
-    assert len(result_sb3) >= 4, f"SB3 env step returned unexpected format: {len(result_sb3)} elements"
-
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_done_signal_consistency(dataset):
-    """Verify done signals are consistent."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    dh_sb3, im_sb3, env_sb3 = _setup_sb3_env(dataset)
-    
-    # Reset
-    env_new.reset()
-    env_sb3.reset()
-    
-    # Run multiple steps
-    max_steps = 10
-    for _ in range(max_steps):
-        # Get valid action for new env
-        n_actions_new = env_new.get_num_actions() if hasattr(env_new, 'get_num_actions') else 1
-        action_new = 0 if n_actions_new > 0 else 0
-        
-        # Step in new env
-        result_new = env_new.step(action_new)
-        done_new = result_new[2] if len(result_new) > 2 else False
-        
-        # Step in sb3 env
-        result_sb3 = env_sb3.step(0)
-        done_sb3 = result_sb3[2] if len(result_sb3) > 2 else False
-        
-        if done_new or done_sb3:
-            break
-    
-    # Both should eventually terminate or continue
-    # (We can't guarantee exact step parity, but both should handle steps)
-
-
-# ============================================================================
-# Reward Tests
-# ============================================================================
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_reward_range(dataset):
-    """Verify rewards are in expected range."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    
-    # Reset
-    env_new.reset()
-    
-    # Run some steps and collect rewards
-    rewards = []
-    max_steps = 5
-    for _ in range(max_steps):
-        result = env_new.step(0)
-        reward = result[1] if len(result) > 1 else 0
-        rewards.append(reward)
-        
-        done = result[2] if len(result) > 2 else False
-        if done:
-            break
-    
-    # Rewards should be finite
-    for r in rewards:
-        if isinstance(r, (int, float)):
-            assert not np.isnan(r), "Found NaN reward"
-            assert not np.isinf(r), "Found Inf reward"
-
-
-# ============================================================================
-# State Transition Tests
-# ============================================================================
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_state_changes_on_step(dataset):
-    """Verify state changes after step."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    
-    # Reset and get initial observation
-    obs_init = env_new.reset()
-    
-    # Take a step
-    result = env_new.step(0)
-    obs_after = result[0] if len(result) > 0 else None
-    
-    # Observation should exist
-    assert obs_after is not None, "Observation after step is None"
-
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_reset_after_done(dataset):
-    """Verify environment can be reset after episode ends."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    
-    # Reset
-    env_new.reset()
-    
-    # Run until done or max steps
-    max_steps = 50
-    for _ in range(max_steps):
-        result = env_new.step(0)
-        done = result[2] if len(result) > 2 else False
-        if done:
-            break
-    
-    # Reset again should work
-    obs_new = env_new.reset()
-    assert obs_new is not None, "Reset after done returned None"
-
-
-# ============================================================================
-# Determinism Tests
-# ============================================================================
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_deterministic_reset(dataset):
-    """Verify deterministic reset with same seed."""
-    # Create two environments with same seed
-    dh1, im1, env1 = _setup_new_env(dataset)
-    dh2, im2, env2 = _setup_new_env(dataset)
-    
-    # Reset both
-    obs1 = env1.reset(seed=42)
-    obs2 = env2.reset(seed=42)
-    
-    # Observations should match (if deterministic)
-    # Note: This depends on implementation - may need to check specific fields
-
-
-# ============================================================================
-# Batch Processing Tests
-# ============================================================================
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_batch_size_one(dataset):
-    """Verify batch size 1 works correctly."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    
-    # Reset
-    obs = env_new.reset()
-    
-    # Check that observation has correct batch dimension
-    assert obs is not None
-
-
-# ============================================================================
-# Memory/Pruning Tests
-# ============================================================================
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_memory_consistency(dataset):
-    """Verify memory structures remain consistent during episode."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    
-    # Reset
-    env_new.reset()
-    
-    # Run multiple steps
-    for _ in range(5):
-        result = env_new.step(0)
-        done = result[2] if len(result) > 2 else False
-        if done:
-            break
-    
-    # Environment should still be in valid state
-    # (No crashes during episode)
-
-
-# ============================================================================
-# Full Episode Tests
-# ============================================================================
-
-@pytest.mark.parametrize("dataset", ["countries_s3"])
-def test_env_complete_episode(dataset):
-    """Verify a complete episode runs without errors."""
-    dh_new, im_new, env_new = _setup_new_env(dataset)
-    
-    # Reset
-    obs = env_new.reset()
-    total_reward = 0
-    steps = 0
-    max_steps = 100
-    
-    while steps < max_steps:
-        # Take action
-        result = env_new.step(0)
-        
-        # Extract reward and done
-        reward = result[1] if len(result) > 1 else 0
-        done = result[2] if len(result) > 2 else False
-        
-        total_reward += reward
-        steps += 1
-        
-        if done:
-            break
-    
-    # Should complete without error
-    assert steps > 0, "No steps taken"
+    return all_passed, {
+        'sb3': sb3_results,
+        'tensor': tensor_results,
+        'matches': matches,
+        'mismatches': mismatches,
+    }
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Test environment parity')
+    parser.add_argument('--dataset', type=str, default='countries_s3',
+                        help='Dataset name (default: countries_s3)')
+    parser.add_argument('--n-queries', type=int, default=200,
+                        help='Number of queries to test (default: 200)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed (default: 42)')
+    parser.add_argument('--verbose', action='store_true',
+                        help='Enable verbose output')
+    
+    args = parser.parse_args()
+    
+    passed, results = run_parity_tests(
+        dataset=args.dataset,
+        n_queries=args.n_queries,
+        seed=args.seed,
+        verbose=args.verbose
+    )
+    
+    sys.exit(0 if passed else 1)

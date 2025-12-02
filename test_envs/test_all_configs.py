@@ -32,8 +32,8 @@ from types import SimpleNamespace
 # Import test modules
 from test_envs.test_engine_sb3 import setup_sb3_engine, test_sb3_engine
 from test_envs.test_engine_tensor import setup_tensor_engine, test_tensor_engine
-from test_envs.test_env_sb3 import setup_sb3_env, test_sb3_env_batch
-from test_envs.test_env_tensor import setup_tensor_env, test_tensor_env_batched, test_tensor_env
+from test_envs.test_env_sb3 import setup_sb3_env, run_sb3_env
+from test_envs.test_env_tensor import setup_tensor_env, run_tensor_env, run_tensor_env
 from test_envs.test_env_eval import test_tensor_env
 from test_envs.test_env_rollout import test_tensor_rollout
 
@@ -164,7 +164,7 @@ class Configs:
         name="sb3_env",
         description="SB3 env (string-based environment)",
         setup_func=setup_sb3_env,
-        test_func=test_sb3_env_batch,
+        test_func=run_sb3_env,
         setup_kwargs={},
         has_traces=True,
         category="environment"
@@ -174,7 +174,7 @@ class Configs:
         name="tensor_env",
         description="Eval env (environment tested via evaluate_policy)",
         setup_func=None,
-        test_func=test_tensor_env,
+        test_func=run_tensor_env,
         has_traces=False,
         category="environment"
     )

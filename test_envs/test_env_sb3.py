@@ -7,7 +7,10 @@ import os
 import sys
 root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, root_path)
-sys.path.insert(0, os.path.join(root_path, 'str_based'))
+# CRITICAL: Add sb3 folder to path so that relative imports within sb3 work correctly
+# This ensures sb3_utils.Term is the same class everywhere
+sb3_path = os.path.join(root_path, 'sb3')
+sys.path.insert(0, sb3_path)
 
 import random
 import torch
@@ -15,11 +18,12 @@ import numpy as np
 from typing import Tuple, Dict, List
 from types import SimpleNamespace
 
-from sb3.sb3_dataset import DataHandler as StrDataHandler
-from sb3.sb3_index_manager import IndexManager as StrIndexManager
-from sb3.sb3_env import LogicEnv_gym as StrEnv
-from sb3.sb3_utils import Term as StrTerm
-from sb3.sb3_unification import canonicalize_state_to_str
+# Import using relative names (same as sb3_env.py does internally)
+from sb3_dataset import DataHandler as StrDataHandler
+from sb3_index_manager import IndexManager as StrIndexManager
+from sb3_env import LogicEnv_gym as StrEnv
+from sb3_utils import Term as StrTerm
+from sb3_unification import state_to_str
 
 
 def get_default_sb3_env_config() -> SimpleNamespace:
@@ -115,7 +119,7 @@ def setup_sb3_env(
     return str_env, im_str, dh_str
 
 
-def test_sb3_env_single_query(
+def run_sb3_env_single_query(
     query_tuple: Tuple[str, str, str],
     env_data: Tuple,
     split: str = 'train',
@@ -181,7 +185,7 @@ def test_sb3_env_single_query(
             is_success_state = all(term.predicate == 'True' for term in state)
             trace.append({
                 'step': steps,
-                'state': canonicalize_state_to_str(state),
+                'state': state_to_str(state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -207,11 +211,11 @@ def test_sb3_env_single_query(
             action = rng.choice(range(num_actions))
         
         # Build derived states list for trace (already in canonical order)
-        derived_states_canonical = [canonicalize_state_to_str(derived_states[i]) for i in range(num_actions)]
+        derived_states_canonical = [state_to_str(derived_states[i]) for i in range(num_actions)]
         
         trace.append({
             'step': steps,
-            'state': canonicalize_state_to_str(state),
+            'state': state_to_str(state),
             'derived_states': derived_states_canonical,
             'num_actions': num_actions,
             'action': action,
@@ -252,13 +256,16 @@ def test_sb3_env_single_query(
     }
 
 
-def test_sb3_env_batch(
+def run_sb3_env(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     env_data: Tuple,
     config: SimpleNamespace
 ) -> Dict:
     """
     Test multiple queries using the SB3 environment.
+    
+    Uses proper reset/step calls directly (not calling _single_query).
+    SB3 environment doesn't have true batching, so queries are processed sequentially.
     
     Args:
         queries: List of (split, (predicate, head, tail))
@@ -277,15 +284,101 @@ def test_sb3_env_batch(
     max_depth = config.max_depth
     seed = config.seed
     verbose = config.verbose
+    
+    str_env, im_str, dh_str = env_data
     results = []
     
     for idx, (split, query_tuple) in enumerate(queries):
-        result = test_sb3_env_single_query(
-            query_tuple, env_data, split=split,
-            deterministic=deterministic, max_depth=max_depth,
-            verbose=verbose and idx < 3, seed=seed + idx
-        )
-        results.append(result)
+        p, h, t = query_tuple
+        
+        # Setup query
+        q_str = StrTerm(predicate=p, args=(h, t))
+        label = 1  # All queries are true
+        
+        # Reset environment with the query using proper reset call
+        str_env.current_query = q_str
+        str_env.current_label = label
+        str_env.current_query_depth_value = None
+        str_obs, _ = str_env._reset([q_str], label)
+        str_env.current_label = label  # Re-ensure after reset
+        
+        # Setup RNG for this query
+        rng = random.Random(seed + idx)
+        
+        # Run episode using step loop
+        total_reward = 0.0
+        steps = 0
+        trace = []
+        done_flag = False
+        str_info = {}
+        
+        while steps < max_depth and not done_flag:
+            # Get current state info
+            state = str_env.tensordict['state']
+            derived_states = str_env.tensordict['derived_states']
+            action_mask = str_obs['action_mask']
+            num_actions = safe_item(action_mask.sum())
+            
+            if num_actions == 0:
+                # Terminal state - check if it's a success
+                is_success_state = all(term.predicate == 'True' for term in state)
+                trace.append({
+                    'step': steps,
+                    'state': state_to_str(state),
+                    'derived_states': [],
+                    'num_actions': 0,
+                    'action': None,
+                    'done': True,
+                    'reward': safe_item(str_env.tensordict.get('reward', 0))
+                })
+                done_flag = True
+                if 'is_success' in str_obs:
+                    str_info = {'is_success': str_obs['is_success']}
+                else:
+                    str_info = {'is_success': is_success_state}
+                break
+            
+            # Choose action
+            if deterministic:
+                action = 0  # First action (canonical order)
+            else:
+                action = rng.choice(range(num_actions))
+            
+            # Build derived states list for trace
+            derived_states_canonical = [state_to_str(derived_states[i]) for i in range(num_actions)]
+            
+            trace.append({
+                'step': steps,
+                'state': state_to_str(state),
+                'derived_states': derived_states_canonical,
+                'num_actions': num_actions,
+                'action': action,
+                'done': False,
+                'reward': 0.0
+            })
+            
+            if verbose and idx < 3 and steps < 3:
+                print(f"  Query {idx+1}, Step {steps}: {num_actions} actions, chose {action}")
+            
+            # Take step
+            str_obs, str_reward, done_flag, truncated, str_info = str_env.step(action)
+            total_reward += safe_item(str_reward)
+            
+            # Update last trace entry with reward
+            if trace:
+                trace[-1]['reward'] = safe_item(str_reward)
+            
+            steps += 1
+        
+        # Get success status
+        success = str_info.get('is_success', False)
+        
+        results.append({
+            'success': success,
+            'steps': steps,
+            'reward': total_reward,
+            'trace': trace
+        })
         
         if not verbose and (idx + 1) % 50 == 0:
             print(f"  Processed {idx + 1}/{len(queries)} queries...")

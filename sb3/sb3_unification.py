@@ -1,14 +1,13 @@
 from typing import List, Dict, Set, Tuple, FrozenSet, Optional, TYPE_CHECKING
 try:
-    from sb3.sb3_utils import Term, Rule
-except ImportError:
+    # Try relative import first (when sb3/ is in sys.path)
     from sb3_utils import Term, Rule
+except ImportError:
+    # Fallback to package import (when imported as sb3.sb3_unification)
+    from sb3.sb3_utils import Term, Rule
 
 if TYPE_CHECKING:
-    try:
-        from sb3.sb3_index_manager import IndexManager
-    except ImportError:
-        from sb3_index_manager import IndexManager
+    from sb3_index_manager import IndexManager
 
 def is_variable(arg: str) -> bool:
     """Check if an argument is a variable."""
@@ -300,13 +299,6 @@ def _canonical_order_key(state: List[Term], index_manager: 'IndexManager') -> Tu
 def state_to_str(state: List[Term]) -> str:
     """Convert a state (list of Terms) to a string representation.
     
-    This conversion preserves the order of atoms as-is, but normalizes 
-    variable names to Var_1, Var_2, ... in order of first appearance.
-    This ensures consistent output between tensor and string engines.
-    
-    Note: This is NOT canonicalization - atoms are not sorted, only variable
-    names are normalized for display purposes.
-    
     Args:
         state: List of Term objects representing the state
         
@@ -316,29 +308,17 @@ def state_to_str(state: List[Term]) -> str:
     if not state:
         return ''
     
-    # First pass: collect all variables in order of first appearance
-    var_mapping: Dict[str, str] = {}
-    next_var_num = 1
-    for term in state:
-        for arg in term.args:
-            if isinstance(arg, str) and (arg.startswith('Var') or is_variable(arg)):
-                if arg not in var_mapping:
-                    var_mapping[arg] = f"Var_{next_var_num}"
-                    next_var_num += 1
-    
-    # Second pass: build string with normalized variable names
+    # Build string with actual variable names (no normalization)
     atoms: List[str] = []
     for term in state:
         if term.predicate in ['True', 'False'] and (not term.args or all(a is None for a in term.args)):
             atoms.append(f"{term.predicate}()")
         else:
-            normalized_args: List[str] = []
+            # Use actual argument values as-is
+            args_strs: List[str] = []
             for arg in term.args:
-                if isinstance(arg, str) and (arg.startswith('Var') or is_variable(arg)):
-                    normalized_args.append(var_mapping[arg])
-                else:
-                    normalized_args.append(str(arg))
-            atoms.append(f"{term.predicate}({','.join(normalized_args)})")
+                args_strs.append(str(arg))
+            atoms.append(f"{term.predicate}({','.join(args_strs)})")
     
     return '|'.join(atoms)
 

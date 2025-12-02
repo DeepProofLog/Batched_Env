@@ -3,9 +3,11 @@ import itertools
 import torch
 import numpy as np
 try:
-    from sb3.sb3_utils import is_variable, Term, Rule
-except ImportError:
+    # Try relative import first (when sb3/ is in sys.path)
     from sb3_utils import is_variable, Term, Rule
+except ImportError:
+    # Fallback to package import (when imported as sb3.sb3_index_manager)
+    from sb3.sb3_utils import is_variable, Term, Rule
 from functools import lru_cache
 
 class IndexManager():
@@ -45,6 +47,9 @@ class IndexManager():
         self.rules_by_pred = {}
         for r in rules:
             self.rules_by_pred.setdefault(r.head.predicate, []).append(r)
+        
+        # Template variable indices will be computed after create_global_idx()
+        self.template_var_str2idx: Dict[str, int] = {}
             
         self.padding_atoms = padding_atoms
         self.constants_images = constants_images
@@ -63,6 +68,11 @@ class IndexManager():
 
         # --- Global indices for Constants and Predicates ---
         self.create_global_idx()
+
+        # --- Compute template variable indices (to match tensor engine behavior) ---
+        # The tensor engine assigns indices to variables in rules starting from constant_no + 1
+        # We need to compute the same max index to ensure runtime variables start at the same point
+        self._compute_template_variable_indices()
 
         # --- Fixed Variable indices ---
         # Variable indices start after the last constant index
@@ -137,6 +147,37 @@ class IndexManager():
         print(f"DEBUG [SB3 IndexManager]: First 10 predicates: {dict(list(self.predicate_str2idx.items())[:10])}")
 
         self.predicate_no = current_idx - 1
+
+    def _compute_template_variable_indices(self):
+        """Compute template variable indices from rules (to match tensor engine behavior).
+        
+        The tensor engine assigns indices to variables in rules:
+        - X, Z, Y, K, etc. get indices starting from constant_no + 1
+        - Variables are indexed in the order they first appear in rules
+        
+        This method builds the same mapping so that next_var_start_for_proofs
+        can be computed identically to the tensor engine.
+        """
+        next_template_idx = self.constant_no + 1
+        
+        # Process rules in the same order as tensor engine (by rule order)
+        for rule in self.rules:
+            # Process head arguments
+            for arg in rule.head.args:
+                if isinstance(arg, str) and is_variable(arg) and arg not in self.template_var_str2idx:
+                    self.template_var_str2idx[arg] = next_template_idx
+                    next_template_idx += 1
+            
+            # Process body arguments
+            for term in rule.body:
+                for arg in term.args:
+                    if isinstance(arg, str) and is_variable(arg) and arg not in self.template_var_str2idx:
+                        self.template_var_str2idx[arg] = next_template_idx
+                        next_template_idx += 1
+        
+        # Store the max template variable index and compute next_var_start_for_proofs
+        self.max_template_var_idx = next_template_idx - 1 if self.template_var_str2idx else self.constant_no
+        self.next_var_start_for_proofs = self.max_template_var_idx + 1
 
     def _create_fixed_var_idx(self):
         '''Create fixed indices for variables based on max_total_vars.'''

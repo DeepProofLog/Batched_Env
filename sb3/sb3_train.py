@@ -3,31 +3,60 @@ from typing import Any, Callable, List, Optional, Tuple
 import torch
 from pathlib import Path
 
-from sb3_index_manager import IndexManager
-from sb3_utils import (
-    get_device, 
-    print_eval_info, 
-    profile_code, 
-    _set_seeds,
-    _freeze_dropout_layernorm,
-    _warn_non_reproducible,
-    # _maybe_enable_wandb,
-)
-from sb3_callbacks import (
-    SB3TrainCheckpoint,
-    CustomEvalCallbackMRR,
-    CustomEvalCallback,
-    DepthProofStatsCallback,
-    ScalarAnnealingCallback,
-    AnnealingTarget,
-    _EvalDepthRewardTracker
-)
-from sb3_custom_dummy_env import create_environments
-from sb3_dataset import DataHandler
-from sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
-from sb3_embeddings import get_embedder
-from sb3_neg_sampling import get_sampler
-from sb3_model_eval import eval_corruptions
+try:
+    # Try relative import first (when sb3/ is in sys.path)
+    from sb3_index_manager import IndexManager
+    from sb3_utils import (
+        get_device, 
+        print_eval_info, 
+        profile_code, 
+        _set_seeds,
+        _freeze_dropout_layernorm,
+        _warn_non_reproducible,
+        # _maybe_enable_wandb,
+    )
+    from sb3_callbacks import (
+        SB3TrainCheckpoint,
+        CustomEvalCallbackMRR,
+        CustomEvalCallback,
+        DepthProofStatsCallback,
+        ScalarAnnealingCallback,
+        AnnealingTarget,
+        _EvalDepthRewardTracker
+    )
+    from sb3_custom_dummy_env import create_environments
+    from sb3_dataset import DataHandler
+    from sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
+    from sb3_embeddings import get_embedder
+    from sb3_neg_sampling import get_sampler
+    from sb3_model_eval import eval_corruptions
+except ImportError:
+    # Fallback to package import (when imported as sb3.sb3_train)
+    from sb3.sb3_index_manager import IndexManager
+    from sb3.sb3_utils import (
+        get_device, 
+        print_eval_info, 
+        profile_code, 
+        _set_seeds,
+        _freeze_dropout_layernorm,
+        _warn_non_reproducible,
+        # _maybe_enable_wandb,
+    )
+    from sb3.sb3_callbacks import (
+        SB3TrainCheckpoint,
+        CustomEvalCallbackMRR,
+        CustomEvalCallback,
+        DepthProofStatsCallback,
+        ScalarAnnealingCallback,
+        AnnealingTarget,
+        _EvalDepthRewardTracker
+    )
+    from sb3.sb3_custom_dummy_env import create_environments
+    from sb3.sb3_dataset import DataHandler
+    from sb3.sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
+    from sb3.sb3_embeddings import get_embedder
+    from sb3.sb3_neg_sampling import get_sampler
+    from sb3.sb3_model_eval import eval_corruptions
 from stable_baselines3.common.callbacks import (
     StopTrainingOnRewardThreshold,
     CallbackList,

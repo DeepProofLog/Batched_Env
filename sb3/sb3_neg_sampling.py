@@ -1,7 +1,14 @@
 import torch
-from sb3_utils import Term
-from sb3_dataset import DataHandler
-from sb3_index_manager import IndexManager
+try:
+    # Try relative import first (when sb3/ is in sys.path)
+    from sb3_utils import Term
+    from sb3_dataset import DataHandler
+    from sb3_index_manager import IndexManager
+except ImportError:
+    # Fallback to package import (when imported as sb3.sb3_neg_sampling)
+    from sb3.sb3_utils import Term
+    from sb3.sb3_dataset import DataHandler
+    from sb3.sb3_index_manager import IndexManager
 from pykeen.triples import TriplesFactory
 from pykeen.sampling import BasicNegativeSampler
 from typing_extensions import TypeAlias 

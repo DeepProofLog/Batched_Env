@@ -5,11 +5,11 @@ import re
 import ast
 from collections import defaultdict
 try:
-    # When imported as package (e.g., from sb3.sb3_dataset)
-    from sb3.sb3_utils import is_variable, Term, Rule, get_atom_from_string
-except ImportError:
-    # Fallback for direct execution within sb3 directory
+    # Try relative import first (when sb3/ is in sys.path)
     from sb3_utils import is_variable, Term, Rule, get_atom_from_string
+except ImportError:
+    # Fallback to package import (when imported as sb3.sb3_dataset)
+    from sb3.sb3_utils import is_variable, Term, Rule, get_atom_from_string
 
 
 

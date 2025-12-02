@@ -254,17 +254,7 @@ class DebugHelper:
         
         valid_atoms = state_2d[valid_mask]
         
-        # First pass: collect all variable indices in order of first appearance
-        var_mapping: Dict[int, int] = {}
-        next_var_num = 1
-        for atom in valid_atoms:
-            for arg in [int(atom[1].item()), int(atom[2].item())]:
-                if arg > self.constant_no and arg != self.padding_idx:
-                    if arg not in var_mapping:
-                        var_mapping[arg] = next_var_num
-                        next_var_num += 1
-        
-        # Second pass: build string with normalized variable names
+        # Return string with actual variable indices/names
         atoms: List[str] = []
         for atom in valid_atoms:
             pred, arg1, arg2 = int(atom[0].item()), int(atom[1].item()), int(atom[2].item())
@@ -275,13 +265,15 @@ class DebugHelper:
             else:
                 pred_str = f"?p{pred}"
             
-            # Format arguments with normalized variable names
+            # Format arguments with ACTUAL variable names
             def format_arg(val: int) -> str:
                 if val == self.padding_idx:
                     return "PAD"
                 elif val > self.constant_no:
-                    # It's a variable - use normalized numbering
-                    return f"Var_{var_mapping[val]}"
+                    # It's a variable - use actual index
+                    # If we have a template var mapping, we could use it, but for runtime vars
+                    # we usually just want Var_<idx>
+                    return f"Var_{val}"
                 else:
                     # It's a constant
                     if 0 <= val < len(self.idx2constant):

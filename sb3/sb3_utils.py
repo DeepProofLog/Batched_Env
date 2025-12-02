@@ -316,20 +316,26 @@ def print_state_transition(state, derived_states, reward, done, action=None, tru
         derived_states: Possible next states list.
         reward: Received reward 
         done: Done flag 
-        action: Executed action tensor (optional).
+        action: Executed action tensor or int (optional).
         truncated: Truncated flag (optional).
         label: Additional label for display (optional).
     """
+    def _safe_item(x):
+        """Safely extract scalar from tensor/numpy or return as-is."""
+        if hasattr(x, 'item'):
+            return x.item()
+        return x
+    
     if action is not None:
-        print('\nState', state, '( action', action.item(), ')')
-        print('Reward', reward.item(), 'Done', done.item())
+        print('\nState', state, '( action', _safe_item(action), ')')
+        print('Reward', _safe_item(reward), 'Done', _safe_item(done))
         if truncated is not None or truncated!=False: print(f" Truncated {truncated}")
         print('     Derived states:', *derived_states[:100])
         if len(derived_states) > 100:
             print('     ... in total', len(derived_states),'\n')
     else:
         print('\nState', state, label) if label is not None else print(state)
-        print('Reward', reward.item(), 'Done', done.item())
+        print('Reward', _safe_item(reward), 'Done', _safe_item(done))
         if truncated is not None or truncated!=False: print(f" Truncated {truncated}")
         print('     Derived states:', *derived_states[:100])
         if len(derived_states) > 100:

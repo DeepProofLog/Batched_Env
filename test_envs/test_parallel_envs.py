@@ -44,7 +44,7 @@ from sb3.sb3_dataset import DataHandler as StrDataHandler
 from sb3.sb3_index_manager import IndexManager as StrIndexManager
 from sb3.sb3_env import LogicEnv_gym as StrEnv
 from sb3.sb3_utils import Term as StrTerm
-from sb3.sb3_unification import canonicalize_state_to_str, canonical_states_to_str
+from sb3.sb3_unification import canonical_state_to_str, canonical_states_to_str
 
 # Tensor-engine stack
 from data_handler import DataHandler
@@ -209,7 +209,7 @@ def compare_query(p: str, h: str, t: str,
         batched_state = batched_env.current_queries[0]  # [A, D]
         
         # Use engine methods to convert states to strings (preserving order, normalizing variables)
-        str_state_canonical = canonicalize_state_to_str(str_state)
+        str_state_canonical = canonical_state_to_str(str_state)
         batched_state_canonical = engine.deb.state_to_str(batched_state)
         
         # Get derived states (available actions)
@@ -242,7 +242,7 @@ def compare_query(p: str, h: str, t: str,
                 print(f"    {line}")
             print(f"\n  [STR] Derived states:")
             for i in range(len(str_derived_states)):
-                str_canon = canonicalize_state_to_str(str_derived_states[i])
+                str_canon = canonical_state_to_str(str_derived_states[i])
                 print(f"    [{i}] {str_canon}")
             print(f"\n  [BATCHED] Derived states:")
             for i in range(len(batched_derived_states)):
@@ -285,7 +285,7 @@ def compare_query(p: str, h: str, t: str,
                 f"str={num_str_actions} vs batched={num_batched_actions}"
             )
             # For debug info, convert states to strings for display only
-            str_normalized_states = [canonicalize_state_to_str(s) for s in str_derived_states[:num_str_actions]]
+            str_normalized_states = [canonical_state_to_str(s) for s in str_derived_states[:num_str_actions]]
             batched_normalized_states = [engine.deb.state_to_str(batched_derived_states[i]) 
                                           for i in range(num_batched_actions)]
             print_debug_info(step, str_env, batched_env, str_obs, batched_obs, batched_obs_td,
@@ -295,14 +295,14 @@ def compare_query(p: str, h: str, t: str,
 
         # Compare states directly in their existing order (already canonical from engine)
         for idx in range(num_str_actions):
-            str_canonical = canonicalize_state_to_str(str_derived_states[idx])
+            str_canonical = canonical_state_to_str(str_derived_states[idx])
             batched_canonical = engine.deb.state_to_str(batched_derived_states[idx])
             if str_canonical != batched_canonical:
                 error_msg = (f"STATE MISMATCH at step {step}, action {idx}:\n"
                              f"  Str:     {str_canonical}\n"
                              f"  Batched: {batched_canonical}")
                 # For debug info, convert all states to strings for display
-                str_normalized_states = [canonicalize_state_to_str(s) for s in str_derived_states[:num_str_actions]]
+                str_normalized_states = [canonical_state_to_str(s) for s in str_derived_states[:num_str_actions]]
                 batched_normalized_states = [engine.deb.state_to_str(batched_derived_states[i]) 
                                               for i in range(num_batched_actions)]
                 print_debug_info(step, str_env, batched_env, str_obs, batched_obs, batched_obs_td,

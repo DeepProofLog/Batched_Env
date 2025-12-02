@@ -9,10 +9,18 @@ import numpy as np
 import torch
 from tensordict import NonTensorData, TensorDict
 
-from sb3_dataset import DataHandler
-from sb3_index_manager import IndexManager
-from sb3_unification import get_next_unification_python
-from sb3_utils import Term, print_state_transition
+try:
+    # Try relative import first (when sb3/ is in sys.path)
+    from sb3_dataset import DataHandler
+    from sb3_index_manager import IndexManager
+    from sb3_unification import get_next_unification_python
+    from sb3_utils import Term, print_state_transition
+except ImportError:
+    # Fallback to package import (when imported as sb3.sb3_env)
+    from sb3.sb3_dataset import DataHandler
+    from sb3.sb3_index_manager import IndexManager
+    from sb3.sb3_unification import get_next_unification_python
+    from sb3.sb3_utils import Term, print_state_transition
 
 State = List[Term]
 
@@ -198,7 +206,7 @@ class LogicEnv_gym(gym.Env):
             )
 
         stacked = torch.stack(
-            [to(device=self.device, dtype=self.pt_idx_dtype) for tensor in sub_indices]
+            [tensor.to(device=self.device, dtype=self.pt_idx_dtype) for tensor in sub_indices]
         )
         num_states = stacked.shape[0]
         if num_states < self.padding_states:
@@ -550,7 +558,9 @@ class LogicEnv_gym(gym.Env):
                                                             excluded_fact = self.current_query if self.current_label == 1 else None,
                                                             verbose=self.prover_verbose,
                                                             next_var_index=self.next_var_index,
-                                                            strategy= self.engine_strategy
+                                                            strategy= self.engine_strategy,
+                                                            canonical_order=self.canonical_action_order,
+                                                            index_manager=self.index_manager
                                                             )
         if self.skip_unary_actions:
             current_state = state.copy() if isinstance(state, list) else [state]
@@ -578,7 +588,9 @@ class LogicEnv_gym(gym.Env):
                         excluded_fact = self.current_query if self.current_label == 1 else None,
                         verbose=self.prover_verbose,
                         next_var_index=self.next_var_index,
-                        strategy= self.engine_strategy
+                        strategy= self.engine_strategy,
+                        canonical_order=self.canonical_action_order,
+                        index_manager=self.index_manager
                     )
                 # MEMORY
                 if self.memory_pruning:
