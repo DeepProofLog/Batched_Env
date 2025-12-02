@@ -64,6 +64,7 @@ class LogicEnv_gym(gym.Env):
                 shaping_beta: float = 0.0,
                 shaping_gamma: Optional[float] = None,
                 kge_inference_engine: Optional[Any] = None,
+                sample_deterministic: bool = False,
                 ):
 
         '''Initialize the environment'''
@@ -140,6 +141,10 @@ class LogicEnv_gym(gym.Env):
             self.query_depths = []
         self.n_episodes = len(queries) if queries is not None else 0
         self.eval_idx = 0
+        
+        # Deterministic round-robin sampling (for parity with tensor env)
+        self.sample_deterministic = sample_deterministic
+        self._train_ptr = 0  # Round-robin pointer for deterministic sampling
         self.consult_janus_eval = False
         self.next_var_index = self.index_manager.variable_start_index
 
@@ -305,13 +310,20 @@ class LogicEnv_gym(gym.Env):
 
     def _sample_train_query(self) -> Tuple[Term, int, Optional[int]]:
         """Sample a training query, optionally performing corruption sampling."""
-        state, _, depth = self.get_random_queries(
-            self.queries,
-            n=1,
-            labels=self.labels,
-            depths=self.query_depths,
-            return_depth=True,
-        )
+        if self.sample_deterministic:
+            # Deterministic round-robin sampling to match tensor env behavior
+            idx = self._train_ptr % len(self.queries)
+            self._train_ptr += 1
+            state = self.queries[idx]
+            depth = self.query_depths[idx] if idx < len(self.query_depths) else None
+        else:
+            state, _, depth = self.get_random_queries(
+                self.queries,
+                n=1,
+                labels=self.labels,
+                depths=self.query_depths,
+                return_depth=True,
+            )
         label = 1
 
         if not self.corruption_mode:

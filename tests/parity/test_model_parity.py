@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 from typing import Tuple, Optional, Dict
 
+import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
@@ -22,44 +23,80 @@ if str(ROOT) not in sys.path:
 if str(SB3_ROOT) not in sys.path:
     sys.path.insert(1, str(SB3_ROOT))
 
+# Import real embedders from both implementations
+from embeddings import EmbedderLearnable
+
+# Try to import SB3 components for parity testing
+try:
+    from sb3.sb3_model import CustomActorCriticPolicy as SB3CustomActorCriticPolicy
+    from sb3.sb3_model import CustomCombinedExtractor as SB3CustomCombinedExtractor
+    from sb3.sb3_embeddings import EmbedderLearnable as SB3EmbedderLearnable
+    SB3_AVAILABLE = True
+except ImportError as e:
+    SB3_AVAILABLE = False
+    _SB3_IMPORT_ERROR = e
+
 
 # ============================================================================
-# Dummy Components
+# Embedder Creation Helpers
 # ============================================================================
 
-class DummyEmbedder:
-    """Minimal embedder for testing."""
-    
-    def __init__(self, vocab_size: int = 100, embed_dim: int = 64, device: str = "cpu"):
-        self.vocab_size = vocab_size
-        self.embed_dim = embed_dim
-        self.embedding_dim = embed_dim  # Alias for compatibility
-        self.device = device
-        
-        torch.manual_seed(42)
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.embedding.to(device)
-    
-    def get_embeddings_batch(self, indices: torch.Tensor) -> torch.Tensor:
-        """Get embeddings for batch of indices."""
-        # indices shape: (batch, ..., 3) where last dim is [pred, arg1, arg2]
-        # Return mean embedding over atoms
-        original_shape = indices.shape
-        flat_indices = indices.reshape(-1).clamp(0, self.vocab_size - 1)
-        embeddings = self.embedding(flat_indices.long())
-        
-        # Reshape back and take mean over last atom dimensions
-        new_shape = original_shape[:-1] + (self.embed_dim,)
-        embeddings = embeddings.view(*original_shape, self.embed_dim)
-        
-        # Mean over the 3 terms (pred, arg1, arg2) to get per-atom embedding
-        embeddings = embeddings.mean(dim=-2)
-        
-        # If there are multiple atoms, mean over atoms too
-        while embeddings.dim() > len(original_shape[:-2]) + 1:
-            embeddings = embeddings.mean(dim=-2)
-        
-        return embeddings
+def create_embedder(
+    n_constants: int = 100,
+    n_predicates: int = 20,
+    n_vars: int = 10,
+    embed_dim: int = 64,
+    seed: int = 42,
+    device: str = "cpu"
+) -> EmbedderLearnable:
+    """Create a real EmbedderLearnable for the tensor-based implementation."""
+    torch.manual_seed(seed)
+    embedder = EmbedderLearnable(
+        n_constants=n_constants,
+        n_predicates=n_predicates,
+        n_vars=n_vars,
+        max_arity=2,
+        padding_atoms=3,
+        atom_embedder='transe',
+        state_embedder='sum',
+        constant_embedding_size=embed_dim,
+        predicate_embedding_size=embed_dim,
+        atom_embedding_size=embed_dim,
+        kge_regularization=0.0,
+        kge_dropout_rate=0.0,
+        device=device,
+    )
+    return embedder
+
+
+def create_sb3_embedder(
+    n_constants: int = 100,
+    n_predicates: int = 20,
+    n_vars: int = 10,
+    embed_dim: int = 64,
+    seed: int = 42,
+    device: str = "cpu"
+):
+    """Create a real EmbedderLearnable for the SB3 implementation."""
+    if not SB3_AVAILABLE:
+        pytest.skip(f"SB3 dependencies unavailable: {_SB3_IMPORT_ERROR}")
+    torch.manual_seed(seed)
+    embedder = SB3EmbedderLearnable(
+        n_constants=n_constants,
+        n_predicates=n_predicates,
+        n_vars=n_vars,
+        max_arity=2,
+        padding_atoms=3,
+        atom_embedder='transe',
+        state_embedder='sum',
+        constant_embedding_size=embed_dim,
+        predicate_embedding_size=embed_dim,
+        atom_embedding_size=embed_dim,
+        kge_regularization=0.0,
+        kge_dropout_rate=0.0,
+        device=device,
+    )
+    return embedder
 
 
 def create_dummy_observation(

@@ -60,6 +60,8 @@ class BatchedEnv(EnvBase):
         verbose: int = 0,
         prover_verbose: int = 0,
         device: Optional[torch.device] = None,
+        # Deterministic sampling mode for parity testing with SB3
+        sample_deterministic_per_env: bool = False,
         # Memory pruning config (Bloom filter)
         memory_bits_pow: int = 22,     # 2**22 bits per env (512 KB) -> higher precision
         memory_hashes: int = 7,        # k hash functions -> more hashes reduce false positives
@@ -137,6 +139,11 @@ class BatchedEnv(EnvBase):
         self._num_all = int(self._all_queries_padded.shape[0])
         # Deterministic round-robin pointer for train query sampling (parity with SB3)
         self._train_ptr = 0
+        # Per-env deterministic sampling mode (for parity testing with SB3)
+        self.sample_deterministic_per_env = sample_deterministic_per_env
+        if self.sample_deterministic_per_env:
+            # Each env has its own pointer, initialized like SB3: env_i starts at query i
+            self._per_env_train_ptrs = list(range(self.batch_size_int))
 
         # Sampling pointer for eval mode
         self.counter = 0
@@ -319,10 +326,18 @@ class BatchedEnv(EnvBase):
 
         # Sample indices
         if self.mode == 'train':
-            # Deterministic round-robin sampling to mirror SB3's fixed ordering
-            start = self._train_ptr
-            idxs = (torch.arange(N, device=device) + start) % self._num_all
-            self._train_ptr = int((start + N) % self._num_all)
+            if self.sample_deterministic_per_env:
+                # Per-env round-robin: each env has its own pointer (parity with SB3)
+                # env_idx contains the indices of envs being reset
+                idxs = torch.zeros(N, dtype=torch.long, device=device)
+                for i, eidx in enumerate(env_idx.tolist()):
+                    idxs[i] = self._per_env_train_ptrs[eidx] % self._num_all
+                    self._per_env_train_ptrs[eidx] = (self._per_env_train_ptrs[eidx] + 1) % self._num_all
+            else:
+                # Global round-robin: queries distributed across all resets
+                start = self._train_ptr
+                idxs = (torch.arange(N, device=device) + start) % self._num_all
+                self._train_ptr = int((start + N) % self._num_all)
         elif self.mode == 'eval':
             assert hasattr(self, "_eval_slot_starts") and self._eval_slot_starts is not None and \
                    hasattr(self, "_eval_slot_lengths") and self._eval_slot_lengths is not None and \

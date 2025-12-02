@@ -93,12 +93,225 @@ class PPO:
             eps=1e-5
         )
     
-    def collect_rollouts(self):
+    def collect_rollouts(
+        self,
+        current_obs,
+        episode_starts: torch.Tensor,
+        current_episode_reward: torch.Tensor,
+        current_episode_length: torch.Tensor,
+        episode_rewards: list,
+        episode_lengths: list,
+        iteration: int,
+        deterministic: bool = True,
+        return_traces: bool = False,
+    ) -> tuple:
         """
-        Collect rollouts - placeholder to match SB3's structure.
-        Actual rollout collection is done in learn().
+        Collect rollouts using the current policy.
+        Matches SB3's collect_rollouts method structure.
+        
+        Args:
+            current_obs: Current observation from environment
+            episode_starts: Tensor indicating episode starts
+            current_episode_reward: Running episode rewards
+            current_episode_length: Running episode lengths
+            episode_rewards: List to accumulate completed episode rewards
+            episode_lengths: List to accumulate completed episode lengths
+            iteration: Current training iteration
+            deterministic: If True, use deterministic action selection (default: True)
+            return_traces: If True, return list of step traces for comparison (default: False)
+            
+        Returns:
+            If return_traces=False: Tuple of (next_obs, episode_starts, current_episode_reward, 
+                     current_episode_length, n_collected * n_envs)
+            If return_traces=True: Tuple of (next_obs, episode_starts, current_episode_reward,
+                     current_episode_length, n_collected * n_envs, traces_list)
         """
-        pass
+        from tensordict import TensorDict
+        
+        self.policy.eval()
+        self.rollout_buffer.reset()
+        self.metrics_collector.reset()
+        
+        traces = [] if return_traces else None
+        n_collected = 0
+        dones = torch.zeros(self.n_envs, dtype=torch.bool, device=self.device)
+        
+        with torch.no_grad():
+            while n_collected < self.n_steps:
+                # Clone the current observation so env.step() cannot mutate the
+                # data we store in the buffer or write to trace.
+                obs_snapshot = current_obs.clone()
+                obs_device = obs_snapshot.to(self.device)
+
+                # Get action from policy
+                if deterministic:
+                    # For parity testing: always use action 0 (first valid action)
+                    actions = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
+                    _, values, _ = self.policy(obs_device, deterministic=True)
+                    # Compute log_probs for action 0
+                    _, _, log_probs = self.policy.evaluate_actions(obs_device, actions)
+                else:
+                    actions, values, log_probs = self.policy(obs_device, deterministic=False)
+                
+                dist_logits = None
+                try:
+                    dist = getattr(self.policy.action_dist, "distribution", None)
+                    if dist is not None and hasattr(dist, "logits"):
+                        dist_logits = dist.logits.detach().clone()
+                except Exception:
+                    dist_logits = None
+                
+                # Step environment
+                actions_env = actions.to(self.env_device)
+                action_td = TensorDict({"action": actions_env}, batch_size=current_obs.batch_size, device=self.env_device)
+                step_result, next_obs = self.env.step_and_maybe_reset(action_td)
+                
+                # Extract done/reward
+                if "next" in step_result.keys():
+                    step_info = step_result["next"]
+                else:
+                    step_info = step_result
+                
+                rewards_env = step_info.get("reward", torch.zeros(self.n_envs, device=self.env_device))
+                dones_env = step_info.get("done", torch.zeros(self.n_envs, dtype=torch.bool, device=self.env_device))
+                
+                # Squeeze to ensure correct shape
+                if rewards_env.dim() > 1:
+                    rewards_env = rewards_env.squeeze(-1)
+                if dones_env.dim() > 1:
+                    dones_env = dones_env.squeeze(-1)
+                rewards = rewards_env.to(self.device)
+                dones = dones_env.to(self.device)
+                
+                # Store transition
+                self.rollout_buffer.add(
+                    obs=obs_device,
+                    action=actions,
+                    reward=rewards,
+                    episode_start=episode_starts,
+                    value=values,
+                    log_prob=log_probs
+                )
+                
+                # Collect traces if requested
+                if return_traces:
+                    for idx in range(self.n_envs):
+                        sub_index = obs_snapshot.get("sub_index")[idx]
+                        derived_sub_indices = obs_snapshot.get("derived_sub_indices")[idx]
+                        action_mask = obs_snapshot.get("action_mask")[idx]
+                        trace_entry = {
+                            "step": n_collected,
+                            "env": idx,
+                            "state_obs": {
+                                "sub_index": sub_index.cpu().numpy().copy() if hasattr(sub_index, 'cpu') else sub_index,
+                                "derived_sub_indices": derived_sub_indices.cpu().numpy().copy() if hasattr(derived_sub_indices, 'cpu') else derived_sub_indices,
+                                "action_mask": action_mask.cpu().numpy().copy() if hasattr(action_mask, 'cpu') else action_mask,
+                            },
+                            "action": int(actions[idx]),
+                            "reward": float(rewards[idx]),
+                            "done": bool(dones[idx]),
+                            "value": float(values[idx]),
+                            "log_prob": float(log_probs[idx]),
+                        }
+                        traces.append(trace_entry)
+                
+                if self.trace_recorder is not None:
+                    if self._trace_episode_ids is None:
+                        self._trace_episode_ids = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
+                    if self._trace_lengths is None:
+                        self._trace_lengths = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
+                    self._trace_lengths = self._trace_lengths + 1
+                    for idx in range(self.n_envs):
+                        obs_dict = obs_snapshot
+                        sub_index = obs_dict.get("sub_index")[idx]
+                        derived_sub_indices = obs_dict.get("derived_sub_indices")[idx]
+                        action_mask = obs_dict.get("action_mask")[idx]
+                        self.trace_recorder.log_step(
+                            phase="train",
+                            iteration=iteration - 1,
+                            step=n_collected,
+                            env=int(idx),
+                            action=int(actions[idx]),
+                            reward=float(rewards[idx]),
+                            done=bool(dones[idx]),
+                            length=int(self._trace_lengths[idx]),
+                            episode=int(self._trace_episode_ids[idx]),
+                            value=float(values[idx]),
+                            log_prob=float(log_probs[idx]),
+                            sub_index=sub_index,
+                            derived_sub_indices=derived_sub_indices,
+                            action_mask=action_mask,
+                            logits=dist_logits[idx] if dist_logits is not None else None,
+                        )
+                
+                # Update statistics
+                current_episode_reward += rewards
+                current_episode_length += 1
+                n_collected += 1
+                
+                # Check for episode ends
+                if dones.any():
+                    for idx in torch.where(dones)[0]:
+                        ep_reward = current_episode_reward[idx].item()
+                        ep_length = current_episode_length[idx].item()
+                        episode_rewards.append(ep_reward)
+                        episode_lengths.append(ep_length)
+
+                        # Collect episode info for rollout metrics
+                        label_val = step_info.get("label")
+                        depth_val = step_info.get("query_depth")
+                        success_val = step_info.get("is_success")
+                        length_val = step_info.get("length")
+                        info_dict = {
+                            "episode": {"r": ep_reward, "l": ep_length},
+                        }
+                        if label_val is not None:
+                            info_dict["label"] = int(label_val[idx].item()) if label_val.ndim > 0 else int(label_val.item())
+                        if depth_val is not None:
+                            info_dict["query_depth"] = int(depth_val[idx].item()) if depth_val.ndim > 0 else int(depth_val.item())
+                        if success_val is not None:
+                            info_dict["is_success"] = bool(success_val[idx].item()) if success_val.ndim > 0 else bool(success_val.item())
+                        self.metrics_collector.accumulate([info_dict])
+                        
+                        # Reset episode stats
+                        current_episode_reward[idx] = 0.0
+                        current_episode_length[idx] = 0
+                        if self._trace_episode_ids is not None:
+                            self._trace_episode_ids[idx] += 1
+                        if self._trace_lengths is not None:
+                            self._trace_lengths[idx] = 0
+                    
+                    # Mark episode starts for next step
+                    episode_starts = dones.float()
+                else:
+                    episode_starts = torch.zeros(self.n_envs, dtype=torch.float32, device=self.device)
+                
+                current_obs = next_obs
+            
+            # Compute last values for bootstrapping
+            _, last_values, _ = self.policy(current_obs.to(self.device))
+        
+        # Compute advantages and returns
+        if dones.dim() > 1:
+            dones = dones.squeeze(-1)
+        self.rollout_buffer.compute_returns_and_advantage(last_values=last_values, dones=dones)
+        
+        if return_traces:
+            return (
+                current_obs,
+                episode_starts,
+                current_episode_reward,
+                current_episode_length,
+                n_collected * self.n_envs,
+                traces,
+            )
+        return (
+            current_obs,
+            episode_starts,
+            current_episode_reward,
+            current_episode_length,
+            n_collected * self.n_envs,
+        )
 
     def train(self) -> Dict[str, float]:
         """
@@ -226,7 +439,7 @@ class PPO:
             "entropy": -sum(entropy_losses) / len(entropy_losses) if entropy_losses else 0.0,
             "clip_fraction": sum(clip_fractions) / len(clip_fractions) if clip_fractions else 0.0,
         }
-    
+
     def learn(
         self,
         total_timesteps: int,
@@ -270,143 +483,25 @@ class PPO:
             # ============================================================
             # Collect rollouts
             # ============================================================
-            self.policy.eval()
-            self.rollout_buffer.reset()
-            self.metrics_collector.reset()
-            
             rollout_start_time = time.time()
-            n_collected = 0
             
-            with torch.no_grad():
-                while n_collected < self.n_steps:
-                    # Clone the current observation so env.step() cannot mutate the
-                    # data we store in the buffer or write to trace.
-                    obs_snapshot = current_obs.clone()
-                    obs_device = obs_snapshot.to(self.device)
-
-                    # Get action from policy
-                    actions, values, log_probs = self.policy(obs_device, deterministic=True)
-                    dist_logits = None
-                    try:
-                        dist = getattr(self.policy.action_dist, "distribution", None)
-                        if dist is not None and hasattr(dist, "logits"):
-                            dist_logits = dist.logits.detach().clone()
-                    except Exception:
-                        dist_logits = None
-                    
-                    # Step environment
-                    actions_env = actions.to(self.env_device)
-                    action_td = TensorDict({"action": actions_env}, batch_size=current_obs.batch_size, device=self.env_device)
-                    step_result, next_obs = self.env.step_and_maybe_reset(action_td)
-                    
-                    # Extract done/reward
-                    if "next" in step_result.keys():
-                        step_info = step_result["next"]
-                    else:
-                        step_info = step_result
-                    
-                    rewards_env = step_info.get("reward", torch.zeros(self.n_envs, device=self.env_device))
-                    dones_env = step_info.get("done", torch.zeros(self.n_envs, dtype=torch.bool, device=self.env_device))
-                    
-                    # Squeeze to ensure correct shape
-                    if rewards_env.dim() > 1:
-                        rewards_env = rewards_env.squeeze(-1)
-                    if dones_env.dim() > 1:
-                        dones_env = dones_env.squeeze(-1)
-                    rewards = rewards_env.to(self.device)
-                    dones = dones_env.to(self.device)
-                    
-                    # Store transition
-                    self.rollout_buffer.add(
-                        obs=obs_device,
-                        action=actions,
-                        reward=rewards,
-                        episode_start=episode_starts,
-                        value=values,
-                        log_prob=log_probs
-                    )
-                    if self.trace_recorder is not None:
-                        if self._trace_episode_ids is None:
-                            self._trace_episode_ids = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
-                        if self._trace_lengths is None:
-                            self._trace_lengths = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
-                        self._trace_lengths = self._trace_lengths + 1
-                        for idx in range(self.n_envs):
-                            obs_dict = obs_snapshot
-                            sub_index = obs_dict.get("sub_index")[idx]
-                            derived_sub_indices = obs_dict.get("derived_sub_indices")[idx]
-                            action_mask = obs_dict.get("action_mask")[idx]
-                            self.trace_recorder.log_step(
-                                phase="train",
-                                iteration=iteration - 1,
-                                step=n_collected,
-                                env=int(idx),
-                                action=int(actions[idx]),
-                                reward=float(rewards[idx]),
-                                done=bool(dones[idx]),
-                                length=int(self._trace_lengths[idx]),
-                                episode=int(self._trace_episode_ids[idx]),
-                                value=float(values[idx]),
-                                log_prob=float(log_probs[idx]),
-                                sub_index=sub_index,
-                                derived_sub_indices=derived_sub_indices,
-                                action_mask=action_mask,
-                                logits=dist_logits[idx] if dist_logits is not None else None,
-                            )
-                    
-                    # Update statistics
-                    current_episode_reward += rewards
-                    current_episode_length += 1
-                    n_collected += 1
-                    total_steps_done += self.n_envs
-                    
-                    # Check for episode ends
-                    if dones.any():
-                        for idx in torch.where(dones)[0]:
-                            ep_reward = current_episode_reward[idx].item()
-                            ep_length = current_episode_length[idx].item()
-                            episode_rewards.append(ep_reward)
-                            episode_lengths.append(ep_length)
-
-                            # Collect episode info for rollout metrics
-                            label_val = step_info.get("label")
-                            depth_val = step_info.get("query_depth")
-                            success_val = step_info.get("is_success")
-                            length_val = step_info.get("length")
-                            info_dict = {
-                                "episode": {"r": ep_reward, "l": ep_length},
-                            }
-                            if label_val is not None:
-                                info_dict["label"] = int(label_val[idx].item()) if label_val.ndim > 0 else int(label_val.item())
-                            if depth_val is not None:
-                                info_dict["query_depth"] = int(depth_val[idx].item()) if depth_val.ndim > 0 else int(depth_val.item())
-                            if success_val is not None:
-                                info_dict["is_success"] = bool(success_val[idx].item()) if success_val.ndim > 0 else bool(success_val.item())
-                            self.metrics_collector.accumulate([info_dict])
-                            
-                            # Reset episode stats
-                            current_episode_reward[idx] = 0.0
-                            current_episode_length[idx] = 0
-                            if self._trace_episode_ids is not None:
-                                self._trace_episode_ids[idx] += 1
-                            if self._trace_lengths is not None:
-                                self._trace_lengths[idx] = 0
-                        
-                        # Mark episode starts for next step
-                        episode_starts = dones.float()
-                    else:
-                        episode_starts = torch.zeros(self.n_envs, dtype=torch.float32, device=self.device)
-                    
-                    current_obs = next_obs
-                
-                # Compute last values for bootstrapping
-                _, last_values, _ = self.policy(current_obs.to(self.device))
+            (
+                current_obs,
+                episode_starts,
+                current_episode_reward,
+                current_episode_length,
+                steps_collected,
+            ) = self.collect_rollouts(
+                current_obs=current_obs,
+                episode_starts=episode_starts,
+                current_episode_reward=current_episode_reward,
+                current_episode_length=current_episode_length,
+                episode_rewards=episode_rewards,
+                episode_lengths=episode_lengths,
+                iteration=iteration,
+            )
             
-            # Compute advantages and returns
-            if dones.dim() > 1:
-                dones = dones.squeeze(-1)
-            self.rollout_buffer.compute_returns_and_advantage(last_values=last_values, dones=dones)
-            
+            total_steps_done += steps_collected
             rollout_time = time.time() - rollout_start_time
             if self.verbose:
                 print(f"[PPO] Rollout collected in {rollout_time:.2f}s")

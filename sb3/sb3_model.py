@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from utils.trace_utils import TraceRecorder
 
 import time
-from typing import Callable, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
 import gymnasium as gym
 import numpy as np
@@ -49,12 +49,29 @@ class PPO_custom(PPO):
         callback: BaseCallback,
         rollout_buffer: RolloutBuffer,
         n_rollout_steps: int,
-    ) -> bool:
-        """Collect rollouts while keeping logging consistent with the base implementation."""
+        deterministic: bool = True,
+        return_traces: bool = False,
+    ) -> Union[bool, Tuple[bool, List[Dict[str, Any]]]]:
+        """Collect rollouts while keeping logging consistent with the base implementation.
+        
+        Args:
+            env: The vectorized environment
+            callback: Callback for logging
+            rollout_buffer: Buffer to store transitions
+            n_rollout_steps: Number of steps to collect
+            deterministic: If True, always use action 0 (first valid action) for parity testing
+            return_traces: If True, return list of step traces for comparison
+            
+        Returns:
+            If return_traces=False: bool indicating success
+            If return_traces=True: Tuple of (success, traces_list)
+        """
         assert self._last_obs is not None, "No previous observation was provided"
         self.policy.set_training_mode(False)
         n_steps = 0
         rollout_buffer.reset()
+        
+        traces = [] if return_traces else None
 
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
@@ -72,7 +89,17 @@ class PPO_custom(PPO):
             with torch.no_grad():
                 # Convert observations to tensor and pass to policy
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, values, log_probs = self.policy(obs_tensor, deterministic=True)
+                
+                if deterministic:
+                    # For parity testing: always use action 0 (first valid action)
+                    actions = torch.zeros(env.num_envs, dtype=torch.long, device=self.device)
+                    values = self.policy.predict_values(obs_tensor)
+                    # Compute log_probs for action 0
+                    dist = self.policy.get_distribution(obs_tensor)
+                    log_probs = dist.log_prob(actions)
+                else:
+                    actions, values, log_probs = self.policy(obs_tensor, deterministic=False)
+                
                 dist_logits = None
                 try:
                     dist = getattr(self.policy.action_dist, "distribution", None)
@@ -120,6 +147,26 @@ class PPO_custom(PPO):
                 values,
                 log_probs,
             )
+            
+            # Collect traces if requested
+            if return_traces:
+                for idx in range(env.num_envs):
+                    trace_entry = {
+                        "step": n_steps - 1,
+                        "env": idx,
+                        "state_obs": {
+                            "sub_index": self._last_obs["sub_index"][idx].copy() if hasattr(self._last_obs["sub_index"][idx], 'copy') else self._last_obs["sub_index"][idx],
+                            "derived_sub_indices": self._last_obs["derived_sub_indices"][idx].copy() if hasattr(self._last_obs["derived_sub_indices"][idx], 'copy') else self._last_obs["derived_sub_indices"][idx],
+                            "action_mask": self._last_obs["action_mask"][idx].copy() if hasattr(self._last_obs["action_mask"][idx], 'copy') else self._last_obs["action_mask"][idx],
+                        },
+                        "action": int(actions[idx]) if actions.ndim == 1 else int(actions[idx, 0]),
+                        "reward": float(rewards[idx]),
+                        "done": bool(dones[idx]),
+                        "value": float(values[idx]),
+                        "log_prob": float(log_probs[idx]),
+                    }
+                    traces.append(trace_entry)
+            
             if self.trace_recorder is not None:
                 lengths = self._trace_lengths + 1
                 for idx in range(env.num_envs):
@@ -168,6 +215,8 @@ class PPO_custom(PPO):
 
         callback.on_rollout_end()
 
+        if return_traces:
+            return True, traces
         return True
 
     def learn(

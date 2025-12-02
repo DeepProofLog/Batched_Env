@@ -35,7 +35,7 @@ from test_envs.test_engine_tensor import setup_tensor_engine, test_tensor_engine
 from test_envs.test_env_sb3 import setup_sb3_env, run_sb3_env
 from test_envs.test_env_tensor import setup_tensor_env, run_tensor_env, run_tensor_env
 from test_envs.test_env_eval import test_tensor_env
-from test_envs.test_env_rollout import test_tensor_rollout
+from test_envs.test_rollout_tensor import test_tensor_rollout
 
 from compare_traces_metrics import compare_traces_metrics
 
