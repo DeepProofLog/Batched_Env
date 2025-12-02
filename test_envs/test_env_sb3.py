@@ -380,7 +380,7 @@ def run_sb3_env(
             'trace': trace
         })
         
-        if not verbose and (idx + 1) % 50 == 0:
+        if not verbose and (idx + 1) % 100 == 0:
             print(f"  Processed {idx + 1}/{len(queries)} queries...")
     
     # Aggregate statistics

@@ -293,8 +293,10 @@ class TestEnvParity:
     @pytest.mark.parametrize("dataset,n_queries", [
         ("countries_s3", 10),
         ("countries_s3", 200),
+        ("countries_s3", 800),
         ("family", 10),
         ("family", 200),
+        ("family", 800),
     ])
     def test_env_parity_sequential(self, dataset: str, n_queries: int, base_config):
         """
@@ -365,8 +367,10 @@ class TestEnvParity:
     @pytest.mark.parametrize("dataset,n_queries", [
         ("countries_s3", 10),
         ("countries_s3", 200),
+        ("countries_s3", 800),
         ("family", 10),
         ("family", 200),
+        ("family", 800),
     ])
     def test_env_parity_batched(self, dataset: str, n_queries: int, base_config):
         """

@@ -604,7 +604,10 @@ class LogicEnv_gym(gym.Env):
                         derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
                     
                 # TRUNCATE MAX ATOMS
-                mask_exceeded_max_atoms = [len(state) >= self.padding_atoms for state in derived_states]
+                # Use > (not >=) to allow states with exactly padding_atoms atoms
+                # This matches tensor env's within_atom_budget = atom_counts <= self.padding_atoms
+                # and is consistent with the post-loop check at line 637 which uses >
+                mask_exceeded_max_atoms = [len(state) > self.padding_atoms for state in derived_states]
                 print(f" Exceeded max atoms: {[len(state) for state in derived_states]}") if self.verbose and any(mask_exceeded_max_atoms) else None
                 derived_states = [state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if not is_exceeded]
                 
