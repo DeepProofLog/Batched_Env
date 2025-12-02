@@ -20,16 +20,16 @@ import torch
 import torch.profiler
 from torch.profiler import ProfilerActivity
 import torch.nn as nn
-# Optional Weights & Biases integration. Avoid hard dependency during tests.
-try:
-    import wandb  # type: ignore
-    try:
-        from wandb.integration.sb3 import WandbCallback  # type: ignore
-    except Exception:  # pragma: no cover - optional dependency path
-        WandbCallback = object  # fallback stub
-except Exception:  # pragma: no cover - optional dependency path
-    wandb = None  # type: ignore
-    WandbCallback = object  # fallback stub
+# # Optional Weights & Biases integration. Avoid hard dependency during tests.
+# try:
+#     import wandb  # type: ignore
+#     try:
+#         from wandb.integration.sb3 import WandbCallback  # type: ignore
+#     except Exception:  # pragma: no cover - optional dependency path
+#         WandbCallback = object  # fallback stub
+# except Exception:  # pragma: no cover - optional dependency path
+#     wandb = None  # type: ignore
+#     WandbCallback = object  # fallback stub
 
 
 # ----------------------
@@ -273,6 +273,7 @@ def print_eval_info(split_name: str, metrics: Dict[str, float]):
 
     print(f'\n\n{split_name} set metrics:')
     grouped: Dict[str, Dict[str, Optional[float]]] = {}
+    grouped_order: List[str] = []
     grouped_suffixes = {"mean", "std", "count"}
     handled_keys: set[str] = set()
 
@@ -285,29 +286,26 @@ def print_eval_info(split_name: str, metrics: Dict[str, float]):
                 base = key[: -len(token)]
                 if base not in grouped:
                     grouped[base] = {"mean": None, "std": None, "count": None}
+                    grouped_order.append(base)
                 grouped[base][suffix] = float(value)
                 handled_keys.add(key)
                 break
 
-    final_output = {}
-
-    for base, stats in grouped.items():
+    for base in grouped_order:
+        stats = grouped[base]
         count_val = stats.get("count")
         display = _format_stat(stats.get("mean"), stats.get("std"), int(count_val) if count_val is not None else None)
-        final_output[base] = display
+        print(f"{base}: {display}")
 
     for key, value in metrics.items():
         if key in handled_keys:
             continue
         if isinstance(value, (float, np.floating)):
-            final_output[key] = f"{value:.3f}"
+            print(f"{key}: {value:.3f}")
         elif isinstance(value, (int, np.integer)):
-            final_output[key] = f"{value}"
+            print(f"{key}: {value}")
         else:
-            final_output[key] = f"{value}"
-
-    for key in sorted(final_output.keys()):
-        print(f"{key}: {final_output[key]}")
+            print(f"{key}: {value}")
 
 def print_state_transition(state, derived_states, reward, done, action=None, truncated=None, label=None):
     """
@@ -323,8 +321,7 @@ def print_state_transition(state, derived_states, reward, done, action=None, tru
         label: Additional label for display (optional).
     """
     if action is not None:
-        action_val = action.item() if hasattr(action, 'item') else action
-        print('\nState', state, '( action', action_val, ')')
+        print('\nState', state, '( action', action.item(), ')')
         print('Reward', reward.item(), 'Done', done.item())
         if truncated is not None or truncated!=False: print(f" Truncated {truncated}")
         print('     Derived states:', *derived_states[:100])
@@ -792,14 +789,14 @@ def _warn_non_reproducible(args: Any) -> None:
             "to make runs reproducible."
         )
 
-def _maybe_enable_wandb(use_WB: bool, args: Any, WB_path: str, model_name: str):
-    if not use_WB:
-        return None
-    return wandb.init(
-        project="RL-NeSy",
-        group=args.run_signature,
-        name=model_name,
-        dir=WB_path,
-        sync_tensorboard=True,
-        config=vars(args),
-    )
+# def _maybe_enable_wandb(use_WB: bool, args: Any, WB_path: str, model_name: str):
+#     if not use_WB:
+#         return None
+#     return wandb.init(
+#         project="RL-NeSy",
+#         group=args.run_signature,
+#         name=model_name,
+#         dir=WB_path,
+#         sync_tensorboard=True,
+#         config=vars(args),
+#     )

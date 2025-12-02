@@ -1,7 +1,7 @@
 import torch
-from .sb3_utils import Term
-from .sb3_dataset import DataHandler
-from .sb3_index_manager import IndexManager
+from sb3_utils import Term
+from sb3_dataset import DataHandler
+from sb3_index_manager import IndexManager
 from pykeen.triples import TriplesFactory
 from pykeen.sampling import BasicNegativeSampler
 from typing_extensions import TypeAlias 
@@ -526,74 +526,17 @@ def get_negatives(
     chosen = cand.unique(dim=0, return_inverse=False)
     chosen = chosen[: B * num_negs]            # simple truncation
 
-    # Check if we have enough candidates after filtering
-    actual_num_candidates = chosen.size(0)
-    expected_num_candidates = B * num_negs
-    
-    # Create output tensor
+    # Reshape and pad out to fixed size
+    chosen = chosen.view(B, -1, 3)             # (B, num_negs, 3)
     neg_subs = torch.full(
         (B, num_negs, padding_atoms, max_arity + 1),
         fill_value=self.index_manager.padding_idx,
         dtype=expected_dtype,
-        device=device,
+        device=device
     )
-    
-    if actual_num_candidates < expected_num_candidates:
-        # We don't have enough candidates - need to handle this carefully
-        # warnings.warn(
-        print(
-            f"Negative sampling produced fewer candidates than requested: "
-            f"got {actual_num_candidates}, expected {expected_num_candidates} ",
-            # f"(batch_size={B}, num_negs={num_negs}). "
-            # f"Padding remaining slots. This may indicate insufficient unique entities "
-            # f"or overly aggressive filtering.",
-            RuntimeWarning
-        )
-        
-        # Debug mode: show what negatives were generated vs expected (before reshape)
-        if debug:
-            # Helper function to get string representation
-            def idx_to_str(idx, is_relation=False):
-                try:
-                    if is_relation:
-                        return self.index_manager.predicate_idx2str.get(idx, f"<unknown_rel_{idx}>")
-                    else:
-                        return self.index_manager.constant_idx2str.get(idx, f"<unknown_ent_{idx}>")
-                except:
-                    return f"<error_{idx}>"
-            
-            # Get positive query string
-            pos_h_str = idx_to_str(pos_batch[0, 0].item(), False)
-            pos_r_str = idx_to_str(pos_batch[0, 1].item(), True)
-            pos_t_str = idx_to_str(pos_batch[0, 2].item(), False)
-            
-            print(f"\n{'='*70}")
-            print(f"DEBUG: Insufficient negatives")
-            print(f"Positive: ({pos_h_str}, {pos_r_str}, {pos_t_str})")
-            print(f"Expected {num_negs} negatives, got {chosen.size(0)} (before batching)")
-            print(f"\nAll negatives generated (after filtering):")
-            for i in range(min(15, chosen.size(0))):
-                h_idx, r_idx, t_idx = chosen[i].tolist()
-                h_str = idx_to_str(h_idx, False)
-                r_str = idx_to_str(r_idx, True)
-                t_str = idx_to_str(t_idx, False)
-                print(f"  [{i}] ({h_str}, {r_str}, {t_str})")
-            if chosen.size(0) > 15:
-                print(f"  ... and {chosen.size(0) - 15} more")
-            print(f"{'='*70}\n")
-        
-        # Reshape what we have and assign only the available candidates
-        chosen = chosen.view(B, -1, 3)  # (B, actual_per_batch, 3) where actual_per_batch <= num_negs
-        actual_per_batch = chosen.size(1)
-        neg_subs[:, :actual_per_batch, 0, 1] = chosen[:, :, 0]
-        neg_subs[:, :actual_per_batch, 0, 0] = chosen[:, :, 1]
-        neg_subs[:, :actual_per_batch, 0, 2] = chosen[:, :, 2]
-    else:
-        # We have enough - proceed as normal
-        chosen = chosen.view(B, num_negs, 3)  # (B, num_negs, 3)
-        neg_subs[:, :, 0, 1] = chosen[:, :, 0]
-        neg_subs[:, :, 0, 0] = chosen[:, :, 1]
-        neg_subs[:, :, 0, 2] = chosen[:, :, 2]
+    neg_subs[:, :, 0, 1] = chosen[:, :, 0]
+    neg_subs[:, :, 0, 0] = chosen[:, :, 1]
+    neg_subs[:, :, 0, 2] = chosen[:, :, 2]
 
     return neg_subs
 
@@ -752,7 +695,7 @@ def get_sampler(
         )
     elif ('countries' in data_handler.dataset_name or 'ablation' in data_handler.dataset_name):
         if data_handler.domain2entity is None:
-            data_handler.domain2entity = {}
+            raise ValueError("Domain information is required for domain-aware negative sampling.")
         # Build domain2idx, skipping entities that aren't in the index
         domain2idx = {}
         skipped_entities = []

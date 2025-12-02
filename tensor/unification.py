@@ -1085,7 +1085,7 @@ class UnificationEngine:
             self.end_tensor = None
         
         # Initialize DebugHelper for verbose output
-        from utils.debug_helper import DebugHelper as DH
+        from tensor.utils.debug_helper import DebugHelper as DH
         self.debug_helper = DH(**stringifier_params) if stringifier_params else None
         self.deb = self.debug_helper  # short alias
 

@@ -9,9 +9,9 @@ from itertools import product
 from typing import Optional, List
 
 import numpy as np
-from utils import FileLogger
-from train import main
-from utils_config import (
+from sb3_utils import FileLogger
+from sb3_train import main
+from sb3_utils_config import (
     load_experiment_configs,
     parse_scalar,
     coerce_config_value,
@@ -29,11 +29,14 @@ if __name__ == "__main__":
 
     DEFAULT_CONFIG = {
         # General experiment configuration
-
+        # Countries: (lr, entropy) decay true, else 5e-5 and 0.2, train_neg_ratio 4, envsxsteps=16x128. 
+        # family: (lr, entropy) decay false, 5e-5 and 0.05, train_neg_ratio 0 (nothing to learn from neg), envsxsteps=128x128. 
+        # countries: 111(train queries)x5(pos+4 neg)x4(avg_len)=2,220 steps. set 16(envs)x128(steps)=2048. Recomended to cover 10%
+        # family: 20k(train queries)x5(pos+4 neg)x3(avg_len)=300k-->cover 30k steps= 128x12
         # Dataset params
         'dataset_name': 'countries_s3',
 
-        'eval_neg_samples': 3,
+        'eval_neg_samples': None,
         'test_neg_samples': None, # 5
 
         'train_depth': None, # {-1,3}
@@ -41,8 +44,8 @@ if __name__ == "__main__":
         'test_depth': None,
 
         'n_train_queries': None,
-        'n_eval_queries': 500,
-        'n_test_queries': 500,
+        'n_eval_queries': None,
+        'n_test_queries': None,
 
         'prob_facts': False,
         'topk_facts': None,
@@ -50,26 +53,29 @@ if __name__ == "__main__":
 
         # Model params
         'model_name': 'PPO',
-        'ent_coef': 0.5,
+        'ent_coef': 0.2,
         'clip_range': 0.2,
-        'n_epochs': 10,
-        'lr': 3e-4,
+        'n_epochs': 20,
+        'lr': 5e-5,
         'gamma': 0.99,
+        'clip_range_vf': None,
+        'target_kl': 0.03,
 
         # Training params
         'seed': [0],
-        'timesteps_train': 128,
+        'timesteps_train': 700000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 1,
+        'n_envs': 16,
         'n_steps': 128,
-        'n_eval_envs': 1,
-        'batch_size': 128,
+        'n_eval_envs': 128,
+        'batch_size': 4096,
+        'eval_freq': 4, # in multiples of (n_steps * n_envs) -> how many rollouts between evaluations
 
         # Env params
         'reward_type': 4,
-        'train_neg_ratio': 1,
+        'train_neg_ratio': 4,
         'engine': 'python',
         'engine_strategy': 'cmp', # 'cmp', 'rft'
         'endf_action': True,
@@ -80,36 +86,52 @@ if __name__ == "__main__":
         'corruption_mode': 'dynamic',
         'false_rules': False,
 
-        # KGE integration params
-        'kge_action': False,        # Add an action which is a new predicate with '_kge', whose logits are from KGE
-        'logit_fusion': False,      # Combine KGE logits with RL logits during training and evaluation
-        'inference_fusion': False,  # Enable KGE inference fusion at evaluation time (True/False)
-        'inference_success_only': False,  # When inference_fusion=True, only use KGE on RL success
-        'pbrs': False,              # Enable potential-based reward shaping
-        'enable_top_k': False,      # Enable Top-K actions filtering with the value function
-        'kge_engine': 'tf',         # KGE backend: 'tf', 'pytorch', or 'pykeen'
-        'kge_checkpoint_dir': './../../checkpoints/',
-        'kge_run_signature': None,
-        'kge_scores_file': None,
+        # Entropy coefficient decay params
+        'ent_coef_decay': False,  # Enable entropy coefficient decay
+        'ent_coef_init_value': 0.5,  # Initial value (defaults to ent_coef if None)
+        'ent_coef_final_value': 0.01,  # Final value
+        'ent_coef_start': 0.0,  # Fraction of training when decay starts
+        'ent_coef_end': 1.0,  # Fraction of training when decay ends
+        'ent_coef_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
 
-        # Top-K actions filtering: Curriculum learning params
-        'top_k_init_value': 10,
-        'top_k_final_value': 7,
-        'top_k_start': 0.3,
-        'top_k_end': 1,
-        'top_k_transform': 'linear',
+        # Learning rate decay params
+        'lr_decay': False,  # Enable learning rate decay
+        'lr_init_value': 3e-4,  # Initial value (defaults to lr if None)
+        'lr_final_value': 1e-6,  # Final value
+        'lr_start': 0.0,  # Fraction of training when decay starts
+        'lr_end': 1.0,  # Fraction of training when decay ends
+        'lr_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
 
-        # KGE logit shaping params for logit_fusion
-        'kge_logit_init_value': 1.0,
-        'kge_logit_final_value': 0.2,
-        'kge_logit_start': 0.2, # at what fraction of training timesteps the annealing starts
-        'kge_logit_end': 1, # at what fraction of training timesteps the annealing ends
-        'kge_logit_transform': 'log',
-        'kge_logit_eps': 1e-6,
+        # # KGE integration params
+        # 'kge_action': False,        # Add an action which is a new predicate with '_kge', whose logits are from KGE
+        # 'logit_fusion': False,      # Combine KGE logits with RL logits during training and evaluation
+        # 'inference_fusion': False,  # Enable KGE inference fusion at evaluation time (True/False)
+        # 'inference_success_only': False,  # When inference_fusion=True, only use KGE on RL success
+        # 'pbrs': False,              # Enable potential-based reward shaping
+        # 'enable_top_k': False,      # Enable Top-K actions filtering with the value function
+        # 'kge_engine': 'tf',         # KGE backend: 'tf', 'pytorch', or 'pykeen'
+        # 'kge_checkpoint_dir': './../../checkpoints/',
+        # 'kge_run_signature': None,
+        # 'kge_scores_file': None,
 
-        # Potential-based shaping params
-        'pbrs_beta': 0.5, 
-        'pbrs_gamma': 0.99, # Set it as the same value of PPO's gamma
+        # # Top-K actions filtering: Curriculum learning params
+        # 'top_k_init_value': 10,
+        # 'top_k_final_value': 7,
+        # 'top_k_start': 0.3,
+        # 'top_k_end': 1,
+        # 'top_k_transform': 'linear',
+
+        # # KGE logit shaping params for logit_fusion
+        # 'kge_logit_init_value': 1.0,
+        # 'kge_logit_final_value': 0.2,
+        # 'kge_logit_start': 0.2, # at what fraction of training timesteps the annealing starts
+        # 'kge_logit_end': 1, # at what fraction of training timesteps the annealing ends
+        # 'kge_logit_transform': 'log',
+        # 'kge_logit_eps': 1e-6,
+
+        # # Potential-based shaping params
+        # 'pbrs_beta': 0.5, 
+        # 'pbrs_gamma': 0.99, # Set it as the same value of PPO's gamma
 
         # Evaluation hybrid fusion
         'eval_hybrid_success_only': True,
@@ -119,20 +141,22 @@ if __name__ == "__main__":
         # Embedding params
         'atom_embedder': 'transe',
         'state_embedder': 'mean',
-        'atom_embedding_size': 256,
+        'atom_embedding_size': 250,
         'learn_embeddings': True,
         'padding_atoms': 6,
         'padding_states': -1, # Auto-computed from dataset unless overridden
         'max_total_vars': 100,
 
         # Other params
-        'device': 'cuda:1',  # Device: 'cpu', 'cuda:1' (auto-select best GPU), or 'cuda:all' (use all available GPUs)
+        'verbose': False,
+        'prover_verbose': False,
+        'device': 'auto',  # Device: 'cpu', 'cuda:1' (auto-select best GPU), or 'cuda:all' (use all available GPUs)
         'min_gpu_memory_gb': 2.0,  # Minimum free GPU memory in GB to consider a GPU available
         'extended_eval_info': True,
         'eval_best_metric': 'mrr',
         'plot': False,
         'data_path': './data/',
-        'models_path': './models/',
+        'models_path': 'models/',
         'rules_file': 'rules.txt',
         'facts_file': 'train.txt',
         'use_logger': True,
@@ -376,6 +400,48 @@ if __name__ == "__main__":
                 'value_type': 'float',
             }
 
+        # --- Entropy coefficient decay schedule ---
+        if cfg.get('ent_coef_decay', False):
+            ent_coef_init = cfg.get('ent_coef_init_value')
+            if ent_coef_init is None:
+                ent_coef_init = cfg.get('ent_coef', 0.2)
+            ent_coef_final = cfg.get('ent_coef_final_value', 0.01)
+            ent_coef_start = float(cfg.get('ent_coef_start', 0.0))
+            ent_coef_end = float(cfg.get('ent_coef_end', 1.0))
+            annealing_specs['ent_coef'] = {
+                'initial': float(ent_coef_init),
+                'final': float(ent_coef_final),
+                'start_point': max(0.0, min(1.0, ent_coef_start)),
+                'end_point': max(0.0, min(1.0, ent_coef_end)),
+                'transform': cfg.get('ent_coef_transform', 'linear'),
+                'value_type': 'float',
+            }
+            print(
+                f"Entropy coefficient decay configured: {ent_coef_init} -> {ent_coef_final} "
+                f"({cfg.get('ent_coef_transform', 'linear')})"
+            )
+
+        # --- Learning rate decay schedule ---
+        if cfg.get('lr_decay', False):
+            lr_init = cfg.get('lr_init_value')
+            if lr_init is None:
+                lr_init = cfg.get('lr', 5e-5)
+            lr_final = cfg.get('lr_final_value', 1e-6)
+            lr_start = float(cfg.get('lr_start', 0.0))
+            lr_end = float(cfg.get('lr_end', 1.0))
+            annealing_specs['lr'] = {
+                'initial': float(lr_init),
+                'final': float(lr_final),
+                'start_point': max(0.0, min(1.0, lr_start)),
+                'end_point': max(0.0, min(1.0, lr_end)),
+                'transform': cfg.get('lr_transform', 'linear'),
+                'value_type': 'float',
+            }
+            print(
+                f"Learning rate decay configured: {lr_init} -> {lr_final} "
+                f"({cfg.get('lr_transform', 'linear')})"
+            )
+
         cfg['annealing_specs'] = annealing_specs
         cfg['annealing'] = annealing_specs
 
@@ -442,7 +508,6 @@ if __name__ == "__main__":
                 if namespace.test_neg_samples != None: print("Overriding test_neg_samples.")
                 namespace.test_neg_samples = None
                 namespace.padding_states = 20
-                namespace.atom_embedding_size = 256
             elif namespace.dataset_name == "family":
                 namespace.padding_states = 130
             elif namespace.dataset_name == "wn18rr":
@@ -504,7 +569,7 @@ if __name__ == "__main__":
             namespace.constant_embedding_size = 2 * namespace.atom_embedding_size
 
         namespace.device = device
-        namespace.eval_freq = namespace.n_steps * namespace.n_envs
+        namespace.eval_freq = int(namespace.n_steps * namespace.eval_freq)
 
         return namespace
 
@@ -543,26 +608,26 @@ if __name__ == "__main__":
             args_namespace.engine_strategy,
             args_namespace.train_neg_ratio,
             args_namespace.reward_type,
-            args_namespace.kge_action,
-            args_namespace.logit_fusion,
-            args_namespace.inference_fusion,
-            args_namespace.pbrs,
-            args_namespace.enable_top_k,
-            args_namespace.prob_facts,
-            args_namespace.topk_facts,
-            args_namespace.topk_facts_threshold,
+            # args_namespace.kge_action,
+            # args_namespace.logit_fusion,
+            # args_namespace.inference_fusion,
+            # args_namespace.pbrs,
+            # args_namespace.enable_top_k,
+            # args_namespace.prob_facts,
+            # args_namespace.topk_facts,
+            # args_namespace.topk_facts_threshold,
             # args_namespace.top_k_initial,
             # args_namespace.top_k_final,
             # args_namespace.top_k_start_step,
             args_namespace.n_epochs,
             args_namespace.lr,
             args_namespace.n_envs,
-            args_namespace.pbrs_beta,
-            args_namespace.pbrs_gamma,
+            # args_namespace.pbrs_beta,
+            # args_namespace.pbrs_gamma,
             args_namespace.eval_hybrid_kge_weight,
             args_namespace.eval_hybrid_rl_weight,
             args_namespace.eval_hybrid_success_only,
-            args_namespace.kge_logit_transform,
+            # args_namespace.kge_logit_transform,
             # args_namespace.kge_logit_gain_init,
             # args_namespace.kge_logit_gain_final,
             # args_namespace.kge_logit_gain_anneal_steps,

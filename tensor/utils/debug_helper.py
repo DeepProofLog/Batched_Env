@@ -218,29 +218,8 @@ class DebugHelper:
                         else:
                             print(f"    [{j}]: <empty>")
 
-    def _merge_reset_obs(self, base_td: TensorDict, reset_td: TensorDict, done_mask: torch.Tensor) -> TensorDict:
-        """Merge base and reset tensordicts based on done mask."""
-        rows = done_mask.nonzero(as_tuple=False).view(-1)
-        if rows.numel() == 0:
-            return base_td
-        merged = base_td.clone()
-        for key in reset_td.keys():
-            reset_val = reset_td.get(key)
-            if isinstance(reset_val, TensorDict):
-                base_val = merged.get(key) if key in merged.keys() else reset_val.clone()
-                merged.set(key, self._merge_reset_obs(base_val, reset_val, done_mask))
-            else:
-                if key in merged.keys():
-                    target = merged.get(key).clone()
-                else:
-                    target = reset_val.clone()
-                target[rows] = reset_val[rows]
-                merged.set(key, target)
-        return merged
-
 
     # ---- Methods for canonicalization and sorting for comparison with string envs ----
-
 
     # --- Canonical string representation ---
 
@@ -434,76 +413,6 @@ class DebugHelper:
         
         # Check if already sorted
         if order == list(range(len(canonical_strings))):
-            return states, counts, owners, next_vars
-
-        order_tensor = torch.tensor(order, dtype=torch.long, device=states.device)
-        states = states.index_select(0, order_tensor)
-        counts = counts.index_select(0, order_tensor)
-        owners = owners.index_select(0, order_tensor)
-        next_vars = next_vars.index_select(0, order_tensor)
-        return states, counts, owners, next_vars
-
-
-
-
-    # --- NOT USED Sort by canonical key ---
-
-    def _tensor_state_canonical_key(self, state: Tensor, constant_no: int, padding_idx: int) -> Tuple[int, ...]:
-        """Generate a canonical key for sorting states.
-        
-        To match canonical_state_to_str (which test_envs uses for comparison):
-        1. Renumber variables in original atom order
-        2. Sort atoms by (pred, arg1, arg2)
-        3. Create tuple key
-        
-        This ensures states sort the same way whether we use canonical keys or canonical strings.
-        """
-        valid_mask = state[:, 0] != padding_idx
-        valid_atoms = state[valid_mask]
-        
-        if valid_atoms.numel() == 0:
-            return tuple()
-        
-        # Step 1: Renumber variables in original order
-        var_map: Dict[int, int] = {}
-        next_var = constant_no + 1
-        renumbered_atoms = valid_atoms.clone()
-        
-        for atom in renumbered_atoms:
-            for col in (1, 2):
-                val = int(atom[col].item())
-                if val == padding_idx or val <= constant_no:
-                    continue
-                if val not in var_map:
-                    var_map[val] = next_var
-                    next_var += 1
-                atom[col] = var_map[val]
-        
-        # Step 2: Sort atoms
-        atom_tuples = [(int(atom[0].item()), int(atom[1].item()), int(atom[2].item())) for atom in renumbered_atoms]
-        sorted_indices = sorted(range(len(atom_tuples)), key=lambda i: atom_tuples[i])
-        
-        # Step 3: Build key from sorted atoms
-        key: List[int] = []
-        for idx in sorted_indices:
-            atom_tuple = atom_tuples[idx]
-            key.extend(atom_tuple)
-        
-        return tuple(key)
-
-    def _sort_candidates_by_canonical_order(self, states: Tensor,
-                                            counts: Tensor,
-                                            owners: Tensor,
-                                            next_vars: Tensor,
-                                            constant_no: int,
-                                            padding_idx: int) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        if states.numel() == 0:
-            return states, counts, owners, next_vars
-
-        keys = [self._tensor_state_canonical_key(states[i], constant_no, padding_idx) for i in range(states.shape[0])]
-        # sorted() is stable by default (maintains original order for equal keys)
-        order = sorted(range(len(keys)), key=lambda idx: (int(owners[idx].item()), keys[idx]))
-        if order == list(range(len(keys))):
             return states, counts, owners, next_vars
 
         order_tensor = torch.tensor(order, dtype=torch.long, device=states.device)

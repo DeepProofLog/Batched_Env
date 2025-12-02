@@ -144,7 +144,14 @@ class BloomFilter:
         """
         if rows.numel() == 0:
             return
-        states = current_queries.index_select(0, rows).clone()      # [N, M, D]
+        
+        # Check if current_queries is the full batch (indexed by env_idx) or a subset (aligned with rows)
+        if current_queries.shape[0] == self.batch_size:
+            states = current_queries.index_select(0, rows).clone()      # [N, M, D]
+        elif current_queries.shape[0] == rows.shape[0]:
+            states = current_queries.clone()                            # [N, M, D]
+        else:
+            raise ValueError(f"Shape mismatch: rows={rows.shape}, current_queries={current_queries.shape}, batch_size={self.batch_size}")
         
         # Filter out terminal predicates (match ExactMemory and str_env behavior)
         # Replace terminal atoms with padding to exclude them from the hash
@@ -305,11 +312,25 @@ class ExactMemory:
         """
         if rows.numel() == 0:
             return
-        for idx in rows.view(-1).tolist():
-            if 0 <= idx < self.batch_size:
-                state = current_queries[idx]
-                key = self._state_to_key(state, ignore_terminals=True)
-                self._mem[idx].add(key)
+        
+        rows_list = rows.view(-1).tolist()
+        
+        if current_queries.shape[0] == self.batch_size:
+            # Full batch, indexed by env_idx
+            for idx in rows_list:
+                if 0 <= idx < self.batch_size:
+                    state = current_queries[idx]
+                    key = self._state_to_key(state, ignore_terminals=True)
+                    self._mem[idx].add(key)
+        elif current_queries.shape[0] == rows.shape[0]:
+            # Subset, aligned with rows
+            for i, idx in enumerate(rows_list):
+                if 0 <= idx < self.batch_size:
+                    state = current_queries[i]
+                    key = self._state_to_key(state, ignore_terminals=True)
+                    self._mem[idx].add(key)
+        else:
+             raise ValueError(f"Shape mismatch: rows={rows.shape}, current_queries={current_queries.shape}, batch_size={self.batch_size}")
 
     def membership(self, states: Tensor, owners: Tensor) -> Tensor:
         """

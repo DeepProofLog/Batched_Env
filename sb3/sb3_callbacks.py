@@ -17,82 +17,22 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_norm
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.callbacks import EvalCallback
-from callbacks import (
-    _format_stat_string as _format_stat_string_shared,
-    _format_depth_key as _format_depth_key_shared,
-    print_formatted_metrics as print_formatted_metrics_shared,
-    RolloutProgressCallback,
-    DetailedMetricsCollector,
-)
+
+def _format_depth_key(depth_value: Any) -> str:
+    """Normalize depth IDs so metrics share consistent naming."""
+    if depth_value in (None, -1):
+        return "unknown"
+    try:
+        return str(int(depth_value))
+    except (TypeError, ValueError):
+        return "unknown"
 
 
-# Reuse shared formatting helpers for consistent logging
-_format_depth_key = _format_depth_key_shared
-_format_stat_string = _format_stat_string_shared
-
-
-class SB3RolloutLogger(BaseCallback):
-    """
-    Adapter that reuses the shared RolloutProgressCallback to print rollout
-    progress in the SB3 training loop.
-    """
-
-    def __init__(self, total_steps: int, n_envs: int, update_interval: int = 25, verbose: bool = True):
-        super().__init__(verbose=0)
-        self.helper = RolloutProgressCallback(
-            total_steps=total_steps,
-            n_envs=n_envs,
-            update_interval=update_interval,
-            verbose=verbose,
-        )
-        self._step_in_rollout = 0
-        self._n_envs = n_envs
-
-    def _on_rollout_start(self) -> None:
-        self._step_in_rollout = 0
-        self.helper.on_rollout_start()
-
-    def _on_step(self) -> bool:
-        # Fired every env step; increment total collected count.
-        self._step_in_rollout += self.training_env.num_envs
-        step_idx = max(0, (self._step_in_rollout // self._n_envs) - 1)
-        self.helper.on_step(step_idx)
-        return True
-
-
-class SB3TrainingMetricsLogger(BaseCallback):
-    """
-    Collect episode stats during rollout and print a concise summary using the
-    shared DetailedMetricsCollector/print_formatted_metrics helpers.
-    """
-
-    def __init__(self, verbose: bool = True):
-        super().__init__(verbose=0)
-        self.collector = DetailedMetricsCollector(collect_detailed=True, verbose=False)
-        self.verbose_print = verbose
-
-    def _on_rollout_start(self) -> None:
-        self.collector.reset()
-
-    def _on_step(self) -> bool:
-        infos = self.locals.get("infos")
-        if infos is not None and isinstance(infos, (list, tuple)):
-            self.collector.accumulate(list(infos))
-        return True
-
-    def _on_rollout_end(self) -> None:
-        if not self.verbose_print:
-            return True
-        metrics = self.collector.compute_metrics()
-        if metrics:
-            print_formatted_metrics_shared(
-                metrics=metrics,
-                prefix="rollout",
-                extra_metrics={},
-                global_step=getattr(self.model, "num_timesteps", None),
-            )
-        return True
-
+def _format_stat_string(mean: Optional[float], std: Optional[float], count: int) -> str:
+    """Return metric display as 'mean +/- std (count)' with fixed precision."""
+    if mean is None or std is None or count == 0:
+        return "N/A"
+    return f"{mean:.3f} +/- {std:.2f} ({count})"
 
 class CustomEvalCallback(EvalCallback):
     """
@@ -188,9 +128,6 @@ class CustomEvalCallback(EvalCallback):
 
     def _on_step(self) -> bool:
         continue_training = True
-        # Skip the very first on_step call to avoid immediate eval at n_calls==0
-        if self.n_calls == 0:
-            return True
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
             start = time.time()
             print('---------------evaluation started---------------')
@@ -250,19 +187,6 @@ class CustomEvalCallback(EvalCallback):
                 success_rate = float(np.mean(self._is_success_buffer))
             self.logger.record("eval/success_rate", success_rate)
             self.logger.record("eval/total_timesteps", self.num_timesteps, exclude="tensorboard")
-
-            # Unified formatted console metrics
-            extra_print_metrics = {
-                "reward_overall": overall_reward_display,
-                "length mean +/- std": overall_length_display,
-                "success_rate": success_rate,
-            }
-            extra_print_metrics.update(label_log_entries)
-            extra_print_metrics.update(depth_log_entries)
-            extra_print_metrics.update(success_log_entries)
-            print_formatted_metrics_shared(
-                metrics={}, prefix="eval", extra_metrics=extra_print_metrics, global_step=self.num_timesteps
-            )
 
             # If a new best model is found, save it
             if mean_reward > self.best_mean_reward:
@@ -500,7 +424,7 @@ class CustomEvalCallback(EvalCallback):
             label_str = "pos" if label == 1 else "neg" if label == 0 else f"label{label}"
             reward_display = _format_stat_string(mean_depth, std_depth, count)
             
-            if self.logger is not None and label_str != "neg":  # for negatives we dont have depth info
+            if self.logger is not None:
                 self.logger.record(f"eval/reward_d_{depth_key}_{label_str}", reward_display)
             
             depth_log_entries[f"eval/reward_depth_{depth_key}_{label_str}_mean"] = mean_depth
@@ -709,8 +633,6 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
         This method is called by the model after each call to `env.step()`.
         """
         continue_training = True
-        if self.n_calls == 0:
-            return True
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
             start = time.time()
             print('---------------evaluation started---------------')
@@ -1023,18 +945,26 @@ class ScalarAnnealingCallback(BaseCallback):
             # Smooth transition using log scaling between the bounds.
             return initial + (final - initial) * math.log1p(9.0 * normalized) / math.log(10.0)
 
-        # Fallback to linear interpolation for unknown transforms.
-        return initial + normalized * (final - initial)
+    def _on_rollout_end(self) -> None:
+        """Print current values of annealing targets at rollout end."""
+        if self.targets:
+            current_values = []
+            for target in self.targets:
+                current_value = self._last_values.get(target.name, target.initial)
+                current_values.append(f"{target.name}: {current_value:.6f}")
+            if current_values:
+                print(f"[Anneal] {', '.join(current_values)}", flush=True)
+
+
 
 class DepthProofStatsCallback(BaseCallback):
-    """Track episode rewards, lengths, and success per query depth during training rollouts."""
+    """Track episode rewards per query depth during training rollouts."""
 
     def __init__(self, prefix: str = "rollout", track_negative: bool = False, verbose: int = 0):
         super().__init__(verbose)
         self.prefix = prefix
         self.track_negative = track_negative
         self._stats: defaultdict[tuple[int, str], List[float]] = defaultdict(list)
-        self._lengths: defaultdict[tuple[int, str], List[float]] = defaultdict(list)
         self._success_values: defaultdict[tuple[int, str], List[float]] = defaultdict(list)
         self._success_values_by_label: defaultdict[int, List[float]] = defaultdict(list)
         self._last_episode_id: Dict[int, int] = {}
@@ -1044,47 +974,24 @@ class DepthProofStatsCallback(BaseCallback):
 
     def _reset(self) -> None:
         self._stats = defaultdict(list)
-        self._lengths = defaultdict(list)
         self._success_values = defaultdict(list)
         self._success_values_by_label = defaultdict(list)
         self._last_episode_id = {}
 
     def _on_step(self) -> bool:
-        # Vectorized check: only process envs that are 'done'
-        dones = self.locals.get("dones")
-        if dones is None:
-            return True
-            
-        # np.where returns a tuple, we want the first element (indices)
-        done_indices = np.where(dones)[0]
-        if len(done_indices) == 0:
-            return True
-
-        infos = self.locals.get("infos")
-        # We can't easily vectorize the extraction from a list of dicts, 
-        # but iterating only over done_indices is much faster than iterating over all envs.
-        for env_idx in done_indices:
-            info = infos[env_idx]
+        infos = self.locals.get("infos", [])
+        for env_idx, info in enumerate(infos):
             if not info or "episode" not in info:
                 continue
-            
             label = info.get("label")
             if label is None:
                 continue
-            
-            # If we are not tracking negatives and this is a negative query, skip
             if not self.track_negative and label != 1:
                 continue
-
             episode_data = info.get("episode")
-            # Monitor wrapper provides 'r' (reward) and 'l' (length)
-            reward = episode_data.get("r")
-            length = episode_data.get("l")
-            
+            reward = episode_data.get("r") if isinstance(episode_data, dict) else None
             if reward is None:
                 continue
-
-            # Avoid double counting using episode_idx if available, else object id
             episode_idx = info.get("episode_idx")
             if episode_idx is not None:
                 if self._last_episode_id.get(env_idx) == episode_idx:
@@ -1095,102 +1002,77 @@ class DepthProofStatsCallback(BaseCallback):
                 if self._last_episode_id.get(env_idx) == episode_id:
                     continue
                 self._last_episode_id[env_idx] = episode_id
-
             depth_key = _format_depth_key(info.get("query_depth"))
             success_flag = bool(info.get("is_success", False))
-            
-            # Store stats
-            key = (label, depth_key)
-            self._success_values[key].append(1.0 if success_flag else 0.0)
+            self._success_values[(label, depth_key)].append(1.0 if success_flag else 0.0)
             self._success_values_by_label[label].append(1.0 if success_flag else 0.0)
+            key = (label, depth_key)
             self._stats[key].append(float(reward))
-            if length is not None:
-                self._lengths[key].append(float(length))
-                
         return True
 
     def _log_stats(self) -> None:
         if not self._stats:
             self._reset()
             return
-
-        # Helper for sorting keys
-        def _sort_key(item):
-            (label, depth_key), _ = item
-            label_order = 0 if label == 1 else 1 if label == 0 else 2
-            if depth_key == "unknown":
-                depth_order = float("inf")
-            else:
-                try:
-                    depth_order = int(depth_key)
-                except (TypeError, ValueError):
-                    depth_order = float("inf")
-            return (label_order, depth_order)
-
-        # 1. Log Rewards by Depth
-        for (label, depth_key), rewards in sorted(self._stats.items(), key=_sort_key):
+        for (label, depth_key), rewards in self._stats.items():
             if not rewards:
                 continue
             label_str = "pos" if label == 1 else "neg"
-            
             rewards_arr = np.asarray(rewards, dtype=np.float32)
             count = rewards_arr.size
             mean_reward = float(rewards_arr.mean()) if count else 0.0
             std_reward = float(rewards_arr.std()) if count > 1 else 0.0
             reward_display = _format_stat_string(mean_reward, std_reward, count)
-            
             if self.logger is not None:
                 self.logger.record(
                     f"{self.prefix}/reward_d_{depth_key}_{label_str}",
                     reward_display
                 )
-
-        # 2. Log Lengths by Depth
-        for (label, depth_key), lengths in sorted(self._lengths.items(), key=_sort_key):
-            if not lengths:
-                continue
-            label_str = "pos" if label == 1 else "neg"
-            
-            lengths_arr = np.asarray(lengths, dtype=np.float32)
-            count = lengths_arr.size
-            mean_length = float(lengths_arr.mean()) if count else 0.0
-            std_length = float(lengths_arr.std()) if count > 1 else 0.0
-            length_display = _format_stat_string(mean_length, std_length, count)
-            
-            if self.logger is not None:
-                self.logger.record(
-                    f"{self.prefix}/len_d_{depth_key}_{label_str}",
-                    length_display
+            if self.verbose > 0:
+                print(
+                    f"Depth {depth_key} ({label_str}) -> rwd: {reward_display}"
                 )
+        if self.logger is not None:
+            def _success_sort(item: Tuple[tuple[int, str], List[float]]) -> Tuple[int, Union[int, float]]:
+                (label, depth_key), _ = item
+                label_order = 0 if label == 1 else 1 if label == 0 else 2
+                if depth_key == "unknown":
+                    depth_order: Union[int, float] = float("inf")
+                else:
+                    try:
+                        depth_order = int(depth_key)
+                    except (TypeError, ValueError):
+                        depth_order = float("inf")
+                return (label_order, depth_order)
 
-        # 3. Log Success by Depth
-        for (label, depth_key), values in sorted(self._success_values.items(), key=_sort_key):
-            if not values:
-                continue
-            values_arr = np.asarray(values, dtype=np.float32)
-            count = values_arr.size
-            mean_success = float(values_arr.mean())
-            std_success = float(values_arr.std()) if count > 1 else 0.0
-            success_display = _format_stat_string(mean_success, std_success, count)
-            label_str = "pos" if label == 1 else "neg"
-            key = f"{self.prefix}/proven_d_{depth_key}_{label_str}"
-            self.logger.record(key, success_display)
+            for (label, depth_key), values in sorted(self._success_values.items(), key=_success_sort):
+                if not values:
+                    continue
+                values_arr = np.asarray(values, dtype=np.float32)
+                count = values_arr.size
+                mean_success = float(values_arr.mean())
+                std_success = float(values_arr.std()) if count > 1 else 0.0
+                success_display = _format_stat_string(mean_success, std_success, count)
+                label_str = "pos" if label == 1 else "neg"
+                key = f"{self.prefix}/proven_d_{depth_key}_{label_str}"
+                self.logger.record(key, success_display)
+                if self.verbose > 0:
+                    success_count = int(values_arr.sum())
+                    print(f"Depth {depth_key} ({label_str}) -> proven: {success_display} | successes: {success_count}")
 
-        # 4. Log Overall Success by Label
-        for label in (1, 0):
-            if label == 0 and not self.track_negative:
-                continue
-            values = self._success_values_by_label.get(label, [])
-            if not values:
-                continue
-            values_arr = np.asarray(values, dtype=np.float32)
-            count = values_arr.size
-            mean_success = float(values_arr.mean())
-            std_success = float(values_arr.std()) if count > 1 else 0.0
-            success_display = _format_stat_string(mean_success, std_success, count)
-            total_key = f"{self.prefix}/proven_{'pos' if label == 1 else 'neg'}"
-            self.logger.record(total_key, success_display)
-
+            for label in (1, 0):
+                if label == 0 and not self.track_negative:
+                    continue
+                values = self._success_values_by_label.get(label, [])
+                if not values:
+                    continue
+                values_arr = np.asarray(values, dtype=np.float32)
+                count = values_arr.size
+                mean_success = float(values_arr.mean())
+                std_success = float(values_arr.std()) if count > 1 else 0.0
+                success_display = _format_stat_string(mean_success, std_success, count)
+                total_key = f"{self.prefix}/proven_{'pos' if label == 1 else 'neg'}"
+                self.logger.record(total_key, success_display)
         self._reset()
 
     def _on_rollout_end(self) -> None:

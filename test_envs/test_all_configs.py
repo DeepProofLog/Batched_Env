@@ -30,13 +30,14 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 # Import test modules
-from test_envs.test_engine_sb3 import setup_sb3_engine, test_sb3_engine_batch
-from test_envs.test_engine_tensor import setup_tensor_engine, test_tensor_engine_batch
+from test_envs.test_engine_sb3 import setup_sb3_engine, test_sb3_engine
+from test_envs.test_engine_tensor import setup_tensor_engine, test_tensor_engine
 from test_envs.test_env_sb3 import setup_sb3_env, test_sb3_env_batch
 from test_envs.test_env_tensor import setup_tensor_env, test_tensor_env_batched, test_tensor_env
-from test_envs.test_env_eval import test_eval_env
-from test_envs.test_env_rollout import test_rolloutsb3_env #,test_rollout_env
+from test_envs.test_env_eval import test_tensor_env
+from test_envs.test_env_rollout import test_tensor_rollout
 
+from compare_traces_metrics import compare_traces_metrics
 
 def create_default_test_config() -> SimpleNamespace:
     """
@@ -58,7 +59,7 @@ def create_default_test_config() -> SimpleNamespace:
         padding_atoms=6,
         padding_states=40,
         max_derived_per_state=40,
-        skip_unary_actions=False,
+        skip_unary_actions=True,
         end_proof_action=False,
         memory_pruning=True,
         use_exact_memory=True,
@@ -66,7 +67,7 @@ def create_default_test_config() -> SimpleNamespace:
         prover_verbose=0,
         max_total_runtime_vars=1_000_000,
         device='cpu',
-        # PPO-specific parameters (for rolloutsb3_env)
+        # PPO-specific parameters (for tensor_rollout)
         n_steps=128,
         n_epochs=1,
         batch_size=1,
@@ -114,9 +115,15 @@ def add_bool_override_argument(parser, name: str, default: bool, help_text: str)
     parser.set_defaults(**{name: default})
 
 
+
+
 @dataclass
 class Config:
-    """Configuration for a test setup."""
+    """
+    Configuration for a test setup.
+    setup_kwargs: Optional keyword arguments for setup_func
+    test_kwargs: Optional keyword arguments for test_func
+    """
     name: str
     description: str
     setup_func: Optional[Callable[..., Any]] = None
@@ -130,11 +137,12 @@ class Config:
 class Configs:
     """Centralized configuration namespace for all test configurations."""
 
+    # ------------------ ENGINE CONFIGURATIONS ------------------
     sb3_engine = Config(
         name="sb3_engine",
         description="SB3 engine (string-based unification engine)",
         setup_func=setup_sb3_engine,
-        test_func=test_sb3_engine_batch,
+        test_func=test_sb3_engine,
         setup_kwargs={},
         has_traces=True,
         category="engine"
@@ -144,21 +152,13 @@ class Configs:
         name="tensor_engine",
         description="Tensor engine (tensor unification engine)",
         setup_func=setup_tensor_engine,
-        test_func=test_tensor_engine_batch,
-        setup_kwargs={"batched": False},
+        test_func=test_tensor_engine,
+        setup_kwargs={},
         has_traces=True,
         category="engine"
     )
 
-    batched_tensor_engine = Config(
-        name="batched_tensor_engine",
-        description="Batched tensor engine (batched tensor unification engine)",
-        setup_func=setup_tensor_engine,
-        test_func=test_tensor_engine_batch,
-        setup_kwargs={"batched": True},
-        has_traces=True,
-        category="engine"
-    )
+    # ------------------ ENVIRONMENT CONFIGURATIONS ------------------
 
     sb3_env = Config(
         name="sb3_env",
@@ -172,49 +172,21 @@ class Configs:
 
     tensor_env = Config(
         name="tensor_env",
-        description="Tensor env (tensor environment)",
-        setup_func=setup_tensor_env,
-        test_func=test_tensor_env,
-        setup_kwargs={"batch_size": 1},
-        has_traces=True,
-        category="environment"
-    )
-
-    batched_tensor_env = Config(
-        name="batched_tensor_env",
-        description="Batched tensor env (batched tensor environment)",
-        setup_func=setup_tensor_env,
-        test_func=test_tensor_env_batched,
-        setup_kwargs={},  # batch_size will be passed dynamically as len(queries)
-        has_traces=True,
-        category="environment"
-    )
-
-    eval_env = Config(
-        name="eval_env",
         description="Eval env (environment tested via evaluate_policy)",
         setup_func=None,
-        test_func=test_eval_env,
+        test_func=test_tensor_env,
         has_traces=False,
         category="environment"
     )
 
-    # rollout_env = Config(
-    #     name="rollout_env",
-    #     description="Rollout env (environment tested via rollout collector with random agent)",
-    #     setup_func=None,
-    #     test_func=test_rollout_env,
-    #     has_traces=False,
-    #     category="environment"
-    # )
-
-    rolloutsb3_env = Config(
-        name="rolloutsb3_env",
+    # ------------------ ROLLOUT CONFIGURATIONS ------------------
+    tensor_rollout = Config(
+        name="tensor_rollout",
         description="RolloutSB3 env (environment tested via PPO SB3-style rollout)",
         setup_func=None,
-        test_func=test_rolloutsb3_env,
+        test_func=test_tensor_rollout,
         has_traces=True,
-        category="environment"
+        category="rollout"
     )
 
     @classmethod
@@ -222,13 +194,9 @@ class Configs:
         return [
             cls.sb3_engine,
             cls.tensor_engine,
-            cls.batched_tensor_engine,
-            cls.sb3_env,
-            cls.tensor_env,
-            cls.batched_tensor_env,
-            cls.eval_env,
-            # cls.rollout_env,
-            cls.rolloutsb3_env,
+            # cls.sb3_env,
+            # cls.tensor_env,
+            # cls.tensor_rollout,
         ]
 
     @classmethod
@@ -241,12 +209,11 @@ class Configs:
     @classmethod
     def get_default_env_configs(cls) -> List[str]:
         return [
-            'sb3_env',
+            'sb3_engine',
+            'tensor_engine',
+            # 'sb3_env',
             # 'tensor_env',
-            'batched_tensor_env',
-            'eval_env',
-            # 'rollout_env',
-            'rolloutsb3_env'
+            # 'tensor_rollout',
         ]
 
 
@@ -332,309 +299,6 @@ def prepare_queries(dataset: str = "countries_s3", base_path: str = "./data/",
     return all_queries
 
 
-def compare_traces_deterministic(traces_dict: Dict[str, List[Dict]], verbose: bool = False) -> bool:
-    """
-    Compare traces from all configurations for deterministic policy.
-    All should produce identical results at every step.
-    
-    Args:
-        traces_dict: Dict mapping config_name -> list of trace dicts
-        verbose: Print detailed comparison
-        
-    Returns:
-        True if all traces match
-    """
-    config_names = list(traces_dict.keys())
-    
-    if not config_names:
-        return True
-    
-    # Get reference traces (first config)
-    ref_name = config_names[0]
-    ref_traces = traces_dict[ref_name]
-    n_queries = len(ref_traces)
-    
-    # Compare each query
-    mismatches = []
-    
-    for q_idx in range(n_queries):
-        ref_trace = ref_traces[q_idx]['trace']
-        ref_success = ref_traces[q_idx]['success']
-        
-        # Compare with all other configs
-        for config_name in config_names[1:]:
-            other_trace = traces_dict[config_name][q_idx]['trace']
-            other_success = traces_dict[config_name][q_idx]['success']
-            
-            # Check success flag
-            if ref_success != other_success:
-                mismatches.append({
-                    'query_idx': q_idx,
-                    'configs': (ref_name, config_name),
-                    'type': 'success',
-                    'ref': ref_success,
-                    'other': other_success
-                })
-            
-            # Check trace length
-            if len(ref_trace) != len(other_trace):
-                mismatches.append({
-                    'query_idx': q_idx,
-                    'configs': (ref_name, config_name),
-                    'type': 'trace_length',
-                    'ref_len': len(ref_trace),
-                    'other_len': len(other_trace)
-                })
-                continue
-            
-            # Compare each step
-            for step_idx, (ref_step, other_step) in enumerate(zip(ref_trace, other_trace)):
-                # Compare states
-                if ref_step['state'] != other_step['state']:
-                    mismatches.append({
-                        'query_idx': q_idx,
-                        'step': step_idx,
-                        'configs': (ref_name, config_name),
-                        'type': 'state',
-                        'ref': ref_step['state'],
-                        'other': other_step['state']
-                    })
-                
-                # Compare number of actions
-                if ref_step['num_actions'] != other_step['num_actions']:
-                    mismatches.append({
-                        'query_idx': q_idx,
-                        'step': step_idx,
-                        'configs': (ref_name, config_name),
-                        'type': 'num_actions',
-                        'ref': ref_step['num_actions'],
-                        'other': other_step['num_actions']
-                    })
-                
-                # Compare derived states (if not terminal)
-                if not ref_step['done'] and not other_step['done']:
-                    ref_derived = sorted(ref_step['derived_states'])
-                    other_derived = sorted(other_step['derived_states'])
-                    if ref_derived != other_derived:
-                        mismatches.append({
-                            'query_idx': q_idx,
-                            'step': step_idx,
-                            'configs': (ref_name, config_name),
-                            'type': 'derived_states',
-                            'ref_count': len(ref_derived),
-                            'other_count': len(other_derived)
-                        })
-    
-    if mismatches:
-        print(f"\n{'='*60}")
-        print(f"DETERMINISTIC COMPARISON: {len(mismatches)} MISMATCHES FOUND")
-        print(f"{'='*60}")
-        
-        if verbose:
-            for i, m in enumerate(mismatches[:10]):  # Show first 10
-                print(f"\nMismatch {i+1}:")
-                print(f"  Query: {m['query_idx']}")
-                if 'step' in m:
-                    print(f"  Step: {m['step']}")
-                print(f"  Configs: {m['configs'][0]} vs {m['configs'][1]}")
-                print(f"  Type: {m['type']}")
-                if 'ref' in m and 'other' in m:
-                    print(f"  {m['configs'][0]}: {m['ref']}")
-                    print(f"  {m['configs'][1]}: {m['other']}")
-                elif 'ref_len' in m:
-                    print(f"  {m['configs'][0]} length: {m['ref_len']}")
-                    print(f"  {m['configs'][1]} length: {m['other_len']}")
-                elif 'ref_count' in m:
-                    print(f"  {m['configs'][0]} derived: {m['ref_count']}")
-                    print(f"  {m['configs'][1]} derived: {m['other_count']}")
-            
-            if len(mismatches) > 10:
-                print(f"\n... and {len(mismatches) - 10} more mismatches")
-        
-        return False
-    else:
-        print(f"\n{'='*60}")
-        print(f"✓ DETERMINISTIC COMPARISON: ALL CONFIGURATIONS MATCH!")
-        print(f"{'='*60}")
-        return True
-
-
-def debug_compare_step_by_step(traces_dict: Dict[str, List[Dict]], queries: List[Tuple]) -> None:
-    """
-    DEBUG MODE: Compare traces step-by-step and raise error on first mismatch.
-    
-    This function compares all configurations query-by-query, step-by-step,
-    and raises a detailed error as soon as any mismatch is detected.
-    
-    Args:
-        traces_dict: Dict mapping config_name -> list of trace dicts
-        queries: List of (split, (predicate, head, tail)) tuples
-        
-    Raises:
-        AssertionError: On first mismatch with detailed information
-    """
-    config_names = list(traces_dict.keys())
-    
-    if len(config_names) < 2:
-        print("DEBUG: Only one configuration, nothing to compare")
-        return
-    
-    print(f"\n{'='*80}")
-    print(f"DEBUG MODE: Step-by-step comparison of {len(config_names)} configurations")
-    print(f"Configurations: {', '.join(config_names)}")
-    print(f"{'='*80}\n")
-    
-    # Get reference traces (first config)
-    ref_name = config_names[0]
-    ref_traces = traces_dict[ref_name]
-    n_queries = len(ref_traces)
-    
-    # Compare each query
-    for q_idx in range(n_queries):
-        split, (pred, head, tail) = queries[q_idx]
-        query_str = f"{pred}({head}, {tail})"
-        
-        print(f"Query {q_idx}/{n_queries}: {query_str} [{split}]")
-        
-        ref_trace = ref_traces[q_idx]['trace']
-        ref_success = ref_traces[q_idx]['success']
-        ref_reward = ref_traces[q_idx]['reward']
-        
-        # Compare with all other configs
-        for config_name in config_names[1:]:
-            other_trace = traces_dict[config_name][q_idx]['trace']
-            other_success = traces_dict[config_name][q_idx]['success']
-            other_reward = traces_dict[config_name][q_idx]['reward']
-            
-            # Check success
-            if ref_success != other_success:
-                error_msg = f"\n{'='*80}\n"
-                error_msg += f"MISMATCH DETECTED - Query {q_idx}: {query_str}\n"
-                error_msg += f"{'='*80}\n"
-                error_msg += f"Configuration comparison: {ref_name} vs {config_name}\n"
-                error_msg += f"TYPE: Success flag mismatch\n\n"
-                error_msg += f"{ref_name} success: {ref_success}\n"
-                error_msg += f"{config_name} success: {other_success}\n"
-                error_msg += f"\n{ref_name} reward: {ref_reward}\n"
-                error_msg += f"{config_name} reward: {other_reward}\n"
-                error_msg += f"\nTrace lengths: {ref_name}={len(ref_trace)}, {config_name}={len(other_trace)}\n"
-                error_msg += f"{'='*80}\n"
-                raise AssertionError(error_msg)
-            
-            # Check trace length
-            if len(ref_trace) != len(other_trace):
-                error_msg = f"\n{'='*80}\n"
-                error_msg += f"MISMATCH DETECTED - Query {q_idx}: {query_str}\n"
-                error_msg += f"{'='*80}\n"
-                error_msg += f"Configuration comparison: {ref_name} vs {config_name}\n"
-                error_msg += f"TYPE: Trace length mismatch\n\n"
-                error_msg += f"{ref_name} trace length: {len(ref_trace)}\n"
-                error_msg += f"{config_name} trace length: {len(other_trace)}\n"
-                error_msg += f"\n{ref_name} final success: {ref_success}\n"
-                error_msg += f"{config_name} final success: {other_success}\n"
-                error_msg += f"\nLast steps:\n"
-                if ref_trace:
-                    error_msg += f"{ref_name} last step {len(ref_trace)-1}:\n"
-                    error_msg += f"  State: {ref_trace[-1]['state']}\n"
-                    error_msg += f"  Num actions: {ref_trace[-1]['num_actions']}\n"
-                    error_msg += f"  Done: {ref_trace[-1]['done']}\n"
-                if other_trace:
-                    error_msg += f"{config_name} last step {len(other_trace)-1}:\n"
-                    error_msg += f"  State: {other_trace[-1]['state']}\n"
-                    error_msg += f"  Num actions: {other_trace[-1]['num_actions']}\n"
-                    error_msg += f"  Done: {other_trace[-1]['done']}\n"
-                error_msg += f"{'='*80}\n"
-                raise AssertionError(error_msg)
-            
-            # Compare each step
-            for step_idx, (ref_step, other_step) in enumerate(zip(ref_trace, other_trace)):
-                # Compare states
-                if ref_step['state'] != other_step['state']:
-                    error_msg = f"\n{'='*80}\n"
-                    error_msg += f"MISMATCH DETECTED - Query {q_idx}: {query_str}\n"
-                    error_msg += f"{'='*80}\n"
-                    error_msg += f"Configuration comparison: {ref_name} vs {config_name}\n"
-                    error_msg += f"TYPE: State mismatch at step {step_idx}\n\n"
-                    error_msg += f"{ref_name} state:\n  {ref_step['state']}\n"
-                    error_msg += f"{config_name} state:\n  {other_step['state']}\n"
-                    error_msg += f"\nStep info:\n"
-                    error_msg += f"  Step: {step_idx}\n"
-                    error_msg += f"  {ref_name} num_actions: {ref_step['num_actions']}\n"
-                    error_msg += f"  {config_name} num_actions: {other_step['num_actions']}\n"
-                    error_msg += f"  {ref_name} done: {ref_step['done']}\n"
-                    error_msg += f"  {config_name} done: {other_step['done']}\n"
-                    if step_idx > 0:
-                        error_msg += f"\nPrevious step {step_idx-1}:\n"
-                        error_msg += f"  {ref_name} state: {ref_trace[step_idx-1]['state']}\n"
-                        error_msg += f"  {config_name} state: {other_trace[step_idx-1]['state']}\n"
-                        error_msg += f"  {ref_name} action: {ref_trace[step_idx-1].get('action', 'N/A')}\n"
-                        error_msg += f"  {config_name} action: {other_trace[step_idx-1].get('action', 'N/A')}\n"
-                    error_msg += f"{'='*80}\n"
-                    raise AssertionError(error_msg)
-                
-                # Compare number of actions
-                if ref_step['num_actions'] != other_step['num_actions']:
-                    error_msg = f"\n{'='*80}\n"
-                    error_msg += f"MISMATCH DETECTED - Query {q_idx}: {query_str}\n"
-                    error_msg += f"{'='*80}\n"
-                    error_msg += f"Configuration comparison: {ref_name} vs {config_name}\n"
-                    error_msg += f"TYPE: Number of actions mismatch at step {step_idx}\n\n"
-                    error_msg += f"Current state: {ref_step['state']}\n"
-                    error_msg += f"{ref_name} num_actions: {ref_step['num_actions']}\n"
-                    error_msg += f"{config_name} num_actions: {other_step['num_actions']}\n"
-                    error_msg += f"\n{ref_name} derived states ({len(ref_step.get('derived_states', []))}):\n"
-                    for i, ds in enumerate(ref_step.get('derived_states', [])[:5]):
-                        error_msg += f"  {i}: {ds}\n"
-                    if len(ref_step.get('derived_states', [])) > 5:
-                        error_msg += f"  ... and {len(ref_step['derived_states']) - 5} more\n"
-                    error_msg += f"\n{config_name} derived states ({len(other_step.get('derived_states', []))}):\n"
-                    for i, ds in enumerate(other_step.get('derived_states', [])[:5]):
-                        error_msg += f"  {i}: {ds}\n"
-                    if len(other_step.get('derived_states', [])) > 5:
-                        error_msg += f"  ... and {len(other_step['derived_states']) - 5} more\n"
-                    error_msg += f"{'='*80}\n"
-                    raise AssertionError(error_msg)
-                
-                # Compare derived states (if not terminal)
-                if not ref_step['done'] and not other_step['done']:
-                    ref_derived = sorted(ref_step.get('derived_states', []))
-                    other_derived = sorted(other_step.get('derived_states', []))
-                    if ref_derived != other_derived:
-                        error_msg = f"\n{'='*80}\n"
-                        error_msg += f"MISMATCH DETECTED - Query {q_idx}: {query_str}\n"
-                        error_msg += f"{'='*80}\n"
-                        error_msg += f"Configuration comparison: {ref_name} vs {config_name}\n"
-                        error_msg += f"TYPE: Derived states mismatch at step {step_idx}\n\n"
-                        error_msg += f"Current state: {ref_step['state']}\n"
-                        error_msg += f"Both have {ref_step['num_actions']} actions\n"
-                        error_msg += f"\n{ref_name} derived states (sorted):\n"
-                        for i, ds in enumerate(ref_derived[:10]):
-                            error_msg += f"  {i}: {ds}\n"
-                        if len(ref_derived) > 10:
-                            error_msg += f"  ... and {len(ref_derived) - 10} more\n"
-                        error_msg += f"\n{config_name} derived states (sorted):\n"
-                        for i, ds in enumerate(other_derived[:10]):
-                            error_msg += f"  {i}: {ds}\n"
-                        if len(other_derived) > 10:
-                            error_msg += f"  ... and {len(other_derived) - 10} more\n"
-                        error_msg += f"\nDifferences:\n"
-                        # Find first difference
-                        for i, (r, o) in enumerate(zip(ref_derived, other_derived)):
-                            if r != o:
-                                error_msg += f"  First diff at index {i}:\n"
-                                error_msg += f"    {ref_name}: {r}\n"
-                                error_msg += f"    {config_name}: {o}\n"
-                                break
-                        if len(ref_derived) != len(other_derived):
-                            error_msg += f"  Length difference: {len(ref_derived)} vs {len(other_derived)}\n"
-                        error_msg += f"{'='*80}\n"
-                        raise AssertionError(error_msg)
-        
-        print(f"  ✓ All {len(config_names)} configurations match for this query\n")
-    
-    print(f"\n{'='*80}")
-    print(f"✓ DEBUG MODE: ALL QUERIES MATCH ACROSS ALL CONFIGURATIONS!")
-    print(f"{'='*80}\n")
 
 
 def print_results_table(results_dict: Dict[str, Dict], deterministic: bool):
@@ -682,78 +346,27 @@ def print_results_table(results_dict: Dict[str, Dict], deterministic: bool):
         print(f"  Average success rate: {avg_success:.2f}% ± {std_success:.2f}%")
         print(f"  Min/Max success rate: {min_success:.2f}% / {max_success:.2f}%")
         
-        # Check if rollout_env is in the mix (uses random policy)
-        has_rollout = 'rollout_env' in results_dict
+        # Check if tensor_rollout is in the mix (uses random policy)
+        has_rollout = 'tensor_rollout' in results_dict
         
         if deterministic:
-            # For deterministic mode, most configs should be identical except rollout_env
-            if has_rollout:
-                # Expect variation due to rollout_env using random policy
-                det_configs = {k: v for k, v in results_dict.items() if k != 'rollout_env'}
-                if det_configs:
-                    det_pcts = [(r['successful'] / r['total_queries'] * 100) for r in det_configs.values()]
-                    det_std = np.std(det_pcts)
-                    if det_std < 0.01:
-                        print(f"  ✓ Deterministic configurations have identical success rates")
-                        print(f"    Note: rollout_env uses random policy, expected to differ")
-                    else:
-                        print(f"  ✗ WARNING: Deterministic configurations differ!")
+            # All should be identical
+            if std_success < 0.01:
+                print(f"  ✓ All configurations have identical success rates (as expected)")
             else:
-                # All should be identical
-                if std_success < 0.01:
-                    print(f"  ✓ All configurations have identical success rates (as expected)")
-                else:
-                    print(f"  ✗ WARNING: Success rates differ between configurations!")
+                print(f"  ✗ WARNING: Success rates differ between configurations!")
     
     print(f"{'='*80}\n")
 
 
-def run_all_tests(
-    dataset: str = "countries_s3",
-    n_queries: int = 100,
-    deterministic: bool = True,
-    max_depth: int = 20,
-    seed: int = 42,
-    verbose: bool = False,
-    debug: bool = False,
-    configs: List[str] = None,
-    collect_action_stats: bool = False,
-    config: SimpleNamespace = None
-):
+def run_all_tests(config: SimpleNamespace):
     """
     Run tests on all requested configurations.
-    
     Args:
-        dataset: Dataset name
-        n_queries: Number of queries to test
-        deterministic: If True, use canonical ordering; if False, random actions
-        max_depth: Maximum proof depth
-        seed: Random seed
-        verbose: Print detailed information
-        debug: If True, compare step-by-step and raise error on first mismatch
-        configs: List of config names to test. If None, use defaults.
-        collect_action_stats: If True, collect action statistics for eval/rollout configs
         config: SimpleNamespace with shared configuration overrides for all setups
     """
-    if config is not None:
-        cfg = clone_config(config)
-    else:
-        cfg = create_default_test_config()
-        overrides = {
-            "dataset": dataset,
-            "n_queries": n_queries,
-            "deterministic": deterministic,
-            "max_depth": max_depth,
-            "seed": seed,
-            "verbose": verbose,
-            "debug": debug,
-            "collect_action_stats": collect_action_stats,
-        }
-        for key, value in overrides.items():
-            if value is not None:
-                setattr(cfg, key, value)
-    if configs is not None:
-        cfg.configs = configs
+    cfg = clone_config(config)
+
     
     random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
@@ -765,8 +378,6 @@ def run_all_tests(
     print(f"Dataset: {cfg.dataset}")
     print(f"Queries: {cfg.n_queries}")
     print(f"Policy: {'Deterministic (canonical)' if cfg.deterministic else 'Random'}")
-    print(f"Max depth: {cfg.max_depth}")
-    print(f"Seed: {cfg.seed}")
     print(f"{'='*80}\n")
     
     print("Preparing queries...")
@@ -809,48 +420,28 @@ def run_all_tests(
             for name, traces in traces_dict.items()
             if Configs.get_config_by_name(name).category == 'environment'
         }
-        
-        # Filter out configs without detailed traces (e.g., eval_env)
-        env_configs_with_traces = {
+
+        rollout_configs = {
             name: traces
-            for name, traces in env_configs.items()
-            if traces and len(traces) > 0 and traces[0].get('trace') and len(traces[0]['trace']) > 0 and 'state' in traces[0]['trace'][0]
+            for name, traces in traces_dict.items()
+            if Configs.get_config_by_name(name).category == 'rollout'
         }
-        
-        if cfg.debug:
-            # Re-run tests for debug
-            debug_traces = {}
-            
-            # Iterate over configs that were already run and have traces
-            for config_name in env_configs_with_traces.keys():
-                print(f"\nTesting: {config_name}")
-                
-                # Setup environment and run test
-                if config_name == 'sb3_env':
-                    env_data = setup_sb3_env(dataset=cfg.dataset, config=cfg)
-                    results = test_sb3_env_batch(queries, env_data, cfg)
-                elif config_name == 'batched_tensor_env':
-                    env_data = setup_tensor_env(dataset=cfg.dataset, config=cfg)
-                    results = test_tensor_env_batched(queries, env_data, cfg)
-                else:
-                    continue
-                
-                traces = results['traces']
-                debug_traces[config_name] = traces
-                
-            # Compare traces
-            debug_compare_step_by_step(debug_traces, queries)
-        else:
-            if len(engine_configs) > 1:
-                print(f"\n{'='*80}")
-                print(f"COMPARING ENGINE TRACES")
-                print(f"{'='*80}")
-                compare_traces_deterministic(engine_configs, verbose=cfg.verbose)
-            if len(env_configs_with_traces) > 1:
-                print(f"\n{'='*80}")
-                print(f"COMPARING ENVIRONMENT TRACES")
-                print(f"{'='*80}")
-                compare_traces_deterministic(env_configs_with_traces, verbose=cfg.verbose)
+
+        if len(engine_configs) > 1:
+            print(f"\n{'='*80}")
+            print(f"COMPARING ENGINE TRACES")
+            print(f"{'='*80}")
+            compare_traces_metrics(engine_configs, verbose=cfg.verbose)
+        if len(env_configs) > 1:
+            print(f"\n{'='*80}")
+            print(f"COMPARING ENVIRONMENT TRACES")
+            print(f"{'='*80}")
+            compare_traces_metrics(env_configs, verbose=cfg.verbose)
+        if len(rollout_configs) > 1:
+            print(f"\n{'='*80}")
+            print(f"COMPARING ROLLOUT TRACES")
+            print(f"{'='*80}")
+            compare_traces_metrics(rollout_configs, verbose=cfg.verbose)
     
     return results_dict, traces_dict
 
@@ -906,4 +497,4 @@ if __name__ == "__main__":
     for key, value in vars(args).items():
         setattr(cli_config, key, value)
     
-    run_all_tests(config=cli_config)
+    run_all_tests(cli_config)

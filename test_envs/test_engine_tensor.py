@@ -13,10 +13,10 @@ import torch
 from typing import Tuple, Dict, List
 from types import SimpleNamespace
 
-from data_handler import DataHandler
-from index_manager import IndexManager
-from unification_engine import UnificationEngine
-from utils.debug_helper import DebugHelper
+from tensor.data_handler import DataHandler
+from tensor.index_manager import IndexManager
+from tensor.unification import UnificationEngine
+from tensor.utils.debug_helper import DebugHelper
 
 
 def get_default_tensor_engine_config() -> SimpleNamespace:
@@ -290,7 +290,7 @@ def test_tensor_engine_single_query(
     }
 
 
-def test_tensor_engine_batch(
+def test_tensor_engine(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     engine_data: Tuple,
     config: SimpleNamespace

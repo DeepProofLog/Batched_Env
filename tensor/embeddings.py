@@ -7,7 +7,7 @@ import pickle
 from typing import Tuple, Optional, Dict
 import math
 
-from data_handler import DataHandler
+from test_envs.data_handler import DataHandler
 
 
 # ------------------ Load embeddings functions------------------

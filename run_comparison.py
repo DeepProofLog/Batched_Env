@@ -11,8 +11,8 @@ import sys
 
 import argparse
 
-import runner_new
-import sb3.sb3_runner_new as sb3_runner_new
+import tensor.runner_shared as tensor_runner
+import sb3.sb3_runner_shared as sb3_runner
 
 
 def _run_with_smoke_flag(fn, smoke: bool, extra_args=None):
@@ -32,13 +32,13 @@ def _run_with_smoke_flag(fn, smoke: bool, extra_args=None):
         sys.argv = argv_backup
 
 
-def run_batched(smoke: bool = False, extra_args=None):
+def run_tensor(smoke: bool = False, extra_args=None):
     """Run batched version."""
     print("="*80)
     print("Running BATCHED version...")
     print("="*80)
     
-    result = _run_with_smoke_flag(runner_new.main, smoke, extra_args)
+    result = _run_with_smoke_flag(tensor_runner.main, smoke, extra_args)
     return result
 
 def run_sb3(smoke: bool = False, extra_args=None):
@@ -47,7 +47,7 @@ def run_sb3(smoke: bool = False, extra_args=None):
     print("Running SB3 version...")
     print("="*80)
 
-    result = _run_with_smoke_flag(sb3_runner_new.main, smoke, extra_args)
+    result = _run_with_smoke_flag(sb3_runner.main, smoke, extra_args)
     return result
 
 
@@ -85,7 +85,7 @@ def main():
     smoke = args.smoke
     
     # Run batched
-    batched_ok = run_batched(smoke=smoke, extra_args=extra_args)
+    batched_ok = run_tensor(smoke=smoke, extra_args=extra_args)
     
     print("\n✓ Batched version completed")
     # Free any large objects before entering SB3 path to reduce peak memory

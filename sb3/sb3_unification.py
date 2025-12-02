@@ -1,8 +1,8 @@
 from typing import List, Dict, Set, Tuple, FrozenSet, Optional, TYPE_CHECKING
-from .sb3_utils import Term, Rule
+from sb3_utils import Term, Rule
 
 if TYPE_CHECKING:
-    from .sb3_index_manager import IndexManager
+    from sb3_index_manager import IndexManager
 
 def is_variable(arg: str) -> bool:
     """Check if an argument is a variable."""
@@ -53,7 +53,8 @@ def unify_with_facts(query: Term,
     
     Args:
         query: Term object representing the query
-        facts: List of Term objects representing facts
+        facts_indexed: Dictionary indexing facts for faster lookup
+        facts_set: Set of all known facts for direct lookup
     
     Returns:
         List of successful substitution dictionaries
@@ -520,7 +521,7 @@ def get_next_unification_python(state: List[Term],
     if strategy == 'complete':
         print('Strategy: complete') if verbose else None
         # ORDER MUST MATCH TENSOR ENGINE: rules first, then facts
-        next_states = rule_derived_states + fact_derived_states
+        next_states = fact_derived_states + rule_derived_states
 
     elif strategy == 'rules_then_facts':
         print('\nStrategy: rules_then_facts') if verbose else None
@@ -532,7 +533,7 @@ def get_next_unification_python(state: List[Term],
             
             # Try to resolve the new first goal with a fact
             # NOTE: r_query comes from a rule body, not the original query, so we don't exclude anything
-            r_fact_substitutions = unify_with_facts(r_query, facts_indexed, facts_set, None, verbose=0)
+            r_fact_substitutions = unify_with_facts(r_query, facts_indexed, facts_set, excluded_fact, verbose=0)
             print(F"State from rule: {r_state}. \nSubs: {r_fact_substitutions}") if verbose else None
 
             for subs in r_fact_substitutions:
@@ -615,11 +616,11 @@ def get_next_unification_python(state: List[Term],
             for i in range(num_to_print):
                 print(f'  State {i}: {canonical_strings[i]}')
 
-    # Apply cap to derived states to match tensor engine behavior (after canonical ordering)
-    if len(next_states) > max_derived_states:
-        if verbose > 0 or len(next_states) > 500:
-            print(f'WARNING: Capping derived states from {len(next_states)} to {max_derived_states}')
-        next_states = next_states[:max_derived_states]
+    # # Apply cap to derived states to match tensor engine behavior (after canonical ordering)
+    # if len(next_states) > max_derived_states:
+    #     if verbose > 0 or len(next_states) > 500:
+    #         print(f'WARNING: Capping derived states from {len(next_states)} to {max_derived_states}')
+    #     next_states = next_states[:max_derived_states]
 
     print(f'\nNext states: {len(next_states)}, {next_states}') if verbose else None
     print('++++++++++++++\n') if verbose else None

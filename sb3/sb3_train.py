@@ -3,17 +3,17 @@ from typing import Any, Callable, List, Optional, Tuple
 import torch
 from pathlib import Path
 
-from .sb3_index_manager import IndexManager
-from .sb3_utils import (
+from sb3_index_manager import IndexManager
+from sb3_utils import (
     get_device, 
     print_eval_info, 
     profile_code, 
     _set_seeds,
     _freeze_dropout_layernorm,
     _warn_non_reproducible,
-    _maybe_enable_wandb,
+    # _maybe_enable_wandb,
 )
-from .sb3_callbacks import (
+from sb3_callbacks import (
     SB3TrainCheckpoint,
     CustomEvalCallbackMRR,
     CustomEvalCallback,
@@ -22,20 +22,21 @@ from .sb3_callbacks import (
     AnnealingTarget,
     _EvalDepthRewardTracker
 )
-from .sb3_callbacks import SB3RolloutLogger
-from .sb3_custom_dummy_env import create_environments
-from .sb3_dataset import DataHandler
-from .sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
-from .sb3_embeddings import get_embedder
-from .sb3_neg_sampling import get_sampler
-from .sb3_model_eval import eval_corruptions
+from sb3_custom_dummy_env import create_environments
+from sb3_dataset import DataHandler
+from sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor, PPO_custom as PPO
+from sb3_embeddings import get_embedder
+from sb3_neg_sampling import get_sampler
+from sb3_model_eval import eval_corruptions
 from stable_baselines3.common.callbacks import (
     StopTrainingOnRewardThreshold,
     CallbackList,
     StopTrainingOnNoModelImprovement,
 )
-from model_new import get_sb3_policy_state_dict_aligned
-
+# from kge_integration import (
+#     _init_kge_engine,
+#     _attach_kge_to_policy,
+# )
 
 def _attach_kge_to_policy(
     model: PPO,
@@ -93,8 +94,9 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         if args.n_eval_queries is None
         else min(args.n_eval_queries, len(dh.valid_queries))
     )
-    if args.n_eval_queries <= 1 and not getattr(args, "allow_small_eval", False):
-        raise AssertionError("Number of evaluation queries must be greater than 1 for callbacks.")
+    assert (
+        args.n_eval_queries > 1
+    ), "Number of evaluation queries must be greater than 1 for callbacks."
     args.n_test_queries = (
         len(dh.test_queries)
         if args.n_test_queries is None
@@ -128,7 +130,7 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
 
     # Embedder
     # Seed is already set at the beginning of main(), but reseed to align with torchrl stack
-    torch.manual_seed(args.seed_run_i)
+    # torch.manual_seed(args.seed_run_i)
     embedder_getter = get_embedder(args, dh, im, device)
     embedder = embedder_getter.embedder
 
@@ -220,13 +222,6 @@ def _build_callbacks(
     model_name: str,
 ):
     callbacks = []
-    # Rollout progress + rollout metrics (console)
-    rollout_cb = SB3RolloutLogger(
-        total_steps=args.n_steps * args.n_envs,
-        n_envs=args.n_envs,
-        update_interval=max(1, (args.n_steps * args.n_envs) // 5),
-        verbose=True,
-    )
     reward_threshold_cb = StopTrainingOnRewardThreshold(reward_threshold=1, verbose=1)
     # timing_callback = EpochTimingCallback(verbose=1)
     # no_improvement_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=7, verbose=1)
@@ -240,7 +235,7 @@ def _build_callbacks(
             n_corruptions=args.eval_neg_samples,
             model_path=str(model_path) if args.save_model else None,
             log_path=log_filename,
-            eval_freq=max(int(args.eval_freq // args.n_envs)*1, 1),
+            eval_freq=args.eval_freq,
             n_eval_episodes=args.n_eval_queries - 1,
             deterministic=True,
             render=False,
@@ -258,7 +253,7 @@ def _build_callbacks(
             eval_env=callback_env,
             model_path=str(model_path) if args.save_model else None,
             log_path=log_filename,
-            eval_freq=max(int(args.eval_freq // args.n_envs), 1),
+            eval_freq=args.eval_freq,
             n_eval_episodes=args.n_eval_queries - 1,
             deterministic=True,
             render=False,
@@ -278,7 +273,7 @@ def _build_callbacks(
 
     depth_stats_cb = DepthProofStatsCallback(prefix="rollout", track_negative=True)
 
-    callbacks.extend([rollout_cb, eval_cb, train_ckpt_cb, depth_stats_cb])
+    callbacks.extend([eval_cb, train_ckpt_cb, depth_stats_cb])
 
     # Add annealing callbacks if configured
     annealing_specs = getattr(args, "annealing_specs", {}) or {}
@@ -336,6 +331,54 @@ def _build_callbacks(
             )
         )
 
+    # --- Entropy coefficient decay ---
+    ent_coef_spec = annealing_specs.get('ent_coef')
+    if isinstance(ent_coef_spec, dict):
+        def _set_ent_coef(value: float) -> None:
+            model.ent_coef = float(value)
+
+        annealing_targets.append(
+            AnnealingTarget(
+                name='ent_coef',
+                setter=_set_ent_coef,
+                initial=float(ent_coef_spec.get('initial', args.ent_coef)),
+                final=float(ent_coef_spec.get('final', 0.01)),
+                start_point=float(ent_coef_spec.get('start_point', 0.0)),
+                end_point=float(ent_coef_spec.get('end_point', 1.0)),
+                transform=str(ent_coef_spec.get('transform', 'linear')),
+                value_type='float',
+            )
+        )
+        print(
+            f"Entropy coefficient annealing: {ent_coef_spec.get('initial')} -> {ent_coef_spec.get('final')} "
+            f"({ent_coef_spec.get('transform', 'linear')})"
+        )
+
+    # --- Learning rate decay ---
+    lr_spec = annealing_specs.get('lr')
+    if isinstance(lr_spec, dict):
+        def _set_lr(value: float) -> None:
+            # Update the learning rate for all parameter groups in the optimizer
+            for param_group in model.policy.optimizer.param_groups:
+                param_group['lr'] = float(value)
+
+        annealing_targets.append(
+            AnnealingTarget(
+                name='lr',
+                setter=_set_lr,
+                initial=float(lr_spec.get('initial', args.lr)),
+                final=float(lr_spec.get('final', 1e-6)),
+                start_point=float(lr_spec.get('start_point', 0.0)),
+                end_point=float(lr_spec.get('end_point', 1.0)),
+                transform=str(lr_spec.get('transform', 'linear')),
+                value_type='float',
+            )
+        )
+        print(
+            f"Learning rate annealing: {lr_spec.get('initial')} -> {lr_spec.get('final')} "
+            f"({lr_spec.get('transform', 'linear')})"
+        )
+
     if annealing_targets and args.timesteps_train > 0:
         # Ensure environments reflect initial values before training starts.
         for target in annealing_targets:
@@ -364,7 +407,7 @@ def _train_if_needed(
     if args.timesteps_train <= 0 or args.load_model:
         return model
 
-    run = _maybe_enable_wandb(use_WB, args, WB_path, model_name)
+    # run = _maybe_enable_wandb(use_WB, args, WB_path, model_name)
 
     training_fn = model.learn
     training_args = {"total_timesteps": args.timesteps_train, "callback": callbacks}
@@ -372,13 +415,9 @@ def _train_if_needed(
     # exit(0)
     # Restore desired checkpoint
     if args.restore_best_val_model:
-        restored_model = eval_cb.restore_best_ckpt(model.get_env())
-        if restored_model is not None:
-            model = restored_model
+        model = eval_cb.restore_best_ckpt(model.get_env())
     else:
-        restored_model = train_ckpt_cb.restore_last_ckpt(model.get_env())
-        if restored_model is not None:
-            model = restored_model
+        model = train_ckpt_cb.restore_last_ckpt(model.get_env())
 
     if run is not None:
         run.finish()
@@ -482,6 +521,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     print(f"Device: {device}. CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
 
     # Build pieces
+    # kge_engine = _init_kge_engine(args)
     kge_engine = None
     dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
     env, eval_env, callback_env = create_environments(
@@ -499,21 +539,18 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     policy_kwargs = {
         'features_extractor_class': CustomCombinedExtractor,
         'features_extractor_kwargs': {'features_dim': embedder.embed_dim, 'embedder': embedder},
-        'enable_top_k': enable_top_k,
-        'top_k_value': top_k_value,
-        'enable_kge_action': args.kge_action,
-        'enable_logit_fusion': args.logit_fusion,
-        'kge_logit_gain_initial': getattr(args, 'kge_logit_init_value', 1.0),
-        'kge_logit_transform': getattr(args, 'kge_logit_transform', 'log'),
-        'kge_logit_eps': getattr(args, 'kge_logit_eps', 1e-6),
-        'hidden_dim': getattr(args, "model_hidden_dim", 128),
-        'num_layers': getattr(args, "model_num_layers", 8),
-        'dropout_prob': getattr(args, "model_dropout", 0.2),
+        # 'enable_top_k': enable_top_k,
+        # 'top_k_value': top_k_value,
+        # 'enable_kge_action': args.kge_action,
+        # 'enable_logit_fusion': args.logit_fusion,
+        # 'kge_logit_gain_initial': getattr(args, 'kge_logit_init_value', 1.0),
+        # 'kge_logit_transform': getattr(args, 'kge_logit_transform', 'log'),
+        # 'kge_logit_eps': getattr(args, 'kge_logit_eps', 1e-6),
     }
 
     # Seed is already set at the beginning of main()
     # Reseed before policy creation to align with torchrl stack
-    torch.manual_seed(args.seed_run_i)
+    # torch.manual_seed(args.seed_run_i)
     model = PPO(
         CustomActorCriticPolicy,
         env,
@@ -526,27 +563,14 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         ent_coef=args.ent_coef,
         clip_range=args.clip_range,
         gamma=args.gamma,
+        clip_range_vf=args.clip_range_vf,
+        target_kl=args.target_kl,
         policy_kwargs=policy_kwargs,
         trace_dir=getattr(args, "trace_dir", None),
         trace_prefix="sb3",
         seed=args.seed_run_i,
     )
-    torch.save(model.policy.state_dict(), "sb3_init.pt")
-    
-    # Verify weights
-    total_params = sum(p.sum() for p in model.policy.parameters())
-    print(f"DEBUG: SB3 Policy Weight Sum: {total_params.item()}")
-    # Shold not Align initial weights with batched policy initialization
-    # total_vocab_size = getattr(index_manager, "total_vocab_size", index_manager.variable_end_index + 1)
-    # aligned_sd = get_sb3_policy_state_dict_aligned(
-    #     embedder=embedder,
-    #     padding_atoms=args.padding_atoms,
-    #     padding_states=args.padding_states,
-    #     max_arity=index_manager.max_arity,
-    #     total_vocab_size=total_vocab_size,
-    #     init_seed=args.seed,
-    # )
-    # model.policy.load_state_dict(aligned_sd)
+
     if getattr(args, "trace_dir", None):
         print(f"[TRACE] SB3 trace recorder: {model.trace_recorder}")
     
@@ -600,8 +624,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         args,
     )
 
-    if getattr(args, "use_compile", False):
-        model.policy = torch.compile(model.policy, mode="reduce-overhead", fullgraph=False)
+    model.policy = torch.compile(model.policy, mode="reduce-overhead", fullgraph=False)
     model.policy.set_training_mode(False)
 
     # ------- Evaluate -------

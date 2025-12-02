@@ -4,7 +4,7 @@ from typing import List, Tuple, Dict, Optional, Set, Union
 import re
 import ast
 from collections import defaultdict
-from .sb3_utils import is_variable, Term, Rule, get_atom_from_string
+from sb3_utils import is_variable, Term, Rule, get_atom_from_string
 
 
 

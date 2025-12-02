@@ -47,10 +47,10 @@ from sb3.sb3_utils import Term as StrTerm
 from sb3.sb3_unification import canonicalize_state_to_str, canonical_states_to_str
 
 # Tensor-engine stack
-from data_handler import DataHandler
-from index_manager import IndexManager
-from unification_engine import UnificationEngine
-from env import BatchedEnv
+from tensor.data_handler import DataHandler
+from tensor.index_manager import IndexManager
+from tensor.unification import UnificationEngine
+from tensor.env import BatchedEnv
 from tensordict import TensorDict
 
 

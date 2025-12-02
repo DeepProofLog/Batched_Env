@@ -118,19 +118,7 @@ def test_sb3_engine_single_query(
     # For training queries, exclude the query from facts to test actual proof mechanism
     excluded_fact_str = q_str if split == 'train' else None
     
-    # Proof functions
-    def str_get_derived(state):
-        branch_next_states, _ = get_next_unification_python(
-            state, facts_set_str, fact_index_str, rules_by_pred, 
-            excluded_fact=excluded_fact_str, verbose=0, next_var_index=1,
-            max_derived_states=max_derived_states
-        )
-        valid = []
-        for s in branch_next_states:
-            if s and not any(term.predicate == 'False' for term in s) and len(s) <= 100:
-                valid.append(s)
-        return valid
-    
+   
     def str_is_true(state):
         return all(term.predicate == 'True' for term in state)
     
@@ -164,7 +152,11 @@ def test_sb3_engine_single_query(
             }
         
         # Get derived states
-        valid_derived = str_get_derived(current_state)
+        valid_derived = get_next_unification_python(
+            current_state, facts_set_str, fact_index_str, rules_by_pred, 
+            excluded_fact=excluded_fact_str, verbose=0, next_var_index=1,
+            max_derived_states=max_derived_states
+        )
         
         if not valid_derived:
             trace.append({
@@ -234,7 +226,7 @@ def test_sb3_engine_single_query(
     }
 
 
-def test_sb3_engine_batch(
+def test_sb3_engine(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     engine_data: Tuple,
     config: SimpleNamespace

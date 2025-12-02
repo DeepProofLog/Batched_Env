@@ -608,7 +608,7 @@ def eval_corruptions(
 
     global_metrics = _init_global_metrics()
 
-    rng = np.random.RandomState(0)  # deterministic tie-breaking without altering global state
+    # rng = np.random.RandomState(0)  # deterministic tie-breaking without altering global state
 
     aggregated_plot_data: Optional[
         Dict[str, List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]]
@@ -734,7 +734,7 @@ def eval_corruptions(
                 log_probs,
                 rewards,
                 lengths,
-                rng,
+                # rng,
             )
 
         if verbose:
@@ -805,7 +805,7 @@ def _extract_and_accumulate_metrics(
     log_probs: np.ndarray,
     rewards: Optional[np.ndarray] = None,
     lengths: Optional[np.ndarray] = None,
-    rng: Optional[np.random.RandomState] = None,
+    # rng: Optional[np.random.RandomState] = None,
 ) -> None:
     """Extract metrics from an evaluation pass and update accumulators.
 
@@ -866,9 +866,10 @@ def _extract_and_accumulate_metrics(
     # Ranking metrics (random tie-breaking; seeded via rng for reproducibility)
     if mask.shape[1] > 1:
         lp_batch = np.where(mask, log_probs, -np.inf)
-        if rng is None:
-            rng = np.random.RandomState(0)
-        random_keys = rng.rand(*lp_batch.shape)
+        # if rng is None:
+        #     rng = np.random.RandomState(0)
+        # random_keys = rng.rand(*lp_batch.shape)
+        random_keys = np.random.rand(*lp_batch.shape)
         sorted_indices = np.lexsort((-random_keys, -lp_batch), axis=1)
         ranks = np.where(sorted_indices == 0)[1] + 1
         mrr, h1, h3, h10 = 1.0/ranks, (ranks == 1).astype(float), (ranks <= 3).astype(float), (ranks <= 10).astype(float)

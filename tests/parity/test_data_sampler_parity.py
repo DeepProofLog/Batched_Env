@@ -32,9 +32,9 @@ def _ensure_root_module(name: str):
 # Lock root index_manager so later imports don't grab sb3/index_manager.py
 _ensure_root_module("index_manager")
 # Now import normally from root
-from data_handler import DataHandler as NewDataHandler
-from index_manager import IndexManager as NewIndexManager
-from sampler import Sampler as NewSampler
+from tensor.data_handler import DataHandler as NewDataHandler
+from tensor.index_manager import IndexManager as NewIndexManager
+from tensor.sampler import Sampler as NewSampler
 
 # Make sb3 helpers importable
 from sb3.sb3_dataset import DataHandler as SB3DataHandler

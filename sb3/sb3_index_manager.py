@@ -2,7 +2,7 @@ from typing import List, Tuple, Dict, Set, Union
 import itertools
 import torch
 import numpy as np
-from .sb3_utils import is_variable, Term, Rule
+from sb3_utils import is_variable, Term, Rule
 from functools import lru_cache
 
 class IndexManager():
@@ -77,7 +77,7 @@ class IndexManager():
         self.unified_term_map.update(self.variable_str2idx)
 
         # DEBUG: Print first 20 constants to verify ordering
-        const_sample = list(self.constant_str2idx.items())[:20]
+        const_sample = list(self.constant_str2idx.items())[:10]
         print(f"[DEBUG IndexManager SB3] First 20 constants:")
         for const_str, const_idx in const_sample:
             print(f"  {const_str} -> {const_idx}")
@@ -315,7 +315,10 @@ class IndexManager():
         
         return ", ".join(terms)
 
-    def build_fact_index(self, facts: List[Term]) -> Dict[Tuple, List[Term]]:
+    def build_fact_index(self, 
+                         facts: List[Term],
+                         deterministic: bool = False
+                         ) -> Dict[Tuple, List[Term]]:
         """Build an inverted index over facts supporting partial-argument lookup.
 
         The index key format is:
@@ -346,13 +349,19 @@ class IndexManager():
                     sorted_subset = tuple(sorted(subset_args_with_pos, key=lambda x: x[0]))
                     key = (predicate,) + sorted_subset
                     if key not in self.fact_index:
-                        self.fact_index[key] = []
-                    self.fact_index[key].append(fact)
+                        if deterministic:
+                            self.fact_index[key] = []
+                        else:
+                            self.fact_index[key] = set()
+                    if deterministic:
+                        self.fact_index[key].append(fact)
+                    else:
+                        self.fact_index[key].add(fact)
         
         # Sort all fact lists lexicographically for deterministic ordering
         # This matches the batched implementation's sorted fact retrieval
-        for key in self.fact_index:
-            # Sort by (predicate, arg0, arg1) lexicographically
-            self.fact_index[key].sort(key=lambda f: (f.predicate, f.args[0] if len(f.args) > 0 else '', f.args[1] if len(f.args) > 1 else ''))
-        
+        if deterministic:
+            for key in self.fact_index:
+                # Sort by (predicate, arg0, arg1) lexicographically
+                self.fact_index[key].sort(key=lambda f: (f.predicate, f.args[0] if len(f.args) > 0 else '', f.args[1] if len(f.args) > 1 else ''))
         return self.fact_index

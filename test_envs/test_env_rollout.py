@@ -19,8 +19,8 @@ from tensordict import TensorDict
 from test_envs.test_env_tensor import setup_tensor_env
 # from rollout import RolloutCollector
 from ppo import PPO
-from model import create_actor_critic
-from rollout import RolloutBuffer
+from tensor.model import create_actor_critic
+from tensor.rollout import RolloutBuffer
 
 
 class LogitsProducingActor(nn.Module):
@@ -154,94 +154,6 @@ class RandomActorCritic(nn.Module):
 
 
 def test_rollout_env(
-    queries: List[Tuple[str, Tuple[str, str, str]]],
-    config: SimpleNamespace
-) -> Dict:
-    """
-    Test environment using PPO rollout collector.
-    
-    Args:
-        queries: List of (split, (predicate, head, tail))
-        config: Configuration namespace with dataset, deterministic, seed, verbose, collect_action_stats, etc.
-        
-    Returns:
-        Dict with keys:
-            - total_queries: int
-            - successful: int
-            - avg_reward: float
-            - avg_steps: float
-            - avg_actions: float (0.0 if collect_action_stats=False)
-            - traces: List of trace dicts
-    """
-    print("Setting up environment for rollout collector...")
-    
-    dataset = config.dataset
-    deterministic = config.deterministic
-    seed = config.seed
-    verbose = config.verbose
-    collect_action_stats = config.collect_action_stats
-    
-    env_data = setup_tensor_env(dataset=dataset, seed=seed, batch_size=len(queries), config=config)
-    batched_env, debug_helper, constant_no, im_batched, dh_batched = env_data
-    
-    # Prepare queries for eval mode
-    all_query_tensors = []
-    for split, (p, h, t) in queries:
-        query_atom = im_batched.atom_to_tensor(p, h, t)
-        query_padded = torch.full((batched_env.padding_atoms, 3), batched_env.padding_idx,
-                                   dtype=torch.long, device='cpu')
-        query_padded[0] = query_atom
-        all_query_tensors.append(query_padded)
-    
-    queries_tensor = torch.stack(all_query_tensors, dim=0)
-    labels_tensor = torch.ones(len(queries), dtype=torch.long, device='cpu')
-    depths_tensor = torch.ones(len(queries), dtype=torch.long, device='cpu')
-    per_slot_lengths = torch.ones(len(queries), dtype=torch.long, device='cpu')
-    
-    batched_env.set_eval_dataset(
-        queries=queries_tensor,
-        labels=labels_tensor,
-        query_depths=depths_tensor,
-        per_slot_lengths=per_slot_lengths
-    )
-    
-    if verbose:
-        print(f"  Environment mode after set_eval_dataset: {batched_env.mode}")
-        print(f"  Eval slot lengths: {batched_env._eval_slot_lengths}")
-    
-    # Create logits-producing actor for rollout collector
-    # Note: RolloutCollector will wrap this with MaskedPolicyWrapper internally
-    actor = LogitsProducingActor(
-        max_actions=batched_env.padding_states,
-        deterministic=deterministic,
-        seed=seed
-    )
-    critic = DummyCritic()
-    
-    print(f"Running rollout collector with {'deterministic' if deterministic else 'random'} actor...")
-    # Create rollout collector
-    rollout_collector = RolloutCollector(
-        env=batched_env,
-        actor=actor,
-        n_envs=len(queries),
-        n_steps=config.n_steps,
-        device=torch.device(config.device),
-        debug=verbose,
-        debug_action_space=False,
-    )
-    
-    # Collect rollouts
-    results = rollout_collector.collect(critic=critic, return_processed_results=True, collect_action_stats=collect_action_stats)
-    
-    if verbose:
-        successful = results['successful']
-        n_total = results['total_queries']
-        print(f"  Rollout summary: {successful}/{n_total} successful")
-    
-    return results
-
-
-def test_rolloutsb3_env(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     config: SimpleNamespace
 ) -> Dict:

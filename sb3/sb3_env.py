@@ -9,10 +9,10 @@ import numpy as np
 import torch
 from tensordict import NonTensorData, TensorDict
 
-from .sb3_dataset import DataHandler
-from .sb3_index_manager import IndexManager
-from .sb3_unification import get_next_unification_python
-from .sb3_utils import Term, print_state_transition
+from sb3_dataset import DataHandler
+from sb3_index_manager import IndexManager
+from sb3_unification import get_next_unification_python
+from sb3_utils import Term, print_state_transition
 
 State = List[Term]
 
@@ -25,8 +25,6 @@ def _state_to_hashable(state: State) -> frozenset:
 
 class LogicEnv_gym(gym.Env):
     batch_locked = False
-    _global_train_ptr = 0
-    _global_train_len = None
     
     def __init__(self,
                 index_manager: Optional[IndexManager] = None,
@@ -54,12 +52,9 @@ class LogicEnv_gym(gym.Env):
                 engine: str = 'python',
                 engine_strategy: str = 'cmp', # 'cmp' (complete) or 'rtf' (rules_then_facts)
                 kge_action: bool = False,
-                reward_type: int = 0,
+                reward_type: int = 2,
                 shaping_beta: float = 0.0,
                 shaping_gamma: Optional[float] = None,
-                train_stride: int = 1,
-                initial_train_idx: int = 0,
-                use_shared_train_ptr: bool = False,
                 kge_inference_engine: Optional[Any] = None,
                 ):
 
@@ -139,16 +134,14 @@ class LogicEnv_gym(gym.Env):
         self.eval_idx = 0
         self.consult_janus_eval = False
         self.next_var_index = self.index_manager.variable_start_index
-        # Deterministic round-robin pointer for train sampling (parity with batched)
-        self.train_idx = int(initial_train_idx)
-        self.train_stride = max(1, int(train_stride))
-        self.use_shared_train_ptr = bool(use_shared_train_ptr)
 
         self.current_query_depth_value = None
 
-        if self.mode == 'train':
-            self.train_neg_ratio = train_neg_ratio
-
+        self.train_neg_ratio = train_neg_ratio
+        if self.train_neg_ratio > 0:
+            self.rejection_weight = 1.0 / self.train_neg_ratio
+        else:
+            self.rejection_weight = 1.0
 
         self._one  = torch.tensor(1.0, device=self.device, dtype=self.reward_dtype)
         self._zero = torch.zeros((), device=self.device, dtype=self.reward_dtype)
@@ -304,18 +297,13 @@ class LogicEnv_gym(gym.Env):
 
     def _sample_train_query(self) -> Tuple[Term, int, Optional[int]]:
         """Sample a training query, optionally performing corruption sampling."""
-        # Deterministic round-robin over training queries for parity
-        if len(self.queries) == 0:
-            raise ValueError("No training queries available.")
-        if self.use_shared_train_ptr:
-            total = self._global_train_len or len(self.queries)
-            idx = self._global_train_ptr % total
-            self.__class__._global_train_ptr = (self._global_train_ptr + 1) % total
-        else:
-            idx = self.train_idx % len(self.queries)
-            self.train_idx = (self.train_idx + self.train_stride) % len(self.queries)
-        state = self.queries[idx]
-        depth = self.query_depths[idx] if idx < len(self.query_depths) else None
+        state, _, depth = self.get_random_queries(
+            self.queries,
+            n=1,
+            labels=self.labels,
+            depths=self.query_depths,
+            return_depth=True,
+        )
         label = 1
 
         if not self.corruption_mode:
@@ -771,7 +759,7 @@ class LogicEnv_gym(gym.Env):
                 if done and successful:
                     reward = self._n1
                 elif done and not successful:
-                    reward = self._one
+                    reward = self._one * self.rejection_weight
                 else:
                     reward = self._zero
         else: 

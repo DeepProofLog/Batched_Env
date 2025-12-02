@@ -51,7 +51,7 @@ def _shared_default_config():
         # Training params
         'seed': 0,
         'seed_run_i': 0,
-        'timesteps_train': 2000,
+        'timesteps_train': 20000,
         'restore_best_val_model': False,
         'load_model': False,
         'save_model': False,
@@ -61,7 +61,6 @@ def _shared_default_config():
         'batch_size_env': 128,  # Start with 1 to match sb3 n_envs=1
         'batch_size_env_eval': 128,
         'batch_size': 4096,
-        'allow_small_eval': False,
 
         # Env params
         'reward_type': 4,
@@ -74,7 +73,6 @@ def _shared_default_config():
         'corruption_mode': 'dynamic',
         'corruption_scheme': ['head', 'tail'],
         'use_exact_memory': True,
-        'kge_action': False,
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -145,15 +143,9 @@ def main():
     parser.add_argument("--seed", type=int, default=DEFAULT_CONFIG['seed'], help="Random seed")
     parser.add_argument("--smoke", action="store_true", help="Use a very small rollout for quick parity checks")
     parser.add_argument("--n_queries", type=int, default=None, help="Limit train/valid/test queries to this number")
-    parser.add_argument("--n_train_queries", type=int, default=None, help="Limit training queries to this number")
-    parser.add_argument("--n_eval_queries", type=int, default=None, help="Limit eval queries to this number")
-    parser.add_argument("--n_test_queries", type=int, default=None, help="Limit test queries to this number")
     parser.add_argument("--trace_dir", type=str, default=None, help="Optional directory to dump rollout traces for parity debugging")
     # Alias to accept sb3-style flag when using the shared comparison runner
     parser.add_argument("--n_envs", type=int, default=None, help="Alias for batch_size_env to ease parity scripts")
-    parser.add_argument("--train_neg_ratio", type=int, default=DEFAULT_CONFIG['train_neg_ratio'], help="Training negative ratio")
-    parser.add_argument("--eval_neg_samples", type=int, default=DEFAULT_CONFIG['eval_neg_samples'], help="Evaluation negative samples")
-    parser.add_argument("--allow_small_eval", action="store_true", help="Permit eval with <=1 query (parity/debugging)")
     
     args = parser.parse_args()
 
@@ -172,17 +164,8 @@ def main():
         config['n_train_queries'] = args.n_queries
         config['n_eval_queries'] = args.n_queries
         config['n_test_queries'] = args.n_queries
-    if args.n_train_queries is not None:
-        config['n_train_queries'] = args.n_train_queries
-    if args.n_eval_queries is not None:
-        config['n_eval_queries'] = args.n_eval_queries
-    if args.n_test_queries is not None:
-        config['n_test_queries'] = args.n_test_queries
     if args.trace_dir:
         config['trace_dir'] = args.trace_dir
-    config['train_neg_ratio'] = args.train_neg_ratio
-    if args.eval_neg_samples is not None:
-        config['eval_neg_samples'] = args.eval_neg_samples
     if 'countries' in config['dataset_name']:
         config['corruption_scheme'] = ['tail']
     if args.smoke:
@@ -199,10 +182,6 @@ def main():
         config['max_total_vars'] = 5000
         config['train_neg_ratio'] = 0.0
         config['corruption_mode'] = False
-        config['allow_small_eval'] = True
-
-    if args.allow_small_eval or (config.get('n_eval_queries') is not None and config['n_eval_queries'] <= 1):
-        config['allow_small_eval'] = True
     
 
     # Eager seeds to align with sb3 runner before train seeds

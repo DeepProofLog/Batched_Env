@@ -5,9 +5,9 @@ from typing import Dict, List, Optional, Tuple
 from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
-from unification_engine import UnificationEngine
-from utils.memory import BloomFilter, ExactMemory
-from utils.debug_helper import DebugHelper
+from tensor.unification import UnificationEngine
+from tensor.utils.memory import BloomFilter, ExactMemory
+from tensor.utils.debug_helper import DebugHelper
 
 
 def _safe_device(device: Optional[torch.device]) -> torch.device:
@@ -361,8 +361,7 @@ class BatchedEnv(EnvBase):
         self._update_original_queries_for_indices(env_idx)
 
         # Apply skip-unary closure to current states (string-env style) when using exact memory.
-        if self.skip_unary_actions and self.use_exact_memory:
-            self._apply_skip_unary_to_current_state(env_idx)
+
 
         # Compute derived only for reset envs
         # Create a mask that only includes the environments that were actually reset (env_idx)
@@ -482,8 +481,7 @@ class BatchedEnv(EnvBase):
             # the unary chains in the action space to mirror the SB3 env traces.
             # Skip-unary promotion is only applied in training mode where we want
             # the shorter rollouts for efficiency.
-            if self.skip_unary_actions and self.use_exact_memory and self.mode == 'train':
-                self._apply_skip_unary_to_current_state(active_rows)
+
 
         self.current_depths = self.current_depths + active_mask.long()
 
@@ -677,6 +675,9 @@ class BatchedEnv(EnvBase):
                 
                 self.next_var_indices.index_copy_(0, non_terminal_idx, updated_var_indices)
 
+                # Save raw counts for skip-unary check (before pruning)
+                raw_counts = derived_counts_subset.clone()
+
                 # Step 3: Postprocess A - validity + proof-safe cut
                 # This includes: memory prune non-terminals, padding limits, mark terminals, add non-terminals to memory
                 if verbose:
@@ -695,8 +696,10 @@ class BatchedEnv(EnvBase):
                 # In exact-memory mode we already applied skip-unary directly
                 # to current states in _reset/_step, so we only run the
                 # batched skip-unary here for the Bloom filter backend.
-                if self.skip_unary_actions and not self.use_exact_memory:
-                    all_derived, derived_counts_subset = self._skip_unary(non_terminal_idx, all_derived, derived_counts_subset)
+                if self.skip_unary_actions:
+                    all_derived, derived_counts_subset = self._skip_unary(
+                        non_terminal_idx, all_derived, derived_counts_subset, raw_counts=raw_counts
+                    )
                     if verbose:
                         self.debug_helper._log(3, f"[compute_derived] after skip_unary counts={derived_counts_subset}")
 
@@ -852,250 +855,9 @@ class BatchedEnv(EnvBase):
     # ---------------------------------------------------------------------
     # Skip-unary closure (batched; bounded loop on subset only)
     # ---------------------------------------------------------------------
-    def _apply_skip_unary_to_current_state(self, env_indices: Tensor):
-        """
-        Apply skip_unary logic to current states immediately after taking an action.
-        This follows unary chains until reaching a branching point or terminal state.
-        Updates self.current_queries in-place for the given environment indices.
-        
-        This is called in _step BEFORE checking termination to ensure that terminal
-        states reached via unary chains (e.g., False()) are detected immediately.
-        """
-        if env_indices.numel() == 0:
-            return
-        
-        device = self._device
-        pad = self.padding_idx
-        max_iters = self.max_skip_unary_iters
-        
-        # Track which envs are still following unary chains
-        active_envs = env_indices.clone()
-        hit_limit = False
-        
-        for iter_count in range(max_iters):
-            if self.verbose >= 1:
-                self.debug_helper._log(1, f"[apply_skip_unary] Iter {iter_count}: {active_envs.numel()} active envs")
-            if active_envs.numel() == 0:
-                break
-            
-            if self.verbose >= 3:
-                self.debug_helper._log(3, f"[apply_skip_unary] Iteration {iter_count}: {active_envs.numel()} active envs")
-            
-            # Check if current states are terminal
-            terminal_mask = self.unification_engine.is_terminal_state(self.current_queries[active_envs])
-            active_envs = active_envs[~terminal_mask]
-            
-            if active_envs.numel() == 0:
-                break
-            
-            # Get derived states for active envs
-            current_states = self.current_queries.index_select(0, active_envs)  # [N, A, D]
-            next_vars = self.next_var_indices.index_select(0, active_envs)
-            excluded = self.original_queries.index_select(0, active_envs).unsqueeze(1)
-            
-            derived_batch, derived_counts, updated_vars = self.unification_engine.get_derived_states(
-                current_states=current_states,
-                next_var_indices=next_vars,
-                excluded_queries=excluded,
-                verbose=0
-            )
-            
-            # Update next_var_indices for envs that got new derived states
-            self.next_var_indices.index_copy_(0, active_envs, updated_vars)
-            
-            if self.verbose >= 2:
-                for i in range(active_envs.shape[0]):
-                    env_idx = active_envs[i]
-                    count = derived_counts[i].item()
-                    self.debug_helper._log(2, f"[apply_skip_unary] Iter {iter_count}: env {env_idx.item()} has {count} derived states BEFORE memory pruning")
 
-            # Apply memory pruning if enabled (exact/Python or Bloom filter)
-            if self.memory_pruning:
-                # CRITICAL: Add current state to memory BEFORE checking derived states
-                # This prevents cycles where a derived state equals the current state
-                self.memory_backend.add_current(active_envs, self.current_queries)
-                
-                # Check membership for all derived states
-                visited = self.memory_backend.membership(
-                    derived_batch,  # [N, K, M, D]
-                    active_envs  # [N]
-                )  # Returns [N, K] bool tensor
-                
-                if self.verbose >= 2:
-                     for i in range(active_envs.shape[0]):
-                        env_idx = active_envs[i]
-                        v = visited[i]
-                        self.debug_helper._log(2, f"[apply_skip_unary] Env {env_idx.item()} visited mask: {v.tolist()}")
-
-                # Number of successor states per env
-                K = derived_batch.shape[1]
-
-                # Keep only non-visited states - vectorized to avoid .item() sync
-                N = active_envs.shape[0]
-                
-                # Create mask for valid derived states [N, K]
-                k_indices = torch.arange(K, device=device).unsqueeze(0)  # [1, K]
-                valid_mask = k_indices < derived_counts.unsqueeze(1)  # [N, K]
-                
-                # CRITICAL: Reject (not truncate) any state exceeding atom budget
-                # This matches _postprocess logic and sb3_env behavior
-                valid_atom = derived_batch[:, :, :, 0] != pad  # [N, K, M]
-                atom_counts = valid_atom.sum(dim=2)  # [N, K]
-                within_atom_budget = atom_counts <= self.padding_atoms  # [N, K]
-                
-                if self.verbose >= 2:
-                    rejected = valid_mask & (~within_atom_budget)
-                    if rejected.any():
-                        num_rejected = rejected.sum().item()
-                        self.debug_helper._log(2, f"[apply_skip_unary] Rejecting {num_rejected} states exceeding atom budget")
-
-                valid_mask = valid_mask & within_atom_budget
-                
-                # Combine with not-visited mask
-                keep_mask = valid_mask & (~visited)  # [N, K]
-                
-                # Count how many to keep per env
-                new_counts = keep_mask.sum(dim=1)  # [N]
-                
-                # Compact the kept states vectorized - use scatter to avoid for loop
-                needs_compaction = (new_counts < derived_counts) & (derived_counts > 0)
-                if needs_compaction.any():
-                    # Create a cumulative sum to get target positions for kept states
-                    # For each env, we need to pack kept states to the front
-                    # Use a fully vectorized approach with masked_select and scatter
-                    
-                    # Create position indices for all states [N, K]
-                    cumsum_mask = keep_mask.cumsum(dim=1) - 1  # Cumulative positions for kept items
-                    
-                    # Only process envs that need compaction
-                    batch_indices = torch.arange(N, device=device).unsqueeze(1).expand(-1, K)
-                    
-                    # Create source and target flat indices
-                    valid_compaction = keep_mask & needs_compaction.unsqueeze(1)
-                    if valid_compaction.any():
-                        # Get flat indices for source (where data currently is)
-                        src_batch, src_k = torch.where(valid_compaction)
-                        # Get flat indices for target (where data should go)
-                        tgt_positions = cumsum_mask[valid_compaction]
-                        
-                        # Copy data using advanced indexing
-                        derived_batch[src_batch, tgt_positions] = derived_batch[src_batch, src_k]
-                    
-                    # Zero out the tail for envs that were compacted
-                    tail_mask = torch.arange(K, device=device).unsqueeze(0) >= new_counts.unsqueeze(1)
-                    tail_mask = tail_mask & needs_compaction.unsqueeze(1)
-                    derived_batch[tail_mask] = pad
-                
-                derived_counts = new_counts
-            
-            # Check which have exactly one non-terminal child
-            is_single = (derived_counts == 1)
-            has_derived = is_single
-            
-            if self.verbose >= 2:
-                for i in range(active_envs.shape[0]):
-                    env_idx = active_envs[i]
-                    count = derived_counts[i].item()
-                    self.debug_helper._log(2, f"[apply_skip_unary] Iter {iter_count}: env {env_idx.item()} has {count} derived states AFTER memory pruning")
-            
-            if not has_derived.any():
-                break
-            
-            # Get first predicate of the single child for rows with count=1
-            first_preds = torch.full((active_envs.shape[0],), pad, dtype=torch.long, device=device)
-            single_mask = is_single
-            if single_mask.any():
-                first_preds[single_mask] = derived_batch[single_mask, 0, 0, 0]
-            
-            # Check if the single child is terminal
-            is_child_terminal = self.unification_engine.is_terminal_pred(first_preds)
-            
-            # Keep only rows with single non-terminal child
-            is_unary_nonterminal = is_single & ~is_child_terminal
-            
-            if not is_unary_nonterminal.any():
-                break
-            
-            # Promote the single child to current state for unary rows
-            unary_envs = active_envs[is_unary_nonterminal]
-            unary_local_idx = torch.arange(active_envs.shape[0], device=device)[is_unary_nonterminal]
-            
-            promoted = derived_batch[unary_local_idx, 0]  # [U, M, D]
-            
-            # Check atom budget
-            valid_atom = promoted[:, :, 0] != pad
-            atom_counts = valid_atom.sum(dim=1)
-            within_budget = atom_counts <= self.padding_atoms
-            
-            if not within_budget.all():
-                if self.verbose >= 2:
-                    self.debug_helper._log(2, f"[apply_skip_unary] Rejecting {(~within_budget).sum().item()} states exceeding atom budget")
-                
-                # Filter everything
-                valid_mask = within_budget
-                if not valid_mask.any():
-                    break
-                
-                unary_envs = unary_envs[valid_mask]
-                promoted = promoted[valid_mask]
-            
-            # Ensure promoted states match padding_atoms dimension
-            if promoted.shape[1] < self.padding_atoms:
-                pad_cols = self.padding_atoms - promoted.shape[1]
-                pad_tail = torch.full(
-                    (promoted.shape[0], pad_cols, promoted.shape[2]),
-                    pad, dtype=promoted.dtype, device=device
-                )
-                promoted = torch.cat([promoted, pad_tail], dim=1)
-            elif promoted.shape[1] > self.padding_atoms:
-                promoted = promoted[:, :self.padding_atoms]
-            
-            # Update current_queries for unary envs
-            self.current_queries.index_copy_(0, unary_envs, promoted)
-            
-            # Note: Promoted states will be added to memory in the next iteration
-            # when we call add_current at the start of the loop before checking derived states
-            
-            # Continue with rows that were unary
-            active_envs = unary_envs
-            
-            if self.verbose >= 2:
-                for env_idx in active_envs[:min(2, active_envs.numel())]:
-                    state_str = self.debug_helper._format_atoms(self.current_queries[env_idx])
-                    self.debug_helper._log(2, f"[apply_skip_unary] Iter {iter_count}: env {env_idx.item()} state: {state_str[:100]}...")
-        else:
-            # Loop completed without breaking - we hit the iteration limit
-            hit_limit = True
-        
-        # Check if we hit the iteration limit
-        # If so, inject False() state to match str environment behavior
-        if hit_limit and active_envs.numel() > 0:
-            if self.verbose >= 1:
-                self.debug_helper._log(1, f"[apply_skip_unary] Hit max_iters={max_iters}, injecting False() for {active_envs.numel()} envs")
-            
-            if self.false_pred_idx is None:
-                raise RuntimeError("False predicate index is undefined; cannot inject False() state after skip-unary cap")
-            
-            # Build False() state
-            false_state = torch.full(
-                (self.padding_atoms, self.max_arity + 1),
-                pad,
-                dtype=self.current_queries.dtype,
-                device=device
-            )
-            false_state[0, 0] = self.false_pred_idx
-            
-            # Set current state to False() for envs that hit the limit
-            false_expanded = false_state.unsqueeze(0).expand(active_envs.shape[0], -1, -1)
-            self.current_queries.index_copy_(0, active_envs, false_expanded)
-        
-        if self.verbose >= 2 and env_indices.numel() > 0:
-            for i in range(min(3, env_indices.numel())):
-                env_idx = env_indices[i]
-                state_str = self.debug_helper._format_atoms(self.current_queries[env_idx])
-                self.debug_helper._log(2, f"[apply_skip_unary] Final state for env {env_idx.item()}: {state_str}")
     
-    def _skip_unary(self, idx_subset: Tensor, derived_states: Tensor, derived_counts: Tensor) -> Tuple[Tensor, Tensor]:
+    def _skip_unary(self, idx_subset: Tensor, derived_states: Tensor, derived_counts: Tensor, raw_counts: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
         """
         Skip-unary loop following proof-safe logic (Step 5):
         While a row (current state) is non-terminal and has exactly one non-terminal child:
@@ -1105,6 +867,13 @@ class BatchedEnv(EnvBase):
         - Terminal handling: if terminal appears, stop processing that row
         - Update current states to the new kept non-terminals
         - Stop the loop on terminal, on first branch (>1 child), or after hop cap
+        
+        Args:
+            idx_subset: [A] indices of active environments
+            derived_states: [A, K, M, D] derived states (post-processed)
+            derived_counts: [A] number of valid derived states (post-processed)
+            raw_counts: [A] number of raw derived states (before pruning). 
+                        If provided, used for the FIRST iteration check to match sb3_env behavior.
         """
         if derived_states.numel() == 0:
             return derived_states, derived_counts
@@ -1117,18 +886,28 @@ class BatchedEnv(EnvBase):
         iters = 0
         
         # Helper: identify rows with single non-terminal child
-        def _unary_nonterminal_rows(ds, dc):
+        def _unary_nonterminal_rows(ds, dc, rc=None):
             """Returns mask [A] for rows that have exactly one non-terminal child."""
             if ds.numel() == 0:
                 return torch.zeros(A, dtype=torch.bool, device=device)
             
-            is_single = (dc == 1)
+            # Use raw counts if provided (for first iteration), otherwise derived counts
+            counts_to_check = rc if rc is not None else dc
+            
+            is_single = (counts_to_check == 1)
+            
+            # For the predicate check, we look at the first child in ds.
+            # If rc=1 but dc=0 (pruned), ds has no valid child, so we can't skip.
+            # So we must also ensure dc >= 1 (actually dc=1 if rc=1 and we are here)
+            is_single = is_single & (dc >= 1)
+            
             fp = ds[:, 0, 0, 0]  # first predicate of the unique child
             is_term = self.unification_engine.is_terminal_pred(fp)
             return is_single & ~is_term
         
         # Start with rows that have single non-terminal children
-        unary_mask = _unary_nonterminal_rows(derived_states, derived_counts)
+        # IMPORTANT: Use raw_counts for the first check if provided
+        unary_mask = _unary_nonterminal_rows(derived_states, derived_counts, raw_counts)
         unary_idx = torch.arange(A, device=device)[unary_mask]
 
         if self.verbose >= 2:
@@ -1162,7 +941,7 @@ class BatchedEnv(EnvBase):
             # Check atom budget
             valid_atom = promoted[:, :, 0] != pad
             atom_counts = valid_atom.sum(dim=1)
-            within_budget = atom_counts <= self.padding_atoms
+            within_budget = atom_counts < self.padding_atoms
             
             if not within_budget.all():
                 if verbose:
@@ -1187,12 +966,14 @@ class BatchedEnv(EnvBase):
                 )
                 promoted = torch.cat([promoted, pad_tail], dim=1)
             
-            self.current_queries.index_copy_(0, env_rows, promoted)
-
+            # Use promoted as the new "current" state for these rows
+            # We do NOT update self.current_queries
+            
             # Check if promoted states are terminal - if so, stop processing them
-            terminal_mask = self.unification_engine.is_terminal_state(self.current_queries[env_rows])
+            terminal_mask = self.unification_engine.is_terminal_state(promoted)
             non_terminal_in_promoted = env_rows[~terminal_mask]
             uidx_non_terminal = uidx[~terminal_mask]
+            promoted_non_terminal = promoted[~terminal_mask]
             
             if verbose:
                 self.debug_helper._log(3, f"[skip_unary] After promotion: {terminal_mask.sum().item()} became terminal")
@@ -1200,9 +981,11 @@ class BatchedEnv(EnvBase):
             # For terminal rows, set their derived to just themselves
             if terminal_mask.any():
                 terminal_uidx = uidx[terminal_mask]
-                terminal_env_rows = env_rows[terminal_mask]
+                # terminal_env_rows = env_rows[terminal_mask] # Not needed if we use promoted
+                terminal_promoted = promoted[terminal_mask]
+                
                 terminal_derived, terminal_counts = self.unification_engine.create_terminal_derived(
-                    self.current_queries[terminal_env_rows], K, M)
+                    terminal_promoted, K, M)
                 
                 # Adjust to (K, M, D) for scatter back
                 terminal_derived_subset = terminal_derived[:, :K, :M, :]
@@ -1212,7 +995,7 @@ class BatchedEnv(EnvBase):
             # Expand non-terminal promoted states
             if non_terminal_in_promoted.numel() > 0:
                 sub_derived, sub_counts, sub_next = self.unification_engine.get_derived_states(
-                    current_states=self.current_queries.index_select(0, non_terminal_in_promoted),
+                    current_states=promoted_non_terminal,
                     next_var_indices=self.next_var_indices.index_select(0, non_terminal_in_promoted),
                     excluded_queries=self.original_queries.index_select(0, non_terminal_in_promoted).unsqueeze(1),
                     verbose=self.prover_verbose
@@ -1220,7 +1003,11 @@ class BatchedEnv(EnvBase):
                 self.next_var_indices.index_copy_(0, non_terminal_in_promoted, sub_next)
 
                 # Postprocess_A: memory pruning, padding limits, mark terminals, add to memory
-                sub_derived, sub_counts = self._postprocess(non_terminal_in_promoted, sub_derived, sub_counts)
+                # IMPORTANT: Pass promoted_non_terminal as current_states to add to memory
+                sub_derived, sub_counts = self._postprocess(
+                    non_terminal_in_promoted, sub_derived, sub_counts, 
+                    current_states=promoted_non_terminal
+                )
 
                 if verbose:
                     self.debug_helper._log(3, f"[skip_unary] After postprocess_A: counts={sub_counts[:min(3, sub_counts.shape[0])]}")
@@ -1281,12 +1068,11 @@ class BatchedEnv(EnvBase):
             false_state[0, 0] = self.false_pred_idx
             false_batch = false_state.unsqueeze(0).expand(env_rows.shape[0], -1, -1)
 
-            # Overwrite current queries for the exhausted rows
-            self.current_queries.index_copy_(0, env_rows, false_batch)
-
-            # Their derived states become the terminal False() state only
+            # We DO NOT overwrite current queries.
+            # We just set their derived states to be the terminal False() state only.
+            
             terminal_derived, terminal_counts = self.unification_engine.create_terminal_derived(
-                self.current_queries[env_rows], K, M)
+                false_batch, K, M)
             terminal_subset = terminal_derived[:, :K, :M, :]
             derived_states.index_copy_(0, unary_idx, terminal_subset)
             derived_counts.index_copy_(0, unary_idx, terminal_counts)
@@ -1314,7 +1100,7 @@ class BatchedEnv(EnvBase):
     # ---------------------------------------------------------------------
     # Postprocess (memory pruning + compaction + truncation)
     # ---------------------------------------------------------------------
-    def _postprocess(self, env_indices: Tensor, states: Tensor, counts: Tensor) -> Tuple[Tensor, Tensor]:
+    def _postprocess(self, env_indices: Tensor, states: Tensor, counts: Tensor, current_states: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
         """
         Postprocess A - Proof-safe validity and budget cut:
         - Add current state to memory (it's being expanded now)
@@ -1337,7 +1123,8 @@ class BatchedEnv(EnvBase):
         # Step 0: Add current state to memory before checking derived states
         # This prevents loops (derived states that match current state will be pruned)
         if self.memory_pruning:
-            self.memory_backend.add_current(env_indices, self.current_queries)
+            state_to_add = current_states if current_states is not None else self.current_queries
+            self.memory_backend.add_current(env_indices, state_to_add)
 
         A, K, M, D = states.shape
         has_states = counts > 0

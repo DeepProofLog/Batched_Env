@@ -12,8 +12,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from rollout import RolloutBuffer
-from trace_utils import TraceRecorder
+from tensor.rollout import RolloutBuffer
+from tensor.utils.trace_utils import TraceRecorder
 from callbacks import print_formatted_metrics, DetailedMetricsCollector
 
 
@@ -93,6 +93,13 @@ class PPO:
             eps=1e-5
         )
     
+    def collect_rollouts(self):
+        """
+        Collect rollouts - placeholder to match SB3's structure.
+        Actual rollout collection is done in learn().
+        """
+        pass
+
     def train(self) -> Dict[str, float]:
         """
         Train the policy using collected rollouts.

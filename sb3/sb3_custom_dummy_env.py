@@ -14,7 +14,7 @@ from stable_baselines3.common.vec_env.util import dict_to_obs, obs_space_info
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
-from .sb3_env import LogicEnv_gym
+from sb3_env import LogicEnv_gym
 
 def create_environments(args, data_handler, index_manager, kge_engine=None, detailed_eval_env=False):
     """
@@ -22,10 +22,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
     """
     facts_set = set(data_handler.facts)
     shaping_gamma = args.pbrs_gamma if args.pbrs_gamma is not None else args.gamma
-    env_verbose = getattr(args, "verbose_env", 0)
-    prover_verbose = getattr(args, "verbose_prover", 0)
 
-    def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0, env_id: Optional[int] = None, train_stride: int = 1, use_shared_train_ptr: bool = False):
+    def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0):
         def _init():
             env = LogicEnv_gym(
                 index_manager=index_manager,
@@ -48,15 +46,13 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
                 padding_states=args.padding_states,
                 device='cpu',
                 engine=args.engine,
-                train_stride=train_stride,
-                initial_train_idx=env_id or 0,
-                use_shared_train_ptr=use_shared_train_ptr,
                 kge_action=args.kge_action,
                 reward_type=args.reward_type,
+                engine_strategy=args.engine_strategy,
                 shaping_beta=args.pbrs_beta,
                 shaping_gamma=shaping_gamma,
                 kge_inference_engine=kge_engine,
-                canonical_action_order=args.canonical_action_order,
+                canonical_action_order=getattr(args, "canonical_action_order", False),
                 verbose=verbose,
                 prover_verbose=prover_verbose,
             )
@@ -74,10 +70,6 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
     eval_env_seeds = rng_eval.integers(0, 2**10, size=args.n_eval_envs)
     callback_env_seeds = rng_callback.integers(0, 2**10, size=1)
 
-    # Reset shared training pointer for string envs to mirror batched round-robin
-    LogicEnv_gym._global_train_ptr = 0
-    LogicEnv_gym._global_train_len = len(data_handler.train_queries)
-
     env_fns = [make_env(
         mode='train',
         seed=int(env_seeds[i]),
@@ -85,11 +77,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.train_queries),
         query_depths=data_handler.train_queries_depths,
         facts=facts_set,
-        verbose=env_verbose,
-        prover_verbose=prover_verbose,
-        env_id=i,
-        train_stride=1,
-        use_shared_train_ptr=True,
+        verbose=args.verbose,
+        prover_verbose=args.prover_verbose,
     ) for i in range(args.n_envs)]
 
     eval_env_fns = [make_env(
@@ -99,8 +88,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.valid_queries),
         query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
-        verbose=env_verbose,
-        prover_verbose=prover_verbose,
+        verbose=args.verbose,
+        prover_verbose=args.prover_verbose,
     ) for i in range(args.n_eval_envs)]
     
     callback_env_fns = [make_env(
@@ -110,8 +99,8 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         labels=[1] * len(data_handler.valid_queries),
         query_depths=data_handler.valid_queries_depths,
         facts=facts_set,
-        verbose=env_verbose,
-        prover_verbose=prover_verbose,
+        verbose=args.verbose,
+        prover_verbose=args.prover_verbose,
     ) for i in range(1)]
 
 
