@@ -1444,9 +1444,9 @@ class BatchedEnv(EnvBase):
                 return torch.zeros((0,), dtype=torch.long, device=self._device)
             raise ValueError(f"{name} must be provided when queries are non-empty")
         tensor = torch.as_tensor(data, dtype=torch.long, device=self._device).view(-1)
-        if shape[0] != expected_len:
+        if tensor.shape[0] != expected_len:
             raise ValueError(
-                f"{name} length ({shape[0]}) does not match number of queries ({expected_len})"
+                f"{name} length ({tensor.shape[0]}) does not match number of queries ({expected_len})"
             )
         return tensor
 

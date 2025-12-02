@@ -75,18 +75,27 @@ class DummyTensorEnv:
         
         self._step_count = torch.zeros(batch_size, dtype=torch.long)
         self._episode_rewards = torch.zeros(batch_size)
+        self._last_obs = None
         
-    def reset(self) -> TensorDict:
-        self._step_count.zero_()
-        self._episode_rewards.zero_()
+    def reset(self, reset_td: TensorDict = None) -> TensorDict:
+        # Handle partial reset via reset_td
+        if reset_td is not None and "_reset" in reset_td.keys():
+            reset_mask = reset_td.get("_reset").view(-1)
+            self._step_count[reset_mask] = 0
+            self._episode_rewards[reset_mask] = 0
+        else:
+            self._step_count.zero_()
+            self._episode_rewards.zero_()
         
         obs = torch.randn(self.n_envs, 8)
+        self._last_obs = obs
         return TensorDict({
             "obs": obs,
             "done": torch.zeros(self.n_envs, dtype=torch.bool),
         }, batch_size=self.batch_size)
     
-    def step_and_maybe_reset(self, action_td: TensorDict) -> Tuple[TensorDict, TensorDict]:
+    def step(self, action_td: TensorDict) -> TensorDict:
+        """Execute one step, return TensorDict with next state under 'next' key."""
         self._step_count += 1
         
         # Random reward
@@ -99,25 +108,35 @@ class DummyTensorEnv:
         # Success for some episodes
         success = dones & (torch.rand(self.n_envs) > 0.5)
         
-        step_result = TensorDict({
+        # Build next observation
+        next_obs = torch.randn(self.n_envs, 8)
+        self._last_obs = next_obs
+        
+        # Return TensorDict with 'next' key (TorchRL style)
+        return TensorDict({
             "reward": rewards,
             "done": dones,
             "is_success": success,
             "length": self._step_count.clone(),
+            "next": TensorDict({
+                "obs": next_obs,
+                "done": dones,
+                "is_success": success,
+            }, batch_size=self.batch_size),
         }, batch_size=self.batch_size)
+    
+    def step_and_maybe_reset(self, action_td: TensorDict) -> Tuple[TensorDict, TensorDict]:
+        """Legacy interface for compatibility."""
+        step_td = self.step(action_td)
+        next_obs_td = step_td.get("next")
         
-        # Auto-reset
+        # Auto-reset finished envs
+        dones = step_td.get("done")
         if dones.any():
             self._step_count[dones] = 0
             self._episode_rewards[dones] = 0
         
-        next_obs = torch.randn(self.n_envs, 8)
-        next_obs_td = TensorDict({
-            "obs": next_obs,
-            "done": torch.zeros(self.n_envs, dtype=torch.bool),
-        }, batch_size=self.batch_size)
-        
-        return step_result, next_obs_td
+        return step_td, next_obs_td
 
 
 # ============================================================================
@@ -247,7 +266,7 @@ def test_episode_reward_accumulation():
     
     # Create environment with known rewards
     class FixedRewardEnv(DummyTensorEnv):
-        def step_and_maybe_reset(self, action_td):
+        def step(self, action_td):
             self._step_count += 1
             
             # Fixed reward of 1.0 per step
@@ -256,24 +275,19 @@ def test_episode_reward_accumulation():
             
             dones = self._step_count >= self.max_steps
             
-            step_result = TensorDict({
+            next_obs = torch.randn(self.n_envs, 8)
+            
+            return TensorDict({
                 "reward": rewards,
                 "done": dones,
                 "is_success": dones,  # All successful
                 "length": self._step_count.clone(),
+                "next": TensorDict({
+                    "obs": next_obs,
+                    "done": dones,
+                    "is_success": dones,
+                }, batch_size=self.batch_size),
             }, batch_size=self.batch_size)
-            
-            if dones.any():
-                self._step_count[dones] = 0
-                self._episode_rewards[dones] = 0
-            
-            next_obs = torch.randn(self.n_envs, 8)
-            next_obs_td = TensorDict({
-                "obs": next_obs,
-                "done": torch.zeros(self.n_envs, dtype=torch.bool),
-            }, batch_size=self.batch_size)
-            
-            return step_result, next_obs_td
     
     env = FixedRewardEnv(batch_size=2, max_steps=5)
     actor = DummyPolicy()
@@ -330,7 +344,7 @@ def test_success_rate_computation():
     
     # Environment where half succeed
     class HalfSuccessEnv(DummyTensorEnv):
-        def step_and_maybe_reset(self, action_td):
+        def step(self, action_td):
             self._step_count += 1
             
             rewards = torch.rand(self.n_envs)
@@ -342,23 +356,19 @@ def test_success_rate_computation():
                 if dones[i]:
                     success[i] = (i % 2 == 0)  # Even indices succeed
             
-            step_result = TensorDict({
+            next_obs = torch.randn(self.n_envs, 8)
+            
+            return TensorDict({
                 "reward": rewards,
                 "done": dones,
                 "is_success": success,
                 "length": self._step_count.clone(),
+                "next": TensorDict({
+                    "obs": next_obs,
+                    "done": dones,
+                    "is_success": success,
+                }, batch_size=self.batch_size),
             }, batch_size=self.batch_size)
-            
-            if dones.any():
-                self._step_count[dones] = 0
-            
-            next_obs = torch.randn(self.n_envs, 8)
-            next_obs_td = TensorDict({
-                "obs": next_obs,
-                "done": torch.zeros(self.n_envs, dtype=torch.bool),
-            }, batch_size=self.batch_size)
-            
-            return step_result, next_obs_td
     
     env = HalfSuccessEnv(batch_size=4, max_steps=3)
     actor = DummyPolicy()

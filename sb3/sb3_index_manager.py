@@ -2,7 +2,10 @@ from typing import List, Tuple, Dict, Set, Union
 import itertools
 import torch
 import numpy as np
-from sb3_utils import is_variable, Term, Rule
+try:
+    from sb3.sb3_utils import is_variable, Term, Rule
+except ImportError:
+    from sb3_utils import is_variable, Term, Rule
 from functools import lru_cache
 
 class IndexManager():
@@ -340,7 +343,27 @@ class IndexManager():
             Mapping from subset-keys to the list of matching facts (sorted for determinism).
         """
         self.fact_index.clear()
+        
+        # Build facts_idx tensor sorted by (pred_idx, head_idx, tail_idx) to match new implementation
+        facts_indexed = []
         for fact in facts:
+            pred_idx = self.predicate_str2idx[fact.predicate]
+            head_idx = self.constant_str2idx[fact.args[0]]
+            tail_idx = self.constant_str2idx[fact.args[1]]
+            facts_indexed.append((pred_idx, head_idx, tail_idx, fact))
+        
+        # Sort by (pred_idx, head_idx, tail_idx) - matches new implementation's sorting
+        facts_indexed.sort(key=lambda x: (x[0], x[1], x[2]))
+        
+        # Store sorted facts_idx tensor and sorted facts list
+        self.facts_idx = torch.tensor(
+            [[f[0], f[1], f[2]] for f in facts_indexed],
+            dtype=torch.long, device=self.device
+        )
+        self.facts_sorted = [f[3] for f in facts_indexed]
+        
+        # Build the inverted index using sorted facts
+        for fact in self.facts_sorted:
             predicate = fact.predicate
             args = fact.args
             constant_args_with_pos = [(i, arg) for i, arg in enumerate(args) if not is_variable(arg)]
@@ -358,10 +381,13 @@ class IndexManager():
                     else:
                         self.fact_index[key].add(fact)
         
-        # Sort all fact lists lexicographically for deterministic ordering
-        # This matches the batched implementation's sorted fact retrieval
+        # Sort all fact lists by index for deterministic ordering (matches new implementation)
         if deterministic:
             for key in self.fact_index:
-                # Sort by (predicate, arg0, arg1) lexicographically
-                self.fact_index[key].sort(key=lambda f: (f.predicate, f.args[0] if len(f.args) > 0 else '', f.args[1] if len(f.args) > 1 else ''))
+                # Sort by (pred_idx, head_idx, tail_idx) to match new implementation exactly
+                self.fact_index[key].sort(key=lambda f: (
+                    self.predicate_str2idx[f.predicate],
+                    self.constant_str2idx[f.args[0]] if len(f.args) > 0 else 0,
+                    self.constant_str2idx[f.args[1]] if len(f.args) > 1 else 0
+                ))
         return self.fact_index

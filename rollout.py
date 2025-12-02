@@ -211,13 +211,13 @@ class RolloutBuffer:
         Swap and flatten axes 0 (buffer_size) and 1 (n_envs).
         Converts [n_steps, n_envs, ...] to [n_steps * n_envs, ...]
         """
-        shape = shape
+        shape = tensor.shape
         if len(shape) < 3:
             shape = (*shape, 1)
-            tensor = reshape(shape)
+            tensor = tensor.reshape(shape)
         
         # Swap axes 0 and 1, then flatten
-        return transpose(0, 1).reshape(shape[0] * shape[1], *shape[2:])
+        return tensor.transpose(0, 1).reshape(shape[0] * shape[1], *shape[2:])
     
     def get(
         self,

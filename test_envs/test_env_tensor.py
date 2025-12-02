@@ -240,7 +240,7 @@ def test_tensor_env_single_query(
             is_success_state = batched_env.unification_engine.is_true_state(batched_state)
             trace.append({
                 'step': steps,
-                'state': debug_helper.canonical_state_to_str(batched_state),
+                'state': debug_helper.state_to_str(batched_state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -265,11 +265,11 @@ def test_tensor_env_single_query(
             action = rng.choice(valid_actions)
         
         # Build derived states list for trace (already in canonical order)
-        derived_states_canonical = [debug_helper.canonical_state_to_str(batched_derived_states[i]) for i in range(num_batched_actions)]
+        derived_states_canonical = [debug_helper.state_to_str(batched_derived_states[i]) for i in range(num_batched_actions)]
         
         trace.append({
             'step': steps,
-            'state': debug_helper.canonical_state_to_str(batched_state),
+            'state': debug_helper.state_to_str(batched_state),
             'derived_states': derived_states_canonical,
             'num_actions': num_batched_actions,
             'action': action,
@@ -518,7 +518,7 @@ def test_tensor_env_batched(
                 batched_env.derived_states_counts[slot_idx] = 0
                 slot_traces[slot_idx].append({
                     'step': slot_steps[slot_idx],
-                    'state': debug_helper.canonical_state_to_str(cur_state),
+                    'state': debug_helper.state_to_str(cur_state),
                     'derived_states': [],
                     'num_actions': 0,
                     'action': None,
@@ -541,13 +541,13 @@ def test_tensor_env_batched(
             cur_state = current_queries[slot_idx]
             derived_states = derived_states_batch[slot_idx]
             derived_states_canonical = [
-                debug_helper.canonical_state_to_str(derived_states[a]) 
+                debug_helper.state_to_str(derived_states[a]) 
                 for a in range(n_actions)
             ]
             
             slot_traces[slot_idx].append({
                 'step': slot_steps[slot_idx],
-                'state': debug_helper.canonical_state_to_str(cur_state),
+                'state': debug_helper.state_to_str(cur_state),
                 'derived_states': derived_states_canonical,
                 'num_actions': n_actions,
                 'action': chosen,

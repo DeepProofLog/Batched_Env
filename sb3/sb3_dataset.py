@@ -4,7 +4,12 @@ from typing import List, Tuple, Dict, Optional, Set, Union
 import re
 import ast
 from collections import defaultdict
-from sb3_utils import is_variable, Term, Rule, get_atom_from_string
+try:
+    # When imported as package (e.g., from sb3.sb3_dataset)
+    from sb3.sb3_utils import is_variable, Term, Rule, get_atom_from_string
+except ImportError:
+    # Fallback for direct execution within sb3 directory
+    from sb3_utils import is_variable, Term, Rule, get_atom_from_string
 
 
 
@@ -40,20 +45,21 @@ def get_max_arity(file_path: str) -> int:
 
 
 
-def get_predicates_and_arguments(rules: List[Rule], facts: List[Term]) -> Tuple[Set[str], Dict[str, int], Set[str], Set[str]]:
+def get_predicates_and_arguments(rules: List[Rule], facts: List[Term], deterministic: bool = False) -> Tuple[Set[str], Dict[str, int], Set[str], Set[str]]:
     """
     Extract predicates, their arities, constants, and variables from rules and facts.
     
     Args:
         rules: List of Rule objects
         facts: List of Term objects representing facts
+        deterministic: If True, return sorted lists instead of sets for deterministic ordering
         
     Returns:
         Tuple containing:
-        - Set of predicate names
+        - Set/List of predicate names
         - Dictionary mapping predicate names to their arities
-        - Set of constants
-        - Set of variables
+        - Set/List of constants
+        - Set/List of variables
     """
     predicates = set()
     constants = set()
@@ -94,6 +100,12 @@ def get_predicates_and_arguments(rules: List[Rule], facts: List[Term]) -> Tuple[
         constants.update([arg for arg in atom.args if not is_variable(arg)])
         if atom.predicate not in predicates_arity:
             predicates_arity[atom.predicate] = len(atom.args)
+    
+    # If deterministic, convert to sorted lists for consistent ordering
+    if deterministic:
+        predicates = sorted(predicates)
+        constants = sorted(constants)
+        variables = sorted(variables)
             
     return predicates, predicates_arity, constants, variables
 
@@ -310,7 +322,8 @@ class DataHandler:
                 test_depth: Optional[Set[int]] = None,
                 prob_facts: bool = False,
                 topk_facts: Optional[int] = None,
-                topk_facts_threshold: Optional[float] = None):
+                topk_facts_threshold: Optional[float] = None,
+                deterministic: bool = False):
         """
         Initialize dataset handler: consult Janus, read rules/facts, load and filter queries.
 
@@ -529,9 +542,12 @@ class DataHandler:
         # else:
         self.janus_facts = None
 
+        # Store deterministic flag for later use
+        self.deterministic = deterministic
+
         # Extract predicates, constants, variables
         self.predicates, self.predicates_arity, self.constants, self.variables = get_predicates_and_arguments(
-            self.rules, self.facts)
+            self.rules, self.facts, deterministic=deterministic)
         self.max_arity = get_max_arity(janus_path) if janus_file else 2
         self.constant_no = len(self.constants)
         self.predicate_no = len(self.predicates)

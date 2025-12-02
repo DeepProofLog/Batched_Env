@@ -91,20 +91,28 @@ def test_coerce_config_value_parity():
     from utils.utils_config import coerce_config_value as trl_coerce
     from sb3_utils_config import coerce_config_value as sb3_coerce
     
+    # Need defaults dict with matching types
+    defaults = {
+        "int_val": 0,
+        "float_val": 0.0,
+        "bool_val": False,
+        "str_val": "",
+    }
+    
     test_cases = [
-        (42, int, 42),
-        ("42", int, 42),
-        (3.14, float, 3.14),
-        ("3.14", float, 3.14),
-        (1, bool, True),
-        (0, bool, False),
-        ("true", bool, True),
+        ("int_val", 42, 42),
+        ("int_val", "42", 42),
+        ("float_val", 3.14, 3.14),
+        ("float_val", "3.14", 3.14),
+        ("bool_val", 1, True),
+        ("bool_val", 0, False),
+        ("bool_val", "true", True),
     ]
     
-    for value, dtype, expected in test_cases:
-        trl_result = trl_coerce(value, dtype)
-        sb3_result = sb3_coerce(value, dtype)
-        assert trl_result == sb3_result, f"Mismatch for ({value}, {dtype}): TRL={trl_result}, SB3={sb3_result}"
+    for key, value, expected in test_cases:
+        trl_result = trl_coerce(key, value, defaults)
+        sb3_result = sb3_coerce(key, value, defaults)
+        assert trl_result == sb3_result, f"Mismatch for ({key}, {value}): TRL={trl_result}, SB3={sb3_result}"
 
 
 # ============================================================================
@@ -120,9 +128,12 @@ def test_update_config_value_parity():
     trl_config = {"a": 1, "b": 2.0, "c": True}
     sb3_config = {"a": 1, "b": 2.0, "c": True}
     
+    # Use configs as defaults too
+    defaults = {"a": 1, "b": 2.0, "c": True}
+    
     # Update both
-    trl_update(trl_config, "a", "100")
-    sb3_update(sb3_config, "a", "100")
+    trl_update(trl_config, "a", "100", defaults)
+    sb3_update(sb3_config, "a", "100", defaults)
     
     assert trl_config == sb3_config
 
@@ -259,30 +270,27 @@ def test_file_logger_parity():
     import os
     
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create loggers
-        trl_log_path = os.path.join(tmpdir, "trl_log.txt")
-        sb3_log_path = os.path.join(tmpdir, "sb3_log.txt")
+        # Create loggers (they create directory structures, not single files)
+        trl_log_folder = os.path.join(tmpdir, "trl_logs")
+        sb3_log_folder = os.path.join(tmpdir, "sb3_logs")
         
-        # Test basic logging
-        with TRLLogger(trl_log_path) as trl_logger:
-            trl_logger.log("Test message 1")
-            trl_logger.log("Test message 2")
+        # Both loggers create the same directory structure
+        trl_logger = TRLLogger(trl_log_folder)
+        sb3_logger = SB3Logger(sb3_log_folder)
         
-        with SB3Logger(sb3_log_path) as sb3_logger:
-            sb3_logger.log("Test message 1")
-            sb3_logger.log("Test message 2")
+        # Both should create the same folders
+        assert os.path.exists(os.path.join(trl_log_folder, "averaged_runs"))
+        assert os.path.exists(os.path.join(trl_log_folder, "indiv_runs"))
+        assert os.path.exists(os.path.join(sb3_log_folder, "averaged_runs"))
+        assert os.path.exists(os.path.join(sb3_log_folder, "indiv_runs"))
         
-        # Read both log files
-        with open(trl_log_path) as f:
-            trl_content = f.read()
-        with open(sb3_log_path) as f:
-            sb3_content = f.read()
-        
-        # Both should have the messages
-        assert "Test message 1" in trl_content
-        assert "Test message 2" in trl_content
-        assert "Test message 1" in sb3_content
-        assert "Test message 2" in sb3_content
+        # Both should have the same public interface
+        assert hasattr(trl_logger, 'folder')
+        assert hasattr(trl_logger, 'folder_experiments')
+        assert hasattr(trl_logger, 'folder_run')
+        assert hasattr(sb3_logger, 'folder')
+        assert hasattr(sb3_logger, 'folder_experiments')
+        assert hasattr(sb3_logger, 'folder_run')
 
 
 # ============================================================================

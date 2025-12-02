@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from sb3.sb3_dataset import DataHandler as StrDataHandler
 from sb3.sb3_index_manager import IndexManager as StrIndexManager
 from sb3.sb3_utils import Term as StrTerm
-from sb3.sb3_unification import get_next_unification_python, canonicalize_state_to_str
+from sb3.sb3_unification import get_next_unification_python, state_to_str
 
 
 def get_default_sb3_engine_config() -> SimpleNamespace:
@@ -136,7 +136,7 @@ def test_sb3_engine_single_query(
         if str_is_true(current_state):
             trace.append({
                 'step': steps,
-                'state': canonicalize_state_to_str(current_state),
+                'state': state_to_str(current_state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -152,47 +152,34 @@ def test_sb3_engine_single_query(
             }
         
         # Get derived states
-        valid_derived = get_next_unification_python(
+        # Note: We pass canonical_order=True to ensure states are sorted before capping,
+        # matching the tensor engine behavior
+        valid_derived, updated_next_var = get_next_unification_python(
             current_state, facts_set_str, fact_index_str, rules_by_pred, 
             excluded_fact=excluded_fact_str, verbose=0, next_var_index=1,
-            max_derived_states=max_derived_states
+            max_derived_states=max_derived_states,
+            canonical_order=True, index_manager=im_str
         )
         
         if not valid_derived:
-            trace.append({
-                'step': steps,
-                'state': canonicalize_state_to_str(current_state),
-                'derived_states': [],
-                'num_actions': 0,
-                'action': None,
-                'done': True
-            })
-            if verbose:
-                print(f"  ✗ Failed at step {steps} (no derived states)")
-            return {
-                'success': False,
-                'steps': steps,
-                'reward': 0.0,
-                'trace': trace
-            }
+            raise RuntimeError("No valid derived states; proof failed prematurely." \
+            " There should always be at least one derived state (could be terminal as well).")
         
-        # Canonicalize and sort - choose action
-        state_canon = [(canonicalize_state_to_str(s), s) for s in valid_derived]
-        state_canon.sort(key=lambda x: x[0])
-        
+        # States are already sorted by the engine when canonical_order=True
+        # Choose action based on deterministic flag
         if deterministic:
-            # Choose first canonical state
+            # Choose first state (already in canonical order)
             chosen_idx = 0
         else:
             # Choose random state
-            chosen_idx = rng.randint(0, len(state_canon) - 1)
+            chosen_idx = rng.randint(0, len(valid_derived) - 1)
         
-        chosen_state = state_canon[chosen_idx][1]
+        chosen_state = valid_derived[chosen_idx]
         
         trace.append({
             'step': steps,
-            'state': canonicalize_state_to_str(current_state),
-            'derived_states': [c[0] for c in state_canon],
+            'state': state_to_str(current_state),
+            'derived_states': [state_to_str(s) for s in valid_derived],
             'num_actions': len(valid_derived),
             'action': chosen_idx,
             'done': False
@@ -208,7 +195,7 @@ def test_sb3_engine_single_query(
     success = str_is_true(current_state)
     trace.append({
         'step': steps,
-        'state': canonicalize_state_to_str(current_state),
+        'state': state_to_str(current_state),
         'derived_states': [],
         'num_actions': 0,
         'action': None,
@@ -226,7 +213,7 @@ def test_sb3_engine_single_query(
     }
 
 
-def test_sb3_engine(
+def run_sb3_engine(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     engine_data: Tuple,
     config: SimpleNamespace
@@ -254,10 +241,13 @@ def test_sb3_engine(
     results = []
     
     for idx, (split, query_tuple) in enumerate(queries):
+        # Get max_derived_states from config if available, else use default
+        max_derived_states = getattr(config, 'max_derived_per_state', 200)
         result = test_sb3_engine_single_query(
             query_tuple, engine_data, split=split, 
             deterministic=deterministic, max_depth=max_depth,
-            verbose=verbose and idx < 3, seed=seed + idx
+            verbose=verbose and idx < 3, seed=seed + idx,
+            max_derived_states=max_derived_states
         )
         results.append(result)
         

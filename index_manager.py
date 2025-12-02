@@ -138,7 +138,9 @@ class IndexManager:
         self.end_pred_idx: Optional[int] = self.predicate_str2idx.get('Endf')
 
         # Runtime var range [start, end]
-        self.runtime_var_start_index: int = self.constant_no + self.template_variable_no + 1
+        # SB3 behavior: variable_start_index = constant_no + 1 (never changes)
+        # We match this to ensure parity
+        self.runtime_var_start_index: int = self.constant_no + 1
         self.runtime_var_end_index: int = self.runtime_var_start_index + self.runtime_variable_no - 1
 
         # Total vocabulary size
@@ -167,19 +169,19 @@ class IndexManager:
         self.constants = set(const_list)
         self.predicates = set(pred_list)
         
-        # DEBUG: Print first 20 constants to verify ordering
-        const_sample = list(self.constant_str2idx.items())[:20]
-        print(f"[DEBUG IndexManager Batched] First 20 constants:")
-        for const_str, const_idx in const_sample:
-            print(f"  {const_str} -> {const_idx}")
+        # # DEBUG: Print first 20 constants to verify ordering
+        # const_sample = list(self.constant_str2idx.items())[:20]
+        # print(f"[DEBUG IndexManager Batched] First 20 constants:")
+        # for const_str, const_idx in const_sample:
+        #     print(f"  {const_str} -> {const_idx}")
         
-        # DEBUG: Print variable allocation
-        print(f"[DEBUG IndexManager Batched] Variable allocation:")
-        print(f"  constant_no: {self.constant_no}")
-        print(f"  template_variable_no: {self.template_variable_no}")
-        print(f"  runtime_variable_no: {self.runtime_variable_no}")
-        print(f"  runtime_var_start_index: {self.runtime_var_start_index}")
-        print(f"  runtime_var_end_index: {self.runtime_var_end_index}")
+        # # DEBUG: Print variable allocation
+        # print(f"[DEBUG IndexManager Batched] Variable allocation:")
+        # print(f"  constant_no: {self.constant_no}")
+        # print(f"  template_variable_no: {self.template_variable_no}")
+        # print(f"  runtime_variable_no: {self.runtime_variable_no}")
+        # print(f"  runtime_var_start_index: {self.runtime_var_start_index}")
+        # print(f"  runtime_var_end_index: {self.runtime_var_end_index}")
         
         if rules is not None:
             self.rules = rules
@@ -209,7 +211,14 @@ class IndexManager:
     # Vocabulary growth for rule variables
     # -----------------------------
     def _ensure_template_var(self, var_name: str) -> int:
-        """Ensure template variable exists and return its index."""
+        """Ensure template variable exists and return its index.
+        
+        Note: Template variables are assigned indices in the range 
+        [constant_no + 1, constant_no + template_variable_no]. However,
+        we do NOT shift the runtime_var_start_index when adding template
+        variables - this matches SB3 behavior where variable_start_index
+        is always constant_no + 1.
+        """
         idx = self.template_var_str2idx.get(var_name)
         if idx is not None:
             return idx
@@ -218,9 +227,7 @@ class IndexManager:
         self.template_variable_no += 1
         self.template_var_str2idx[var_name] = idx
         self.idx2template_var.append(var_name)
-        # update runtime var window
-        self.runtime_var_start_index = self.constant_no + self.template_variable_no + 1
-        self.runtime_var_end_index = self.runtime_var_start_index + self.runtime_variable_no - 1
+        # NOTE: Do NOT update runtime_var_start_index here - SB3 keeps it fixed
         # update unified map for one-shot conversions
         self.unified_term_map[var_name] = idx
         # update total vocab size

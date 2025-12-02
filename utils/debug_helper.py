@@ -221,6 +221,81 @@ class DebugHelper:
 
     # ---- Methods for canonicalization and sorting for comparison with string envs ----
 
+    # --- Simple string representation (preserves order) ---
+
+    def state_to_str(self, state: Tensor) -> str:
+        """Convert a tensor state to string representation.
+        
+        This converts the state to a string preserving atom order. Variables are
+        normalized to Var_1, Var_2, ... in order of first appearance to ensure
+        consistent output between tensor and string engines.
+        
+        Note: This is NOT canonicalization - atoms are not sorted, only variable
+        names are normalized for display purposes.
+        
+        Args:
+            state: Tensor of shape [max_atoms, 3] or [1, max_atoms, 3]
+            
+        Returns:
+            String representation with atoms separated by '|'
+        """
+        # Handle batch dimension if present
+        if state.dim() == 3:
+            if state.shape[0] != 1:
+                raise ValueError("Expected single batch dimension")
+            state_2d = state[0]
+        else:
+            state_2d = state
+
+        # Filter out padding atoms
+        valid_mask = state_2d[:, 0] != self.padding_idx
+        if not valid_mask.any():
+            return ''
+        
+        valid_atoms = state_2d[valid_mask]
+        
+        # First pass: collect all variable indices in order of first appearance
+        var_mapping: Dict[int, int] = {}
+        next_var_num = 1
+        for atom in valid_atoms:
+            for arg in [int(atom[1].item()), int(atom[2].item())]:
+                if arg > self.constant_no and arg != self.padding_idx:
+                    if arg not in var_mapping:
+                        var_mapping[arg] = next_var_num
+                        next_var_num += 1
+        
+        # Second pass: build string with normalized variable names
+        atoms: List[str] = []
+        for atom in valid_atoms:
+            pred, arg1, arg2 = int(atom[0].item()), int(atom[1].item()), int(atom[2].item())
+            
+            # Get predicate string
+            if 0 <= pred < len(self.idx2predicate):
+                pred_str = self.idx2predicate[pred]
+            else:
+                pred_str = f"?p{pred}"
+            
+            # Format arguments with normalized variable names
+            def format_arg(val: int) -> str:
+                if val == self.padding_idx:
+                    return "PAD"
+                elif val > self.constant_no:
+                    # It's a variable - use normalized numbering
+                    return f"Var_{var_mapping[val]}"
+                else:
+                    # It's a constant
+                    if 0 <= val < len(self.idx2constant):
+                        return self.idx2constant[val]
+                    else:
+                        return f"?c{val}"
+            
+            if pred_str in ['True', 'False'] and arg1 == self.padding_idx and arg2 == self.padding_idx:
+                atoms.append(f"{pred_str}()")
+            else:
+                atoms.append(f"{pred_str}({format_arg(arg1)},{format_arg(arg2)})")
+        
+        return '|'.join(atoms)
+
     # --- Canonical string representation ---
 
     def canonical_state_to_str(self, state: Tensor) -> str:

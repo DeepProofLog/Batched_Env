@@ -100,11 +100,21 @@ def evaluate_policy(
         actor_device = next(actor.parameters(), torch.zeros((), device=device)).device if isinstance(actor, nn.Module) else device
         policy_td = td.clone().to(actor_device)
         out = actor(policy_td)
-        policy_out = out if isinstance(out, TensorDict) else policy_td
-        action = policy_out.get("action").view(-1).long().to(device)
+        
+        # Handle both tuple output (actions, values, log_probs) and TensorDict output
+        if isinstance(out, tuple):
+            # Model returns (actions, values, log_probs) like SB3
+            action = out[0].view(-1).long().to(device)
+            log_probs = out[2].view(-1).to(device) if len(out) > 2 else torch.zeros(B, device=device)
+        elif isinstance(out, TensorDict):
+            action = out.get("action").view(-1).long().to(device)
+            log_probs = out.get("sample_log_prob", torch.zeros(B, device=device)).view(-1).to(device)
+        else:
+            # Fallback: assume action is in policy_td
+            action = policy_td.get("action").view(-1).long().to(device)
+            log_probs = policy_td.get("sample_log_prob", torch.zeros(B, device=device)).view(-1).to(device)
+        
         action_td = TensorDict({"action": action.to(device)}, batch_size=env.batch_size).to(device)
-
-        log_probs = policy_out.get("sample_log_prob", torch.zeros(B, device=device)).view(-1).to(device)
         done_prev = prev_done
         need_more = ep_count < targets
         reset_rows = done_prev & need_more

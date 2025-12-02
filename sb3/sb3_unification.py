@@ -1,8 +1,14 @@
 from typing import List, Dict, Set, Tuple, FrozenSet, Optional, TYPE_CHECKING
-from sb3_utils import Term, Rule
+try:
+    from sb3.sb3_utils import Term, Rule
+except ImportError:
+    from sb3_utils import Term, Rule
 
 if TYPE_CHECKING:
-    from sb3_index_manager import IndexManager
+    try:
+        from sb3.sb3_index_manager import IndexManager
+    except ImportError:
+        from sb3_index_manager import IndexManager
 
 def is_variable(arg: str) -> bool:
     """Check if an argument is a variable."""
@@ -291,6 +297,52 @@ def _canonical_order_key(state: List[Term], index_manager: 'IndexManager') -> Tu
     return tuple(key)
 
 
+def state_to_str(state: List[Term]) -> str:
+    """Convert a state (list of Terms) to a string representation.
+    
+    This conversion preserves the order of atoms as-is, but normalizes 
+    variable names to Var_1, Var_2, ... in order of first appearance.
+    This ensures consistent output between tensor and string engines.
+    
+    Note: This is NOT canonicalization - atoms are not sorted, only variable
+    names are normalized for display purposes.
+    
+    Args:
+        state: List of Term objects representing the state
+        
+    Returns:
+        String representation with atoms separated by '|'
+    """
+    if not state:
+        return ''
+    
+    # First pass: collect all variables in order of first appearance
+    var_mapping: Dict[str, str] = {}
+    next_var_num = 1
+    for term in state:
+        for arg in term.args:
+            if isinstance(arg, str) and (arg.startswith('Var') or is_variable(arg)):
+                if arg not in var_mapping:
+                    var_mapping[arg] = f"Var_{next_var_num}"
+                    next_var_num += 1
+    
+    # Second pass: build string with normalized variable names
+    atoms: List[str] = []
+    for term in state:
+        if term.predicate in ['True', 'False'] and (not term.args or all(a is None for a in term.args)):
+            atoms.append(f"{term.predicate}()")
+        else:
+            normalized_args: List[str] = []
+            for arg in term.args:
+                if isinstance(arg, str) and (arg.startswith('Var') or is_variable(arg)):
+                    normalized_args.append(var_mapping[arg])
+                else:
+                    normalized_args.append(str(arg))
+            atoms.append(f"{term.predicate}({','.join(normalized_args)})")
+    
+    return '|'.join(atoms)
+
+
 def canonical_state_to_str(state: List[Term]) -> str:
     """Return a canonical string representation for a list of Terms.
     
@@ -380,9 +432,6 @@ def canonical_states_to_str(states: List[List[Term]], return_indices: bool = Fal
     else:
         return [x[0] for x in canonical_with_idx]
 
-
-# Backward compatibility alias
-canonicalize_state_to_str = canonical_state_to_str
 
 
 def get_next_unification_python(state: List[Term],
@@ -521,7 +570,7 @@ def get_next_unification_python(state: List[Term],
     if strategy == 'complete':
         print('Strategy: complete') if verbose else None
         # ORDER MUST MATCH TENSOR ENGINE: rules first, then facts
-        next_states = fact_derived_states + rule_derived_states
+        next_states = rule_derived_states  + fact_derived_states
 
     elif strategy == 'rules_then_facts':
         print('\nStrategy: rules_then_facts') if verbose else None
@@ -616,11 +665,11 @@ def get_next_unification_python(state: List[Term],
             for i in range(num_to_print):
                 print(f'  State {i}: {canonical_strings[i]}')
 
-    # # Apply cap to derived states to match tensor engine behavior (after canonical ordering)
-    # if len(next_states) > max_derived_states:
-    #     if verbose > 0 or len(next_states) > 500:
-    #         print(f'WARNING: Capping derived states from {len(next_states)} to {max_derived_states}')
-    #     next_states = next_states[:max_derived_states]
+    # Apply cap to derived states to match tensor engine behavior (after canonical ordering)
+    if len(next_states) > max_derived_states:
+        if verbose > 0 or len(next_states) > 500:
+            print(f'WARNING: Capping derived states from {len(next_states)} to {max_derived_states}')
+        next_states = next_states[:max_derived_states]
 
     print(f'\nNext states: {len(next_states)}, {next_states}') if verbose else None
     print('++++++++++++++\n') if verbose else None

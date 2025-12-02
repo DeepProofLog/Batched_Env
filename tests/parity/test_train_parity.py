@@ -223,7 +223,7 @@ def test_batched_env_creation():
     )
     
     assert env is not None
-    assert env.n_envs == args.batch_size_env
+    assert env.batch_size[0] == args.batch_size_env
 
 
 # ============================================================================
@@ -251,8 +251,16 @@ def test_ppo_creation():
     
     policy = DummyModel()
     
+    # Create a mock env with batch_size
+    class MockEnv:
+        batch_size = torch.Size([4])
+        n_envs = 4
+    
+    mock_env = MockEnv()
+    
     ppo = PPO(
         policy=policy,
+        env=mock_env,
         n_steps=16,
         batch_size=4,
         n_epochs=4,

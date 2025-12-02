@@ -170,13 +170,15 @@ def test_tensor_engine_single_query(
         )
         num_derived = derived_counts[0].item()
         
+        # NOTE: Do NOT filter out False() states here - match SB3 behavior!
+        # The SB3 test engine does not filter False() states, it just continues
+        # with them as regular actions. Filtering happens only in is_true checks.
         valid = []
         for i in range(num_derived):
             s = derived[0, i]
-            if not engine.is_false_state(s):
-                non_padding = (s[:, 0] != engine.padding_idx).sum().item()
-                if non_padding <= 100:
-                    valid.append(s.unsqueeze(0))
+            non_padding = (s[:, 0] != engine.padding_idx).sum().item()
+            if non_padding <= 100:
+                valid.append(s.unsqueeze(0))
         return valid, updated_next_var
     
     def tensor_is_true(state):
@@ -189,9 +191,10 @@ def test_tensor_engine_single_query(
             state = state.squeeze(0)
         return engine.is_false_state(state)
     
-    def tensor_canonicalize(state):
+    def tensor_state_to_str(state):
+        """Convert tensor state to string (preserves order, normalizes variables)."""
         s = state.squeeze(0) if state.dim() > 2 else state
-        return debug_helper.canonical_state_to_str(s)
+        return debug_helper.state_to_str(s)
     
     # Run proof
     current_state = query_padded
@@ -204,7 +207,7 @@ def test_tensor_engine_single_query(
         if tensor_is_true(current_state):
             trace.append({
                 'step': steps,
-                'state': tensor_canonicalize(current_state),
+                'state': tensor_state_to_str(current_state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -225,7 +228,7 @@ def test_tensor_engine_single_query(
         if not tensor_derived:
             trace.append({
                 'step': steps,
-                'state': tensor_canonicalize(current_state),
+                'state': tensor_state_to_str(current_state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -240,23 +243,21 @@ def test_tensor_engine_single_query(
                 'trace': trace
             }
         
-        # Canonicalize and sort
-        canon_states = [(tensor_canonicalize(s), s) for s in tensor_derived]
-        canon_states.sort(key=lambda x: x[0])
-        
+        # States are already sorted by the engine when sort_states=True
+        # Choose action based on deterministic flag
         if deterministic:
-            # Choose first canonical state
+            # Choose first state (already in canonical order)
             chosen_idx = 0
         else:
             # Choose random state
-            chosen_idx = rng.randint(0, len(canon_states) - 1)
+            chosen_idx = rng.randint(0, len(tensor_derived) - 1)
         
-        chosen_state = canon_states[chosen_idx][1]
+        chosen_state = tensor_derived[chosen_idx]
         
         trace.append({
             'step': steps,
-            'state': tensor_canonicalize(current_state),
-            'derived_states': [c[0] for c in canon_states],
+            'state': tensor_state_to_str(current_state),
+            'derived_states': [tensor_state_to_str(s) for s in tensor_derived],
             'num_actions': len(tensor_derived),
             'action': chosen_idx,
             'done': False
@@ -272,7 +273,7 @@ def test_tensor_engine_single_query(
     success = tensor_is_true(current_state)
     trace.append({
         'step': steps,
-        'state': tensor_canonicalize(current_state),
+        'state': tensor_state_to_str(current_state),
         'derived_states': [],
         'num_actions': 0,
         'action': None,
@@ -290,13 +291,16 @@ def test_tensor_engine_single_query(
     }
 
 
-def test_tensor_engine(
+def run_tensor_engine(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     engine_data: Tuple,
     config: SimpleNamespace
 ) -> Dict:
     """
-    Test multiple queries using the tensor engine.
+    Test multiple queries using the tensor engine in a TRUE BATCHED manner.
+    
+    All queries are processed in parallel using the batched unification engine.
+    Action selection (deterministic=first canonical, or random) is handled per query.
     
     Args:
         queries: List of (split, (predicate, head, tail))
@@ -311,22 +315,192 @@ def test_tensor_engine(
             - avg_steps: float
             - traces: List of trace dicts
     """
+    dh_non, im_non, engine, debug_helper, next_var_start = engine_data
+    
     deterministic = config.deterministic
     max_depth = config.max_depth
     seed = config.seed
     verbose = config.verbose
-    results = []
     
-    for idx, (split, query_tuple) in enumerate(queries):
-        result = test_tensor_engine_single_query(
-            query_tuple, engine_data, split=split,
-            deterministic=deterministic, max_depth=max_depth,
-            verbose=verbose and idx < 3, seed=seed + idx
-        )
-        results.append(result)
+    B = len(queries)
+    device = engine.device
+    pad = engine.padding_idx
+    
+    # Start with initial padding but allow dynamic growth
+    # Use a larger initial size to avoid frequent resizing
+    initial_max_atoms = 20
+    
+    # Initialize RNGs for non-deterministic action selection (one per query)
+    rngs = [random.Random(seed + i) for i in range(B)]
+    
+    # Build initial states batch: [B, max_atoms, 3]
+    current_states = torch.full((B, initial_max_atoms, 3), pad, dtype=torch.long, device=device)
+    excluded_queries = torch.full((B, initial_max_atoms, 3), pad, dtype=torch.long, device=device)
+    
+    for i, (split, (p, h, t)) in enumerate(queries):
+        query_tensor = im_non.atom_to_tensor(p, h, t)  # [3]
+        current_states[i, 0] = query_tensor
+        if split == 'train':
+            excluded_queries[i, 0] = query_tensor
+    
+    # Initialize tracking
+    next_var_tracker = torch.full((B,), next_var_start, dtype=torch.long, device=device)
+    
+    # Per-query tracking
+    done = torch.zeros(B, dtype=torch.bool, device=device)
+    success = torch.zeros(B, dtype=torch.bool, device=device)
+    steps_taken = torch.zeros(B, dtype=torch.long, device=device)
+    
+    # Traces: list of dicts per query
+    traces = [[] for _ in range(B)]
+    
+    def state_to_str(state):
+        """Convert a single state tensor to string (preserves order, normalizes variables)."""
+        s = state.squeeze(0) if state.dim() > 2 else state
+        return debug_helper.state_to_str(s)
+    
+    def is_true(state):
+        """Check if a single state is True."""
+        s = state.squeeze(0) if state.dim() > 2 else state
+        return engine.is_true_state(s)
+    
+    def is_false(state):
+        """Check if a single state is False."""
+        s = state.squeeze(0) if state.dim() > 2 else state
+        return engine.is_false_state(s)
+    
+    # Main proof loop
+    for step in range(max_depth + 1):
+        # Check for queries that are already TRUE
+        for i in range(B):
+            if done[i]:
+                continue
+            if is_true(current_states[i]):
+                done[i] = True
+                success[i] = True
+                traces[i].append({
+                    'step': step,
+                    'state': state_to_str(current_states[i]),
+                    'derived_states': [],
+                    'num_actions': 0,
+                    'action': None,
+                    'done': True
+                })
         
-        if not verbose and (idx + 1) % 50 == 0:
-            print(f"  Processed {idx + 1}/{len(queries)} queries...")
+        # If all done, break early
+        if done.all():
+            break
+        
+        if step >= max_depth:
+            # Max depth reached - mark remaining as done
+            for i in range(B):
+                if not done[i]:
+                    done[i] = True
+                    success[i] = is_true(current_states[i])
+                    traces[i].append({
+                        'step': step,
+                        'state': state_to_str(current_states[i]),
+                        'derived_states': [],
+                        'num_actions': 0,
+                        'action': None,
+                        'done': True
+                    })
+            break
+        
+        # Get derived states for ALL queries in batch
+        derived_states, derived_counts, updated_next_var = engine.get_derived_states(
+            current_states, next_var_tracker,
+            excluded_queries=excluded_queries, verbose=0
+        )
+        # derived_states: [B, K, M, 3], derived_counts: [B]
+        
+        next_var_tracker = updated_next_var
+        
+        # Get the output atom dimension from derived states
+        M_out = derived_states.shape[2]
+        
+        # Resize current_states if derived states have more atoms
+        current_max_atoms = current_states.shape[1]
+        if M_out > current_max_atoms:
+            new_current = torch.full((B, M_out, 3), pad, dtype=torch.long, device=device)
+            new_current[:, :current_max_atoms, :] = current_states
+            current_states = new_current
+            
+            # Also resize excluded_queries to match
+            new_excluded = torch.full((B, M_out, 3), pad, dtype=torch.long, device=device)
+            new_excluded[:, :current_max_atoms, :] = excluded_queries[:, :current_max_atoms, :]
+            excluded_queries = new_excluded
+        
+        # Process each query's derived states
+        for i in range(B):
+            if done[i]:
+                continue
+            
+            num_derived = derived_counts[i].item()
+            
+            # Collect valid derived states for this query
+            valid_states = []
+            for k in range(num_derived):
+                s = derived_states[i, k]  # [M, 3]
+                # Check if it's a padding state (all padding)
+                non_padding = (s[:, 0] != pad).sum().item()
+                if non_padding > 0 and non_padding <= 100:
+                    valid_states.append(s)
+            
+            if not valid_states:
+                # No valid derived states - mark as failed
+                done[i] = True
+                success[i] = False
+                traces[i].append({
+                    'step': step,
+                    'state': state_to_str(current_states[i]),
+                    'derived_states': [],
+                    'num_actions': 0,
+                    'action': None,
+                    'done': True
+                })
+                continue
+            
+            # States are already sorted by the engine when sort_states=True
+            # Choose action based on deterministic flag
+            if deterministic:
+                chosen_idx = 0
+            else:
+                chosen_idx = rngs[i].randint(0, len(valid_states) - 1)
+            
+            chosen_state = valid_states[chosen_idx]
+            
+            # Record trace
+            traces[i].append({
+                'step': step,
+                'state': state_to_str(current_states[i]),
+                'derived_states': [state_to_str(s) for s in valid_states],
+                'num_actions': len(valid_states),
+                'action': chosen_idx,
+                'done': False
+            })
+            
+            # Update state for this query
+            # chosen_state is [M_out, 3], current_states is [B, current_max_atoms, 3]
+            # They should have same M dimension now after resizing above
+            M_chosen = chosen_state.shape[0]
+            current_max_atoms = current_states.shape[1]
+            
+            # Reset the row to padding, then copy chosen_state
+            current_states[i] = pad
+            current_states[i, :M_chosen] = chosen_state
+            
+            steps_taken[i] += 1
+    
+    # Build results
+    results = []
+    for i in range(B):
+        results.append({
+            'success': success[i].item(),
+            'steps': len(traces[i]) - 1 if traces[i] else 0,  # steps before final done
+            'reward': 1.0 if success[i].item() else 0.0,
+            'trace': traces[i]
+        })
     
     # Aggregate statistics
     successful = sum(1 for r in results if r['success'])
@@ -337,9 +511,9 @@ def test_tensor_engine(
     total_actions = 0
     total_action_steps = 0
     for r in results:
-        for step in r['trace']:
-            if 'num_actions' in step:
-                total_actions += step['num_actions']
+        for step_data in r['trace']:
+            if 'num_actions' in step_data:
+                total_actions += step_data['num_actions']
                 total_action_steps += 1
     
     avg_actions = total_actions / total_action_steps if total_action_steps > 0 else 0.0

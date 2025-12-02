@@ -65,6 +65,7 @@ class DataHandler:
         topk_facts_threshold: Optional[float] = None,
         filter_queries_by_rules: bool = True,
         corruption_mode: bool = False,
+        deterministic: bool = False,
     ) -> None:
         """
         Initialize DataHandler and optionally load data from files.
@@ -130,6 +131,7 @@ class DataHandler:
         self.constants: Set[str] = set()
         self.predicates: Set[str] = set()
         self.max_arity: int = 2  # Binary relations by default
+        self.deterministic = deterministic  # Use sorted lists instead of sets for deterministic ordering
         
         # Probabilistic facts
         self._probabilistic_facts: List[Term] = []
@@ -262,7 +264,11 @@ class DataHandler:
                     continue
 
     def _load_rules_from_file(self, filepath: str) -> None:
-        """Load rules from file."""
+        """Load rules from file.
+        
+        IMPORTANT: SB3 uppercases rule variable arguments. We match this behavior
+        to ensure parity between implementations.
+        """
         with open(filepath, 'r') as f:
             for line in f:
                 line = line.strip()
@@ -270,9 +276,22 @@ class DataHandler:
                     continue
                 try:
                     rule = get_rule_from_string(line)
-                    self.rules.append(rule)
-                    head = (rule.head.predicate, *rule.head.args)
-                    body = [(atom.predicate, *atom.args) for atom in rule.body]
+                    
+                    # Match SB3 behavior: uppercase all rule arguments
+                    # (variables are uppercase by convention, but this ensures parity)
+                    upper_head_args = tuple(arg.upper() for arg in rule.head.args)
+                    upper_head = Term(rule.head.predicate, upper_head_args)
+                    
+                    upper_body = []
+                    for atom in rule.body:
+                        upper_args = tuple(arg.upper() for arg in atom.args)
+                        upper_body.append(Term(atom.predicate, upper_args))
+                    
+                    updated_rule = Rule(upper_head, upper_body)
+                    self.rules.append(updated_rule)
+                    
+                    head = (upper_head.predicate, *upper_head.args)
+                    body = [(atom.predicate, *atom.args) for atom in upper_body]
                     self.rules_str.append((head, body))
                 except Exception:
                     continue
@@ -377,6 +396,11 @@ class DataHandler:
             self.predicates.add(pred)
             self.constants.add(a)
             self.constants.add(b)
+        
+        # If deterministic, convert to sorted lists for consistent ordering
+        if self.deterministic:
+            self.predicates = sorted(self.predicates)
+            self.constants = sorted(self.constants)
     
     def _load_probabilistic_facts(
         self,
@@ -573,9 +597,9 @@ class DataHandler:
                 depths=depths_tensor,
             )
 
+        # Build all_known_triples_idx - ONLY from queries, NOT facts
+        # SB3 behavior: self.all_known_triples = self.train_queries + self.valid_queries + self.test_queries
         ak = []
-        if im.facts_idx is not None and im.facts_idx.numel() > 0:
-            ak.append(im.facts_idx.detach().to('cpu'))
         for split in splits.values():
             if split.queries.numel() > 0:
                 ak.append(split.queries[:, 0].detach().to('cpu'))

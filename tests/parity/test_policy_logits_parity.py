@@ -118,10 +118,7 @@ def test_policy_logits_align_with_sb3_initialization():
         lr_schedule=_lr_schedule,
         features_extractor_class=CustomCombinedExtractor,
         features_extractor_kwargs={"embedder": embedder_sb3, "features_dim": embed_dim},
-        enable_top_k=False,
-        enable_kge_action=False,
         share_features_extractor=True,
-        dropout_prob=0.2,
     ).to(device)
 
     # Disable dropout to make the forward passes deterministic for comparison
