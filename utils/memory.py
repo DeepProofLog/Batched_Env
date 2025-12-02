@@ -337,7 +337,7 @@ class ExactMemory:
         Exact membership test.
         states: [A, K, M, D]
         owners: [A]
-        Returns visited: [A, K] bool tensor.
+        Returns visited: [A, K] bool 
         """
         if states.numel() == 0:
             return torch.zeros(

@@ -174,7 +174,7 @@ class IndexManager():
 
     @lru_cache(maxsize=131_072)
     def _state_tuple_to_subidx(self, key: Tuple[int, ...]) -> torch.Tensor:
-        """Convert a state tuple key back to a sub-index tensor."""
+        """Convert a state tuple key back to a sub-index """
         # `as_tensor()` avoids an extra copy when the cache hits
         flat = torch.as_tensor(key, dtype=self.idx_dtype, device=self.device)
         return flat.view(self.padding_atoms, self.max_arity + 1)

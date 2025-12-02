@@ -12,8 +12,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tensor.rollout import RolloutBuffer
-from tensor.utils.trace_utils import TraceRecorder
+from rollout import RolloutBuffer
+from utils.trace_utils import TraceRecorder
 from callbacks import print_formatted_metrics, DetailedMetricsCollector
 
 

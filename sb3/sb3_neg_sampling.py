@@ -424,7 +424,7 @@ def get_negatives(
         Tensor with each query encoded as (padding_atoms, max_arity+1).  
         We only look at slot 0 (= the triple).
     padding_atoms / max_arity
-        Needed for shape construction of the output tensor.
+        Needed for shape construction of the output 
     num_negs
         * int  ➟ sample `num_negs` negatives per positive (old behaviour)  
         * None ➟ enumerate every legal corruption for every triple.
@@ -549,7 +549,7 @@ def get_negatives_from_states(
     return_states: bool = True,
 ) -> Union[torch.Tensor, List[List[Term]]]:
     """
-    Convert a list of Term-lists to sub-indices, generate negatives, and return sub-indices tensor.
+    Convert a list of Term-lists to sub-indices, generate negatives, and return sub-indices 
 
     Args:
         states: list of B query states, each a list of Term

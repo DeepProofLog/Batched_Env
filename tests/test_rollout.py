@@ -27,18 +27,18 @@ from types import SimpleNamespace
 from time import time
 from tensordict import TensorDict
 
-from tensor.data_handler import DataHandler
-from tensor.index_manager import IndexManager
-from tensor.sampler import Sampler
-from tensor.embeddings import get_embedder
-from tensor.env import BatchedEnv
-from tensor.unification import UnificationEngine
-from tensor.debug_config import DebugConfig
+from data_handler import DataHandler
+from index_manager import IndexManager
+from sampler import Sampler
+from embeddings import get_embedder
+from env import BatchedEnv
+from unification import UnificationEngine
+from debug_config import DebugConfig
 
 # Import new PPO implementation
 from ppo.ppo import PPO
 from ppo.model import create_actor_critic
-from tensor.model_eval import evaluate_policy
+from model_eval import evaluate_policy
 
 
 def test_rollout_pipeline(test_mode=None, args: SimpleNamespace = None):

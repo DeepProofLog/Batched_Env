@@ -5,9 +5,9 @@ from typing import Dict, List, Optional, Tuple
 from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
-from tensor.unification import UnificationEngine
-from tensor.utils.memory import BloomFilter, ExactMemory
-from tensor.utils.debug_helper import DebugHelper
+from unification import UnificationEngine
+from utils.memory import BloomFilter, ExactMemory
+from utils.debug_helper import DebugHelper
 
 
 def _safe_device(device: Optional[torch.device]) -> torch.device:
@@ -1444,14 +1444,14 @@ class BatchedEnv(EnvBase):
                 return torch.zeros((0,), dtype=torch.long, device=self._device)
             raise ValueError(f"{name} must be provided when queries are non-empty")
         tensor = torch.as_tensor(data, dtype=torch.long, device=self._device).view(-1)
-        if tensor.shape[0] != expected_len:
+        if shape[0] != expected_len:
             raise ValueError(
-                f"{name} length ({tensor.shape[0]}) does not match number of queries ({expected_len})"
+                f"{name} length ({shape[0]}) does not match number of queries ({expected_len})"
             )
         return tensor
 
     def _compute_first_atoms(self, padded_queries: Tensor) -> Tensor:
-        """Extract first atoms from padded queries tensor.
+        """Extract first atoms from padded queries 
         Expects shape [N, A, D], returns [N, D].
         N is number of queries, A is padding_atoms, D is max_arity + 1."""
         pad = self.padding_idx

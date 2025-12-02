@@ -16,11 +16,11 @@ from typing import Tuple, Dict, List
 from types import SimpleNamespace
 from tensordict import TensorDict
 
-from tensor.data_handler import DataHandler
-from tensor.index_manager import IndexManager
-from tensor.unification import UnificationEngine
-from tensor.env import BatchedEnv
-from tensor.utils.debug_helper import DebugHelper
+from data_handler import DataHandler
+from index_manager import IndexManager
+from unification import UnificationEngine
+from env import BatchedEnv
+from utils.debug_helper import DebugHelper
 
 
 def get_default_tensor_env_config() -> SimpleNamespace:

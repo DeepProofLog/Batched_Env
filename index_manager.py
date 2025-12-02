@@ -239,7 +239,7 @@ class IndexManager:
         return self._ensure_template_var(token)
 
     def atom_to_tensor(self, pred_str: str, a_str: str, b_str: str) -> LongTensor:
-        """Convert single atom to [3] tensor."""
+        """Convert single atom to [3] """
         p = self.predicate_str2idx[pred_str]
         a = self.term_to_index(a_str)
         b = self.term_to_index(b_str)

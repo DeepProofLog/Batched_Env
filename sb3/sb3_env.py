@@ -198,7 +198,7 @@ class LogicEnv_gym(gym.Env):
             )
 
         stacked = torch.stack(
-            [tensor.to(device=self.device, dtype=self.pt_idx_dtype) for tensor in sub_indices]
+            [to(device=self.device, dtype=self.pt_idx_dtype) for tensor in sub_indices]
         )
         num_states = stacked.shape[0]
         if num_states < self.padding_states:
@@ -213,7 +213,7 @@ class LogicEnv_gym(gym.Env):
         return stacked
 
     def _pad_single_state(self, state: State) -> torch.Tensor:
-        """Helper to stack and pad a single state's sub-index tensor."""
+        """Helper to stack and pad a single state's sub-index """
         state_tensor = self.index_manager.get_atom_sub_index(state)
         return self._pad_sub_indices([state_tensor])
 

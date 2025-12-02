@@ -19,8 +19,8 @@ from tensordict import TensorDict
 from test_envs.test_env_tensor import setup_tensor_env
 # from rollout import RolloutCollector
 from ppo import PPO
-from tensor.model import create_actor_critic
-from tensor.rollout import RolloutBuffer
+from model import create_actor_critic
+from rollout import RolloutBuffer
 
 
 class LogitsProducingActor(nn.Module):

@@ -314,8 +314,8 @@ def print_state_transition(state, derived_states, reward, done, action=None, tru
     Args:
         state: Current state representation.
         derived_states: Possible next states list.
-        reward: Received reward tensor.
-        done: Done flag tensor.
+        reward: Received reward 
+        done: Done flag 
         action: Executed action tensor (optional).
         truncated: Truncated flag (optional).
         label: Additional label for display (optional).

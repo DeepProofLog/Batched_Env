@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 if str(SB3_ROOT) not in sys.path:
     sys.path.insert(1, str(SB3_ROOT))
 
-from tensor.model import create_actor_critic
+from model import create_actor_critic
 
 try:
     from sb3.sb3_model import CustomActorCriticPolicy, CustomCombinedExtractor

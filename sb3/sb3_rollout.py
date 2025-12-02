@@ -127,7 +127,7 @@ class BaseBuffer(ABC):
 
     def to_torch(self, array: np.ndarray, copy: bool = True) -> th.Tensor:
         """
-        Convert a numpy array to a PyTorch tensor.
+        Convert a numpy array to a PyTorch 
         Note: it copies the data by default
 
         :param array:

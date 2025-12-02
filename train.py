@@ -14,16 +14,16 @@ import torch.nn as nn
 import numpy as np
 from tensordict import TensorDict
 
-from tensor.data_handler import DataHandler
+from data_handler import DataHandler
 from callbacks import print_formatted_metrics
-from tensor.embeddings import get_embedder
-from env import BatchedEnvSB3 as BatchedEnv
+from embeddings import get_embedder
+from env import BatchedEnv as BatchedEnv
 from index_manager import IndexManager
-from tensor.sampler import Sampler
-from tensor.unification import UnificationEngine
-from tensor.model import create_actor_critic  # Use new clean model
+from sampler import Sampler
+from unification import UnificationEngine
+from model import create_actor_critic  # Use new clean model
 from ppo import PPO  # Use new clean PPO
-from tensor.model_eval import evaluate_ranking_metrics
+from model_eval import evaluate_ranking_metrics
 
 from utils.utils import (
     _freeze_dropout_layernorm,
@@ -33,7 +33,7 @@ from utils.utils import (
     is_variable,
     print_eval_info,
 )
-from tensor.utils.trace_utils import TraceRecorder, _to_python_scalar
+from utils.trace_utils import TraceRecorder, _to_python_scalar
 
 
 def _default_corruption_mode(corruption_scheme):

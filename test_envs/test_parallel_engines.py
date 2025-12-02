@@ -33,10 +33,10 @@ from sb3.sb3_utils import Term as StrTerm, Rule as StrRule
 from sb3.sb3_unification import get_next_unification_python, canonicalize_state_to_str, canonical_states_to_str
 
 # Tensor-engine stack
-from tensor.data_handler import DataHandler
-from tensor.index_manager import IndexManager
-from tensor.unification import UnificationEngine
-from tensor.debug_helper import DebugHelper
+from data_handler import DataHandler
+from index_manager import IndexManager
+from unification import UnificationEngine
+from utils.debug_helper import DebugHelper
 
 
 def _parse_args() -> argparse.Namespace:

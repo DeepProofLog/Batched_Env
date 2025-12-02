@@ -11,7 +11,7 @@ import sys
 
 import argparse
 
-import tensor.runner_shared as tensor_runner
+import runner_shared as tensor_runner
 import sb3.sb3_runner_shared as sb3_runner
 
 

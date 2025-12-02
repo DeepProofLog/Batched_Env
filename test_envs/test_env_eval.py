@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from tensordict import TensorDict
 
 from test_envs.test_env_tensor import setup_tensor_env, get_default_tensor_env_config
-from tensor.model_eval import evaluate_policy
+from model_eval import evaluate_policy
 
 
 class DeterministicActorForEval(nn.Module):

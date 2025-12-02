@@ -1109,7 +1109,7 @@ class MRREvaluationCallback(EvaluationCallback):
             return {}
         
         # Import here to avoid circular imports
-        from tensor.model_eval import evaluate_ranking_metrics, evaluate_policy
+        from model_eval import evaluate_ranking_metrics, evaluate_policy
         
         try:
             # Use the policy's _predict_actions method which handles embeddings correctly

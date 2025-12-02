@@ -1085,7 +1085,7 @@ class UnificationEngine:
             self.end_tensor = None
         
         # Initialize DebugHelper for verbose output
-        from tensor.utils.debug_helper import DebugHelper as DH
+        from utils.debug_helper import DebugHelper as DH
         self.debug_helper = DH(**stringifier_params) if stringifier_params else None
         self.deb = self.debug_helper  # short alias
 
@@ -1372,13 +1372,13 @@ class UnificationEngine:
         return torch.equal(state[0], self.false_tensor.squeeze(0))
 
     def get_false_state(self) -> Tensor:
-        """Return a clone of the false tensor."""
+        """Return a clone of the false """
         if self.false_tensor is None:
             raise ValueError("False predicate not defined.")
         return self.false_tensor.clone()
 
     def get_true_state(self) -> Tensor:
-        """Return a clone of the true tensor."""
+        """Return a clone of the true """
         if self.true_tensor is None:
             raise ValueError("True predicate not defined.")
         return self.true_tensor.clone()
