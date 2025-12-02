@@ -5,18 +5,23 @@ Simple and modular testing for the string-based unification engine.
 """
 import os
 import sys
+
 root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sb3_path = os.path.join(root_path, 'sb3')
+# Ensure all SB3 modules resolve to the SAME top-level module paths.
+# Mixing package and top-level imports creates distinct Term classes and breaks parity.
 sys.path.insert(0, root_path)
+sys.path.insert(0, sb3_path)
 
 import random
 import torch
 from typing import Tuple, Dict, List
 from types import SimpleNamespace
 
-from sb3.sb3_dataset import DataHandler as StrDataHandler
-from sb3.sb3_index_manager import IndexManager as StrIndexManager
-from sb3.sb3_utils import Term as StrTerm
-from sb3.sb3_unification import get_next_unification_python, state_to_str
+from sb3_dataset import DataHandler as StrDataHandler
+from sb3_index_manager import IndexManager as StrIndexManager
+from sb3_utils import Term as StrTerm
+from sb3_unification import get_next_unification_python, state_to_str
 
 
 def get_default_sb3_engine_config() -> SimpleNamespace:
@@ -259,7 +264,7 @@ def run_sb3_engine(
         )
         results.append(result)
         
-        if not verbose and (idx + 1) % 50 == 0:
+        if (idx + 1) % 100 == 0:
             print(f"  Processed {idx + 1}/{len(queries)} queries...")
     
     # Aggregate statistics

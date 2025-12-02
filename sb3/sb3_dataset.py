@@ -527,12 +527,12 @@ class DataHandler:
         self.all_known_triples = self.train_queries + self.valid_queries + self.test_queries
         # self.valid_queries = self.test_queries.copy() # Use test queries as valid queries
 
-        print(f"Dataset {dataset_name} loaded:")
-        print(f"  Rules: {len(self.rules)}")
-        print(f"  Facts: {len(self.facts)}")
-        print(f"  Train queries: {len(self.train_queries)}")
-        print(f"  Valid queries: {len(self.valid_queries)}")
-        print(f"  Test queries: {len(self.test_queries)}")
+        # print(f"Dataset {dataset_name} loaded:")
+        # print(f"  Rules: {len(self.rules)}")
+        # print(f"  Facts: {len(self.facts)}")
+        # print(f"  Train queries: {len(self.train_queries)}")
+        # print(f"  Valid queries: {len(self.valid_queries)}")
+        # print(f"  Test queries: {len(self.test_queries)}")
 
         # # Load Janus facts
         # if janus_file:

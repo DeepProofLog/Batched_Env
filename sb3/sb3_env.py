@@ -559,6 +559,7 @@ class LogicEnv_gym(gym.Env):
                                                             verbose=self.prover_verbose,
                                                             next_var_index=self.next_var_index,
                                                             strategy= self.engine_strategy,
+                                                            max_derived_states=self.padding_states,
                                                             canonical_order=self.canonical_action_order,
                                                             index_manager=self.index_manager
                                                             )
@@ -589,6 +590,7 @@ class LogicEnv_gym(gym.Env):
                         verbose=self.prover_verbose,
                         next_var_index=self.next_var_index,
                         strategy= self.engine_strategy,
+                        max_derived_states=self.padding_states,
                         canonical_order=self.canonical_action_order,
                         index_manager=self.index_manager
                     )

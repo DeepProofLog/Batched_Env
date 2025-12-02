@@ -91,16 +91,16 @@ class IndexManager():
 
         # DEBUG: Print first 20 constants to verify ordering
         const_sample = list(self.constant_str2idx.items())[:10]
-        print(f"[DEBUG IndexManager SB3] First 20 constants:")
-        for const_str, const_idx in const_sample:
-            print(f"  {const_str} -> {const_idx}")
+        # print(f"[DEBUG IndexManager SB3] First 20 constants:")
+        # for const_str, const_idx in const_sample:
+        #     print(f"  {const_str} -> {const_idx}")
         
-        # DEBUG: Print variable allocation
-        print(f"[DEBUG IndexManager SB3] Variable allocation:")
-        print(f"  constant_no: {self.constant_no}")
-        print(f"  variable_start_index: {self.variable_start_index}")
-        print(f"  variable_end_index: {self.variable_end_index}")
-        print(f"  max_total_vars: {self.max_total_vars}")
+        # # DEBUG: Print variable allocation
+        # print(f"[DEBUG IndexManager SB3] Variable allocation:")
+        # print(f"  constant_no: {self.constant_no}")
+        # print(f"  variable_start_index: {self.variable_start_index}")
+        # print(f"  variable_end_index: {self.variable_end_index}")
+        # print(f"  max_total_vars: {self.max_total_vars}")
 
         self.fact_index: Dict[Tuple, Set[Term]] = {}
 
@@ -144,7 +144,7 @@ class IndexManager():
                 self.predicate_str2idx[term] = current_idx
                 self.predicate_idx2str[current_idx] = term
                 current_idx += 1
-        print(f"DEBUG [SB3 IndexManager]: First 10 predicates: {dict(list(self.predicate_str2idx.items())[:10])}")
+        # print(f"DEBUG [SB3 IndexManager]: First 10 predicates: {dict(list(self.predicate_str2idx.items())[:10])}")
 
         self.predicate_no = current_idx - 1
 

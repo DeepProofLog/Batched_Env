@@ -442,7 +442,9 @@ def run_parity_tests(
     dataset: str = "countries_s3",
     n_queries: int = 200,
     seed: int = 42,
-    verbose: bool = False
+    verbose: bool = False,
+    memory_pruning: bool = True,
+    skip_unary_actions: bool = True
 ) -> Tuple[bool, Dict]:
     """
     Run parity tests programmatically.
@@ -455,6 +457,8 @@ def run_parity_tests(
     config.n_queries = n_queries
     config.seed = seed
     config.verbose = verbose
+    config.memory_pruning = memory_pruning
+    config.skip_unary_actions = skip_unary_actions
     
     random.seed(config.seed)
     torch.manual_seed(config.seed)
@@ -466,6 +470,8 @@ def run_parity_tests(
     print(f"Dataset: {dataset}")
     print(f"Queries: {n_queries}")
     print(f"Seed: {seed}")
+    print(f"Memory pruning: {memory_pruning}")
+    print(f"Skip unary actions: {skip_unary_actions}")
     print(f"{'='*80}\n")
     
     queries = prepare_queries(
@@ -546,6 +552,10 @@ if __name__ == "__main__":
                         help='Random seed (default: 42)')
     parser.add_argument('--verbose', action='store_true',
                         help='Enable verbose output')
+    parser.add_argument('--no-memory-pruning', action='store_true',
+                        help='Disable memory pruning (default: enabled)')
+    parser.add_argument('--no-skip-unary', action='store_true',
+                        help='Disable skipping unary actions (default: enabled)')
     
     args = parser.parse_args()
     
@@ -553,7 +563,9 @@ if __name__ == "__main__":
         dataset=args.dataset,
         n_queries=args.n_queries,
         seed=args.seed,
-        verbose=args.verbose
+        verbose=args.verbose,
+        memory_pruning=not args.no_memory_pruning,
+        skip_unary_actions=not args.no_skip_unary
     )
     
     sys.exit(0 if passed else 1)

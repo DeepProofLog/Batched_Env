@@ -291,29 +291,23 @@ def test_tensor_engine_single_query(
     }
 
 
-def run_tensor_engine(
+def _run_tensor_engine_batch(
     queries: List[Tuple[str, Tuple[str, str, str]]],
     engine_data: Tuple,
-    config: SimpleNamespace
-) -> Dict:
+    config: SimpleNamespace,
+    base_seed_offset: int = 0
+) -> List[Dict]:
     """
-    Test multiple queries using the tensor engine in a TRUE BATCHED manner.
-    
-    All queries are processed in parallel using the batched unification engine.
-    Action selection (deterministic=first canonical, or random) is handled per query.
+    Run tensor engine on a single batch of queries.
     
     Args:
-        queries: List of (split, (predicate, head, tail))
+        queries: List of (split, (predicate, head, tail)) for this batch
         engine_data: Tuple from setup_tensor_engine()
-        config: Configuration namespace with deterministic, max_depth, seed, verbose, etc.
+        config: Configuration namespace
+        base_seed_offset: Offset for random seeds to ensure consistency across batches
         
     Returns:
-        Dict with keys:
-            - total_queries: int
-            - successful: int
-            - avg_reward: float
-            - avg_steps: float
-            - traces: List of trace dicts
+        List of result dicts for each query in the batch
     """
     dh_non, im_non, engine, debug_helper, next_var_start = engine_data
     
@@ -327,11 +321,10 @@ def run_tensor_engine(
     pad = engine.padding_idx
     
     # Start with initial padding but allow dynamic growth
-    # Use a larger initial size to avoid frequent resizing
     initial_max_atoms = 20
     
     # Initialize RNGs for non-deterministic action selection (one per query)
-    rngs = [random.Random(seed + i) for i in range(B)]
+    rngs = [random.Random(seed + base_seed_offset + i) for i in range(B)]
     
     # Build initial states batch: [B, max_atoms, 3]
     current_states = torch.full((B, initial_max_atoms, 3), pad, dtype=torch.long, device=device)
@@ -407,7 +400,7 @@ def run_tensor_engine(
                     })
             break
         
-        # Get derived states for ALL queries in batch
+        # Get derived states for queries in this batch
         derived_states, derived_counts, updated_next_var = engine.get_derived_states(
             current_states, next_var_tracker,
             excluded_queries=excluded_queries, verbose=0
@@ -481,8 +474,6 @@ def run_tensor_engine(
             })
             
             # Update state for this query
-            # chosen_state is [M_out, 3], current_states is [B, current_max_atoms, 3]
-            # They should have same M dimension now after resizing above
             M_chosen = chosen_state.shape[0]
             current_max_atoms = current_states.shape[1]
             
@@ -492,25 +483,79 @@ def run_tensor_engine(
             
             steps_taken[i] += 1
     
-    # Build results
+    # Build results for this batch
     results = []
     for i in range(B):
         results.append({
             'success': success[i].item(),
-            'steps': len(traces[i]) - 1 if traces[i] else 0,  # steps before final done
+            'steps': len(traces[i]) - 1 if traces[i] else 0,
             'reward': 1.0 if success[i].item() else 0.0,
             'trace': traces[i]
         })
     
+    return results
+
+
+def run_tensor_engine(
+    queries: List[Tuple[str, Tuple[str, str, str]]],
+    engine_data: Tuple,
+    config: SimpleNamespace
+) -> Dict:
+    """
+    Test multiple queries using the tensor engine in batches to avoid OOM.
+    
+    Queries are processed in batches (default 250) using the batched unification engine.
+    Action selection (deterministic=first canonical, or random) is handled per query.
+    
+    Args:
+        queries: List of (split, (predicate, head, tail))
+        engine_data: Tuple from setup_tensor_engine()
+        config: Configuration namespace with deterministic, max_depth, seed, verbose, etc.
+            - batch_size: Number of queries to process at once (default: 250)
+        
+    Returns:
+        Dict with keys:
+            - total_queries: int
+            - successful: int
+            - avg_reward: float
+            - avg_steps: float
+            - traces: List of trace dicts
+    """
+    batch_size = getattr(config, 'batch_size', 250)
+    total_queries = len(queries)
+    
+    all_results = []
+    
+    # Process queries in batches
+    for batch_start in range(0, total_queries, batch_size):
+        print(f"Processing queries {batch_start} to {min(batch_start + batch_size, total_queries)}...")
+        batch_end = min(batch_start + batch_size, total_queries)
+        batch_queries = queries[batch_start:batch_end]
+        
+        # Run this batch
+        batch_results = _run_tensor_engine_batch(
+            batch_queries, 
+            engine_data, 
+            config,
+            base_seed_offset=batch_start
+        )
+        all_results.extend(batch_results)
+        
+        # Explicit cleanup to free memory between batches
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
     # Aggregate statistics
-    successful = sum(1 for r in results if r['success'])
-    total_reward = sum(r['reward'] for r in results)
-    total_steps = sum(r['steps'] for r in results)
+    successful = sum(1 for r in all_results if r['success'])
+    total_reward = sum(r['reward'] for r in all_results)
+    total_steps = sum(r['steps'] for r in all_results)
     
     # Compute average actions (branching factor)
     total_actions = 0
     total_action_steps = 0
-    for r in results:
+    for r in all_results:
         for step_data in r['trace']:
             if 'num_actions' in step_data:
                 total_actions += step_data['num_actions']
@@ -524,5 +569,5 @@ def run_tensor_engine(
         'avg_reward': total_reward / len(queries) if queries else 0.0,
         'avg_steps': total_steps / len(queries) if queries else 0.0,
         'avg_actions': avg_actions,
-        'traces': results
+        'traces': all_results
     }
