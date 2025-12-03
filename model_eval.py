@@ -94,8 +94,6 @@ def evaluate_policy(
         init_done = _get_step_value(td, "done", torch.zeros(B, 1, dtype=torch.bool, device=device)).view(-1).tolist()
         print("[evaluate_policy] initial done flags:", init_done)
 
-    prev_done = torch.zeros(B, dtype=torch.bool, device=device)
-
     while bool((ep_count < targets).any()):
         actor_device = next(actor.parameters(), torch.zeros((), device=device)).device if isinstance(actor, nn.Module) else device
         policy_td = td.clone().to(actor_device)
@@ -115,11 +113,9 @@ def evaluate_policy(
             log_probs = policy_td.get("sample_log_prob", torch.zeros(B, device=device)).view(-1).to(device)
         
         action_td = TensorDict({"action": action.to(device)}, batch_size=env.batch_size).to(device)
-        done_prev = prev_done
-        need_more = ep_count < targets
-        reset_rows = done_prev & need_more
-
-        step_td, next_td = step_and_maybe_reset(env, action_td, reset_rows=reset_rows)
+        
+        # Step environment (without auto-reset, so we can control which slots reset)
+        step_td = env.step(action_td)
 
         rew = _get_step_value(step_td, "reward", torch.zeros(B, device=device)).view(-1)
         done_curr = _get_step_value(step_td, "done", torch.zeros(B, 1, dtype=torch.bool, device=device)).view(-1)
@@ -130,6 +126,7 @@ def evaluate_policy(
         ep_length += 1
         ep_logprob += log_probs
 
+        need_more = ep_count < targets
         finished_rows = done_curr & need_more
         if finished_rows.any():
             rows = finished_rows.nonzero(as_tuple=False).view(-1)
@@ -143,7 +140,24 @@ def evaluate_policy(
             ep_return[rows] = 0
             ep_length[rows] = 0
             ep_logprob[rows] = 0
-        prev_done = done_curr
+        
+        # Reset only the environments that finished AND need more episodes
+        # This prevents resetting slots that have completed their target
+        next_obs = step_td.get("next", step_td)
+        reset_needed = done_curr & need_more  # Only reset if we need more episodes
+        if reset_needed.any():
+            # After episode tracking update, need_more changes, so recompute
+            # Slots that just finished but still need more episodes should reset
+            still_need_more = ep_count < targets
+            reset_mask = done_curr & still_need_more
+            if reset_mask.any():
+                reset_td = env.reset(TensorDict({"_reset": reset_mask.view(-1, 1)}, batch_size=env.batch_size))
+                next_td = _merge_rows(next_obs.clone(), reset_td, reset_mask)
+            else:
+                next_td = next_obs
+        else:
+            next_td = next_obs
+        
         td = next_td.to(device)
 
         if info_callback is not None:
@@ -198,7 +212,7 @@ def _merge_rows(dst: TensorDict, src: TensorDict, mask: torch.Tensor) -> TensorD
 # ------------------------------------------------------------
 
 @torch.inference_mode()
-def evaluate_ranking_metrics(
+def eval_corruptions(
     actor: nn.Module,
     env:   EnvBase,
     *,
