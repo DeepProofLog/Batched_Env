@@ -43,6 +43,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.logger import configure
 
 # sb3 imports
+from sb3_custom_dummy_env import CustomDummyVecEnv
 from sb3_dataset import DataHandler as StrDataHandler
 from sb3_index_manager import IndexManager as StrIndexManager
 from sb3_env import LogicEnv_gym as StrEnv
@@ -50,7 +51,7 @@ from sb3_model import PPO_custom, CustomActorCriticPolicy, CustomCombinedExtract
 from sb3_embeddings import EmbedderLearnable as SB3Embedder
 from sb3_model_eval import evaluate_policy as sb3_evaluate_policy
 from sb3_model_eval import eval_corruptions as sb3_eval_corruptions
-from sb3_neg_sampling import BasicNegativeSamplerDomain
+from sb3_neg_sampling import BasicNegativeSamplerDomain, get_sampler as get_sb3_sampler
 
 # Tensor imports
 from data_handler import DataHandler
@@ -129,6 +130,7 @@ def create_aligned_environments(dataset: str, n_envs: int, mode: str = 'valid'):
         rules_file="rules.txt",
         facts_file="train.txt",
         train_depth=None,
+        corruption_mode=True,  # Enable domain loading for negative sampling
     )
     
     im_sb3 = StrIndexManager(
@@ -239,12 +241,10 @@ def create_sb3_eval_env(env_data: Dict, queries: List, n_envs: int, seed: int = 
         return _init
     
     env_fns = [make_env(env_idx=i) for i in range(n_envs)]
-    vec_env = DummyVecEnv(env_fns)
+    vec_env = CustomDummyVecEnv(env_fns)
     
-    # Set the custom type marker required by sb3_evaluate_policy
-    vec_env.type_ = "custom_dummy"
-    
-    # Set episode tracking attributes (must be arrays for slice assignment)
+    # CustomDummyVecEnv already has the episode tracking attributes built-in
+    # Just reset them for this evaluation run
     vec_env._episode_target = np.zeros(n_envs, dtype=int)
     vec_env._episode_count = np.zeros(n_envs, dtype=int)
     vec_env.active_envs = np.ones(n_envs, dtype=bool)
@@ -465,39 +465,74 @@ def create_tensor_eval_env(env_data: Dict, queries: List, n_envs: int, seed: int
     return ppo, env, im, engine
 
 
-def create_sb3_sampler(dh, im, device, seed: int = 42):
-    """Create SB3 negative sampler."""
-    return BasicNegativeSamplerDomain(
+def create_sb3_sampler(dh, im, device, seed: int = 42, corruption_scheme=['tail']):
+    """Create SB3 negative sampler using the official get_sampler function."""
+    return get_sb3_sampler(
         data_handler=dh,
         index_manager=im,
+        corruption_scheme=corruption_scheme,
         device=device,
-        seed=seed,
+        corruption_mode=True,
     )
 
 
 def create_tensor_sampler(dh, im, device, seed: int = 42):
-    """Create tensor negative sampler."""
-    # Build domain constraints from data handler
+    """Create tensor negative sampler with domain constraints matching SB3."""
+    import os
+    
+    # Build domain constraints from domain file (same as SB3)
     domain_heads = {}
     domain_tails = {}
     
-    if hasattr(dh, 'domain2constants') and dh.domain2constants:
-        for rel_idx, pred_str in enumerate(im.idx2predicate):
-            if pred_str == im.padding_idx:
+    # Load domain file directly (like SB3 does)
+    # Construct path from dataset name
+    domain_file = os.path.join("./data/", dh.dataset_name, "domain2constants.txt")
+    if os.path.exists(domain_file):
+        pred2domains = {}  # predicate -> (head_domain, tail_domain)
+        domain2entities = {}  # domain_name -> list of entities
+        
+        with open(domain_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if ':' in line:
+                    # Format: predicate:head_domain:tail_domain
+                    parts = line.split(':')
+                    if len(parts) == 3:
+                        pred, head_dom, tail_dom = parts
+                        pred2domains[pred] = (head_dom, tail_dom)
+                else:
+                    # Format: domain_name entity1 entity2 ...
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        domain_name = parts[0]
+                        entities = parts[1:]
+                        domain2entities[domain_name] = entities
+        
+        # Build domain_heads and domain_tails per predicate
+        for pred_str, (head_dom, tail_dom) in pred2domains.items():
+            if pred_str not in im.predicate_str2idx:
                 continue
-            # Get head and tail domains for this predicate
-            head_dom = dh.domain2constants.get(f"head_{pred_str}", None)
-            tail_dom = dh.domain2constants.get(f"tail_{pred_str}", None)
+            rel_idx = im.predicate_str2idx[pred_str]
             
-            if head_dom is not None:
-                head_indices = torch.tensor([im.constant_str2idx[c] for c in head_dom if c in im.constant_str2idx], 
-                                           dtype=torch.long)
+            # Head domain
+            if head_dom in domain2entities:
+                head_ents = domain2entities[head_dom]
+                head_indices = torch.tensor(
+                    [im.constant_str2idx[e] for e in head_ents if e in im.constant_str2idx],
+                    dtype=torch.long
+                )
                 if head_indices.numel() > 0:
                     domain_heads[rel_idx] = head_indices
             
-            if tail_dom is not None:
-                tail_indices = torch.tensor([im.constant_str2idx[c] for c in tail_dom if c in im.constant_str2idx],
-                                           dtype=torch.long)
+            # Tail domain
+            if tail_dom in domain2entities:
+                tail_ents = domain2entities[tail_dom]
+                tail_indices = torch.tensor(
+                    [im.constant_str2idx[e] for e in tail_ents if e in im.constant_str2idx],
+                    dtype=torch.long
+                )
                 if tail_indices.numel() > 0:
                     domain_tails[rel_idx] = tail_indices
     
@@ -807,7 +842,12 @@ def run_eval_corruptions_parity(
         print("Creating negative samplers...")
     
     device = torch.device("cpu")
-    sb3_sampler = create_sb3_sampler(env_data['sb3']['dh'], sb3_im, device, seed)
+    # Map corruption_mode to corruption_scheme list
+    if corruption_mode == 'both':
+        corruption_scheme = ['head', 'tail']
+    else:
+        corruption_scheme = [corruption_mode]
+    sb3_sampler = create_sb3_sampler(env_data['sb3']['dh'], sb3_im, device, seed, corruption_scheme=corruption_scheme)
     tensor_sampler = create_tensor_sampler(env_data['tensor']['dh'], tensor_im, device, seed)
     
     # Run SB3 eval_corruptions
@@ -815,21 +855,23 @@ def run_eval_corruptions_parity(
         print("\nRunning SB3 eval_corruptions...")
     
     try:
+        # SB3 API: eval_corruptions(model, env, data, sampler, n_corruptions, ...)
         sb3_metrics = sb3_eval_corruptions(
             model=sb3_ppo,
             env=sb3_env,
+            data=queries_sb3,  # list of query objects
             sampler=sb3_sampler,
-            n_eval_episodes=n_eval_episodes,
+            n_corruptions=k_negatives,
             deterministic=True,
-            mode=corruption_mode,
-            K=k_negatives,
-            method='k_negatives',
+            corruption_scheme=corruption_scheme,  # ['head'] or ['tail'] or ['head', 'tail']
+            verbose=0,
         )
         
-        results.sb3_mrr = sb3_metrics.get('MRR', 0.0)
-        results.sb3_hits1 = sb3_metrics.get('Hits@1', 0.0)
-        results.sb3_hits3 = sb3_metrics.get('Hits@3', 0.0)
-        results.sb3_hits10 = sb3_metrics.get('Hits@10', 0.0)
+        # SB3 returns keys like 'mrr_mean', 'hits1_mean', etc.
+        results.sb3_mrr = sb3_metrics.get('mrr_mean', sb3_metrics.get('MRR', 0.0))
+        results.sb3_hits1 = sb3_metrics.get('hits1_mean', sb3_metrics.get('Hits@1', 0.0))
+        results.sb3_hits3 = sb3_metrics.get('hits3_mean', sb3_metrics.get('Hits@3', 0.0))
+        results.sb3_hits10 = sb3_metrics.get('hits10_mean', sb3_metrics.get('Hits@10', 0.0))
         
         if verbose:
             print(f"  SB3 MRR: {results.sb3_mrr:.4f}")
@@ -848,15 +890,24 @@ def run_eval_corruptions_parity(
         print("\nRunning tensor eval_corruptions...")
     
     try:
+        # Tensor API: eval_corruptions(actor, env, queries, sampler, ...)
+        # Convert queries to tensor format - just the query atom, not padded
+        tensor_im = env_data['tensor']['im']
+        query_tensors = []
+        for q in queries_tensor:
+            query_atom = tensor_im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            query_tensors.append(query_atom)
+        queries_t = torch.stack(query_tensors, dim=0)  # shape (B, 3)
+        
         tensor_metrics = tensor_eval_corruptions(
             actor=tensor_ppo.policy,
             env=tensor_env,
+            queries=queries_t,
             sampler=tensor_sampler,
-            n_eval_episodes=n_eval_episodes,
+            n_corruptions=k_negatives,
+            corruption_modes=tuple(corruption_scheme),  # ('head',) or ('tail',) or ('head', 'tail')
             deterministic=True,
-            mode=corruption_mode,
-            K=k_negatives,
-            method='k_negatives',
+            verbose=False,
         )
         
         results.tensor_mrr = tensor_metrics.get('MRR', 0.0)
@@ -969,49 +1020,72 @@ class TestEvaluatePolicyParity:
 
 
 class TestEvalCorruptionsParity:
-    """Tests for eval_corruptions parity."""
+    """Tests for eval_corruptions parity.
     
-    @pytest.mark.parametrize("corruption_mode", ["tail", "head"])
-    def test_eval_corruptions_modes(self, corruption_mode):
-        """Test eval_corruptions for different corruption modes."""
+    Tests cover:
+    - countries_s3: Uses domain constraints (tail corruption only, regions domain has 5 entities -> max 4 negatives)
+    - family: No domain constraints (both head and tail corruptions)
+    """
+    
+    def test_eval_corruptions_countries_s3_tail(self):
+        """Test eval_corruptions for countries_s3 with tail corruption (domain-constrained).
+        
+        Note: countries_s3 locatedin predicate has tail domain = regions (5 entities),
+        so we use num_negs=None to get all possible corruptions (4 negatives per positive).
+        """
         results = run_eval_corruptions_parity(
             dataset="countries_s3",
             n_envs=2,
             n_eval_episodes=5,
             seed=42,
-            verbose=False,
-            corruption_mode=corruption_mode,
+            verbose=True,
+            corruption_mode="tail",
+            k_negatives=None,  # Use None to get all possible corruptions (domain has only 5 entities)
+        )
+        assert results.eval_corruptions_success, \
+            f"eval_corruptions parity failed for countries_s3 tail: MRR SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
+    
+    def test_eval_corruptions_family_tail(self):
+        """Test eval_corruptions for family with tail corruption."""
+        results = run_eval_corruptions_parity(
+            dataset="family",
+            n_envs=2,
+            n_eval_episodes=5,
+            seed=42,
+            verbose=True,
+            corruption_mode="tail",
             k_negatives=20,
         )
         assert results.eval_corruptions_success, \
-            f"eval_corruptions parity failed for mode={corruption_mode}"
+            f"eval_corruptions parity failed for family tail: MRR SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
     
-    def test_eval_corruptions_mrr_match(self):
-        """Test that MRR matches between implementations."""
+    def test_eval_corruptions_family_head(self):
+        """Test eval_corruptions for family with head corruption."""
         results = run_eval_corruptions_parity(
-            dataset="countries_s3",
+            dataset="family",
             n_envs=2,
             n_eval_episodes=5,
             seed=42,
-            verbose=False,
+            verbose=True,
+            corruption_mode="head",
             k_negatives=20,
         )
-        assert results.mrr_match, \
-            f"MRR mismatch: SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
+        assert results.eval_corruptions_success, \
+            f"eval_corruptions parity failed for family head: MRR SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
     
-    def test_eval_corruptions_hits_match(self):
-        """Test that Hits@K metrics match between implementations."""
+    def test_eval_corruptions_family_both(self):
+        """Test eval_corruptions for family with both head and tail corruption."""
         results = run_eval_corruptions_parity(
-            dataset="countries_s3",
+            dataset="family",
             n_envs=2,
             n_eval_episodes=5,
             seed=42,
-            verbose=False,
+            verbose=True,
+            corruption_mode="both",
             k_negatives=20,
         )
-        assert results.hits1_match, "Hits@1 doesn't match"
-        assert results.hits3_match, "Hits@3 doesn't match"
-        assert results.hits10_match, "Hits@10 doesn't match"
+        assert results.eval_corruptions_success, \
+            f"eval_corruptions parity failed for family both: MRR SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
 
 
 # ============================================================

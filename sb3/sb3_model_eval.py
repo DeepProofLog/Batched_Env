@@ -866,10 +866,9 @@ def _extract_and_accumulate_metrics(
     # Ranking metrics (random tie-breaking; seeded via rng for reproducibility)
     if mask.shape[1] > 1:
         lp_batch = np.where(mask, log_probs, -np.inf)
-        # if rng is None:
-        #     rng = np.random.RandomState(0)
-        # random_keys = rng.rand(*lp_batch.shape)
-        random_keys = np.random.rand(*lp_batch.shape)
+        # Use seeded RNG for reproducible tie-breaking (matches tensor implementation)
+        rng = np.random.RandomState(0)
+        random_keys = rng.rand(*lp_batch.shape)
         sorted_indices = np.lexsort((-random_keys, -lp_batch), axis=1)
         ranks = np.where(sorted_indices == 0)[1] + 1
         mrr, h1, h3, h10 = 1.0/ranks, (ranks == 1).astype(float), (ranks <= 3).astype(float), (ranks <= 10).astype(float)
