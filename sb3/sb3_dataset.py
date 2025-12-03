@@ -559,7 +559,7 @@ class DataHandler:
         if corruption_mode:
             if 'countries' in self.dataset_name or 'ablation' in self.dataset_name:
                 # Load the domain file
-                domain_file = join(base_path, "domain2constants_old.txt")
+                domain_file = join(base_path, "domain2constants.txt")
                 try:
                     self.entity2domain = {}
                     self.domain2entity = defaultdict(list)

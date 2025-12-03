@@ -33,7 +33,7 @@ if __name__ == "__main__":
         # Dataset params
         'dataset_name': 'countries_s3',
 
-        'eval_neg_samples': 3,
+        'eval_neg_samples': None,
         'test_neg_samples': None,
 
         'train_depth': None,
@@ -43,13 +43,13 @@ if __name__ == "__main__":
         'load_depth_info': True,
 
         'n_train_queries': None,
-        'n_eval_queries': 500,
-        'n_test_queries': 500,
+        'n_eval_queries': None,
+        'n_test_queries': None,
 
 
         # Model params
         'model_name': 'PPO',
-        'ent_coef': 0.5,
+        'ent_coef': 0.2,
         'clip_range': 0.2,
         'n_epochs': 10,
         'lr': 3e-4,
@@ -57,20 +57,20 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 128,
+        'timesteps_train': 200000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
         'use_amp': True,
         'use_compile': True,
         'n_steps': 128, #64
-        'batch_size_env': 1,  # 256
-        'batch_size_env_eval': 1,  # 256
-        'batch_size': 128,
+        'batch_size_env': 16,  # 256
+        'batch_size_env_eval': 16,  # 256
+        'batch_size': 1024,
 
         # Env params
         'reward_type': 4,
-        'train_neg_ratio': 1,
+        'train_neg_ratio': 4,
         'end_proof_action': True,
         'skip_unary_actions': True,
         'max_depth': 20,

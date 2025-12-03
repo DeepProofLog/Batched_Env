@@ -23,7 +23,7 @@ from sampler import Sampler
 from unification import UnificationEngine
 from model import create_actor_critic  # Use new clean model
 from ppo import PPO  # Use new clean PPO
-from model_eval import evaluate_ranking_metrics
+from model_eval import eval_corruptions
 
 from utils.utils import (
     _freeze_dropout_layernorm,
@@ -710,7 +710,7 @@ def _evaluate_split(
     if corruption_count is None:
         corruption_count = 3
 
-    metrics = evaluate_ranking_metrics(
+    metrics = eval_corruptions(
         actor=eval_actor,
         env=env,
         queries=queries,

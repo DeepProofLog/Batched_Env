@@ -508,7 +508,7 @@ class DataHandler:
         """Load domain mapping for countries/ablation datasets."""
         from collections import defaultdict
         
-        domain_file = join(dataset_path, "domain2constants_old.txt")
+        domain_file = join(dataset_path, "domain2constants.txt")
         if not os.path.exists(domain_file):
             print(f"Warning: Domain file {domain_file} not found")
             return
@@ -638,6 +638,14 @@ class DataHandler:
         
         # Store for reference
         self.domain_to_entity_indices = domain_to_entity_indices
+        
+        # Build entity_idx -> domain (for sampler)
+        self.entity_idx_to_domain: Dict[int, str] = {}
+        for domain, entities in self.domain2entity.items():
+            for entity in entities:
+                if entity in im.constant_str2idx:
+                    self.entity_idx_to_domain[im.constant_str2idx[entity]] = domain
+        
         predicate_domain_map = self.predicate_domain_map
         
         # Apply domain constraints to predicates
@@ -672,3 +680,21 @@ class DataHandler:
     def set_domain_tails(self, rel_id: int, allowed_entities: Iterable[int]) -> None:
         """Set allowed tail entities for a relation."""
         self.allowed_tails_per_rel[rel_id] = torch.tensor(list(allowed_entities), dtype=torch.long)
+
+    def get_sampler_domain_info(self) -> Tuple[Optional[Dict[str, List[int]]], Optional[Dict[int, str]]]:
+        """
+        Get domain information for the sampler.
+        
+        Returns:
+            Tuple of (domain2idx, entity2domain):
+            - domain2idx: Dict mapping domain name to list of entity indices
+            - entity2domain: Dict mapping entity index to domain name
+            
+        Returns (None, None) if domain info is not available.
+        Must call materialize_indices() first.
+        """
+        if not hasattr(self, 'domain_to_entity_indices') or self.domain_to_entity_indices is None:
+            return None, None
+        if not hasattr(self, 'entity_idx_to_domain') or self.entity_idx_to_domain is None:
+            return None, None
+        return self.domain_to_entity_indices, self.entity_idx_to_domain

@@ -39,6 +39,11 @@ these attributes used during evaluation:
 `model.policy(obs_tensor, deterministic)` and returns `(actions, values, logp)`.
 
 
+Trace Types for detailed step-by-step comparison (matching tensor version):
+- `SB3EvalStepTrace`: Trace of a single step in evaluate_policy
+- `SB3EvalCorruptionsTrace`: Trace of eval_corruptions evaluation
+
+
 • Observations follow SB3's multi-input convention and are converted via
 `stable_baselines3.common.on_policy_algorithm.obs_as_tensor`.
 
@@ -52,7 +57,7 @@ Tip: This file deliberately stays *framework-agnostic* outside of SB3 to allow
 plugging different policies and samplers.
 """
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple, Union, Optional, Callable
+from typing import Any, Dict, List, Tuple, Union, Optional, Callable, TypedDict
 import os
 import time
 import random
@@ -69,6 +74,44 @@ from stable_baselines3.common.on_policy_algorithm import obs_as_tensor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
 
 
+# ------------------------------------------------------------
+# Trace Types for detailed step-by-step comparison
+# ------------------------------------------------------------
+
+class SB3EvalStepTrace(TypedDict, total=False):
+    """Trace of a single step in evaluate_policy (SB3 version)."""
+    step: int                    # Global step index
+    env_idx: int                 # Environment index in the batch
+    episode_idx: int             # Episode index for this env
+    action: int                  # Action taken
+    reward: float                # Reward received
+    done: bool                   # Whether episode ended
+    success: bool                # Whether proof succeeded (if applicable)
+    log_prob: float              # Log probability of the action
+    cumulative_reward: float     # Cumulative reward so far in episode
+    episode_length: int          # Steps so far in episode
+    state_obs: Dict[str, Any]    # State observation (sub_index, derived_states, etc.)
+    next_state_obs: Dict[str, Any]  # Next state observation
+    value: float                 # Value estimate (if available)
+    query: List[int]             # Query tensor [rel, head, tail]
+
+
+class SB3EvalCorruptionsTrace(TypedDict, total=False):
+    """Trace of eval_corruptions evaluation (SB3 version)."""
+    batch_idx: int               # Batch index
+    mode: str                    # Corruption mode (head/tail)
+    query_idx: int               # Query index within batch
+    query: List[int]             # Query tensor [rel, head, tail]
+    negatives: List[List[int]]   # Generated negative samples
+    num_negatives: int           # Number of negatives generated
+    pos_logp: float              # Log probability for positive
+    neg_logps: List[float]       # Log probabilities for negatives
+    pos_success: bool            # Whether positive proof succeeded
+    neg_successes: List[bool]    # Whether negative proofs succeeded
+    rank: int                    # Rank of the positive query
+    episode_traces: List[SB3EvalStepTrace]  # Detailed traces per episode
+
+
 # ---------------------------------------------------------------------------
 # Low-level, fast vectorized evaluator
 # ---------------------------------------------------------------------------
@@ -83,6 +126,7 @@ def evaluate_policy(
     verbose: int = 0,
     track_logprobs: bool = False,
     info_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+    return_traces: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Roll out a policy on a *vectorized* env and aggregate per-episode stats.
 
@@ -111,6 +155,8 @@ def evaluate_policy(
     info_callback : callable, optional
         If provided, called after each environment step with the list of info
         dicts returned by the vectorized environment (useful for custom logging).
+    return_traces : bool, default False
+        If True, collects detailed step-by-step traces for comparison with tensor version.
 
     Returns
     -------
@@ -124,6 +170,8 @@ def evaluate_policy(
         Mask marking valid episode slots per env.
     proof_successful : np.ndarray, shape (L, T_max), dtype=bool
         Whether the env reported success for each finished episode.
+    traces : List[SB3EvalStepTrace] (only if return_traces=True)
+        Detailed step-by-step traces for each step.
 
     Notes
     -----
@@ -183,6 +231,27 @@ def evaluate_policy(
         current_state_histories: list[list[str]] = [[] for _ in range(n_envs)]
         index_manager = env.get_attr("index_manager")[0]
 
+    # Trace collection for debugging parity (matching tensor version)
+    traces: List[SB3EvalStepTrace] = []
+    global_step = 0
+    
+    def _extract_state_obs(observations: Dict[str, np.ndarray], env_idx: int) -> Dict[str, Any]:
+        """Extract state observation for tracing."""
+        obs = {}
+        if "sub_index" in observations:
+            obs["sub_index"] = observations["sub_index"][env_idx].tolist()
+        if "derived_states" in observations:
+            obs["derived_states"] = observations["derived_states"][env_idx].tolist()
+        if "derived_sub_indices" in observations:
+            obs["derived_sub_indices"] = observations["derived_sub_indices"][env_idx].tolist()
+        if "action_mask" in observations:
+            obs["action_mask"] = observations["action_mask"][env_idx].tolist()
+        if "query" in observations:
+            obs["query"] = observations["query"][env_idx].tolist()
+        if "n_derived" in observations:
+            obs["n_derived"] = int(observations["n_derived"][env_idx])
+        return obs
+
     # env needs numpy actions
     action_shape = env.action_space.shape
     full_actions = np.zeros((n_envs, *action_shape), dtype=env.action_space.dtype)
@@ -202,7 +271,13 @@ def evaluate_policy(
             obs_active = observations[active_np]
 
         obs_tensor = obs_as_tensor(obs_active, device)
-        acts_tensor, _, lp_tensor = model.policy(obs_tensor, deterministic=deterministic)
+        acts_tensor, values_tensor, lp_tensor = model.policy(obs_tensor, deterministic=deterministic)
+
+        # Extract pre-step state for tracing
+        pre_step_obs = {}
+        if return_traces:
+            for i, env_i in enumerate(active_np):
+                pre_step_obs[env_i] = _extract_state_obs(observations, env_i)
 
         # track histories (before step)
         if track_logprobs:
@@ -228,6 +303,32 @@ def evaluate_policy(
 
         current_rew[active_idx] += rews_t[active_idx]
         current_len[active_idx] += 1
+
+        # Collect traces for this step
+        if return_traces:
+            for i, env_i in enumerate(active_np):
+                success_this_step = infos[env_i].get("is_success", False) if dones_np[env_i] else False
+                value_est = float(values_tensor[i].item()) if values_tensor is not None else 0.0
+                trace: SB3EvalStepTrace = {
+                    "step": global_step,
+                    "env_idx": env_i,
+                    "episode_idx": int(counts[env_i].item()),
+                    "action": int(acts_tensor[i].item()),
+                    "reward": float(rews_np[env_i]),
+                    "done": bool(dones_np[env_i]),
+                    "success": success_this_step,
+                    "log_prob": float(lp_tensor[i].item()),
+                    "cumulative_reward": float(current_rew[env_i].item()),
+                    "episode_length": int(current_len[env_i].item()),
+                    "state_obs": pre_step_obs.get(env_i, {}),
+                    "next_state_obs": _extract_state_obs(new_obs, env_i) if isinstance(new_obs, dict) else {},
+                    "value": value_est,
+                }
+                # Add query if available
+                if "query" in pre_step_obs.get(env_i, {}):
+                    trace["query"] = pre_step_obs[env_i]["query"]
+                traces.append(trace)
+            global_step += 1
 
         # append step lps BEFORE checking for done episodes
         if track_logprobs:
@@ -303,12 +404,21 @@ def evaluate_policy(
     ]
 
     if track_logprobs:
+        if return_traces:
+            return (
+                rewards, lengths, logps, mask, proof_successful,
+                episode_logprob_histories, episode_choices_histories,
+                episode_steplogprob_histories, episode_state_histories,
+                traces
+            )
         return (
             rewards, lengths, logps, mask, proof_successful,
             episode_logprob_histories, episode_choices_histories,
             episode_steplogprob_histories, episode_state_histories
         )
     else:
+        if return_traces:
+            return (rewards, lengths, logps, mask, proof_successful, traces)
         return (rewards, lengths, logps, mask, proof_successful)
 # ---------------------------------------------------------------------------
 # Shared helpers for high-level evaluation
@@ -426,6 +536,7 @@ def _evaluate_with_rl(
     data_depths: Optional[List[int]],
     batch_start_idx: int,
     plot: bool,
+    return_traces: bool = False,
 ) -> Tuple[
     np.ndarray,
     np.ndarray,
@@ -433,6 +544,7 @@ def _evaluate_with_rl(
     np.ndarray,
     np.ndarray,
     Optional[Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray]]],
+    Optional[List[SB3EvalStepTrace]],
 ]:
     _configure_env_batch(env, batch, corrs, data_depths, batch_start_idx)
 
@@ -443,20 +555,37 @@ def _evaluate_with_rl(
         target_episodes=targets,
         verbose=verbose,
         info_callback=info_callback,
+        return_traces=return_traces,
     )
 
+    traces = None
     if plot:
-        (
-            rewards,
-            lengths,
-            log_probs,
-            mask,
-            proof_successful,
-            logprob_histories,
-            choices_histories,
-            steplogprob_histories,
-            state_histories,
-        ) = evaluate_policy(track_logprobs=True, **eval_kwargs)
+        result = evaluate_policy(track_logprobs=True, **eval_kwargs)
+        if return_traces:
+            (
+                rewards,
+                lengths,
+                log_probs,
+                mask,
+                proof_successful,
+                logprob_histories,
+                choices_histories,
+                steplogprob_histories,
+                state_histories,
+                traces,
+            ) = result
+        else:
+            (
+                rewards,
+                lengths,
+                log_probs,
+                mask,
+                proof_successful,
+                logprob_histories,
+                choices_histories,
+                steplogprob_histories,
+                state_histories,
+            ) = result
         plot_payload = (
             logprob_histories,
             choices_histories,
@@ -464,11 +593,13 @@ def _evaluate_with_rl(
             state_histories,
         )
     else:
-        rewards, lengths, log_probs, mask, proof_successful = evaluate_policy(
-            track_logprobs=False, **eval_kwargs
-        )
+        result = evaluate_policy(track_logprobs=False, **eval_kwargs)
+        if return_traces:
+            rewards, lengths, log_probs, mask, proof_successful, traces = result
+        else:
+            rewards, lengths, log_probs, mask, proof_successful = result
         plot_payload = None
-    return rewards, lengths, log_probs, mask, proof_successful, plot_payload
+    return rewards, lengths, log_probs, mask, proof_successful, plot_payload, traces
 
 
 def _combine_hybrid_scores(
@@ -510,6 +641,7 @@ def eval_corruptions(
     hybrid_kge_weight: float = 2.0,
     hybrid_rl_weight: float = 1.0,
     hybrid_success_only: bool = True,
+    return_traces: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate a model by ranking a positive query vs. its corruptions.
 
@@ -569,11 +701,14 @@ def eval_corruptions(
     hybrid_success_only : bool, default True
         When True, adds the RL contribution only for successful proofs; when
         False, adds it to every candidate regardless of success.
+    return_traces : bool, default False
+        If True, collects detailed traces for comparison with tensor version.
 
     Returns
     -------
     Dict[str, Any]
         Aggregated metrics (means/stds) and classification scores.
+        If return_traces=True, includes 'traces' key with list of SB3EvalCorruptionsTrace.
     """
     if evaluation_mode not in ("rl_only", "kge_only", "hybrid"):
         raise ValueError(f"Invalid evaluation_mode: {evaluation_mode}")
@@ -609,6 +744,9 @@ def eval_corruptions(
     global_metrics = _init_global_metrics()
 
     # rng = np.random.RandomState(0)  # deterministic tie-breaking without altering global state
+
+    # Trace collection for debugging parity
+    all_traces: List[SB3EvalCorruptionsTrace] = [] if return_traces else []
 
     aggregated_plot_data: Optional[
         Dict[str, List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]]
@@ -658,6 +796,7 @@ def eval_corruptions(
 
             rewards: Optional[np.ndarray] = None
             lengths: Optional[np.ndarray] = None
+            episode_traces: List[SB3EvalStepTrace] = []
 
             if evaluation_mode == "kge_only":
                 log_probs = kge_eval(batch, corrs, mask, kge_inference_engine)
@@ -670,6 +809,7 @@ def eval_corruptions(
                     eval_mask,
                     proof_successful,
                     plot_payload,
+                    episode_traces_result,
                 ) = _evaluate_with_rl(
                     model=model,
                     env=env,
@@ -682,8 +822,12 @@ def eval_corruptions(
                     data_depths=data_depths,
                     batch_start_idx=start,
                     plot=plot,
+                    return_traces=return_traces,
                 )
+                
                 mask = eval_mask
+                if episode_traces_result is not None:
+                    episode_traces = episode_traces_result
 
                 if evaluation_mode == "hybrid":
                     kge_log_scores = kge_eval(batch, corrs, mask, kge_inference_engine)
@@ -725,6 +869,58 @@ def eval_corruptions(
                         B=B,
                     )
 
+            # Collect eval_corruptions traces for each query in this batch
+            if return_traces:
+                # Compute ranks for this batch (using same logic as _extract_and_accumulate_metrics)
+                lp_batch = np.where(mask, log_probs, -np.inf)
+                rng = np.random.RandomState(0)
+                random_keys = rng.rand(*lp_batch.shape)
+                sorted_indices = np.lexsort((-random_keys, -lp_batch), axis=1)
+                ranks = np.where(sorted_indices == 0)[1] + 1
+                
+                for i in range(B):
+                    pos_query = batch[i]
+                    negs = corrs[i]
+                    
+                    # Extract query as list (handle different object types)
+                    query_list = []
+                    if hasattr(pos_query, 'predicate') and hasattr(pos_query, 'args'):
+                        query_list = [str(pos_query.predicate)] + [str(a) for a in pos_query.args]
+                    
+                    # Extract negatives as lists
+                    neg_list = []
+                    for neg in negs:
+                        if hasattr(neg, 'predicate') and hasattr(neg, 'args'):
+                            neg_list.append([str(neg.predicate)] + [str(a) for a in neg.args])
+                    
+                    # Get log probs for pos and negs
+                    num_valid = int(mask[i].sum())
+                    pos_logp = float(log_probs[i, 0]) if num_valid > 0 else float('-inf')
+                    neg_logps_list = [float(log_probs[i, j]) for j in range(1, num_valid)]
+                    
+                    # Get success flags
+                    pos_succ = bool(proof_successful[i, 0]) if num_valid > 0 else False
+                    neg_succs = [bool(proof_successful[i, j]) for j in range(1, num_valid)]
+                    
+                    # Filter episode traces for this query (env_idx == i)
+                    query_episode_traces = [t for t in episode_traces if t.get("env_idx") == i]
+                    
+                    trace: SB3EvalCorruptionsTrace = {
+                        "batch_idx": b,
+                        "mode": corruption_type,
+                        "query_idx": start + i,
+                        "query": query_list,
+                        "negatives": neg_list,
+                        "num_negatives": len(negs),
+                        "pos_logp": pos_logp,
+                        "neg_logps": neg_logps_list,
+                        "pos_success": pos_succ,
+                        "neg_successes": neg_succs,
+                        "rank": int(ranks[i]),
+                        "episode_traces": query_episode_traces,
+                    }
+                    all_traces.append(trace)
+
             _extract_and_accumulate_metrics(
                 batch_metrics,
                 global_metrics,
@@ -754,7 +950,10 @@ def eval_corruptions(
             line_alpha=0.7,
         )
 
-    return _finalize_and_get_results(global_metrics)
+    result = _finalize_and_get_results(global_metrics)
+    if return_traces:
+        result["traces"] = all_traces
+    return result
 
 
 # ---------------------------------------------------------------------------

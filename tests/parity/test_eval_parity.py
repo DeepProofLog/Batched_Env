@@ -51,6 +51,7 @@ from sb3_model import PPO_custom, CustomActorCriticPolicy, CustomCombinedExtract
 from sb3_embeddings import EmbedderLearnable as SB3Embedder
 from sb3_model_eval import evaluate_policy as sb3_evaluate_policy
 from sb3_model_eval import eval_corruptions as sb3_eval_corruptions
+from sb3_model_eval import SB3EvalStepTrace, SB3EvalCorruptionsTrace
 from sb3_neg_sampling import BasicNegativeSamplerDomain, get_sampler as get_sb3_sampler
 
 # Tensor imports
@@ -63,6 +64,7 @@ from model import ActorCriticPolicy as TensorPolicy
 from ppo import PPO as TensorPPO
 from model_eval import evaluate_policy as tensor_evaluate_policy
 from model_eval import eval_corruptions as tensor_eval_corruptions
+from model_eval import EvalStepTrace, EvalCorruptionsTrace
 from sampler import Sampler, SamplerConfig
 
 
@@ -101,6 +103,227 @@ class EvalParityResults:
     # Overall
     evaluate_policy_success: bool = False
     eval_corruptions_success: bool = False
+
+
+def compare_traces(
+    sb3_traces: List[SB3EvalCorruptionsTrace],
+    tensor_traces: List[EvalCorruptionsTrace],
+    max_traces: int = 5,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """
+    Compare traces from SB3 and tensor eval_corruptions to find differences.
+    
+    Args:
+        sb3_traces: List of SB3EvalCorruptionsTrace
+        tensor_traces: List of EvalCorruptionsTrace
+        max_traces: Maximum number of traces to compare in detail
+        verbose: Whether to print comparison output
+        
+    Returns:
+        Dict with comparison results and first differences found
+    """
+    result = {
+        "num_sb3_traces": len(sb3_traces),
+        "num_tensor_traces": len(tensor_traces),
+        "matches": [],
+        "mismatches": [],
+    }
+    
+    if verbose:
+        print("\n" + "=" * 70)
+        print("TRACE COMPARISON")
+        print(f"SB3 traces: {len(sb3_traces)}, Tensor traces: {len(tensor_traces)}")
+        print("=" * 70)
+    
+    # Compare traces pairwise
+    num_to_compare = min(len(sb3_traces), len(tensor_traces), max_traces)
+    for i in range(num_to_compare):
+        sb3_t = sb3_traces[i]
+        tensor_t = tensor_traces[i]
+        
+        # Extract comparable fields
+        sb3_rank = sb3_t.get("rank", -1)
+        tensor_rank = tensor_t.get("rank", -1)
+        
+        sb3_pos_logp = sb3_t.get("pos_logp", float('-inf'))
+        tensor_pos_logp = tensor_t.get("pos_logp", float('-inf'))
+        
+        sb3_mode = sb3_t.get("mode", "")
+        tensor_mode = tensor_t.get("mode", "")
+        
+        sb3_query_idx = sb3_t.get("query_idx", -1)
+        tensor_query_idx = tensor_t.get("query_idx", -1)
+        
+        sb3_num_negs = sb3_t.get("num_negatives", 0)
+        tensor_num_negs = tensor_t.get("num_negatives", 0)
+        
+        # Check for rank mismatch
+        rank_match = sb3_rank == tensor_rank
+        logp_match = abs(sb3_pos_logp - tensor_pos_logp) < 0.001
+        
+        trace_info = {
+            "idx": i,
+            "sb3_rank": sb3_rank,
+            "tensor_rank": tensor_rank,
+            "rank_match": rank_match,
+            "sb3_pos_logp": sb3_pos_logp,
+            "tensor_pos_logp": tensor_pos_logp,
+            "logp_match": logp_match,
+            "sb3_mode": sb3_mode,
+            "tensor_mode": tensor_mode,
+            "sb3_query_idx": sb3_query_idx,
+            "tensor_query_idx": tensor_query_idx,
+            "sb3_num_negs": sb3_num_negs,
+            "tensor_num_negs": tensor_num_negs,
+        }
+        
+        if rank_match and logp_match:
+            result["matches"].append(trace_info)
+        else:
+            result["mismatches"].append(trace_info)
+        
+        if verbose:
+            match_symbol = "✓" if (rank_match and logp_match) else "✗"
+            print(f"\nTrace {i} [{match_symbol}]:")
+            print(f"  Mode: SB3={sb3_mode}, Tensor={tensor_mode}")
+            print(f"  Query idx: SB3={sb3_query_idx}, Tensor={tensor_query_idx}")
+            print(f"  Num negs: SB3={sb3_num_negs}, Tensor={tensor_num_negs}")
+            print(f"  Rank: SB3={sb3_rank}, Tensor={tensor_rank} {'✓' if rank_match else '✗'}")
+            print(f"  Pos logp: SB3={sb3_pos_logp:.4f}, Tensor={tensor_pos_logp:.4f} {'✓' if logp_match else '✗'}")
+            
+            # If mismatch, print more details
+            if not rank_match or not logp_match:
+                sb3_neg_logps = sb3_t.get("neg_logps", [])
+                tensor_neg_logps = tensor_t.get("neg_logps", [])
+                
+                print(f"  Neg logps (first 5):")
+                print(f"    SB3: {[f'{x:.4f}' for x in sb3_neg_logps[:5]]}")
+                print(f"    Tensor: {[f'{x:.4f}' for x in tensor_neg_logps[:5]]}")
+                
+                sb3_pos_succ = sb3_t.get("pos_success", False)
+                tensor_pos_succ = tensor_t.get("pos_success", False)
+                print(f"  Pos success: SB3={sb3_pos_succ}, Tensor={tensor_pos_succ}")
+                
+                # Look at episode traces if available
+                sb3_ep_traces = sb3_t.get("episode_traces", [])
+                tensor_ep_traces = tensor_t.get("episode_traces", [])
+                
+                if sb3_ep_traces or tensor_ep_traces:
+                    print(f"  Episode traces: SB3 has {len(sb3_ep_traces)}, Tensor has {len(tensor_ep_traces)}")
+                    
+                    # DETAILED COMPARISON: Compare episode traces step by step
+                    max_steps_to_compare = min(10, len(sb3_ep_traces), len(tensor_ep_traces))
+                    for j in range(max_steps_to_compare):
+                        sb3_ep = sb3_ep_traces[j]
+                        tensor_ep = tensor_ep_traces[j]
+                        
+                        sb3_action = sb3_ep.get("action", -1)
+                        tensor_action = tensor_ep.get("action", -1)
+                        sb3_reward = sb3_ep.get("reward", 0.0)
+                        tensor_reward = tensor_ep.get("reward", 0.0)
+                        sb3_lp = sb3_ep.get("log_prob", 0.0)
+                        tensor_lp = tensor_ep.get("log_prob", 0.0)
+                        sb3_done = sb3_ep.get("done", False)
+                        tensor_done = tensor_ep.get("done", False)
+                        
+                        # Check if this step differs
+                        step_differs = (sb3_action != tensor_action or 
+                                       abs(sb3_lp - tensor_lp) > 0.001 or
+                                       abs(sb3_reward - tensor_reward) > 1e-6 or
+                                       sb3_done != tensor_done)
+                        
+                        if step_differs or j < 3:  # Always show first 3 steps
+                            marker = "***DIFF***" if step_differs else ""
+                            print(f"\n    === Step {j} {marker} ===")
+                            print(f"      Action:  SB3={sb3_action}, Tensor={tensor_action}")
+                            print(f"      Reward:  SB3={sb3_reward:.6f}, Tensor={tensor_reward:.6f}")
+                            print(f"      LogProb: SB3={sb3_lp:.6f}, Tensor={tensor_lp:.6f}")
+                            print(f"      Done:    SB3={sb3_done}, Tensor={tensor_done}")
+                            
+                            # Print state observations if available
+                            sb3_state_obs = sb3_ep.get("state_obs", {})
+                            tensor_state_obs = tensor_ep.get("state_obs", {})
+                            
+                            if sb3_state_obs or tensor_state_obs:
+                                # Sub-index (current state)
+                                sb3_sub = sb3_state_obs.get("sub_index")
+                                tensor_sub = tensor_state_obs.get("sub_index")
+                                
+                                if sb3_sub is not None:
+                                    sb3_sub_arr = np.array(sb3_sub) if not isinstance(sb3_sub, np.ndarray) else sb3_sub
+                                    # Get first non-padding atom
+                                    print(f"      SB3 sub_index[0]: {sb3_sub_arr[0].tolist() if len(sb3_sub_arr.shape) > 0 else sb3_sub_arr}")
+                                if tensor_sub is not None:
+                                    tensor_sub_arr = np.array(tensor_sub) if not isinstance(tensor_sub, np.ndarray) else tensor_sub
+                                    print(f"      Tensor sub_index[0]: {tensor_sub_arr[0].tolist() if len(tensor_sub_arr.shape) > 0 else tensor_sub_arr}")
+                                
+                                # Compare sub_index match
+                                if sb3_sub is not None and tensor_sub is not None:
+                                    sb3_arr = np.array(sb3_sub)
+                                    tensor_arr = np.array(tensor_sub)
+                                    if sb3_arr.shape == tensor_arr.shape:
+                                        match = np.allclose(sb3_arr, tensor_arr)
+                                        print(f"      sub_index MATCH: {match}")
+                                    else:
+                                        print(f"      sub_index SHAPE MISMATCH: SB3={sb3_arr.shape}, Tensor={tensor_arr.shape}")
+                                
+                                # Action mask
+                                sb3_mask = sb3_state_obs.get("action_mask")
+                                tensor_mask = tensor_state_obs.get("action_mask")
+                                
+                                if sb3_mask is not None and tensor_mask is not None:
+                                    sb3_mask_arr = np.array(sb3_mask)
+                                    tensor_mask_arr = np.array(tensor_mask)
+                                    sb3_valid = int(np.sum(sb3_mask_arr))
+                                    tensor_valid = int(np.sum(tensor_mask_arr))
+                                    print(f"      Valid actions: SB3={sb3_valid}, Tensor={tensor_valid}")
+                                    
+                                    if sb3_mask_arr.shape == tensor_mask_arr.shape:
+                                        mask_match = np.array_equal(sb3_mask_arr, tensor_mask_arr)
+                                        print(f"      action_mask MATCH: {mask_match}")
+                                        if not mask_match:
+                                            # Find differing positions
+                                            diff_pos = np.where(sb3_mask_arr != tensor_mask_arr)[0]
+                                            print(f"      Differing positions: {diff_pos[:10].tolist()}")
+                                
+                                # Derived states
+                                sb3_derived = sb3_state_obs.get("derived_sub_indices")
+                                tensor_derived = tensor_state_obs.get("derived_sub_indices")
+                                
+                                if sb3_derived is not None:
+                                    sb3_derived_arr = np.array(sb3_derived)
+                                    # Count non-padding derived states
+                                    if len(sb3_derived_arr.shape) >= 2:
+                                        sb3_num_derived = np.sum(sb3_derived_arr[:, 0, 0] != 0)  # Assuming padding_idx=0
+                                        print(f"      SB3 num derived states: {sb3_num_derived}")
+                                if tensor_derived is not None:
+                                    tensor_derived_arr = np.array(tensor_derived)
+                                    if len(tensor_derived_arr.shape) >= 2:
+                                        tensor_num_derived = np.sum(tensor_derived_arr[:, 0, 0] != 0)
+                                        print(f"      Tensor num derived states: {tensor_num_derived}")
+                            
+                            # Print logits if available
+                            sb3_logits = sb3_ep.get("logits")
+                            tensor_logits = tensor_ep.get("logits")
+                            
+                            if sb3_logits is not None or tensor_logits is not None:
+                                if sb3_logits is not None:
+                                    sb3_logits_arr = np.array(sb3_logits)
+                                    print(f"      SB3 logits (first 5): {sb3_logits_arr[:5].tolist()}")
+                                if tensor_logits is not None:
+                                    tensor_logits_arr = np.array(tensor_logits)
+                                    print(f"      Tensor logits (first 5): {tensor_logits_arr[:5].tolist()}")
+                            
+                            if step_differs:
+                                break  # Stop at first difference for clarity
+    
+    if verbose:
+        print("\n" + "-" * 70)
+        print(f"Summary: {len(result['matches'])} matches, {len(result['mismatches'])} mismatches")
+        print("-" * 70)
+    
+    return result
 
 
 def create_aligned_environments(dataset: str, n_envs: int, mode: str = 'valid'):
@@ -156,6 +379,7 @@ def create_aligned_environments(dataset: str, n_envs: int, mode: str = 'valid'):
         rules_file="rules.txt",
         facts_file="train.txt",
         train_depth=None,
+        corruption_mode='dynamic',  # Enable domain loading for negative sampling
     )
     
     im_tensor = IndexManager(
@@ -476,85 +700,39 @@ def create_sb3_sampler(dh, im, device, seed: int = 42, corruption_scheme=['tail'
     )
 
 
-def create_tensor_sampler(dh, im, device, seed: int = 42):
-    """Create tensor negative sampler with domain constraints matching SB3."""
-    import os
+def create_tensor_sampler(dh, im, dh_sb3, device, seed: int = 42, corruption_scheme=['head', 'tail']):
+    """Create tensor negative sampler with domain constraints matching SB3.
     
-    # Build domain constraints from domain file (same as SB3)
-    domain_heads = {}
-    domain_tails = {}
+    Uses the same domain2idx and entity2domain format as SB3's get_sampler function.
     
-    # Load domain file directly (like SB3 does)
-    # Construct path from dataset name
-    domain_file = os.path.join("./data/", dh.dataset_name, "domain2constants.txt")
-    if os.path.exists(domain_file):
-        pred2domains = {}  # predicate -> (head_domain, tail_domain)
-        domain2entities = {}  # domain_name -> list of entities
-        
-        with open(domain_file, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                if ':' in line:
-                    # Format: predicate:head_domain:tail_domain
-                    parts = line.split(':')
-                    if len(parts) == 3:
-                        pred, head_dom, tail_dom = parts
-                        pred2domains[pred] = (head_dom, tail_dom)
-                else:
-                    # Format: domain_name entity1 entity2 ...
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        domain_name = parts[0]
-                        entities = parts[1:]
-                        domain2entities[domain_name] = entities
-        
-        # Build domain_heads and domain_tails per predicate
-        for pred_str, (head_dom, tail_dom) in pred2domains.items():
-            if pred_str not in im.predicate_str2idx:
-                continue
-            rel_idx = im.predicate_str2idx[pred_str]
-            
-            # Head domain
-            if head_dom in domain2entities:
-                head_ents = domain2entities[head_dom]
-                head_indices = torch.tensor(
-                    [im.constant_str2idx[e] for e in head_ents if e in im.constant_str2idx],
-                    dtype=torch.long
-                )
-                if head_indices.numel() > 0:
-                    domain_heads[rel_idx] = head_indices
-            
-            # Tail domain
-            if tail_dom in domain2entities:
-                tail_ents = domain2entities[tail_dom]
-                tail_indices = torch.tensor(
-                    [im.constant_str2idx[e] for e in tail_ents if e in im.constant_str2idx],
-                    dtype=torch.long
-                )
-                if tail_indices.numel() > 0:
-                    domain_tails[rel_idx] = tail_indices
-    
-    # Build known triples for filtering
-    all_triples = []
-    for q in dh.train_queries + dh.valid_queries + dh.test_queries:
-        pred_idx = im.predicate_str2idx[q.predicate]
-        head_idx = im.constant_str2idx[q.args[0]]
-        tail_idx = im.constant_str2idx[q.args[1]]
-        all_triples.append([pred_idx, head_idx, tail_idx])
-    
-    all_triples_tensor = torch.tensor(all_triples, dtype=torch.long, device=device)
-    
+    Args:
+        dh: Tensor DataHandler
+        im: Tensor IndexManager  
+        dh_sb3: SB3 DataHandler (needed for domain2entity which is loaded by SB3)
+        device: Target device
+        seed: Random seed
+        corruption_scheme: List of corruption modes ['head'], ['tail'], or ['head', 'tail']
+    """
+    domain2idx, entity2domain = dh.get_sampler_domain_info()
+
+    # Map corruption_scheme to default_mode
+    if corruption_scheme == ['head']:
+        default_mode = 'head'
+    elif corruption_scheme == ['tail']:
+        default_mode = 'tail'
+    else:
+        default_mode = 'both'
+
+    # Use the pre-computed all_known_triples_idx from the data handler
     sampler = Sampler.from_data(
-        all_known_triples_idx=all_triples_tensor,
+        all_known_triples_idx=dh.all_known_triples_idx,
         num_entities=im.constant_no,
         num_relations=im.predicate_no,
         device=device,
-        default_mode='both',
+        default_mode=default_mode,
         seed=seed,
-        domain_heads=domain_heads if domain_heads else None,
-        domain_tails=domain_tails if domain_tails else None,
+        domain2idx=domain2idx,
+        entity2domain=entity2domain,
     )
     
     return sampler
@@ -848,11 +1026,69 @@ def run_eval_corruptions_parity(
     else:
         corruption_scheme = [corruption_mode]
     sb3_sampler = create_sb3_sampler(env_data['sb3']['dh'], sb3_im, device, seed, corruption_scheme=corruption_scheme)
-    tensor_sampler = create_tensor_sampler(env_data['tensor']['dh'], tensor_im, device, seed)
+    tensor_sampler = create_tensor_sampler(env_data['tensor']['dh'], tensor_im, env_data['sb3']['dh'], device, seed, corruption_scheme=corruption_scheme)
+
+    # Debug: Compare generated negatives for the first query
+    # Use a separate seed for debug to avoid polluting RNG state
+    debug_rng_state = torch.get_rng_state()
+    DEBUG_SEED = 99999
+    torch.manual_seed(DEBUG_SEED)
     
-    # Run SB3 eval_corruptions
-    if verbose:
-        print("\nRunning SB3 eval_corruptions...")
+    print("\n--- Debug: Negative Sampling Comparison ---")
+    q0 = queries_sb3[0]
+    print(f"Query 0: {q0}")
+    
+    # Handle -1 for debug sampling
+    debug_k_negatives = k_negatives if k_negatives != -1 else None
+    
+    # SB3 Negatives - use get_negatives_from_states_separate
+    sb3_head_negs, sb3_tail_negs = sb3_sampler.get_negatives_from_states_separate([[q0]], device=device, num_negs=debug_k_negatives)
+    
+    if corruption_mode == 'tail' or corruption_mode == 'both':
+        if isinstance(sb3_tail_negs, list):
+            print(f"SB3 Tail Negs (first 3): {[str(t) for t in sb3_tail_negs[:3]]}")
+        else:
+            print(f"SB3 Tail Negs (first 3): {sb3_tail_negs[:3] if sb3_tail_negs is not None else 'None'}")
+    if corruption_mode == 'head' or corruption_mode == 'both':
+        if isinstance(sb3_head_negs, list):
+            print(f"SB3 Head Negs (first 3): {[str(t) for t in sb3_head_negs[:3]]}")
+        else:
+            print(f"SB3 Head Negs (first 3): {sb3_head_negs[:3] if sb3_head_negs is not None else 'None'}")
+
+    # Tensor Negatives - use get_negatives_from_states_separate to match SB3
+    tensor_im = env_data['tensor']['im']
+    query_tensors = []
+    for q in queries_tensor:
+        query_atom = tensor_im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+        query_tensors.append(query_atom)
+    queries_t_debug = torch.stack(query_tensors, dim=0)
+    
+    t_q0 = queries_t_debug[0].unsqueeze(0)
+    # Use get_negatives_from_states_separate for tensor too
+    t_head_negs, t_tail_negs = tensor_sampler.get_negatives_from_states_separate(
+        t_q0, num_negatives=debug_k_negatives, device=device
+    )
+    
+    if corruption_mode == 'tail' or corruption_mode == 'both':
+        if t_tail_negs and len(t_tail_negs) > 0 and t_tail_negs[0].numel() > 0:
+            print(f"Tensor Tail Negs (first 3): {t_tail_negs[0][:3].tolist()}")
+        else:
+            print(f"Tensor Tail Negs: empty")
+    if corruption_mode == 'head' or corruption_mode == 'both':
+        if t_head_negs and len(t_head_negs) > 0 and t_head_negs[0].numel() > 0:
+            print(f"Tensor Head Negs (first 3): {t_head_negs[0][:3].tolist()}")
+        else:
+            print(f"Tensor Head Negs: empty")
+    print("-------------------------------------------\n")
+    
+    # Restore RNG state after debug
+    torch.set_rng_state(debug_rng_state)
+    
+    # Synchronize RNG state before SB3 eval_corruptions
+    eval_seed = 12345  # Fixed seed for eval_corruptions parity
+    torch.manual_seed(eval_seed)
+    
+    sb3_traces = []  # Store SB3 traces for comparison
     
     try:
         # SB3 API: eval_corruptions(model, env, data, sampler, n_corruptions, ...)
@@ -865,7 +1101,11 @@ def run_eval_corruptions_parity(
             deterministic=True,
             corruption_scheme=corruption_scheme,  # ['head'] or ['tail'] or ['head', 'tail']
             verbose=0,
+            return_traces=True,  # Enable trace collection
         )
+        
+        # Extract traces
+        sb3_traces = sb3_metrics.get('traces', [])
         
         # SB3 returns keys like 'mrr_mean', 'hits1_mean', etc.
         results.sb3_mrr = sb3_metrics.get('mrr_mean', sb3_metrics.get('MRR', 0.0))
@@ -878,6 +1118,7 @@ def run_eval_corruptions_parity(
             print(f"  SB3 Hits@1: {results.sb3_hits1:.4f}")
             print(f"  SB3 Hits@3: {results.sb3_hits3:.4f}")
             print(f"  SB3 Hits@10: {results.sb3_hits10:.4f}")
+            print(f"  SB3 traces collected: {len(sb3_traces)}")
     except Exception as e:
         if verbose:
             print(f"  SB3 eval_corruptions error: {e}")
@@ -889,6 +1130,11 @@ def run_eval_corruptions_parity(
     if verbose:
         print("\nRunning tensor eval_corruptions...")
     
+    # Synchronize RNG state before tensor eval_corruptions (SAME seed as SB3)
+    torch.manual_seed(eval_seed)
+    
+    tensor_traces = []  # Store tensor traces for comparison
+    
     try:
         # Tensor API: eval_corruptions(actor, env, queries, sampler, ...)
         # Convert queries to tensor format - just the query atom, not padded
@@ -899,16 +1145,23 @@ def run_eval_corruptions_parity(
             query_tensors.append(query_atom)
         queries_t = torch.stack(query_tensors, dim=0)  # shape (B, 3)
         
+        # Handle -1 as None (all corruptions) for Tensor implementation
+        tensor_k_negatives = k_negatives if k_negatives != -1 else None
+        
         tensor_metrics = tensor_eval_corruptions(
             actor=tensor_ppo.policy,
             env=tensor_env,
             queries=queries_t,
             sampler=tensor_sampler,
-            n_corruptions=k_negatives,
+            n_corruptions=tensor_k_negatives,
             corruption_modes=tuple(corruption_scheme),  # ('head',) or ('tail',) or ('head', 'tail')
             deterministic=True,
             verbose=False,
+            return_traces=True,  # Enable trace collection
         )
+        
+        # Extract traces
+        tensor_traces = tensor_metrics.get('traces', [])
         
         results.tensor_mrr = tensor_metrics.get('MRR', 0.0)
         results.tensor_hits1 = tensor_metrics.get('Hits@1', 0.0)
@@ -920,6 +1173,7 @@ def run_eval_corruptions_parity(
             print(f"  Tensor Hits@1: {results.tensor_hits1:.4f}")
             print(f"  Tensor Hits@3: {results.tensor_hits3:.4f}")
             print(f"  Tensor Hits@10: {results.tensor_hits10:.4f}")
+            print(f"  Tensor traces collected: {len(tensor_traces)}")
     except Exception as e:
         if verbose:
             print(f"  Tensor eval_corruptions error: {e}")
@@ -927,7 +1181,7 @@ def run_eval_corruptions_parity(
         traceback.print_exc()
         return results
     
-    # Compare results (with 1% relative tolerance)
+    # Compare traces if results don't match
     if verbose:
         print("\n--- Results Comparison ---")
     
@@ -961,6 +1215,11 @@ def run_eval_corruptions_parity(
         results.hits3_match and
         results.hits10_match
     )
+    
+    # Compare traces if there's a mismatch and we have traces
+    if not results.eval_corruptions_success and sb3_traces and tensor_traces:
+        if verbose:
+            compare_traces(sb3_traces, tensor_traces, max_traces=30, verbose=True)
     
     if verbose:
         print("\n" + "=" * 70)
@@ -1022,70 +1281,42 @@ class TestEvaluatePolicyParity:
 class TestEvalCorruptionsParity:
     """Tests for eval_corruptions parity.
     
-    Tests cover:
-    - countries_s3: Uses domain constraints (tail corruption only, regions domain has 5 entities -> max 4 negatives)
-    - family: No domain constraints (both head and tail corruptions)
+    Parametrized test covering various configurations:
+    - dataset: Dataset name (family, countries_s3, etc.)
+    - corruption_mode: 'head', 'tail', or 'both'
+    - n_queries: Number of test queries to evaluate
+    - k_negatives: Number of corruptions per query (None for all possible corruptions)
     """
     
-    def test_eval_corruptions_countries_s3_tail(self):
-        """Test eval_corruptions for countries_s3 with tail corruption (domain-constrained).
+    @pytest.mark.parametrize("dataset,corruption_mode,n_queries,k_negatives", [
+        # Family dataset: head and tail corruption, 10 test queries, 10 corruptions
+        ("family", "both", 10, 10),
+        ("family", "both", 2, None),
+        # Countries_s3 dataset: tail corruption, all test queries (24), 3 corruptions
+        ("countries_s3", "tail", 24, 3),
+        # Countries_s3 dataset: tail corruption, all test queries (24), all corruptions (None)
+        ("countries_s3", "tail", 24, None),
+    ])
+    def test_eval_corruptions(self, dataset, corruption_mode, n_queries, k_negatives):
+        """General eval_corruptions parity test with configurable parameters."""
+        # Convert None to -1 for the internal API (which uses -1 to signal "all corruptions")
+        k_neg_internal = -1 if k_negatives is None else k_negatives
         
-        Note: countries_s3 locatedin predicate has tail domain = regions (5 entities),
-        so we use num_negs=None to get all possible corruptions (4 negatives per positive).
-        """
         results = run_eval_corruptions_parity(
-            dataset="countries_s3",
+            dataset=dataset,
             n_envs=2,
-            n_eval_episodes=5,
+            n_eval_episodes=n_queries,
             seed=42,
             verbose=True,
-            corruption_mode="tail",
-            k_negatives=None,  # Use None to get all possible corruptions (domain has only 5 entities)
+            mode="test",
+            corruption_mode=corruption_mode,
+            k_negatives=k_neg_internal,
         )
+        
+        k_neg_str = "all" if k_negatives is None else str(k_negatives)
         assert results.eval_corruptions_success, \
-            f"eval_corruptions parity failed for countries_s3 tail: MRR SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
-    
-    def test_eval_corruptions_family_tail(self):
-        """Test eval_corruptions for family with tail corruption."""
-        results = run_eval_corruptions_parity(
-            dataset="family",
-            n_envs=2,
-            n_eval_episodes=5,
-            seed=42,
-            verbose=True,
-            corruption_mode="tail",
-            k_negatives=20,
-        )
-        assert results.eval_corruptions_success, \
-            f"eval_corruptions parity failed for family tail: MRR SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
-    
-    def test_eval_corruptions_family_head(self):
-        """Test eval_corruptions for family with head corruption."""
-        results = run_eval_corruptions_parity(
-            dataset="family",
-            n_envs=2,
-            n_eval_episodes=5,
-            seed=42,
-            verbose=True,
-            corruption_mode="head",
-            k_negatives=20,
-        )
-        assert results.eval_corruptions_success, \
-            f"eval_corruptions parity failed for family head: MRR SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
-    
-    def test_eval_corruptions_family_both(self):
-        """Test eval_corruptions for family with both head and tail corruption."""
-        results = run_eval_corruptions_parity(
-            dataset="family",
-            n_envs=2,
-            n_eval_episodes=5,
-            seed=42,
-            verbose=True,
-            corruption_mode="both",
-            k_negatives=20,
-        )
-        assert results.eval_corruptions_success, \
-            f"eval_corruptions parity failed for family both: MRR SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
+            f"eval_corruptions parity failed for {dataset} {corruption_mode} ({n_queries} queries, {k_neg_str} corruptions): " \
+            f"MRR SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
 
 
 # ============================================================

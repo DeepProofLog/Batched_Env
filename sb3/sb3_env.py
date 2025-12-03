@@ -169,12 +169,17 @@ class LogicEnv_gym(gym.Env):
         self._potential_cache.clear()
 
     def _set_seed(self, seed:int):
-        '''Set the seed for the environment. If no seed is provided, generate a random one'''
+        '''Set the seed for the environment. If no seed is provided, generate a random one.
+        
+        Note: We intentionally do NOT call torch.manual_seed() here because that would
+        modify the global RNG state, which can cause issues with reproducibility in
+        eval_corruptions when multiple batches are evaluated. Instead, we use Python's
+        random.Random for local sampling needs.
+        '''
         if seed is None:
-            seed = torch.empty((), dtype=self.pt_idx_dtype).random_().item()
+            # Use Python's random to avoid consuming torch's global RNG
+            seed = random.randint(0, 2**31 - 1)
         self.seed = int(seed)
-        rng = torch.manual_seed(self.seed)
-        self.rng = rng
         self.seed_gen = random.Random(self.seed)
 
 

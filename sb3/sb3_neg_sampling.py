@@ -518,32 +518,102 @@ def get_negatives(
             neg_subs[i, :m, 0, 2] = nb[:, 2]   # tail
         return neg_subs
     # -------------------------------------------------------
-    # 3⃣  Sampled negatives (old path, unchanged)
+    # 3⃣  Sampled negatives (robust batch-aligned path) - BATCHED
     # -------------------------------------------------------
-    overshoot = 3
+    overshoot = 1  # No overshoot for parity with tensor sampler
+    # cand: (B, overshoot*num_negs, 3)
     cand = self.corrupt_batch(
         pos_batch,
         num_negs_per_pos=overshoot * num_negs
-    ).view(-1, 3).to(expected_dtype)           # (B·overshoot·num_negs, 3)
-    cand = cand[self.filterer(cand)]
-
-    # Drop duplicates & true triples (if filtered=True in the sampler)
-    # Keep first `num_negs` per positive & corruption side
-    # ----------------------------------------------------
-    chosen = cand.unique(dim=0, return_inverse=False)
-    chosen = chosen[: B * num_negs]            # simple truncation
-
-    # Reshape and pad out to fixed size
-    chosen = chosen.view(B, -1, 3)             # (B, num_negs, 3)
+    )
+    
+    # Flatten for filtering: (B*M, 3)
+    M = cand.size(1)
+    cand_flat = cand.view(-1, 3).to(expected_dtype)
+    
+    # Filter: (B*M,)
+    mask_flat = self.filterer(cand_flat)
+    
+    # Reshape mask: (B, M)
+    mask = mask_flat.view(B, M)
+    
+    # -------------------------------------------------------
+    # Batched unique-per-row using sorting + deduplication
+    # -------------------------------------------------------
+    # Create hash for each candidate: h*N^2 + r*N + t where N = max_entity_id+1
+    # This creates a unique 64-bit key for each triple
+    N = max(cand_flat[:, 0].max().item(), cand_flat[:, 1].max().item(), 
+            cand_flat[:, 2].max().item()) + 1
+    N = max(N, 1)  # Ensure N >= 1
+    
+    # Create hashes for sorting: (B, M)
+    cand_hashes = (cand[:, :, 0].long() * N * N + 
+                   cand[:, :, 1].long() * N + 
+                   cand[:, :, 2].long())  # (B, M)
+    
+    # Set invalid entries to a very large value so they sort to end
+    LARGE_VAL = 2**62
+    cand_hashes_masked = torch.where(mask, cand_hashes, 
+                                      torch.full_like(cand_hashes, LARGE_VAL))
+    
+    # Sort within each row: (B, M), indices: (B, M)
+    sorted_hashes, sort_indices = torch.sort(cand_hashes_masked, dim=1)
+    
+    # Find unique boundaries: an entry is unique if it differs from previous
+    # First entry of each row is always unique (if valid)
+    shifted = torch.cat([
+        torch.full((B, 1), LARGE_VAL + 1, dtype=sorted_hashes.dtype, device=device),
+        sorted_hashes[:, :-1]
+    ], dim=1)
+    is_unique = (sorted_hashes != shifted) & (sorted_hashes < LARGE_VAL)  # (B, M)
+    
+    # Initialize output with padding
     neg_subs = torch.full(
         (B, num_negs, padding_atoms, max_arity + 1),
         fill_value=self.index_manager.padding_idx,
         dtype=expected_dtype,
         device=device
     )
-    neg_subs[:, :, 0, 1] = chosen[:, :, 0]
-    neg_subs[:, :, 0, 0] = chosen[:, :, 1]
-    neg_subs[:, :, 0, 2] = chosen[:, :, 2]
+    
+    # Gather sorted candidates using sort_indices
+    # Expand sort_indices for gathering: (B, M, 3)
+    sort_indices_exp = sort_indices.unsqueeze(-1).expand(-1, -1, 3)
+    sorted_cand = torch.gather(cand.to(expected_dtype), 1, sort_indices_exp)  # (B, M, 3)
+    
+    # Create position indices for unique entries within each row
+    # cumsum of is_unique gives 1-based position of each unique entry
+    unique_positions = is_unique.long().cumsum(dim=1)  # (B, M), values in [1, unique_count]
+    
+    # Valid unique entries are those that are unique and within num_negs
+    valid_unique = is_unique & (unique_positions <= num_negs)
+    
+    # Use advanced indexing to place valid unique candidates
+    # Create flat views for efficient indexing
+    valid_mask_flat = valid_unique.view(-1)
+    target_pos_flat = (unique_positions - 1).view(-1)  # 0-indexed
+    sorted_cand_flat = sorted_cand.view(-1, 3)
+    
+    # Create batch indices
+    batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(B, M).reshape(-1)
+    
+    # Filter to only valid entries
+    valid_batch = batch_idx[valid_mask_flat]
+    valid_pos = target_pos_flat[valid_mask_flat]
+    valid_vals = sorted_cand_flat[valid_mask_flat]
+    
+    # Create output buffer for candidates: (B, num_negs, 3)
+    output_cand = torch.zeros((B, num_negs, 3), dtype=expected_dtype, device=device)
+    
+    # Place valid entries using advanced indexing
+    if valid_batch.numel() > 0:
+        output_cand[valid_batch, valid_pos] = valid_vals
+    
+    # Fill neg_subs from output_cand
+    # output_cand is (B, num_negs, 3) in (h, r, t) format
+    # neg_subs is (B, num_negs, padding_atoms, max_arity+1) in (r, h, t) format at [:, :, 0, :]
+    neg_subs[:, :, 0, 1] = output_cand[:, :, 0]  # head
+    neg_subs[:, :, 0, 0] = output_cand[:, :, 1]  # relation  
+    neg_subs[:, :, 0, 2] = output_cand[:, :, 2]  # tail
 
     return neg_subs
 

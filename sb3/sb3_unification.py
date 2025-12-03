@@ -647,7 +647,7 @@ def get_next_unification_python(state: List[Term],
 
     # Apply cap to derived states to match tensor engine behavior (after canonical ordering)
     if len(next_states) > max_derived_states:
-        if verbose > 0 or len(next_states) > 500:
+        if verbose > 0 and len(next_states) > 500:
             print(f'WARNING: Capping derived states from {len(next_states)} to {max_derived_states}')
         next_states = next_states[:max_derived_states]
 

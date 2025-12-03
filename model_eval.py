@@ -1,7 +1,7 @@
 # ======================== model_eval.py ========================
 from __future__ import annotations
 import os
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypedDict
 
 import numpy as np
 import torch
@@ -12,6 +12,44 @@ from torchrl.envs import EnvBase
 from callbacks import _format_stat_string, _format_depth_key
 
 DEBUG_EVAL = os.environ.get("NGG_DEBUG_EVAL", "").lower() in {"1", "true", "yes"}
+
+
+# ------------------------------------------------------------
+# Trace Types for detailed step-by-step comparison
+# ------------------------------------------------------------
+
+class EvalStepTrace(TypedDict, total=False):
+    """Trace of a single step in evaluate_policy."""
+    step: int                    # Global step index
+    env_idx: int                 # Environment index in the batch
+    episode_idx: int             # Episode index for this env
+    action: int                  # Action taken
+    reward: float                # Reward received
+    done: bool                   # Whether episode ended
+    success: bool                # Whether proof succeeded (if applicable)
+    log_prob: float              # Log probability of the action
+    cumulative_reward: float     # Cumulative reward so far in episode
+    episode_length: int          # Steps so far in episode
+    state_obs: Dict[str, Any]    # State observation (sub_index, derived_states, etc.)
+    next_state_obs: Dict[str, Any]  # Next state observation
+    value: float                 # Value estimate (if available)
+    query: List[int]             # Query tensor [rel, head, tail]
+
+
+class EvalCorruptionsTrace(TypedDict, total=False):
+    """Trace of eval_corruptions evaluation."""
+    batch_idx: int               # Batch index
+    mode: str                    # Corruption mode (head/tail)
+    query_idx: int               # Query index within batch
+    query: List[int]             # Query tensor [rel, head, tail]
+    negatives: List[List[int]]   # Generated negative samples
+    num_negatives: int           # Number of negatives generated
+    pos_logp: float              # Log probability for positive
+    neg_logps: List[float]       # Log probabilities for negatives
+    pos_success: bool            # Whether positive proof succeeded
+    neg_successes: List[bool]    # Whether negative proofs succeeded
+    rank: int                    # Rank of the positive query
+    episode_traces: List[EvalStepTrace]  # Detailed traces per episode
 
 
 # ------------------------------------------------------------
@@ -44,11 +82,27 @@ def evaluate_policy(
     collect_action_stats: bool = False,
     info_callback: Optional[Callable[[TensorDict], None]] = None,
     verbose: int = 0,
-) -> Dict[str, torch.Tensor]:
+    return_traces: bool = False,
+) -> Dict[str, Any]:
     """
     Evaluate a policy on a single TorchRL env with internal batch dimension.
     Uses step_and_maybe_reset semantics (no invalid-action patching).
     Returns rewards/lengths/logps/success/mask tensors shaped [B, T].
+    
+    Args:
+        actor: Policy network
+        env: TorchRL environment
+        n_eval_episodes: Number of episodes to evaluate (if target_episodes not provided)
+        target_episodes: Per-env target episode counts [B]
+        deterministic: Use deterministic actions
+        track_logprobs: Track log probabilities (always True internally)
+        collect_action_stats: Collect action statistics
+        info_callback: Callback for step info
+        verbose: Verbosity level
+        return_traces: If True, collect detailed step-by-step traces for comparison
+        
+    Returns:
+        Dict with rewards/lengths/logps/success/mask tensors, and optionally 'traces' list
     """
     device = getattr(env, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     B = infer_batch_size(env)
@@ -80,6 +134,10 @@ def evaluate_policy(
     ep_length  = torch.zeros(B, dtype=torch.long,   device=device)
     ep_logprob = torch.zeros(B, dtype=torch.float32, device=device)
 
+    # Trace collection
+    traces: List[EvalStepTrace] = [] if return_traces else []
+    global_step = 0
+
     td = env.reset().to(device, non_blocking=True)
 
     def _get_step_value(step_td: TensorDict, key: str, default: torch.Tensor) -> torch.Tensor:
@@ -89,24 +147,76 @@ def evaluate_policy(
         if nxt is not None and key in nxt.keys():
             return nxt.get(key)
         return default
+    
+    def _extract_state_obs(td: TensorDict, env_idx: int) -> Dict[str, Any]:
+        """Extract state observation for tracing."""
+        obs = {}
+        # Try to get sub_index (state representation)
+        if "sub_index" in td.keys():
+            sub_idx = td.get("sub_index")
+            if sub_idx is not None:
+                obs["sub_index"] = sub_idx[env_idx].cpu().tolist() if sub_idx.dim() > 1 else sub_idx.cpu().tolist()
+        # Try to get derived_states
+        if "derived_states" in td.keys():
+            derived = td.get("derived_states")
+            if derived is not None:
+                obs["derived_states"] = derived[env_idx].cpu().tolist() if derived.dim() > 1 else derived.cpu().tolist()
+        # Try to get derived_sub_indices (alternative name)
+        if "derived_sub_indices" in td.keys():
+            derived = td.get("derived_sub_indices")
+            if derived is not None:
+                obs["derived_sub_indices"] = derived[env_idx].cpu().tolist() if derived.dim() > 1 else derived.cpu().tolist()
+        # Try to get action_mask
+        if "action_mask" in td.keys():
+            mask = td.get("action_mask")
+            if mask is not None:
+                obs["action_mask"] = mask[env_idx].cpu().tolist() if mask.dim() > 1 else mask.cpu().tolist()
+        # Try to get query
+        if "query" in td.keys():
+            query = td.get("query")
+            if query is not None:
+                obs["query"] = query[env_idx].cpu().tolist() if query.dim() > 1 else query.cpu().tolist()
+        # Try to get n_derived
+        if "n_derived" in td.keys():
+            n_derived = td.get("n_derived")
+            if n_derived is not None:
+                obs["n_derived"] = int(n_derived[env_idx].item()) if n_derived.dim() > 0 else int(n_derived.item())
+        return obs
 
     if verbose_level > 0:
         init_done = _get_step_value(td, "done", torch.zeros(B, 1, dtype=torch.bool, device=device)).view(-1).tolist()
         print("[evaluate_policy] initial done flags:", init_done)
 
     while bool((ep_count < targets).any()):
+        # Extract pre-step state for tracing
+        pre_step_obs = {}
+        if return_traces:
+            for env_idx in range(B):
+                if ep_count[env_idx] < targets[env_idx]:
+                    pre_step_obs[env_idx] = _extract_state_obs(td, env_idx)
+        
         actor_device = next(actor.parameters(), torch.zeros((), device=device)).device if isinstance(actor, nn.Module) else device
         policy_td = td.clone().to(actor_device)
-        out = actor(policy_td)
+        
+        # Call actor with deterministic flag if it supports it
+        if hasattr(actor, 'forward') and 'deterministic' in actor.forward.__code__.co_varnames:
+            out = actor(policy_td, deterministic=deterministic)
+        else:
+            out = actor(policy_td)
         
         # Handle both tuple output (actions, values, log_probs) and TensorDict output
+        value_estimates = torch.zeros(B, device=device)
         if isinstance(out, tuple):
             # Model returns (actions, values, log_probs) like SB3
             action = out[0].view(-1).long().to(device)
+            if len(out) > 1 and out[1] is not None:
+                value_estimates = out[1].view(-1).to(device)
             log_probs = out[2].view(-1).to(device) if len(out) > 2 else torch.zeros(B, device=device)
         elif isinstance(out, TensorDict):
             action = out.get("action").view(-1).long().to(device)
             log_probs = out.get("sample_log_prob", torch.zeros(B, device=device)).view(-1).to(device)
+            if "state_value" in out.keys():
+                value_estimates = out.get("state_value").view(-1).to(device)
         else:
             # Fallback: assume action is in policy_td
             action = policy_td.get("action").view(-1).long().to(device)
@@ -125,6 +235,32 @@ def evaluate_policy(
         ep_return += rew
         ep_length += 1
         ep_logprob += log_probs
+        
+        # Collect traces for this step
+        if return_traces:
+            next_obs_td = step_td.get("next", step_td)
+            for env_idx in range(B):
+                if ep_count[env_idx] < targets[env_idx]:
+                    trace: EvalStepTrace = {
+                        "step": global_step,
+                        "env_idx": env_idx,
+                        "episode_idx": int(ep_count[env_idx].item()),
+                        "action": int(action[env_idx].item()),
+                        "reward": float(rew[env_idx].item()),
+                        "done": bool(done_curr[env_idx].item()),
+                        "success": bool(success_curr[env_idx].item()),
+                        "log_prob": float(log_probs[env_idx].item()),
+                        "cumulative_reward": float(ep_return[env_idx].item()),
+                        "episode_length": int(ep_length[env_idx].item()),
+                        "state_obs": pre_step_obs.get(env_idx, {}),
+                        "next_state_obs": _extract_state_obs(next_obs_td, env_idx),
+                        "value": float(value_estimates[env_idx].item()),
+                    }
+                    # Add query if available
+                    if "query" in pre_step_obs.get(env_idx, {}):
+                        trace["query"] = pre_step_obs[env_idx]["query"]
+                    traces.append(trace)
+            global_step += 1
 
         need_more = ep_count < targets
         finished_rows = done_curr & need_more
@@ -166,13 +302,18 @@ def evaluate_policy(
     if actor_was_training:
         actor.train()
 
-    return {
+    result = {
         "rewards": rewards.cpu(),
         "lengths": lengths.cpu(),
         "logps":   logps.cpu(),
         "success": success.cpu(),
         "mask":    mask.cpu(),
     }
+    
+    if return_traces:
+        result["traces"] = traces
+    
+    return result
 
 
 def step_and_maybe_reset(
@@ -224,7 +365,27 @@ def eval_corruptions(
     deterministic: bool = True,
     verbose: bool = False,
     info_callback: Optional[Callable] = None,
+    return_traces: bool = False,
 ) -> Dict[str, Any]:
+    """
+    Evaluate a model by ranking a positive query vs. its corruptions.
+    
+    Args:
+        actor: Policy network
+        env: TorchRL environment
+        queries: Query tensors [N, A, D] or [N, D]
+        sampler: Negative sampler for generating corruptions
+        query_depths: Depth values for queries
+        n_corruptions: Number of corruptions per type (None for all)
+        corruption_modes: Tuple of corruption modes ('head', 'tail')
+        deterministic: Use deterministic actions
+        verbose: Print progress
+        info_callback: Callback for step info
+        return_traces: If True, collect detailed traces for comparison
+        
+    Returns:
+        Dict with MRR, Hits@K metrics, and optionally 'traces' list
+    """
     env_device = getattr(env, "_device", None)
     actor_device = None
     try:
@@ -239,6 +400,9 @@ def eval_corruptions(
         raise ValueError(f"Expected queries with 2 or 3 dims, got shape {tuple(queries.shape)}")
     N = int(queries.shape[0])
     A, D = int(queries.shape[1]), int(queries.shape[2])
+    
+    # Trace collection for eval_corruptions
+    all_traces: List[EvalCorruptionsTrace] = [] if return_traces else []
 
     def finalize(ranks: List[int]) -> Dict[str, float]:
         arr = np.asarray(ranks, dtype=np.int64)
@@ -264,20 +428,60 @@ def eval_corruptions(
             pos = queries[start:start + Q].to(device)
             pos_triples = pos.squeeze(1) if (A == 1 and D == 3) else pos
 
-            for mode in corruption_modes:
-                # negatives
+            # Generate head and tail corruptions separately upfront (SB3-style)
+            # This ensures we use the same negatives generation pattern as SB3
+            if n_corruptions == 0:
+                head_corrs_list = [torch.empty((0, 3), dtype=pos_triples.dtype, device=device) for _ in range(Q)]
+                tail_corrs_list = [torch.empty((0, 3), dtype=pos_triples.dtype, device=device) for _ in range(Q)]
+            elif hasattr(sampler, 'get_negatives_from_states_separate'):
+                # Use SB3-style separate generation
+                head_corrs_list, tail_corrs_list = sampler.get_negatives_from_states_separate(
+                    pos_triples,
+                    num_negatives=n_corruptions,
+                    device=device,
+                )
+            else:
+                # Fallback: generate separately using corrupt method
                 if n_corruptions is None:
-                    heads_list, tails_list = sampler.corrupt_all(pos_triples, mode=mode)
-                    raw_lists = heads_list if mode == "head" else tails_list
-                    ragged_lists = [t.unsqueeze(1).to(device) if (A == 1 and D == 3) else t.to(device) for t in raw_lists]
-                    lengths_i = [int(t.shape[0]) for t in ragged_lists]
+                    head_corrs_list_raw, _ = sampler.corrupt_all(pos_triples, mode='head')
+                    _, tail_corrs_list_raw = sampler.corrupt_all(pos_triples, mode='tail')
+                    head_corrs_list = head_corrs_list_raw if head_corrs_list_raw else [torch.empty((0, 3), dtype=pos_triples.dtype, device=device) for _ in range(Q)]
+                    tail_corrs_list = tail_corrs_list_raw if tail_corrs_list_raw else [torch.empty((0, 3), dtype=pos_triples.dtype, device=device) for _ in range(Q)]
                 else:
                     K = int(n_corruptions)
-                    neg = sampler.corrupt(pos_triples, num_negatives=K, mode=mode).to(device)
-                    if A == 1 and D == 3:
-                        neg = neg.unsqueeze(2)
-                    ragged_lists = [neg[i] for i in range(Q)]
-                    lengths_i = [K for _ in range(Q)]
+                    head_neg = sampler.corrupt(pos_triples, num_negatives=K, mode='head').to(device)
+                    tail_neg = sampler.corrupt(pos_triples, num_negatives=K, mode='tail').to(device)
+                    head_corrs_list = [head_neg[i] for i in range(Q)]
+                    tail_corrs_list = [tail_neg[i] for i in range(Q)]
+
+            for mode in corruption_modes:
+                # Select the appropriate corruption list based on mode
+                if mode == "head":
+                    corrs_list = head_corrs_list
+                else:  # tail
+                    corrs_list = tail_corrs_list
+                
+                # Convert to ragged lists format and count valid negatives
+                ragged_lists = []
+                lengths_i = []
+                for i in range(Q):
+                    neg_tensor = corrs_list[i]
+                    if neg_tensor.numel() == 0:
+                        ragged_lists.append(torch.empty((0, 1, 3) if (A == 1 and D == 3) else (0, 3), dtype=pos.dtype, device=device))
+                        lengths_i.append(0)
+                    else:
+                        # Add dimension if needed
+                        if A == 1 and D == 3 and neg_tensor.ndim == 2:
+                            neg_tensor = neg_tensor.unsqueeze(1)
+                        ragged_lists.append(neg_tensor.to(device))
+                        # Count valid (non-padding) negatives
+                        # Use SB3-compatible logic: valid if ALL fields are non-zero (padding_idx=0)
+                        # A row with ANY zero field is considered padding
+                        flat_neg = neg_tensor.view(neg_tensor.shape[0], -1)
+                        is_valid = (flat_neg != 0).all(dim=1)  # Valid if ALL fields are non-zero
+                        valid_count = int(is_valid.sum().item())
+                        lengths_i.append(valid_count)
+
 
                 per_slot_lengths = [1 + li for li in lengths_i]
                 slot_starts = []
@@ -289,7 +493,8 @@ def eval_corruptions(
                 for i in range(Q):
                     flat_list.append(pos[i].unsqueeze(0))
                     if per_slot_lengths[i] > 1:
-                        flat_list.append(ragged_lists[i])
+                        # Only append the valid negatives (exclude padding)
+                        flat_list.append(ragged_lists[i][:lengths_i[i]])
                 flat_queries = torch.cat(flat_list, dim=0)
                 flat_labels = torch.cat([
                     torch.cat([torch.tensor([1], dtype=torch.long, device=device),
@@ -325,12 +530,15 @@ def eval_corruptions(
                     deterministic=deterministic,
                     track_logprobs=True,
                     info_callback=info_callback,
+                    return_traces=return_traces,
                 )
+                
                 logps_out = out["logps"].to(device)
                 msk = out["mask"].to(device)
                 success = out.get("success")
                 lengths_out = out.get("lengths")
                 rewards_out = out.get("rewards")
+                episode_traces = out.get("traces", []) if return_traces else []
 
                 labels_matrix = torch.zeros_like(logps_out, dtype=torch.bool)
                 for i, Ei in enumerate(per_slot_lengths):
@@ -354,6 +562,12 @@ def eval_corruptions(
                 logps_out = logps_out.clone()
                 logps_out[~success_mask] -= 100.0
 
+                # Align RNG with SB3 for parity in tie-breaking
+                rng = np.random.RandomState(0)
+                # SB3 generates random keys for the whole batch (B, Tmax)
+                # We must match this generation order.
+                batch_random_keys = rng.rand(Q, Tmax)
+
                 ranks_this = []
                 for i in range(Q):
                     Ei = per_slot_lengths[i]
@@ -361,10 +575,53 @@ def eval_corruptions(
                     l_i = logps_out[i, cols].cpu().numpy()
                     m_i = msk[i, cols].cpu().numpy()
                     lp_batch = np.where(m_i, l_i, -np.inf)
-                    random_keys = rng.rand(*lp_batch.shape)
+                    
+                    # Use pre-generated keys for this row
+                    random_keys = batch_random_keys[i, cols]
+                    
                     sorted_indices = np.lexsort((-random_keys, -lp_batch))
                     rank = np.where(sorted_indices == 0)[0][0] + 1
                     ranks_this.append(rank)
+                    
+                    # Collect trace for this query
+                    if return_traces:
+                        # Extract positive query
+                        pos_query = pos[i].squeeze().cpu().tolist() if pos[i].dim() > 1 else pos[i].cpu().tolist()
+                        
+                        # Extract negatives for this query
+                        neg_list = []
+                        if lengths_i[i] > 0:
+                            neg_tensor = ragged_lists[i][:lengths_i[i]]
+                            for j in range(min(lengths_i[i], neg_tensor.shape[0])):
+                                neg_triple = neg_tensor[j].squeeze().cpu().tolist() if neg_tensor[j].dim() > 1 else neg_tensor[j].cpu().tolist()
+                                neg_list.append(neg_triple)
+                        
+                        # Extract log probs (pos is at index 0, negs follow)
+                        pos_logp = float(logps_out[i, 0].cpu().item()) if Ei > 0 else float('-inf')
+                        neg_logps_list = [float(logps_out[i, j].cpu().item()) for j in range(1, min(Ei, Tmax))]
+                        
+                        # Extract success flags
+                        pos_succ = bool(success_mask[i, 0].cpu().item()) if success is not None and Ei > 0 else False
+                        neg_succs = [bool(success_mask[i, j].cpu().item()) for j in range(1, min(Ei, Tmax))] if success is not None else []
+                        
+                        # Filter episode traces for this query (env_idx == i)
+                        query_episode_traces = [t for t in episode_traces if t.get("env_idx") == i]
+                        
+                        trace: EvalCorruptionsTrace = {
+                            "batch_idx": start // B,
+                            "mode": mode,
+                            "query_idx": start + i,
+                            "query": pos_query,
+                            "negatives": neg_list,
+                            "num_negatives": lengths_i[i],
+                            "pos_logp": pos_logp,
+                            "neg_logps": neg_logps_list,
+                            "pos_success": pos_succ,
+                            "neg_successes": neg_succs,
+                            "rank": rank,
+                            "episode_traces": query_episode_traces,
+                        }
+                        all_traces.append(trace)
 
                 per_mode_ranks[mode].extend(ranks_this)
 
@@ -442,5 +699,9 @@ def eval_corruptions(
                 agg[f"proven_d_{depth_key}_{lbl_key}"] = _format_stat_string(np.mean(succs), np.std(succs), len(succs))
             if rews:
                 agg[f"reward_d_{depth_key}_{lbl_key}"] = _format_stat_string(np.mean(rews), np.std(rews), len(rews))
+
+    # Add traces if requested
+    if return_traces:
+        agg["traces"] = all_traces
 
     return agg
