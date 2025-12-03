@@ -1230,7 +1230,9 @@ class EmbedderLearnable(nn.Module):
             regularization=kge_regularization,
             dropout_rate=kge_dropout_rate,
             device=device
-        )   
+        )
+        # Expose a consistent dimensionality attribute used elsewhere
+        self.embed_dim = atom_embedding_size   
 
     def get_embeddings_batch(self, sub_indices: torch.Tensor) -> torch.Tensor:
         """Get embeddings for a batch of sub-indices.

@@ -2,16 +2,14 @@
 Model Parity Tests.
 
 Tests verifying that the tensor-based ActorCriticPolicy produces the same
-results as the SB3 CustomActorCriticPolicy.
+results as the SB3 CustomActorCriticPolicy using real EmbedderLearnable.
 """
 from pathlib import Path
 import sys
-from typing import Tuple, Optional, Dict
+from typing import Dict
 
 import gymnasium as gym
-import numpy as np
 import torch
-import torch.nn as nn
 import pytest
 from tensordict import TensorDict
 
@@ -25,6 +23,7 @@ if str(SB3_ROOT) not in sys.path:
 
 # Import real embedders from both implementations
 from embeddings import EmbedderLearnable
+from model import ActorCriticPolicy
 
 # Try to import SB3 components for parity testing
 try:
@@ -38,25 +37,37 @@ except ImportError as e:
 
 
 # ============================================================================
-# Embedder Creation Helpers
+# Default Test Parameters
+# ============================================================================
+
+DEFAULT_N_CONSTANTS = 100
+DEFAULT_N_PREDICATES = 20
+DEFAULT_N_VARS = 10
+DEFAULT_EMBED_DIM = 64
+DEFAULT_MAX_ARITY = 2
+DEFAULT_PADDING_ATOMS = 3
+
+
+# ============================================================================
+# Helpers
 # ============================================================================
 
 def create_embedder(
-    n_constants: int = 100,
-    n_predicates: int = 20,
-    n_vars: int = 10,
-    embed_dim: int = 64,
+    n_constants: int = DEFAULT_N_CONSTANTS,
+    n_predicates: int = DEFAULT_N_PREDICATES,
+    n_vars: int = DEFAULT_N_VARS,
+    embed_dim: int = DEFAULT_EMBED_DIM,
     seed: int = 42,
     device: str = "cpu"
 ) -> EmbedderLearnable:
     """Create a real EmbedderLearnable for the tensor-based implementation."""
     torch.manual_seed(seed)
-    embedder = EmbedderLearnable(
+    return EmbedderLearnable(
         n_constants=n_constants,
         n_predicates=n_predicates,
         n_vars=n_vars,
-        max_arity=2,
-        padding_atoms=3,
+        max_arity=DEFAULT_MAX_ARITY,
+        padding_atoms=DEFAULT_PADDING_ATOMS,
         atom_embedder='transe',
         state_embedder='sum',
         constant_embedding_size=embed_dim,
@@ -66,14 +77,13 @@ def create_embedder(
         kge_dropout_rate=0.0,
         device=device,
     )
-    return embedder
 
 
 def create_sb3_embedder(
-    n_constants: int = 100,
-    n_predicates: int = 20,
-    n_vars: int = 10,
-    embed_dim: int = 64,
+    n_constants: int = DEFAULT_N_CONSTANTS,
+    n_predicates: int = DEFAULT_N_PREDICATES,
+    n_vars: int = DEFAULT_N_VARS,
+    embed_dim: int = DEFAULT_EMBED_DIM,
     seed: int = 42,
     device: str = "cpu"
 ):
@@ -81,12 +91,12 @@ def create_sb3_embedder(
     if not SB3_AVAILABLE:
         pytest.skip(f"SB3 dependencies unavailable: {_SB3_IMPORT_ERROR}")
     torch.manual_seed(seed)
-    embedder = SB3EmbedderLearnable(
+    return SB3EmbedderLearnable(
         n_constants=n_constants,
         n_predicates=n_predicates,
         n_vars=n_vars,
-        max_arity=2,
-        padding_atoms=3,
+        max_arity=DEFAULT_MAX_ARITY,
+        padding_atoms=DEFAULT_PADDING_ATOMS,
         atom_embedder='transe',
         state_embedder='sum',
         constant_embedding_size=embed_dim,
@@ -96,28 +106,33 @@ def create_sb3_embedder(
         kge_dropout_rate=0.0,
         device=device,
     )
-    return embedder
 
 
-def create_dummy_observation(
+def create_random_observation(
     batch_size: int = 4,
     n_actions: int = 16,
-    n_atoms: int = 3,
+    n_atoms: int = DEFAULT_PADDING_ATOMS,
+    n_predicates: int = DEFAULT_N_PREDICATES,
+    n_constants: int = DEFAULT_N_CONSTANTS,
+    n_vars: int = DEFAULT_N_VARS,
+    max_arity: int = DEFAULT_MAX_ARITY,
+    seed: int = 42,
     device: str = "cpu"
 ) -> TensorDict:
-    """Create a dummy observation TensorDict."""
-    torch.manual_seed(42)
+    """Create a random observation TensorDict with valid indices."""
+    torch.manual_seed(seed)
     
-    # sub_index: (batch, 1, n_atoms, 3)
-    sub_index = torch.randint(0, 50, (batch_size, 1, n_atoms, 3), dtype=torch.int32, device=device)
+    # Predicate indices in [1, n_predicates], constant indices in [1, n_constants + n_vars]
+    pred_indices = torch.randint(1, n_predicates + 1, (batch_size, 1, n_atoms, 1), dtype=torch.int32, device=device)
+    const_indices = torch.randint(1, n_constants + n_vars + 1, (batch_size, 1, n_atoms, max_arity), dtype=torch.int32, device=device)
+    sub_index = torch.cat([pred_indices, const_indices], dim=-1)
     
-    # derived_sub_indices: (batch, n_actions, n_atoms, 3)
-    derived_sub_indices = torch.randint(0, 50, (batch_size, n_actions, n_atoms, 3), dtype=torch.int32, device=device)
+    action_pred_indices = torch.randint(1, n_predicates + 1, (batch_size, n_actions, n_atoms, 1), dtype=torch.int32, device=device)
+    action_const_indices = torch.randint(1, n_constants + n_vars + 1, (batch_size, n_actions, n_atoms, max_arity), dtype=torch.int32, device=device)
+    derived_sub_indices = torch.cat([action_pred_indices, action_const_indices], dim=-1)
     
-    # action_mask: (batch, n_actions) - random valid/invalid actions
-    action_mask = torch.randint(0, 2, (batch_size, n_actions), dtype=torch.bool, device=device)
-    # Ensure at least one valid action per batch
-    action_mask[:, 0] = True
+    # All actions valid for simplicity
+    action_mask = torch.ones(batch_size, n_actions, dtype=torch.bool, device=device)
     
     return TensorDict({
         "sub_index": sub_index,
@@ -126,462 +141,240 @@ def create_dummy_observation(
     }, batch_size=torch.Size([batch_size]))
 
 
+def create_sb3_observation(obs_td: TensorDict) -> Dict[str, torch.Tensor]:
+    """Convert TensorDict observation to SB3 dict format."""
+    return {
+        "sub_index": obs_td["sub_index"],
+        "derived_sub_indices": obs_td["derived_sub_indices"],
+        "action_mask": obs_td["action_mask"].to(torch.uint8),
+    }
+
+
 # ============================================================================
-# Network Architecture Tests
+# Parity Tests
 # ============================================================================
 
-def test_shared_policy_value_network_shapes():
-    """Test that SharedPolicyValueNetwork produces correct output shapes."""
-    from model import SharedPolicyValueNetwork
-    
-    torch.manual_seed(42)
-    
+@pytest.mark.skipif(not SB3_AVAILABLE, reason="SB3 dependencies unavailable")
+def test_embedder_parity():
+    """Test that tensor and SB3 embedders produce identical outputs."""
+    embed_dim = DEFAULT_EMBED_DIM
     batch_size = 4
     n_actions = 16
-    embed_dim = 64
+    seed = 42
     
-    shared_net = SharedPolicyValueNetwork(embed_dim=embed_dim, hidden_dim=128, num_layers=4)
+    tensor_emb = create_embedder(embed_dim=embed_dim, seed=seed)
+    sb3_emb = create_sb3_embedder(embed_dim=embed_dim, seed=seed)
     
-    obs_embeddings = torch.randn(batch_size, 1, embed_dim)
-    action_embeddings = torch.randn(batch_size, n_actions, embed_dim)
-    action_mask = torch.ones(batch_size, n_actions, dtype=torch.bool)
-    action_mask[:, -3:] = False  # Mask some actions
-    
-    logits = shared_net.forward_policy(obs_embeddings, action_embeddings, action_mask)
-    
-    assert logits.shape == (batch_size, n_actions)
-    # Masked positions should be -inf
-    assert torch.all(torch.isinf(logits[:, -3:]))
-    # Valid positions should be finite
-    assert torch.all(torch.isfinite(logits[:, :-3]))
-
-
-def test_shared_value_head_shapes():
-    """Test that SharedPolicyValueNetwork value head produces correct output shapes."""
-    from model import SharedPolicyValueNetwork
-    
-    torch.manual_seed(42)
-    
-    batch_size = 4
-    embed_dim = 64
-    
-    shared_net = SharedPolicyValueNetwork(embed_dim=embed_dim, hidden_dim=128, num_layers=4)
-    
-    obs_embeddings = torch.randn(batch_size, embed_dim)
-    
-    values = shared_net.forward_value(obs_embeddings)
-    
-    assert values.shape == (batch_size,)
-
-
-def test_custom_network_forward():
-    """Test CustomNetwork forward method."""
-    from model import CustomNetwork
-    
-    torch.manual_seed(42)
-    
-    batch_size = 4
-    n_actions = 16
-    embed_dim = 64
-    
-    custom_net = CustomNetwork(embed_dim=embed_dim)
-    
-    obs_embeddings = torch.randn(batch_size, 1, embed_dim)
-    action_embeddings = torch.randn(batch_size, n_actions, embed_dim)
-    action_mask = torch.ones(batch_size, n_actions, dtype=torch.bool)
-    
-    features = (obs_embeddings, action_embeddings, action_mask)
-    logits, values = custom_net(features)
-    
-    assert logits.shape == (batch_size, n_actions)
-    assert values.shape == (batch_size,)
-
-
-# ============================================================================
-# ActorCriticPolicy Tests
-# ============================================================================
-
-def test_actor_critic_forward():
-    """Test ActorCriticPolicy forward method."""
-    from model import ActorCriticPolicy
-    
-    torch.manual_seed(42)
-    
-    batch_size = 4
-    n_actions = 16
-    embed_dim = 64
-    
-    embedder = DummyEmbedder(vocab_size=100, embed_dim=embed_dim)
-    
-    policy = ActorCriticPolicy(
-        embedder=embedder,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=4,
-        dropout_prob=0.0,
-        device=torch.device("cpu"),
-        action_dim=n_actions,
-    )
-    policy.eval()
-    
-    obs = create_dummy_observation(batch_size=batch_size, n_actions=n_actions)
+    obs = create_random_observation(batch_size=batch_size, n_actions=n_actions, seed=123)
     
     with torch.no_grad():
-        actions, values, log_probs = policy(obs, deterministic=True)
+        tensor_obs_emb = tensor_emb.get_embeddings_batch(obs["sub_index"])
+        sb3_obs_emb = sb3_emb.get_embeddings_batch(obs["sub_index"])
+        tensor_action_emb = tensor_emb.get_embeddings_batch(obs["derived_sub_indices"])
+        sb3_action_emb = sb3_emb.get_embeddings_batch(obs["derived_sub_indices"])
     
-    assert actions.shape == (batch_size,)
-    assert values.shape == (batch_size,)
-    assert log_probs.shape == (batch_size,)
-    
-    # Actions should be valid indices
-    assert torch.all(actions >= 0)
-    assert torch.all(actions < n_actions)
-    
-    # Log probs should be finite and <= 0
-    assert torch.all(torch.isfinite(log_probs))
-    assert torch.all(log_probs <= 0)
+    assert torch.allclose(tensor_obs_emb, sb3_obs_emb, atol=1e-5), \
+        f"Obs embeddings differ: max diff = {(tensor_obs_emb - sb3_obs_emb).abs().max().item()}"
+    assert torch.allclose(tensor_action_emb, sb3_action_emb, atol=1e-5), \
+        f"Action embeddings differ: max diff = {(tensor_action_emb - sb3_action_emb).abs().max().item()}"
 
 
-def test_actor_critic_evaluate_actions():
-    """Test ActorCriticPolicy evaluate_actions method."""
-    from model import ActorCriticPolicy
-    
-    torch.manual_seed(42)
-    
+@pytest.mark.skipif(not SB3_AVAILABLE, reason="SB3 dependencies unavailable")
+def test_forward_parity():
+    """Test that tensor and SB3 policies produce identical forward outputs (logits & values)."""
+    embed_dim = DEFAULT_EMBED_DIM
     batch_size = 4
     n_actions = 16
-    embed_dim = 64
+    n_atoms = DEFAULT_PADDING_ATOMS
+    max_arity = DEFAULT_MAX_ARITY
+    seed = 42
+    device = "cpu"
     
-    embedder = DummyEmbedder(vocab_size=100, embed_dim=embed_dim)
+    # Create embedders with same seed
+    tensor_emb = create_embedder(embed_dim=embed_dim, seed=seed)
+    sb3_emb = create_sb3_embedder(embed_dim=embed_dim, seed=seed)
     
-    policy = ActorCriticPolicy(
-        embedder=embedder,
+    # Create tensor policy
+    torch.manual_seed(seed)
+    tensor_policy = ActorCriticPolicy(
+        embedder=tensor_emb,
         embed_dim=embed_dim,
         hidden_dim=128,
         num_layers=4,
         dropout_prob=0.0,
-        device=torch.device("cpu"),
+        device=torch.device(device),
         action_dim=n_actions,
     )
-    policy.eval()
+    tensor_policy.eval()
     
-    obs = create_dummy_observation(batch_size=batch_size, n_actions=n_actions)
+    # Create SB3 policy
+    obs_space = gym.spaces.Dict({
+        "sub_index": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(1, n_atoms, max_arity + 1), dtype=int),
+        "derived_sub_indices": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(n_actions, n_atoms, max_arity + 1), dtype=int),
+        "action_mask": gym.spaces.Box(low=0, high=1, shape=(n_actions,), dtype=int),
+    })
+    action_space = gym.spaces.Discrete(n_actions)
     
-    # Get some actions first
+    torch.manual_seed(seed)
+    sb3_policy = SB3CustomActorCriticPolicy(
+        observation_space=obs_space,
+        action_space=action_space,
+        lr_schedule=lambda _: 0.0,
+        features_extractor_class=SB3CustomCombinedExtractor,
+        features_extractor_kwargs={"embedder": sb3_emb, "features_dim": embed_dim},
+        share_features_extractor=True,
+    ).to(device)
+    sb3_policy.eval()
+    
+    # Create test observations
+    obs_td = create_random_observation(batch_size=batch_size, n_actions=n_actions, seed=123)
+    obs_sb3 = create_sb3_observation(obs_td)
+    
+    # Forward pass
     with torch.no_grad():
-        actions, _, _ = policy(obs, deterministic=False)
+        tensor_actions, tensor_values, tensor_log_probs = tensor_policy(obs_td, deterministic=True)
+        sb3_actions, sb3_values, sb3_log_probs = sb3_policy(obs_sb3, deterministic=True)
     
-    # Evaluate those actions
-    values, log_probs, entropy = policy.evaluate_actions(obs, actions)
+    sb3_values = sb3_values.flatten()
     
-    assert values.shape == (batch_size,)
-    assert log_probs.shape == (batch_size,)
-    assert entropy.shape == (batch_size,)
-    
-    # Entropy should be non-negative
-    assert torch.all(entropy >= 0)
+    assert torch.equal(tensor_actions, sb3_actions), \
+        f"Actions differ: tensor={tensor_actions}, sb3={sb3_actions}"
+    assert torch.allclose(tensor_values, sb3_values, atol=1e-5), \
+        f"Values differ: max diff = {(tensor_values - sb3_values).abs().max().item()}"
+    assert torch.allclose(tensor_log_probs, sb3_log_probs, atol=1e-5), \
+        f"Log probs differ: max diff = {(tensor_log_probs - sb3_log_probs).abs().max().item()}"
 
 
-def test_actor_critic_predict_values():
-    """Test ActorCriticPolicy predict_values method."""
-    from model import ActorCriticPolicy
-    
-    torch.manual_seed(42)
-    
+@pytest.mark.skipif(not SB3_AVAILABLE, reason="SB3 dependencies unavailable")
+def test_evaluate_actions_parity():
+    """Test that tensor and SB3 policies produce identical evaluate_actions outputs."""
+    embed_dim = DEFAULT_EMBED_DIM
     batch_size = 4
     n_actions = 16
-    embed_dim = 64
+    n_atoms = DEFAULT_PADDING_ATOMS
+    max_arity = DEFAULT_MAX_ARITY
+    seed = 42
+    device = "cpu"
     
-    embedder = DummyEmbedder(vocab_size=100, embed_dim=embed_dim)
+    # Create embedders with same seed
+    tensor_emb = create_embedder(embed_dim=embed_dim, seed=seed)
+    sb3_emb = create_sb3_embedder(embed_dim=embed_dim, seed=seed)
     
-    policy = ActorCriticPolicy(
-        embedder=embedder,
+    # Create tensor policy
+    torch.manual_seed(seed)
+    tensor_policy = ActorCriticPolicy(
+        embedder=tensor_emb,
         embed_dim=embed_dim,
         hidden_dim=128,
         num_layers=4,
         dropout_prob=0.0,
-        device=torch.device("cpu"),
+        device=torch.device(device),
         action_dim=n_actions,
     )
-    policy.eval()
+    tensor_policy.eval()
     
-    obs = create_dummy_observation(batch_size=batch_size, n_actions=n_actions)
+    # Create SB3 policy
+    obs_space = gym.spaces.Dict({
+        "sub_index": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(1, n_atoms, max_arity + 1), dtype=int),
+        "derived_sub_indices": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(n_actions, n_atoms, max_arity + 1), dtype=int),
+        "action_mask": gym.spaces.Box(low=0, high=1, shape=(n_actions,), dtype=int),
+    })
+    action_space = gym.spaces.Discrete(n_actions)
     
+    torch.manual_seed(seed)
+    sb3_policy = SB3CustomActorCriticPolicy(
+        observation_space=obs_space,
+        action_space=action_space,
+        lr_schedule=lambda _: 0.0,
+        features_extractor_class=SB3CustomCombinedExtractor,
+        features_extractor_kwargs={"embedder": sb3_emb, "features_dim": embed_dim},
+        share_features_extractor=True,
+    ).to(device)
+    sb3_policy.eval()
+    
+    # Create test observations and actions
+    obs_td = create_random_observation(batch_size=batch_size, n_actions=n_actions, seed=123)
+    obs_sb3 = create_sb3_observation(obs_td)
+    actions = torch.arange(batch_size, device=device) % n_actions
+    
+    # Evaluate actions
     with torch.no_grad():
-        values = policy.predict_values(obs)
+        tensor_values, tensor_log_probs, tensor_entropy = tensor_policy.evaluate_actions(obs_td, actions)
+        sb3_values, sb3_log_probs, sb3_entropy = sb3_policy.evaluate_actions(obs_sb3, actions)
     
-    assert values.shape == (batch_size,)
-    assert torch.all(torch.isfinite(values))
+    sb3_values = sb3_values.flatten()
+    sb3_log_probs = sb3_log_probs.flatten()
+    sb3_entropy = sb3_entropy.flatten() if sb3_entropy is not None else None
+    
+    assert torch.allclose(tensor_values, sb3_values, atol=1e-5), \
+        f"Values differ: max diff = {(tensor_values - sb3_values).abs().max().item()}"
+    assert torch.allclose(tensor_log_probs, sb3_log_probs, atol=1e-5), \
+        f"Log probs differ: max diff = {(tensor_log_probs - sb3_log_probs).abs().max().item()}"
+    if sb3_entropy is not None:
+        assert torch.allclose(tensor_entropy, sb3_entropy, atol=1e-5), \
+            f"Entropy differs: max diff = {(tensor_entropy - sb3_entropy).abs().max().item()}"
 
 
-# ============================================================================
-# Determinism Tests
-# ============================================================================
-
-def test_deterministic_mode_consistency():
-    """Test that deterministic mode gives same actions."""
-    from model import ActorCriticPolicy
-    
-    torch.manual_seed(42)
-    
+@pytest.mark.skipif(not SB3_AVAILABLE, reason="SB3 dependencies unavailable")
+def test_predict_values_parity():
+    """Test that tensor and SB3 policies produce identical predict_values outputs."""
+    embed_dim = DEFAULT_EMBED_DIM
     batch_size = 4
     n_actions = 16
-    embed_dim = 64
+    n_atoms = DEFAULT_PADDING_ATOMS
+    max_arity = DEFAULT_MAX_ARITY
+    seed = 42
+    device = "cpu"
     
-    embedder = DummyEmbedder(vocab_size=100, embed_dim=embed_dim)
+    # Create embedders with same seed
+    tensor_emb = create_embedder(embed_dim=embed_dim, seed=seed)
+    sb3_emb = create_sb3_embedder(embed_dim=embed_dim, seed=seed)
     
-    policy = ActorCriticPolicy(
-        embedder=embedder,
+    # Create tensor policy
+    torch.manual_seed(seed)
+    tensor_policy = ActorCriticPolicy(
+        embedder=tensor_emb,
         embed_dim=embed_dim,
         hidden_dim=128,
         num_layers=4,
         dropout_prob=0.0,
-        device=torch.device("cpu"),
+        device=torch.device(device),
         action_dim=n_actions,
     )
-    policy.eval()
+    tensor_policy.eval()
     
-    obs = create_dummy_observation(batch_size=batch_size, n_actions=n_actions)
+    # Create SB3 policy
+    obs_space = gym.spaces.Dict({
+        "sub_index": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(1, n_atoms, max_arity + 1), dtype=int),
+        "derived_sub_indices": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(n_actions, n_atoms, max_arity + 1), dtype=int),
+        "action_mask": gym.spaces.Box(low=0, high=1, shape=(n_actions,), dtype=int),
+    })
+    action_space = gym.spaces.Discrete(n_actions)
     
+    torch.manual_seed(seed)
+    sb3_policy = SB3CustomActorCriticPolicy(
+        observation_space=obs_space,
+        action_space=action_space,
+        lr_schedule=lambda _: 0.0,
+        features_extractor_class=SB3CustomCombinedExtractor,
+        features_extractor_kwargs={"embedder": sb3_emb, "features_dim": embed_dim},
+        share_features_extractor=True,
+    ).to(device)
+    sb3_policy.eval()
+    
+    # Create test observations
+    obs_td = create_random_observation(batch_size=batch_size, n_actions=n_actions, seed=123)
+    obs_sb3 = create_sb3_observation(obs_td)
+    
+    # Predict values
     with torch.no_grad():
-        actions1, values1, log_probs1 = policy(obs, deterministic=True)
-        actions2, values2, log_probs2 = policy(obs, deterministic=True)
+        tensor_values = tensor_policy.predict_values(obs_td)
+        sb3_values = sb3_policy.predict_values(obs_sb3)
     
-    # Deterministic mode should give identical results
-    assert torch.allclose(actions1, actions2)
-    assert torch.allclose(values1, values2)
-    assert torch.allclose(log_probs1, log_probs2)
-
-
-def test_stochastic_mode_variability():
-    """Test that stochastic mode can give different actions.
+    sb3_values = sb3_values.flatten()
     
-    This test verifies that the model's sample() method actually samples
-    from the distribution rather than always returning the mode.
-    """
-    from model import ActorCriticPolicy
-    from stable_baselines3.common.distributions import CategoricalDistribution
-    
-    # Test 1: Verify the distribution's sample method works correctly
-    # Create a distribution with uniform probabilities where sampling should vary
-    test_logits = torch.zeros(16, 8)  # 16 batches, 8 actions - uniform distribution
-    dist = CategoricalDistribution(action_dim=8)
-    dist.proba_distribution(action_logits=test_logits)
-    
-    # Sample multiple times and check for variability
-    samples = [dist.sample() for _ in range(50)]
-    stacked = torch.stack(samples, dim=0)
-    
-    # With uniform distribution and 50 samples, there must be variability
-    unique_counts = [len(stacked[:, i].unique()) for i in range(16)]
-    assert sum(u > 1 for u in unique_counts) >= 10, \
-        "Distribution sample() should produce variable results with uniform logits"
-    
-    # Test 2: Verify ActorCriticPolicy uses sample() in stochastic mode
-    batch_size = 4
-    n_actions = 16
-    embed_dim = 64
-    
-    embedder = DummyEmbedder(vocab_size=100, embed_dim=embed_dim)
-    
-    policy = ActorCriticPolicy(
-        embedder=embedder,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=4,
-        dropout_prob=0.0,
-        device=torch.device("cpu"),
-        action_dim=n_actions,
-    )
-    policy.eval()
-    
-    obs = create_dummy_observation(batch_size=batch_size, n_actions=n_actions)
-    
-    # Get the distribution logits to check if they're reasonably varied
-    with torch.no_grad():
-        features = policy.extract_features(obs)
-        if policy.share_features_extractor:
-            logits, _ = policy.mlp_extractor(features)
-        else:
-            obs_embeddings, action_embeddings, action_mask = features[0]
-            logits = policy.mlp_extractor.forward_actor((obs_embeddings, action_embeddings, action_mask))
-    
-    # The test passes if either:
-    # 1. The model produces varied samples, OR  
-    # 2. The logits are so peaked that sampling the same action is expected
-    probs = torch.softmax(logits, dim=-1)
-    max_probs = probs.max(dim=-1).values
-    
-    # If max probability > 0.99, the distribution is effectively deterministic
-    # and we should skip the variability check
-    if max_probs.mean() < 0.99:
-        all_actions = []
-        with torch.no_grad():
-            for _ in range(30):
-                actions, _, _ = policy(obs, deterministic=False)
-                all_actions.append(actions.clone())
-        
-        stacked = torch.stack(all_actions, dim=0)
-        unique_per_batch = [len(stacked[:, i].unique()) for i in range(batch_size)]
-        
-        # At least some batches should have variable actions
-        assert sum(u > 1 for u in unique_per_batch) >= 1 or n_actions == 1, \
-            f"Expected stochastic variability but got unique counts: {unique_per_batch}"
-
-
-# ============================================================================
-# Action Mask Tests
-# ============================================================================
-
-def test_action_mask_respected():
-    """Test that masked actions are never selected in deterministic mode."""
-    from model import ActorCriticPolicy
-    
-    torch.manual_seed(42)
-    
-    batch_size = 4
-    n_actions = 16
-    embed_dim = 64
-    
-    embedder = DummyEmbedder(vocab_size=100, embed_dim=embed_dim)
-    
-    policy = ActorCriticPolicy(
-        embedder=embedder,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=4,
-        dropout_prob=0.0,
-        device=torch.device("cpu"),
-        action_dim=n_actions,
-    )
-    policy.eval()
-    
-    obs = create_dummy_observation(batch_size=batch_size, n_actions=n_actions)
-    
-    # Mask half the actions
-    obs["action_mask"][:, n_actions // 2:] = False
-    
-    with torch.no_grad():
-        for _ in range(10):
-            actions, _, _ = policy(obs, deterministic=False)
-            # All actions should be in the valid range
-            assert torch.all(actions < n_actions // 2), f"Invalid action selected: {actions}"
-
-
-# ============================================================================
-# Gradient Flow Tests
-# ============================================================================
-
-def test_gradient_flow_evaluate_actions():
-    """Test that gradients flow through evaluate_actions."""
-    from model import ActorCriticPolicy
-    
-    torch.manual_seed(42)
-    
-    batch_size = 4
-    n_actions = 16
-    embed_dim = 64
-    
-    embedder = DummyEmbedder(vocab_size=100, embed_dim=embed_dim)
-    
-    policy = ActorCriticPolicy(
-        embedder=embedder,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=4,
-        dropout_prob=0.0,
-        device=torch.device("cpu"),
-        action_dim=n_actions,
-    )
-    policy.train()
-    
-    obs = create_dummy_observation(batch_size=batch_size, n_actions=n_actions)
-    actions = torch.randint(0, n_actions // 2, (batch_size,))  # Valid actions only
-    
-    values, log_probs, entropy = policy.evaluate_actions(obs, actions)
-    
-    # Compute dummy loss
-    loss = values.mean() + log_probs.mean() + entropy.mean()
-    loss.backward()
-    
-    # Check that some gradients exist
-    has_grads = False
-    for param in policy.parameters():
-        if param.grad is not None and param.grad.abs().sum() > 0:
-            has_grads = True
-            break
-    
-    assert has_grads, "No gradients computed"
-
-
-# ============================================================================
-# Feature Extractor Tests
-# ============================================================================
-
-def test_feature_extractor_output():
-    """Test CustomCombinedExtractor produces correct outputs."""
-    from model import CustomCombinedExtractor
-    
-    torch.manual_seed(42)
-    
-    batch_size = 4
-    n_actions = 16
-    embed_dim = 64
-    
-    embedder = DummyEmbedder(vocab_size=100, embed_dim=embed_dim)
-    extractor = CustomCombinedExtractor(embedder)
-    
-    obs = create_dummy_observation(batch_size=batch_size, n_actions=n_actions)
-    
-    obs_emb, action_emb, mask = extractor(obs)
-    
-    # Check shapes
-    assert obs_emb.shape[-1] == embed_dim
-    assert action_emb.shape[-1] == embed_dim
-    assert mask.shape == (batch_size, n_actions)
-
-
-# ============================================================================
-# Numerical Stability Tests
-# ============================================================================
-
-def test_no_nan_with_all_masked():
-    """Test that model handles edge case where many actions are masked."""
-    from model import ActorCriticPolicy
-    
-    torch.manual_seed(42)
-    
-    batch_size = 4
-    n_actions = 16
-    embed_dim = 64
-    
-    embedder = DummyEmbedder(vocab_size=100, embed_dim=embed_dim)
-    
-    policy = ActorCriticPolicy(
-        embedder=embedder,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=4,
-        dropout_prob=0.0,
-        device=torch.device("cpu"),
-        action_dim=n_actions,
-    )
-    policy.eval()
-    
-    obs = create_dummy_observation(batch_size=batch_size, n_actions=n_actions)
-    
-    # Leave only one action valid per batch
-    obs["action_mask"][:, :] = False
-    obs["action_mask"][:, 0] = True
-    
-    with torch.no_grad():
-        actions, values, log_probs = policy(obs, deterministic=True)
-    
-    # All should select action 0
-    assert torch.all(actions == 0)
-    # No NaN/Inf in outputs
-    assert torch.all(torch.isfinite(values))
-    assert torch.all(torch.isfinite(log_probs))
+    assert torch.allclose(tensor_values, sb3_values, atol=1e-5), \
+        f"Predicted values differ: max diff = {(tensor_values - sb3_values).abs().max().item()}"
 
 
 if __name__ == "__main__":

@@ -144,8 +144,11 @@ class IndexManager:
         self.runtime_var_end_index: int = self.runtime_var_start_index + self.runtime_variable_no - 1
 
         # Total vocabulary size
-        self.variable_no: int = self.constant_no + self.template_variable_no + self.runtime_variable_no
-        self.total_vocab_size: int = self.variable_no + 1  # +1 for padding
+        # IMPORTANT: Match SB3 behavior exactly - variable_no = max_total_vars
+        # SB3 uses: self.variable_no = self.max_total_vars
+        # NOT: self.variable_no = constant_no + template_variable_no + runtime_variable_no
+        self.variable_no: int = max_total_runtime_vars  # Match SB3 exactly
+        self.total_vocab_size: int = self.constant_no + self.variable_no + 1  # constants + vars + padding
         self.pack_base = self.total_vocab_size + 1    # safe 64-bit packing base
 
         # Tensors (filled later by materializers)
@@ -230,9 +233,10 @@ class IndexManager:
         # NOTE: Do NOT update runtime_var_start_index here - SB3 keeps it fixed
         # update unified map for one-shot conversions
         self.unified_term_map[var_name] = idx
-        # update total vocab size
-        self.variable_no = self.constant_no + self.template_variable_no + self.runtime_variable_no
-        self.total_vocab_size = self.variable_no + 1
+        # NOTE: Do NOT update variable_no here - SB3 keeps variable_no = max_total_vars
+        # Template variables are indexed within the constant_no + 1 to constant_no + template_variable_no range
+        # but this doesn't change variable_no (which equals max_total_vars in SB3)
+        self.total_vocab_size = self.constant_no + self.variable_no + 1
         return idx
 
     # -----------------------------

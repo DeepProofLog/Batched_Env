@@ -46,9 +46,14 @@ class PPO:
         trace_dir: Optional[str] = None,
         trace_prefix: str = "batched",
         trace_recorder: Optional[TraceRecorder] = None,
+        sb3_determinism: bool = False,
     ):
         """
         Initialize PPO - matches SB3's __init__ exactly.
+        
+        Args:
+            sb3_determinism: If True, use numpy random permutation for shuffling
+                           to match SB3's behavior exactly (for parity testing).
         """
         self.policy = policy
         self.env = env
@@ -84,6 +89,7 @@ class PPO:
             device=self.device,
             gamma=gamma,
             gae_lambda=gae_lambda,
+            sb3_determinism=sb3_determinism,
         )
         
         # Create optimizer - matches SB3
@@ -149,7 +155,8 @@ class PPO:
                     actions = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
                     _, values, _ = self.policy(obs_device, deterministic=True)
                     # Compute log_probs for action 0
-                    _, _, log_probs = self.policy.evaluate_actions(obs_device, actions)
+                    # evaluate_actions returns (values, log_probs, entropy)
+                    _, log_probs, _ = self.policy.evaluate_actions(obs_device, actions)
                 else:
                     actions, values, log_probs = self.policy(obs_device, deterministic=False)
                 
@@ -313,13 +320,17 @@ class PPO:
             n_collected * self.n_envs,
         )
 
-    def train(self) -> Dict[str, float]:
+    def train(self, return_traces: bool = False) -> Dict[str, float]:
         """
         Train the policy using collected rollouts.
         Matches SB3's train() method exactly.
         
+        Args:
+            return_traces: If True, return detailed per-batch training traces
+        
         Returns:
-            Dictionary of training metrics
+            Dictionary of training metrics. If return_traces=True, includes 'traces' key
+            with list of per-batch training details.
         """
         # Set policy to training mode
         self.policy.train()
@@ -329,6 +340,9 @@ class PPO:
         value_losses = []
         entropy_losses = []
         clip_fractions = []
+        
+        # Training traces for detailed comparison
+        train_traces = [] if return_traces else None
         
         if self.verbose:
             print(f"[PPO] Training for {self.n_epochs} epochs...")
@@ -414,6 +428,23 @@ class PPO:
                 value_losses.append(value_loss.item())
                 entropy_losses.append(entropy_loss.item())
                 
+                # Collect training traces if requested
+                if return_traces:
+                    train_traces.append({
+                        "epoch": epoch,
+                        "batch_size": len(actions),
+                        "policy_loss": policy_loss.item(),
+                        "value_loss": value_loss.item(),
+                        "entropy_loss": entropy_loss.item(),
+                        "clip_fraction": clip_fraction,
+                        "ratio_mean": ratio.mean().item(),
+                        "ratio_std": ratio.std().item(),
+                        "advantages_mean": advantages.mean().item(),
+                        "advantages_std": advantages.std().item(),
+                        "old_log_probs_mean": old_log_probs.mean().item(),
+                        "new_log_probs_mean": log_probs.mean().item(),
+                    })
+                
                 # --------------------
                 # Optimization step - matches SB3 exactly
                 # --------------------
@@ -433,12 +464,17 @@ class PPO:
         self.policy.eval()
         
         # Return average metrics - matches SB3
-        return {
+        metrics = {
             "policy_loss": sum(pg_losses) / len(pg_losses) if pg_losses else 0.0,
             "value_loss": sum(value_losses) / len(value_losses) if value_losses else 0.0,
             "entropy": -sum(entropy_losses) / len(entropy_losses) if entropy_losses else 0.0,
             "clip_fraction": sum(clip_fractions) / len(clip_fractions) if clip_fractions else 0.0,
         }
+        
+        if return_traces:
+            metrics["traces"] = train_traces
+        
+        return metrics
 
     def learn(
         self,
