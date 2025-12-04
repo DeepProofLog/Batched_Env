@@ -172,14 +172,14 @@ def test_sb3_engine_single_query(
             current_state, facts_set_str, fact_index_str, rules_by_pred, 
             excluded_fact=excluded_fact_str, verbose=0, next_var_index=current_next_var,
             max_derived_states=max_derived_states,
-            canonical_order=True, index_manager=im_str
+            canonical_order=False, index_manager=im_str  # Natural ordering matches tensor engine
         )
         
         # In Tensor engine, next_var_indices is updated.
         # So we should update it here too.
         current_next_var = updated_next_var
         
-        # States are already sorted by the engine when canonical_order=True
+        # States are in natural order (matching tensor engine)
         # Choose action based on deterministic flag
         if deterministic:
             chosen_idx = 0

@@ -87,7 +87,7 @@ def setup_tensor_engine(
     engine = UnificationEngine.from_index_manager(
         im_non, take_ownership=True, stringifier_params=stringifier_params,
         max_derived_per_state=max_derived_per_state,  # Set max derived states for eval mode
-        sort_states=True
+        sort_states=False  # Natural ordering now matches SB3 engine
     )
 
     debug_helper = DebugHelper(
@@ -243,10 +243,10 @@ def test_tensor_engine_single_query(
                 'trace': trace
             }
         
-        # States are already sorted by the engine when sort_states=True
+        # States are in natural order (matching SB3 engine)
         # Choose action based on deterministic flag
         if deterministic:
-            # Choose first state (already in canonical order)
+            # Choose first state
             chosen_idx = 0
         else:
             # Choose random state
@@ -454,7 +454,7 @@ def _run_tensor_engine_batch(
                 })
                 continue
             
-            # States are already sorted by the engine when sort_states=True
+            # States are in natural order (matching SB3 engine)
             # Choose action based on deterministic flag
             if deterministic:
                 chosen_idx = 0
