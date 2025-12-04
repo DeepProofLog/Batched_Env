@@ -85,8 +85,14 @@ def _base_args(dataset: str = "countries_s3"):
     )
 
 
-def _create_stacks(args, seed=42):
-    """Create both stacks with same seed for comparison."""
+def _create_stacks(args, seed=42, default_mode="tail"):
+    """Create both stacks with same seed for comparison.
+    
+    Args:
+        args: Configuration namespace
+        seed: Random seed
+        default_mode: Corruption mode for tensor sampler ('head', 'tail', or 'both')
+    """
     # Create SB3 stack first to get domain info
     dh_sb3 = SB3DataHandler(
         dataset_name=args.dataset_name,
@@ -171,7 +177,7 @@ def _create_stacks(args, seed=42):
         num_entities=im_new.constant_no,
         num_relations=im_new.predicate_no,
         device=torch.device("cpu"),
-        default_mode="tail",
+        default_mode=default_mode,
         seed=seed,
         domain2idx=domain2idx,
         entity2domain=entity2domain,
@@ -184,12 +190,18 @@ def _create_stacks(args, seed=42):
 _STACK_CACHE = {}
 
 
-def get_stacks(dataset: str, seed: int = 42):
-    """Get or create stacks for a dataset."""
-    cache_key = (dataset, seed)
+def get_stacks(dataset: str, seed: int = 42, default_mode: str = "tail"):
+    """Get or create stacks for a dataset.
+    
+    Args:
+        dataset: Dataset name
+        seed: Random seed
+        default_mode: Corruption mode for tensor sampler ('head', 'tail', or 'both')
+    """
+    cache_key = (dataset, seed, default_mode)
     if cache_key not in _STACK_CACHE:
         args = _base_args(dataset=dataset)
-        result = _create_stacks(args, seed=seed)
+        result = _create_stacks(args, seed=seed, default_mode=default_mode)
         _STACK_CACHE[cache_key] = result
     return _STACK_CACHE[cache_key]
 
@@ -1150,8 +1162,22 @@ class TestNegativeSamplerParity:
         3. Produce identical results given the same RNG state
         
         This is the exact method used by eval_corruptions.
+        
+        Note: countries_s3 only uses tail corruption, family uses both head and tail.
         """
-        dh_new, im_new, sampler_new, dh_sb3, im_sb3, sampler_sb3, args = get_stacks(dataset)
+        # Determine corruption mode based on dataset
+        # countries_s3: only tail corruption
+        # family: both head and tail corruption
+        if dataset == "countries_s3":
+            default_mode = "tail"
+            corruption_scheme = ['tail']
+            corruption_indices = [2]
+        else:  # family
+            default_mode = "both"
+            corruption_scheme = ['head', 'tail']
+            corruption_indices = [0, 2]
+        
+        dh_new, im_new, sampler_new, dh_sb3, im_sb3, sampler_sb3, args = get_stacks(dataset, default_mode=default_mode)
         
         device = torch.device("cpu")
         n_queries = min(10, len(dh_sb3.test_queries))
@@ -1168,9 +1194,9 @@ class TestNegativeSamplerParity:
             queries_tensor.append(torch.tensor([rel_idx, head_idx, tail_idx], dtype=torch.long))
         queries_tensor = torch.stack(queries_tensor, dim=0).to(device)
         
-        # Configure SB3 sampler for both head and tail
-        sampler_sb3.corruption_scheme = ['head', 'tail']
-        sampler_sb3._corruption_indices = [0, 2]
+        # Configure SB3 sampler with the appropriate corruption scheme
+        sampler_sb3.corruption_scheme = corruption_scheme
+        sampler_sb3._corruption_indices = corruption_indices
         
         SEED = 42
         

@@ -540,12 +540,6 @@ def run_tensor_engine(
             base_seed_offset=batch_start
         )
         all_results.extend(batch_results)
-        
-        # Explicit cleanup to free memory between batches
-        import gc
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
     
     # Aggregate statistics
     successful = sum(1 for r in all_results if r['success'])
