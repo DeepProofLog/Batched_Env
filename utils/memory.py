@@ -42,7 +42,9 @@ class BloomFilter:
         # Hash support for states
         self._pack_base = total_vocab_size + 1  # matches IndexManager.pack_base default
         L = padding_atoms * (max_arity + 1)
-        ar = torch.arange(L, device=device, dtype=torch.long)
+        # Use (ar + 1) to avoid ar[0]=0 which would make _pos_vec1[0] == _pos_vec2[0] == 0
+        # This caused h1 == h2 for single-atom states, making double-hashing degenerate
+        ar = torch.arange(L, device=device, dtype=torch.long) + 1
         self._pos_vec1 = (ar * 0x9E3779B97F4A7C15) & ((1 << 63) - 1)  # 63-bit to keep it positive
         self._pos_vec2 = (ar * 0xC2B2AE3D27D4EB4F) & ((1 << 63) - 1)
         self._hash_idx = torch.arange(self.mem_hashes, device=device, dtype=torch.long)
