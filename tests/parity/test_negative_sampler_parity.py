@@ -7,11 +7,11 @@ corruptions, same order.
 
 Run with: pytest tests/parity/test_negative_sampler_parity.py -v -s
 """
-from types import SimpleNamespace
 from pathlib import Path
 import sys
 import importlib.util
 import os
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -48,16 +48,17 @@ from sb3.sb3_neg_sampling import get_sampler as get_sb3_sampler
 
 
 # ============================================================================
-# Configuration
+# Default Configuration
 # ============================================================================
 
 FULL_DATASET = os.environ.get("FULL_DATASET", "0") == "1"
 
 
-def _base_args(dataset: str = "countries_s3"):
-    """Base configuration for tests."""
+def create_default_config(dataset: str = "countries_s3") -> SimpleNamespace:
+    """Default parameters for negative sampler parity tests."""
     n = None if FULL_DATASET else 50
     return SimpleNamespace(
+        # Dataset / data files
         dataset_name=dataset,
         data_path="./data/",
         janus_file=None,
@@ -66,63 +67,72 @@ def _base_args(dataset: str = "countries_s3"):
         test_file="test.txt",
         rules_file="rules.txt",
         facts_file="train.txt",
+        train_depth=None,
+        valid_depth=None,
+        test_depth=None,
+        
+        # Sampler/query limits
         n_train_queries=n,
         n_eval_queries=n,
         n_test_queries=n,
         corruption_mode="dynamic",
         corruption_scheme=["tail"],
-        padding_atoms=6,
-        padding_states=20,
-        max_total_vars=1_000_000,
-        train_depth=None,
-        valid_depth=None,
-        test_depth=None,
+        train_neg_ratio=1.0,
+        filter_queries_by_rules=False,
         prob_facts=False,
         topk_facts=None,
         topk_facts_threshold=0.33,
-        train_neg_ratio=1.0,
-        filter_queries_by_rules=False,
+        
+        # Environment / padding
+        padding_atoms=6,
+        padding_states=20,
+        max_total_vars=1000,
     )
 
 
-def _create_stacks(args, seed=42, default_mode="tail"):
+def clone_config(config: SimpleNamespace) -> SimpleNamespace:
+    """Clone a config namespace."""
+    return SimpleNamespace(**vars(config))
+
+
+def _create_stacks(config: SimpleNamespace, seed: int = 42, default_mode: str = "tail"):
     """Create both stacks with same seed for comparison.
     
     Args:
-        args: Configuration namespace
+        config: Configuration namespace
         seed: Random seed
         default_mode: Corruption mode for tensor sampler ('head', 'tail', or 'both')
     """
     # Create SB3 stack first to get domain info
     dh_sb3 = SB3DataHandler(
-        dataset_name=args.dataset_name,
-        base_path=args.data_path,
-        janus_file=args.janus_file,
-        train_file=args.train_file,
-        valid_file=args.valid_file,
-        test_file=args.test_file,
-        rules_file=args.rules_file,
-        facts_file=args.facts_file,
-        n_train_queries=args.n_train_queries,
-        n_eval_queries=args.n_eval_queries,
-        n_test_queries=args.n_test_queries,
-        corruption_mode=args.corruption_mode,
-        train_depth=args.train_depth,
-        valid_depth=args.valid_depth,
-        test_depth=args.test_depth,
-        prob_facts=args.prob_facts,
-        topk_facts=args.topk_facts,
-        topk_facts_threshold=args.topk_facts_threshold,
+        dataset_name=config.dataset_name,
+        base_path=config.data_path,
+        janus_file=config.janus_file,
+        train_file=config.train_file,
+        valid_file=config.valid_file,
+        test_file=config.test_file,
+        rules_file=config.rules_file,
+        facts_file=config.facts_file,
+        n_train_queries=config.n_train_queries,
+        n_eval_queries=config.n_eval_queries,
+        n_test_queries=config.n_test_queries,
+        corruption_mode=config.corruption_mode,
+        train_depth=config.train_depth,
+        valid_depth=config.valid_depth,
+        test_depth=config.test_depth,
+        prob_facts=config.prob_facts,
+        topk_facts=config.topk_facts,
+        topk_facts_threshold=config.topk_facts_threshold,
         deterministic=True,
     )
     im_sb3 = SB3IndexManager(
         dh_sb3.constants,
         dh_sb3.predicates,
-        args.max_total_vars,
+        config.max_total_vars,
         dh_sb3.rules,
         max_arity=dh_sb3.max_arity,
         device="cpu",
-        padding_atoms=args.padding_atoms,
+        padding_atoms=config.padding_atoms,
     )
     im_sb3.build_fact_index(dh_sb3.facts, deterministic=True)
     
@@ -131,39 +141,39 @@ def _create_stacks(args, seed=42, default_mode="tail"):
     sampler_sb3 = get_sb3_sampler(
         data_handler=dh_sb3,
         index_manager=im_sb3,
-        corruption_scheme=args.corruption_scheme,
+        corruption_scheme=config.corruption_scheme,
         device=torch.device("cpu"),
     )
     
     # Create new stack
     dh_new = NewDataHandler(
-        dataset_name=args.dataset_name,
-        base_path=args.data_path,
-        janus_file=args.janus_file,
-        train_file=args.train_file,
-        valid_file=args.valid_file,
-        test_file=args.test_file,
-        rules_file=args.rules_file,
-        facts_file=args.facts_file,
-        n_train_queries=args.n_train_queries,
-        n_eval_queries=args.n_eval_queries,
-        n_test_queries=args.n_test_queries,
-        train_depth=args.train_depth,
-        valid_depth=args.valid_depth,
-        test_depth=args.test_depth,
-        prob_facts=args.prob_facts,
-        topk_facts=args.topk_facts,
-        topk_facts_threshold=args.topk_facts_threshold,
-        corruption_mode=args.corruption_mode,
-        filter_queries_by_rules=args.filter_queries_by_rules,
+        dataset_name=config.dataset_name,
+        base_path=config.data_path,
+        janus_file=config.janus_file,
+        train_file=config.train_file,
+        valid_file=config.valid_file,
+        test_file=config.test_file,
+        rules_file=config.rules_file,
+        facts_file=config.facts_file,
+        n_train_queries=config.n_train_queries,
+        n_eval_queries=config.n_eval_queries,
+        n_test_queries=config.n_test_queries,
+        train_depth=config.train_depth,
+        valid_depth=config.valid_depth,
+        test_depth=config.test_depth,
+        prob_facts=config.prob_facts,
+        topk_facts=config.topk_facts,
+        topk_facts_threshold=config.topk_facts_threshold,
+        corruption_mode=config.corruption_mode,
+        filter_queries_by_rules=config.filter_queries_by_rules,
         deterministic=True,
     )
     im_new = NewIndexManager(
         constants=dh_new.constants,
         predicates=dh_new.predicates,
-        max_total_runtime_vars=args.max_total_vars,
+        max_total_runtime_vars=config.max_total_vars,
         max_arity=dh_new.max_arity,
-        padding_atoms=args.padding_atoms,
+        padding_atoms=config.padding_atoms,
         device="cpu",
     )
     dh_new.materialize_indices(im=im_new, device=torch.device("cpu"))
@@ -183,7 +193,7 @@ def _create_stacks(args, seed=42, default_mode="tail"):
         entity2domain=entity2domain,
     )
     
-    return dh_new, im_new, sampler_new, dh_sb3, im_sb3, sampler_sb3, args
+    return dh_new, im_new, sampler_new, dh_sb3, im_sb3, sampler_sb3, config
 
 
 # Module-level cache
@@ -200,8 +210,8 @@ def get_stacks(dataset: str, seed: int = 42, default_mode: str = "tail"):
     """
     cache_key = (dataset, seed, default_mode)
     if cache_key not in _STACK_CACHE:
-        args = _base_args(dataset=dataset)
-        result = _create_stacks(args, seed=seed, default_mode=default_mode)
+        cfg = create_default_config(dataset=dataset)
+        result = _create_stacks(cfg, seed=seed, default_mode=default_mode)
         _STACK_CACHE[cache_key] = result
     return _STACK_CACHE[cache_key]
 

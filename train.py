@@ -316,7 +316,6 @@ def _make_env_from_split(split, *, mode, batch_size, args, index_manager, sample
         train_neg_ratio=args.train_neg_ratio if mode == "train" else 0.0,
         max_depth=args.max_depth,
         memory_pruning=args.memory_pruning,
-        eval_pruning=getattr(args, "eval_pruning", False),
         end_proof_action=getattr(args, "end_proof_action", False),
         skip_unary_actions=args.skip_unary_actions,
         reward_type=args.reward_type,

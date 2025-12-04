@@ -19,19 +19,7 @@ from unification import UnificationEngine
 from utils.debug_helper import DebugHelper
 
 
-def get_default_tensor_engine_config() -> SimpleNamespace:
-    return SimpleNamespace(
-        padding_atoms=20,
-        max_total_runtime_vars=1_000_000,
-        max_derived_per_state=500,
-        device='cpu'
-    )
-
-
 def setup_tensor_engine(
-    dataset: str = "countries_s3",
-    base_path: str = "./data/",
-    batched: bool = False,
     config: SimpleNamespace = None
 ) -> Tuple:
     """
@@ -45,7 +33,9 @@ def setup_tensor_engine(
     Returns:
         (dh, im, engine, debug_helper, next_var_start)
     """
-    cfg = config or get_default_tensor_engine_config()
+    cfg = config
+    base_path = getattr(cfg, 'base_path', "./data/")
+    dataset = getattr(cfg, 'dataset', 'family')
     device_value = getattr(cfg, 'device', 'cpu')
     device = device_value if isinstance(device_value, torch.device) else torch.device(device_value)
     padding_atoms = getattr(cfg, 'padding_atoms', 20)
@@ -116,7 +106,6 @@ def test_tensor_engine_single_query(
     split: str = 'train',
     deterministic: bool = True,
     max_depth: int = 10,
-    max_derived_states: int = 200,
     verbose: bool = False,
     seed: int = 42
 ) -> Dict:
@@ -311,7 +300,7 @@ def _run_tensor_engine_batch(
     """
     dh_non, im_non, engine, debug_helper, next_var_start = engine_data
     
-    deterministic = config.deterministic
+    deterministic = config.deterministic if hasattr(config, 'deterministic') else True
     max_depth = config.max_depth
     seed = config.seed
     verbose = config.verbose

@@ -1,19 +1,20 @@
 """
 Environment Parity Tests.
 
-Tests verifying that the tensor-based BatchedEnv produces EXACTLY the same 
-behavior as the SB3 string-based LogicEnv_gym.
-
-This test module mirrors the structure of test_unification_parity.py but focuses
-on full environment parity, not just the unification engine.
+Validate that the tensor-based `BatchedEnv` matches the SB3 `LogicEnv_gym`
+step-for-step. Query selection, traces, and outcomes must align.
 
 Usage:
     pytest tests/parity/test_env_parity.py -v
     pytest tests/parity/test_env_parity.py -v -k "countries"
     pytest tests/parity/test_env_parity.py -v -k "family"
+    
+    # CLI
+    python tests/parity/test_env_parity.py --dataset countries_s3 --n-queries 200
 """
 import os
 import sys
+import argparse
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Dict, Tuple
@@ -41,30 +42,42 @@ from test_env_tensor import setup_tensor_env, run_tensor_env as _run_tensor_env
 
 
 # ============================================================================
-# Configuration
+# Default Configuration
 # ============================================================================
 
-def create_default_parity_config() -> SimpleNamespace:
-    """Create default configuration for parity tests."""
+def create_default_config() -> SimpleNamespace:
+    """Centralized defaults for all env parity tests."""
     return SimpleNamespace(
+        # Dataset/query selection
         dataset="countries_s3",
         n_queries=200,
-        deterministic=True,
+        data_path="./data/",
+        train_file="train.txt",
+        valid_file="valid.txt",
+        test_file="test.txt",
+        rules_file="rules.txt",
+        facts_file="train.txt",
+        train_depth=None,
+        corruption_mode="dynamic",
+        
+        # Environment behavior
         max_depth=20,
-        seed=42,
-        verbose=False,
-        debug=False,
         padding_atoms=6,
         padding_states=40,
         max_derived_per_state=40,
         skip_unary_actions=True,
         end_proof_action=True,
         memory_pruning=True,
-        use_exact_memory=True,
+        use_exact_memory=False,
         reward_type=0,
         prover_verbose=0,
-        max_total_runtime_vars=1_000_000,
-        device='cpu',
+        max_total_runtime_vars=1000,
+        device="cpu",
+        
+        # Seeds / logging
+        seed=42,
+        verbose=False,
+        debug=False,
     )
 
 
@@ -77,38 +90,21 @@ def clone_config(config: SimpleNamespace) -> SimpleNamespace:
 # Query Preparation
 # ============================================================================
 
-def prepare_queries(
-    dataset: str = "countries_s3",
-    base_path: str = "./data/",
-    n_queries: int = None,
-    seed: int = 42
-) -> List[Tuple[str, Tuple[str, str, str]]]:
-    """
-    Prepare list of queries from dataset.
-    
-    Args:
-        dataset: Dataset name
-        base_path: Base path to data directory
-        n_queries: If specified, sample this many queries; otherwise use all
-        seed: Random seed for sampling
-        
-    Returns:
-        List of (split, (predicate, head, tail)) tuples
-    """
+def prepare_queries(config: SimpleNamespace) -> List[Tuple[str, Tuple[str, str, str]]]:
+    """Prepare a shuffled list of queries for the requested dataset."""
     from sb3.sb3_dataset import DataHandler
     
     dh = DataHandler(
-        dataset_name=dataset,
-        base_path=base_path,
-        train_file="train.txt",
-        valid_file="valid.txt",
-        test_file="test.txt",
-        rules_file="rules.txt",
-        facts_file="train.txt",
-        train_depth=None,
+        dataset_name=config.dataset,
+        base_path=config.data_path,
+        train_file=config.train_file,
+        valid_file=config.valid_file,
+        test_file=config.test_file,
+        rules_file=config.rules_file,
+        facts_file=config.facts_file,
+        train_depth=config.train_depth,
     )
     
-    # Collect all queries
     all_queries = []
     for q in dh.train_queries:
         all_queries.append(('train', (q.predicate, q.args[0], q.args[1])))
@@ -117,12 +113,11 @@ def prepare_queries(
     for q in dh.test_queries:
         all_queries.append(('test', (q.predicate, q.args[0], q.args[1])))
     
-    # Shuffle and take first n
-    rng = random.Random(seed)
+    rng = random.Random(config.seed)
     rng.shuffle(all_queries)
     
-    if n_queries is not None:
-        all_queries = all_queries[:n_queries]
+    if config.n_queries is not None:
+        all_queries = all_queries[:config.n_queries]
     
     return all_queries
 
@@ -152,7 +147,6 @@ def run_env(
         Results dict with traces
     """
     setup_kwargs = {
-        "dataset": config.dataset,
         "config": config,
     }
     
@@ -283,7 +277,7 @@ def compare_all_traces(
 @pytest.fixture(scope="module")
 def base_config():
     """Base configuration for all tests."""
-    return create_default_parity_config()
+    return create_default_config()
 
 
 # ============================================================================
@@ -322,11 +316,7 @@ class TestEnvParity:
         np.random.seed(config.seed)
         
         # Prepare queries
-        queries = prepare_queries(
-            dataset=config.dataset,
-            n_queries=config.n_queries,
-            seed=config.seed
-        )
+        queries = prepare_queries(config)
         
         print(f"\n{'='*60}")
         print(f"Testing env parity (sequential): {dataset} with {n_queries} queries")
@@ -395,11 +385,7 @@ class TestEnvParity:
         np.random.seed(config.seed)
         
         # Prepare queries
-        queries = prepare_queries(
-            dataset=config.dataset,
-            n_queries=config.n_queries,
-            seed=config.seed
-        )
+        queries = prepare_queries(config)
         
         print(f"\n{'='*60}")
         print(f"Testing env parity (batched): {dataset} with {n_queries} queries")
@@ -451,7 +437,7 @@ def run_parity_tests(
     seed: int = 42,
     verbose: bool = False,
     memory_pruning: bool = True,
-    skip_unary_actions: bool = True
+    skip_unary_actions: bool = True,
 ) -> Tuple[bool, Dict]:
     """
     Run parity tests programmatically.
@@ -459,7 +445,7 @@ def run_parity_tests(
     Returns:
         (all_passed, results_dict)
     """
-    config = create_default_parity_config()
+    config = create_default_config()
     config.dataset = dataset
     config.n_queries = n_queries
     config.seed = seed
@@ -481,11 +467,7 @@ def run_parity_tests(
     print(f"Skip unary actions: {skip_unary_actions}")
     print(f"{'='*80}\n")
     
-    queries = prepare_queries(
-        dataset=config.dataset,
-        n_queries=config.n_queries,
-        seed=config.seed
-    )
+    queries = prepare_queries(config)
     
     print(f"Prepared {len(queries)} queries\n")
     
@@ -551,9 +533,9 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Test environment parity')
-    parser.add_argument('--dataset', type=str, default='countries_s3',
+    parser.add_argument('--dataset', type=str, default='family',
                         help='Dataset name (default: countries_s3)')
-    parser.add_argument('--n-queries', type=int, default=200,
+    parser.add_argument('--n-queries', type=int, default=800,
                         help='Number of queries to test (default: 200)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed (default: 42)')

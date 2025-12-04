@@ -23,22 +23,6 @@ from env import BatchedEnv
 from utils.debug_helper import DebugHelper
 
 
-def get_default_tensor_env_config() -> SimpleNamespace:
-    return SimpleNamespace(
-        max_total_runtime_vars=1000000,
-        padding_atoms=100,
-        padding_states=500,
-        memory_pruning=False,
-        reward_type=0,
-        verbose=0,
-        prover_verbose=0,
-        skip_unary_actions=False,
-        end_proof_action=False,
-        use_exact_memory=True,
-        max_derived_per_state=500,
-        device='cpu'
-    )
-
 
 def safe_item(x):
     """Safely extract scalar from numpy/torch/python scalar."""
@@ -49,8 +33,7 @@ def safe_item(x):
     return x
 
 
-def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", seed: int = 42,
-                     batch_size: int = 1, config: SimpleNamespace = None, 
+def setup_tensor_env(config: SimpleNamespace = None, 
                      sort_states: bool = False) -> Tuple:
     """
     Setup the batched tensor environment with dataset.
@@ -58,16 +41,20 @@ def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", 
     Returns:
         (batched_env, debug_helper, constant_no, im_batched, dh_batched)
     """
-    cfg = config or get_default_tensor_env_config()
+    cfg = config
+    # Extract dataset and base_path from config if not provided directly
+    dataset = getattr(cfg, 'dataset', 'countries_s3')
+    base_path = getattr(cfg, 'data_path', './data/')
+    batch_size = getattr(cfg, 'batch_size', 16)
     max_total_runtime_vars = getattr(cfg, 'max_total_runtime_vars', 1000000)
     padding_atoms = getattr(cfg, 'padding_atoms', 100)
     padding_states = getattr(cfg, 'padding_states', 500)
-    memory_pruning = getattr(cfg, 'memory_pruning', False)
+    memory_pruning = getattr(cfg, 'memory_pruning', True)
     reward_type = getattr(cfg, 'reward_type', 0)
     verbose = getattr(cfg, 'verbose', 0)
     prover_verbose = getattr(cfg, 'prover_verbose', 0)
-    skip_unary_actions = getattr(cfg, 'skip_unary_actions', False)
-    end_proof_action = getattr(cfg, 'end_proof_action', False)
+    skip_unary_actions = getattr(cfg, 'skip_unary_actions', True)
+    end_proof_action = getattr(cfg, 'end_proof_action', True)
     use_exact_memory = getattr(cfg, 'use_exact_memory', True)
     max_derived_per_state = getattr(cfg, 'max_derived_per_state', 500)
     device_value = getattr(cfg, 'device', 'cpu')
@@ -148,7 +135,6 @@ def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", 
         mode='train',  # Start in train mode, set_eval_dataset will switch to eval
         max_depth=20,
         memory_pruning=memory_pruning,
-        eval_pruning=memory_pruning,  # CRITICAL: Enable memory pruning in eval mode too
         use_exact_memory=use_exact_memory,
         skip_unary_actions=skip_unary_actions,
         end_proof_action=end_proof_action,
@@ -361,12 +347,11 @@ def run_tensor_env(
     
     batch_size = len(queries)
     
+    # Update config with the correct batch_size based on number of queries
+    config.batch_size = batch_size
+    
     # Setup batched env with proper batch size
     batched_env, debug_helper, constant_no, im_batched_new, _ = setup_tensor_env(
-        dataset=dh_batched.dataset_name,
-        base_path="./data/",
-        seed=seed,
-        batch_size=batch_size,
         config=config
     )
     device = getattr(batched_env, '_device', torch.device('cpu'))

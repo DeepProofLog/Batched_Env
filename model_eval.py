@@ -551,12 +551,16 @@ def eval_corruptions(
 
                 Tmax = logps_out.shape[1]
                 if success is not None:
-                    success_mask = success.to(device).bool() & labels_matrix
+                    # For penalty: penalize ALL unsuccessful proofs (matching SB3 behavior)
+                    success_for_penalty = success.to(device).bool()
+                    # For reporting: track which positive queries succeeded
+                    success_mask = success.to(device).bool()
                 else:
-                    success_mask = labels_matrix
+                    success_for_penalty = torch.ones_like(logps_out, dtype=torch.bool)
+                    success_mask = None
 
                 logps_out = logps_out.clone()
-                logps_out[~success_mask] -= 100.0
+                logps_out[~success_for_penalty] -= 100.0
 
                 # Align RNG with SB3 for parity in tie-breaking
                 rng = np.random.RandomState(0)
@@ -597,8 +601,8 @@ def eval_corruptions(
                         neg_logps_list = [float(logps_out[i, j].cpu().item()) for j in range(1, min(Ei, Tmax))]
                         
                         # Extract success flags
-                        pos_succ = bool(success_mask[i, 0].cpu().item()) if success is not None and Ei > 0 else False
-                        neg_succs = [bool(success_mask[i, j].cpu().item()) for j in range(1, min(Ei, Tmax))] if success is not None else []
+                        pos_succ = bool(success_mask[i, 0].cpu().item()) if success_mask is not None and Ei > 0 else False
+                        neg_succs = [bool(success_mask[i, j].cpu().item()) for j in range(1, min(Ei, Tmax))] if success_mask is not None else []
                         
                         # Filter episode traces for this query (env_idx == i)
                         query_episode_traces = [t for t in episode_traces if t.get("env_idx") == i]

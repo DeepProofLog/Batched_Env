@@ -77,7 +77,28 @@ from sampler import Sampler, SamplerConfig
 @dataclass
 class TrainParityConfig:
     """Configuration for train parity tests."""
+    # Dataset / data files
     dataset: str = "countries_s3"
+    data_path: str = "./data/"
+    train_file: str = "train.txt"
+    valid_file: str = "valid.txt"
+    test_file: str = "test.txt"
+    rules_file: str = "rules.txt"
+    facts_file: str = "train.txt"
+    train_depth: Any = None
+    
+    # Environment / padding
+    padding_atoms: int = 6
+    padding_states: int = 64
+    max_steps: int = 20
+    use_exact_memory: bool = True
+    memory_pruning: bool = True
+    skip_unary_actions: bool = True
+    end_proof_action: bool = True
+    reward_type: int = 0
+    max_total_vars: int = 1000  # Reduced from 1000000 to save memory
+    
+    # PPO / training
     n_envs: int = 3
     n_steps: int = 20
     n_epochs: int = 4
@@ -89,15 +110,15 @@ class TrainParityConfig:
     ent_coef: float = 0.0
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    seed: int = 42
     total_timesteps: int = 60  # Small for testing - n_steps * n_envs
     n_corruptions: int = 10
-    device: str = "cpu"
-    padding_atoms: int = 6
-    padding_states: int = 64
-    max_steps: int = 20
+    
+    # Embedding / model
     atom_embedding_size: int = 64  # Reduced from 256 to save memory
-    max_total_vars: int = 1000  # Reduced from 1000000 to save memory
+    
+    # Misc
+    seed: int = 42
+    device: str = "cpu"
     verbose: bool = True
     skip_training: bool = False  # Skip actual training (for faster testing)
     skip_eval: bool = False  # Skip evaluation (to avoid OOM issues)
@@ -160,13 +181,13 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
     # Data handler
     dh = SB3DataHandler(
         dataset_name=config.dataset,
-        base_path="./data/",
-        train_file="train.txt",
-        valid_file="valid.txt",
-        test_file="test.txt",
-        rules_file="rules.txt",
-        facts_file="train.txt",
-        train_depth=None,
+        base_path=config.data_path,
+        train_file=config.train_file,
+        valid_file=config.valid_file,
+        test_file=config.test_file,
+        rules_file=config.rules_file,
+        facts_file=config.facts_file,
+        train_depth=config.train_depth,
         corruption_mode=True,
     )
     
@@ -181,7 +202,7 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
         device=device,
     )
     facts_set = set(dh.facts)
-    im.build_fact_index(list(facts_set))
+    im.build_fact_index(list(facts_set), deterministic=True)
     
     # Sampler
     sampler = get_sb3_sampler(
@@ -226,7 +247,7 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
                 sample_deterministic=True,  # Round-robin for parity
                 seed=config.seed,
                 max_depth=config.max_steps,
-                memory_pruning=False,
+                memory_pruning=config.memory_pruning,
                 padding_atoms=config.padding_atoms,
                 padding_states=config.padding_states,
                 verbose=0,
@@ -234,10 +255,9 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
                 device=device,
                 engine='python',
                 engine_strategy='complete',
-                skip_unary_actions=False,
-                endf_action=False,
-                reward_type=0,
-                canonical_action_order=True,
+                skip_unary_actions=config.skip_unary_actions,
+                endf_action=config.end_proof_action,
+                reward_type=config.reward_type,
             )
             env._train_ptr = idx  # Set train pointer for deterministic query selection
             return Monitor(env)  # Wrap with Monitor like working tests
@@ -289,13 +309,13 @@ def create_tensor_components(config: TrainParityConfig, sb3_dh: SB3DataHandler =
     # Data handler
     dh = DataHandler(
         dataset_name=config.dataset,
-        base_path="./data/",
-        train_file="train.txt",
-        valid_file="valid.txt", 
-        test_file="test.txt",
-        rules_file="rules.txt",
-        facts_file="train.txt",
-        train_depth=None,
+        base_path=config.data_path,
+        train_file=config.train_file,
+        valid_file=config.valid_file, 
+        test_file=config.test_file,
+        rules_file=config.rules_file,
+        facts_file=config.facts_file,
+        train_depth=config.train_depth,
         corruption_mode="dynamic",
     )
     
@@ -338,13 +358,11 @@ def create_tensor_components(config: TrainParityConfig, sb3_dh: SB3DataHandler =
     
     # Create unification engine
     engine = UnificationEngine.from_index_manager(
-        im,
-        take_ownership=True,
+        im, take_ownership=True,
         stringifier_params=stringifier_params,
-        end_pred_idx=None,
-        end_proof_action=False,
+        end_pred_idx=im.end_pred_idx,
+        end_proof_action=config.end_proof_action,
         max_derived_per_state=config.padding_states,
-        sort_states=True,
     )
     engine.index_manager = im
     
@@ -373,17 +391,16 @@ def create_tensor_components(config: TrainParityConfig, sb3_dh: SB3DataHandler =
         unification_engine=engine,
         mode='train',
         max_depth=config.max_steps,
-        memory_pruning=False,
-        eval_pruning=False,
-        use_exact_memory=True,
-        skip_unary_actions=False,
-        end_proof_action=False,
-        reward_type=0,
+        memory_pruning=config.memory_pruning,
+        use_exact_memory=config.use_exact_memory,
+        skip_unary_actions=config.skip_unary_actions,
+        end_proof_action=config.end_proof_action,
+        reward_type=config.reward_type,
         padding_atoms=config.padding_atoms,
         padding_states=config.padding_states,
         true_pred_idx=im.predicate_str2idx.get('True'),
         false_pred_idx=im.predicate_str2idx.get('False'),
-        end_pred_idx=im.predicate_str2idx.get('End'),
+        end_pred_idx=im.predicate_str2idx.get('Endf'),
         verbose=0,
         prover_verbose=0,
         device=device,
@@ -400,17 +417,16 @@ def create_tensor_components(config: TrainParityConfig, sb3_dh: SB3DataHandler =
         unification_engine=engine,
         mode='eval',
         max_depth=config.max_steps,
-        memory_pruning=False,
-        eval_pruning=False,
+        memory_pruning=config.memory_pruning,
         use_exact_memory=True,
-        skip_unary_actions=False,
-        end_proof_action=False,
-        reward_type=0,
+        skip_unary_actions=config.skip_unary_actions,
+        end_proof_action=config.end_proof_action,
+        reward_type=config.reward_type,
         padding_atoms=config.padding_atoms,
         padding_states=config.padding_states,
         true_pred_idx=im.predicate_str2idx.get('True'),
         false_pred_idx=im.predicate_str2idx.get('False'),
-        end_pred_idx=im.predicate_str2idx.get('End'),
+        end_pred_idx=im.predicate_str2idx.get('Endf'),
         verbose=0,
         prover_verbose=0,
         device=device,

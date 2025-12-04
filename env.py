@@ -53,7 +53,6 @@ class BatchedEnv(EnvBase):
         # Env related params
         max_depth: int = 10,
         memory_pruning: bool = True,
-        eval_pruning: bool = True,
         end_proof_action: bool = False,
         skip_unary_actions: bool = False,
         reward_type: int = 0,
@@ -180,8 +179,8 @@ class BatchedEnv(EnvBase):
         self.derived_states_counts = torch.zeros(B, dtype=torch.long, device=self._device)
 
         # -------- Memory pruning (Bloom filter per env) --------
-        self.eval_pruning = bool(eval_pruning)
-        self.memory_pruning = bool(memory_pruning) if mode == 'train' or self.eval_pruning else False
+        # memory_pruning applies to both train and eval modes
+        self.memory_pruning = bool(memory_pruning)
         self.use_exact_memory = bool(use_exact_memory)
         if self.use_exact_memory:
             self.memory_backend = ExactMemory(
@@ -1544,7 +1543,7 @@ class BatchedEnv(EnvBase):
         
         # Switch to eval mode (required for per-slot scheduling to work)
         self.mode = 'eval'
-        self.memory_pruning = self.eval_pruning
+        # Note: memory_pruning is set at init and applies to both train and eval modes
         
         # 1) Store dataset tensors
         self._all_queries_padded = self._ensure_query_tensor(queries.to(device))

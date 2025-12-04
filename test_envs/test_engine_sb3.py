@@ -24,17 +24,9 @@ from sb3_utils import Term as StrTerm
 from sb3_unification import get_next_unification_python, state_to_str
 
 
-def get_default_sb3_engine_config() -> SimpleNamespace:
-    return SimpleNamespace(
-        padding_atoms=100,
-        max_total_runtime_vars=1_000_000,
-        device='cpu'
-    )
 
 
 def setup_sb3_engine(
-    dataset: str = "countries_s3",
-    base_path: str = "./data/",
     config: SimpleNamespace = None
 ) -> Tuple:
     """
@@ -43,7 +35,9 @@ def setup_sb3_engine(
     Returns:
         (dh_str, im_str, fact_index_str, rules_by_pred, facts_set)
     """
-    cfg = config or get_default_sb3_engine_config()
+    cfg = config
+    base_path = getattr(cfg, 'base_path', "./data/")
+    dataset = getattr(cfg, 'dataset', 'family')
     device_value = getattr(cfg, 'device', 'cpu')
     device = device_value if isinstance(device_value, torch.device) else torch.device(device_value)
     padding_atoms = getattr(cfg, 'padding_atoms', 100)
@@ -247,7 +241,7 @@ def run_sb3_engine(
             - avg_steps: float
             - traces: List of trace dicts
     """
-    deterministic = config.deterministic
+    deterministic = config.deterministic if hasattr(config, 'deterministic') else True
     max_depth = config.max_depth
     seed = config.seed
     verbose = config.verbose

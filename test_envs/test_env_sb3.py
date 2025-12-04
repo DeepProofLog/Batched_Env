@@ -26,20 +26,6 @@ from sb3_utils import Term as StrTerm
 from sb3_unification import state_to_str
 
 
-def get_default_sb3_env_config() -> SimpleNamespace:
-    return SimpleNamespace(
-        padding_atoms=100,
-        padding_states=500,
-        skip_unary_actions=True,
-        end_proof_action=True,
-        reward_type=0,
-        memory_pruning=True,
-        max_total_runtime_vars=1000,
-        verbose=0,
-        prover_verbose=0,
-        device='cpu'
-    )
-
 
 def safe_item(x):
     """Safely extract scalar from numpy/torch/python scalar."""
@@ -51,9 +37,6 @@ def safe_item(x):
 
 
 def setup_sb3_env(
-    dataset: str = "countries_s3",
-    base_path: str = "./data/",
-    seed: int = 42,
     config: SimpleNamespace = None
 ) -> Tuple:
     """
@@ -62,10 +45,14 @@ def setup_sb3_env(
     Returns:
         (str_env, im_str, dh_str)
     """
-    cfg = config or get_default_sb3_env_config()
+    cfg = config
     device_value = getattr(cfg, 'device', 'cpu')
     device = device_value if isinstance(device_value, torch.device) else torch.device(device_value)
-
+    seed = getattr(cfg, 'seed', 42)
+    
+    dataset = getattr(cfg, 'dataset')
+    base_path = getattr(cfg, 'data_path', getattr(cfg, 'base_path', "./data/"))
+    
     dh_str = StrDataHandler(
         dataset_name=dataset,
         base_path=base_path,

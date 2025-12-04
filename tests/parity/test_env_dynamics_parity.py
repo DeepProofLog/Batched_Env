@@ -304,7 +304,6 @@ def create_tensor_env(env_data: Dict, queries: List, n_envs: int):
         mode='train',
         max_depth=20,
         memory_pruning=False,
-        eval_pruning=False,
         use_exact_memory=True,
         skip_unary_actions=False,
         end_proof_action=False,

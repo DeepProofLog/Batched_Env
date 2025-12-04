@@ -15,7 +15,8 @@ Usage:
 import os
 import sys
 from pathlib import Path
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -57,29 +58,84 @@ from ppo import PPO as TensorPPO
 from rollout import RolloutBuffer as TensorRolloutBuffer
 
 
-def create_aligned_environments(dataset: str, n_envs: int):
-    """Create SB3 and tensor environments with aligned queries."""
-    base_path = "./data/"
-    device = torch.device("cpu")
-    padding_atoms = 6
-    padding_states = 100  # Reduced from 500 to lower memory usage
-    
-    # ===== SB3 Setup =====
-    dh_sb3 = StrDataHandler(
-        dataset_name=dataset,
-        base_path=base_path,
+# ============================================================================
+# Default Configuration
+# ============================================================================
+
+def create_default_config() -> SimpleNamespace:
+    """Default settings for rollout parity tests."""
+    return SimpleNamespace(
+        # Dataset/files
+        dataset="countries_s3",
+        data_path="./data/",
         train_file="train.txt",
-        valid_file="valid.txt", 
+        valid_file="valid.txt",
         test_file="test.txt",
         rules_file="rules.txt",
         facts_file="train.txt",
         train_depth=None,
+        max_total_vars=1000,
+        
+        # Environment
+        padding_atoms=6,
+        padding_states=100,
+        max_depth=20,
+        memory_pruning=True,
+        use_exact_memory=True,
+        skip_unary_actions=True,
+        end_proof_action=True,
+        reward_type=0,
+        device="cpu",
+        
+        # PPO/traces
+        n_envs=4,
+        n_steps=20,
+        batch_size=64,
+        learning_rate=3e-4,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.0,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        
+        # Embedding/model
+        embed_dim=64,
+        n_vars_for_embedder=1000,
+        
+        # Seeds/logging
+        seed=42,
+    )
+
+
+def clone_config(config: SimpleNamespace) -> SimpleNamespace:
+    """Clone a config namespace."""
+    return SimpleNamespace(**vars(config))
+
+
+def create_aligned_environments(config: SimpleNamespace):
+    """Create SB3 and tensor environments with aligned queries."""
+    base_path = config.data_path
+    device = torch.device(config.device)
+    padding_atoms = config.padding_atoms
+    padding_states = config.padding_states
+    
+    # ===== SB3 Setup =====
+    dh_sb3 = StrDataHandler(
+        dataset_name=config.dataset,
+        base_path=base_path,
+        train_file=config.train_file,
+        valid_file=config.valid_file, 
+        test_file=config.test_file,
+        rules_file=config.rules_file,
+        facts_file=config.facts_file,
+        train_depth=config.train_depth,
     )
     
     im_sb3 = StrIndexManager(
         constants=dh_sb3.constants,
         predicates=dh_sb3.predicates,
-        max_total_vars=1000000,
+        max_total_vars=config.max_total_vars,
         rules=dh_sb3.rules,
         padding_atoms=padding_atoms,
         max_arity=dh_sb3.max_arity,
@@ -91,20 +147,20 @@ def create_aligned_environments(dataset: str, n_envs: int):
     
     # ===== Tensor Setup =====
     dh_tensor = DataHandler(
-        dataset_name=dataset,
+        dataset_name=config.dataset,
         base_path=base_path,
-        train_file="train.txt",
-        valid_file="valid.txt",
-        test_file="test.txt",
-        rules_file="rules.txt",
-        facts_file="train.txt",
-        train_depth=None,
+        train_file=config.train_file,
+        valid_file=config.valid_file,
+        test_file=config.test_file,
+        rules_file=config.rules_file,
+        facts_file=config.facts_file,
+        train_depth=config.train_depth,
     )
     
     im_tensor = IndexManager(
         constants=dh_tensor.constants,
         predicates=dh_tensor.predicates,
-        max_total_runtime_vars=1000000,
+        max_total_runtime_vars=config.max_total_vars,
         padding_atoms=padding_atoms,
         max_arity=dh_tensor.max_arity,
         device=device,
@@ -133,11 +189,11 @@ def create_aligned_environments(dataset: str, n_envs: int):
     }
 
 
-def create_sb3_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
+def create_sb3_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
     """Create SB3 PPO with DummyVecEnv."""
-    device = torch.device("cpu")
-    padding_atoms = env_data.get('padding_atoms', 6)
-    padding_states = env_data.get('padding_states', 100)
+    device = torch.device(config.device)
+    padding_atoms = env_data.get('padding_atoms', config.padding_atoms)
+    padding_states = env_data.get('padding_states', config.padding_states)
     
     dh = env_data['dh']
     im = env_data['im']
@@ -157,9 +213,9 @@ def create_sb3_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
                 facts=facts_set,
                 mode='train',
                 sample_deterministic=True,
-                seed=42,
-                max_depth=20,
-                memory_pruning=True,
+                seed=config.seed,
+                max_depth=config.max_depth,
+                memory_pruning=config.memory_pruning,
                 padding_atoms=padding_atoms,
                 padding_states=padding_states,
                 verbose=0,
@@ -167,56 +223,56 @@ def create_sb3_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
                 device=device,
                 engine='python',
                 engine_strategy='complete',
-                skip_unary_actions=True,
-                endf_action=True,
-                reward_type=0,
+                skip_unary_actions=config.skip_unary_actions,
+                endf_action=config.end_proof_action,
+                reward_type=config.reward_type,
             )
             env._train_ptr = env_idx
             return Monitor(env)
         return _init
     
-    env_fns = [make_env(env_idx=i) for i in range(n_envs)]
+    env_fns = [make_env(env_idx=i) for i in range(config.n_envs)]
     vec_env = DummyVecEnv(env_fns)
     
     # Create embedder with fixed seed for reproducibility
-    torch.manual_seed(42)
+    torch.manual_seed(config.seed)
     embedder = SB3Embedder(
         n_constants=im.constant_no,
         n_predicates=im.predicate_no,
-        n_vars=im.variable_no if hasattr(im, 'variable_no') else 1000,
+        n_vars=config.n_vars_for_embedder,
         max_arity=dh.max_arity,
         padding_atoms=padding_atoms,
         atom_embedder='transe',
         state_embedder='sum',
-        constant_embedding_size=64,
-        predicate_embedding_size=64,
-        atom_embedding_size=64,
+        constant_embedding_size=config.embed_dim,
+        predicate_embedding_size=config.embed_dim,
+        atom_embedding_size=config.embed_dim,
         device=device,
     )
-    embedder.embed_dim = 64  # Set embed_dim
+    embedder.embed_dim = config.embed_dim
     
     # Create PPO with fixed seed for reproducibility
-    torch.manual_seed(42)
+    torch.manual_seed(config.seed)
     ppo = PPO_custom(
         policy=CustomActorCriticPolicy,
         env=vec_env,
-        n_steps=n_steps,
-        batch_size=64,
+        n_steps=config.n_steps,
+        batch_size=config.batch_size,
         n_epochs=1,
-        learning_rate=3e-4,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.0,
-        vf_coef=0.5,
-        max_grad_norm=0.5,
+        learning_rate=config.learning_rate,
+        gamma=config.gamma,
+        gae_lambda=config.gae_lambda,
+        clip_range=config.clip_range,
+        ent_coef=config.ent_coef,
+        vf_coef=config.vf_coef,
+        max_grad_norm=config.max_grad_norm,
         verbose=0,
         device=device,
         policy_kwargs={
             "features_extractor_class": CustomCombinedExtractor,
             "features_extractor_kwargs": {
                 "embedder": embedder,
-                "features_dim": 64,
+                "features_dim": config.embed_dim,
             },
         },
     )
@@ -224,11 +280,11 @@ def create_sb3_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
     return ppo, vec_env, im
 
 
-def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
+def create_tensor_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
     """Create tensor PPO with BatchedEnv."""
-    device = torch.device("cpu")
-    padding_atoms = env_data.get('padding_atoms', 6)
-    padding_states = env_data.get('padding_states', 100)
+    device = torch.device(config.device)
+    padding_atoms = env_data.get('padding_atoms', config.padding_atoms)
+    padding_states = env_data.get('padding_states', config.padding_states)
     
     dh = env_data['dh']
     im = env_data['im']
@@ -246,7 +302,7 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
         im, take_ownership=True,
         stringifier_params=stringifier_params,
         end_pred_idx=im.end_pred_idx,
-        end_proof_action=True,
+        end_proof_action=config.end_proof_action,
         max_derived_per_state=padding_states,
     )
     engine.index_manager = im
@@ -262,19 +318,18 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
     queries_tensor = torch.stack(query_tensors, dim=0)
     
     env = BatchedEnv(
-        batch_size=n_envs,
+        batch_size=config.n_envs,
         queries=queries_tensor,
         labels=torch.ones(len(queries), dtype=torch.long, device=device),
         query_depths=torch.ones(len(queries), dtype=torch.long, device=device),
         unification_engine=engine,
         mode='train',
-        max_depth=20,
-        memory_pruning=True,
-        eval_pruning=False,
-        use_exact_memory=True,
-        skip_unary_actions=True,
-        end_proof_action=False,
-        reward_type=0,
+        max_depth=config.max_depth,
+        memory_pruning=config.memory_pruning,
+        use_exact_memory=config.use_exact_memory,
+        skip_unary_actions=config.skip_unary_actions,
+        end_proof_action=config.end_proof_action,
+        reward_type=config.reward_type,
         padding_atoms=padding_atoms,
         padding_states=padding_states,
         true_pred_idx=im.predicate_str2idx.get('True'),
@@ -284,33 +339,33 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
         prover_verbose=0,
         device=device,
         runtime_var_start_index=im.constant_no + 1,
-        total_vocab_size=im.constant_no + 1000000,
+        total_vocab_size=im.constant_no + config.max_total_vars,
         sample_deterministic_per_env=True,
     )
     
     # Create embedder with fixed seed for reproducibility (same seed as SB3)
-    torch.manual_seed(42)
+    torch.manual_seed(config.seed)
     embedder = TensorEmbedder(
         n_constants=im.constant_no,
         n_predicates=im.predicate_no,
-        n_vars=im.variable_no,
+        n_vars=config.n_vars_for_embedder,
         max_arity=dh.max_arity,
         padding_atoms=padding_atoms,
         atom_embedder='transe',
         state_embedder='sum',
-        constant_embedding_size=64,
-        predicate_embedding_size=64,
-        atom_embedding_size=64,
+        constant_embedding_size=config.embed_dim,
+        predicate_embedding_size=config.embed_dim,
+        atom_embedding_size=config.embed_dim,
         device=str(device),
     )
-    embedder.embed_dim = 64
+    embedder.embed_dim = config.embed_dim
     
     # Create policy with fixed seed for reproducibility (same seed as SB3)
-    torch.manual_seed(42)
+    torch.manual_seed(config.seed)
     action_size = padding_states  # action space size is padding_states
     policy = TensorPolicy(
         embedder=embedder,
-        embed_dim=64,
+        embed_dim=config.embed_dim,
         action_dim=action_size,
         hidden_dim=256,
         num_layers=8,
@@ -322,17 +377,17 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
     ppo = TensorPPO(
         policy=policy,
         env=env,
-        n_steps=n_steps,
-        learning_rate=3e-4,
+        n_steps=config.n_steps,
+        learning_rate=config.learning_rate,
         n_epochs=1,
-        batch_size=64,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
+        batch_size=config.batch_size,
+        gamma=config.gamma,
+        gae_lambda=config.gae_lambda,
+        clip_range=config.clip_range,
         normalize_advantage=True,
-        ent_coef=0.0,
-        vf_coef=0.5,
-        max_grad_norm=0.5,
+        ent_coef=config.ent_coef,
+        vf_coef=config.vf_coef,
+        max_grad_norm=config.max_grad_norm,
         device=device,
         verbose=False,
     )
@@ -505,42 +560,52 @@ def compare_traces(sb3_traces: List[Dict], tensor_traces: List[Dict],
     return results
 
 
-def run_rollout_parity_test(dataset: str, n_envs: int, n_steps: int, verbose: bool = True) -> bool:
+def run_rollout_parity_test(
+    dataset: str,
+    n_envs: int,
+    n_steps: int,
+    verbose: bool = True,
+    config: Optional[SimpleNamespace] = None,
+) -> bool:
     """Run the full rollout parity test."""
+    cfg = clone_config(config or create_default_config())
+    cfg.dataset = dataset
+    cfg.n_envs = n_envs
+    cfg.n_steps = n_steps
     print("=" * 70)
     print(f"Rollout Collection Parity Test")
-    print(f"Dataset: {dataset}, n_envs: {n_envs}, n_steps: {n_steps}")
+    print(f"Dataset: {cfg.dataset}, n_envs: {cfg.n_envs}, n_steps: {cfg.n_steps}")
     print("=" * 70)
     
     # Create aligned environments
     print("\nCreating aligned environments...")
-    env_data = create_aligned_environments(dataset, n_envs)
+    env_data = create_aligned_environments(cfg)
     
     # Create SB3 PPO
     print("Creating SB3 PPO...")
     sb3_ppo, sb3_env, sb3_im = create_sb3_ppo(
-        env_data['sb3'], env_data['queries'], n_envs, n_steps
+        cfg, env_data['sb3'], env_data['queries']
     )
     
     # Create tensor PPO
     print("Creating tensor PPO...")
     tensor_ppo, tensor_env, tensor_im, engine = create_tensor_ppo(
-        env_data['tensor'], env_data['tensor_queries'], n_envs, n_steps
+        cfg, env_data['tensor'], env_data['tensor_queries']
     )
     
     # Collect rollouts with traces using the new flags
     # Set same seed before each collect to ensure identical sampling
     print("\nCollecting SB3 rollouts with return_traces=True...")
-    torch.manual_seed(123)  # Seed before sampling
-    sb3_traces, sb3_buffer = collect_sb3_rollout_traces(sb3_ppo, n_steps)
+    torch.manual_seed(cfg.seed)  # Seed before sampling
+    sb3_traces, sb3_buffer = collect_sb3_rollout_traces(sb3_ppo, cfg.n_steps)
     
     print("Collecting tensor rollouts with return_traces=True...")
-    torch.manual_seed(123)  # Same seed for identical sampling
-    tensor_traces, tensor_buffer = collect_tensor_rollout_traces(tensor_ppo, n_steps, tensor_im)
+    torch.manual_seed(cfg.seed)  # Same seed for identical sampling
+    tensor_traces, tensor_buffer = collect_tensor_rollout_traces(tensor_ppo, cfg.n_steps, tensor_im)
     
     # Compare traces
     print("\n--- Trace Comparison ---")
-    results = compare_traces(sb3_traces, tensor_traces, n_steps, n_envs, verbose=verbose)
+    results = compare_traces(sb3_traces, tensor_traces, cfg.n_steps, cfg.n_envs, verbose=verbose)
     
     # Print summary
     print("\n" + "=" * 70)
@@ -601,22 +666,27 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Rollout Collection Parity Test")
-    parser.add_argument("--dataset", type=str, default="countries_s3",
+    parser.add_argument("--dataset", type=str, default="family",
                        help="Dataset name (default: countries_s3)")
-    parser.add_argument("--n-envs", type=int, default=4,
+    parser.add_argument("--n-envs", type=int, default=40,
                        help="Number of environments (default: 4)")
-    parser.add_argument("--n-steps", type=int, default=20,
+    parser.add_argument("--n-steps", type=int, default=100,
                        help="Number of rollout steps (default: 20)")
     parser.add_argument("--verbose", action="store_true", default=False,
                        help="Enable verbose output (show each step comparison)")
     
     args = parser.parse_args()
+    cfg = create_default_config()
+    cfg.dataset = args.dataset
+    cfg.n_envs = args.n_envs
+    cfg.n_steps = args.n_steps
     
     success = run_rollout_parity_test(
-        dataset=args.dataset,
-        n_envs=args.n_envs,
-        n_steps=args.n_steps,
-        verbose=args.verbose
+        dataset=cfg.dataset,
+        n_envs=cfg.n_envs,
+        n_steps=cfg.n_steps,
+        verbose=args.verbose,
+        config=cfg,
     )
     
     sys.exit(0 if success else 1)

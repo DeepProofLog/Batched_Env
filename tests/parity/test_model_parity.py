@@ -1,17 +1,37 @@
 """
 Model Parity Tests.
 
-Tests verifying that the tensor-based ActorCriticPolicy produces the same
-results as the SB3 CustomActorCriticPolicy using real EmbedderLearnable.
+Tests verifying that the tensor-based ActorCriticPolicy produces EXACTLY the
+same results as the SB3 CustomActorCriticPolicy using real EmbedderLearnable.
+
+This module tests:
+- Embedder output parity (observation and action embeddings)
+- Forward pass parity (actions, values, log probabilities)
+- evaluate_actions parity (values, log probs, entropy)
+- predict_values parity
+
+Usage:
+    pytest tests/parity/test_model_parity.py -v
+    pytest tests/parity/test_model_parity.py -v -k "embedder"
+    pytest tests/parity/test_model_parity.py -v -k "forward"
+    
+    # Run from command line:
+    python tests/parity/test_model_parity.py
 """
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Dict
+from types import SimpleNamespace
 
 import gymnasium as gym
 import torch
 import pytest
 from tensordict import TensorDict
+
+
+# ============================================================================
+# Path Setup
+# ============================================================================
 
 ROOT = Path(__file__).resolve().parents[2]
 SB3_ROOT = ROOT / "sb3"
@@ -21,7 +41,7 @@ if str(ROOT) not in sys.path:
 if str(SB3_ROOT) not in sys.path:
     sys.path.insert(1, str(SB3_ROOT))
 
-# Import real embedders from both implementations
+# Import tensor-based components
 from embeddings import EmbedderLearnable
 from model import ActorCriticPolicy
 
@@ -37,108 +57,146 @@ except ImportError as e:
 
 
 # ============================================================================
-# Default Test Parameters
+# Default Configuration
 # ============================================================================
 
-DEFAULT_N_CONSTANTS = 100
-DEFAULT_N_PREDICATES = 20
-DEFAULT_N_VARS = 10
-DEFAULT_EMBED_DIM = 64
-DEFAULT_MAX_ARITY = 2
-DEFAULT_PADDING_ATOMS = 3
-
-
-# ============================================================================
-# Helpers
-# ============================================================================
-
-def create_embedder(
-    n_constants: int = DEFAULT_N_CONSTANTS,
-    n_predicates: int = DEFAULT_N_PREDICATES,
-    n_vars: int = DEFAULT_N_VARS,
-    embed_dim: int = DEFAULT_EMBED_DIM,
-    seed: int = 42,
-    device: str = "cpu"
-) -> EmbedderLearnable:
-    """Create a real EmbedderLearnable for the tensor-based implementation."""
-    torch.manual_seed(seed)
-    return EmbedderLearnable(
-        n_constants=n_constants,
-        n_predicates=n_predicates,
-        n_vars=n_vars,
-        max_arity=DEFAULT_MAX_ARITY,
-        padding_atoms=DEFAULT_PADDING_ATOMS,
+def create_default_config() -> SimpleNamespace:
+    """
+    Create default configuration for model parity tests.
+    
+    Returns:
+        Configuration namespace with all test parameters
+    """
+    return SimpleNamespace(
+        # Model dimensions
+        n_constants=100,
+        n_predicates=20,
+        n_vars=10,
+        embed_dim=64,
+        max_arity=2,
+        padding_atoms=3,
+        
+        # Network architecture
+        hidden_dim=128,
+        num_layers=4,
+        dropout_prob=0.0,
+        
+        # Test settings
+        batch_size=4,
+        n_actions=16,
+        seed=42,
+        device="cpu",
+        
+        # Embedder settings
         atom_embedder='transe',
         state_embedder='sum',
-        constant_embedding_size=embed_dim,
-        predicate_embedding_size=embed_dim,
-        atom_embedding_size=embed_dim,
         kge_regularization=0.0,
         kge_dropout_rate=0.0,
-        device=device,
     )
 
 
-def create_sb3_embedder(
-    n_constants: int = DEFAULT_N_CONSTANTS,
-    n_predicates: int = DEFAULT_N_PREDICATES,
-    n_vars: int = DEFAULT_N_VARS,
-    embed_dim: int = DEFAULT_EMBED_DIM,
-    seed: int = 42,
-    device: str = "cpu"
-):
-    """Create a real EmbedderLearnable for the SB3 implementation."""
+def clone_config(config: SimpleNamespace) -> SimpleNamespace:
+    """Create a shallow clone of a configuration namespace."""
+    return SimpleNamespace(**vars(config))
+
+
+# ============================================================================
+# Component Creation Helpers
+# ============================================================================
+
+def create_embedder(config: SimpleNamespace) -> EmbedderLearnable:
+    """Create a tensor-based EmbedderLearnable."""
+    torch.manual_seed(config.seed)
+    return EmbedderLearnable(
+        n_constants=config.n_constants,
+        n_predicates=config.n_predicates,
+        n_vars=config.n_vars,
+        max_arity=config.max_arity,
+        padding_atoms=config.padding_atoms,
+        atom_embedder=config.atom_embedder,
+        state_embedder=config.state_embedder,
+        constant_embedding_size=config.embed_dim,
+        predicate_embedding_size=config.embed_dim,
+        atom_embedding_size=config.embed_dim,
+        kge_regularization=config.kge_regularization,
+        kge_dropout_rate=config.kge_dropout_rate,
+        device=config.device,
+    )
+
+
+def create_sb3_embedder(config: SimpleNamespace):
+    """Create a SB3 EmbedderLearnable."""
     if not SB3_AVAILABLE:
         pytest.skip(f"SB3 dependencies unavailable: {_SB3_IMPORT_ERROR}")
-    torch.manual_seed(seed)
+    
+    torch.manual_seed(config.seed)
     return SB3EmbedderLearnable(
-        n_constants=n_constants,
-        n_predicates=n_predicates,
-        n_vars=n_vars,
-        max_arity=DEFAULT_MAX_ARITY,
-        padding_atoms=DEFAULT_PADDING_ATOMS,
-        atom_embedder='transe',
-        state_embedder='sum',
-        constant_embedding_size=embed_dim,
-        predicate_embedding_size=embed_dim,
-        atom_embedding_size=embed_dim,
-        kge_regularization=0.0,
-        kge_dropout_rate=0.0,
-        device=device,
+        n_constants=config.n_constants,
+        n_predicates=config.n_predicates,
+        n_vars=config.n_vars,
+        max_arity=config.max_arity,
+        padding_atoms=config.padding_atoms,
+        atom_embedder=config.atom_embedder,
+        state_embedder=config.state_embedder,
+        constant_embedding_size=config.embed_dim,
+        predicate_embedding_size=config.embed_dim,
+        atom_embedding_size=config.embed_dim,
+        kge_regularization=config.kge_regularization,
+        kge_dropout_rate=config.kge_dropout_rate,
+        device=config.device,
     )
 
 
-def create_random_observation(
-    batch_size: int = 4,
-    n_actions: int = 16,
-    n_atoms: int = DEFAULT_PADDING_ATOMS,
-    n_predicates: int = DEFAULT_N_PREDICATES,
-    n_constants: int = DEFAULT_N_CONSTANTS,
-    n_vars: int = DEFAULT_N_VARS,
-    max_arity: int = DEFAULT_MAX_ARITY,
-    seed: int = 42,
-    device: str = "cpu"
-) -> TensorDict:
-    """Create a random observation TensorDict with valid indices."""
-    torch.manual_seed(seed)
+def create_random_observation(config: SimpleNamespace, obs_seed: int = 123) -> TensorDict:
+    """
+    Create a random observation TensorDict with valid indices.
     
-    # Predicate indices in [1, n_predicates], constant indices in [1, n_constants + n_vars]
-    pred_indices = torch.randint(1, n_predicates + 1, (batch_size, 1, n_atoms, 1), dtype=torch.int32, device=device)
-    const_indices = torch.randint(1, n_constants + n_vars + 1, (batch_size, 1, n_atoms, max_arity), dtype=torch.int32, device=device)
+    Args:
+        config: Test configuration
+        obs_seed: Seed for observation generation
+        
+    Returns:
+        TensorDict with sub_index, derived_sub_indices, and action_mask
+    """
+    torch.manual_seed(obs_seed)
+    
+    # Predicate indices in [1, n_predicates]
+    pred_indices = torch.randint(
+        1, config.n_predicates + 1,
+        (config.batch_size, 1, config.padding_atoms, 1),
+        dtype=torch.int32, device=config.device
+    )
+    
+    # Constant indices in [1, n_constants + n_vars]
+    const_indices = torch.randint(
+        1, config.n_constants + config.n_vars + 1,
+        (config.batch_size, 1, config.padding_atoms, config.max_arity),
+        dtype=torch.int32, device=config.device
+    )
+    
     sub_index = torch.cat([pred_indices, const_indices], dim=-1)
     
-    action_pred_indices = torch.randint(1, n_predicates + 1, (batch_size, n_actions, n_atoms, 1), dtype=torch.int32, device=device)
-    action_const_indices = torch.randint(1, n_constants + n_vars + 1, (batch_size, n_actions, n_atoms, max_arity), dtype=torch.int32, device=device)
+    # Action observations
+    action_pred_indices = torch.randint(
+        1, config.n_predicates + 1,
+        (config.batch_size, config.n_actions, config.padding_atoms, 1),
+        dtype=torch.int32, device=config.device
+    )
+    action_const_indices = torch.randint(
+        1, config.n_constants + config.n_vars + 1,
+        (config.batch_size, config.n_actions, config.padding_atoms, config.max_arity),
+        dtype=torch.int32, device=config.device
+    )
     derived_sub_indices = torch.cat([action_pred_indices, action_const_indices], dim=-1)
     
-    # All actions valid for simplicity
-    action_mask = torch.ones(batch_size, n_actions, dtype=torch.bool, device=device)
+    # All actions valid
+    action_mask = torch.ones(config.batch_size, config.n_actions, dtype=torch.bool, device=config.device)
     
     return TensorDict({
         "sub_index": sub_index,
         "derived_sub_indices": derived_sub_indices,
         "action_mask": action_mask,
-    }, batch_size=torch.Size([batch_size]))
+    }, batch_size=torch.Size([config.batch_size]))
 
 
 def create_sb3_observation(obs_td: TensorDict) -> Dict[str, torch.Tensor]:
@@ -151,21 +209,33 @@ def create_sb3_observation(obs_td: TensorDict) -> Dict[str, torch.Tensor]:
 
 
 # ============================================================================
-# Parity Tests
+# Pytest Fixtures
+# ============================================================================
+
+@pytest.fixture(scope="module")
+def base_config():
+    """Base configuration for all tests in this module."""
+    return create_default_config()
+
+
+# ============================================================================
+# Embedder Parity Tests
 # ============================================================================
 
 @pytest.mark.skipif(not SB3_AVAILABLE, reason="SB3 dependencies unavailable")
 def test_embedder_parity():
-    """Test that tensor and SB3 embedders produce identical outputs."""
-    embed_dim = DEFAULT_EMBED_DIM
-    batch_size = 4
-    n_actions = 16
-    seed = 42
+    """
+    Test that tensor and SB3 embedders produce identical outputs.
     
-    tensor_emb = create_embedder(embed_dim=embed_dim, seed=seed)
-    sb3_emb = create_sb3_embedder(embed_dim=embed_dim, seed=seed)
+    Verifies that get_embeddings_batch produces the same embeddings
+    for both observation states and action states.
+    """
+    config = create_default_config()
     
-    obs = create_random_observation(batch_size=batch_size, n_actions=n_actions, seed=123)
+    tensor_emb = create_embedder(config)
+    sb3_emb = create_sb3_embedder(config)
+    
+    obs = create_random_observation(config, obs_seed=123)
     
     with torch.no_grad():
         tensor_obs_emb = tensor_emb.get_embeddings_batch(obs["sub_index"])
@@ -179,55 +249,68 @@ def test_embedder_parity():
         f"Action embeddings differ: max diff = {(tensor_action_emb - sb3_action_emb).abs().max().item()}"
 
 
+# ============================================================================
+# Forward Pass Parity Tests
+# ============================================================================
+
 @pytest.mark.skipif(not SB3_AVAILABLE, reason="SB3 dependencies unavailable")
 def test_forward_parity():
-    """Test that tensor and SB3 policies produce identical forward outputs (logits & values)."""
-    embed_dim = DEFAULT_EMBED_DIM
-    batch_size = 4
-    n_actions = 16
-    n_atoms = DEFAULT_PADDING_ATOMS
-    max_arity = DEFAULT_MAX_ARITY
-    seed = 42
-    device = "cpu"
+    """
+    Test that tensor and SB3 policies produce identical forward outputs.
     
-    # Create embedders with same seed
-    tensor_emb = create_embedder(embed_dim=embed_dim, seed=seed)
-    sb3_emb = create_sb3_embedder(embed_dim=embed_dim, seed=seed)
+    Verifies that forward pass produces same:
+    - Actions (in deterministic mode)
+    - Values
+    - Log probabilities
+    """
+    config = create_default_config()
+    
+    # Create embedders
+    tensor_emb = create_embedder(config)
+    sb3_emb = create_sb3_embedder(config)
     
     # Create tensor policy
-    torch.manual_seed(seed)
+    torch.manual_seed(config.seed)
     tensor_policy = ActorCriticPolicy(
         embedder=tensor_emb,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=4,
-        dropout_prob=0.0,
-        device=torch.device(device),
-        action_dim=n_actions,
+        embed_dim=config.embed_dim,
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+        dropout_prob=config.dropout_prob,
+        device=torch.device(config.device),
+        action_dim=config.n_actions,
     )
     tensor_policy.eval()
     
     # Create SB3 policy
     obs_space = gym.spaces.Dict({
-        "sub_index": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(1, n_atoms, max_arity + 1), dtype=int),
-        "derived_sub_indices": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(n_actions, n_atoms, max_arity + 1), dtype=int),
-        "action_mask": gym.spaces.Box(low=0, high=1, shape=(n_actions,), dtype=int),
+        "sub_index": gym.spaces.Box(
+            low=0, high=config.n_constants + config.n_vars,
+            shape=(1, config.padding_atoms, config.max_arity + 1), dtype=int
+        ),
+        "derived_sub_indices": gym.spaces.Box(
+            low=0, high=config.n_constants + config.n_vars,
+            shape=(config.n_actions, config.padding_atoms, config.max_arity + 1), dtype=int
+        ),
+        "action_mask": gym.spaces.Box(
+            low=0, high=1, shape=(config.n_actions,), dtype=int
+        ),
     })
-    action_space = gym.spaces.Discrete(n_actions)
+    action_space = gym.spaces.Discrete(config.n_actions)
     
-    torch.manual_seed(seed)
+    torch.manual_seed(config.seed)
     sb3_policy = SB3CustomActorCriticPolicy(
         observation_space=obs_space,
         action_space=action_space,
         lr_schedule=lambda _: 0.0,
         features_extractor_class=SB3CustomCombinedExtractor,
-        features_extractor_kwargs={"embedder": sb3_emb, "features_dim": embed_dim},
+        features_extractor_kwargs={"embedder": sb3_emb, "features_dim": config.embed_dim},
         share_features_extractor=True,
-    ).to(device)
+    ).to(config.device)
     sb3_policy.eval()
     
     # Create test observations
-    obs_td = create_random_observation(batch_size=batch_size, n_actions=n_actions, seed=123)
+    obs_td = create_random_observation(config, obs_seed=123)
     obs_sb3 = create_sb3_observation(obs_td)
     
     # Forward pass
@@ -245,57 +328,70 @@ def test_forward_parity():
         f"Log probs differ: max diff = {(tensor_log_probs - sb3_log_probs).abs().max().item()}"
 
 
+# ============================================================================
+# Evaluate Actions Parity Tests
+# ============================================================================
+
 @pytest.mark.skipif(not SB3_AVAILABLE, reason="SB3 dependencies unavailable")
 def test_evaluate_actions_parity():
-    """Test that tensor and SB3 policies produce identical evaluate_actions outputs."""
-    embed_dim = DEFAULT_EMBED_DIM
-    batch_size = 4
-    n_actions = 16
-    n_atoms = DEFAULT_PADDING_ATOMS
-    max_arity = DEFAULT_MAX_ARITY
-    seed = 42
-    device = "cpu"
+    """
+    Test that tensor and SB3 policies produce identical evaluate_actions outputs.
     
-    # Create embedders with same seed
-    tensor_emb = create_embedder(embed_dim=embed_dim, seed=seed)
-    sb3_emb = create_sb3_embedder(embed_dim=embed_dim, seed=seed)
+    Verifies that evaluate_actions produces same:
+    - Values
+    - Log probabilities
+    - Entropy
+    """
+    config = create_default_config()
+    
+    # Create embedders
+    tensor_emb = create_embedder(config)
+    sb3_emb = create_sb3_embedder(config)
     
     # Create tensor policy
-    torch.manual_seed(seed)
+    torch.manual_seed(config.seed)
     tensor_policy = ActorCriticPolicy(
         embedder=tensor_emb,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=4,
-        dropout_prob=0.0,
-        device=torch.device(device),
-        action_dim=n_actions,
+        embed_dim=config.embed_dim,
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+        dropout_prob=config.dropout_prob,
+        device=torch.device(config.device),
+        action_dim=config.n_actions,
     )
     tensor_policy.eval()
     
     # Create SB3 policy
     obs_space = gym.spaces.Dict({
-        "sub_index": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(1, n_atoms, max_arity + 1), dtype=int),
-        "derived_sub_indices": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(n_actions, n_atoms, max_arity + 1), dtype=int),
-        "action_mask": gym.spaces.Box(low=0, high=1, shape=(n_actions,), dtype=int),
+        "sub_index": gym.spaces.Box(
+            low=0, high=config.n_constants + config.n_vars,
+            shape=(1, config.padding_atoms, config.max_arity + 1), dtype=int
+        ),
+        "derived_sub_indices": gym.spaces.Box(
+            low=0, high=config.n_constants + config.n_vars,
+            shape=(config.n_actions, config.padding_atoms, config.max_arity + 1), dtype=int
+        ),
+        "action_mask": gym.spaces.Box(
+            low=0, high=1, shape=(config.n_actions,), dtype=int
+        ),
     })
-    action_space = gym.spaces.Discrete(n_actions)
+    action_space = gym.spaces.Discrete(config.n_actions)
     
-    torch.manual_seed(seed)
+    torch.manual_seed(config.seed)
     sb3_policy = SB3CustomActorCriticPolicy(
         observation_space=obs_space,
         action_space=action_space,
         lr_schedule=lambda _: 0.0,
         features_extractor_class=SB3CustomCombinedExtractor,
-        features_extractor_kwargs={"embedder": sb3_emb, "features_dim": embed_dim},
+        features_extractor_kwargs={"embedder": sb3_emb, "features_dim": config.embed_dim},
         share_features_extractor=True,
-    ).to(device)
+    ).to(config.device)
     sb3_policy.eval()
     
     # Create test observations and actions
-    obs_td = create_random_observation(batch_size=batch_size, n_actions=n_actions, seed=123)
+    obs_td = create_random_observation(config, obs_seed=123)
     obs_sb3 = create_sb3_observation(obs_td)
-    actions = torch.arange(batch_size, device=device) % n_actions
+    actions = torch.arange(config.batch_size, device=config.device) % config.n_actions
     
     # Evaluate actions
     with torch.no_grad():
@@ -315,55 +411,65 @@ def test_evaluate_actions_parity():
             f"Entropy differs: max diff = {(tensor_entropy - sb3_entropy).abs().max().item()}"
 
 
+# ============================================================================
+# Predict Values Parity Tests
+# ============================================================================
+
 @pytest.mark.skipif(not SB3_AVAILABLE, reason="SB3 dependencies unavailable")
 def test_predict_values_parity():
-    """Test that tensor and SB3 policies produce identical predict_values outputs."""
-    embed_dim = DEFAULT_EMBED_DIM
-    batch_size = 4
-    n_actions = 16
-    n_atoms = DEFAULT_PADDING_ATOMS
-    max_arity = DEFAULT_MAX_ARITY
-    seed = 42
-    device = "cpu"
+    """
+    Test that tensor and SB3 policies produce identical predict_values outputs.
     
-    # Create embedders with same seed
-    tensor_emb = create_embedder(embed_dim=embed_dim, seed=seed)
-    sb3_emb = create_sb3_embedder(embed_dim=embed_dim, seed=seed)
+    Verifies that predict_values produces the same value estimates.
+    """
+    config = create_default_config()
+    
+    # Create embedders
+    tensor_emb = create_embedder(config)
+    sb3_emb = create_sb3_embedder(config)
     
     # Create tensor policy
-    torch.manual_seed(seed)
+    torch.manual_seed(config.seed)
     tensor_policy = ActorCriticPolicy(
         embedder=tensor_emb,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=4,
-        dropout_prob=0.0,
-        device=torch.device(device),
-        action_dim=n_actions,
+        embed_dim=config.embed_dim,
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+        dropout_prob=config.dropout_prob,
+        device=torch.device(config.device),
+        action_dim=config.n_actions,
     )
     tensor_policy.eval()
     
     # Create SB3 policy
     obs_space = gym.spaces.Dict({
-        "sub_index": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(1, n_atoms, max_arity + 1), dtype=int),
-        "derived_sub_indices": gym.spaces.Box(low=0, high=DEFAULT_N_CONSTANTS + DEFAULT_N_VARS, shape=(n_actions, n_atoms, max_arity + 1), dtype=int),
-        "action_mask": gym.spaces.Box(low=0, high=1, shape=(n_actions,), dtype=int),
+        "sub_index": gym.spaces.Box(
+            low=0, high=config.n_constants + config.n_vars,
+            shape=(1, config.padding_atoms, config.max_arity + 1), dtype=int
+        ),
+        "derived_sub_indices": gym.spaces.Box(
+            low=0, high=config.n_constants + config.n_vars,
+            shape=(config.n_actions, config.padding_atoms, config.max_arity + 1), dtype=int
+        ),
+        "action_mask": gym.spaces.Box(
+            low=0, high=1, shape=(config.n_actions,), dtype=int
+        ),
     })
-    action_space = gym.spaces.Discrete(n_actions)
+    action_space = gym.spaces.Discrete(config.n_actions)
     
-    torch.manual_seed(seed)
+    torch.manual_seed(config.seed)
     sb3_policy = SB3CustomActorCriticPolicy(
         observation_space=obs_space,
         action_space=action_space,
         lr_schedule=lambda _: 0.0,
         features_extractor_class=SB3CustomCombinedExtractor,
-        features_extractor_kwargs={"embedder": sb3_emb, "features_dim": embed_dim},
+        features_extractor_kwargs={"embedder": sb3_emb, "features_dim": config.embed_dim},
         share_features_extractor=True,
-    ).to(device)
+    ).to(config.device)
     sb3_policy.eval()
     
     # Create test observations
-    obs_td = create_random_observation(batch_size=batch_size, n_actions=n_actions, seed=123)
+    obs_td = create_random_observation(config, obs_seed=123)
     obs_sb3 = create_sb3_observation(obs_td)
     
     # Predict values
@@ -376,6 +482,10 @@ def test_predict_values_parity():
     assert torch.allclose(tensor_values, sb3_values, atol=1e-5), \
         f"Predicted values differ: max diff = {(tensor_values - sb3_values).abs().max().item()}"
 
+
+# ============================================================================
+# CLI Runner
+# ============================================================================
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -75,7 +75,6 @@ if __name__ == "__main__":
         'skip_unary_actions': True,
         'max_depth': 20,
         'memory_pruning': True,
-        'eval_pruning': False,
         'corruption_mode': True,
 
         # Embedding params
@@ -219,9 +218,6 @@ if __name__ == "__main__":
 
         raw_corruption_mode = getattr(namespace, "corruption_mode", True)
         namespace.corruption_mode = bool(raw_corruption_mode)
-
-        raw_eval_pruning = getattr(namespace, "eval_pruning", False)
-        namespace.eval_pruning = bool(raw_eval_pruning)
 
         # Auto-configure padding_states based on dataset
         if namespace.padding_states == -1:

@@ -70,7 +70,6 @@ def _shared_default_config():
         'skip_unary_actions': True,
         'max_depth': 20,
         'memory_pruning': True,
-        'eval_pruning': True,
         'corruption_mode': 'dynamic',
         'corruption_scheme': ['head', 'tail'],
         'use_exact_memory': True,

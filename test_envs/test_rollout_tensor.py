@@ -238,7 +238,6 @@ def create_tensor_env(dataset: str = "countries_s3", n_envs: int = 4, num_train_
         mode='train',
         max_depth=20,
         memory_pruning=False,
-        eval_pruning=False,
         use_exact_memory=True,
         skip_unary_actions=False,
         end_proof_action=False,
