@@ -34,7 +34,6 @@ class RolloutBuffer:
         device: torch.device,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
-        sb3_determinism: bool = False,
     ):
         self.buffer_size = buffer_size
         self.n_envs = n_envs
@@ -61,8 +60,6 @@ class RolloutBuffer:
         self.obs_keys = None
         self.obs_shapes = {}
         self.obs_dtypes = {}
-
-        self.sb3_determinism = sb3_determinism
         
     def reset(self) -> None:
         """Reset the buffer."""
@@ -256,13 +253,10 @@ class RolloutBuffer:
             self.generator_ready = True
         
         # Create random permutation of indices
-        # Use numpy permutation to match SB3's RolloutBuffer.get() exactly
+        # Use numpy permutation for exact parity with SB3
         total_size = self.buffer_size * self.n_envs
-        if self.sb3_determinism: 
-            indices = np.random.permutation(total_size)
-            indices = torch.from_numpy(indices).to(self.device)
-        else:
-            indices = torch.randperm(total_size, device=self.device)
+        indices = np.random.permutation(total_size)
+        indices = torch.from_numpy(indices).to(self.device)
         
         # Default to full batch if batch_size not specified
         if batch_size is None:

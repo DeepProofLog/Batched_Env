@@ -50,7 +50,6 @@ class PPO_custom(PPO):
         callback: BaseCallback,
         rollout_buffer: RolloutBuffer,
         n_rollout_steps: int,
-        deterministic: bool = True,
         return_traces: bool = False,
     ) -> Union[bool, Tuple[bool, List[Dict[str, Any]]]]:
         """Collect rollouts while keeping logging consistent with the base implementation.
@@ -60,7 +59,6 @@ class PPO_custom(PPO):
             callback: Callback for logging
             rollout_buffer: Buffer to store transitions
             n_rollout_steps: Number of steps to collect
-            deterministic: If True, always use action 0 (first valid action) for parity testing
             return_traces: If True, return list of step traces for comparison
             
         Returns:
@@ -80,7 +78,8 @@ class PPO_custom(PPO):
         callback.on_rollout_start()
         # print('Entering rollout loop')
         while n_steps < n_rollout_steps:
-            if n_steps % (n_rollout_steps // 5) == 0:
+            log_interval = max(1, n_rollout_steps // 5)
+            if n_steps % log_interval == 0:
                 print(f"Collecting rollouts: {n_steps}/{n_rollout_steps} steps")
 
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
@@ -91,15 +90,9 @@ class PPO_custom(PPO):
                 # Convert observations to tensor and pass to policy
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 
-                if deterministic:
-                    # For parity testing: always use action 0 (first valid action)
-                    actions = torch.zeros(env.num_envs, dtype=torch.long, device=self.device)
-                    values = self.policy.predict_values(obs_tensor)
-                    # Compute log_probs for action 0
-                    dist = self.policy.get_distribution(obs_tensor)
-                    log_probs = dist.log_prob(actions)
-                else:
-                    actions, values, log_probs = self.policy(obs_tensor, deterministic=False)
+                # Always sample actions (not deterministic)
+                # With same model weights and RNG state, sampling produces identical results
+                actions, values, log_probs = self.policy(obs_tensor, deterministic=False)
                 
                 dist_logits = None
                 try:

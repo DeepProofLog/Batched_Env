@@ -46,14 +46,9 @@ class PPO:
         trace_dir: Optional[str] = None,
         trace_prefix: str = "batched",
         trace_recorder: Optional[TraceRecorder] = None,
-        sb3_determinism: bool = False,
     ):
         """
         Initialize PPO - matches SB3's __init__ exactly.
-        
-        Args:
-            sb3_determinism: If True, use numpy random permutation for shuffling
-                           to match SB3's behavior exactly (for parity testing).
         """
         self.policy = policy
         self.env = env
@@ -89,8 +84,14 @@ class PPO:
             device=self.device,
             gamma=gamma,
             gae_lambda=gae_lambda,
-            sb3_determinism=sb3_determinism,
         )
+        
+        # Persistent state for consecutive learn() calls - matches SB3
+        self._last_obs = None
+        self._last_episode_starts = None
+        self._current_episode_reward = None
+        self._current_episode_length = None
+        self.num_timesteps = 0
         
         # Create optimizer - matches SB3
         self.optimizer = torch.optim.Adam(
@@ -108,7 +109,6 @@ class PPO:
         episode_rewards: list,
         episode_lengths: list,
         iteration: int,
-        deterministic: bool = True,
         return_traces: bool = False,
     ) -> tuple:
         """
@@ -123,7 +123,6 @@ class PPO:
             episode_rewards: List to accumulate completed episode rewards
             episode_lengths: List to accumulate completed episode lengths
             iteration: Current training iteration
-            deterministic: If True, use deterministic action selection (default: True)
             return_traces: If True, return list of step traces for comparison (default: False)
             
         Returns:
@@ -149,16 +148,9 @@ class PPO:
                 obs_snapshot = current_obs.clone()
                 obs_device = obs_snapshot.to(self.device)
 
-                # Get action from policy
-                if deterministic:
-                    # For parity testing: always use action 0 (first valid action)
-                    actions = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
-                    _, values, _ = self.policy(obs_device, deterministic=True)
-                    # Compute log_probs for action 0
-                    # evaluate_actions returns (values, log_probs, entropy)
-                    _, log_probs, _ = self.policy.evaluate_actions(obs_device, actions)
-                else:
-                    actions, values, log_probs = self.policy(obs_device, deterministic=False)
+                # Get action from policy - always sample (not deterministic)
+                # With same model weights and RNG state, sampling produces identical results
+                actions, values, log_probs = self.policy(obs_device, deterministic=False)
                 
                 dist_logits = None
                 try:
@@ -480,6 +472,7 @@ class PPO:
         self,
         total_timesteps: int,
         callback=None,
+        reset_num_timesteps: bool = True,
     ) -> None:
         """
         Learn policy using PPO algorithm - matches SB3's learn() method.
@@ -487,17 +480,33 @@ class PPO:
         Args:
             total_timesteps: Total number of timesteps to train for
             callback: Optional callback to call after each rollout
+            reset_num_timesteps: Whether to reset timestep counter and environment.
+                               Set to False when calling learn() consecutively.
         """
         from tensordict import TensorDict
         
-        total_steps_done = 0
+        # Handle reset_num_timesteps - matches SB3 _setup_learn behavior
+        if reset_num_timesteps:
+            self.num_timesteps = 0
+        else:
+            # Make sure training timesteps are ahead of the internal counter
+            total_timesteps += self.num_timesteps
+        
+        total_steps_done = self.num_timesteps
         iteration = 0
         
-        # Reset environment
-        current_obs = self.env.reset()
-        current_episode_reward = torch.zeros(self.n_envs, device=self.device)
-        current_episode_length = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
-        episode_starts = torch.ones(self.n_envs, dtype=torch.float32, device=self.device)
+        # Only reset environment if needed (first call or explicit reset) - matches SB3
+        if reset_num_timesteps or self._last_obs is None:
+            current_obs = self.env.reset()
+            current_episode_reward = torch.zeros(self.n_envs, device=self.device)
+            current_episode_length = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
+            episode_starts = torch.ones(self.n_envs, dtype=torch.float32, device=self.device)
+        else:
+            # Resume from last state
+            current_obs = self._last_obs
+            current_episode_reward = self._current_episode_reward
+            current_episode_length = self._current_episode_length
+            episode_starts = self._last_episode_starts
         
         # Episode tracking
         episode_rewards = []
@@ -584,3 +593,10 @@ class PPO:
                 print(f"[PPO] Mean length: {sum(episode_lengths)/len(episode_lengths):.1f}")
         if self.trace_recorder is not None:
             self.trace_recorder.flush()
+        
+        # Save state for consecutive learn() calls - matches SB3
+        self._last_obs = current_obs
+        self._last_episode_starts = episode_starts
+        self._current_episode_reward = current_episode_reward
+        self._current_episode_length = current_episode_length
+        self.num_timesteps = total_steps_done

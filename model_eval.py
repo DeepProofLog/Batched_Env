@@ -198,11 +198,7 @@ def evaluate_policy(
         actor_device = next(actor.parameters(), torch.zeros((), device=device)).device if isinstance(actor, nn.Module) else device
         policy_td = td.clone().to(actor_device)
         
-        # Call actor with deterministic flag if it supports it
-        if hasattr(actor, 'forward') and 'deterministic' in actor.forward.__code__.co_varnames:
-            out = actor(policy_td, deterministic=deterministic)
-        else:
-            out = actor(policy_td)
+        out = actor(policy_td, deterministic=deterministic)
         
         # Handle both tuple output (actions, values, log_probs) and TensorDict output
         value_estimates = torch.zeros(B, device=device)

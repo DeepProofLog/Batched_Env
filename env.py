@@ -142,7 +142,8 @@ class BatchedEnv(EnvBase):
         # Per-env deterministic sampling mode (for parity testing with SB3)
         self.sample_deterministic_per_env = sample_deterministic_per_env
         if self.sample_deterministic_per_env:
-            # Each env has its own pointer, initialized like SB3: env_i starts at query i
+            # Each env has its own pointer, initialized to env_idx like SB3
+            # (SB3 sets env._train_ptr = env_idx for parity testing)
             self._per_env_train_ptrs = list(range(self.batch_size_int))
 
         # Sampling pointer for eval mode

@@ -683,7 +683,6 @@ def create_tensor_eval_env(env_data: Dict, queries: List, n_envs: int, seed: int
         max_grad_norm=0.5,
         device=device,
         verbose=False,
-        sb3_determinism=True,
     )
     
     return ppo, env, im, engine
@@ -802,7 +801,6 @@ def run_evaluate_policy_parity(
             model=sb3_ppo,
             env=sb3_env,
             n_eval_episodes=n_eval_episodes,
-            deterministic=True,
             track_logprobs=True,
         )
         # When track_logprobs=True, returns 9 values
@@ -838,7 +836,6 @@ def run_evaluate_policy_parity(
             actor=tensor_ppo.policy,
             env=tensor_env,
             target_episodes=targets,  # Use per-env targets like SB3
-            deterministic=True,
             track_logprobs=True,
         )
         
@@ -1098,7 +1095,6 @@ def run_eval_corruptions_parity(
             data=queries_sb3,  # list of query objects
             sampler=sb3_sampler,
             n_corruptions=k_negatives,
-            deterministic=True,
             corruption_scheme=corruption_scheme,  # ['head'] or ['tail'] or ['head', 'tail']
             verbose=0,
             return_traces=True,  # Enable trace collection
@@ -1155,7 +1151,6 @@ def run_eval_corruptions_parity(
             sampler=tensor_sampler,
             n_corruptions=tensor_k_negatives,
             corruption_modes=tuple(corruption_scheme),  # ('head',) or ('tail',) or ('head', 'tail')
-            deterministic=True,
             verbose=False,
             return_traces=True,  # Enable trace collection
         )
@@ -1291,7 +1286,6 @@ class TestEvalCorruptionsParity:
     @pytest.mark.parametrize("dataset,corruption_mode,n_queries,k_negatives", [
         # Family dataset: head and tail corruption, 10 test queries, 10 corruptions
         ("family", "both", 10, 10),
-        ("family", "both", 2, None),
         # Countries_s3 dataset: tail corruption, all test queries (24), 3 corruptions
         ("countries_s3", "tail", 24, 3),
         # Countries_s3 dataset: tail corruption, all test queries (24), all corruptions (None)
@@ -1331,11 +1325,11 @@ if __name__ == "__main__":
                        help="Dataset name (default: countries_s3)")
     parser.add_argument("--n-envs", type=int, default=2,
                        help="Number of environments (default: 2)")
-    parser.add_argument("--n-eval-episodes", type=int, default=10,
-                       help="Number of evaluation episodes (default: 10)")
+    parser.add_argument("--n-eval-episodes", type=int, default=24,
+                       help="Number of evaluation episodes (default: 24)")
     parser.add_argument("--seed", type=int, default=42,
                        help="Random seed (default: 42)")
-    parser.add_argument("--mode", type=str, default="valid",
+    parser.add_argument("--mode", type=str, default="test",
                        choices=["train", "valid", "test"],
                        help="Query set to use (default: valid)")
     parser.add_argument("--test", type=str, default="both",

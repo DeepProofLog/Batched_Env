@@ -179,7 +179,8 @@ def create_sb3_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
     env_fns = [make_env(env_idx=i) for i in range(n_envs)]
     vec_env = DummyVecEnv(env_fns)
     
-    # Create embedder
+    # Create embedder with fixed seed for reproducibility
+    torch.manual_seed(42)
     embedder = SB3Embedder(
         n_constants=im.constant_no,
         n_predicates=im.predicate_no,
@@ -195,7 +196,8 @@ def create_sb3_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
     )
     embedder.embed_dim = 64  # Set embed_dim
     
-    # Create PPO
+    # Create PPO with fixed seed for reproducibility
+    torch.manual_seed(42)
     ppo = PPO_custom(
         policy=CustomActorCriticPolicy,
         env=vec_env,
@@ -288,7 +290,8 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
         sample_deterministic_per_env=True,
     )
     
-    # Create embedder
+    # Create embedder with fixed seed for reproducibility (same seed as SB3)
+    torch.manual_seed(42)
     embedder = TensorEmbedder(
         n_constants=im.constant_no,
         n_predicates=im.predicate_no,
@@ -304,7 +307,8 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
     )
     embedder.embed_dim = 64
     
-    # Create policy
+    # Create policy with fixed seed for reproducibility (same seed as SB3)
+    torch.manual_seed(42)
     action_size = padding_states  # action space size is padding_states
     policy = TensorPolicy(
         embedder=embedder,
@@ -373,7 +377,6 @@ def collect_sb3_rollout_traces(
         callback=callback,
         rollout_buffer=ppo.rollout_buffer,
         n_rollout_steps=n_steps,
-        deterministic=True,
         return_traces=True,
     )
     
@@ -406,7 +409,6 @@ def collect_tensor_rollout_traces(
         episode_rewards=episode_rewards,
         episode_lengths=episode_lengths,
         iteration=0,
-        deterministic=True,
         return_traces=True,
     )
     
@@ -529,10 +531,13 @@ def run_rollout_parity_test(dataset: str, n_envs: int, n_steps: int, verbose: bo
     )
     
     # Collect rollouts with traces using the new flags
+    # Set same seed before each collect to ensure identical sampling
     print("\nCollecting SB3 rollouts with return_traces=True...")
+    torch.manual_seed(123)  # Seed before sampling
     sb3_traces, sb3_buffer = collect_sb3_rollout_traces(sb3_ppo, n_steps)
     
     print("Collecting tensor rollouts with return_traces=True...")
+    torch.manual_seed(123)  # Same seed for identical sampling
     tensor_traces, tensor_buffer = collect_tensor_rollout_traces(tensor_ppo, n_steps, tensor_im)
     
     # Compare traces

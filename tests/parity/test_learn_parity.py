@@ -223,8 +223,9 @@ def create_sb3_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int, n_e
     vec_env = DummyVecEnv(env_fns)
     
     # Create embedder with fixed seed
-    # Use a fixed n_vars for both implementations to ensure identical embeddings
-    n_vars_for_embedder = 1000000  # Fixed value for parity testing
+    # Use a reasonable n_vars for testing - 1000 is enough for test scenarios
+    # and avoids massive memory usage from 1M embedding entries
+    n_vars_for_embedder = 1000
     torch.manual_seed(seed)
     embedder = SB3Embedder(
         n_constants=im.constant_no,
@@ -337,8 +338,8 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int, 
     )
     
     # Create embedder with fixed seed
-    # Use a fixed n_vars for both implementations to ensure identical embeddings
-    n_vars_for_embedder = 1000000  # Fixed value for parity testing (must match SB3)
+    # Use a reasonable n_vars for testing - must match SB3 value
+    n_vars_for_embedder = 1000
     torch.manual_seed(seed)
     embedder = TensorEmbedder(
         n_constants=im.constant_no,
@@ -386,7 +387,6 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int, 
         max_grad_norm=0.5,
         device=device,
         verbose=False,
-        sb3_determinism=True,  # Use numpy shuffling to match SB3 exactly
     )
     
     return ppo, env, im, engine
@@ -447,7 +447,6 @@ def collect_sb3_rollout_with_traces(
         callback=callback,
         rollout_buffer=ppo.rollout_buffer,
         n_rollout_steps=n_steps,
-        deterministic=True,
         return_traces=True,
     )
     
@@ -499,7 +498,6 @@ def collect_tensor_rollout_with_traces(
         episode_rewards=episode_rewards,
         episode_lengths=episode_lengths,
         iteration=1,
-        deterministic=True,
         return_traces=True,
     )
     
@@ -784,8 +782,10 @@ def run_learn_parity_test(
     )
     
     # Collect rollouts and train for SB3
+    # Set same seed before each collect to ensure identical sampling
     if verbose:
         print("\nCollecting SB3 rollouts and training...")
+    torch.manual_seed(123)  # Seed before sampling
     sb3_traces, sb3_buffer, sb3_train_metrics = collect_sb3_rollout_with_traces(
         sb3_ppo, n_steps, return_train_traces=compare_training_traces
     )
@@ -796,6 +796,7 @@ def run_learn_parity_test(
     # Collect rollouts and train for tensor
     if verbose:
         print("Collecting tensor rollouts and training...")
+    torch.manual_seed(123)  # Same seed for identical sampling
     tensor_traces, tensor_buffer, tensor_train_metrics = collect_tensor_rollout_with_traces(
         tensor_ppo, n_steps, tensor_im, return_train_traces=compare_training_traces
     )
@@ -1082,7 +1083,7 @@ if __name__ == "__main__":
                        help="Number of environments (default: 4)")
     parser.add_argument("--n-steps", type=int, default=20,
                        help="Number of rollout steps (default: 20)")
-    parser.add_argument("--n-epochs", type=int, default=1,
+    parser.add_argument("--n-epochs", type=int, default=3,
                        help="Number of training epochs (default: 1)")
     parser.add_argument("--seed", type=int, default=42,
                        help="Random seed (default: 42)")
