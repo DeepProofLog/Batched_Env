@@ -87,7 +87,7 @@ def create_aligned_environments(dataset: str, n_envs: int):
     )
     
     facts_set = set(dh_sb3.facts)
-    im_sb3.build_fact_index(list(facts_set))
+    im_sb3.build_fact_index(list(facts_set), deterministic=True)
     
     # ===== Tensor Setup =====
     dh_tensor = DataHandler(
@@ -159,7 +159,7 @@ def create_sb3_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
                 sample_deterministic=True,
                 seed=42,
                 max_depth=20,
-                memory_pruning=False,
+                memory_pruning=True,
                 padding_atoms=padding_atoms,
                 padding_states=padding_states,
                 verbose=0,
@@ -167,10 +167,9 @@ def create_sb3_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
                 device=device,
                 engine='python',
                 engine_strategy='complete',
-                skip_unary_actions=False,
-                endf_action=False,
+                skip_unary_actions=True,
+                endf_action=True,
                 reward_type=0,
-                canonical_action_order=True,
             )
             env._train_ptr = env_idx
             return Monitor(env)
@@ -246,10 +245,9 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
     engine = UnificationEngine.from_index_manager(
         im, take_ownership=True,
         stringifier_params=stringifier_params,
-        end_pred_idx=None,
-        end_proof_action=False,
+        end_pred_idx=im.end_pred_idx,
+        end_proof_action=True,
         max_derived_per_state=padding_states,
-        sort_states=True
     )
     engine.index_manager = im
     
@@ -271,17 +269,17 @@ def create_tensor_ppo(env_data: Dict, queries: List, n_envs: int, n_steps: int):
         unification_engine=engine,
         mode='train',
         max_depth=20,
-        memory_pruning=False,
+        memory_pruning=True,
         eval_pruning=False,
         use_exact_memory=True,
-        skip_unary_actions=False,
+        skip_unary_actions=True,
         end_proof_action=False,
         reward_type=0,
         padding_atoms=padding_atoms,
         padding_states=padding_states,
         true_pred_idx=im.predicate_str2idx.get('True'),
         false_pred_idx=im.predicate_str2idx.get('False'),
-        end_pred_idx=im.predicate_str2idx.get('End'),
+        end_pred_idx=im.predicate_str2idx.get('Endf'),
         verbose=0,
         prover_verbose=0,
         device=device,

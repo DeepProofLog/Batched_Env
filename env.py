@@ -717,6 +717,11 @@ class BatchedEnv(EnvBase):
 
                 # Step 5.5: Add END action if configured and room available (for non-terminal rows)
                 if self.end_proof_action:
+                    # Cap to padding_states - 1 BEFORE adding Endf
+                    # This matches SB3 behavior: max_num_states = padding_states - 1, then append Endf
+                    max_for_endf = self.padding_states - 1
+                    derived_counts_subset = torch.clamp(derived_counts_subset, max=max_for_endf)
+                    
                     all_derived, derived_counts_subset = self._add_end_action(all_derived, derived_counts_subset)
                     if verbose:
                         self.debug_helper._log(3, f"[compute_derived] after add_end_action counts={derived_counts_subset}")
@@ -757,10 +762,12 @@ class BatchedEnv(EnvBase):
                 batched_derived[rows, 0] = expanded
                 counts[rows] = 1
 
-        # Safety: any active env with zero states -> insert END (if available) or FALSE
+        # Safety check: any active env with zero states is a bug since _postprocess should inject FALSE
         need_fallback = active_mask & (counts == 0)
         if need_fallback.any():
-            raise ValueError('this shuold not happen, no state shold be empty')
+            # Log details for debugging
+            num_affected = need_fallback.sum().item()
+            raise ValueError(f'Bug: {num_affected} active env(s) have zero derived states after postprocess - this should not happen')
 
         # If proof-end action is enabled, never prefer END over FALSE for single-option failure rows
         # end is only when the agent chooses to end the proof
@@ -804,8 +811,11 @@ class BatchedEnv(EnvBase):
 
     def _add_end_action(self, states: Tensor, counts: Tensor) -> Tuple[Tensor, Tensor]:
         """
-        Add END action to derived states for rows that don't have all terminal states.
-        This is called for non-terminal current states after postprocess and skip-unary.
+        Add END action to derived states for rows that don't have any terminal outcome.
+        
+        Matches SB3 behavior exactly:
+        - has_terminal_outcome = any derived state has True or False predicate
+        - If NOT has_terminal_outcome, add Endf
         
         Args:
             states: [A, K, M, D] derived states
@@ -826,29 +836,30 @@ class BatchedEnv(EnvBase):
         
         A, K, M, D = states.shape
         
-        # Check which rows have all terminal derived states
-        # If K=0 (which shouldn't happen if we handled numel=0 above, unless we just created it), 
-        # then "all terminal" is vacuously true? No, if K=0, there are NO terminal states.
-        # So all_terminal should be False (we haven't found a terminal).
         if K == 0:
              raise RuntimeError('K should not be 0')
-        else:
-            first_preds = states[:, :, 0, 0]  # [A, K]
-            is_term = self.unification_engine.is_terminal_pred(first_preds) | (first_preds == pad)
-            
-            valid_state_mask = torch.arange(K, device=device).view(1, -1).expand(A, -1) < counts.view(A, 1)
-            # If a row has 0 valid states, all_terminal is True?
-            # Logic: (is_term | ~valid).all()
-            # If count=0, valid is all False. ~valid is all True. So all_terminal is True.
-            # BUT we want to add END if count=0!
-            # So if count=0, we should treat it as "not all terminal" (i.e. we haven't found a terminal yet).
-            # So we need to explicitly check counts > 0 for all_terminal logic?
-            # Or just force reserve_end if count == 0.
-            all_terminal = (is_term | ~valid_state_mask).all(dim=1) & (counts > 0)
-
-        # Reserve END for rows that are not all terminal and have room
-        # We allow adding END if count < K.
-        reserve_end = ~all_terminal & (counts < K)
+        
+        first_preds = states[:, :, 0, 0]  # [A, K]
+        valid_state_mask = torch.arange(K, device=device).view(1, -1).expand(A, -1) < counts.view(A, 1)
+        
+        # Check for terminal predicates (True/False) among valid states
+        # Match SB3: has_terminal_outcome = any(any(atom.predicate in ('True', 'False') for atom in state) for state in derived_states)
+        is_true = (first_preds == self.true_pred_idx) if self.true_pred_idx is not None else torch.zeros_like(first_preds, dtype=torch.bool)
+        is_false = (first_preds == self.false_pred_idx) if self.false_pred_idx is not None else torch.zeros_like(first_preds, dtype=torch.bool)
+        is_terminal = is_true | is_false
+        
+        # has_terminal_outcome: any valid state has True or False predicate
+        has_terminal_outcome = (is_terminal & valid_state_mask).any(dim=1)
+        
+        # If count=0, there's no terminal outcome (empty derived states)
+        # SB3 would add Endf in this case
+        has_terminal_outcome = has_terminal_outcome & (counts > 0)
+        
+        # Reserve END for rows without terminal outcome and with room
+        # Use padding_states (final buffer size) instead of K (engine working buffer)
+        # because _fit_to_buffer will expand to padding_states after this
+        K_final = self.padding_states
+        reserve_end = ~has_terminal_outcome & (counts < K_final)
         
         if reserve_end.any():
             rows = torch.arange(A, device=device)[reserve_end]
@@ -858,6 +869,15 @@ class BatchedEnv(EnvBase):
             end_state[0] = end_atom[0]  # Copy END atom to first position
             
             pos = counts[rows]
+            
+            # If we need to write beyond current K, expand the states tensor
+            max_pos_needed = pos.max().item() if pos.numel() > 0 else 0
+            if max_pos_needed >= K:
+                # Expand states tensor to accommodate the new position
+                new_K = max_pos_needed + 1
+                pad_extra = torch.full((A, new_K - K, M, D), pad, dtype=states.dtype, device=device)
+                states = torch.cat([states, pad_extra], dim=1)
+            
             expanded_end = end_state.unsqueeze(0).expand(rows.shape[0], -1, -1)
             states[rows, pos] = expanded_end
             counts[rows] = pos + 1
@@ -1188,7 +1208,6 @@ class BatchedEnv(EnvBase):
 
         # Step 4: Compact kept states
         new_counts = keep_mask.sum(dim=1)  # [A]
-        needs_false = (new_counts == 0) & has_states  # [A]
 
         pos = torch.cumsum(keep_mask.long(), dim=1) - 1  # [A, K]
         pos = torch.clamp(pos, min=0, max=K - 1)
@@ -1202,7 +1221,9 @@ class BatchedEnv(EnvBase):
         
         counts_out = new_counts.clone()
 
-        # Step 5: Inject FALSE where needed
+        # Step 5: Inject FALSE where needed - any row with 0 states needs FALSE
+        # This matches SB3 behavior where empty derived_states (after memory pruning) -> end_in_false()
+        needs_false = new_counts == 0
         if needs_false.any():
             # Create FALSE state with correct M dimension to match compact
             false_state = torch.full((M, D), pad, dtype=states.dtype, device=device)
@@ -1481,9 +1502,21 @@ class BatchedEnv(EnvBase):
         self.original_queries.index_copy_(0, rows, first_atoms)
 
     def _set_seed(self, seed: int):
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
+        """
+        Set the seed for environment-local random operations.
+        
+        Note: We intentionally do NOT call torch.manual_seed() here because that
+        would modify the global RNG state, which can cause issues with reproducibility.
+        Instead, we store the seed and use local RNGs when needed.
+        
+        For global seeding, use utils.seeding.seed_all() at the start of your script.
+        """
+        import random as _random
+        if seed is None:
+            seed = _random.randint(0, 2**31 - 1)
+        self.seed = int(seed)
+        # Create a local Python RNG for this environment (like sb3_env.py)
+        self.seed_gen = _random.Random(self.seed)
 
     # ===================== Evaluation =====================
 

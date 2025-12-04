@@ -29,6 +29,9 @@ import torch.nn as nn
 import numpy as np
 from collections import deque
 
+# Import seeding utilities (must be before other local imports to set up paths correctly)
+from seed_utils import ParityTestSeeder, ParityTestConfig, seed_all
+
 # Setup paths
 ROOT = Path(__file__).resolve().parents[2]
 SB3_ROOT = ROOT / "sb3"
@@ -43,7 +46,10 @@ if str(TEST_ENVS_ROOT) not in sys.path:
 
 # SB3 imports
 from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import obs_as_tensor
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.logger import configure
 
 # sb3 imports
 from sb3_custom_dummy_env import CustomDummyVecEnv
@@ -51,7 +57,7 @@ from sb3_dataset import DataHandler as SB3DataHandler
 from sb3_index_manager import IndexManager as SB3IndexManager
 from sb3_env import LogicEnv_gym as SB3Env
 from sb3_model import PPO_custom as SB3PPO, CustomActorCriticPolicy, CustomCombinedExtractor
-from sb3_embeddings import EmbedderLearnable as SB3Embedder, get_embedder as sb3_get_embedder
+from sb3_embeddings import EmbedderLearnable as SB3Embedder
 from sb3_model_eval import eval_corruptions as sb3_eval_corruptions
 from sb3_neg_sampling import get_sampler as get_sb3_sampler
 
@@ -60,13 +66,12 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 from unification import UnificationEngine
 from env import BatchedEnv
-from embeddings import EmbedderLearnable as TensorEmbedder, get_embedder as tensor_get_embedder
-from model import ActorCriticPolicy as TensorPolicy, create_actor_critic
+from embeddings import EmbedderLearnable as TensorEmbedder
+from model import ActorCriticPolicy as TensorPolicy
 from ppo import PPO as TensorPPO
 from rollout import RolloutBuffer
 from model_eval import eval_corruptions as tensor_eval_corruptions
 from sampler import Sampler, SamplerConfig
-from utils.utils import _set_seeds, _freeze_dropout_layernorm, is_variable
 
 
 @dataclass
@@ -187,28 +192,25 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
         corruption_mode=True,
     )
     
-    # Embedder
+    # Embedder - use reasonable n_vars to avoid massive memory usage
+    n_vars_for_embedder = 1000
     torch.manual_seed(config.seed)
-    embedder_args = type('Args', (), {
-        'learn_embeddings': True,
-        'atom_embedder': 'transe',
-        'state_embedder': 'mean',
-        'constant_embedding_size': config.atom_embedding_size,
-        'predicate_embedding_size': config.atom_embedding_size,
-        'atom_embedding_size': config.atom_embedding_size,
-        'padding_atoms': config.padding_atoms,
-        'dataset_name': config.dataset,
-    })()
-    embedder = sb3_get_embedder(
-        args=embedder_args,
-        data_handler=dh,
-        index_manager=im,
+    embedder = SB3Embedder(
+        n_constants=im.constant_no,
+        n_predicates=im.predicate_no,
+        n_vars=n_vars_for_embedder,
+        max_arity=dh.max_arity,
+        padding_atoms=config.padding_atoms,
+        atom_embedder='transe',
+        state_embedder='sum',
+        constant_embedding_size=config.atom_embedding_size,
+        predicate_embedding_size=config.atom_embedding_size,
+        atom_embedding_size=config.atom_embedding_size,
         device=device,
-    ).embedder
+    )
+    embedder.embed_dim = config.atom_embedding_size
     
-    # Create environments
-    facts_set = set(dh.facts)
-    
+    # Create environments with Monitor wrapper like working tests
     def make_env(idx: int, mode: str = "train"):
         def _init():
             queries = dh.train_queries if mode == "train" else dh.test_queries
@@ -222,7 +224,7 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
                 facts=facts_set,
                 mode=mode,
                 sample_deterministic=True,  # Round-robin for parity
-                seed=config.seed + idx,
+                seed=config.seed,
                 max_depth=config.max_steps,
                 memory_pruning=False,
                 padding_atoms=config.padding_atoms,
@@ -236,12 +238,13 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
                 endf_action=False,
                 reward_type=0,
                 canonical_action_order=True,
-                corruption_mode=None,  # No corruption during training
             )
-            return env
+            env._train_ptr = idx  # Set train pointer for deterministic query selection
+            return Monitor(env)  # Wrap with Monitor like working tests
         return _init
     
-    train_env = CustomDummyVecEnv([make_env(i, "train") for i in range(config.n_envs)])
+    # Use DummyVecEnv for training, CustomDummyVecEnv for evaluation
+    train_env = DummyVecEnv([make_env(i, "train") for i in range(config.n_envs)])
     eval_env = CustomDummyVecEnv([make_env(i, "eval") for i in range(config.n_envs)])
     
     # Create model
@@ -304,14 +307,11 @@ def create_tensor_components(config: TrainParityConfig, sb3_dh: SB3DataHandler =
         max_arity=dh.max_arity,
         padding_atoms=config.padding_atoms,
         device=device,
+        rules=dh.rules,
     )
     
     # Materialize indices
     dh.materialize_indices(im=im, device=device)
-    
-    # Align runtime variable start with SB3
-    head_vars = {arg for rule in dh.rules for arg in getattr(rule.head, "args", ()) if is_variable(arg)}
-    im.adjust_runtime_start_for_head_vars(len(head_vars))
     
     # Sampler
     domain2idx, entity2domain = dh.get_sampler_domain_info()
@@ -326,100 +326,129 @@ def create_tensor_components(config: TrainParityConfig, sb3_dh: SB3DataHandler =
         entity2domain=entity2domain,
     )
     
-    # Embedder
-    torch.manual_seed(config.seed)
-    embedder = tensor_get_embedder(
-        args=type('Args', (), {
-            'learn_embeddings': True,
-            'atom_embedder': 'transe',
-            'state_embedder': 'mean',
-            'constant_embedding_size': config.atom_embedding_size,
-            'predicate_embedding_size': config.atom_embedding_size,
-            'atom_embedding_size': config.atom_embedding_size,
-            'padding_atoms': config.padding_atoms,
-            'dataset_name': config.dataset,
-        })(),
-        data_handler=dh,
-        constant_no=im.constant_no,
-        predicate_no=im.predicate_no,
-        runtime_var_end_index=im.runtime_var_end_index,
-        constant_str2idx=im.constant_str2idx,
-        predicate_str2idx=im.predicate_str2idx,
-        constant_images_no=0,
-        device=device,
-    ).embedder
-    
     # Create stringifier params
-    stringifier_params = im.get_stringifier_params()
+    stringifier_params = {
+        'verbose': 0,
+        'idx2predicate': im.idx2predicate,
+        'idx2constant': im.idx2constant,
+        'idx2template_var': im.idx2template_var,
+        'padding_idx': im.padding_idx,
+        'n_constants': im.constant_no
+    }
     
     # Create unification engine
     engine = UnificationEngine.from_index_manager(
         im,
+        take_ownership=True,
         stringifier_params=stringifier_params,
         end_pred_idx=None,
         end_proof_action=False,
         max_derived_per_state=config.padding_states,
         sort_states=True,
     )
+    engine.index_manager = im
     
-    # Get data splits
-    train_split = dh.get_materialized_split("train")
-    test_split = dh.get_materialized_split("test")
+    # Convert queries to tensor format like working tests
+    train_queries = dh.train_queries
+    test_queries = dh.test_queries
     
-    # Create environments - match SB3 settings
+    def convert_queries_to_tensor(queries):
+        query_tensors = []
+        for q in queries:
+            query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            query_padded = torch.full((config.padding_atoms, 3), im.padding_idx, dtype=torch.long, device=device)
+            query_padded[0] = query_atom
+            query_tensors.append(query_padded)
+        return torch.stack(query_tensors, dim=0)
+    
+    train_queries_tensor = convert_queries_to_tensor(train_queries)
+    test_queries_tensor = convert_queries_to_tensor(test_queries)
+    
+    # Create environments - match working tests exactly
     train_env = BatchedEnv(
-        queries=train_split.queries,
-        labels=train_split.labels,
-        query_depths=train_split.depths,
+        batch_size=config.n_envs,
+        queries=train_queries_tensor,
+        labels=torch.ones(len(train_queries), dtype=torch.long, device=device),
+        query_depths=torch.ones(len(train_queries), dtype=torch.long, device=device),
         unification_engine=engine,
-        stringifier_params=stringifier_params,
+        mode='train',
+        max_depth=config.max_steps,
+        memory_pruning=False,
+        eval_pruning=False,
+        use_exact_memory=True,
+        skip_unary_actions=False,
+        end_proof_action=False,
+        reward_type=0,
         padding_atoms=config.padding_atoms,
         padding_states=config.padding_states,
-        max_depth=config.max_steps,
-        batch_size=config.n_envs,
-        mode="train",
-        sampler=None,  # No corruption during training
+        true_pred_idx=im.predicate_str2idx.get('True'),
+        false_pred_idx=im.predicate_str2idx.get('False'),
+        end_pred_idx=im.predicate_str2idx.get('End'),
+        verbose=0,
+        prover_verbose=0,
         device=device,
-        sample_deterministic_per_env=True,  # Round-robin for parity
-        memory_pruning=False,  # Match SB3
-        runtime_var_start_index=im.runtime_var_start_index,
+        runtime_var_start_index=im.constant_no + 1,
+        total_vocab_size=im.constant_no + config.max_total_vars,
+        sample_deterministic_per_env=True,
     )
     
     eval_env = BatchedEnv(
-        queries=test_split.queries,
-        labels=test_split.labels,
-        query_depths=test_split.depths,
+        batch_size=config.n_envs,
+        queries=test_queries_tensor,
+        labels=torch.ones(len(test_queries), dtype=torch.long, device=device),
+        query_depths=torch.ones(len(test_queries), dtype=torch.long, device=device),
         unification_engine=engine,
-        stringifier_params=stringifier_params,
+        mode='eval',
+        max_depth=config.max_steps,
+        memory_pruning=False,
+        eval_pruning=False,
+        use_exact_memory=True,
+        skip_unary_actions=False,
+        end_proof_action=False,
+        reward_type=0,
         padding_atoms=config.padding_atoms,
         padding_states=config.padding_states,
-        max_depth=config.max_steps,
-        batch_size=config.n_envs,
-        mode="eval",
-        sampler=None,
+        true_pred_idx=im.predicate_str2idx.get('True'),
+        false_pred_idx=im.predicate_str2idx.get('False'),
+        end_pred_idx=im.predicate_str2idx.get('End'),
+        verbose=0,
+        prover_verbose=0,
         device=device,
+        runtime_var_start_index=im.constant_no + 1,
+        total_vocab_size=im.constant_no + config.max_total_vars,
         sample_deterministic_per_env=True,
-        memory_pruning=False,  # Match SB3
-        runtime_var_start_index=im.runtime_var_start_index,
     )
     
-    # Create model
+    # Create embedder with fixed seed - match SB3 exactly
+    n_vars_for_embedder = 1000
     torch.manual_seed(config.seed)
-    embed_dim = getattr(embedder, "embed_dim", getattr(embedder, "atom_embedding_size", config.atom_embedding_size))
-    policy = create_actor_critic(
-        embedder=embedder,
-        embed_dim=embed_dim,
-        hidden_dim=128,
-        num_layers=8,
-        dropout_prob=0.2,
-        device=device,
+    embedder = TensorEmbedder(
+        n_constants=im.constant_no,
+        n_predicates=im.predicate_no,
+        n_vars=n_vars_for_embedder,
+        max_arity=dh.max_arity,
         padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        max_arity=im.max_arity,
-        total_vocab_size=im.total_vocab_size,
-        init_seed=config.seed,
-        match_sb3_init=True,  # Important for weight alignment
+        atom_embedder='transe',
+        state_embedder='sum',  # Must match SB3
+        constant_embedding_size=config.atom_embedding_size,
+        predicate_embedding_size=config.atom_embedding_size,
+        atom_embedding_size=config.atom_embedding_size,
+        device=str(device),
     )
+    embedder.embed_dim = config.atom_embedding_size
+    
+    # Create policy with fixed seed
+    action_size = config.padding_states
+    torch.manual_seed(config.seed)
+    policy = TensorPolicy(
+        embedder=embedder,
+        embed_dim=config.atom_embedding_size,
+        action_dim=action_size,
+        hidden_dim=256,
+        num_layers=8,
+        dropout_prob=0.0,
+        device=device,
+    ).to(device)
     
     return {
         'dh': dh,
@@ -554,12 +583,14 @@ def run_sb3_rollout(model, env, n_steps: int, seed: int) -> Dict[str, Any]:
 
 def run_tensor_rollout(policy, env, n_steps: int, seed: int, device: torch.device) -> Dict[str, Any]:
     """Run a single rollout with tensor env and collect detailed traces."""
+    from tensordict import TensorDict
+    
     torch.manual_seed(seed)
     np.random.seed(seed)
     
     policy.eval()
     
-    td = env.reset()
+    current_obs = env.reset()
     
     trace = {
         'observations': [],
@@ -571,31 +602,45 @@ def run_tensor_rollout(policy, env, n_steps: int, seed: int, device: torch.devic
     }
     
     for step in range(n_steps):
+        # Clone observation to avoid mutation
+        obs_snapshot = current_obs.clone()
         obs_dict = {
-            'sub_index': td['sub_index'].to(device),
-            'derived_sub_indices': td['derived_sub_indices'].to(device),
-            'action_mask': td['action_mask'].to(device),
+            'sub_index': obs_snapshot['sub_index'].to(device),
+            'derived_sub_indices': obs_snapshot['derived_sub_indices'].to(device),
+            'action_mask': obs_snapshot['action_mask'].to(device),
         }
         
         with torch.no_grad():
             actions, values, log_probs = policy(obs_dict, deterministic=True)
         
-        td['action'] = actions
-        td = env.step(td)
+        # Step environment using step_and_maybe_reset like tensor PPO does
+        action_td = TensorDict({"action": actions}, batch_size=current_obs.batch_size, device=device)
+        step_result, next_obs = env.step_and_maybe_reset(action_td)
         
-        # TorchRL convention: rewards/dones are in 'next' after step
-        next_td = td['next']
+        # Extract done/reward - handle both with and without 'next' key
+        if "next" in step_result.keys():
+            step_info = step_result["next"]
+        else:
+            step_info = step_result
+        
+        rewards = step_info.get("reward", torch.zeros(env.batch_size_int, device=device))
+        dones = step_info.get("done", torch.zeros(env.batch_size_int, dtype=torch.bool, device=device))
+        
+        # Squeeze to ensure correct shape
+        if rewards.dim() > 1:
+            rewards = rewards.squeeze(-1)
+        if dones.dim() > 1:
+            dones = dones.squeeze(-1)
         
         trace['observations'].append({k: v.cpu().numpy().copy() for k, v in obs_dict.items()})
         trace['actions'].append(actions.cpu().numpy().copy())
-        trace['rewards'].append(next_td['reward'].cpu().numpy().copy())
+        trace['rewards'].append(rewards.cpu().numpy().copy())
         trace['values'].append(values.cpu().numpy().copy())
         trace['log_probs'].append(log_probs.cpu().numpy().copy())
-        trace['dones'].append(next_td['done'].cpu().numpy().copy())
+        trace['dones'].append(dones.cpu().numpy().copy())
         
-        # Move to next state (use the 'next' observations for next iteration)
-        # Need to update td with the next observations
-        td = next_td
+        # Move to next observation
+        current_obs = next_obs
     
     return trace
 
@@ -679,7 +724,7 @@ def run_train_parity(
     
     try:
         # Set seeds
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         
         # Create SB3 components
         if verbose:
@@ -689,7 +734,7 @@ def run_train_parity(
         # Create tensor components
         if verbose:
             print("\n[2/6] Creating tensor components...")
-        _set_seeds(config.seed)  # Reset seeds
+        seed_all(config.seed)  # Reset seeds
         tensor_comp = create_tensor_components(config, sb3_comp['dh'])
         
         # Compare initial weights
@@ -715,14 +760,14 @@ def run_train_parity(
         if verbose:
             print("\n[4/6] Comparing single rollout...")
         
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         sb3_trace = run_sb3_rollout(
             sb3_comp['model'], sb3_comp['train_env'], config.n_steps, config.seed
         )
         # Only store traces if explicitly needed (skip by default to save memory)
         # results.sb3_rollout_trace = sb3_trace
         
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         tensor_trace = run_tensor_rollout(
             tensor_comp['policy'], tensor_comp['train_env'], config.n_steps, config.seed, tensor_comp['device']
         )
@@ -767,7 +812,7 @@ def run_train_parity(
         
         # Reset both environments to ensure same starting state
         # The rollout comparison may have changed env state
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         sb3_comp['train_env'].reset()
         sb3_comp['model']._last_obs = None  # Force re-initialization
         sb3_comp['model']._last_episode_starts = None
@@ -775,11 +820,11 @@ def run_train_parity(
         tensor_comp['train_env'].reset()
         
         # SB3 training
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         sb3_comp['model'].learn(total_timesteps=config.total_timesteps, progress_bar=False)
         
         # Tensor training
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         tensor_ppo = TensorPPO(
             policy=tensor_comp['policy'],
             env=tensor_comp['train_env'],
@@ -838,7 +883,7 @@ def run_train_parity(
         test_queries = sb3_comp['dh'].test_queries[:config.n_envs * 4]
         
         # SB3 evaluation (needs env, model, data, sampler, n_corruptions, ...)
-        _set_seeds(config.seed + 1000)  # Different seed for eval
+        seed_all(config.seed + 1000)  # Different seed for eval
         sb3_eval_results = sb3_eval_corruptions(
             model=sb3_comp['model'],
             env=sb3_comp['eval_env'],
@@ -846,19 +891,19 @@ def run_train_parity(
             sampler=sb3_comp['sampler'],
             n_corruptions=config.n_corruptions,
             corruption_scheme=['tail'],
-            deterministic=True,
             verbose=0,
         )
         results.sb3_mrr = sb3_eval_results.get('mrr_mean', 0.0)
         results.sb3_hits1 = sb3_eval_results.get('hits1_mean', 0.0)
         
         # Tensor evaluation
-        _set_seeds(config.seed + 1000)
+        seed_all(config.seed + 1000)
         tensor_comp['policy'].eval()
-        # Get test queries in tensor format
-        test_split = tensor_comp['dh'].get_materialized_split("test")
+        # Get test queries - already in tensor format from create_tensor_components
+        # tensor_comp['eval_env'] was created with test_queries_tensor
+        # We need to get the original query objects from dh.test_queries
         tensor_im = tensor_comp['im']
-        test_query_objs = test_split.queries[:config.n_envs * 4]
+        test_query_objs = tensor_comp['dh'].test_queries[:config.n_envs * 4]
         # Convert to tensor format
         tensor_query_atoms = []
         for q in test_query_objs:
@@ -873,7 +918,6 @@ def run_train_parity(
             sampler=tensor_comp['sampler'],
             n_corruptions=config.n_corruptions,
             corruption_modes=('tail',),
-            deterministic=True,
             verbose=False,
         )
         results.tensor_mrr = tensor_eval_results.get('MRR', 0.0)
@@ -954,18 +998,18 @@ class TestTrainParity:
             verbose=True,
         )
         
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         sb3_comp = create_sb3_components(config)
         
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         tensor_comp = create_tensor_components(config)
         
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         sb3_trace = run_sb3_rollout(
             sb3_comp['model'], sb3_comp['train_env'], config.n_steps, config.seed
         )
         
-        _set_seeds(config.seed)
+        seed_all(config.seed)
         tensor_trace = run_tensor_rollout(
             tensor_comp['policy'], tensor_comp['train_env'], config.n_steps, config.seed, tensor_comp['device']
         )

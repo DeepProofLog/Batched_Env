@@ -879,11 +879,14 @@ def profile_code(profiler_type, function_to_profile, *args, **kwargs):
         return function_to_profile(*args, **kwargs)
 
 def _set_seeds(seed: int) -> None:
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    random.seed(seed)
-    np.random.seed(seed)
+    """
+    Legacy function - prefer using utils.seeding.seed_all() instead.
+    
+    This function is kept for backward compatibility but simply delegates
+    to the new seeding module.
+    """
+    from utils.seeding import seed_all
+    seed_all(seed, deterministic_cudnn=False)
 
 
 def _freeze_dropout_layernorm(m: nn.Module):

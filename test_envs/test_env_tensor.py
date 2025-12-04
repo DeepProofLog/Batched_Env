@@ -50,7 +50,8 @@ def safe_item(x):
 
 
 def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", seed: int = 42,
-                     batch_size: int = 1, config: SimpleNamespace = None) -> Tuple:
+                     batch_size: int = 1, config: SimpleNamespace = None, 
+                     sort_states: bool = False) -> Tuple:
     """
     Setup the batched tensor environment with dataset.
     
@@ -109,8 +110,8 @@ def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", 
         stringifier_params=stringifier_params,
         end_pred_idx=im_batched.end_pred_idx if end_proof_action else None,
         end_proof_action=end_proof_action,
-        max_derived_per_state=max_derived_per_state,  # Set max derived states for eval mode
-        sort_states=True
+        max_derived_per_state=max_derived_per_state,
+        sort_states=sort_states
     )
     engine.index_manager = im_batched
     
@@ -156,7 +157,7 @@ def setup_tensor_env(dataset: str = "countries_s3", base_path: str = "./data/", 
         padding_states=padding_states,
         true_pred_idx=im_batched.predicate_str2idx.get('True'),
         false_pred_idx=im_batched.predicate_str2idx.get('False'),
-        end_pred_idx=im_batched.predicate_str2idx.get('End'),
+        end_pred_idx=im_batched.predicate_str2idx.get('Endf'),
         verbose=verbose,
         prover_verbose=prover_verbose,
         device=device,
@@ -350,7 +351,7 @@ def run_tensor_env(
             - avg_steps: float
             - traces: List of trace dicts (one per query)
     """
-    deterministic = config.deterministic
+    deterministic = config.deterministic if hasattr(config, 'deterministic') else True
     max_depth = config.max_depth
     seed = config.seed
     verbose = config.verbose

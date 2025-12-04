@@ -30,10 +30,11 @@ def get_default_sb3_env_config() -> SimpleNamespace:
     return SimpleNamespace(
         padding_atoms=100,
         padding_states=500,
-        skip_unary_actions=False,
-        end_proof_action=False,
+        skip_unary_actions=True,
+        end_proof_action=True,
         reward_type=0,
-        memory_pruning=False,
+        memory_pruning=True,
+        max_total_runtime_vars=1000,
         verbose=0,
         prover_verbose=0,
         device='cpu'
@@ -89,7 +90,9 @@ def setup_sb3_env(
     facts_set = set(dh_str.facts)
     
     # Build fact index for efficient unification
-    im_str.build_fact_index(list(facts_set))
+    # Use deterministic=True to ensure consistent iteration order (sorted by (pred, head, tail))
+    # This matches the tensor engine's fact ordering
+    im_str.build_fact_index(list(facts_set), deterministic=True)
     
     # Create str environment
     str_env = StrEnv(
@@ -102,7 +105,7 @@ def setup_sb3_env(
         mode='eval_with_restart',
         seed=seed,
         max_depth=20,
-        memory_pruning=getattr(cfg, 'memory_pruning', False),
+        memory_pruning=getattr(cfg, 'memory_pruning', True),
         padding_atoms=getattr(cfg, 'padding_atoms', 100),
         padding_states=getattr(cfg, 'padding_states', 500),
         verbose=getattr(cfg, 'verbose', 0),
@@ -110,10 +113,10 @@ def setup_sb3_env(
         device=device,
         engine='python',
         engine_strategy='complete',
-        skip_unary_actions=getattr(cfg, 'skip_unary_actions', False),
-        endf_action=getattr(cfg, 'end_proof_action', False),
+        skip_unary_actions=getattr(cfg, 'skip_unary_actions', True),
+        endf_action=getattr(cfg, 'end_proof_action', True),
         reward_type=getattr(cfg, 'reward_type', 0),
-        canonical_action_order=True,
+        canonical_action_order=getattr(cfg, 'canonical_action_order', False),
     )
     
     return str_env, im_str, dh_str
@@ -201,22 +204,21 @@ def run_sb3_env_single_query(
                 str_info = {'is_success': is_success_state}
             break
         
-        # States are already in canonical order from environment (canonical_action_order=True)
         # Just take first action in deterministic mode
         if deterministic:
-            # Choose first action (already in canonical order)
+            # Choose first action
             action = 0
         else:
             # Choose random action
             action = rng.choice(range(num_actions))
         
-        # Build derived states list for trace (already in canonical order)
-        derived_states_canonical = [state_to_str(derived_states[i]) for i in range(num_actions)]
+        # Build derived states list for trace 
+        derived_states_ = [state_to_str(derived_states[i]) for i in range(num_actions)]
         
         trace.append({
             'step': steps,
             'state': state_to_str(state),
-            'derived_states': derived_states_canonical,
+            'derived_states': derived_states_,
             'num_actions': num_actions,
             'action': action,
             'done': False,
@@ -280,7 +282,7 @@ def run_sb3_env(
             - avg_steps: float
             - traces: List of trace dicts
     """
-    deterministic = config.deterministic
+    deterministic = config.deterministic if hasattr(config, 'deterministic') else True
     max_depth = config.max_depth
     seed = config.seed
     verbose = config.verbose
@@ -340,17 +342,17 @@ def run_sb3_env(
             
             # Choose action
             if deterministic:
-                action = 0  # First action (canonical order)
+                action = 0  # First action 
             else:
                 action = rng.choice(range(num_actions))
             
             # Build derived states list for trace
-            derived_states_canonical = [state_to_str(derived_states[i]) for i in range(num_actions)]
+            derived_states_ = [state_to_str(derived_states[i]) for i in range(num_actions)]
             
             trace.append({
                 'step': steps,
                 'state': state_to_str(state),
-                'derived_states': derived_states_canonical,
+                'derived_states': derived_states_,
                 'num_actions': num_actions,
                 'action': action,
                 'done': False,

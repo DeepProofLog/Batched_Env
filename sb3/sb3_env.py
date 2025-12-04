@@ -661,6 +661,14 @@ class LogicEnv_gym(gym.Env):
 
         derived_states = final_states # Use the filtered list from now on
 
+        # If no derived states remain after memory pruning, end in False (proof is stuck)
+        # This must be checked BEFORE adding Endf, since Endf is only an option when
+        # there are other actions available - it's for the agent to choose to give up,
+        # not a forced terminal when no moves are possible.
+        if not derived_states:
+            derived_states, derived_sub_indices = self.end_in_false()
+            return derived_states, derived_sub_indices, truncated_flag
+
         # KGE ACTION MODULE
         # It uses the original `state` variable to ensure alignment.
         if self.kge_action and state and state[0].predicate not in terminal_predicates:
@@ -682,18 +690,17 @@ class LogicEnv_gym(gym.Env):
         if len(derived_states) > max_num_states:
             print(f"Exceeded max next states: {len(derived_states)}") if self.verbose else None
             
-            if self.canonical_action_order:
-                # If canonical order is enforced, we trust the order from the engine (lexicographical)
-                # and just truncate. Sorting by length would break the canonical order.
-                indices = list(range(max_num_states))
-            else:
-                # Otherwise, prefer shorter states as a heuristic
-                indices = sorted(range(len(derived_states)), key=lambda k: len(derived_states[k]))[:max_num_states]
+            # Preserve natural order when truncating (matches tensor engine behavior)
+            # The natural order is: rules first, then facts, in the order they appear in data
+            # This ensures parity between SB3 and tensor engines
+            indices = list(range(max_num_states))
             
             derived_states = [derived_states[i] for i in indices]
             final_sub_indices = [final_sub_indices[i] for i in indices]
 
         # END ACTION MODULE
+        # Only add Endf/Endt when there are non-terminal derived states available
+        # (giving the agent the option to give up instead of continuing)
         if self.endt_action or self.endf_action:
             has_terminal_outcome = any(
                 any(atom.predicate in ('True', 'False') for atom in state)
@@ -712,10 +719,7 @@ class LogicEnv_gym(gym.Env):
             derived_states.append(endt_state)
             final_sub_indices.append(self.index_manager.get_atom_sub_index(endt_state))
 
-        if not derived_states:
-            derived_states, derived_sub_indices = self.end_in_false()
-        else:
-            derived_sub_indices = self._pad_sub_indices(final_sub_indices)
+        derived_sub_indices = self._pad_sub_indices(final_sub_indices)
 
         return derived_states, derived_sub_indices, truncated_flag
     

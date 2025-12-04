@@ -281,7 +281,7 @@ class DebugHelper:
                     else:
                         return f"?c{val}"
             
-            if pred_str in ['True', 'False'] and arg1 == self.padding_idx and arg2 == self.padding_idx:
+            if pred_str in ['True', 'False', 'Endf'] and arg1 == self.padding_idx and arg2 == self.padding_idx:
                 atoms.append(f"{pred_str}()")
             else:
                 atoms.append(f"{pred_str}({format_arg(arg1)},{format_arg(arg2)})")
@@ -408,7 +408,7 @@ class DebugHelper:
             else:
                 pred_str = f"?p{pred}"
             
-            if pred_str in ['True', 'False'] and arg1 == self.padding_idx and arg2 == self.padding_idx:
+            if pred_str in ['True', 'False', 'Endf'] and arg1 == self.padding_idx and arg2 == self.padding_idx:
                 canonical_atoms.append(f"{pred_str}()")
             else:
                 canonical_atoms.append(f"{pred_str}({format_arg_final(arg1, arg1_is_var)},{format_arg_final(arg2, arg2_is_var)})")

@@ -27,6 +27,9 @@ import torch.nn as nn
 import numpy as np
 from collections import deque
 
+# Import seeding utilities (must be before other local imports to set up paths correctly)
+from seed_utils import ParityTestSeeder, ParityTestConfig, seed_all
+
 # Setup paths
 ROOT = Path(__file__).resolve().parents[2]
 SB3_ROOT = ROOT / "sb3"
@@ -407,7 +410,7 @@ def collect_sb3_rollout_with_traces(
     ppo: PPO_custom,
     n_steps: int,
     return_train_traces: bool = False,
-    train_seed: int = 123,
+    seeder: ParityTestSeeder = None,
 ) -> Tuple[List[Dict], BufferSnapshot, Dict[str, float]]:
     """
     Collect rollouts using SB3 PPO with trace collection, then perform training.
@@ -417,7 +420,7 @@ def collect_sb3_rollout_with_traces(
         ppo: SB3 PPO instance
         n_steps: Number of rollout steps
         return_train_traces: If True, return detailed training traces from train()
-        train_seed: Seed for RNG before training (for shuffling parity)
+        seeder: ParityTestSeeder instance for consistent seeding (if None, uses seed_all directly)
         
     Note: Returns a BufferSnapshot instead of the actual buffer because SB3's
     train() reshapes the buffer arrays, changing element order.
@@ -454,8 +457,10 @@ def collect_sb3_rollout_with_traces(
     buffer_snapshot = BufferSnapshot(ppo.rollout_buffer)
     
     # Seed RNG before training for shuffling parity
-    np.random.seed(train_seed)
-    torch.manual_seed(train_seed)
+    if seeder is not None:
+        seeder.seed_for_training()
+    else:
+        seed_all(123)  # Fallback for backward compatibility
     
     # Perform training using the new train() method with return_traces
     train_metrics = ppo.train(return_traces=return_train_traces)
@@ -468,7 +473,7 @@ def collect_tensor_rollout_with_traces(
     n_steps: int,
     im: IndexManager,
     return_train_traces: bool = False,
-    train_seed: int = 123,
+    seeder: ParityTestSeeder = None,
 ) -> Tuple[List[Dict], TensorRolloutBuffer, Dict[str, float]]:
     """
     Collect rollouts using tensor PPO with trace collection, then perform training.
@@ -479,7 +484,7 @@ def collect_tensor_rollout_with_traces(
         n_steps: Number of rollout steps
         im: Index manager
         return_train_traces: If True, also return detailed training traces
-        train_seed: Seed for RNG before training (for shuffling parity)
+        seeder: ParityTestSeeder instance for consistent seeding (if None, uses seed_all directly)
     """
     # Initialize
     current_obs = ppo.env.reset()
@@ -505,8 +510,10 @@ def collect_tensor_rollout_with_traces(
     traces = result[5]
     
     # Seed RNG before training for shuffling parity
-    np.random.seed(train_seed)
-    torch.manual_seed(train_seed)
+    if seeder is not None:
+        seeder.seed_for_training()
+    else:
+        seed_all(123)  # Fallback for backward compatibility
     
     # Perform training and get metrics (with optional training traces)
     train_metrics = ppo.train(return_traces=return_train_traces)
@@ -756,10 +763,14 @@ def run_learn_parity_test(
     """
     results = LearnParityResults()
     
+    # Initialize seeder for consistent seeding across all phases
+    seeder = ParityTestSeeder(seed=seed)
+    
     if verbose:
         print("=" * 70)
         print(f"Learn Parity Test")
         print(f"Dataset: {dataset}, n_envs: {n_envs}, n_steps: {n_steps}, n_epochs: {n_epochs}")
+        print(f"Using ParityTestSeeder with base seed: {seed}")
         print("=" * 70)
     
     # Create aligned environments
@@ -767,14 +778,14 @@ def run_learn_parity_test(
         print("\nCreating aligned environments...")
     env_data = create_aligned_environments(dataset, n_envs)
     
-    # Create SB3 PPO
+    # Create SB3 PPO (internal seeding with torch.manual_seed(seed))
     if verbose:
         print("Creating SB3 PPO...")
     sb3_ppo, sb3_env, sb3_im = create_sb3_ppo(
         env_data['sb3'], env_data['queries'], n_envs, n_steps, n_epochs, seed
     )
     
-    # Create tensor PPO
+    # Create tensor PPO (internal seeding with torch.manual_seed(seed))
     if verbose:
         print("Creating tensor PPO...")
     tensor_ppo, tensor_env, tensor_im, engine = create_tensor_ppo(
@@ -782,23 +793,22 @@ def run_learn_parity_test(
     )
     
     # Collect rollouts and train for SB3
-    # Set same seed before each collect to ensure identical sampling
     if verbose:
         print("\nCollecting SB3 rollouts and training...")
-    torch.manual_seed(123)  # Seed before sampling
+    seeder.seed_for_rollout_collection()
     sb3_traces, sb3_buffer, sb3_train_metrics = collect_sb3_rollout_with_traces(
-        sb3_ppo, n_steps, return_train_traces=compare_training_traces
+        sb3_ppo, n_steps, return_train_traces=compare_training_traces, seeder=seeder
     )
     results.sb3_train_metrics = sb3_train_metrics
     if compare_training_traces and "traces" in sb3_train_metrics:
         results.sb3_train_traces = sb3_train_metrics["traces"]
     
-    # Collect rollouts and train for tensor
+    # Collect rollouts and train for tensor (same seed for identical sampling)
     if verbose:
         print("Collecting tensor rollouts and training...")
-    torch.manual_seed(123)  # Same seed for identical sampling
+    seeder.seed_for_rollout_collection()
     tensor_traces, tensor_buffer, tensor_train_metrics = collect_tensor_rollout_with_traces(
-        tensor_ppo, n_steps, tensor_im, return_train_traces=compare_training_traces
+        tensor_ppo, n_steps, tensor_im, return_train_traces=compare_training_traces, seeder=seeder
     )
     results.tensor_train_metrics = tensor_train_metrics
     if compare_training_traces and "traces" in tensor_train_metrics:
@@ -984,27 +994,34 @@ def test_learn_training_executes():
 
 def test_learn_training_traces():
     """Test that training traces can be collected from both SB3 and tensor PPO and match."""
+    # Initialize seeder
+    seeder = ParityTestSeeder(seed=42)
+    
     # Create aligned environments
     env_data = create_aligned_environments("countries_s3", n_envs=2)
     
     # Create SB3 PPO
+    seeder.seed_for_model_creation()
     sb3_ppo, sb3_env, sb3_im = create_sb3_ppo(
         env_data['sb3'], env_data['queries'], n_envs=2, n_steps=10, n_epochs=2, seed=42
     )
     
     # Create tensor PPO
+    seeder.seed_for_model_creation()
     tensor_ppo, tensor_env, tensor_im, engine = create_tensor_ppo(
         env_data['tensor'], env_data['tensor_queries'], n_envs=2, n_steps=10, n_epochs=2, seed=42
     )
     
     # Collect rollouts and train with traces for SB3
+    seeder.seed_for_rollout_collection()
     sb3_traces, sb3_buffer, sb3_train_metrics = collect_sb3_rollout_with_traces(
-        sb3_ppo, n_steps=10, return_train_traces=True
+        sb3_ppo, n_steps=10, return_train_traces=True, seeder=seeder
     )
     
     # Collect rollouts and train with traces for tensor
+    seeder.seed_for_rollout_collection()
     tensor_traces, tensor_buffer, tensor_train_metrics = collect_tensor_rollout_with_traces(
-        tensor_ppo, n_steps=10, im=tensor_im, return_train_traces=True
+        tensor_ppo, n_steps=10, im=tensor_im, return_train_traces=True, seeder=seeder
     )
     
     # Check that training traces are present in both

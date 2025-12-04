@@ -25,6 +25,9 @@ import torch.nn as nn
 import numpy as np
 from collections import deque
 
+# Import seeding utilities (must be before other local imports to set up paths correctly)
+from seed_utils import ParityTestSeeder, ParityTestConfig, seed_all
+
 # Setup paths
 ROOT = Path(__file__).resolve().parents[2]
 SB3_ROOT = ROOT / "sb3"
@@ -367,7 +370,7 @@ def create_aligned_environments(dataset: str, n_envs: int, mode: str = 'valid'):
     )
     
     facts_set = set(dh_sb3.facts)
-    im_sb3.build_fact_index(list(facts_set))
+    im_sb3.build_fact_index(list(facts_set), deterministic=True)
     
     # ===== Tensor Setup =====
     dh_tensor = DataHandler(
@@ -458,7 +461,6 @@ def create_sb3_eval_env(env_data: Dict, queries: List, n_envs: int, seed: int = 
                 skip_unary_actions=False,
                 endf_action=False,
                 reward_type=0,
-                canonical_action_order=True,
             )
             env._train_ptr = env_idx
             return Monitor(env)
@@ -555,10 +557,9 @@ def create_tensor_eval_env(env_data: Dict, queries: List, n_envs: int, seed: int
     engine = UnificationEngine.from_index_manager(
         im, take_ownership=True,
         stringifier_params=stringifier_params,
-        end_pred_idx=None,
+        end_pred_idx=im.end_pred_idx,
         end_proof_action=False,
         max_derived_per_state=padding_states,
-        sort_states=True
     )
     engine.index_manager = im
     

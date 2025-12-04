@@ -58,7 +58,7 @@ def create_default_parity_config() -> SimpleNamespace:
         padding_states=40,
         max_derived_per_state=40,
         skip_unary_actions=True,
-        end_proof_action=False,
+        end_proof_action=True,
         memory_pruning=True,
         use_exact_memory=True,
         reward_type=0,
@@ -224,6 +224,9 @@ def compare_trace_step(step_tensor: Dict, step_sb3: Dict, step_idx: int) -> Tupl
     if step_tensor.get('done') != step_sb3.get('done'):
         return False, f"Step {step_idx}: done mismatch: {step_tensor.get('done')} vs {step_sb3.get('done')}"
     
+    # Compare reward
+    if step_tensor.get('reward') != step_sb3.get('reward'):
+        return False, f"Step {step_idx}: reward mismatch: {step_tensor.get('reward')} vs {step_sb3.get('reward')}"
     return True, ""
 
 
