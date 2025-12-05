@@ -159,7 +159,7 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
 
     # Embedder
     # Seed is already set at the beginning of main(), but reseed to align with torchrl stack
-    # torch.manual_seed(args.seed_run_i)
+    torch.manual_seed(args.seed_run_i)
     embedder_getter = get_embedder(args, dh, im, device)
     embedder = embedder_getter.embedder
 
@@ -436,17 +436,23 @@ def _train_if_needed(
     if args.timesteps_train <= 0 or args.load_model:
         return model
 
+    run = None  # Placeholder for wandb run (currently disabled)
     # run = _maybe_enable_wandb(use_WB, args, WB_path, model_name)
 
     training_fn = model.learn
     training_args = {"total_timesteps": args.timesteps_train, "callback": callbacks}
     profile_code('False', training_fn, **training_args)  # cProfile
     # exit(0)
-    # Restore desired checkpoint
-    if args.restore_best_val_model:
-        model = eval_cb.restore_best_ckpt(model.get_env())
-    else:
-        model = train_ckpt_cb.restore_last_ckpt(model.get_env())
+    # Restore desired checkpoint (if model saving is enabled)
+    if args.save_model:
+        if args.restore_best_val_model:
+            restored_model = eval_cb.restore_best_ckpt(model.get_env())
+            if restored_model is not None:
+                model = restored_model
+        else:
+            restored_model = train_ckpt_cb.restore_last_ckpt(model.get_env())
+            if restored_model is not None:
+                model = restored_model
 
     if run is not None:
         run.finish()
@@ -456,6 +462,15 @@ def _train_if_needed(
 def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler: DataHandler) -> Tuple[dict, dict, dict]:
     print("\nTest set evaluation...")
     eval_mode = "hybrid" if bool(getattr(args, "inference_fusion", False)) else "rl_only"
+    
+    # Reseed before evaluation for deterministic parity testing
+    # This ensures negative sampling in eval_corruptions matches tensor implementation
+    deterministic_parity = getattr(args, "deterministic_parity", False)
+    if deterministic_parity:
+        import numpy as np
+        eval_seed = 12345  # Fixed seed for eval_corruptions parity (same as test_eval_parity.py)
+        torch.manual_seed(eval_seed)
+        np.random.seed(eval_seed)
 
     depth_reward_tracker = _EvalDepthRewardTracker()
 

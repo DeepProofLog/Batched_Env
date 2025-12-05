@@ -110,7 +110,7 @@ class TrainParityConfig:
     ent_coef: float = 0.0
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    total_timesteps: int = 60  # Small for testing - n_steps * n_envs
+    total_timesteps: int = 120  # Small for testing - n_steps * n_envs * 2
     n_corruptions: int = 10
     
     # Embedding / model
@@ -977,10 +977,11 @@ def run_train_parity(
 class TestTrainParity:
     """Tests for training parity between SB3 and tensor implementations."""
     
-    @pytest.mark.parametrize("dataset,n_envs,n_steps,total_timesteps,n_corruptions", [
-        ("countries_s3", 3, 20, 60, 10),
+    @pytest.mark.parametrize("dataset,n_envs,n_steps,total_timesteps,n_corruptions,batch_size,n_epochs,lr,ent_coef", [
+        ("countries_s3", 3, 20, 60, 10, 64, 4, 3e-4, 0.0),
+        ("countries_s3", 4, 32, 256, 10, 4096, 20, 5e-5, 0.2),
     ])
-    def test_train_parity(self, dataset, n_envs, n_steps, total_timesteps, n_corruptions):
+    def test_train_parity(self, dataset, n_envs, n_steps, total_timesteps, n_corruptions, batch_size, n_epochs, lr, ent_coef):
         """Test that SB3 and tensor training produce similar results."""
         config = TrainParityConfig(
             dataset=dataset,
@@ -988,6 +989,10 @@ class TestTrainParity:
             n_steps=n_steps,
             total_timesteps=total_timesteps,
             n_corruptions=n_corruptions,
+            batch_size=batch_size,
+            n_epochs=n_epochs,
+            learning_rate=lr,
+            ent_coef=ent_coef,
             seed=42,
             device="cpu",
             verbose=True,
@@ -998,8 +1003,7 @@ class TestTrainParity:
         # Assert key parity checks
         assert results.rollout_actions_match, "Rollout actions should match"
         assert results.rollout_rewards_match, "Rollout rewards should match"
-        # Note: Eval metrics may differ due to model weight differences from different init
-        # assert results.eval_mrr_match, f"Eval MRR should match: SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
+        assert results.eval_mrr_match, f"Eval MRR should match: SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
     
     @pytest.mark.parametrize("dataset", ["countries_s3"])
     def test_single_rollout_parity(self, dataset):
@@ -1042,13 +1046,16 @@ class TestTrainParity:
 
 if __name__ == "__main__":
     import argparse
-    
     parser = argparse.ArgumentParser(description="Train Parity Test")
     parser.add_argument("--dataset", type=str, default="countries_s3")
-    parser.add_argument("--n-envs", type=int, default=3)
-    parser.add_argument("--n-steps", type=int, default=20)
-    parser.add_argument("--total-timesteps", type=int, default=60)
+    parser.add_argument("--n-envs", type=int, default=4)
+    parser.add_argument("--n-steps", type=int, default=32)
+    parser.add_argument("--total-timesteps", type=int, default=256)
     parser.add_argument("--n-corruptions", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=4096)
+    parser.add_argument("--n-epochs", type=int, default=10)
+    parser.add_argument("--learning-rate", type=float, default=5e-5)
+    parser.add_argument("--ent-coef", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--verbose", action="store_true", default=True)
@@ -1063,6 +1070,10 @@ if __name__ == "__main__":
         n_steps=args.n_steps,
         total_timesteps=args.total_timesteps,
         n_corruptions=args.n_corruptions,
+        batch_size=args.batch_size,
+        n_epochs=args.n_epochs,
+        learning_rate=args.learning_rate,
+        ent_coef=args.ent_coef,
         seed=args.seed,
         device=args.device,
         verbose=args.verbose,

@@ -67,6 +67,12 @@ def seed_all(seed: int, deterministic_cudnn: bool = True, warn: bool = False) ->
     np.random.seed(seed)
     torch.manual_seed(seed)
     
+    # Enable deterministic algorithms for exact reproducibility
+    # This ensures operations like scatter_add, index_add, etc. use deterministic implementations  
+    # Set warn_only=False to error out if non-deterministic operations are used
+    torch.use_deterministic_algorithms(True, warn_only=False)
+    print('ensuring determinism in the torch algorithm')
+    
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)

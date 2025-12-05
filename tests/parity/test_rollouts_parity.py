@@ -88,6 +88,7 @@ def create_default_config() -> SimpleNamespace:
         device="cpu",
         
         # PPO/traces
+        n_epochs=5,
         n_envs=4,
         n_steps=20,
         batch_size=64,
@@ -258,7 +259,7 @@ def create_sb3_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
         env=vec_env,
         n_steps=config.n_steps,
         batch_size=config.batch_size,
-        n_epochs=1,
+        n_epochs=config.n_epochs,
         learning_rate=config.learning_rate,
         gamma=config.gamma,
         gae_lambda=config.gae_lambda,
@@ -379,7 +380,7 @@ def create_tensor_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
         env=env,
         n_steps=config.n_steps,
         learning_rate=config.learning_rate,
-        n_epochs=1,
+        n_epochs=config.n_epochs,
         batch_size=config.batch_size,
         gamma=config.gamma,
         gae_lambda=config.gae_lambda,

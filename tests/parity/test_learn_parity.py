@@ -116,6 +116,9 @@ def create_default_config() -> SimpleNamespace:
         # Misc
         seed=42,
         device="cpu",
+        buffer_atol=1e-4,
+        metrics_rtol=0.01,
+        traces_atol=0.01,
     )
 
 
@@ -886,7 +889,7 @@ def run_learn_parity_test(
     # Compare buffers
     if verbose:
         print("\n--- Buffer Comparison ---")
-    buffer_results = compare_buffers(sb3_buffer, tensor_buffer, cfg.n_steps, cfg.n_envs)
+    buffer_results = compare_buffers(sb3_buffer, tensor_buffer, cfg.n_steps, cfg.n_envs, atol=cfg.buffer_atol)
     results.buffer_rewards_match = buffer_results['rewards_match']
     results.buffer_values_match = buffer_results['values_match']
     results.buffer_log_probs_match = buffer_results['log_probs_match']
@@ -901,7 +904,7 @@ def run_learn_parity_test(
     # Compare training metrics
     if verbose:
         print("\n--- Training Metrics Comparison ---")
-    metrics_match, metrics_comparison = compare_train_metrics(sb3_train_metrics, tensor_train_metrics)
+    metrics_match, metrics_comparison = compare_train_metrics(sb3_train_metrics, tensor_train_metrics, rtol=cfg.metrics_rtol)
     results.metrics_match = metrics_match
     
     if verbose:
@@ -914,7 +917,7 @@ def run_learn_parity_test(
         if verbose:
             print("\n--- Training Traces Comparison (Per-Batch) ---")
         train_traces_match, train_traces_n_mismatches, train_trace_mismatches = compare_train_traces(
-            results.sb3_train_traces, results.tensor_train_traces, atol=0.01, verbose=verbose
+            results.sb3_train_traces, results.tensor_train_traces, atol=cfg.traces_atol, verbose=verbose
         )
         results.train_traces_match = train_traces_match
         results.train_traces_n_mismatches = train_traces_n_mismatches
@@ -1121,7 +1124,7 @@ def test_learn_training_traces():
     
     # Compare traces between implementations
     traces_match, n_mismatches, mismatches = compare_train_traces(
-        sb3_train_traces, tensor_train_traces, atol=0.1, verbose=True
+        sb3_train_traces, tensor_train_traces, atol=cfg.traces_atol, verbose=True
     )
     
     print(f"\nTraining traces comparison: match={traces_match}, mismatches={n_mismatches}")
@@ -1159,19 +1162,31 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Learn Parity Test")
     parser.add_argument("--dataset", type=str, default="countries_s3",
                        help="Dataset name (default: countries_s3)")
-    parser.add_argument("--n-envs", type=int, default=40,
+    parser.add_argument("--n-envs", type=int, default=4,
                        help="Number of environments (default: 4)")
-    parser.add_argument("--n-steps", type=int, default=40,
-                       help="Number of rollout steps (default: 20)")
-    parser.add_argument("--n-epochs", type=int, default=5,
+    parser.add_argument("--n-steps", type=int, default=32,
+                       help="Number of rollout steps (default: 32)")
+    parser.add_argument("--batch-size", type=int, default=4096,
+                       help="Batch size for training (default: 64)")
+    parser.add_argument("--n-epochs", type=int, default=10,
                        help="Number of training epochs (default: 1)")
+    parser.add_argument("--learning-rate", type=float, default=3e-4,
+                       help="Learning rate (default: 3e-4)")
+    parser.add_argument("--ent-coef", type=float, default=0.2,
+                       help="Entropy coefficient (default: 0.2)")
     parser.add_argument("--seed", type=int, default=42,
                        help="Random seed (default: 42)")
     parser.add_argument("--verbose", action="store_true", default=True,
                        help="Enable verbose output")
     parser.add_argument("--quiet", action="store_true", default=False,
                        help="Disable verbose output")
-    
+    parser.add_argument("--atol", type=float, default=1e-4,
+                       help="Absolute tolerance for buffer comparison (default: 1e-4)")
+    parser.add_argument("--rtol", type=float, default=0.01,
+                       help="Relative tolerance for metrics comparison (default: 0.01)")
+    parser.add_argument("--traces-atol", type=float, default=0.01,
+                       help="Absolute tolerance for training traces comparison (default: 0.01)")
+
     args = parser.parse_args()
     
     verbose = args.verbose and not args.quiet

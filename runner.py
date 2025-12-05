@@ -29,6 +29,7 @@ if __name__ == "__main__":
 
     DEFAULT_CONFIG = {
         # General experiment configuration
+        # NOTE: These defaults are aligned with sb3_runner.py for parity testing
 
         # Dataset params
         'dataset_name': 'countries_s3',
@@ -51,43 +52,43 @@ if __name__ == "__main__":
         'model_name': 'PPO',
         'ent_coef': 0.2,
         'clip_range': 0.2,
-        'n_epochs': 10,
-        'lr': 3e-4,
+        'n_epochs': 20,  # Aligned with SB3 (was 10)
+        'lr': 5e-5,  # Aligned with SB3 (was 3e-4)
         'gamma': 0.99,
 
         # Training params
         'seed': [0],
-        'timesteps_train': 200000,
+        'timesteps_train': 2000,  # Aligned with SB3 (was 200000)
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
         'use_amp': True,
         'use_compile': True,
-        'n_steps': 128, #64
-        'batch_size_env': 16,  # 256
-        'batch_size_env_eval': 16,  # 256
-        'batch_size': 1024,
+        'n_steps': 128,
+        'batch_size_env': 16,
+        'batch_size_env_eval': 16,
+        'batch_size': 4096,  # Aligned with SB3 (was 1024)
 
         # Env params
-        'reward_type': 4,
+        'reward_type': 0,  # Aligned with SB3 (was 4)
         'train_neg_ratio': 4,
         'end_proof_action': True,
         'skip_unary_actions': True,
         'max_depth': 20,
         'memory_pruning': True,
-        'corruption_mode': True,
+        'corruption_mode': 'dynamic',  # Aligned with SB3 (was True)
 
         # Embedding params
         'atom_embedder': 'transe',
         'state_embedder': 'mean',
-        'atom_embedding_size': 256,
+        'atom_embedding_size': 250,  # Aligned with SB3 (was 256)
         'learn_embeddings': True,
         'padding_atoms': 6,
-        'padding_states': 20,  # if -1, auto-computed from dataset
-        'max_total_vars': 1000000,
+        'padding_states': -1,  # Aligned with SB3 (was 20), auto-computed from dataset
+        'max_total_vars': 100,  # Aligned with SB3 (was 1000000)
 
         # Other params
-        'device': 'cuda:1',  # 'cpu', 'cuda:1' (auto-select), or 'cuda:all'
+        'device': 'auto',  # Aligned with SB3 (was 'cuda:1')
         'rollout_device': None,  # Device for rollout collection, None means same as device
         'min_gpu_memory_gb': 2.0,
         'extended_eval_info': True,
@@ -95,9 +96,11 @@ if __name__ == "__main__":
         'plot_trajectories': False,
         'plot': False,
         'depth_info': True,  # Enable depth info by default to see metrics by depth
+        'verbose': False,  # Added for SB3 parity
         'verbose_cb': False,  # Verbose callback debugging
         'verbose_env': 0,  # Environment verbosity level (0=quiet, 1=verbose)
         'verbose_prover': 0,  # Prover verbosity level (0=quiet, 1=verbose)
+        'prover_verbose': False,  # Added for SB3 parity
         'data_path': './data/',
         'models_path': 'models/',
         'rules_file': 'rules.txt',

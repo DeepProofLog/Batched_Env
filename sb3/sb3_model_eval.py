@@ -742,9 +742,6 @@ def eval_corruptions(
         )
 
     global_metrics = _init_global_metrics()
-
-    # rng = np.random.RandomState(0)  # deterministic tie-breaking without altering global state
-
     # Trace collection for debugging parity
     all_traces: List[SB3EvalCorruptionsTrace] = [] if return_traces else []
 
@@ -930,7 +927,6 @@ def eval_corruptions(
                 log_probs,
                 rewards,
                 lengths,
-                # rng,
             )
 
         if verbose:
@@ -1004,7 +1000,6 @@ def _extract_and_accumulate_metrics(
     log_probs: np.ndarray,
     rewards: Optional[np.ndarray] = None,
     lengths: Optional[np.ndarray] = None,
-    # rng: Optional[np.random.RandomState] = None,
 ) -> None:
     """Extract metrics from an evaluation pass and update accumulators.
 

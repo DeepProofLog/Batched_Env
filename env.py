@@ -429,7 +429,11 @@ class BatchedEnv(EnvBase):
 
     def sample_negatives(self, N, batch_q, batch_labels, proof_depths, batch_first_atoms, env_idx, device, pad, A, D):
         """
-        Vectorized negative sampling with deterministic per-env scheduling that mirrors SB3.
+        Vectorized negative sampling that mirrors SB3's per-env sequential behavior.
+        
+        Strategy: Corrupt ALL samples in a single vectorized call, but apply updates only
+        to envs that need negatives. This ensures RNG consumption happens in the correct order
+        (all N envs in sequence) while gaining vectorization benefits.
         """
         if not ((self.mode == 'train') and self.corruption_mode and (self.train_neg_ratio > 0)):
             return batch_q, batch_labels, proof_depths
@@ -440,24 +444,35 @@ class BatchedEnv(EnvBase):
 
         cycle = ratio + 1
         local_counters = self._train_neg_counters.index_select(0, env_idx)  # [N]
-        neg_mask = (local_counters % cycle) != 0
+        
+        # Clone tensors for modification
+        batch_q = batch_q.clone()
+        batch_labels = batch_labels.clone()
+        proof_depths = proof_depths.clone()
+        
+        # Vectorized corruption: corrupt ALL N atoms in one call
+        # This ensures RNG is consumed in sequential order for all N envs
+        corrupted_atoms = self.sampler.corrupt(
+            batch_first_atoms,  # [N, D]
+            num_negatives=1,
+            device=device
+        )  # [N, 1, D] or [N, D]
+        
+        # Normalize shape to [N, D]
+        if corrupted_atoms.dim() == 3:
+            corrupted_atoms = corrupted_atoms[:, 0, :]  # [N, D]
+        
+        # Determine which envs need negative samples (counter % cycle != 0)
+        needs_negative = (local_counters % cycle) != 0  # [N] boolean tensor
+        
+        # Apply corrupted atoms only to envs that need negatives
+        # Use masked indexing for efficient vectorized update
+        if needs_negative.any():
+            batch_q[needs_negative, 0, :D] = corrupted_atoms[needs_negative]
+            batch_labels[needs_negative] = 0
+            proof_depths[needs_negative] = -1
 
-        neg_rows = torch.arange(N, device=device)[neg_mask]
-        if neg_rows.numel() > 0:
-            atoms = batch_first_atoms.index_select(0, neg_rows)
-            corrupted = self.sampler.corrupt(atoms, num_negatives=1, device=device)
-            if corrupted.dim() == 3:
-                corrupted = corrupted[:, 0]
-            neg_states = batch_q.index_select(0, neg_rows).clone()
-            neg_states[:, 0, : D] = corrupted
-            batch_q = batch_q.clone()
-            batch_q.index_copy_(0, neg_rows, neg_states)
-            batch_labels = batch_labels.clone()
-            batch_labels.index_fill_(0, neg_rows, 0)
-            proof_depths = proof_depths.clone()
-            proof_depths.index_fill_(0, neg_rows, -1)
-
-        # Update per-env counters (mod cycle) for processed env rows
+        # Update per-env counters (mod cycle) for all processed envs
         new_counters = (local_counters + 1) % cycle
         self._train_neg_counters.index_copy_(0, env_idx, new_counters)
 

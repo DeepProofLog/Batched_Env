@@ -22,8 +22,11 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
     """
     facts_set = set(data_handler.facts)
     shaping_gamma = args.pbrs_gamma if args.pbrs_gamma is not None else args.gamma
+    
+    # Deterministic parity mode - for testing exact match with tensor version
+    deterministic_parity = getattr(args, "deterministic_parity", False)
 
-    def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0):
+    def make_env(mode='train', seed=0, queries=None, labels=None, query_depths=None, facts=None, verbose=0, prover_verbose=0, env_idx=0):
         def _init():
             env = LogicEnv_gym(
                 index_manager=index_manager,
@@ -53,9 +56,13 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
                 shaping_gamma=shaping_gamma,
                 kge_inference_engine=kge_engine,
                 canonical_action_order=getattr(args, "canonical_action_order", False),
+                sample_deterministic=deterministic_parity,
                 verbose=verbose,
                 prover_verbose=prover_verbose,
             )
+            # Set train pointer for deterministic query selection
+            if deterministic_parity:
+                env._train_ptr = env_idx
             env = Monitor(env)
             return env
         return _init
@@ -79,6 +86,7 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         facts=facts_set,
         verbose=args.verbose,
         prover_verbose=args.prover_verbose,
+        env_idx=i,
     ) for i in range(args.n_envs)]
 
     eval_env_fns = [make_env(
@@ -90,6 +98,7 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         facts=facts_set,
         verbose=args.verbose,
         prover_verbose=args.prover_verbose,
+        env_idx=i,
     ) for i in range(args.n_eval_envs)]
     
     callback_env_fns = [make_env(
@@ -101,6 +110,7 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
         facts=facts_set,
         verbose=args.verbose,
         prover_verbose=args.prover_verbose,
+        env_idx=i,
     ) for i in range(1)]
 
 

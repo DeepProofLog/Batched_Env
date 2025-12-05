@@ -7,7 +7,7 @@ SB3 PPO.train() implementation as closely as possible.
 
 import time
 from typing import Dict, Optional
-
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -41,6 +41,7 @@ class PPO:
         ent_coef: float = 0.0,
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
+        target_kl: Optional[float] = None,
         device: torch.device = None,
         verbose: bool = False,
         trace_dir: Optional[str] = None,
@@ -64,6 +65,7 @@ class PPO:
         self.ent_coef = ent_coef
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
+        self.target_kl = target_kl
         self.device = device if device is not None else torch.device('cpu')
         self.verbose = verbose
         self.trace_recorder = trace_recorder or (TraceRecorder(trace_dir, prefix=trace_prefix) if trace_dir else None)
@@ -143,6 +145,9 @@ class PPO:
         
         with torch.no_grad():
             while n_collected < self.n_steps:
+                log_interval = max(1, self.n_steps // 5)
+                if n_collected % log_interval == 0:
+                    print(f"Collecting rollouts: {n_collected}/{self.n_steps} steps")
                 # Clone the current observation so env.step() cannot mutate the
                 # data we store in the buffer or write to trace.
                 obs_snapshot = current_obs.clone()
@@ -288,7 +293,7 @@ class PPO:
                 current_obs = next_obs
             
             # Compute last values for bootstrapping
-            _, last_values, _ = self.policy(current_obs.to(self.device))
+            last_values = self.policy.predict_values(current_obs.to(self.device))
         
         # Compute advantages and returns
         if dones.dim() > 1:
@@ -332,6 +337,7 @@ class PPO:
         value_losses = []
         entropy_losses = []
         clip_fractions = []
+        approx_kl_divs = []
         
         # Training traces for detailed comparison
         train_traces = [] if return_traces else None
@@ -342,7 +348,9 @@ class PPO:
         # --------------------
         # Epoch loop - matches SB3 exactly
         # --------------------
+        continue_training = True
         for epoch in range(self.n_epochs):
+            approx_kl_divs_epoch = []
             # Minibatch loop
             for batch_data in self.rollout_buffer.get(batch_size=self.batch_size):
                 obs, actions, old_values, old_log_probs, advantages, returns = batch_data
@@ -415,6 +423,15 @@ class PPO:
                 # --------------------
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
                 
+                # Calculate approximate form of reverse KL Divergence for early stopping
+                # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
+                # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
+                # and Schulman blog: http://joschu.net/blog/kl-approx.html
+                with torch.no_grad():
+                    log_ratio = log_probs - old_log_probs
+                    approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                    approx_kl_divs_epoch.append(approx_kl_div)
+                
                 # Log losses
                 pg_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())
@@ -437,7 +454,6 @@ class PPO:
                         "new_log_probs_mean": log_probs.mean().item(),
                     })
                 
-                # --------------------
                 # Optimization step - matches SB3 exactly
                 # --------------------
                 self.optimizer.zero_grad()
@@ -451,9 +467,26 @@ class PPO:
                     )
                 
                 self.optimizer.step()
+                
+                if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
+                    continue_training = False
+                    if self.verbose >= 1:
+                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                    break
+            
+            if not continue_training:
+                break
         
-        # Set policy back to eval mode
-        self.policy.eval()
+            approx_kl_divs.extend(approx_kl_divs_epoch)
+            print(f"Epoch {epoch+1}/{self.n_epochs}. Losses: total {loss.item():.5f}, "
+                  f"policy {np.mean(pg_losses):.5f}, "
+                  f"value {np.mean(value_losses):.5f}, "
+                  f"entropy {np.mean(entropy_losses):.5f}, "
+                  f"approx_kl {np.mean(approx_kl_divs):.5f} "
+                  f"clip_fraction {np.mean(clip_fractions):.5f}. ")
+        
+        # NOTE: Do NOT set policy back to eval mode here - SB3 leaves it in training mode
+        # The policy will be set to eval mode at the start of collect_rollouts()
         
         # Return average metrics - matches SB3
         metrics = {
@@ -461,6 +494,7 @@ class PPO:
             "value_loss": sum(value_losses) / len(value_losses) if value_losses else 0.0,
             "entropy": -sum(entropy_losses) / len(entropy_losses) if entropy_losses else 0.0,
             "clip_fraction": sum(clip_fractions) / len(clip_fractions) if clip_fractions else 0.0,
+            "approx_kl": sum(approx_kl_divs) / len(approx_kl_divs) if approx_kl_divs else 0.0,
         }
         
         if return_traces:

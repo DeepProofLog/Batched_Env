@@ -60,7 +60,7 @@ class CustomEvalCallback(EvalCallback):
     :param verbose: Verbosity level: 0 for no output, 1 for indicating information about evaluation results
     :param warn: Passed to ``evaluate_policy`` (warns if ``eval_env`` has not been
         wrapped with a Monitor wrapper)
-        """
+    """
 
     def __init__(
         self,

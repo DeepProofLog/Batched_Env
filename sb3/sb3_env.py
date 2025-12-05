@@ -500,7 +500,6 @@ class LogicEnv_gym(gym.Env):
         info["query_depth"] = self.current_query_depth_value
         info["max_depth_reached"] = bool(exceeded_max_depth)
         if done_next:
-            # Match tensor_env behavior: success is based on proof completion, not truncation
             info["is_success"] = successful
             # if self.engine == 'prolog' and self.current_label == 1 and self.current_query in self.facts:
             #     janus.query_once(f"asserta({self.current_query.prolog_str()}).")
@@ -621,9 +620,6 @@ class LogicEnv_gym(gym.Env):
                         derived_states = [state for state, is_visited in zip(derived_states, visited_mask) if not is_visited]
                     
                 # TRUNCATE MAX ATOMS
-                # Use > (not >=) to allow states with exactly padding_atoms atoms
-                # This matches tensor env's within_atom_budget = atom_counts <= self.padding_atoms
-                # and is consistent with the post-loop check at line 637 which uses >
                 mask_exceeded_max_atoms = [len(state) > self.padding_atoms for state in derived_states]
                 print(f" Exceeded max atoms: {[len(state) for state in derived_states]}") if self.verbose and any(mask_exceeded_max_atoms) else None
                 derived_states = [state for state, is_exceeded in zip(derived_states, mask_exceeded_max_atoms) if not is_exceeded]
@@ -662,9 +658,6 @@ class LogicEnv_gym(gym.Env):
         derived_states = final_states # Use the filtered list from now on
 
         # If no derived states remain after memory pruning, end in False (proof is stuck)
-        # This must be checked BEFORE adding Endf, since Endf is only an option when
-        # there are other actions available - it's for the agent to choose to give up,
-        # not a forced terminal when no moves are possible.
         if not derived_states:
             derived_states, derived_sub_indices = self.end_in_false()
             return derived_states, derived_sub_indices, truncated_flag
@@ -692,7 +685,6 @@ class LogicEnv_gym(gym.Env):
             
             # Preserve natural order when truncating (matches tensor engine behavior)
             # The natural order is: rules first, then facts, in the order they appear in data
-            # This ensures parity between SB3 and tensor engines
             indices = list(range(max_num_states))
             
             derived_states = [derived_states[i] for i in indices]

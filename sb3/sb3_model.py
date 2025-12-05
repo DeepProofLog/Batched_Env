@@ -93,14 +93,14 @@ class PPO_custom(PPO):
                 # Always sample actions (not deterministic)
                 # With same model weights and RNG state, sampling produces identical results
                 actions, values, log_probs = self.policy(obs_tensor, deterministic=False)
-                
-                dist_logits = None
-                try:
-                    dist = getattr(self.policy.action_dist, "distribution", None)
-                    if dist is not None and hasattr(dist, "logits"):
-                        dist_logits = dist.logits.detach().clone()
-                except Exception:
+                if self.trace_recorder is not None:
                     dist_logits = None
+                    try:
+                        dist = getattr(self.policy.action_dist, "distribution", None)
+                        if dist is not None and hasattr(dist, "logits"):
+                            dist_logits = dist.logits.detach().clone()
+                    except Exception:
+                        dist_logits = None
             actions = actions.cpu().numpy()
 
             # Execute actions in environment
@@ -727,6 +727,13 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
         features = self.extract_features(obs)
         latent_vf = self.mlp_extractor.forward_critic(features)
         return latent_vf
+
+    def get_distribution(self, obs: PyTorchObs) -> Distribution:
+        """Get current policy distribution given observations."""
+        features = super().extract_features(obs, self.pi_features_extractor)
+        latent_pi = self.mlp_extractor.forward_actor(features)
+        action_logits = latent_pi
+        return self.action_dist.proba_distribution(action_logits=action_logits)
 
     # def _init_kge_settings(self, kwargs: Dict[str, object]) -> None:
     #     """Extract and document kwargs related to KGE-assisted policies."""
@@ -1412,9 +1419,16 @@ class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
     #     latent_vf = self.mlp_extractor.forward_critic(features)
     #     return latent_vf
 
-    def get_distribution(self, obs: PyTorchObs) -> Distribution:
-        """Get current policy distribution given observations."""
-        features = super().extract_features(obs, self.pi_features_extractor)
-        latent_pi = self.mlp_extractor.forward_actor(features)
-        action_logits = latent_pi
-        return self.action_dist.proba_distribution(action_logits=action_logits)
+    # def get_distribution(self, obs: PyTorchObs) -> Distribution:
+    #     """Get current policy distribution given observations."""
+    #     features = super().extract_features(obs, self.pi_features_extractor)
+    #     action_context = self._extract_action_context(features)
+    #     latent_pi = self.mlp_extractor.forward_actor(features)
+    #     special_action_mask = self._build_special_action_mask(obs, action_context)
+    #     shaped_logits = self._apply_kge_logit_shaping(obs, action_context, latent_pi)
+    #     action_logits = self._filter_action_logits_top_k(
+    #         shaped_logits,
+    #         action_context,
+    #         protected_action_mask=special_action_mask,
+    #     )
+    #     return self.action_dist.proba_distribution(action_logits=action_logits)

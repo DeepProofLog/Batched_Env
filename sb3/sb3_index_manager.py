@@ -89,19 +89,6 @@ class IndexManager():
         self.unified_term_map.update(self.constant_str2idx)
         self.unified_term_map.update(self.variable_str2idx)
 
-        # DEBUG: Print first 20 constants to verify ordering
-        const_sample = list(self.constant_str2idx.items())[:10]
-        # print(f"[DEBUG IndexManager SB3] First 20 constants:")
-        # for const_str, const_idx in const_sample:
-        #     print(f"  {const_str} -> {const_idx}")
-        
-        # # DEBUG: Print variable allocation
-        # print(f"[DEBUG IndexManager SB3] Variable allocation:")
-        # print(f"  constant_no: {self.constant_no}")
-        # print(f"  variable_start_index: {self.variable_start_index}")
-        # print(f"  variable_end_index: {self.variable_end_index}")
-        # print(f"  max_total_vars: {self.max_total_vars}")
-
         self.fact_index: Dict[Tuple, Set[Term]] = {}
 
     # def reset_next_var_index(self):
@@ -127,7 +114,7 @@ class IndexManager():
                 self.constant_str2idx[term] = current_idx
                 self.constant_idx2str[current_idx] = term
                 current_idx += 1
-                
+
         self.constant_no = len(self.constant_str2idx)
 
         # --- Predicates (Regular + Special) ---
@@ -144,7 +131,6 @@ class IndexManager():
                 self.predicate_str2idx[term] = current_idx
                 self.predicate_idx2str[current_idx] = term
                 current_idx += 1
-        # print(f"DEBUG [SB3 IndexManager]: First 10 predicates: {dict(list(self.predicate_str2idx.items())[:10])}")
 
         self.predicate_no = current_idx - 1
 
@@ -227,54 +213,6 @@ class IndexManager():
         # zero-copy lookup; DO NOT mutate the returned tensor
         return self._state_tuple_to_subidx(self.state_to_tuple(state))
 
-
-    # def get_atom_sub_index(self, state: List[Term]) -> torch.Tensor:
-    #     """
-    #     Get sub-indices (predicate, args) for each atom in a state in a single pass.
-    #     Uses a unified term map for faster argument lookup by processing arguments together.
-
-    #     Args:
-    #         state: A list of Term objects representing the logical state.
-
-    #     Returns:
-    #         sub_index: Tensor (padding_atoms, max_arity + 1) with indices.
-    #     """
-    #     # --- State Length Check ---
-    #     state_len = len(state)
-    #     if state_len > self.padding_atoms:
-    #          raise ValueError(f"Length of processed state ({state_len}) exceeds padding_atoms ({self.padding_atoms}).")
-
-    #     # --- Initialize Tensor ---
-    #     sub_index = torch.zeros(self.padding_atoms, self.max_arity + 1, device=self.device, dtype=self.idx_dtype)
-
-    #     # --- Single Pass for Indexing ---
-    #     # Local references to maps for efficiency
-    #     predicate_map = self.predicate_str2idx
-    #     unified_map = self.unified_term_map
-
-    #     for i, atom in enumerate(state):
-    #         # --- Predicate Index ---
-
-    #         try:
-    #             sub_index[i, 0] = predicate_map[atom.predicate]
-    #         except KeyError:
-    #              raise KeyError(f"Predicate '{atom.predicate}' not found in predicate map.")
-
-    #         # --- Argument Indices ---
-    #         num_args = len(atom.args)
-    #         if num_args > 0:
-    #             max_j = min(num_args, self.max_arity)
-    #             try:
-    #                 # Directly assign the slice from a list comprehension
-    #                 sub_index[i, 1:max_j + 1] = torch.tensor(
-    #                     [unified_map[arg] for arg in atom.args[:max_j]],
-    #                     device=self.device,
-    #                     dtype=self.idx_dtype
-    #                 )
-    #             except KeyError as e:
-    #                  raise KeyError(f"Argument '{e}' not in constant or variable maps.") from e
-
-    #     return sub_index
 
     def subindices_to_terms(
         self,

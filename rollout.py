@@ -218,7 +218,8 @@ class RolloutBuffer:
             tensor = tensor.reshape(shape)
         
         # Swap axes 0 and 1, then flatten
-        return tensor.transpose(0, 1).reshape(shape[0] * shape[1], *shape[2:])
+        # Make contiguous to match numpy's memory layout and ensure deterministic operations
+        return tensor.transpose(0, 1).contiguous().reshape(shape[0] * shape[1], *shape[2:])
     
     def get(
         self,
@@ -236,6 +237,11 @@ class RolloutBuffer:
         if not self.full:
             raise RuntimeError("Buffer is not full. Cannot sample.")
         
+        # Create random permutation of indices FIRST - exactly as in SB3
+        # This MUST come before generator_ready check to match SB3's random state consumption order
+        total_size = self.buffer_size * self.n_envs
+        indices = np.random.permutation(total_size)
+        
         # Prepare flattened data on first call
         if not self.generator_ready:
             # Flatten observations
@@ -252,10 +258,7 @@ class RolloutBuffer:
             
             self.generator_ready = True
         
-        # Create random permutation of indices
-        # Use numpy permutation for exact parity with SB3
-        total_size = self.buffer_size * self.n_envs
-        indices = np.random.permutation(total_size)
+        # Convert indices to torch tensor
         indices = torch.from_numpy(indices).to(self.device)
         
         # Default to full batch if batch_size not specified

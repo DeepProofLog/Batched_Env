@@ -268,7 +268,6 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     print(f"N envs: {config.n_envs}, N steps: {config.n_steps}")
     print(f"Total timesteps: {config.total_timesteps}")
     print(f"Seed: {config.seed}")
-    print(f"N corruptions: {config.n_corruptions}")
     print("=" * 70)
     
     # Create tensor components
@@ -305,13 +304,9 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     tensor_query_atoms = []
     for q in test_query_objs:
         query_atom = tensor_im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-        # query_padded = torch.full((config.padding_atoms, 3), tensor_im.padding_idx, dtype=torch.long, device=tensor_comp['device'])
-        # query_padded[0] = query_atom
-        # tensor_query_atoms.append(query_padded)
         tensor_query_atoms.append(query_atom)
     tensor_queries = torch.stack(tensor_query_atoms, dim=0)
     
-    print(f"DEBUG: n_corruptions before eval: {config.n_corruptions}")
     tensor_eval_results = tensor_eval_corruptions(
         actor=tensor_comp['policy'],
         env=tensor_comp['eval_env'],

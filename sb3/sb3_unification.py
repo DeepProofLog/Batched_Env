@@ -1,13 +1,10 @@
-from typing import List, Dict, Set, Tuple, FrozenSet, Optional, TYPE_CHECKING
+from typing import List, Dict, Set, Tuple, FrozenSet, Optional, TYPE_CHECKING, Any
 try:
     # Try relative import first (when sb3/ is in sys.path)
     from sb3_utils import Term, Rule
 except ImportError:
     # Fallback to package import (when imported as sb3.sb3_unification)
     from sb3.sb3_utils import Term, Rule
-
-if TYPE_CHECKING:
-    from sb3_index_manager import IndexManager
 
 def is_variable(arg: str) -> bool:
     """Check if an argument is a variable."""
@@ -230,72 +227,6 @@ def rename_vars_local(next_states: List[List[Term]],
     return renamed_states_outer, max_index_seen
 
 
-
-def _canonical_order_key(state: List[Term], index_manager: 'IndexManager') -> Tuple[int, ...]:
-    """Build a canonical key (tuple of ints) for ordering states deterministically.
-    Atoms are sorted by their indexed representation before generating the key."""
-    predicate_map = index_manager.predicate_str2idx
-    constant_map = index_manager.constant_str2idx
-    pad = index_manager.padding_idx
-    max_arity = index_manager.max_arity
-    constant_no = index_manager.constant_no
-
-    # First, convert all terms to indexed tuples for sorting
-    indexed_terms = []
-    for term in state:
-        pred_idx = predicate_map.get(term.predicate, pad)
-        args = term.args if term.args else ()
-        arg_indices = []
-        for pos in range(max_arity):
-            if pos < len(args):
-                arg = args[pos]
-                if arg in constant_map:
-                    arg_indices.append(constant_map[arg])
-                elif arg is None:
-                    arg_indices.append(pad)
-                elif (isinstance(arg, str) and (arg.startswith('Var_') or is_variable(arg))):
-                    # For sorting, use a placeholder that preserves variable identity
-                    # We'll remap after sorting
-                    arg_indices.append(constant_no + 1 + hash(arg) % 100000)  # temp placeholder
-                else:
-                    arg_indices.append(constant_map.get(arg, pad))
-            else:
-                arg_indices.append(pad)
-        indexed_terms.append((pred_idx, tuple(arg_indices), term))
-    
-    # Sort by (predicate, args) tuple
-    indexed_terms.sort(key=lambda x: (x[0], x[1]))
-    
-    # Now generate the key with proper variable remapping
-    var_map: Dict[str, int] = {}
-    next_var_idx = constant_no + 1
-    key: List[int] = []
-
-    for pred_idx, _, term in indexed_terms:
-        key.append(pred_idx)
-        args = term.args if term.args else ()
-        for pos in range(max_arity):
-            if pos < len(args):
-                arg = args[pos]
-                if arg in constant_map:
-                    key.append(constant_map[arg])
-                elif arg is None:
-                    key.append(pad)
-                elif (isinstance(arg, str) and (arg.startswith('Var_') or is_variable(arg))):
-                    mapped = var_map.get(arg)
-                    if mapped is None:
-                        mapped = next_var_idx
-                        var_map[arg] = mapped
-                        next_var_idx += 1
-                    key.append(mapped)
-                else:
-                    key.append(constant_map.get(arg, pad))
-            else:
-                key.append(pad)
-
-    return tuple(key)
-
-
 def state_to_str(state: List[Term]) -> str:
     """Convert a state (list of Terms) to a string representation.
     
@@ -424,7 +355,8 @@ def get_next_unification_python(state: List[Term],
                          verbose: int = 0,
                          max_derived_states: int = 500,
                          canonical_order: bool = False,
-                         index_manager: Optional['IndexManager'] = None) -> Tuple[List[List[Term]], Optional[int]]:
+                         index_manager: Optional[Any] = None,
+                         ) -> Tuple[List[List[Term]], Optional[int]]:
     """
     Processes a state and returns all possible next states based on a chosen strategy.
 
@@ -620,8 +552,6 @@ def get_next_unification_python(state: List[Term],
     next_states, next_var_index = rename_vars_local(next_states, next_var_index, verbose=0)
 
     if canonical_order:
-        if index_manager is None:
-            raise ValueError("canonical_order=True requires index_manager to be provided")
         # Sort by canonical string representation (matches tensor engine behavior)
         canonical_strings = [canonical_state_to_str(s) for s in next_states]
         
