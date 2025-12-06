@@ -63,9 +63,16 @@ def seed_all(seed: int, deterministic_cudnn: bool = True, warn: bool = False) ->
             seed_all(42)
             # ... rest of your code
     """
+    import os
+    
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    
+    # Set CUBLAS_WORKSPACE_CONFIG for deterministic CUDA matmul operations
+    # This is required when using torch.use_deterministic_algorithms(True) on CUDA
+    if torch.cuda.is_available():
+        os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
     
     # Enable deterministic algorithms for exact reproducibility
     # This ensures operations like scatter_add, index_add, etc. use deterministic implementations  
@@ -82,10 +89,9 @@ def seed_all(seed: int, deterministic_cudnn: bool = True, warn: bool = False) ->
             torch.backends.cudnn.benchmark = False
             if warn:
                 print(
-                    "Note: CUDNN set to deterministic mode. "
-                    "For full reproducibility, also set:\n"
-                    "  export CUBLAS_WORKSPACE_CONFIG=:16:8\n"
-                    "  export PYTHONHASHSEED=0"
+                    "Warning: This setting is not reproducible when creating 2 models from scratch, but it is when loading pretrained models. You can use\n"
+                    "  export CUBLAS_WORKSPACE_CONFIG=:16:8; export PYTHONHASHSEED=0\n"
+                    "to make runs reproducible."
                 )
 
 

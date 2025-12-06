@@ -1,14 +1,40 @@
-import torch
-import argparse
-import datetime
-import copy
+# ==============================================================================
+# CRITICAL: Early seeding for deterministic initialization
+# Must happen BEFORE importing sb3_train (which triggers many nested imports)
+# ==============================================================================
 import os
 import sys
+import random
 import warnings
+
+# Set environment variables for determinism before any CUDA operations
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+os.environ.setdefault('PYTHONHASHSEED', '0')
+
+# Minimal early imports for seeding
+import numpy as np
+import torch
+
+# Default seed used for initialization - will be overridden by config
+_INIT_SEED = 0
+random.seed(_INIT_SEED)
+np.random.seed(_INIT_SEED)
+torch.manual_seed(_INIT_SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(_INIT_SEED)
+
+# Set float32 matmul precision (matching runner.py)
+torch.set_float32_matmul_precision('high')
+
+# ==============================================================================
+# Now import remaining modules (order matches runner.py)
+# ==============================================================================
+import argparse
+import copy
+import datetime
 from itertools import product
 from typing import Optional, List
 
-import numpy as np
 try:
     # Try relative import first (when sb3/ is in sys.path)
     from sb3_utils import FileLogger
@@ -35,10 +61,6 @@ except ImportError:
         get_available_gpus,
         select_best_gpu,
     )
-torch.set_float32_matmul_precision('high')
-# import gc
-# gc.disable()  
-# torch.cuda.set_allocator_config(garbage_collection_threshold=0.9)
 
 if __name__ == "__main__":
 
@@ -82,9 +104,9 @@ if __name__ == "__main__":
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'n_envs': 16,
-        'n_steps': 128,
-        'n_eval_envs': 128,
+        'n_envs': 20,
+        'n_steps': 40,
+        'n_eval_envs': 20,
         'batch_size': 4096,
         'eval_freq': 1, # in multiples of (n_steps * n_envs) -> how many rollouts between evaluations
 
@@ -178,6 +200,10 @@ if __name__ == "__main__":
         'logger_path': './runs/',
         'use_wb': False,
         'wb_path': './../wandb/',
+        
+        # Deterministic parity settings - enable for exact match with tensor runner
+        'deterministic_parity': False,  # Enable strict seeding for parity testing
+        'match_sb3_init': False,  # Match SB3 model initialization
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())

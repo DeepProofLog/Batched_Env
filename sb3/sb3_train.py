@@ -88,6 +88,12 @@ def _attach_kge_to_policy(
 
 def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler, IndexManager, Any, Any]:
     """Prepare DataHandler, IndexManager, sampler and embedder."""
+    
+    # PARITY: Reseed at start for deterministic alignment
+    deterministic_parity = getattr(args, 'deterministic_parity', False)
+    if deterministic_parity:
+        _set_seeds(args.seed_run_i)
+    
     # Dataset
     dh = DataHandler(
         dataset_name=args.dataset_name,
@@ -548,10 +554,24 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
 
 
 
-def main(args, log_filename, use_logger, use_WB, WB_path, date):
-
+def main(args, log_filename, use_logger, use_WB, WB_path, date, external_components=None):
+    """Main training function.
+    
+    Args:
+        args: Configuration namespace
+        log_filename: Log file path
+        use_logger: Whether to use logging
+        use_WB: Whether to use Weights & Biases
+        WB_path: W&B path
+        date: Date string
+        external_components: Optional dict with pre-created components for parity testing:
+            {'dh': DataHandler, 'index_manager': IndexManager, 'sampler': Sampler, 'embedder': Embedder}
+    """
     _warn_non_reproducible(args)
     _set_seeds(args.seed_run_i)
+    
+    # Deterministic parity mode for exact alignment with tensor implementation
+    deterministic_parity = getattr(args, 'deterministic_parity', False)
 
     # Normalize KGE flags
     args.kge_action = bool(getattr(args, "kge_action", False))
@@ -564,10 +584,20 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
     device = get_device(args.device)
     print(f"Device: {device}. CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
 
-    # Build pieces
-    # kge_engine = _init_kge_engine(args)
+    # Build pieces - use external components if provided (for parity testing)
     kge_engine = None
-    dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
+    if external_components is not None:
+        dh = external_components['dh']
+        index_manager = external_components['index_manager']
+        sampler = external_components['sampler']
+        embedder = external_components['embedder']
+    else:
+        dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
+    
+    # PARITY: Reseed before environment creation for deterministic alignment
+    if deterministic_parity:
+        _set_seeds(args.seed_run_i)
+    
     env, eval_env, callback_env = create_environments(
         args,
         dh,
@@ -592,9 +622,10 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date):
         # 'kge_logit_eps': getattr(args, 'kge_logit_eps', 1e-6),
     }
 
-    # Seed is already set at the beginning of main()
-    # Reseed before policy creation to align with torchrl stack
-    # torch.manual_seed(args.seed_run_i)
+    # PARITY: Reseed before model creation for deterministic alignment
+    if deterministic_parity:
+        _set_seeds(args.seed_run_i)
+    
     model = PPO(
         CustomActorCriticPolicy,
         env,

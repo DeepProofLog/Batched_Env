@@ -16,7 +16,12 @@ import torch
 import gc
 
 from utils.utils import FileLogger
-from train_new import main as train_main
+try:
+    # Try relative import first (when sb3/ is in sys.path or cwd)
+    from sb3_train import main as train_main
+except ImportError:
+    # Fallback to package import (when imported as sb3.sb3_runner_shared)
+    from sb3.sb3_train import main as train_main
 
 
 def _shared_default_config():

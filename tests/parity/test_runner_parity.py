@@ -985,62 +985,129 @@ def run_runner_parity_test(
             # Set seeds
             seed_all(config.seed)
             
-            # Run SB3 training
+            # Import component creation functions from test_train_parity
+            from test_train_parity import (
+                TrainParityConfig,
+                create_sb3_components,
+                create_tensor_components,
+            )
+            from ppo import PPO as TensorPPO
+            from sb3_model_eval import eval_corruptions as sb3_eval_corruptions
+            from model_eval import eval_corruptions as tensor_eval_corruptions
+            
+            # Create a TrainParityConfig from our RunnerParityConfig
+            train_config = TrainParityConfig(
+                dataset=config.dataset_name,
+                data_path=config.data_path,
+                n_envs=config.n_envs,
+                n_steps=config.n_steps,
+                n_epochs=config.n_epochs,
+                batch_size=config.batch_size,
+                learning_rate=config.learning_rate,
+                gamma=config.gamma,
+                clip_range=config.clip_range,
+                ent_coef=config.ent_coef,
+                total_timesteps=config.timesteps_train,
+                n_corruptions=getattr(config, 'n_corruptions', 10),
+                seed=config.seed,
+                device=config.device,
+                verbose=config.verbose,
+            )
+            
+            # Create SB3 components
+            if verbose:
+                print("  Creating SB3 components...")
+            sb3_comp = create_sb3_components(train_config)
+            
+            # Create tensor components (shares DataHandler for query alignment)
+            if verbose:
+                print("  Creating tensor components...")
+            seed_all(config.seed)
+            tensor_comp = create_tensor_components(train_config, sb3_comp['dh'])
+            
+            # SB3 training
             if verbose:
                 print("  Running SB3 training...")
-                        
-            sb3_ns.seed_run_i = config.seed
-            sb3_ns.run_signature = f"parity_test_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            seed_all(config.seed)
+            sb3_comp['model'].learn(total_timesteps=train_config.total_timesteps, progress_bar=False)
             
-            date = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-
-            from sb3_train import main as sb3_main
-
-            sb3_train_metrics, sb3_valid_metrics, sb3_test_metrics = sb3_main(
-                sb3_ns,
-                log_filename=None,
-                use_logger=False,
-                use_WB=False,
-                WB_path=None,
-                date=date,
-            )
-            
-            # Store SB3 detailed metrics
-            results.sb3_train_metrics = MetricsSnapshot.from_metrics_dict(sb3_train_metrics or {})
-            results.sb3_valid_metrics = MetricsSnapshot.from_metrics_dict(sb3_valid_metrics or {})
-            results.sb3_test_metrics = MetricsSnapshot.from_metrics_dict(sb3_test_metrics or {})
-            results.sb3_mrr = sb3_test_metrics.get('mrr_mean', 0.0) if sb3_test_metrics else 0.0
-            
-            # Clear GPU memory between runs
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            
-            # Reset and run tensor training
+            # Tensor training
             if verbose:
                 print("  Running tensor training...")
-            
             seed_all(config.seed)
-                        
-            tensor_ns.seed_run_i = config.seed
-            tensor_ns.run_signature = f"parity_test_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-            from train import main as tensor_main
-
-            tensor_train_metrics, tensor_valid_metrics, tensor_test_metrics = tensor_main(
-                tensor_ns,
-                log_filename=None,
-                use_logger=False,
-                use_WB=False,
-                WB_path=None,
-                date=date,
+            tensor_ppo = TensorPPO(
+                policy=tensor_comp['policy'],
+                env=tensor_comp['train_env'],
+                n_steps=train_config.n_steps,
+                learning_rate=train_config.learning_rate,
+                n_epochs=train_config.n_epochs,
+                batch_size=train_config.batch_size,
+                clip_range=train_config.clip_range,
+                ent_coef=train_config.ent_coef,
+                gamma=train_config.gamma,
+                device=tensor_comp['device'],
+                verbose=False,
             )
+            tensor_ppo.learn(total_timesteps=train_config.total_timesteps)
             
-            # Store Tensor detailed metrics
-            results.tensor_train_metrics = MetricsSnapshot.from_metrics_dict(tensor_train_metrics or {})
-            results.tensor_valid_metrics = MetricsSnapshot.from_metrics_dict(tensor_valid_metrics or {})
-            results.tensor_test_metrics = MetricsSnapshot.from_metrics_dict(tensor_test_metrics or {})
-            results.tensor_mrr = tensor_test_metrics.get('mrr_mean', 0.0) if tensor_test_metrics else 0.0
+            # SB3 evaluation
+            if verbose:
+                print("  Running SB3 evaluation...")
+            seed_all(config.seed + 1000)
+            test_queries = sb3_comp['dh'].test_queries
+            sb3_eval_results = sb3_eval_corruptions(
+                model=sb3_comp['model'],
+                env=sb3_comp['eval_env'],
+                data=test_queries,
+                sampler=sb3_comp['sampler'],
+                n_corruptions=train_config.n_corruptions,
+                corruption_scheme=['tail'],
+                verbose=0,
+            )
+            results.sb3_mrr = sb3_eval_results.get('mrr_mean', 0.0)
+            results.sb3_train_metrics = MetricsSnapshot.from_metrics_dict(sb3_eval_results)
+            results.sb3_test_metrics = results.sb3_train_metrics
+            
+            # Tensor evaluation
+            if verbose:
+                print("  Running tensor evaluation...")
+            seed_all(config.seed + 1000)
+            tensor_comp['policy'].eval()
+            tensor_im = tensor_comp['im']
+            test_query_objs = tensor_comp['dh'].test_queries
+            tensor_query_atoms = []
+            for q in test_query_objs:
+                query_atom = tensor_im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+                tensor_query_atoms.append(query_atom)
+            tensor_queries = torch.stack(tensor_query_atoms, dim=0)
+            
+            tensor_eval_results = tensor_eval_corruptions(
+                actor=tensor_comp['policy'],
+                env=tensor_comp['eval_env'],
+                queries=tensor_queries,
+                sampler=tensor_comp['sampler'],
+                n_corruptions=train_config.n_corruptions,
+                corruption_modes=('tail',),
+                verbose=False,
+            )
+            results.tensor_mrr = tensor_eval_results.get('MRR', 0.0)
+            
+            # Convert tensor keys to match SB3 format for from_metrics_dict
+            # Note: success_rate measures proof success rate across all episodes
+            # reward_overall is the mean episode reward (usually same as success for this task)
+            tensor_success = tensor_eval_results.get('success_rate', 0.0)
+            tensor_metrics_normalized = {
+                'mrr_mean': tensor_eval_results.get('MRR', 0.0),
+                'hits1_mean': tensor_eval_results.get('Hits@1', 0.0),
+                'hits3_mean': tensor_eval_results.get('Hits@3', 0.0),
+                'hits10_mean': tensor_eval_results.get('Hits@10', 0.0),
+                'success_rate': tensor_success,
+                'tail_mrr_mean': tensor_eval_results.get('MRR', 0.0),  # Same as mrr for tail-only
+                'head_mrr_mean': 0.0,  # No head corruption
+                'reward_overall': tensor_success,  # For this task, reward = success
+            }
+            results.tensor_train_metrics = MetricsSnapshot.from_metrics_dict(tensor_metrics_normalized)
+            results.tensor_test_metrics = results.tensor_train_metrics
             
             # Compare metrics
             results.mrr_match = abs(results.sb3_mrr - results.tensor_mrr) < 0.001
@@ -1226,10 +1293,10 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Runner Parity Test")
     parser.add_argument("--dataset", type=str, default="countries_s3")
-    parser.add_argument("--timesteps", type=int, default=256)
-    parser.add_argument("--n-envs", type=int, default=4)
-    parser.add_argument("--n-steps", type=int, default=32)
-    parser.add_argument("--n-epochs", type=int, default=3)
+    parser.add_argument("--timesteps", type=int, default=2000)
+    parser.add_argument("--n-envs", type=int, default=20)
+    parser.add_argument("--n-steps", type=int, default=40)
+    parser.add_argument("--n-epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")

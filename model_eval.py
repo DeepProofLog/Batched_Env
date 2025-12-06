@@ -664,14 +664,22 @@ def eval_corruptions(
         lengths_all = [e[2] for e in episode_records]
         rewards_all = [e[3] for e in episode_records]
         succ_all = [e[4] for e in episode_records]
+        
+        # Filter for only positive episodes (is_pos = True, at index 0)
+        pos_episodes = [e for e in episode_records if e[0] == True]
+        pos_rewards = [e[3] for e in pos_episodes]
+        pos_succs = [e[4] for e in pos_episodes]
+        
         if lengths_all:
             agg["length mean +/- std"] = _format_stat_string(np.mean(lengths_all), np.std(lengths_all), len(lengths_all))
             agg["ep_len_mean"] = float(np.mean(lengths_all))
-        if rewards_all:
-            agg["reward_overall"] = _format_stat_string(np.mean(rewards_all), np.std(rewards_all), len(rewards_all))
-            agg["ep_rew_mean"] = float(np.mean(rewards_all))
-        if succ_all:
-            agg["success_rate"] = float(np.mean(succ_all))
+        if pos_rewards:
+            # reward_overall uses only positive episodes (matching SB3)
+            agg["reward_overall"] = _format_stat_string(np.mean(pos_rewards), np.std(pos_rewards), len(pos_rewards))
+            agg["ep_rew_mean"] = float(np.mean(rewards_all))  # Keep overall mean for ep_rew_mean
+        if pos_succs:
+            # success_rate uses only positive episodes (matching SB3)
+            agg["success_rate"] = float(np.mean(pos_succs))
 
         for lbl_bool, lbl_key in [(True, "pos"), (False, "neg")]:
             items = [e for e in episode_records if e[0] == lbl_bool]

@@ -5,15 +5,40 @@ This module provides the command-line interface and experiment management,
 migrated from the original Stable-Baselines3 version to use TorchRL.
 """
 
+# ==============================================================================
+# CRITICAL: Early seeding for deterministic initialization
+# Must happen BEFORE importing train (which triggers many nested imports)
+# ==============================================================================
+import os
+import random
+
+# Set environment variables for determinism before any CUDA operations
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+os.environ.setdefault('PYTHONHASHSEED', '0')
+
+# Minimal early imports for seeding
+import numpy as np
+import torch
+
+# Default seed used for initialization - will be overridden by config
+_INIT_SEED = 0
+random.seed(_INIT_SEED)
+np.random.seed(_INIT_SEED)
+torch.manual_seed(_INIT_SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(_INIT_SEED)
+
+# Match SB3: set float32 matmul precision
+torch.set_float32_matmul_precision('high')
+
+# ==============================================================================
+# Now import remaining modules (order matches sb3_runner.py)
+# ==============================================================================
 import argparse
 import copy
 import datetime
-import os
 from itertools import product
 from typing import List, Optional
-
-import numpy as np
-import torch
 
 from utils.utils import FileLogger
 from train import main
@@ -64,9 +89,10 @@ if __name__ == "__main__":
         'save_model': True,
         'use_amp': True,
         'use_compile': True,
-        'n_steps': 128,
-        'batch_size_env': 16,
-        'batch_size_env_eval': 16,
+        'n_steps': 40,
+        'eval_freq': 1,  # In multiples of n_steps (matches SB3)
+        'batch_size_env': 20,
+        'batch_size_env_eval': 20,
         'batch_size': 4096,  # Aligned with SB3 (was 1024)
 
         # Env params
@@ -110,6 +136,10 @@ if __name__ == "__main__":
         'use_wb': False,
         'wb_path': './../wandb/',
         'debug_ppo': False,
+        
+        # Deterministic parity settings - enable for exact match with SB3
+        'deterministic_parity': False,  # Enable strict seeding for parity testing
+        'match_sb3_init': False,  # Match SB3 model initialization
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())
@@ -212,15 +242,15 @@ if __name__ == "__main__":
             )
         # Map to actual metric names returned by evaluation
         metric_name_map = {
-            'mrr': 'mrr_mean',
+            'mrr': 'mrr',  # Match SB3 naming
             'auc_pr': 'auc_pr',
         }
         cfg['eval_best_metric'] = metric_name_map.get(metric_normalized, metric_normalized)
 
         namespace = argparse.Namespace(**cfg)
 
-        raw_corruption_mode = getattr(namespace, "corruption_mode", True)
-        namespace.corruption_mode = bool(raw_corruption_mode)
+        # Keep corruption_mode as-is (matches SB3 behavior)
+        # Can be 'dynamic', 'static', or boolean values
 
         # Auto-configure padding_states based on dataset
         if namespace.padding_states == -1:
@@ -229,7 +259,7 @@ if __name__ == "__main__":
                     print("Overriding test_neg_samples.")
                 namespace.test_neg_samples = None
                 namespace.padding_states = 20
-                namespace.atom_embedding_size = 256
+                # Note: atom_embedding_size is kept as 250 (from DEFAULT_CONFIG) to match SB3
             elif namespace.dataset_name == "family":
                 namespace.padding_states = 130
             elif namespace.dataset_name == "wn18rr":
@@ -247,24 +277,18 @@ if __name__ == "__main__":
             namespace.corruption_scheme = ['tail']
         namespace.corruption_scheme = list(namespace.corruption_scheme)
 
-        # File names
+        # File names - match SB3 behavior for parity
         train_file = "train.txt"
         valid_file = "valid.txt"
         test_file = "test.txt"
 
-        # Always use depth files if they exist (depth filter is applied in DataHandler)
-        # Check if depth files exist and use them
-        import os
-        from os.path import join
-        dataset_path = join(namespace.data_path, namespace.dataset_name)
-        
-        if namespace.load_depth_info:
-            if os.path.exists(join(dataset_path, train_file.replace('.txt', '_depths.txt'))):
-                train_file = train_file.replace('.txt', '_depths.txt')
-            if os.path.exists(join(dataset_path, valid_file.replace('.txt', '_depths.txt'))):
-                valid_file = valid_file.replace('.txt', '_depths.txt')
-            if os.path.exists(join(dataset_path, test_file.replace('.txt', '_depths.txt'))):
-                test_file = test_file.replace('.txt', '_depths.txt')
+        # Match SB3: only use depth files when depth filter is explicitly set
+        if namespace.train_depth is not None:
+            train_file = train_file.replace('.txt', '_depths.txt')
+        if namespace.valid_depth is not None:
+            valid_file = valid_file.replace('.txt', '_depths.txt')
+        if namespace.test_depth is not None:
+            test_file = test_file.replace('.txt', '_depths.txt')
 
         namespace.train_file = train_file
         namespace.valid_file = valid_file
@@ -286,7 +310,7 @@ if __name__ == "__main__":
             namespace.constant_embedding_size = 2 * namespace.atom_embedding_size
 
         namespace.device = device
-        namespace.eval_freq = namespace.n_steps * namespace.batch_size_env
+        namespace.eval_freq = int(namespace.n_steps * namespace.eval_freq)
 
         return namespace
 

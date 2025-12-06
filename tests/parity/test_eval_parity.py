@@ -1405,7 +1405,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluation Parity Tests")
     parser.add_argument("--dataset", type=str, default="countries_s3",
                        help="Dataset name (default: countries_s3)")
-    parser.add_argument("--n-envs", type=int, default=2,
+    parser.add_argument("--n-envs", type=int, default=20,
                        help="Number of environments (default: 2)")
     parser.add_argument("--n-eval-episodes", type=int, default=24,
                        help="Number of evaluation episodes (default: 24)")
