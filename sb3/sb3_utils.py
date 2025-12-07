@@ -273,7 +273,6 @@ def print_eval_info(split_name: str, metrics: Dict[str, float]):
 
     print(f'\n\n{split_name} set metrics:')
     grouped: Dict[str, Dict[str, Optional[float]]] = {}
-    grouped_order: List[str] = []
     grouped_suffixes = {"mean", "std", "count"}
     handled_keys: set[str] = set()
 
@@ -286,26 +285,32 @@ def print_eval_info(split_name: str, metrics: Dict[str, float]):
                 base = key[: -len(token)]
                 if base not in grouped:
                     grouped[base] = {"mean": None, "std": None, "count": None}
-                    grouped_order.append(base)
                 grouped[base][suffix] = float(value)
                 handled_keys.add(key)
                 break
 
-    for base in grouped_order:
+    # Print grouped metrics in alphabetical order
+    for base in sorted(grouped.keys()):
         stats = grouped[base]
         count_val = stats.get("count")
         display = _format_stat(stats.get("mean"), stats.get("std"), int(count_val) if count_val is not None else None)
         print(f"{base}: {display}")
 
+    # Collect and sort remaining metrics
+    remaining_output: List[Tuple[str, str]] = []
     for key, value in metrics.items():
         if key in handled_keys:
             continue
         if isinstance(value, (float, np.floating)):
-            print(f"{key}: {value:.3f}")
+            remaining_output.append((key, f"{value:.3f}"))
         elif isinstance(value, (int, np.integer)):
-            print(f"{key}: {value}")
+            remaining_output.append((key, str(value)))
         else:
-            print(f"{key}: {value}")
+            remaining_output.append((key, str(value)))
+
+    # Print remaining metrics in alphabetical order
+    for key, formatted_value in sorted(remaining_output, key=lambda x: x[0]):
+        print(f"{key}: {formatted_value}")
 
 def print_state_transition(state, derived_states, reward, done, action=None, truncated=None, label=None):
     """

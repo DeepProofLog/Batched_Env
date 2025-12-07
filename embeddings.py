@@ -1,3 +1,22 @@
+"""
+Embedding Layers for Logical Reasoning.
+
+This module provides learnable and fixed embedding layers for encoding
+logical atoms (predicates + constants) into dense vector representations.
+
+Classes:
+    - TransE: Translation-based embedding (h + r - t)
+    - ComplEx: Complex-valued embeddings 
+    - Attention: Dot-product attention for atom composition
+    - RNN/GRU: Sequential composition for atom embeddings
+    - Transformer: Multi-head attention composition
+
+Tensor shapes:
+    predicate_emb:  (B, n_states, n_atoms, 1, embed_dim)
+    constant_embs:  (B, n_states, n_atoms, 2, embed_dim)
+    atom_output:    (B, n_states, n_atoms, embed_dim)
+    state_output:   (B, n_states, embed_dim)
+"""
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -130,24 +149,24 @@ class EmbedderNonLearnable:
             sub_indices = sub_indices.to(torch.int64)
         
         # Extract predicate and constant indices
-        predicate_indices = sub_indices[..., 0].contiguous()
-        constant_indices = sub_indices[..., 1:].contiguous()
+        predicate_indices = sub_indices[..., 0].contiguous()  # [...]
+        constant_indices = sub_indices[..., 1:].contiguous()  # [..., 2]
         
         # Use nn.Embedding for optimized lookup
-        predicate_embeddings = self.predicate_embedding(predicate_indices).unsqueeze(-2)
-        constant_embeddings = self.constant_embedding(constant_indices)
+        predicate_embeddings = self.predicate_embedding(predicate_indices).unsqueeze(-2)  # [..., 1, E]
+        constant_embeddings = self.constant_embedding(constant_indices)  # [..., 2, E]
         
         # TransE composition (fused computation)
         # Directly compute: predicate + (constant_1 - constant_2) and sum
-        constant_1 = constant_embeddings[..., 0, :]
-        constant_2 = constant_embeddings[..., 1, :]
-        predicate_emb_squeezed = predicate_embeddings.squeeze(-2)
+        constant_1 = constant_embeddings[..., 0, :]  # [..., E]
+        constant_2 = constant_embeddings[..., 1, :]  # [..., E]
+        predicate_emb_squeezed = predicate_embeddings.squeeze(-2)  # [..., E]
         
         # Compute atom embeddings: predicate + (constant_1 - constant_2)
-        atom_embeddings = predicate_emb_squeezed + (constant_1 - constant_2)
+        atom_embeddings = predicate_emb_squeezed + (constant_1 - constant_2)  # [..., E]
         
         # Sum atom embeddings to get state embeddings
-        state_embeddings = atom_embeddings.sum(dim=-2)
+        state_embeddings = atom_embeddings.sum(dim=-2)  # [..., E] (summed over atoms)
 
         return state_embeddings
     

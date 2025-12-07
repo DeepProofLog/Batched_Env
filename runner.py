@@ -10,25 +10,21 @@ migrated from the original Stable-Baselines3 version to use TorchRL.
 # Must happen BEFORE importing train (which triggers many nested imports)
 # ==============================================================================
 import os
-import random
 
 # Set environment variables for determinism before any CUDA operations
 os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
 os.environ.setdefault('PYTHONHASHSEED', '0')
 
-# Minimal early imports for seeding
+# Early imports for seeding
 import numpy as np
 import torch
+from utils.seeding import seed_all
 
-# Default seed used for initialization - will be overridden by config
+# Default seed for module initialization - will be overridden by config
 _INIT_SEED = 0
-random.seed(_INIT_SEED)
-np.random.seed(_INIT_SEED)
-torch.manual_seed(_INIT_SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(_INIT_SEED)
+seed_all(_INIT_SEED, deterministic=True, warn=False)
 
-# Match SB3: set float32 matmul precision
+# Set float32 matmul precision
 torch.set_float32_matmul_precision('high')
 
 # ==============================================================================
@@ -137,9 +133,9 @@ if __name__ == "__main__":
         'wb_path': './../wandb/',
         'debug_ppo': False,
         
-        # Deterministic parity settings - enable for exact match with SB3
-        'deterministic_parity': False,  # Enable strict seeding for parity testing
-        'match_sb3_init': False,  # Match SB3 model initialization
+        # Determinism settings
+        'deterministic': True,  # Enable strict reproducibility (slower, set False for production)
+        'eval_deterministic': True,  # Use argmax in evaluation (vs sampling)
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())

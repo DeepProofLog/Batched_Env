@@ -26,17 +26,22 @@ Tensor = torch.Tensor
 
 def _mix_hash(triples: LongTensor, b_e: int, b_r: int) -> LongTensor:
     """
-    Compute a fast 64-bit mixed hash for (h, r, t) triples (indices start at 1).
-    Uses collision-free packing: h << 42 | r << 21 | t
-    Assumes h, r, t < 2^21 (~2M).
+    Compute a fast 64-bit mixed hash for (h, r, t) triples.
+    
+    This function generates a unique 64-bit identifier for each triple by packing
+    the entity and relation indices. It assumes indices are within [0, 2^21].
     
     Args:
-        triples: [*, 3] long tensor (r, h, t)
-        b_e: Entity hash bucket size (unused)
-        b_r: Relation hash bucket size (unused)
+        triples (LongTensor): [*, 3] Tensor of triples in (r, h, t) format.
+                              The function internally converts to (h, r, t) for packing.
+        b_e (int):            Entity hash bucket size (unused, kept for API matching).
+        b_r (int):            Relation hash bucket size (unused, kept for API matching).
     
     Returns:
-        hashes: [*] int64 tensor
+        LongTensor: [*] 64-bit hash values.
+        
+    Logic:
+        hashes = (h << 42) | (r << 21) | t
     """
     h = triples[..., 1].to(torch.int64)  # head (column 1)
     r = triples[..., 0].to(torch.int64)  # relation (column 0)
@@ -62,17 +67,25 @@ class SamplerConfig:
 class Sampler:
     """
     Unified, index-only negative sampler with optional domains and filtering.
-
-    Public API:
-      - corrupt(positives, num_negatives, mode, ...) - Returns [B, K, 3] in (r, h, t) format
-      - corrupt_batch(positive_batch, num_negs_per_pos) - SB3-compatible, (h, r, t) format
-      - corrupt_batch_all(positive_batch) - SB3-compatible, (h, r, t) format
-      - corrupt_all(positives, mode, ...) - Returns (heads_list, tails_list) in (r, h, t) format
-
-    Internals:
-      - Filterer: sorted unique 64-bit hashes of known positives (CPU/GPU)
-      - Domain: optional entity->domain mapping and domain->entities pools (SB3-compatible)
-      - Generator: vectorized torch.rand matching SB3's approach exactly
+    
+    This class provides scalable negative sampling for knowledge graph training.
+    It supports both simple uniform sampling and domain-constrained sampling,
+    matching the behavior of Stable Baselines3's KG implementation.
+    
+    Features:
+        - Vectorized operations on GPU.
+        - Efficient filtering of known positives via sorted hash lookups.
+        - Domain awareness to corrupt entities only with valid types.
+        - Exact parity with SB3's randomness and logic.
+    
+    Tensor Shape Conventions:
+        - B: Batch size.
+        - K: Number of negative samples per positive.
+        - M: Total number of candidates (num_negs * overshoot).
+        
+    Internal Buffers:
+        - hashes_sorted: [Known_Positives] Sorted 64-bit hashes for filtering.
+        - domain_padded: [Num_Domains, Max_Domain_Size] Padded entity pools.
     """
 
     def __init__(self, cfg: SamplerConfig) -> None:
@@ -115,20 +128,20 @@ class Sampler:
         entity2domain: Optional[Dict[int, str]] = None,
     ) -> "Sampler":
         """
-        Create sampler from data.
+        Create a Sampler instance initialized with data.
         
         Args:
-            all_known_triples_idx: All known positive triples in (r, h, t) format
-            num_entities: Number of entities
-            num_relations: Number of relations
-            device: Target device
-            default_mode: Default corruption mode
-            seed: Random seed
-            domain2idx: Optional mapping from domain name to list of entity indices
-            entity2domain: Optional mapping from entity index to domain name
+            all_known_triples_idx (LongTensor): [T, 3] All known positive triples in (r, h, t) format.
+            num_entities (int):    Total number of entities.
+            num_relations (int):   Total number of relations.
+            device (torch.device): Target device for tensors.
+            default_mode (str):    Default corruption mode ('head', 'tail', 'both').
+            seed (int):            Random seed.
+            domain2idx (Dict):     Optional domain name -> entity ID list mapping.
+            entity2domain (Dict):  Optional entity ID -> domain name mapping.
         
         Returns:
-            Sampler instance
+            Sampler: Initialized sampler instance.
         """
         cfg = SamplerConfig(num_entities, num_relations, device, default_mode, seed)
         self = cls(cfg)
@@ -152,7 +165,7 @@ class Sampler:
         return self
     
     def _update_corruption_indices(self) -> None:
-        """Update corruption indices based on default_mode."""
+        """Update corruption indices (0=head, 2=tail) based on default_mode."""
         if self.default_mode == 'head':
             self._corruption_indices = [0]  # head is column 0 in (h, r, t)
         elif self.default_mode == 'tail':
@@ -167,9 +180,15 @@ class Sampler:
         device: torch.device,
     ) -> None:
         """
-        Build SB3-compatible domain structures for exact parity with BasicNegativeSamplerDomain.
+        Build SB3-compatible domain structures for exact parity.
         
-        This replicates the exact logic from SB3's BasicNegativeSamplerDomain.__init__().
+        Constructs padded domain pools and entity-to-domain mappings to enable
+        vectorized domain updates that match logic in `BasicNegativeSamplerDomain`.
+        
+        Args:
+            domain2idx (Dict): Domain name to entity list.
+            entity2domain (Dict): Entity ID to domain name.
+            device (torch.device): Device.
         """
         storage_dtype = torch.int32
         
@@ -214,7 +233,15 @@ class Sampler:
     # Internal helpers
     # -----------------------------
     def _filter_keep_mask(self, triples: LongTensor) -> torch.BoolTensor:
-        """Return mask of entries NOT present in known positives. triples: [N,3] in (r, h, t)."""
+        """
+        Return mask of entries NOT present in known positives using sorted search.
+        
+        Args:
+            triples (LongTensor): [N, 3] Candidates to check, in (r, h, t) format.
+            
+        Returns:
+            torch.BoolTensor: [N] Boolean mask (True = keep, False = filter out).
+        """
         if self.hashes_sorted is None or self.hashes_sorted.numel() == 0:
             return torch.ones((triples.shape[0],), dtype=torch.bool, device=triples.device)
         
@@ -242,16 +269,20 @@ class Sampler:
         num_negs_per_pos: int,
     ) -> LongTensor:
         """
-        SB3-compatible corruption method. Input/output in (h, r, t) format.
+        Generate negatives for a batch of positives using SB3-compatible logic.
         
-        This method exactly replicates SB3's BasicNegativeSamplerDomain.corrupt_batch().
+        This method operates in (h, r, t) format and replicates the logic of
+        SB3's `BasicNegativeSamplerDomain.corrupt_batch()`, including:
+        - Domain constraints.
+        - Exact random sampling procedure.
+        - Splitting work across corruption indices.
         
         Args:
-            positive_batch: [B, 3] positive triples in (head, relation, tail) format
-            num_negs_per_pos: Number of negatives per positive
+            positive_batch (LongTensor): [B, 3] Positive triples in (h, r, t) format.
+            num_negs_per_pos (int):      Number of negatives to generate per positive.
         
         Returns:
-            [B, num_negs_per_pos, 3] negative triples in (h, r, t) format
+            LongTensor: [B, num_negs_per_pos, 3] Negative triples in (h, r, t) format.
         """
         device = positive_batch.device
         batch_shape = positive_batch.shape[:-1]
@@ -329,13 +360,15 @@ class Sampler:
     def corrupt_batch_all(self, positive_batch: LongTensor) -> List[LongTensor]:
         """
         Enumerate all legal domain-respecting corruptions for each triple.
-        SB3-compatible method. Input/output in (h, r, t) format.
+        
+        Matches SB3's exhaustive generation, returning ragged lists of candidates.
         
         Args:
-            positive_batch: [B, 3] positive triples in (head, relation, tail) format
+            positive_batch (LongTensor): [B, 3] Positive triples in (h, r, t) format.
         
         Returns:
-            List of [M_i, 3] tensors, one per input triple, in (h, r, t) format
+            List[LongTensor]: List of [M_i, 3] tensors, one per input triple.
+                              Each tensor contains all valid corruptions in (h, r, t) format.
         """
         device = positive_batch.device
         out: List[LongTensor] = []
@@ -399,29 +432,31 @@ class Sampler:
     ) -> LongTensor:
         """
         Vectorized K-negative generation with filtering and uniqueness.
-        Returns [B, K, 3] on `device` (default sampler device).
         
-        Matches SB3's get_negatives behavior exactly:
-        1. Generate overshoot * num_negatives candidates
-        2. Filter out known positives
-        3. Take unique candidates
-        4. Return first num_negatives
+        This is the main entry point for the training loop. It wraps the SB3-compatible
+        core logic but accepts input in (r, h, t) format, which is the standard throughout
+        the rest of this codebase.
         
-        Input is in (relation, head, tail) format. Internally converts to (h, r, t) for
-        SB3-compatible processing, then converts back.
+        Logic:
+        1. Convert input to (h, r, t).
+        2. Call `corrupt_batch` to generate raw candidates (with overshoot if requested).
+        3. Convert candidates back to (r, h, t).
+        4. (Optional) Filter out known positives using `_filter_keep_mask`.
+        5. (Optional) Deduplicate candidates per row.
+        6. Select the first `num_negatives` valid candidates.
         
         Args:
-            positives: [B, 3] positive triples in (r, h, t) format
-            num_negatives: Number of negatives per positive
-            mode: Corruption mode ('head', 'tail', or 'both')
-            device: Target device (defaults to sampler device)
-            filter: Whether to filter out known positives
-            unique: Whether to ensure unique negatives per positive
-            use_domain: Whether to use domain constraints
-            overshoot: Multiplier for oversampling before filtering (default 1, no overshoot)
+            positives (LongTensor): [B, 3] Positive triples in (r, h, t) format.
+            num_negatives (int):    Target number of negatives per positive.
+            mode (str):             Corruption mode ('head', 'tail', 'both').
+            device (torch.device):  Target device.
+            filter (bool):          If True, remove generated triples that are known positives.
+            unique (bool):          If True, ensure valid negatives are unique per row.
+            use_domain (bool):      If True, respect domain constraints (implied by internal state).
+            overshoot (int):        Oversampling factor (default 1).
         
         Returns:
-            negatives: [B, K, 3] negative triples in (r, h, t) format
+            LongTensor: [B, K, 3] Negative triples in (r, h, t) format.
         """
         if device is None:
             device = self.device
@@ -510,18 +545,20 @@ class Sampler:
         use_domain: bool = True,
     ) -> Tuple[List[LongTensor], Optional[List[LongTensor]]]:
         """
-        Enumerate *all* legal corruptions. Returns (all_heads, all_tails).
-        If mode='head' -> (heads, None); if 'tail' -> ([], tails); if 'both' -> (heads, tails).
-        Each list has length B; each element is [K_i, 3] ragged tensor on `device` in (r, h, t) format.
+        Enumerate *all* legal corruptions for a batch of positives.
+        
+        This uses `corrupt_batch_all` internally but handles format conversion and filtering.
         
         Args:
-            positives: [B, 3] positive triples in (r, h, t) format
-            mode: Corruption mode
-            device: Target device
-            use_domain: Whether to use domain constraints
+            positives (LongTensor): [B, 3] Positive triples in (r, h, t) format.
+            mode (str):             Corruption mode.
+            device (torch.device):  Target device.
+            use_domain (bool):      Respect domain constraints.
         
         Returns:
-            (heads_list, tails_list): Lists of corrupted triples in (r, h, t) format
+            Tuple[List, Optional[List]]: (heads_list, tails_list).
+                - heads_list: List of [K_i, 3] tensors (r, h, t) containing head corruptions.
+                - tails_list: List of [K_i, 3] tensors (r, h, t) containing tail corruptions (or None).
         """
         if device is None:
             device = self.device
@@ -590,30 +627,22 @@ class Sampler:
         unique: bool = True,
     ) -> Tuple[List[LongTensor], List[LongTensor]]:
         """
-        Generate head and tail corruptions separately, mimicking SB3's get_negatives_from_states_separate.
+        Generate head and tail corruptions separately (SB3 parity method).
         
-        This method generates head corruptions and tail corruptions completely independently,
-        returning them as separate lists. This is important for eval_corruptions which
-        iterates over corruption modes and needs separate negatives for each mode.
-        
-        IMPORTANT: This method uses BATCHED processing for filter+unique to match SB3's
-        exact behavior. The processing order is:
-        1. Generate ALL candidates in batch
-        2. Flatten and filter ALL at once
-        3. Apply batched unique-per-row using sort + deduplication
-        4. Split results back into per-query lists
+        This method is critical for evaluation protocols (like MRR) where head
+        and tail corruptions are scored independently. It ensures exact parity
+        with SB3's batched generation logic, including sorting and deduplication behavior.
         
         Args:
-            positives: [B, 3] positive triples in (r, h, t) format
-            num_negatives: Number of negatives per corruption type, or None for all
-            device: Target device (defaults to sampler device)
-            filter: Whether to filter out known positives
-            unique: Whether to ensure unique negatives per positive
+            positives (LongTensor): [B, 3] Positive triples in (r, h, t) format.
+            num_negatives (Optional[int]): Target K negatives. If None, generate all (OOM risky).
+            device (torch.device): Target device.
+            filter (bool): Whether to filter known positives.
+            unique (bool): Whether to deduplicate results.
         
         Returns:
-            (head_negs_list, tail_negs_list): 
-                - head_negs_list: List[LongTensor] of length B, each [K_i, 3] in (r, h, t) format
-                - tail_negs_list: List[LongTensor] of length B, each [K_i, 3] in (r, h, t) format
+            Tuple[List, List]: (head_negs_list, tail_negs_list)
+                - Each list contains B tensors of shape [K, 3] or [All, 3] in (r, h, t) format.
         """
         if device is None:
             device = self.device

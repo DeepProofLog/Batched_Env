@@ -372,3 +372,385 @@ class ExactMemory:
                     visited[a, k] = True
 
         return visited
+
+
+class GPUExactMemory:
+    """
+    GPU-accelerated exact memory backend using sorted hash tables.
+    
+    This class provides exact membership testing (like ExactMemory) but runs entirely
+    on GPU using packed 64-bit hashes and torch.searchsorted for O(log N) lookup.
+    
+    Key differences from ExactMemory:
+    - No Python loops or .tolist() calls
+    - All operations are vectorized on GPU
+    - Uses sorted hash tensors per environment for exact membership
+    
+    Maintains semantic parity with ExactMemory:
+    - States are treated as order-independent sets of atoms
+    - Terminal predicates are filtered when adding states
+    - Membership checks include terminals for derived state comparison
+    """
+
+    def __init__(
+        self,
+        batch_size: int,
+        device: torch.device,
+        padding_idx: int,
+        padding_atoms: int,
+        max_arity: int,
+        total_vocab_size: int,
+        true_pred_idx: Optional[int] = None,
+        false_pred_idx: Optional[int] = None,
+        end_pred_idx: Optional[int] = None,
+        initial_capacity: int = 1024,
+    ):
+        """
+        Initialize GPU exact memory.
+        
+        Args:
+            batch_size: Number of environments
+            device: GPU device
+            padding_idx: Index used for padding
+            padding_atoms: Maximum atoms per state
+            max_arity: Maximum predicate arity
+            total_vocab_size: Size of vocabulary (for hash base)
+            true_pred_idx: Index of True predicate (terminal)
+            false_pred_idx: Index of False predicate (terminal)
+            end_pred_idx: Index of Endf predicate (terminal)
+            initial_capacity: Initial hash table capacity per environment
+        """
+        self.batch_size = int(batch_size)
+        self._device = device
+        self.padding_idx = int(padding_idx)
+        self.true_pred_idx = true_pred_idx
+        self.false_pred_idx = false_pred_idx
+        self.end_pred_idx = end_pred_idx
+        self._capacity = initial_capacity
+        
+        # Hash packing base
+        self._pack_base = total_vocab_size + 1
+        self._mask63 = (1 << 63) - 1
+        
+        # Position vectors for order-independent hashing (same as BloomFilter)
+        L = padding_atoms * (max_arity + 1)
+        ar = torch.arange(L, device=device, dtype=torch.long) + 1
+        self._pos_vec = (ar * 0x9E3779B97F4A7C15) & self._mask63
+        
+        # Per-environment sorted hash storage
+        # Shape: [batch_size, capacity] - stores sorted hashes
+        self._mem_hashes = torch.full(
+            (batch_size, initial_capacity), 
+            torch.iinfo(torch.long).max,  # Use max as sentinel
+            dtype=torch.long, 
+            device=device
+        )
+        # Count of valid entries per environment
+        self._mem_counts = torch.zeros(batch_size, dtype=torch.long, device=device)
+        
+    def reset(self, rows: Tensor) -> None:
+        """Clear memory for selected env indices (fully vectorized)."""
+        if rows.numel() == 0:
+            return
+        # Reset counts and fill with sentinel
+        self._mem_counts.index_fill_(0, rows, 0)
+        self._mem_hashes.index_fill_(0, rows, torch.iinfo(torch.long).max)
+    
+    def _state_hash64(self, states: Tensor, ignore_terminals: bool) -> Tensor:
+        """
+        Compute order-independent 64-bit hash for states.
+        
+        Args:
+            states: [N, M, D] or [A, K, M, D] tensor of states
+            ignore_terminals: If True, exclude terminal predicates from hash
+            
+        Returns:
+            Hash tensor of shape [N] or [A, K]
+        """
+        if states.dim() == 4:
+            A, K, M, D = states.shape
+            states_flat = states.view(A * K, M, D)
+            hashes_flat = self._state_hash64(states_flat, ignore_terminals)
+            return hashes_flat.view(A, K)
+        
+        # states: [N, M, D]
+        N, M, D = states.shape
+        s = states.long()
+        pad = self.padding_idx
+        
+        # Create validity mask
+        preds = s[:, :, 0]  # [N, M]
+        valid = preds != pad
+        
+        if ignore_terminals:
+            if self.true_pred_idx is not None:
+                valid = valid & (preds != self.true_pred_idx)
+            if self.false_pred_idx is not None:
+                valid = valid & (preds != self.false_pred_idx)
+            if self.end_pred_idx is not None:
+                valid = valid & (preds != self.end_pred_idx)
+        
+        # Pack atoms: pred * base^2 + arg0 * base + arg1
+        base = self._pack_base
+        packed = ((s[:, :, 0] * base + s[:, :, 1]) * base + s[:, :, 2]) & self._mask63  # [N, M]
+        
+        # Mask invalid atoms with sentinel for sorting
+        sentinel = torch.iinfo(torch.long).max
+        packed_masked = torch.where(valid, packed, sentinel)
+        
+        # Sort for order-independence
+        packed_sorted, _ = torch.sort(packed_masked, dim=1)  # [N, M]
+        
+        # Count valid atoms
+        num_valid = valid.sum(dim=1)  # [N]
+        valid_sorted_mask = torch.arange(M, device=self._device).unsqueeze(0) < num_valid.unsqueeze(1)
+        
+        # XOR with position vector for hash
+        pos_vec = self._pos_vec[:M].unsqueeze(0).expand(N, -1)
+        h = torch.where(valid_sorted_mask, packed_sorted ^ pos_vec, 0).sum(dim=1) & self._mask63
+        
+        return h
+    
+    def _ensure_capacity(self, rows: Tensor, additional: int) -> None:
+        """Ensure capacity for additional entries (grows if needed)."""
+        max_needed = (self._mem_counts[rows] + additional).max().item()
+        if max_needed > self._capacity:
+            new_capacity = max(self._capacity * 2, int(max_needed * 1.5))
+            new_hashes = torch.full(
+                (self.batch_size, new_capacity),
+                torch.iinfo(torch.long).max,
+                dtype=torch.long,
+                device=self._device
+            )
+            new_hashes[:, :self._capacity] = self._mem_hashes
+            self._mem_hashes = new_hashes
+            self._capacity = new_capacity
+    
+    def add_current(self, rows: Tensor, current_queries: Tensor) -> None:
+        """
+        Add current_queries[rows] to memory (fully GPU-vectorized).
+        Filters out terminal atoms to match ExactMemory behavior.
+        
+        Args:
+            rows: [N] env indices to update
+            current_queries: [B, M, D] or [N, M, D] states
+        """
+        if rows.numel() == 0:
+            return
+        
+        # Get states for the specified rows
+        if current_queries.shape[0] == self.batch_size:
+            states = current_queries.index_select(0, rows)  # [N, M, D]
+        elif current_queries.shape[0] == rows.shape[0]:
+            states = current_queries  # [N, M, D]
+        else:
+            raise ValueError(f"Shape mismatch: rows={rows.shape}, current_queries={current_queries.shape}")
+        
+        # Compute hashes (ignoring terminals)
+        hashes = self._state_hash64(states, ignore_terminals=True)  # [N]
+        
+        # Check for uniqueness of rows (common case optimization)
+        # If all rows are unique, we can perform a fully vectorized batched update
+        # This is strictly faster than looping over unique_rows
+        if rows.shape[0] == rows.unique().shape[0]:
+            self._add_current_unique(rows, hashes)
+        else:
+            # Fallback for duplicate rows (rare in this codebase)
+            unique_rows, inverse = torch.unique(rows, return_inverse=True)
+            for env_idx in unique_rows:
+                mask = (rows == env_idx)
+                new_hashes = hashes[mask]
+                self._update_single_env(env_idx, new_hashes)
+
+    def _add_current_unique(self, rows: Tensor, new_hashes: Tensor) -> None:
+        """
+        Vectorized update for unique environment rows.
+        Concatenates new hashes to existing ones, sorts, and dedups in parallel.
+        """
+        # 1. Gather existing hashes: [N, Capacity]
+        existing = self._mem_hashes[rows]
+        
+        # 2. Append new hashes: [N, Capacity + 1]
+        # new_hashes is [N], unsqueeze to [N, 1]
+        combined = torch.cat([existing, new_hashes.unsqueeze(1)], dim=1)
+        
+        # 3. Sort to bring duplicates together and sentinels to end: [N, Capacity + 1]
+        sorted_hashes, _ = torch.sort(combined, dim=1)
+        
+        # 4. Identify unique values (valid and not duplicate of previous)
+        is_duplicate = torch.zeros_like(sorted_hashes, dtype=torch.bool)
+        is_duplicate[:, 1:] = sorted_hashes[:, 1:] == sorted_hashes[:, :-1]
+        
+        is_sentinel = sorted_hashes == torch.iinfo(torch.long).max
+        keep_mask = (~is_duplicate) & (~is_sentinel)
+        
+        # 5. Calculate new counts
+        new_counts = keep_mask.sum(dim=1)
+        
+        # 6. Check capacity and resize if needed
+        max_needed = new_counts.max().item()
+        if max_needed > self._capacity:
+            self._ensure_capacity(rows, max_needed - self._mem_counts[rows].min().item())
+            # Re-gather existing because _mem_hashes changed size (and address?)
+            # NOTE: _mem_hashes is updated in _ensure_capacity.
+            # We need to recreate the `combined` tensor or map logic to new capacity.
+            # Simpler: just recurse? No.
+            # Re-do step 1-3 with new capacity?
+            # Existing has grown, but data is same.
+            # We can't use `sorted_hashes` directly if we need to write to a larger buffer.
+            # BUT: update_buffer creation below depends on self._capacity.
+            # So as long as we use updated self._capacity, we are fine.
+        
+        # 7. Compaction: Write kept values to update buffer
+        batch_idx = torch.arange(rows.shape[0], device=self._device).unsqueeze(1).expand_as(sorted_hashes)
+        scatter_pos = torch.cumsum(keep_mask.long(), dim=1) - 1
+        
+        # Select validated locations
+        target_rows = batch_idx[keep_mask]
+        target_cols = scatter_pos[keep_mask]
+        
+        # Create a clean buffer [N, Capacity]
+        update_buffer = torch.full(
+            (rows.shape[0], self._capacity), 
+            torch.iinfo(torch.long).max, 
+            dtype=torch.long, 
+            device=self._device
+        )
+        
+        # Write to update_buffer
+        update_buffer[target_rows, target_cols] = sorted_hashes[keep_mask]
+        
+        # 8. Write back to global memory
+        self._mem_hashes[rows] = update_buffer
+        self._mem_counts[rows] = new_counts
+
+    def _update_single_env(self, env_idx: Tensor, new_hashes: Tensor) -> None:
+        """Legacy/Fallback update for a single environment id."""
+        count = self._mem_counts[env_idx]
+        existing = self._mem_hashes[env_idx, :count]
+        combined = torch.cat([existing, new_hashes])
+        unique_combined = torch.unique(combined)
+        unique_combined = unique_combined[unique_combined != torch.iinfo(torch.long).max]
+        new_count = unique_combined.shape[0]
+        
+        if new_count > self._capacity:
+            self._ensure_capacity(env_idx.unsqueeze(0), new_count - count)
+            
+        self._mem_hashes[env_idx, :new_count] = unique_combined
+        if new_count < self._capacity:
+            self._mem_hashes[env_idx, new_count:] = torch.iinfo(torch.long).max
+        self._mem_counts[env_idx] = new_count
+    
+    def add_current_batched(self, rows: Tensor, current_queries: Tensor) -> None:
+        """
+        Batched version of add_current (more efficient for many insertions).
+        Uses batch-level operations where possible.
+        """
+        if rows.numel() == 0:
+            return
+        
+        # Get states for the specified rows
+        if current_queries.shape[0] == self.batch_size:
+            states = current_queries.index_select(0, rows)
+        elif current_queries.shape[0] == rows.shape[0]:
+            states = current_queries
+        else:
+            raise ValueError(f"Shape mismatch")
+        
+        N = rows.shape[0]
+        hashes = self._state_hash64(states, ignore_terminals=True)  # [N]
+        
+        self._ensure_capacity(rows, 1)
+        
+        # For efficiency, update unique rows in batch
+        unique_rows, inverse = torch.unique(rows, return_inverse=True)
+        
+        for i, env_idx in enumerate(unique_rows):
+            # Get all hashes for this env
+            mask = (rows == env_idx)
+            new_hashes = hashes[mask]
+            
+            count = self._mem_counts[env_idx].item()
+            existing = self._mem_hashes[env_idx, :count]
+            
+            # Merge: combine existing and new, unique, sort
+            combined = torch.cat([existing, new_hashes])
+            unique_combined = torch.unique(combined)
+            unique_combined = unique_combined[unique_combined != torch.iinfo(torch.long).max]
+            
+            new_count = unique_combined.shape[0]
+            if new_count > self._capacity:
+                self._ensure_capacity(env_idx.unsqueeze(0), new_count - count)
+            
+            self._mem_hashes[env_idx, :new_count] = unique_combined
+            self._mem_hashes[env_idx, new_count:] = torch.iinfo(torch.long).max
+            self._mem_counts[env_idx] = new_count
+    
+    def membership(self, states: Tensor, owners: Tensor) -> Tensor:
+        """
+        GPU-vectorized exact membership test.
+        
+        Args:
+            states: [A, K, M, D] batch of derived states
+            owners: [A] env indices for each row
+            
+        Returns:
+            visited: [A, K] bool tensor
+        """
+        if states.numel() == 0:
+            return torch.zeros(
+                (states.shape[0], states.shape[1]),
+                dtype=torch.bool,
+                device=states.device,
+            )
+        
+        A, K, M, D = states.shape
+        
+        # Compute hashes for all states (NOT ignoring terminals for membership check)
+        hashes = self._state_hash64(states, ignore_terminals=False)  # [A, K]
+        
+        # Get counts for each owner
+        counts = self._mem_counts[owners]  # [A]
+        
+        # Initialize result
+        visited = torch.zeros((A, K), dtype=torch.bool, device=states.device)
+        
+        # Check padding (skip if first atom is padding)
+        is_padding = states[:, :, 0, 0] == self.padding_idx  # [A, K]
+        
+        # For each unique owner, do batch membership check
+        unique_owners = torch.unique(owners)
+        
+        for env_idx in unique_owners:
+            owner_mask = (owners == env_idx)  # [A]
+            if not owner_mask.any():
+                continue
+            
+            count = self._mem_counts[env_idx]
+            if count == 0:
+                continue
+            
+            mem_hashes = self._mem_hashes[env_idx, :count]  # [count]
+            
+            # Get hashes for this owner's states
+            owner_indices = torch.where(owner_mask)[0]  # indices in A
+            owner_hashes = hashes[owner_mask]  # [num_owner, K]
+            
+            # Flatten for searchsorted
+            owner_hashes_flat = owner_hashes.flatten()  # [num_owner * K]
+            
+            # Binary search
+            pos = torch.searchsorted(mem_hashes, owner_hashes_flat)  # [num_owner * K]
+            pos = pos.clamp(max=count - 1)  # Clamp to valid range
+            
+            # Check if found
+            found = (mem_hashes[pos] == owner_hashes_flat)  # [num_owner * K]
+            found = found.view(-1, K)  # [num_owner, K]
+            
+            # Update visited for this owner
+            visited[owner_mask] = found
+        
+        # Don't mark padding as visited
+        visited = visited & ~is_padding
+        
+        return visited

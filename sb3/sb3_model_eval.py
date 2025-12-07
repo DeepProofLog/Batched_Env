@@ -1175,10 +1175,10 @@ def _finalize_and_get_results(metrics: Dict[str, List[float]]) -> Dict[str, floa
     final_results = {
         'mrr_mean': all_mrr.mean() if all_mrr.size > 0 else 0.0, 'hits1_mean': all_h1.mean() if all_h1.size > 0 else 0.0,
         'hits3_mean': all_h3.mean() if all_h3.size > 0 else 0.0, 'hits10_mean': all_h10.mean() if all_h10.size > 0 else 0.0,
-        'head_mrr_mean': get_stats(metrics['head_mrr'])[0], 'tail_mrr_mean': get_stats(metrics['tail_mrr'])[0],
-        'head_hits1_mean': get_stats(metrics['head_h1'])[0], 'tail_hits1_mean': get_stats(metrics['tail_h1'])[0],
-        'head_hits3_mean': get_stats(metrics['head_h3'])[0], 'tail_hits3_mean': get_stats(metrics['tail_h3'])[0],
-        'head_hits10_mean': get_stats(metrics['head_h10'])[0], 'tail_hits10_mean': get_stats(metrics['tail_h10'])[0],
+        'mrr_head_mean': get_stats(metrics['head_mrr'])[0], 'mrr_tail_mean': get_stats(metrics['tail_mrr'])[0],
+        'hits1_head_mean': get_stats(metrics['head_h1'])[0], 'hits1_tail_mean': get_stats(metrics['tail_h1'])[0],
+        'hits3_head_mean': get_stats(metrics['head_h3'])[0], 'hits3_tail_mean': get_stats(metrics['tail_h3'])[0],
+        'hits10_head_mean': get_stats(metrics['head_h10'])[0], 'hits10_tail_mean': get_stats(metrics['tail_h10'])[0],
         'average_precision': all_ap.mean() if all_ap.size > 0 else 0.0,
     }
     for key in ['pos_rw', 'neg_rw', 'pos_len', 'neg_len', 'pos_lp', 'neg_lp',

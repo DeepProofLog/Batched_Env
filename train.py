@@ -1,7 +1,23 @@
 """
-Training script following the EXACT same logical flow as sb3_train.py.
-Uses tensor-based components (BatchedEnv, TensorPPO, etc.) but with
-matching initialization sequence for parity testing.
+Training script for Neural-Guided Logical Reasoning (Batched Version).
+
+This module manages the training loop for the Agent, ensuring functional parity
+with the SB3 implementation where applicable.
+
+Key Components:
+1. **Data Handler**: Loads and processes the knowledge graph data.
+2. **Index Manager**: Manages mapping between symbols and integer indices.
+3. **Environment**: Creates batched logical reasoning environments.
+4. **Policy**: Instantiates the Actor-Critic network with Embedder.
+5. **PPO**: Runs the Proximal Policy Optimization algorithm.
+6. **Evaluation**: Periodically evaluates performance on test queries.
+
+Usage:
+    Run directly or via `test_runner_simple.py` for parity checks.
+    
+    ```bash
+    python train.py --dataset countries_s3
+    ```
 """
 import gc
 import os
@@ -133,18 +149,25 @@ def get_device(device: str = "auto") -> torch.device:
 # ==============================================================================
 
 def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler, IndexManager, Any, Any]:
-    """Prepare DataHandler, IndexManager, sampler and embedder.
+    """
+    Prepare knowledge graph data components and indices.
     
-    MUST MATCH sb3_train._build_data_and_index initialization order exactly:
-    1. Create DataHandler
-    2. Create IndexManager  
-    3. Create sampler
-    4. RESEED before embedder creation (torch.manual_seed(args.seed_run_i))
-    5. Create embedder
+    Initializes the following components in a deterministic order for SB3 parity:
+    1. **DataHandler**: Loads raw triples, rules, and splits.
+    2. **IndexManager**: Builds integer mappings for entities, predicates, and variables.
+    3. **Sampler**: Constructs the negative sampler and corruptor (with domain info).
+    4. **Embedder**: Initializes learnable embeddings for the policy.
+    
+    Args:
+        args (Any): Configuration namespace containing paths and hyperparameters.
+        device (torch.device): Target device for tensors.
+        
+    Returns:
+        Tuple[DataHandler, IndexManager, Sampler, Embedder]: Initialized components.
     """
     # PARITY: Reseed at start for deterministic alignment
-    deterministic_parity = getattr(args, 'deterministic_parity', False)
-    if deterministic_parity:
+    deterministic = getattr(args, 'deterministic', False)
+    if deterministic:
         _set_seeds(args.seed_run_i)
     
     # Dataset (matching sb3)
@@ -161,8 +184,6 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         test_depth=getattr(args, 'test_depth', None),
         corruption_mode=getattr(args, 'corruption_mode', 'dynamic'),
     )
-    print(f"DEBUG: DataHandler n_train_queries={getattr(args, 'n_train_queries', None)}")
-    print(f"DEBUG: DataHandler predicates ({len(dh.predicates)}): {sorted(list(dh.predicates))}")
     
     # Respect caps from args (matching sb3)
     args.n_train_queries = (
@@ -250,7 +271,24 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
 # ==============================================================================
 
 def create_environments(args: Any, dh: DataHandler, im: IndexManager, **kwargs):
-    """Create train and eval environments matching sb3 create_environments."""
+    """
+    Create training and evaluation environments.
+    
+    Constructs `BatchedEnv` instances for training (using `train.txt` queries)
+    and evaluation (using `test.txt` queries). Configures the `UnificationEngine`
+    and other environment parameters (padding, depth, reward type).
+    
+    Args:
+        args (Any): Configuration namespace.
+        dh (DataHandler): Data handler with query splits.
+        im (IndexManager): Index manager for symbol mapping.
+        **kwargs: Extensible keyword arguments.
+        
+    Returns:
+        Tuple[BatchedEnv, BatchedEnv, BatchedEnv]: 
+            (train_env, eval_env, callback_env). 
+            Note: callback_env is typically aliased to eval_env.
+    """
     device = torch.device(args.device)
     
     # Create stringifier params
@@ -352,12 +390,33 @@ def create_environments(args: Any, dh: DataHandler, im: IndexManager, **kwargs):
 # ==============================================================================
 
 def _evaluate(args: Any, policy, eval_env, sampler, dh: DataHandler, im: IndexManager, device: torch.device) -> Tuple[dict, dict, dict]:
-    """Evaluate model and return metrics matching sb3_train._evaluate."""
+    """
+    Evaluate the policy on the test set corrupted queries.
+    
+    Performs MRR (Mean Reciprocal Rank) and Hits@K evaluation.
+    1. Reseeds RNG for deterministic evaluation (if configured).
+    2. Selects test queries.
+    3. Runs `tensor_eval_corruptions` (vectorized ranking).
+    4. Formats metrics for logging.
+    
+    Args:
+        args (Any): Configuration.
+        policy (ActorCriticPolicy): Trained policy network.
+        eval_env (BatchedEnv): Evaluation environment.
+        sampler (Sampler): Negative sampler.
+        dh (DataHandler): Data handler.
+        im (IndexManager): Index manager.
+        device (torch.device): Compute device.
+        
+    Returns:
+        Tuple[Dict, Dict, Dict]: (train_metrics, valid_metrics, test_metrics).
+            Note: train and valid metrics are currently placeholders (zeros).
+    """
     print("\nTest set evaluation...")
     
     # Reseed before evaluation (matching sb3)
-    deterministic_parity = getattr(args, "deterministic_parity", False)
-    if deterministic_parity:
+    deterministic = getattr(args, "deterministic", False)
+    if deterministic:
         eval_seed = 12345  # Same as sb3_train
         torch.manual_seed(eval_seed)
         np.random.seed(eval_seed)
@@ -406,6 +465,7 @@ def _evaluate(args: Any, policy, eval_env, sampler, dh: DataHandler, im: IndexMa
         return 0.0
     
     # Build metrics dict matching sb3 format
+    per_mode = eval_results.get('per_mode', {})
     metrics_test = {
         'mrr_mean': _parse_metric(eval_results.get('MRR', 0.0)),
         'hits1_mean': _parse_metric(eval_results.get('Hits@1', 0.0)),
@@ -413,18 +473,33 @@ def _evaluate(args: Any, policy, eval_env, sampler, dh: DataHandler, im: IndexMa
         'hits10_mean': _parse_metric(eval_results.get('Hits@10', 0.0)),
         'rewards_pos_mean': _parse_metric(eval_results.get('reward_pos_mean', 0.0)),
         'rewards_neg_mean': _parse_metric(eval_results.get('reward_neg_mean', 0.0)),
-        'reward_label_pos': _parse_metric(eval_results.get('reward_pos_mean', 0.0)),
-        'reward_label_neg': _parse_metric(eval_results.get('reward_neg_mean', 0.0)),
-        'success_rate': _parse_metric(eval_results.get('proven_pos', 0.0)),
-        'reward_overall': _parse_metric(eval_results.get('proven_pos', 0.0)),  # For parity comparison
-        'proven_pos': _parse_metric(eval_results.get('proven_pos', 0.0)),
-        'tail_mrr_mean': _parse_metric(eval_results.get('MRR', 0.0)),  # Tail-only corruption
-        'head_mrr_mean': 0.0,  # No head corruption in default config
+        'reward_label_pos': _parse_metric(eval_results.get('reward_label_pos', 0.0)),
+        'reward_label_neg': _parse_metric(eval_results.get('reward_label_neg', 0.0)),
+        'success_rate': _parse_metric(eval_results.get('success_rate', 0.0)),
+        'reward_overall': eval_results.get('reward_overall', ''),
+        'proven_pos': eval_results.get('proven_pos', ''),
+        'proven_neg': eval_results.get('proven_neg', ''),
+        # Per-mode metrics (renamed to mrr_head/mrr_tail convention)
+        'mrr_tail_mean': _parse_metric(per_mode.get('tail', {}).get('MRR', 0.0)),
+        'mrr_head_mean': _parse_metric(per_mode.get('head', {}).get('MRR', 0.0)),
+        'hits1_tail_mean': _parse_metric(per_mode.get('tail', {}).get('Hits@1', 0.0)),
+        'hits1_head_mean': _parse_metric(per_mode.get('head', {}).get('Hits@1', 0.0)),
+        'hits3_tail_mean': _parse_metric(per_mode.get('tail', {}).get('Hits@3', 0.0)),
+        'hits3_head_mean': _parse_metric(per_mode.get('head', {}).get('Hits@3', 0.0)),
+        'hits10_tail_mean': _parse_metric(per_mode.get('tail', {}).get('Hits@10', 0.0)),
+        'hits10_head_mean': _parse_metric(per_mode.get('head', {}).get('Hits@10', 0.0)),
     }
+    
+    # Add depth-based metrics if available
+    for key in eval_results.keys():
+        if key.startswith('len_d_') or key.startswith('proven_d_') or key.startswith('reward_d_'):
+            metrics_test[key] = eval_results[key]
     
     print(f"results for: {getattr(args, 'run_signature', 'tensor')}")
     print("\nTest set metrics:")
-    for k, v in metrics_test.items():
+    # Print metrics in alphabetical order
+    for k in sorted(metrics_test.keys()):
+        v = metrics_test[k]
         if isinstance(v, (int, float)):
             print(f"{k}: {v:.3f}")
         else:
@@ -443,27 +518,32 @@ def _evaluate(args: Any, policy, eval_env, sampler, dh: DataHandler, im: IndexMa
 
 def main(args, log_filename, use_logger, use_WB, WB_path, date, external_components=None):
     """
-    Main training function matching sb3_train.main() signature and flow EXACTLY.
+    Main training entry point.
+    
+    Orchestrates the entire training pipeline, designed to match the control flow
+    of the reference SB3 implementation `sb3_train.py` exactly for parity verification.
+    
+    Steps:
+    1. Check reproducibility settings.
+    2. Set random seeds.
+    3. Initialize data components (DataHandler, IndexManager, Sampler, Embedder).
+    4. Create environments (Train, Eval).
+    5. Initialize Policy and PPO algorithm.
+    6. Run training loop (`ppo.learn`).
+    7. Run evaluation (`_evaluate`).
     
     Args:
-        args: Configuration namespace
-        log_filename: Log file path
-        use_logger: Whether to use logging
-        use_WB: Whether to use Weights & Biases
-        WB_path: W&B path
-        date: Date string
-        external_components: Optional dict with pre-created components for parity testing:
-            {'dh': DataHandler, 'index_manager': IndexManager, 'sampler': Sampler, 'embedder': Embedder}
+        args (Namespace): Parsed command-line arguments.
+        log_filename (str): Path to log file.
+        use_logger (bool): Whether to enable logging.
+        use_WB (bool): Whether to use Weights & Biases.
+        WB_path (str): W&B run path.
+        date (str): Timestamp string.
+        external_components (Optional[Dict]): Pre-initialized components (dh, im, sampler, embedder)
+                                              for dependency injection during testing.
     
-    Flow MUST match sb3_train.main():
-    1. _warn_non_reproducible(args)
-    2. _set_seeds(args.seed_run_i)
-    3. get_device
-    4. _build_data_and_index (includes reseed before embedder)
-    5. create_environments
-    6. Create policy/PPO
-    7. Train
-    8. Evaluate
+    Returns:
+        Tuple[Dict, Dict, Dict]: Metrics (train, valid, test).
     """
     # Step 1: Warn (matching sb3)
     _warn_non_reproducible(args)
@@ -472,7 +552,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     _set_seeds(args.seed_run_i)
     
     # Deterministic parity mode for exact alignment with SB3 implementation
-    deterministic_parity = getattr(args, 'deterministic_parity', False)
+    deterministic = getattr(args, 'deterministic', False)
     
     # Step 3: Get device (matching sb3)
     device = get_device(args.device)
@@ -488,7 +568,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
     
     # PARITY: Reseed before environment creation for deterministic alignment
-    if deterministic_parity:
+    if deterministic:
         _set_seeds(args.seed_run_i)
     
     # Step 5: Create environments (matching sb3)
@@ -499,7 +579,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     )
     
     # PARITY: Reseed before model creation for deterministic alignment
-    if deterministic_parity:
+    if deterministic:
         _set_seeds(args.seed_run_i)
     
     # Step 6: Create policy/PPO (matching sb3 flow)
@@ -528,6 +608,28 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         verbose=1,
     )
     
+    # Step 6.5: Initial evaluation with untrained model (matching sb3 eval callback at step 0)
+    print("\n" + "="*60)
+    print("Initial evaluation (untrained model)")
+    print("="*60)
+    policy.eval()
+    initial_eval_results = tensor_eval_corruptions(
+        actor=policy,
+        env=eval_env,
+        queries=torch.stack([
+            index_manager.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            for q in dh.valid_queries[:getattr(args, 'n_eval_queries', 10) or 10]
+        ]),
+        sampler=sampler,
+        n_corruptions=getattr(args, 'eval_neg_samples', 10) or 10,
+        corruption_modes=tuple(getattr(args, 'corruption_scheme', ['tail'])),
+        verbose=0,
+    )
+    print(f"Initial MRR: {initial_eval_results.get('MRR', 0.0):.4f}")
+    print(f"Initial Hits@1: {initial_eval_results.get('Hits@1', 0.0):.4f}")
+    print(f"Initial success_rate: {initial_eval_results.get('success_rate', 0.0):.4f}")
+    print("="*60 + "\n")
+    
     # Step 7: Train (matching sb3 flow)
     if args.timesteps_train > 0 and not getattr(args, 'load_model', False):
         ppo.learn(total_timesteps=args.timesteps_train)
@@ -555,7 +657,25 @@ def seed_all_compat(seed: int):
 
 
 def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
-    """Create tensor training components (data handler, index manager, env, model)."""
+    """
+    Create all tensor training components from a config.
+    
+    This helper function encapsulates the initialization of:
+    - DataHandler
+    - IndexManager
+    - Sampler
+    - UnificationEngine
+    - BatchedEnvs (Train/Eval)
+    - Embedder
+    - Policy
+    
+    Args:
+        config (TrainParityConfig): Configuration object.
+        
+    Returns:
+        Dict[str, Any]: Dictionary containing initialized components:
+            {'dh', 'im', 'sampler', 'embedder', 'engine', 'train_env', 'eval_env', 'policy', 'device'}
+    """
     device = torch.device(config.device)
     
     # Data handler
@@ -732,7 +852,18 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
 
 
 def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
-    """Run full training experiment and return evaluation metrics."""
+    """
+    Run a full training experiment using the simplified configuration.
+    
+    This is a high-level entry point for running parity tests without
+    complex command-line argument parsing.
+    
+    Args:
+        config (TrainParityConfig): Experiment configuration.
+        
+    Returns:
+        Dict[str, float]: Dictionary of final evaluation results (MRR, Hits@1).
+    """
     print("=" * 70)
     print("TENSOR TRAINING")
     print(f"Dataset: {config.dataset}")

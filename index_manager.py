@@ -111,7 +111,6 @@ class IndexManager:
         self.idx2constant: List[str] = ["<PAD>"] + const_list
 
         self.predicate_str2idx: Dict[str, int] = {s: i + 1 for i, s in enumerate(pred_list)}
-        # print(f"DEBUG [Batched IndexManager]: First 10 predicates: {dict(list(self.predicate_str2idx.items())[:10])}")
         self.idx2predicate: List[str] = ["<PAD>"] + pred_list
 
         # Template vars appear only in rules; we'll allocate lazily when rules are materialized
@@ -151,19 +150,12 @@ class IndexManager:
         self.total_vocab_size: int = self.constant_no + self.variable_no + 1  # constants + vars + padding
         self.pack_base = self.total_vocab_size + 1    # safe 64-bit packing base
 
-        # Tensors (filled later by materializers)
-        self.facts_idx: Optional[LongTensor] = None            # [F, 3]
-        self.rules_idx: Optional[LongTensor] = None            # [R, M, 3]
-        self.rule_lens: Optional[LongTensor] = None            # [R]
-        self.rules_heads_idx: Optional[LongTensor] = None      # [R, 3]
-
-        # Fact index (CPU) for quick predicate slices
-        self.predicate_range_map: Optional[torch.IntTensor] = None  # [num_predicates+1, 2]
-        self.predicate_range_map_gpu: Optional[torch.IntTensor] = None
-
-        # Special tensors for True/False atoms
-        self.true_tensor: Optional[LongTensor] = None
-        self.false_tensor: Optional[LongTensor] = None
+        # Tensors for facts and rules
+        # Shapes: facts_idx (F, 3), rules_idx (R, M, 3), rule_lens (R,)
+        self.facts_idx: Optional[LongTensor] = None
+        self.rules_idx: Optional[LongTensor] = None
+        self.rule_lens: Optional[LongTensor] = None
+        self.rules_heads_idx: Optional[LongTensor] = None
 
         self.device: torch.device = device if device is not None else torch.device("cpu")
         self.idx_dtype = torch.long  # For compatibility
@@ -172,20 +164,7 @@ class IndexManager:
         self.constants = set(const_list)
         self.predicates = set(pred_list)
         
-        # # DEBUG: Print first 20 constants to verify ordering
-        # const_sample = list(self.constant_str2idx.items())[:20]
-        # print(f"[DEBUG IndexManager Batched] First 20 constants:")
-        # for const_str, const_idx in const_sample:
-        #     print(f"  {const_str} -> {const_idx}")
-        
-        # # DEBUG: Print variable allocation
-        # print(f"[DEBUG IndexManager Batched] Variable allocation:")
-        # print(f"  constant_no: {self.constant_no}")
-        # print(f"  template_variable_no: {self.template_variable_no}")
-        # print(f"  runtime_variable_no: {self.runtime_variable_no}")
-        # print(f"  runtime_var_start_index: {self.runtime_var_start_index}")
-        # print(f"  runtime_var_end_index: {self.runtime_var_end_index}")
-        
+
         if rules is not None:
             self.rules = rules
             # Pre-index rules by predicate for unification

@@ -90,8 +90,8 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     """Prepare DataHandler, IndexManager, sampler and embedder."""
     
     # PARITY: Reseed at start for deterministic alignment
-    deterministic_parity = getattr(args, 'deterministic_parity', False)
-    if deterministic_parity:
+    deterministic = getattr(args, 'deterministic', False)
+    if deterministic:
         _set_seeds(args.seed_run_i)
     
     # Dataset
@@ -471,8 +471,8 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
     
     # Reseed before evaluation for deterministic parity testing
     # This ensures negative sampling in eval_corruptions matches tensor implementation
-    deterministic_parity = getattr(args, "deterministic_parity", False)
-    if deterministic_parity:
+    deterministic = getattr(args, "deterministic", False)
+    if deterministic:
         import numpy as np
         eval_seed = 12345  # Fixed seed for eval_corruptions parity (same as test_eval_parity.py)
         torch.manual_seed(eval_seed)
@@ -571,7 +571,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     _set_seeds(args.seed_run_i)
     
     # Deterministic parity mode for exact alignment with tensor implementation
-    deterministic_parity = getattr(args, 'deterministic_parity', False)
+    deterministic = getattr(args, 'deterministic', False)
 
     # Normalize KGE flags
     args.kge_action = bool(getattr(args, "kge_action", False))
@@ -595,7 +595,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
     
     # PARITY: Reseed before environment creation for deterministic alignment
-    if deterministic_parity:
+    if deterministic:
         _set_seeds(args.seed_run_i)
     
     env, eval_env, callback_env = create_environments(
@@ -623,7 +623,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     }
 
     # PARITY: Reseed before model creation for deterministic alignment
-    if deterministic_parity:
+    if deterministic:
         _set_seeds(args.seed_run_i)
     
     model = PPO(

@@ -1,0 +1,88 @@
+Device: cuda
+Total timesteps: 90
+Training time: 22.04s
+
+================================================================================
+Top by Cumulative Time
+================================================================================
+         735465 function calls (658699 primitive calls) in 22.035 seconds
+
+   Ordered by: cumulative time
+   List reduced from 533 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.001    0.001   22.035   22.035 ppo.py:629(learn)
+        1    0.665    0.665   11.137   11.137 ppo.py:163(collect_rollouts)
+        1    0.067    0.067   10.702   10.702 ppo.py:417(train)
+       32    0.144    0.004    9.539    0.298 env.py:717(step_and_maybe_reset)
+       62    0.089    0.001    9.227    0.149 env.py:784(_compute_derived_states)
+       32    0.001    0.000    8.061    0.252 common.py:2056(step)
+       32    0.028    0.001    8.054    0.252 env.py:591(_step)
+ 3644/447    0.084    0.000    6.813    0.015 _contextlib.py:117(decorate_context)
+      207    0.465    0.002    6.783    0.033 unification.py:1807(get_derived_states)
+       62    0.166    0.003    6.062    0.098 env.py:1062(_skip_unary)
+       80    0.001    0.000    5.784    0.072 _tensor.py:570(backward)
+       80    0.001    0.000    5.782    0.072 __init__.py:243(backward)
+       80    0.001    0.000    5.773    0.072 graph.py:832(_engine_run_backward)
+       80    5.772    0.072    5.772    0.072 {method 'run_backward' of 'torch._C._EngineBase' objects}
+19581/194    0.038    0.000    2.909    0.015 module.py:1771(_wrapped_call_impl)
+19581/194    0.050    0.000    2.908    0.015 module.py:1779(_call_impl)
+      113    0.002    0.000    2.386    0.021 model.py:328(forward)
+       80    0.001    0.000    2.195    0.027 model.py:510(evaluate_actions)
+      339    0.001    0.000    2.186    0.006 model.py:250(_encode_with_shared_body)
+      339    0.192    0.001    2.181    0.006 model.py:135(forward)
+     3390    0.033    0.000    2.091    0.001 container.py:245(forward)
+      113    0.026    0.000    1.990    0.018 model.py:261(forward_policy)
+      207    0.758    0.004    1.896    0.009 unification.py:943(unify_with_rules)
+      207    0.690    0.003    1.706    0.008 env.py:1286(_postprocess)
+       30    0.001    0.000    1.475    0.049 common.py:2822(reset)
+       30    0.023    0.001    1.389    0.046 env.py:355(_reset)
+      207    0.340    0.002    1.114    0.005 unification.py:762(unify_with_facts)
+       80    0.003    0.000    1.102    0.014 optimizer.py:497(wrapper)
+       90    0.045    0.001    1.085    0.012 rollout.py:244(get)
+       80    0.002    0.000    1.084    0.014 optimizer.py:62(_use_grad)
+
+
+
+
+================================================================================
+Top by Total Time
+================================================================================
+         735465 function calls (658699 primitive calls) in 22.035 seconds
+
+   Ordered by: internal time
+   List reduced from 533 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       80    5.772    0.072    5.772    0.072 {method 'run_backward' of 'torch._C._EngineBase' objects}
+     4545    1.033    0.000    1.033    0.000 {method 'to' of 'torch._C.TensorBase' objects}
+       80    0.954    0.012    0.954    0.012 {built-in method torch._foreach_sqrt}
+     3729    0.919    0.000    0.919    0.000 {built-in method torch._C._nn.linear}
+      207    0.758    0.004    1.896    0.009 unification.py:943(unify_with_rules)
+     3051    0.748    0.000    0.748    0.000 {built-in method torch.layer_norm}
+      207    0.690    0.003    1.706    0.008 env.py:1286(_postprocess)
+        1    0.665    0.665   11.137   11.137 ppo.py:163(collect_rollouts)
+      207    0.636    0.003    0.851    0.004 unification.py:1181(prune_and_collapse)
+      207    0.547    0.003    0.940    0.005 unification.py:1314(standardize_derived_states)
+      207    0.465    0.002    6.783    0.033 unification.py:1807(get_derived_states)
+     7152    0.391    0.000    0.391    0.000 {method 'index_select' of 'torch._C.TensorBase' objects}
+      207    0.340    0.002    1.114    0.005 unification.py:762(unify_with_facts)
+      333    0.340    0.001    0.681    0.002 unification.py:415(unify_one_to_one)
+     1194    0.336    0.000    0.336    0.000 {method 'index_copy_' of 'torch._C.TensorBase' objects}
+      207    0.313    0.002    0.566    0.003 unification.py:632(preprocess_states)
+     4791    0.306    0.000    0.306    0.000 {built-in method torch.where}
+      207    0.289    0.001    0.467    0.002 unification.py:1494(pack_by_owner)
+     5454    0.258    0.000    0.258    0.000 {built-in method torch.arange}
+     1574    0.250    0.000    0.250    0.000 {built-in method torch.nonzero}
+       32    0.249    0.008    0.276    0.009 fast_distributions.py:51(sample)
+     9883    0.237    0.000    0.237    0.000 {method 'any' of 'torch._C.TensorBase' objects}
+     3390    0.228    0.000    0.228    0.000 {built-in method torch.relu}
+      207    0.209    0.001    0.495    0.002 memory.py:140(add_current)
+      339    0.192    0.001    2.181    0.006 model.py:135(forward)
+      384    0.169    0.000    0.372    0.001 unification.py:540(pairs_via_predicate_ranges)
+       62    0.166    0.003    6.062    0.098 env.py:1062(_skip_unary)
+      540    0.158    0.000    0.296    0.001 unification.py:346(apply_substitutions)
+     2976    0.156    0.000    0.156    0.000 {method 'sum' of 'torch._C.TensorBase' objects}
+      207    0.150    0.001    0.150    0.001 {built-in method torch.isin}
+
+

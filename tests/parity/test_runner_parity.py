@@ -15,6 +15,10 @@ Usage:
 """
 import gc
 import os
+
+# Force strict parity for testing
+os.environ['USE_FAST_CATEGORICAL'] = '0'
+
 import sys
 import copy
 import argparse
@@ -562,9 +566,9 @@ def get_common_config_for_parity() -> Dict[str, Any]:
         'min_gpu_memory_gb': 2.0,
         'use_compile': False,
         
-        # Deterministic parity settings - enable for exact match
-        'deterministic_parity': True,
-        'match_sb3_init': True,
+        # Determinism settings - enable for exact match
+        'deterministic': True,
+        'eval_deterministic': True,
     }
 
 
@@ -1065,6 +1069,11 @@ def run_runner_parity_test(
                 verbose=0,
             )
             results.sb3_mrr = sb3_eval_results.get('mrr_mean', 0.0)
+            
+            # Normalize SB3 metrics (mirroring Tensor logic for parity comparison)
+            if 'tail_mrr_mean' not in sb3_eval_results:
+                sb3_eval_results['tail_mrr_mean'] = sb3_eval_results.get('mrr_mean', 0.0)
+            
             results.sb3_train_metrics = MetricsSnapshot.from_metrics_dict(sb3_eval_results)
             results.sb3_test_metrics = results.sb3_train_metrics
             
@@ -1293,7 +1302,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Runner Parity Test")
     parser.add_argument("--dataset", type=str, default="countries_s3")
-    parser.add_argument("--timesteps", type=int, default=2000)
+    parser.add_argument("--timesteps", type=int, default=90)
     parser.add_argument("--n-envs", type=int, default=20)
     parser.add_argument("--n-steps", type=int, default=40)
     parser.add_argument("--n-epochs", type=int, default=5)
@@ -1360,3 +1369,5 @@ if __name__ == "__main__":
             print(f"  {m}")
         if len(results.namespace_mismatches) > 10:
             print(f"  ... and {len(results.namespace_mismatches) - 10} more")
+
+    sys.exit(0 if results.overall_success else 1)

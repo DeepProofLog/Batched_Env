@@ -1,4 +1,16 @@
-# ======================== model_eval.py ========================
+"""
+Model Evaluation for Neural-Guided Logical Reasoning.
+
+This module provides evaluation utilities for tensor-based PPO agents:
+- evaluate_policy(): Single-pass policy evaluation with batched envs
+- eval_corruptions(): Ranking-based MRR evaluation with head/tail corruptions
+
+Key tensor shapes:
+    rewards:  (B, T) - per-env, per-episode rewards
+    lengths:  (B, T) - per-env, per-episode lengths
+    success:  (B, T) - per-env, per-episode success flags
+    mask:     (B, T) - valid episode mask
+"""
 from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypedDict
@@ -86,23 +98,31 @@ def evaluate_policy(
 ) -> Dict[str, Any]:
     """
     Evaluate a policy on a single TorchRL env with internal batch dimension.
-    Uses step_and_maybe_reset semantics (no invalid-action patching).
-    Returns rewards/lengths/logps/success/mask tensors shaped [B, T].
+    
+    This function runs the policy in the environment until the target number of episodes
+    is reached for each batch slot. It handles partial resets and collects metrics
+    per episode.
     
     Args:
-        actor: Policy network
-        env: TorchRL environment
-        n_eval_episodes: Number of episodes to evaluate (if target_episodes not provided)
-        target_episodes: Per-env target episode counts [B]
-        deterministic: Use deterministic actions
-        track_logprobs: Track log probabilities (always True internally)
-        collect_action_stats: Collect action statistics
-        info_callback: Callback for step info
-        verbose: Verbosity level
-        return_traces: If True, collect detailed step-by-step traces for comparison
+        actor (nn.Module): Policy network.
+        env (EnvBase): Batched TorchRL environment.
+        n_eval_episodes (Optional[int]): Total episodes to run per slot (if target_episodes is None).
+        target_episodes (Optional[Sequence[int]]): [B] Exact target episode counts per slot.
+        deterministic (bool): If True, use mode of action distribution.
+        track_logprobs (bool): Whether to return log probabilities (always tracked internally).
+        collect_action_stats (bool): Unused, kept for API compatibility.
+        info_callback (Optional[Callable]): Function called with step_td at each step.
+        verbose (int): Verbosity level.
+        return_traces (bool): If True, return detailed step-by-step execution traces.
         
     Returns:
-        Dict with rewards/lengths/logps/success/mask tensors, and optionally 'traces' list
+        Dict[str, Any]: Dictionary containing:
+            - "rewards" (Tensor): [B, T] Total reward per episode.
+            - "lengths" (Tensor): [B, T] Length of each episode.
+            - "logps" (Tensor):   [B, T] Sum of log probabilities per episode.
+            - "success" (Tensor): [B, T] Success flag (1.0 or 0.0) per episode.
+            - "mask" (Tensor):    [B, T] Boolean mask indicating valid episodes.
+            - "traces" (List):    Optional list of execution traces.
     """
     device = getattr(env, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     B = infer_batch_size(env)
@@ -188,6 +208,8 @@ def evaluate_policy(
         print("[evaluate_policy] initial done flags:", init_done)
 
     while bool((ep_count < targets).any()):
+        if verbose_level > 0:
+            print(f"[evaluate_policy] episode count/total {ep_count}/{targets}")
         # Extract pre-step state for tracing
         pre_step_obs = {}
         if return_traces:
@@ -318,6 +340,23 @@ def step_and_maybe_reset(
     *,
     reset_rows: torch.Tensor,
 ) -> Tuple[TensorDict, TensorDict]:
+    """
+    Step the environment and reset specific rows if requested.
+    
+    This function manually handles partial resets (unlike auto-resetting envs).
+    It steps all environments, then selectively resets the states for rows
+    indicated by `reset_rows`, merging the reset observations into `next_td`.
+    
+    Args:
+        env (EnvBase): The environment.
+        action_td (TensorDict): Action tensor dict for the step.
+        reset_rows (Tensor): [B] Boolean mask indicating which rows to reset.
+        
+    Returns:
+        Tuple[TensorDict, TensorDict]: (step_td, next_td)
+            - step_td: Result of env.step() (transitions).
+            - next_td: Next observation (potentially reset).
+    """
     step_td = env.step(action_td)
     next_obs = step_td.get("next", step_td)
     if reset_rows.any():
@@ -366,21 +405,34 @@ def eval_corruptions(
     """
     Evaluate a model by ranking a positive query vs. its corruptions.
     
+    This function implements the standard Mean Reciprocal Rank (MRR) and Hits@K
+    evaluation protocol. For each test query (h, r, t), it generates K negatives
+    (e.g., (h', r, t)), evaluates the policy on all of them, and computes the
+    rank of the positive query based on the final log-probability (or value).
+    
+    It supports batching the evaluation by packing multiple queries and their
+    negatives into the environment's batch slots using `set_eval_dataset`.
+    
     Args:
-        actor: Policy network
-        env: TorchRL environment
-        queries: Query tensors [N, A, D] or [N, D]
-        sampler: Negative sampler for generating corruptions
-        query_depths: Depth values for queries
-        n_corruptions: Number of corruptions per type (None for all)
-        corruption_modes: Tuple of corruption modes ('head', 'tail')
-        deterministic: Use deterministic actions
-        verbose: Print progress
-        info_callback: Callback for step info
-        return_traces: If True, collect detailed traces for comparison
+        actor (nn.Module): Policy network.
+        env (EnvBase): Batched TorchRL environment.
+        queries (Tensor): [N, A, D] or [N, D] Positive queries to evaluate.
+        sampler (Any): Sampler instance for generating negatives.
+        query_depths (Optional[Tensor]): [N] Depths of the queries (for analysis).
+        n_corruptions (Optional[int]): Number of negatives per query (None for all).
+        corruption_modes (Sequence[str]): Tuple of modes to evaluate ('head', 'tail').
+        deterministic (bool): If True, use deterministic actions during rollout.
+        verbose (bool): Whether to print progress logs.
+        info_callback (Optional[Callable]): Callback for step info.
+        return_traces (bool): If True, return detailed traces.
         
     Returns:
-        Dict with MRR, Hits@K metrics, and optionally 'traces' list
+        Dict[str, Any]: Dictionary containing aggregate metrics:
+            - "MRR": Mean Reciprocal Rank.
+            - "Hits@1", "Hits@3", "Hits@10": Hits metrics.
+            - "per_mode": {mode: {metric: value}} Breakdown by mode.
+            - ... various breakdown statistics by depth/length.
+            - "traces" (List): Optional list of traces.
     """
     env_device = getattr(env, "_device", None)
     actor_device = None
@@ -420,6 +472,8 @@ def eval_corruptions(
 
     with torch.inference_mode():
         for start in range(0, N, B):
+            if verbose:
+                print(f"Processing batch {start}/{N}")
             Q = min(B, N - start)
             pos = queries[start:start + Q].to(device)
             pos_triples = pos.squeeze(1) if (A == 1 and D == 3) else pos
@@ -451,6 +505,8 @@ def eval_corruptions(
                     tail_corrs_list = [tail_neg[i] for i in range(Q)]
 
             for mode in corruption_modes:
+                if verbose:
+                    print(f"Processing mode {mode}")
                 # Select the appropriate corruption list based on mode
                 if mode == "head":
                     corrs_list = head_corrs_list
@@ -527,6 +583,7 @@ def eval_corruptions(
                     track_logprobs=True,
                     info_callback=info_callback,
                     return_traces=return_traces,
+                    verbose=verbose,
                 )
                 
                 logps_out = out["logps"].to(device)

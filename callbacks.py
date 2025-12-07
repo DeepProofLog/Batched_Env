@@ -179,7 +179,7 @@ class DetailedMetricsCollector:
         self.verbose = verbose
         self.reset()
     
-    def reset(self):
+    def reset(self) -> None:
         """Clear all accumulated statistics."""
         # Store raw episode data by (label, depth_key) for detailed tracking
         self._episode_stats: defaultdict[Tuple[int, str], List[Dict[str, float]]] = defaultdict(list)
@@ -188,7 +188,7 @@ class DetailedMetricsCollector:
         if self.verbose:
             print("[DetailedMetricsCollector] Stats reset")
     
-    def accumulate(self, infos: List[Dict[str, Any]]):
+    def accumulate(self, infos: List[Dict[str, Any]]) -> None:
         """
         Accumulate episode statistics from environment info dicts.
         
@@ -479,7 +479,7 @@ class EvaluationCallback:
         """Check if we should run evaluation at this iteration."""
         return (iteration % self.eval_freq == 0) or (iteration == 0)
     
-    def on_evaluation_start(self, iteration: int, global_step: int):
+    def on_evaluation_start(self, iteration: int, global_step: int) -> None:
         """Called at the start of evaluation."""
         self.current_iteration = iteration
         if self.verbose_cb:
@@ -487,7 +487,7 @@ class EvaluationCallback:
         self.metrics_collector.reset()
         self.eval_start_time = time.time()
     
-    def accumulate_episode_stats(self, infos: List[Dict[str, Any]]):
+    def accumulate_episode_stats(self, infos: List[Dict[str, Any]]) -> None:
         """Accumulate episode stats by label and depth using the common collector."""
         if self.verbose_cb:
             print(f"[EvaluationCallback] Accumulating episode stats from {len(infos)} infos")
@@ -499,7 +499,7 @@ class EvaluationCallback:
             print("[EvaluationCallback] Computing metrics")
         return self.metrics_collector.compute_metrics()
     
-    def on_evaluation_end(self, iteration: int, global_step: int, eval_metrics: Dict[str, Any]):
+    def on_evaluation_end(self, iteration: int, global_step: int, eval_metrics: Dict[str, Any]) -> bool:
         """Called when evaluation is complete."""        
         # Get global statistics from DetailedMetricsCollector
         rollout_metrics = self.compute_metrics()
@@ -578,7 +578,7 @@ class TrainingMetricsCallback:
         self.train_start_time = None
         self.training_epoch_losses = []  # Track losses per epoch
     
-    def on_training_start(self):
+    def on_training_start(self) -> None:
         """Called at the start of training."""
         if self.verbose_cb:
             print("[TrainingMetricsCallback] Training started")
@@ -617,7 +617,7 @@ class TrainingMetricsCallback:
     #                 print(f"  Training epoch {epoch}/{n_epochs}: "
     #                     f"pg_loss={policy_loss:.4f}, v_loss={value_loss:.4f}, entropy={entropy:.4f}, kl={approx_kl:.4f}, clip_frac={clip_frac:.4f}")
 
-    def accumulate_episode_stats(self, infos: List[Dict[str, Any]]):
+    def accumulate_episode_stats(self, infos: List[Dict[str, Any]]) -> None:
         """Accumulate episode stats during training using the common collector."""
         if self.verbose_cb:
             print(f"[TrainingMetricsCallback] Accumulating episode stats from {len(infos)} infos")
@@ -628,7 +628,7 @@ class TrainingMetricsCallback:
         iteration: int,
         global_step: int,
         n_envs: int = 1,
-    ):
+    ) -> None:
         """Called at the end of a training iteration."""
         if self.verbose_cb:
             print(f"[TrainingMetricsCallback] Iteration {iteration} ended at step {global_step}")
@@ -706,14 +706,14 @@ class RolloutProgressCallback:
         self.current_steps = 0
         self.start_time = None
     
-    def on_rollout_start(self):
+    def on_rollout_start(self) -> None:
         """Called at the start of rollout collection."""
         self.current_steps = 0
         # self.start_time = time.time()
         if self.verbose:
             print("Collecting rollouts")
     
-    def on_step(self, step: int):
+    def on_step(self, step: int) -> None:
         """
         Called after each step during rollout.
         
@@ -728,7 +728,7 @@ class RolloutProgressCallback:
         
         self.current_steps = total_collected
     
-    def on_rollout_end(self):
+    def on_rollout_end(self) -> None:
         """Called when rollout collection is complete."""
         pass
         # if self.start_time is not None:
@@ -769,27 +769,27 @@ class TorchRLCallbackManager:
         self.train_callback = train_callback  # Expose publicly for direct access
         self.checkpoint_callback = checkpoint_callback
     
-    def on_training_start(self):
+    def on_training_start(self) -> None:
         """Called at the start of training."""
         if self.train_callback:
             self.train_callback.on_training_start()
     
-    def on_rollout_start(self):
+    def on_rollout_start(self) -> None:
         """Called at the start of rollout collection."""
         if self.rollout_callback:
             self.rollout_callback.on_rollout_start()
     
-    def on_rollout_step(self, step: int):
+    def on_rollout_step(self, step: int) -> None:
         """Called after each step during rollout."""
         if self.rollout_callback:
             self.rollout_callback.on_step(step)
     
-    def on_rollout_end(self):
+    def on_rollout_end(self) -> None:
         """Called when rollout collection is complete."""
         if self.rollout_callback:
             self.rollout_callback.on_rollout_end()
     
-    def accumulate_episode_stats(self, infos: Union[List[Dict[str, Any]], Dict[str, torch.Tensor]], mode: str = "train"):
+    def accumulate_episode_stats(self, infos: Union[List[Dict[str, Any]], Dict[str, torch.Tensor]], mode: str = "train") -> None:
         """
         Accumulate episode statistics.
         
@@ -861,7 +861,7 @@ class TorchRLCallbackManager:
             return self.eval_callback.should_evaluate(iteration)
         return False
     
-    def on_evaluation_start(self, iteration: int, global_step: int):
+    def on_evaluation_start(self, iteration: int, global_step: int) -> None:
         """Called at the start of evaluation."""
         if self.eval_callback:
             self.eval_callback.on_evaluation_start(iteration, global_step)
@@ -888,7 +888,7 @@ class TorchRLCallbackManager:
         global_step: int,
         n_envs: int = 1,
         metrics: Optional[Dict[str, Any]] = None,
-    ):
+    ) -> None:
         """Called at the end of a training iteration."""
         if self.train_callback:
             self.train_callback.on_iteration_end(iteration, global_step, n_envs)

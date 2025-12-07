@@ -180,6 +180,7 @@ class CustomEvalCallback(EvalCallback):
             label_metrics = self._compute_label_metrics()
             label_log_entries = self._log_label_metrics(label_metrics)
             depth_log_entries = self._log_depth_reward_stats()
+            length_log_entries = self._log_depth_length_stats()
             success_log_entries = self._log_depth_success_stats()
 
             success_rate = float("nan")
@@ -214,6 +215,7 @@ class CustomEvalCallback(EvalCallback):
                 }
                 log_payload.update(label_log_entries)
                 log_payload.update(depth_log_entries)
+                log_payload.update(length_log_entries)
                 log_payload.update(success_log_entries)
                 self._log_values(log_payload)
 
@@ -432,6 +434,45 @@ class CustomEvalCallback(EvalCallback):
             depth_log_entries[f"eval/reward_depth_{depth_key}_{label_str}_count"] = count
 
         return depth_log_entries
+
+    def _log_depth_length_stats(self) -> Dict[str, Union[float, int]]:
+        """Log length stats by depth from consolidated episode stats."""
+        length_entries: Dict[str, Union[float, int]] = {}
+        if not self._episode_stats:
+            return length_entries
+
+        def _order_key(item: Tuple[Tuple[int, str], List[Dict]]) -> Tuple[int, Union[int, float]]:
+            (label, depth_key), _ = item
+            label_order = 0 if label == 1 else 1 if label == 0 else 2
+            if depth_key == "unknown":
+                depth_order: Union[int, float] = float("inf")
+            else:
+                try:
+                    depth_order = int(depth_key)
+                except (TypeError, ValueError):
+                    depth_order = float("inf")
+            return (label_order, depth_order)
+
+        for (label, depth_key), episodes in sorted(self._episode_stats.items(), key=_order_key):
+            lengths = [ep["length"] for ep in episodes if ep.get("length") is not None]
+            if not lengths:
+                continue
+            
+            lengths_arr = np.asarray(lengths, dtype=np.float32)
+            count = lengths_arr.size
+            mean_length = float(lengths_arr.mean())
+            std_length = float(lengths_arr.std()) if count > 1 else 0.0
+            label_str = "pos" if label == 1 else "neg" if label == 0 else f"label{label}"
+            length_display = _format_stat_string(mean_length, std_length, count)
+            
+            if self.logger is not None:
+                self.logger.record(f"eval/len_d_{depth_key}_{label_str}", length_display)
+            
+            length_entries[f"eval/len_depth_{depth_key}_{label_str}_mean"] = mean_length
+            length_entries[f"eval/len_depth_{depth_key}_{label_str}_std"] = std_length
+            length_entries[f"eval/len_depth_{depth_key}_{label_str}_count"] = count
+
+        return length_entries
 
     def _log_depth_success_stats(self) -> Dict[str, Union[float, int]]:
         """Log success stats by depth from consolidated episode stats."""
@@ -699,6 +740,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                 self.logger.record("eval/length mean +/- std", overall_length_display)
 
             depth_log_entries = self._log_depth_reward_stats()
+            length_log_entries = self._log_depth_length_stats()
             success_log_entries = self._log_depth_success_stats()
 
             success_rate = float("nan")
@@ -762,6 +804,7 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
                 
                 log_payload.update(label_log_entries)
                 log_payload.update(depth_log_entries)
+                log_payload.update(length_log_entries)
                 log_payload.update(success_log_entries)
                 self._log_values(log_payload)
 
@@ -967,6 +1010,7 @@ class DepthProofStatsCallback(BaseCallback):
         self._stats: defaultdict[tuple[int, str], List[float]] = defaultdict(list)
         self._success_values: defaultdict[tuple[int, str], List[float]] = defaultdict(list)
         self._success_values_by_label: defaultdict[int, List[float]] = defaultdict(list)
+        self._length_values: defaultdict[tuple[int, str], List[float]] = defaultdict(list)
         self._last_episode_id: Dict[int, int] = {}
 
     def _init_callback(self) -> None:
@@ -976,6 +1020,7 @@ class DepthProofStatsCallback(BaseCallback):
         self._stats = defaultdict(list)
         self._success_values = defaultdict(list)
         self._success_values_by_label = defaultdict(list)
+        self._length_values = defaultdict(list)
         self._last_episode_id = {}
 
     def _on_step(self) -> bool:
@@ -1008,13 +1053,31 @@ class DepthProofStatsCallback(BaseCallback):
             self._success_values_by_label[label].append(1.0 if success_flag else 0.0)
             key = (label, depth_key)
             self._stats[key].append(float(reward))
+            # Track episode length
+            length = episode_data.get("l") if isinstance(episode_data, dict) else None
+            if length is not None:
+                self._length_values[key].append(float(length))
         return True
 
     def _log_stats(self) -> None:
-        if not self._stats:
+        if not self._stats and not self._length_values:
             self._reset()
             return
-        for (label, depth_key), rewards in self._stats.items():
+        
+        def _depth_sort(item: Tuple[tuple[int, str], List[float]]) -> Tuple[int, Union[int, float]]:
+            (label, depth_key), _ = item
+            label_order = 0 if label == 1 else 1 if label == 0 else 2
+            if depth_key == "unknown":
+                depth_order: Union[int, float] = float("inf")
+            else:
+                try:
+                    depth_order = int(depth_key)
+                except (TypeError, ValueError):
+                    depth_order = float("inf")
+            return (label_order, depth_order)
+        
+        # Log rewards by depth
+        for (label, depth_key), rewards in sorted(self._stats.items(), key=_depth_sort):
             if not rewards:
                 continue
             label_str = "pos" if label == 1 else "neg"
@@ -1031,6 +1094,26 @@ class DepthProofStatsCallback(BaseCallback):
             if self.verbose > 0:
                 print(
                     f"Depth {depth_key} ({label_str}) -> rwd: {reward_display}"
+                )
+        
+        # Log lengths by depth
+        for (label, depth_key), lengths in sorted(self._length_values.items(), key=_depth_sort):
+            if not lengths:
+                continue
+            label_str = "pos" if label == 1 else "neg"
+            lengths_arr = np.asarray(lengths, dtype=np.float32)
+            count = lengths_arr.size
+            mean_length = float(lengths_arr.mean()) if count else 0.0
+            std_length = float(lengths_arr.std()) if count > 1 else 0.0
+            length_display = _format_stat_string(mean_length, std_length, count)
+            if self.logger is not None:
+                self.logger.record(
+                    f"{self.prefix}/len_d_{depth_key}_{label_str}",
+                    length_display
+                )
+            if self.verbose > 0:
+                print(
+                    f"Depth {depth_key} ({label_str}) -> len: {length_display}"
                 )
         if self.logger is not None:
             def _success_sort(item: Tuple[tuple[int, str], List[float]]) -> Tuple[int, Union[int, float]]:

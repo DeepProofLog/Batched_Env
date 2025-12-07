@@ -46,53 +46,70 @@ import numpy as np
 import torch
 
 
-def seed_all(seed: int, deterministic_cudnn: bool = True, warn: bool = False) -> None:
+def seed_all(
+    seed: int,
+    deterministic: bool = True,
+    deterministic_cudnn: bool = True,
+    warn: bool = False
+) -> None:
     """
     Set seeds for ALL random number generators globally.
     
-    Call this ONCE at the start of your script/training run.
+    This is the CENTRAL seeding function - call this ONCE at the start
+    of your script/training run (typically from runner.py).
     
     Args:
         seed: The seed value to use
-        deterministic_cudnn: If True, sets CUDNN to deterministic mode.
-            Note: This may impact performance but ensures reproducibility.
+        deterministic: If True, enables strict deterministic operations.
+            - Sets torch.use_deterministic_algorithms(True)
+            - May impact performance but ensures exact reproducibility
+            - Set to False for production (faster, but non-reproducible)
+        deterministic_cudnn: If True AND deterministic=True, sets CUDNN
+            to deterministic mode. Ignored if deterministic=False.
         warn: If True, print a warning about deterministic mode
     
     Example:
-        if __name__ == "__main__":
-            seed_all(42)
-            # ... rest of your code
+        # For reproducible parity testing:
+        seed_all(42, deterministic=True)
+        
+        # For production (faster):
+        seed_all(42, deterministic=False)
     """
     import os
     
+    # Core seeding - always done
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     
-    # Set CUBLAS_WORKSPACE_CONFIG for deterministic CUDA matmul operations
-    # This is required when using torch.use_deterministic_algorithms(True) on CUDA
-    if torch.cuda.is_available():
-        os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
-    
-    # Enable deterministic algorithms for exact reproducibility
-    # This ensures operations like scatter_add, index_add, etc. use deterministic implementations  
-    # Set warn_only=False to error out if non-deterministic operations are used
-    torch.use_deterministic_algorithms(True, warn_only=False)
-    print('ensuring determinism in the torch algorithm')
-    
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+    
+    # Deterministic mode - optional for performance
+    if deterministic:
+        # Set CUBLAS_WORKSPACE_CONFIG for deterministic CUDA matmul operations
+        if torch.cuda.is_available():
+            os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
         
-        if deterministic_cudnn:
+        # Enable deterministic algorithms for exact reproducibility
+        torch.use_deterministic_algorithms(True, warn_only=False)
+        print('ensuring determinism in the torch algorithm')
+        
+        if deterministic_cudnn and torch.cuda.is_available():
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
             if warn:
                 print(
-                    "Warning: This setting is not reproducible when creating 2 models from scratch, but it is when loading pretrained models. You can use\n"
-                    "  export CUBLAS_WORKSPACE_CONFIG=:16:8; export PYTHONHASHSEED=0\n"
-                    "to make runs reproducible."
+                    "Warning: This setting is not reproducible when creating "
+                    "2 models from scratch, but it is when loading pretrained models."
                 )
+    else:
+        # Non-deterministic mode - faster for production
+        torch.use_deterministic_algorithms(False)
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True  # Enable cuDNN autotuner
+
 
 
 def derive_seed(base_seed: int, index: int, multiplier: int = 1000003) -> int:

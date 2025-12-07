@@ -1,4 +1,31 @@
-# NEW ENV
+"""
+Batched Environment for Neural-Guided Logical Reasoning.
+
+This module provides a vectorized TorchRL-compatible environment for 
+training agents on logical reasoning tasks (theorem proving, KG reasoning).
+
+Key Features:
+    - GPU-first vectorized operations across B environments.
+    - Memory pruning via Bloom filters or exact memory.
+    - Skip-unary optimization for efficient rollout traversal.
+    - Negative sampling for contrastive learning support.
+    - Logic-safe termination (TRUE/FALSE/END).
+
+Tensor Shape Conventions:
+    - B: Batch size (number of parallel environments)
+    - A: Atoms per state (max_atoms/padding_atoms)
+    - D: Atom dimension (max_arity + 1) -> [pred, arg0, arg1]
+    - S: States per step (action space size/padding_states)
+    - N: Variable number of active queries or derived states
+
+Core Tensors:
+    current_queries:        [B, A, D]
+    derived_states_batch:   [B, S, A, D]
+    derived_states_counts:  [B]
+    action_mask:            [B, S]
+    current_labels:         [B]
+    current_depths:         [B]
+"""
 import torch
 from torch import Tensor
 from typing import Dict, List, Optional, Tuple
@@ -6,7 +33,7 @@ from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
 from unification import UnificationEngine
-from utils.memory import BloomFilter, ExactMemory
+from utils.memory import BloomFilter, ExactMemory, GPUExactMemory
 from utils.debug_helper import DebugHelper
 
 
@@ -18,12 +45,17 @@ def _safe_device(device: Optional[torch.device]) -> torch.device:
 
 class BatchedEnv(EnvBase):
     """
-    Vectorized, GPU-first environment with:
-      • Memory pruning/tabling via per-env GPU Bloom filters (loop-free membership checks)
-      • Optional skip-unary closure using a *batched* bounded loop over just the unary subset
-      • No Python loops in hot paths (_reset, _step, _postprocess_batched); skip-unary loop is subset-only
-      • Important, the endf/end_proof action, is just for the agent to be able to end the proof, not to substitute the False() terminal state
-      When the agent chooses endf, then we switch it to False() and end the proof 
+    Vectorized, GPU-first logic environment.
+    
+    This environment manages `B` parallel logical proofs. It interacts with the `UnificationEngine`
+    to generate derived states (successors) and supports advanced features like bloom-filter based
+    memory pruning and skip-unary optimization for efficient training.
+    
+    Attributes:
+        batch_size_int (int): Number of parallel environments (B).
+        current_queries (Tensor): [B, A, D] Current state of proofs.
+        derived_states_batch (Tensor): [B, S, A, D] Cached successors for the current step.
+        derived_states_counts (Tensor): [B] Number of valid successors per env.
     """
 
     def __init__(
@@ -143,7 +175,7 @@ class BatchedEnv(EnvBase):
         if self.sample_deterministic_per_env:
             # Each env has its own pointer, initialized to env_idx like SB3
             # (SB3 sets env._train_ptr = env_idx for parity testing)
-            self._per_env_train_ptrs = list(range(self.batch_size_int))
+            self._per_env_train_ptrs = torch.arange(self.batch_size_int, dtype=torch.long, device=self._device)
 
         # Sampling pointer for eval mode
         self.counter = 0
@@ -183,13 +215,28 @@ class BatchedEnv(EnvBase):
         self.memory_pruning = bool(memory_pruning)
         self.use_exact_memory = bool(use_exact_memory)
         if self.use_exact_memory:
-            self.memory_backend = ExactMemory(
-                batch_size=batch_size,
-                padding_idx=self.padding_idx,
-                true_pred_idx=self.true_pred_idx,
-                false_pred_idx=self.false_pred_idx,
-                end_pred_idx=self.end_pred_idx,
-            )
+            # Use GPU-based exact memory when device is CUDA, otherwise fallback to CPU ExactMemory
+            if self._device.type == 'cuda':
+                self.memory_backend = GPUExactMemory(
+                    batch_size=batch_size,
+                    device=self._device,
+                    padding_idx=self.padding_idx,
+                    padding_atoms=self.padding_atoms,
+                    max_arity=self.max_arity,
+                    total_vocab_size=self.total_vocab_size,
+                    true_pred_idx=self.true_pred_idx,
+                    false_pred_idx=self.false_pred_idx,
+                    end_pred_idx=self.end_pred_idx,
+                )
+            else:
+                # Fallback to CPU-based exact memory
+                self.memory_backend = ExactMemory(
+                    batch_size=batch_size,
+                    padding_idx=self.padding_idx,
+                    true_pred_idx=self.true_pred_idx,
+                    false_pred_idx=self.false_pred_idx,
+                    end_pred_idx=self.end_pred_idx,
+                )
         else:
             self.memory_backend = BloomFilter(
                 batch_size=batch_size,
@@ -225,7 +272,25 @@ class BatchedEnv(EnvBase):
     # ---------------------------------------------------------------------
     # Specs
     # ---------------------------------------------------------------------
-    def _make_specs(self):
+    # ---------------------------------------------------------------------
+    # Specs
+    # ---------------------------------------------------------------------
+    def _make_specs(self) -> None:
+        """
+        Define the observation, action, and reward specifications.
+        
+        Observation Spec (Composite):
+            - sub_index:            [B, 1, A, D] Current state (expanded dim for consistency).
+            - derived_sub_indices:  [B, S, A, D] Potential successor states.
+            - action_mask:          [B, S] Boolean mask of valid actions.
+            - shape:                [B] Batch shape.
+            
+        Action Spec (Bounded):
+            - shape: [B] Integer action indices in range [0, S-1].
+            
+        Reward Spec:
+            - shape: [B, 1] Scalar reward.
+        """
         from torchrl.data import Composite, Bounded
 
         max_vocab_size = int(self.total_vocab_size)
@@ -288,6 +353,25 @@ class BatchedEnv(EnvBase):
         )
 
     def _reset(self, tensordict: Optional[TensorDict] = None) -> TensorDict:
+        """
+        Reset environments to initial states.
+        
+        Supports partial resets via `tensordict['_reset']` mask.
+        If `tensordict` is None, resets all environments.
+        
+        Logic:
+        1. Identify environments to reset (all or subset).
+        2. Sample new queries from the dataset (deterministic or random based on mode).
+        3. Apply negative sampling (corruption) if training.
+        4. Reset internal state buffers (depths, memory, etc.).
+        5. Compute initial derived states for the new queries.
+        
+        Args:
+            tensordict: Optional TensorDict containing `_reset` boolean mask [B, 1].
+            
+        Returns:
+            TensorDict containing initial observations for the batch.
+        """
         device = self._device
         pad = self.padding_idx
         B = self.batch_size_int
@@ -328,11 +412,10 @@ class BatchedEnv(EnvBase):
         if self.mode == 'train':
             if self.sample_deterministic_per_env:
                 # Per-env round-robin: each env has its own pointer (parity with SB3)
-                # env_idx contains the indices of envs being reset
-                idxs = torch.zeros(N, dtype=torch.long, device=device)
-                for i, eidx in enumerate(env_idx.tolist()):
-                    idxs[i] = self._per_env_train_ptrs[eidx] % self._num_all
-                    self._per_env_train_ptrs[eidx] = (self._per_env_train_ptrs[eidx] + 1) % self._num_all
+                # Vectorized update of pointers
+                current_ptrs = self._per_env_train_ptrs[env_idx]
+                idxs = current_ptrs % self._num_all
+                self._per_env_train_ptrs[env_idx] = (current_ptrs + 1) % self._num_all
             else:
                 # Global round-robin: queries distributed across all resets
                 start = self._train_ptr
@@ -427,13 +510,40 @@ class BatchedEnv(EnvBase):
             )
         return self._create_observation()
 
-    def sample_negatives(self, N, batch_q, batch_labels, proof_depths, batch_first_atoms, env_idx, device, pad, A, D):
+    def sample_negatives(
+        self,
+        N: int,
+        batch_q: Tensor,
+        batch_labels: Tensor,
+        proof_depths: Tensor,
+        batch_first_atoms: Tensor,
+        env_idx: Tensor,
+        device: torch.device,
+        pad: int,
+        A: int,
+        D: int,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         """
-        Vectorized negative sampling that mirrors SB3's per-env sequential behavior.
+        Vectorized negative sampling (corruption) matching SB3's behavior.
         
-        Strategy: Corrupt ALL samples in a single vectorized call, but apply updates only
-        to envs that need negatives. This ensures RNG consumption happens in the correct order
-        (all N envs in sequence) while gaining vectorization benefits.
+        If enabled, corrupts the head/tail of queries to create negative examples
+        for contrastive learning.
+        
+        Args:
+            N (int):                 Number of environments being reset.
+            batch_q (Tensor):        [N, A, D] Query tensors.
+            batch_labels (Tensor):   [N] Label tensors.
+            proof_depths (Tensor):   [N] Depth tensors.
+            batch_first_atoms (Tensor): [N, D] First atom of each query (for corruption context).
+            env_idx (Tensor):        [N] Indices of environments being reset.
+            device (torch.device):   Target device.
+            pad (int):               Padding index.
+            A (int):                 Number of atoms per state.
+            D (int):                 Atom dimension (arity + 1).
+            
+        Returns:
+            Tuple[Tensor, Tensor, Tensor]: (batch_q, batch_labels, proof_depths)
+                                           Shapes: [N, A, D], [N], [N]
         """
         if not ((self.mode == 'train') and self.corruption_mode and (self.train_neg_ratio > 0)):
             return batch_q, batch_labels, proof_depths
@@ -479,14 +589,36 @@ class BatchedEnv(EnvBase):
         return batch_q, batch_labels, proof_depths
 
     def _step(self, tensordict: TensorDict) -> TensorDict:
-        """Vectorized step. Adds visited states to Bloom memory when enabled."""
+        """
+        Execute one step of the environment.
         
-        actions = tensordict["action"]
+        Logic:
+        1. Read action from input `tensordict`.
+        2. Validate action validity against `derived_states_counts`.
+        3. Update `current_queries` with the chosen successor state.
+        4. Increment depth.
+        5. Compute new derived states (successors) for the new query.
+        6. Apply skip-unary closure (fast-forwarding unary chains) if enabled.
+        7. Check termination conditions (True, False, Depth Limit).
+        8. Compute rewards.
+        9. Pack observations for the next step.
+        
+        Args:
+            tensordict: TensorDict containing `action` [B].
+            
+        Returns:
+            TensorDict containing:
+            - next observation (sub_index, derived_sub_indices, action_mask, etc.)
+            - reward [B, 1]
+            - done, terminated, truncated [B, 1]
+        """
+        
+        actions = tensordict["action"]  # [B] or [B, 1]
         if actions.dtype != torch.long:
-            actions = actions.long()
+            actions = actions.long()  # [B]
 
-        counts = self.derived_states_counts
-        active_mask = counts > 0
+        counts = self.derived_states_counts  # [B]
+        active_mask = counts > 0  # [B] bool
 
         # Validate actions only for rows that have available successors
         invalid_mask = (actions >= counts) & active_mask
@@ -501,9 +633,9 @@ class BatchedEnv(EnvBase):
         B = self.batch_size_int
         batch_ids = torch.arange(B, device=self._device)
         if active_mask.any():
-            active_rows = batch_ids[active_mask]
-            chosen = self.derived_states_batch[active_rows, actions[active_rows]]
-            self.current_queries.index_copy_(0, active_rows, chosen)
+            active_rows = batch_ids[active_mask]  # [A] active env indices
+            chosen = self.derived_states_batch[active_rows, actions[active_rows]]  # [A, M, D]
+            self.current_queries.index_copy_(0, active_rows, chosen)  # Update [B, M, D]
 
             # Optional string-env style skip-unary: follow unary chains on the
             # newly selected current states before expanding successors.
@@ -529,8 +661,8 @@ class BatchedEnv(EnvBase):
         # NOW check termination AFTER skip_unary has been applied
         if self.verbose >= 2:
             self.debug_helper._log(2, f"[_step] Before _get_done_reward, current_queries[0,0]: {self.current_queries[0, 0]}")
-        rewards, terminated, truncated, is_success = self._get_done_reward()
-        dones = terminated | truncated
+        rewards, terminated, truncated, is_success = self._get_done_reward()  # [B,1], [B,1], [B,1], [B,1]
+        dones = terminated | truncated  # [B,1] bool
         if self.verbose >= 2:
             self.debug_helper._log(2, f"[_step] After _get_done_reward: terminated={terminated}, truncated={truncated}, dones={dones}")
 
@@ -586,17 +718,15 @@ class BatchedEnv(EnvBase):
         """
         Execute a step and automatically reset environments that are done.
         
-        This is the recommended method for rollout collection as it ensures
-        environments are immediately reset when episodes complete, preventing
-        steps through terminal states.
+        This prevents the agent from stepping through terminal states in vectorized settings.
         
         Args:
-            tensordict: Input tensordict with action
+            tensordict: Input tensordict with action [B].
             
         Returns:
-            Tuple of (step_result_td, next_obs_td):
-                - step_result_td: Full step result with 'next' key containing observations/rewards/done
-                - next_obs_td: Observation for next iteration (already reset for done envs)
+            Tuple[TensorDict, TensorDict]:
+                - step_result_td: The full result of the step (including done=True for finished envs).
+                - next_obs_td:    Observation for the *next* step (reset observations for done envs).
         """
         # Execute the step
         step_result = self.step(tensordict)
@@ -651,18 +781,30 @@ class BatchedEnv(EnvBase):
         # No resets needed, return as-is
         return step_result, next_obs
 
-    # ---------------------------------------------------------------------
-    # Derived-state computation
-    # ---------------------------------------------------------------------
-    def _compute_derived_states(self, active_mask: Optional[torch.Tensor] = None, clear_inactive: bool = False):
+    def _compute_derived_states(self, active_mask: Optional[torch.Tensor] = None, clear_inactive: bool = False) -> None:
         """
-        Compute derived states following proof-safe logic:
-        1) Mark terminal rows (TRUE/FALSE/END)
-        2) Expand valid (non-terminal) rows
-        3) Postprocess A: memory prune non-terminals, reject over-budget, mark & protect terminals
-        4) Terminal handling: emit rewards for rows with terminals
-        5) Skip-unary loop on remaining non-terminal rows
-        6) Update current states for branching rows
+        Compute derived states following proof-safe logic.
+        
+        This method interacts with the `UnificationEngine` to expand the current states
+        and then applies several filtering and post-processing steps.
+        
+        Logic:
+        1. Identify non-terminal rows (those not already TRUE/FALSE/END).
+        2. Expand non-terminal rows via `UnificationEngine.get_derived_states`.
+        3. (Optional) Run skip-unary loop to fast-forward deterministic chains (train mode only).
+        4. Post-process:
+           - Filter by memory (Bloom/Exact) to avoid cycles (prune visited).
+           - Reject states that exceed atom/state limits (no partial truncation).
+           - Mark as terminal if needed.
+        5. (Optional) Add END action for proofs that can stop.
+        6. Fit results into the fixed-size `derived_states_batch` buffer.
+        7. Handle terminal rows by assigning a self-loop (or dummy derived state).
+        
+        Args:
+            active_mask (Tensor): [B] Boolean mask for environments to process.
+                                  Inactive envs are skipped to save compute.
+            clear_inactive (bool): If True, zeros out the derived states for inactive envs.
+                                   Useful in training reset flows; risky in evaluation.
         """
         if active_mask is None:
             active_mask = torch.ones(self.batch_size_int, dtype=torch.bool, device=self._device)
@@ -793,7 +935,16 @@ class BatchedEnv(EnvBase):
     def _fit_to_buffer(self, states: Tensor, counts: Tensor, num_envs: int) -> Tuple[Tensor, Tensor]:
         """
         Fit derived states to the environment buffer dimensions [N, S, A, D].
-        Pads or truncates states dimension (S) and atoms dimension (A) as needed.
+        
+        Pads or truncates the states dimension (S) and atoms dimension (A) as needed.
+        
+        Args:
+            states (Tensor):   [N, K_sub, M_sub, D] Input states.
+            counts (Tensor):   [N] Counts.
+            num_envs (int):    Number of environments N.
+            
+        Returns:
+            Tuple[Tensor, Tensor]: (states, counts) reshaped to [N, S, A, D].
         """
         if states.numel() == 0:
             return (torch.full((num_envs, self.padding_states, self.padding_atoms, self.max_arity + 1),
@@ -828,15 +979,15 @@ class BatchedEnv(EnvBase):
         Add END action to derived states for rows that don't have any terminal outcome.
         
         Matches SB3 behavior exactly:
-        - has_terminal_outcome = any derived state has True or False predicate
-        - If NOT has_terminal_outcome, add Endf
+        - If no successor is TRUE/FALSE, append the END action if space permits.
+        - This allows the agent to voluntarily terminate a proof path.
         
         Args:
-            states: [A, K, M, D] derived states
-            counts: [A] number of valid states per row
+            states (Tensor): [A, K, M, D] Derived states.
+            counts (Tensor): [A] Number of valid states per row.
         
         Returns:
-            Updated (states, counts) with END actions added where appropriate
+            Tuple[Tensor, Tensor]: Updated (states, counts) with END actions added.
         """
         # Guard: if end_pred_idx is not set, we cannot add END actions
         if self.end_pred_idx is None:
@@ -873,28 +1024,33 @@ class BatchedEnv(EnvBase):
         # Use padding_states (final buffer size) instead of K (engine working buffer)
         # because _fit_to_buffer will expand to padding_states after this
         K_final = self.padding_states
+        # Reserve END for rows without terminal outcome and with room
+        # Use padding_states (final buffer size) instead of K (engine working buffer)
+        K_final = self.padding_states
         reserve_end = ~has_terminal_outcome & (counts < K_final)
         
-        if reserve_end.any():
-            rows = torch.arange(A, device=device)[reserve_end]
-            # Create END state: first atom is END, rest are padding
-            end_state = torch.full((M, D), pad, dtype=torch.long, device=device)
-            end_atom = self.unification_engine.get_end_state()  # [1, 3]
-            end_state[0] = end_atom[0]  # Copy END atom to first position
-            
-            pos = counts[rows]
-            
-            # If we need to write beyond current K, expand the states tensor
-            max_pos_needed = pos.max().item() if pos.numel() > 0 else 0
-            if max_pos_needed >= K:
-                # Expand states tensor to accommodate the new position
-                new_K = max_pos_needed + 1
-                pad_extra = torch.full((A, new_K - K, M, D), pad, dtype=states.dtype, device=device)
-                states = torch.cat([states, pad_extra], dim=1)
-            
-            expanded_end = end_state.unsqueeze(0).expand(rows.shape[0], -1, -1)
-            states[rows, pos] = expanded_end
-            counts[rows] = pos + 1
+        # Optimization: Avoid all CPU syncs (no .item(), no .any(), no numel())
+        
+        # 1. Unconditionally expand to K_final if needed to ensure safety
+        # Since we filtered by counts < K_final, we know we only write within [0, K_final-1]
+        if K < K_final:
+            pad_extra = torch.full((A, K_final - K, M, D), pad, dtype=states.dtype, device=device)
+            states = torch.cat([states, pad_extra], dim=1)
+        
+        # 2. Perform updates using masking/indexing without checking size on CPU
+        # Boolean indexing returns a tensor; operations on it are async unless we check size
+        rows = torch.arange(A, device=device)[reserve_end]
+        
+        # Prepare END state singleton [M, D] (broadcastable)
+        end_state = torch.full((M, D), pad, dtype=torch.long, device=device)
+        end_atom = self.unification_engine.get_end_state()
+        end_state[0] = end_atom[0]
+        
+        # execute update - broadcasting handles the dimension matching for rows
+        # Direct assignment with empty rows is a no-op in PyTorch, avoiding explicit size check (sync)
+        pos = counts[rows]
+        states[rows, pos] = end_state
+        counts[rows] = pos + 1
         
         return states, counts
 
@@ -905,26 +1061,26 @@ class BatchedEnv(EnvBase):
     
     def _skip_unary(self, idx_subset: Tensor, derived_states: Tensor, derived_counts: Tensor) -> Tuple[Tensor, Tensor]:
         """
-        Skip-unary loop matching SB3 behavior exactly:
+        Batched skip-unary logic matching SB3's behavior exactly.
         
-        SB3 algorithm:
-        1. Check if len(derived_states) == 1 AND derived_states[0] is non-empty AND first atom is non-terminal
-        2. While this is true:
-           a. current_state = derived_states[0].copy()  # Promote the single child
-           b. Get new derived_states via unification(current_state)
-           c. Add current_state to memory
-           d. Filter derived_states by memory (remove visited states)
-           e. Filter derived_states by max_atoms
-           f. Check condition again (on post-filtered states)
-        3. Return derived_states
+        This optimization fast-forwards through deterministic chains (single successor).
         
-        Key insight: SB3 checks len==1 on RAW states initially, but on POST-FILTERED states
-        in subsequent loop iterations. Memory pruning happens INSIDE the loop after expansion.
+        Algorithm:
+        1. Identify "unary" states: non-terminal rows with exactly 1 non-terminal child.
+        2. While unary states exist (and iter < max):
+           a. Promote the single child to be the current state.
+           b. Expand this new state to get its successors.
+           c. Add the promoted state to memory (visited).
+           d. Filter successors by memory & post-process.
+           e. Repeat until branching, terminal, or iteration limit.
         
         Args:
-            idx_subset: [A] indices of active environments
-            derived_states: [A, K, M, D] RAW derived states (before memory pruning)
-            derived_counts: [A] number of valid RAW derived states
+            idx_subset (Tensor):     [A] Indices of active environments involved.
+            derived_states (Tensor): [A, K, M, D] RAW derived states (before pruning).
+            derived_counts (Tensor): [A] Number of valid states.
+            
+        Returns:
+            Tuple[Tensor, Tensor]: (derived_states, derived_counts) Updated in-place/returned.
         """
         if derived_states.numel() == 0:
             return derived_states, derived_counts
@@ -1127,19 +1283,32 @@ class BatchedEnv(EnvBase):
     # ---------------------------------------------------------------------
     # Postprocess (memory pruning + compaction + truncation)
     # ---------------------------------------------------------------------
-    def _postprocess(self, env_indices: Tensor, states: Tensor, counts: Tensor, current_states: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+    def _postprocess(
+        self, 
+        env_indices: Tensor, 
+        states: Tensor, 
+        counts: Tensor, 
+        current_states: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Tensor]:
         """
-        Postprocess A - Proof-safe validity and budget cut:
-        - Add current state to memory (it's being expanded now)
-        - Mark non-terminal rows
-        - Memory prune non-terminals using memory (terminals bypass)
-        - Reject any state violating padding_cfg (state or atom count) - no semantic truncation
-        - Mark terminals and protect them from being dropped
+        Proof-safe validity filtering and memory pruning.
         
-        This ensures:
-        - Proof safety: terminals are never dropped by memory prune
-        - Soundness under padding: any over-budget state is rejected, not truncated
-        - Memory/tabling is per-query (episode) and idempotent
+        Logic:
+        1. Add current state to memory (to prevent immediate cycles).
+        2. Validate states (non-empty, within atom budget).
+        3. Prune visited states via memory check (except terminals, which are safe).
+        4. Compact derived states (remove pruned holes).
+        5. Inject FALSE state if no valid successors remain.
+        
+        Args:
+            env_indices (Tensor):    [A] Indices of active environments.
+            states (Tensor):         [A, K, M, D] Derived states.
+            counts (Tensor):         [A] Derived counts.
+            current_states (Tensor): [A, M, D] Optional override for current state 
+                                     (used during skip-unary promotion).
+                                     
+        Returns:
+            Tuple[Tensor, Tensor]: (compact_states, new_counts)
         """
         device = self._device
         pad = self.padding_idx
@@ -1257,6 +1426,22 @@ class BatchedEnv(EnvBase):
     # Reward / Done
     # ---------------------------------------------------------------------
     def _get_done_reward(self) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """
+        Compute rewards and termination flags for the current state.
+        
+        Logic:
+        - Terminated: Natural proof conclusion (TRUE/FALSE) or explicit END action.
+        - Truncated: Depth limit exceeded without natural termination.
+        - Success: State proves TRUE (matches label=1 in some reward modes).
+        - Rewards: Computed based on `reward_type` (Binary, Sparse, Dense, etc.).
+        
+        Returns:
+            Tuple[Tensor, Tensor, Tensor, Tensor]:
+            - rewards:      [B, 1] Float rewards.
+            - terminated:   [B, 1] Boolean natural termination.
+            - truncated:    [B, 1] Boolean depth truncation.
+            - is_success:   [B, 1] Boolean proof success status.
+        """
         B = self.batch_size_int
         device = self._device
         pad = self.padding_idx
@@ -1356,7 +1541,18 @@ class BatchedEnv(EnvBase):
     # ---------------------------------------------------------------------
     # Observation packing
     # ---------------------------------------------------------------------
-    def _create_observation_dict(self) -> Dict:
+    def _create_observation_dict(self) -> Dict[str, Tensor]:
+        """
+        Pack internal state into an observation dictionary.
+        
+        Returns:
+            Dict[str, Tensor]:
+            - sub_index:            [B, 1, A, D] Current state
+            - derived_sub_indices:  [B, S, A, D] Successors
+            - action_mask:          [B, S] Valid actions mask
+            - label:                [B] Ground truth label
+            - query_depth:          [B] Current depth
+        """
         B = self.batch_size_int
         S = self.padding_states
         device = self._device
@@ -1366,8 +1562,7 @@ class BatchedEnv(EnvBase):
         
         # Debug action mask creation
         if self.debug_config.is_enabled('env', level=2):
-            self._debug_observation_creation(action_mask, counts)
-        
+            self._debug_observation_creation(action_mask, counts)        
         # If everything is masked we need to surface the underlying issue immediately.
         # HOWEVER: If all environments are done, this is normal and we should just return dummy obs
         all_false = (~action_mask).all(dim=1)
@@ -1416,7 +1611,13 @@ class BatchedEnv(EnvBase):
     def _build_single_atom_state(self, num_rows: int, atom: Tensor) -> Tensor:
         """
         Build a padded state batch with a single non-padding atom in position 0.
-        Avoids broadcasting a [1, 3] atom tensor across all atom slots.
+        
+        Args:
+            num_rows (int): Batch size N.
+            atom (Tensor):  [1, D] or [D] Atom tensor.
+            
+        Returns:
+            Tensor: [N, A, D] Padded state tensor with the atom at index 0.
         """
         state = torch.full(
             (num_rows, self.padding_atoms, self.max_arity + 1),
@@ -1434,10 +1635,14 @@ class BatchedEnv(EnvBase):
     # Utilities
     # ---------------------------------------------------------------------
     def _ensure_query_tensor(self, queries: Tensor) -> Tensor:
-        """Ensure queries tensor is properly padded to [N, padding_atoms, max_arity+1].
-        Expects input of shape [N, L, D] where 
-        N is number of queries, L is current atom count, D is current width.
-        Pads/truncates atoms to padding_atoms and width to max_arity + 1.
+        """
+        Validate and pad the queries tensor to [N, padding_atoms, max_arity+1].
+        
+        Args:
+            queries (Tensor): [N, L, D] Initial query tensor.
+            
+        Returns:
+            Tensor: [N, A, D] Standardized query tensor.
         """
         if not isinstance(queries, torch.Tensor) or queries.dim() != 3:
             raise TypeError(
@@ -1466,7 +1671,17 @@ class BatchedEnv(EnvBase):
         return queries
 
     def _ensure_vector(self, data: Optional[Tensor], expected_len: int, name: str) -> Tensor:
-        """Ensure data is a 1D tensor of expected length on the correct device."""
+        """
+        Validate and standardize a 1D tensor to [expected_len].
+        
+        Args:
+            data (Optional[Tensor]): Input data or None.
+            expected_len (int):      Expected length N.
+            name (str):              Debug name.
+            
+        Returns:
+            Tensor: [N] 1D tensor on the correct device.
+        """
         if data is None:
             if expected_len == 0:
                 return torch.zeros((0,), dtype=torch.long, device=self._device)
@@ -1479,9 +1694,15 @@ class BatchedEnv(EnvBase):
         return tensor
 
     def _compute_first_atoms(self, padded_queries: Tensor) -> Tensor:
-        """Extract first atoms from padded queries 
-        Expects shape [N, A, D], returns [N, D].
-        N is number of queries, A is padding_atoms, D is max_arity + 1."""
+        """
+        Extract the first valid non-padding atom from each query.
+        
+        Args:
+            padded_queries (Tensor): [N, A, D] Padded query states.
+            
+        Returns:
+            Tensor: [N, D] First valid atom for each query.
+        """
         pad = self.padding_idx
         assert padded_queries.dim() == 3, "padded_queries must be 3D tensor"
         valid = padded_queries[:, :, 0] != pad
@@ -1496,8 +1717,16 @@ class BatchedEnv(EnvBase):
             )
         return first_atoms
 
-    def _update_original_queries_for_indices(self, indices: Tensor):
-        """For selected env indices, update original_queries to match the first atom of current_queries."""
+    def _update_original_queries_for_indices(self, indices: Tensor) -> None:
+        """
+        Update `original_queries` to match the current state for specific indices.
+        
+        This is used when a new episode starts (after reset) to sync the 'original'
+        reference query used for loop detection and negative sampling.
+        
+        Args:
+            indices (Tensor): [SubBatch] Indices of environments to update.
+        """
         if indices.numel() == 0:
             return
         device = self._device
@@ -1515,15 +1744,18 @@ class BatchedEnv(EnvBase):
             first_atoms[~has_valid] = torch.full((self.max_arity + 1,), pad, dtype=torch.long, device=device)
         self.original_queries.index_copy_(0, rows, first_atoms)
 
-    def _set_seed(self, seed: int):
+    def _set_seed(self, seed: Optional[int]) -> None:
         """
         Set the seed for environment-local random operations.
         
-        Note: We intentionally do NOT call torch.manual_seed() here because that
-        would modify the global RNG state, which can cause issues with reproducibility.
-        Instead, we store the seed and use local RNGs when needed.
+        Args:
+            seed (Optional[int]): Input seed (or None to generate random).
         
-        For global seeding, use utils.seeding.seed_all() at the start of your script.
+        Note:
+            We intentionally do NOT call torch.manual_seed() here because that
+            would modify the global RNG state, which can cause issues with reproducibility
+            in multi-env settings. Instead, we store the seed and use local RNGs for
+            operations like negative sampling.
         """
         import random as _random
         if seed is None:
@@ -1542,17 +1774,21 @@ class BatchedEnv(EnvBase):
         per_slot_lengths: Optional[torch.Tensor] = None,  # [B] (first Q > 0, rest 0)
     ) -> None:
         """
-        Preloads the evaluation dataset and (optionally) a per-slot schedule.
-
-        If per_slot_lengths is provided:
-        - Data in `queries/labels/depths` MUST be laid out as a concatenation of
-            per-slot blocks: slot0's E0 items, then slot1's E1 items, etc.
-        - We compute per-slot (start, length) and reset per-slot pointers.
-        - _reset(mode='eval') will then pull the next item for EACH SLOT independently
-            (partial resets work too).
-
-        If per_slot_lengths is None:
-        - Falls back to the original global sequential pointer (self.counter).
+        Preload evaluation dataset and optional per-slot schedule.
+        
+        This method supports two modes:
+        1. **Global Sequential**: `per_slot_lengths` is None. All environments pull sequentially
+           from the dataset using a shared global pointer.
+        2. **Per-Slot Partitioned**: `per_slot_lengths` is provided. The dataset is logically
+           concatenated from `B` independent chunks. Each environment `i` pulls from
+           its own dedicated chunk `chunk_i`.
+        
+        Args:
+            queries (Tensor):          [M, A, D] Dataset queries (M total items).
+            labels (Tensor):           [M] Labels.
+            query_depths (Tensor):     [M] Target derivation depths.
+            per_slot_lengths (Tensor): [B] Length of the chunk for each slot.
+                                       If provided, M must equal sum(per_slot_lengths).
         """
         device = self._device
         

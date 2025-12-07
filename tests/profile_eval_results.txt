@@ -1,0 +1,91 @@
+Device: cuda
+Number of queries: 10
+Corruptions per query: 100
+Evaluation time: 118.25s
+MRR: 0.6245
+Hits@1: 0.6000
+
+================================================================================
+Top by Cumulative Time
+================================================================================
+         5534115 function calls (5105403 primitive calls) in 118.197 seconds
+
+   Ordered by: cumulative time
+   List reduced from 601 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.001    0.001  118.068  118.068 grad_mode.py:287(__exit__)
+        1    1.297    1.297  118.014  118.014 model_eval.py:85(evaluate_policy)
+     1648    2.320    0.001   92.830    0.056 env.py:785(_compute_derived_states)
+     1062    0.022    0.000   77.821    0.073 common.py:2056(step)
+     1062    0.709    0.001   77.630    0.073 env.py:592(_step)
+     2662    4.315    0.002   70.372    0.026 unification.py:1872(get_derived_states)
+     1625    1.115    0.001   32.310    0.020 env.py:1058(_skip_unary)
+     2662   10.263    0.004   23.425    0.009 unification.py:967(unify_with_rules)
+      586    0.012    0.000   21.106    0.036 common.py:2822(reset)
+      586    0.359    0.001   19.696    0.034 env.py:355(_reset)
+184788/1062    0.259    0.000   13.841    0.013 module.py:1771(_wrapped_call_impl)
+184788/1062    0.350    0.000   13.836    0.013 module.py:1779(_call_impl)
+     1062    0.013    0.000   13.813    0.013 model.py:468(forward)
+     2662    3.922    0.001   12.948    0.005 env.py:1282(_postprocess)
+     2662    3.564    0.001   10.694    0.004 unification.py:762(unify_with_facts)
+     2662    5.271    0.002    9.203    0.003 unification.py:1382(standardize_derived_states)
+     1062    0.015    0.000    8.403    0.008 model.py:321(forward)
+     2662    6.101    0.002    7.944    0.003 unification.py:1249(prune_and_collapse)
+    31860    0.213    0.000    7.369    0.000 container.py:245(forward)
+     3186    0.008    0.000    7.172    0.002 model.py:243(_encode_with_shared_body)
+     3186    0.490    0.000    7.135    0.002 model.py:128(forward)
+     3788    2.921    0.001    5.926    0.002 unification.py:415(unify_one_to_one)
+     1062    0.101    0.000    5.785    0.005 model.py:254(forward_policy)
+     2662    3.035    0.001    5.376    0.002 unification.py:632(preprocess_states)
+     2662    1.887    0.001    4.608    0.002 memory.py:140(add_current)
+    35046    0.040    0.000    4.200    0.000 linear.py:130(forward)
+     2662    2.442    0.001    4.169    0.002 unification.py:1561(pack_by_owner)
+    35046    4.132    0.000    4.132    0.000 {built-in method torch._C._nn.linear}
+     1062    0.012    0.000    3.966    0.004 distributions.py:287(proba_distribution)
+     1062    0.038    0.000    3.954    0.004 categorical.py:56(__init__)
+
+
+
+
+================================================================================
+Top by Total Time
+================================================================================
+         5534115 function calls (5105403 primitive calls) in 118.197 seconds
+
+   Ordered by: internal time
+   List reduced from 601 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+     2662   10.263    0.004   23.425    0.009 unification.py:967(unify_with_rules)
+     2662    6.101    0.002    7.944    0.003 unification.py:1249(prune_and_collapse)
+     2662    5.271    0.002    9.203    0.003 unification.py:1382(standardize_derived_states)
+     2662    4.315    0.002   70.372    0.026 unification.py:1872(get_derived_states)
+    35046    4.132    0.000    4.132    0.000 {built-in method torch._C._nn.linear}
+     2662    3.922    0.001   12.948    0.005 env.py:1282(_postprocess)
+    92935    3.703    0.000    3.703    0.000 {method 'index_select' of 'torch._C.TensorBase' objects}
+     2662    3.564    0.001   10.694    0.004 unification.py:762(unify_with_facts)
+     1062    3.540    0.003    3.644    0.003 distribution.py:47(__init__)
+    88475    3.437    0.000    3.437    0.000 {built-in method torch.arange}
+    17892    3.353    0.000    3.353    0.000 {method 'index_copy_' of 'torch._C.TensorBase' objects}
+     2662    3.035    0.001    5.376    0.002 unification.py:632(preprocess_states)
+     3788    2.921    0.001    5.926    0.002 unification.py:415(unify_one_to_one)
+    57731    2.872    0.000    2.872    0.000 {built-in method torch.where}
+   137261    2.613    0.000    2.613    0.000 {method 'any' of 'torch._C.TensorBase' objects}
+    19167    2.592    0.000    2.592    0.000 {built-in method torch.nonzero}
+     2662    2.442    0.001    4.169    0.002 unification.py:1561(pack_by_owner)
+     1648    2.320    0.001   92.830    0.056 env.py:785(_compute_derived_states)
+     9112    2.257    0.000    2.257    0.000 {built-in method torch.bincount}
+      585    2.076    0.004    2.396    0.004 model_eval.py:370(_merge_rows)
+     2662    1.887    0.001    4.608    0.002 memory.py:140(add_current)
+     4729    1.757    0.000    3.788    0.001 unification.py:540(pairs_via_predicate_ranges)
+    52465    1.556    0.000    1.556    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
+    38814    1.548    0.000    1.548    0.000 {method 'sum' of 'torch._C.TensorBase' objects}
+     1625    1.546    0.001    2.024    0.001 env.py:978(_add_end_action)
+     6450    1.500    0.000    2.784    0.000 unification.py:346(apply_substitutions)
+    28674    1.403    0.000    1.403    0.000 {built-in method torch.layer_norm}
+     2662    1.399    0.001    2.270    0.001 unification.py:1158(combine_candidates)
+     4729    1.322    0.000    1.322    0.000 {built-in method torch.repeat_interleave}
+        1    1.297    1.297  118.014  118.014 model_eval.py:85(evaluate_policy)
+
+

@@ -1,9 +1,19 @@
 """
-GPU-based Rollout Buffer for PPO using TensorDict.
+Rollout Buffer for On-Policy Reinforcement Learning.
 
-This module provides a rollout buffer implementation that mimics the SB3 RolloutBuffer
-but works entirely on GPU with torch tensors and tensordicts. It's designed to work
-with a batched environment that produces vectorized observations.
+This module provides a GPU-accelerated rollout buffer for collecting
+and processing environment transitions during PPO training.
+
+Key Features:
+    - GPU-native storage using torch tensors
+    - GAE (Generalized Advantage Estimation) computation
+    - Efficient minibatch generation for training
+    - Compatible with vectorized environments
+
+Tensor Shape Conventions:
+    T = buffer_size (number of steps per rollout)
+    N = n_envs (number of parallel environments)
+    * = variable observation dimensions
 """
 
 import torch
@@ -18,6 +28,15 @@ class RolloutBuffer:
     
     This buffer stores transitions collected during rollout and computes
     advantages using Generalized Advantage Estimation (GAE).
+    
+    Storage shapes:
+        observations: Dict[str, (buffer_size, n_envs, *obs_shape)]
+        actions:      (buffer_size, n_envs, action_dim)
+        rewards:      (buffer_size, n_envs)
+        values:       (buffer_size, n_envs)
+        log_probs:    (buffer_size, n_envs)
+        advantages:   (buffer_size, n_envs)
+        returns:      (buffer_size, n_envs)
     
     Args:
         buffer_size: Number of steps to collect per rollout
@@ -210,7 +229,8 @@ class RolloutBuffer:
     def swap_and_flatten(tensor: torch.Tensor) -> torch.Tensor:
         """
         Swap and flatten axes 0 (buffer_size) and 1 (n_envs).
-        Converts [n_steps, n_envs, ...] to [n_steps * n_envs, ...]
+        
+        Shape: (n_steps, n_envs, ...) -> (n_steps * n_envs, ...)
         """
         shape = tensor.shape
         if len(shape) < 3:
@@ -237,8 +257,8 @@ class RolloutBuffer:
         if not self.full:
             raise RuntimeError("Buffer is not full. Cannot sample.")
         
-        # Create random permutation of indices FIRST - exactly as in SB3
-        # This MUST come before generator_ready check to match SB3's random state consumption order
+        # Create random permutation of indices
+        # Ensures consistent random state consumption independent of generator readiness
         total_size = self.buffer_size * self.n_envs
         indices = np.random.permutation(total_size)
         
@@ -297,7 +317,7 @@ class RolloutBuffer:
 
     @staticmethod
     def _format_actions(actions: torch.Tensor) -> torch.Tensor:
-        """Match SB3 behavior by squeezing the last dimension when it is singular."""
+        """Squeeze the last dimension if it is singular."""
         if actions.dim() > 1 and actions.shape[-1] == 1:
             return actions.squeeze(-1)
         return actions

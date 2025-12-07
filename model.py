@@ -1,14 +1,22 @@
 """
-model.py - Clean implementation that exactly mimics SB3's model logic.
+Neural Network Architecture for Actor-Critic Policy.
 
-This file is a simplified version of model.py that removes all batched-specific
-optimizations and matches the SB3 implementation as closely as possible.
+This module defines the neural network components for reinforcement learning:
 
-Architecture matches sb3/sb3_model.py:
-- SharedBody: Shared residual MLP for both policy and value
-- PolicyHead: Projects shared features to embedding space
-- ValueHead: Produces scalar value estimates
-- SharedPolicyValueNetwork: Combines shared body with separate heads
+    - CustomCombinedExtractor: Converts index-based observations to embeddings
+    - SharedBody: Residual MLP backbone shared between policy and value heads
+    - PolicyHead: Projects shared features to action embedding space
+    - ValueHead: Produces scalar value estimates from shared features
+    - SharedPolicyValueNetwork: Complete policy-value network with shared backbone
+    - CustomNetwork: High-level network interface for the trainer
+    - ActorCriticPolicy: Complete actor-critic policy with action sampling
+
+Tensor Shape Conventions:
+    B = Batch size (number of environments)
+    S = Number of possible successor states (action space size)
+    A = Number of atoms per state
+    E = Embedding dimension
+    H = Hidden dimension
 """
 
 import math
@@ -20,22 +28,35 @@ from typing import Tuple, Optional, Dict
 import gymnasium as gym
 import numpy as np
 from tensordict import TensorDict
-from stable_baselines3.common.distributions import CategoricalDistribution
+import os
+if os.environ.get("USE_FAST_CATEGORICAL", "1") == "1":
+    try:
+        from utils.fast_distributions import FastCategoricalDistribution as CategoricalDistribution
+    except ImportError:
+        from stable_baselines3.common.distributions import CategoricalDistribution
+else:
+    from stable_baselines3.common.distributions import CategoricalDistribution
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.torch_layers import MlpExtractor
 
 
 class CustomCombinedExtractor(nn.Module):
     """
-    Feature extractor that converts index-based observations into embeddings.
-    Matches SB3's BaseFeaturesExtractor pattern exactly.
+    Feature extractor that converts index-based observations into dense embeddings.
+    
+    This module takes observation indices (predicate, arg0, arg1) and produces
+    continuous embedding vectors using a learned embedder.
     """
     
     def __init__(self, embedder):
+        """Initialize the feature extractor.
+        
+        Args:
+            embedder: Embedding module that converts indices to dense vectors.
+        """
         super().__init__()
         self.embedder = embedder
         self.embed_dim = embedder.embedding_dim
-        # Match SB3 CombinedExtractor contract
         self._features_dim = 1
         self.features_dim = 1
     
@@ -44,37 +65,54 @@ class CustomCombinedExtractor(nn.Module):
         Extract embeddings from observations.
         
         Args:
-            obs: TensorDict containing 'sub_index', 'derived_sub_indices', 'action_mask'
+            obs: TensorDict containing:
+                - 'sub_index': (batch, 1, pad_atoms, 3)
+                - 'derived_sub_indices': (batch, pad_states, pad_atoms, 3)
+                - 'action_mask': (batch, pad_states)
         
         Returns:
-            Tuple of (obs_embeddings, action_embeddings, action_mask)
+            obs_embeddings: (batch, 1, pad_atoms, embed_dim)
+            action_embeddings: (batch, pad_states, pad_atoms, embed_dim)
+            action_mask: (batch, pad_states)
         """
-        # Get tensors from TensorDict - exactly as in SB3
-        obs_sub_indices = obs.get("sub_index")  # (batch, 1, pad_atoms, 3)
-        action_sub_indices = obs.get("derived_sub_indices")  # (batch, pad_states, pad_atoms, 3)
-        action_mask = obs.get("action_mask")  # (batch, pad_states)
+        # Get tensors from TensorDict
+        obs_sub_indices = obs.get("sub_index")  # [B, 1, A, 3]
+        action_sub_indices = obs.get("derived_sub_indices")  # [B, S, A, 3]
+        action_mask = obs.get("action_mask")  # [B, S]
         
         # Ensure correct dtype
         if obs_sub_indices.dtype != torch.int32:
-            obs_sub_indices = obs_sub_indices.to(torch.int32)
+            obs_sub_indices = obs_sub_indices.to(torch.int32)  # [B, 1, A, 3]
         if action_sub_indices.dtype != torch.int32:
-            action_sub_indices = action_sub_indices.to(torch.int32)
+            action_sub_indices = action_sub_indices.to(torch.int32)  # [B, S, A, 3]
         
         # Get embeddings from embedder
-        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices)
-        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices)
+        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices)  # [B, 1, A, E]
+        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices)  # [B, S, A, E]
         
         return obs_embeddings, action_embeddings, action_mask
 
 
 class SharedBody(nn.Module):
-    """Shared residual MLP body for both policy and value networks.
-    Matches sb3/sb3_model.py SharedBody exactly."""
-    def __init__(self, embed_dim=64, hidden_dim=256, num_layers=8, dropout_prob=0.0):
+    """
+    Shared residual MLP backbone for both policy and value networks.
+    
+    The shared architecture enables efficient learning by allowing both
+    policy and value heads to leverage common feature representations.
+    Uses residual connections for stable gradient flow in deep networks.
+    """
+    def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, num_layers: int = 8, dropout_prob: float = 0.0):
+        """Initialize the shared body network.
+        
+        Args:
+            embed_dim: Dimension of input embeddings.
+            hidden_dim: Dimension of hidden layers in residual blocks.
+            num_layers: Number of residual blocks.
+            dropout_prob: Dropout probability (0.0 recommended for stable training).
+        """
         super().__init__()
-        # Initial transformation from embedding to hidden representation
-        # NOTE: dropout_prob set to 0.0 by default to avoid train/eval mode inconsistencies
-        # that cause issues with PPO's log probability computation and value function learning
+        
+        # Initial projection from embedding to hidden dimension
         self.input_transform = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
             nn.ReLU(),
@@ -82,7 +120,7 @@ class SharedBody(nn.Module):
             nn.Dropout(dropout_prob)
         )
         
-        # Residual blocks for deep feature extraction (shared between policy and value)
+        # Stack of residual blocks for deep feature extraction
         self.res_blocks = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
@@ -95,23 +133,43 @@ class SharedBody(nn.Module):
         self.hidden_dim = hidden_dim
 
     def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Apply shared residual stack to embeddings."""
+        """Apply shared residual network to embeddings.
+        
+        Args:
+            embeddings: Input embeddings of shape [..., embed_dim].
+            
+        Returns:
+            Processed features of shape [..., hidden_dim].
+        """
         original_shape = embeddings.shape
-        flat_embeddings = embeddings.reshape(-1, original_shape[-1])
-        x = self.input_transform(flat_embeddings)
+        flat_embeddings = embeddings.reshape(-1, original_shape[-1])  # [N, embed_dim]
+        
+        x = self.input_transform(flat_embeddings)  # [N, hidden_dim]
+        
+        # Apply residual blocks with skip connections
         for block in self.res_blocks:
             residual = x
-            x = block(x)
-            x = x + residual
-        return x.view(*original_shape[:-1], -1)
+            x = block(x) + residual  # [N, hidden_dim]
+        
+        return x.view(*original_shape[:-1], -1)  # [..., hidden_dim]
 
 
 class PolicyHead(nn.Module):
-    """Policy head that takes shared body output and produces action logits.
-    Matches sb3/sb3_model.py PolicyHead exactly."""
-    def __init__(self, hidden_dim=256, embed_dim=64):
+    """
+    Policy head that projects shared features to action embedding space.
+    
+    Used to compute action logits by comparing projected observation
+    embeddings with projected action embeddings via dot product.
+    """
+    
+    def __init__(self, hidden_dim: int = 256, embed_dim: int = 64):
+        """Initialize the policy head.
+        
+        Args:
+            hidden_dim: Dimension of input from shared body.
+            embed_dim: Output embedding dimension for action comparison.
+        """
         super().__init__()
-        # Final transformation that projects the processed representation to embedding space
         self.out_transform = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -119,16 +177,31 @@ class PolicyHead(nn.Module):
         )
 
     def forward(self, shared_features: torch.Tensor) -> torch.Tensor:
-        """Project shared features back to embedding dimension."""
+        """Project shared features to embedding space.
+        
+        Args:
+            shared_features: Features from shared body [..., hidden_dim].
+            
+        Returns:
+            Projected embeddings [..., embed_dim].
+        """
         return self.out_transform(shared_features)
 
 
 class ValueHead(nn.Module):
-    """Value head that takes shared body output and produces scalar value estimates.
-    Matches sb3/sb3_model.py ValueHead exactly."""
-    def __init__(self, hidden_dim=256):
+    """
+    Value head that produces scalar value estimates from shared features.
+    
+    Estimates the expected cumulative reward from the current state.
+    """
+    
+    def __init__(self, hidden_dim: int = 256):
+        """Initialize the value head.
+        
+        Args:
+            hidden_dim: Dimension of input from shared body.
+        """
         super().__init__()
-        # Output layers to produce a single scalar value estimate
         self.output_layer = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
@@ -136,125 +209,189 @@ class ValueHead(nn.Module):
         )
     
     def forward(self, shared_features: torch.Tensor) -> torch.Tensor:
-        """Get value prediction from shared features."""
-        value = self.output_layer(shared_features)
-        return value.squeeze(-1)
+        """Compute value estimate from shared features.
+        
+        Args:
+            shared_features: Features from shared body [..., hidden_dim].
+            
+        Returns:
+            Scalar value estimates with last dimension squeezed [...].
+        """
+        value = self.output_layer(shared_features)  # [..., 1]
+        return value.squeeze(-1)  # [...]
 
 
 class SharedPolicyValueNetwork(nn.Module):
-    """Combined network with shared body for policy and value function.
-    Matches sb3/sb3_model.py SharedPolicyValueNetwork exactly."""
-    def __init__(self, embed_dim=64, hidden_dim=256, num_layers=8, dropout_prob=0.0):
-        super().__init__()
-        # Shared body for both policy and value
-        # NOTE: dropout_prob=0.0 by default to avoid train/eval mode issues with PPO
-        self.shared_body = SharedBody(embed_dim, hidden_dim, num_layers, dropout_prob)
+    """
+    Combined policy-value network with shared backbone.
+    
+    Uses a shared residual network for feature extraction, with separate
+    heads for policy (action selection) and value (state evaluation).
+    
+    The policy uses dot-product attention between observation and action
+    embeddings to compute action logits.
+    """
+    
+    def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, 
+                 num_layers: int = 8, dropout_prob: float = 0.0):
+        """Initialize the policy-value network.
         
-        # Separate heads for policy and value
+        Args:
+            embed_dim: Dimension of input/output embeddings.
+            hidden_dim: Hidden dimension in residual blocks.
+            num_layers: Number of residual blocks in shared body.
+            dropout_prob: Dropout probability (0.0 recommended).
+        """
+        super().__init__()
+        self.shared_body = SharedBody(embed_dim, hidden_dim, num_layers, dropout_prob)
         self.policy_head = PolicyHead(hidden_dim, embed_dim)
         self.value_head = ValueHead(hidden_dim)
 
     def _encode_with_shared_body(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Apply shared body to embeddings."""
+        """Process embeddings through the shared backbone.
+        
+        Args:
+            embeddings: Input embeddings [..., embed_dim].
+            
+        Returns:
+            Processed features [..., hidden_dim].
+        """
         return self.shared_body(embeddings)
 
-    def forward_policy(self, obs_embeddings: torch.Tensor, action_embeddings: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
-        """Forward pass for policy network."""
-        # Process observation embeddings through shared body and policy head
-        shared_obs = self._encode_with_shared_body(obs_embeddings)
-        encoded_obs = self.policy_head(shared_obs)
+    def forward_policy(self, obs_embeddings: torch.Tensor, 
+                       action_embeddings: torch.Tensor, 
+                       action_mask: torch.Tensor) -> torch.Tensor:
+        """Compute action logits via observation-action similarity.
         
-        # Process action embeddings through shared body and policy head
-        shared_actions = self._encode_with_shared_body(action_embeddings)
-        encoded_actions = self.policy_head(shared_actions)
+        Args:
+            obs_embeddings: Observation embeddings [B, 1, A, E].
+            action_embeddings: Action embeddings [B, S, A, E].
+            action_mask: Boolean mask for valid actions [B, S].
+            
+        Returns:
+            Action logits with invalid actions masked to -inf [B, S].
+        """
+        # Encode observations and actions through shared body + policy head
+        shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, A, H]
+        encoded_obs = self.policy_head(shared_obs)  # [B, 1, A, E]
         
-        # Compute similarity (dot product) between observation and action embeddings
-        logits = torch.matmul(encoded_obs, encoded_actions.transpose(-2, -1)).squeeze(-2)
-        # Apply logit scaling exactly as in sb3 - CRITICAL for parity
+        shared_actions = self._encode_with_shared_body(action_embeddings)  # [B, S, A, H]
+        encoded_actions = self.policy_head(shared_actions)  # [B, S, A, E]
+        
+        # Compute dot-product similarity for action selection
+        logits = torch.matmul(encoded_obs, encoded_actions.transpose(-2, -1)).squeeze(-2)  # [B, S]
+        
+        # Scale logits by embedding dimension for stable gradients
         logits = logits / (obs_embeddings.shape[-1] ** 0.5)
         
-        # action_mask: (batch, pad_states) with 1 for valid slots
-        logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
+        # Mask invalid actions
+        logits = logits.masked_fill(~action_mask.bool(), float("-inf"))  # [B, S]
         
         return logits
 
     def forward_value(self, obs_embeddings: torch.Tensor) -> torch.Tensor:
-        """Forward pass for value network."""
-        # Process observation embeddings through shared body and value head
-        shared_obs = self._encode_with_shared_body(obs_embeddings)
-        value = self.value_head(shared_obs)
+        """Compute state value estimate.
+        
+        Args:
+            obs_embeddings: Observation embeddings [B, 1, A, E].
+            
+        Returns:
+            Value estimates [B].
+        """
+        shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, A, H]
+        value = self.value_head(shared_obs)  # [B]
         return value
 
 
 class CustomNetwork(nn.Module):
     """
-    Custom network for policy and value function with shared body.
-    It receives as input the features extracted by the feature extractor.
-    Matches sb3/sb3_model.py CustomNetwork exactly.
-
-    :param last_layer_dim_pi: (int) number of units for the last layer of the policy network
-    :param last_layer_dim_vf: (int) number of units for the last layer of the value network
-    :param embed_dim: dimension of embeddings
+    High-level network interface combining policy and value networks.
+    
+    Wraps SharedPolicyValueNetwork to provide a clean interface for the
+    PPO trainer and other training components.
     """
-    def __init__(
-        self,
-        last_layer_dim_pi: int = 64,
-        last_layer_dim_vf: int = 1, 
-        embed_dim: int = 200
-    ):
-        super(CustomNetwork, self).__init__()
+    
+    def __init__(self, last_layer_dim_pi: int = 64, last_layer_dim_vf: int = 1, 
+                 embed_dim: int = 200):
+        """Initialize the custom network.
+        
+        Args:
+            last_layer_dim_pi: Policy output dimension (unused, kept for compatibility).
+            last_layer_dim_vf: Value output dimension (unused, kept for compatibility).
+            embed_dim: Embedding dimension for the shared network.
+        """
+        super().__init__()
         self.latent_dim_pi = last_layer_dim_pi
         self.latent_dim_vf = last_layer_dim_vf
-
-        # Use shared policy-value network instead of separate networks
         self.shared_network = SharedPolicyValueNetwork(embed_dim)
 
-    def forward(self, features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, features: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+                ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute both policy logits and value estimate.
+        
+        Args:
+            features: Tuple of (obs_embeddings, action_embeddings, action_mask).
+            
+        Returns:
+            Tuple of (action_logits [B, S], value_estimates [B]).
         """
-        Forward method for SB3 compatibility.
-        Accepts features (which can include sub_indices for embedding) and outputs:
-        - latent policy representation
-        - latent value representation
-        """
-        # Assuming `features` is observation sub_indices passed here for embedding
         obs_embeddings, action_embeddings, action_mask = features
-        probs = self.shared_network.forward_policy(obs_embeddings, action_embeddings, action_mask) # (batch_size=n_envs,pad_states)
-        value = self.shared_network.forward_value(obs_embeddings).squeeze(-1) # (batch_size=n_envs)
-        return probs, value
+        logits = self.shared_network.forward_policy(obs_embeddings, action_embeddings, action_mask)  # [B, S]
+        value = self.shared_network.forward_value(obs_embeddings).squeeze(-1)  # [B]
+        return logits, value
     
-    def forward_actor(self, features: torch.Tensor) -> torch.Tensor:
-        """
-        Forward method for the actor network.
-        Accepts features (which can include sub_indices for embedding) and outputs the latent policy representation.
+    def forward_actor(self, features: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+                      ) -> torch.Tensor:
+        """Compute action logits only.
+        
+        Args:
+            features: Tuple of (obs_embeddings, action_embeddings, action_mask).
+            
+        Returns:
+            Action logits [B, S].
         """
         obs_embeddings, action_embeddings, action_mask = features
         return self.shared_network.forward_policy(obs_embeddings, action_embeddings, action_mask)
 
-    def forward_critic(self, features: torch.Tensor) -> torch.Tensor:
-        """
-        Forward method for the critic network.
-        Accepts features (which can include sub_indices for embedding) and outputs the latent value representation.
+    def forward_critic(self, features: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+                       ) -> torch.Tensor:
+        """Compute value estimate only.
+        
+        Args:
+            features: Tuple of (obs_embeddings, action_embeddings, action_mask).
+            
+        Returns:
+            Value estimates [B].
         """
         obs_embeddings, _, _ = features
         return self.shared_network.forward_value(obs_embeddings).squeeze(-1)
 
-    # Expose value_network for compatibility with top-k filtering
     @property
     def value_network(self):
-        """Property to expose value computation for top-k filtering compatibility."""
+        """Return the value network computation function."""
         return self._value_network_wrapper
 
     def _value_network_wrapper(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Wrapper to compute values from embeddings for top-k filtering."""
+        """Compute value from embeddings directly.
+        
+        Args:
+            embeddings: Input embeddings [B, ...].
+            
+        Returns:
+            Value estimates [B].
+        """
         return self.shared_network.forward_value(embeddings)
 
 
 class ActorCriticPolicy(nn.Module):
     """
-    Combined actor-critic policy that exactly matches SB3's ActorCriticPolicy.
+    Complete actor-critic policy for PPO training.
     
-    This is a clean implementation that removes all batched-specific optimizations
-    and matches the SB3 logic line-by-line.
+    Combines feature extraction (embedder), shared network backbone,
+    and action distribution to provide:
+    - Action sampling with log probabilities
+    - Action evaluation for PPO updates
+    - Value estimation for advantage computation
     """
     
     def __init__(
@@ -312,7 +449,7 @@ class ActorCriticPolicy(nn.Module):
         for module, gain in module_gains.items():
             module.apply(partial(BasePolicy.init_weights, gain=gain))
 
-        # Action distribution - now aligned with SB3 action_dim
+        # Action distribution - use fast version that skips Categorical validation
         self.action_dist = CategoricalDistribution(action_dim)
 
         # Move everything to device

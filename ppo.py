@@ -1,8 +1,16 @@
 """
-ppo_new.py - Clean PPO implementation that exactly mimics SB3's PPO.
+PPO (Proximal Policy Optimization) Algorithm.
 
-This file removes all batched-specific optimizations and matches the
-SB3 PPO.train() implementation as closely as possible.
+This module implements the PPO reinforcement learning algorithm with:
+    - GAE (Generalized Advantage Estimation) for advantage computation
+    - Clipped surrogate objective for stable policy updates
+    - Value function loss with optional clipping
+    - Entropy bonus for exploration
+
+Key Components:
+    - collect_rollouts(): Collects environment transitions into a buffer
+    - train(): Performs PPO policy updates with multiple epochs
+    - learn(): Main training loop orchestrating rollout and update cycles
 """
 
 import time
@@ -19,10 +27,38 @@ from callbacks import print_formatted_metrics, DetailedMetricsCollector
 
 class PPO:
     """
-    Proximal Policy Optimization algorithm (PPO) - matches SB3 exactly.
+    Proximal Policy Optimization (PPO) algorithm.
     
-    This is a simplified version that removes all optimizations and follows
-    the SB3 PPO implementation line-by-line.
+    PPO is an on-policy gradient method that alternates between sampling data
+    through interaction with the environment and optimizing a "surrogate" objective
+    function using stochastic gradient ascent.
+    
+    Key Features:
+    - **Clipped Surrogate Objective**: Constrains the policy update step size to
+      prevent destructive large updates.
+    - **Generalized Advantage Estimation (GAE)**: Used for calculating advantages,
+      balancing bias and variance.
+    - **Value Function Clipping**: Optional clipping of the value function updates
+      to match the policy trust region.
+    - **Entropy Regularization**: Encourages exploration by adding an entropy bonus
+      to the loss.
+    
+    Attributes:
+        policy (nn.Module): Actor-Critic network.
+        env (EnvBase): Batched TorchRL environment.
+        n_steps (int): Steps per environment per rollout.
+        learning_rate (float): Adam optimizer learning rate.
+        n_epochs (int): Number of optimization epochs per rollout.
+        batch_size (int): Minibatch size for gradient updates.
+        gamma (float): Discount factor for future rewards.
+        gae_lambda (float): GAE smoothing parameter.
+        clip_range (float): Hyperparameter epsilon for clipping policy updates.
+        clip_range_vf (Optional[float]): Hyperparameter for clipping value updates.
+        normalize_advantage (bool): Whether to normalize advantages per minibatch.
+        ent_coef (float): Entropy coefficient.
+        vf_coef (float): Value function coefficient.
+        max_grad_norm (float): Gradient clipping norm.
+        target_kl (Optional[float]): KL divergence limit for early stopping.
     """
     
     def __init__(
@@ -49,7 +85,29 @@ class PPO:
         trace_recorder: Optional[TraceRecorder] = None,
     ):
         """
-        Initialize PPO - matches SB3's __init__ exactly.
+        Initialize the PPO algorithm.
+        
+        Args:
+            policy (nn.Module): Actor-critic policy network.
+            env: Environment instance (used to infer n_envs and device).
+            n_steps (int): Number of steps to run for each environment per update.
+            learning_rate (float): Learning rate.
+            n_epochs (int): Number of epochs when optimizing the surrogate loss.
+            batch_size (int): Minibatch size.
+            gamma (float): Discount factor.
+            gae_lambda (float): Factor for trade-off of bias vs variance for GAE.
+            clip_range (float): Clipping parameter espilon.
+            clip_range_vf (Optional[float]): Clipping parameter for value function.
+            normalize_advantage (bool): Whether to normalize or not the advantage.
+            ent_coef (float): Entropy coefficient for the loss calculation.
+            vf_coef (float): Value function coefficient for the loss calculation.
+            max_grad_norm (float): The maximum value for the gradient clipping.
+            target_kl (Optional[float]): Limit the KL divergence between updates.
+            device (torch.device): Device to run on.
+            verbose (bool): Verbosity flag.
+            trace_dir (Optional[str]): Directory to save traces.
+            trace_prefix (str): Prefix for trace files.
+            trace_recorder (Optional[TraceRecorder]): Existing recorder instance.
         """
         self.policy = policy
         self.env = env
@@ -79,7 +137,7 @@ class PPO:
         # Get number of environments
         self.n_envs = int(env.batch_size[0]) if isinstance(env.batch_size, torch.Size) else int(env.batch_size)
         
-        # Create rollout buffer - matches SB3
+        # Create rollout buffer
         self.rollout_buffer = RolloutBuffer(
             buffer_size=n_steps,
             n_envs=self.n_envs,
@@ -88,14 +146,14 @@ class PPO:
             gae_lambda=gae_lambda,
         )
         
-        # Persistent state for consecutive learn() calls - matches SB3
+        # Persistent state for consecutive learn() calls
         self._last_obs = None
         self._last_episode_starts = None
         self._current_episode_reward = None
         self._current_episode_length = None
         self.num_timesteps = 0
         
-        # Create optimizer - matches SB3
+        # Initialize optimizer
         self.optimizer = torch.optim.Adam(
             self.policy.parameters(),
             lr=self.learning_rate,
@@ -114,24 +172,30 @@ class PPO:
         return_traces: bool = False,
     ) -> tuple:
         """
-        Collect rollouts using the current policy.
-        Matches SB3's collect_rollouts method structure.
+        Collect experiences using the current policy and fill the rollout buffer.
+        
+        This method steps the environment `n_steps` times. It stores observations,
+        actions, rewards, done flags, probabilities, and values in the buffer.
+        It handles environment resets and tracking episode statistics.
         
         Args:
-            current_obs: Current observation from environment
-            episode_starts: Tensor indicating episode starts
-            current_episode_reward: Running episode rewards
-            current_episode_length: Running episode lengths
-            episode_rewards: List to accumulate completed episode rewards
-            episode_lengths: List to accumulate completed episode lengths
-            iteration: Current training iteration
-            return_traces: If True, return list of step traces for comparison (default: False)
+            current_obs (Any): Last observation from previous rollout (or reset).
+            episode_starts (Tensor): [N_envs] Binary mask for episode starts.
+            current_episode_reward (Tensor): [N_envs] Accumulator for rewards.
+            current_episode_length (Tensor): [N_envs] Accumulator for lengths.
+            episode_rewards (List): Global list to Append completed episode rewards.
+            episode_lengths (List): Global list to Append completed episode lengths.
+            iteration (int): Current global iteration number.
+            return_traces (bool): If True, collect and return step-by-step traces.
             
         Returns:
-            If return_traces=False: Tuple of (next_obs, episode_starts, current_episode_reward, 
-                     current_episode_length, n_collected * n_envs)
-            If return_traces=True: Tuple of (next_obs, episode_starts, current_episode_reward,
-                     current_episode_length, n_collected * n_envs, traces_list)
+            Tuple[Any, Tensor, Tensor, Tensor, int, Optional[List]]: 
+                - next_obs: Latest observation.
+                - episode_starts: Updated start masks.
+                - current_episode_reward: Updated reward accumulators.
+                - current_episode_length: Updated length accumulators.
+                - total_steps: Total steps collected (n_steps * n_envs).
+                - traces: Optional list of trace dictionaries (if return_traces=True).
         """
         from tensordict import TensorDict
         
@@ -255,26 +319,59 @@ class PPO:
                 
                 # Check for episode ends
                 if dones.any():
-                    for idx in torch.where(dones)[0]:
-                        ep_reward = current_episode_reward[idx].item()
-                        ep_length = current_episode_length[idx].item()
+                    done_indices = torch.where(dones)[0]
+                    # Batch extract values to avoid per-element .item() calls
+                    ep_rewards_batch = current_episode_reward[done_indices].tolist()
+                    ep_lengths_batch = current_episode_length[done_indices].tolist()
+                    
+                    # Pre-extract optional values if available
+                    # We use .tolist() once per batch to avoid N .item() calls
+                    extra_keys = []
+                    extra_batches = {}
+                    
+                    # Helper to safely batch-extract
+                    def extract_batch(key, tensor_val):
+                        if tensor_val is not None and tensor_val.shape[0] >= self.n_envs:
+                            # It's a batch tensor, allow indexing
+                            return tensor_val[done_indices].tolist() 
+                        elif tensor_val is not None:
+                            # It might be a scalar or weird shape - fallback to list of None (safe)
+                            # Or repeat? Assuming batch tensor for now.
+                            return None
+                        return None
+
+                    if step_info.get("label") is not None:
+                        extra_keys.append("label")
+                        extra_batches["label"] = extract_batch("label", step_info.get("label"))
+                    if step_info.get("query_depth") is not None:
+                        extra_keys.append("query_depth")
+                        extra_batches["query_depth"] = extract_batch("query_depth", step_info.get("query_depth"))
+                    if step_info.get("is_success") is not None:
+                        extra_keys.append("is_success")
+                        extra_batches["is_success"] = extract_batch("is_success", step_info.get("is_success"))
+
+                    for i, idx in enumerate(done_indices):
+                        ep_reward = ep_rewards_batch[i]
+                        ep_length = int(ep_lengths_batch[i])
                         episode_rewards.append(ep_reward)
                         episode_lengths.append(ep_length)
 
                         # Collect episode info for rollout metrics
-                        label_val = step_info.get("label")
-                        depth_val = step_info.get("query_depth")
-                        success_val = step_info.get("is_success")
-                        length_val = step_info.get("length")
                         info_dict = {
                             "episode": {"r": ep_reward, "l": ep_length},
                         }
-                        if label_val is not None:
-                            info_dict["label"] = int(label_val[idx].item()) if label_val.ndim > 0 else int(label_val.item())
-                        if depth_val is not None:
-                            info_dict["query_depth"] = int(depth_val[idx].item()) if depth_val.ndim > 0 else int(depth_val.item())
-                        if success_val is not None:
-                            info_dict["is_success"] = bool(success_val[idx].item()) if success_val.ndim > 0 else bool(success_val.item())
+                        
+                        # Apply extras
+                        for key in extra_keys:
+                            batch = extra_batches[key]
+                            if batch is not None:
+                                val = batch[i]
+                                # Convert ints/bools safely
+                                if key == "is_success":
+                                    info_dict[key] = bool(val)
+                                else:
+                                    info_dict[key] = int(val)
+                                    
                         self.metrics_collector.accumulate([info_dict])
                         
                         # Reset episode stats
@@ -319,25 +416,35 @@ class PPO:
 
     def train(self, return_traces: bool = False) -> Dict[str, float]:
         """
-        Train the policy using collected rollouts.
-        Matches SB3's train() method exactly.
+        Update policy using the currently collected rollout buffer.
+        
+        Performs `n_epochs` of PPO updates:
+        1. Iterates over minibatches of data.
+        2. Computes the PPO clipped loss, value loss, and entropy loss.
+        3. Takes an optimizer step.
+        4. Monitors KL divergence for early stopping.
         
         Args:
-            return_traces: If True, return detailed per-batch training traces
+            return_traces (bool): If True, return detailed per-batch training traces.
         
         Returns:
-            Dictionary of training metrics. If return_traces=True, includes 'traces' key
-            with list of per-batch training details.
+            Dict[str, float]: Dictionary containing average training metrics:
+                - "policy_loss": Average clipped policy loss.
+                - "value_loss": Average value function loss.
+                - "entropy": Average entropy loss.
+                - "clip_fraction": Average fraction of clipped updates.
+                - "approx_kl": Average approximate KL divergence.
+                - "traces": Optional list of per-batch details (if return_traces=True).
         """
         # Set policy to training mode
         self.policy.train()
         
-        # Accumulators for logging
-        pg_losses = []
-        value_losses = []
-        entropy_losses = []
-        clip_fractions = []
-        approx_kl_divs = []
+        # Accumulators for logging (Tensors)
+        pg_losses_t = []
+        value_losses_t = []
+        entropy_losses_t = []
+        clip_fractions_t = []
+        approx_kl_divs_t = []
         
         # Training traces for detailed comparison
         train_traces = [] if return_traces else None
@@ -346,20 +453,19 @@ class PPO:
             print(f"[PPO] Training for {self.n_epochs} epochs...")
         
         # --------------------
-        # Epoch loop - matches SB3 exactly
+        # Epoch loop
         # --------------------
         continue_training = True
         for epoch in range(self.n_epochs):
-            approx_kl_divs_epoch = []
+            approx_kl_divs_epoch_t = []
             # Minibatch loop
             for batch_data in self.rollout_buffer.get(batch_size=self.batch_size):
                 obs, actions, old_values, old_log_probs, advantages, returns = batch_data
                 
-                # Flatten actions to match SB3
+                # Flatten actions if needed
                 actions = actions.squeeze(-1) if actions.dim() > 1 else actions
                 
-                # Normalize advantages - exactly as in SB3
-                # SB3 normalizes per minibatch, not per full batch
+                # Normalize advantages per minibatch
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
                 
@@ -389,11 +495,11 @@ class PPO:
                 
                 # Logging: clip fraction
                 with torch.no_grad():
-                    clip_fraction = torch.mean((torch.abs(ratio - 1) > self.clip_range).float()).item()
-                    clip_fractions.append(clip_fraction)
+                    clip_fraction_t = torch.mean((torch.abs(ratio - 1) > self.clip_range).float())
+                    clip_fractions_t.append(clip_fraction_t)
                 
                 # --------------------
-                # Value loss - matches SB3 exactly
+                # Value loss calculation with optional clipping
                 # --------------------
                 if self.clip_range_vf is None:
                     # No clipping
@@ -410,7 +516,7 @@ class PPO:
                 value_loss = F.mse_loss(returns, values_pred)
                 
                 # --------------------
-                # Entropy loss - matches SB3 exactly
+                # Entropy loss calculation
                 # --------------------
                 if entropy is None:
                     # Approximate entropy when no analytical form
@@ -429,13 +535,13 @@ class PPO:
                 # and Schulman blog: http://joschu.net/blog/kl-approx.html
                 with torch.no_grad():
                     log_ratio = log_probs - old_log_probs
-                    approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
-                    approx_kl_divs_epoch.append(approx_kl_div)
+                    approx_kl_div_t = torch.mean((torch.exp(log_ratio) - 1) - log_ratio)
+                    approx_kl_divs_epoch_t.append(approx_kl_div_t)
                 
-                # Log losses
-                pg_losses.append(policy_loss.item())
-                value_losses.append(value_loss.item())
-                entropy_losses.append(entropy_loss.item())
+                # Log losses (Keep as tensors)
+                pg_losses_t.append(policy_loss.detach())
+                value_losses_t.append(value_loss.detach())
+                entropy_losses_t.append(entropy_loss.detach())
                 
                 # Collect training traces if requested
                 if return_traces:
@@ -445,7 +551,7 @@ class PPO:
                         "policy_loss": policy_loss.item(),
                         "value_loss": value_loss.item(),
                         "entropy_loss": entropy_loss.item(),
-                        "clip_fraction": clip_fraction,
+                        "clip_fraction": clip_fraction_t.item(),
                         "ratio_mean": ratio.mean().item(),
                         "ratio_std": ratio.std().item(),
                         "advantages_mean": advantages.mean().item(),
@@ -454,7 +560,7 @@ class PPO:
                         "new_log_probs_mean": log_probs.mean().item(),
                     })
                 
-                # Optimization step - matches SB3 exactly
+                # Optimization step
                 # --------------------
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -468,34 +574,52 @@ class PPO:
                 
                 self.optimizer.step()
                 
-                if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
-                    continue_training = False
-                    if self.verbose >= 1:
-                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
-                    break
+                if self.target_kl is not None:
+                    # Sync only if needed for early stopping (once per batch)
+                    # We can optimize this if target_kl is None, but usually we check it.
+                    # To avoid per-batch sync, we could check every N batches?
+                    # For now, just sync single scalar.
+                    approx_kl_div = approx_kl_div_t.item()
+                    if approx_kl_div > 1.5 * self.target_kl:
+                        continue_training = False
+                        if self.verbose >= 1:
+                            print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                        break
             
             if not continue_training:
                 break
         
-            approx_kl_divs.extend(approx_kl_divs_epoch)
-            print(f"Epoch {epoch+1}/{self.n_epochs}. Losses: total {loss.item():.5f}, "
-                  f"policy {np.mean(pg_losses):.5f}, "
-                  f"value {np.mean(value_losses):.5f}, "
-                  f"entropy {np.mean(entropy_losses):.5f}, "
-                  f"approx_kl {np.mean(approx_kl_divs):.5f} "
-                  f"clip_fraction {np.mean(clip_fractions):.5f}. ")
+            approx_kl_divs_t.extend(approx_kl_divs_epoch_t)
+            
+            # Print epoch stats (Sync ONCE per epoch)
+            if self.verbose or epoch == self.n_epochs - 1:
+                # Compute means on GPU then sync
+                with torch.no_grad():
+                   mean_pg = torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0
+                   mean_val = torch.stack(value_losses_t).mean().item() if value_losses_t else 0.0
+                   mean_ent = torch.stack(entropy_losses_t).mean().item() if entropy_losses_t else 0.0
+                   mean_kl = torch.stack(approx_kl_divs_t).mean().item() if approx_kl_divs_t else 0.0
+                   mean_clip = torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0
+                   
+                   print(f"Epoch {epoch+1}/{self.n_epochs}. Losses: total {loss.item():.5f}, "
+                        f"policy {mean_pg:.5f}, "
+                        f"value {mean_val:.5f}, "
+                        f"entropy {mean_ent:.5f}, "
+                        f"approx_kl {mean_kl:.5f} "
+                        f"clip_fraction {mean_clip:.5f}. ")
         
-        # NOTE: Do NOT set policy back to eval mode here - SB3 leaves it in training mode
+        # NOTE: Policy is left in training mode to avoid unnecessary mode switching
         # The policy will be set to eval mode at the start of collect_rollouts()
         
-        # Return average metrics - matches SB3
-        metrics = {
-            "policy_loss": sum(pg_losses) / len(pg_losses) if pg_losses else 0.0,
-            "value_loss": sum(value_losses) / len(value_losses) if value_losses else 0.0,
-            "entropy": -sum(entropy_losses) / len(entropy_losses) if entropy_losses else 0.0,
-            "clip_fraction": sum(clip_fractions) / len(clip_fractions) if clip_fractions else 0.0,
-            "approx_kl": sum(approx_kl_divs) / len(approx_kl_divs) if approx_kl_divs else 0.0,
-        }
+        # Return average metrics (Sync ONCE at end)
+        with torch.no_grad():
+            metrics = {
+                "policy_loss": torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0,
+                "value_loss": torch.stack(value_losses_t).mean().item() if value_losses_t else 0.0,
+                "entropy": -torch.stack(entropy_losses_t).mean().item() if entropy_losses_t else 0.0, # entropy_loss is already negative of entropy
+                "clip_fraction": torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0,
+                "approx_kl": torch.stack(approx_kl_divs_t).mean().item() if approx_kl_divs_t else 0.0,
+            }
         
         if return_traces:
             metrics["traces"] = train_traces
@@ -509,17 +633,17 @@ class PPO:
         reset_num_timesteps: bool = True,
     ) -> None:
         """
-        Learn policy using PPO algorithm - matches SB3's learn() method.
+        Execute the PPO main loop: alternate between collecting rollouts and training.
         
         Args:
-            total_timesteps: Total number of timesteps to train for
-            callback: Optional callback to call after each rollout
-            reset_num_timesteps: Whether to reset timestep counter and environment.
-                               Set to False when calling learn() consecutively.
+            total_timesteps (int): The total number of environment steps to train for.
+            callback (Optional[Callable]): Callback called at every step.
+            reset_num_timesteps (bool): If True, reset the timestep counter.
+                                        Set False to continue training.
         """
         from tensordict import TensorDict
         
-        # Handle reset_num_timesteps - matches SB3 _setup_learn behavior
+        # Handle reset_num_timesteps
         if reset_num_timesteps:
             self.num_timesteps = 0
         else:
@@ -529,7 +653,7 @@ class PPO:
         total_steps_done = self.num_timesteps
         iteration = 0
         
-        # Only reset environment if needed (first call or explicit reset) - matches SB3
+        # Only reset environment if needed (first call or explicit reset)
         if reset_num_timesteps or self._last_obs is None:
             current_obs = self.env.reset()
             current_episode_reward = torch.zeros(self.n_envs, device=self.device)
@@ -587,7 +711,7 @@ class PPO:
                 if episode_rewards:
                     recent_rewards = episode_rewards[-10:]
                     print(f"[PPO] Recent episodes: reward={sum(recent_rewards)/len(recent_rewards):.3f}, length={sum(episode_lengths[-10:])/len(episode_lengths[-10:]):.1f}")
-            # SB3-style rollout metrics table with detailed stats
+            # Display detailed rollout metrics
             rollout_metrics = self.metrics_collector.compute_metrics()
             extra_rollout = {
                 "total_timesteps": total_steps_done,
@@ -628,7 +752,7 @@ class PPO:
         if self.trace_recorder is not None:
             self.trace_recorder.flush()
         
-        # Save state for consecutive learn() calls - matches SB3
+        # Save state for consecutive learn() calls
         self._last_obs = current_obs
         self._last_episode_starts = episode_starts
         self._current_episode_reward = current_episode_reward

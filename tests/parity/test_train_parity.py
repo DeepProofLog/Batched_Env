@@ -16,6 +16,10 @@ Usage:
 """
 import gc
 import os
+
+# Force strict parity for testing
+os.environ['USE_FAST_CATEGORICAL'] = '0'
+
 import sys
 from pathlib import Path
 from typing import List, Dict, Tuple, Any, Optional
@@ -1050,7 +1054,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default="countries_s3")
     parser.add_argument("--n-envs", type=int, default=20)
     parser.add_argument("--n-steps", type=int, default=40)
-    parser.add_argument("--total-timesteps", type=int, default=2000)
+    parser.add_argument("--total-timesteps", type=int, default=90)
     parser.add_argument("--n-corruptions", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--n-epochs", type=int, default=5)

@@ -1,37 +1,71 @@
+"""
+Modular Tensor-Based Unification Engine for Logical Reasoning.
 
-# unification_engine_modular.py
-# -----------------------------------------------------------------------------
-# A clean, modular rewrite of the batched single-step unification pipeline.
-# The focus is on a *readable* and *maintainable* orchestration of:
-#
-#   1) preprocessing
-#   2) rule unification
-#   3) fact unification
-#   4) combine (rules ⊕ facts)
-#   5) prune & collapse proofs (this is the ONLY place with pruning)
-#   6) standardize/canonicalize runtime variables
-#   7) deduplicate (optional)
-#   8) pad back to original batch size (drop-in compatibility)
-#
-# All functions carry shape comments and short explanations.
-#
-# Conventions:
-#   - "B" is the batch size (#input states)
-#   - "A" is the number of *active* states (after filtering terminals)
-#   - "K_r" / "K_f" = rule/fact successors per active state
-#   - "K"   = total successors per active state (K_r + K_f)
-#   - "N"   = total number of candidates across the active set
-#   - "M"   = atoms per candidate state
-#   - Triples are shaped [*, 3] with layout [pred, arg0, arg1]
-#   - padding_idx is used in all dimensions where variable-length packing occurs
-#
-# Notes:
-#   - All pruning (replacing ground facts by True / dropping them) happens in
-#     `prune_and_collapse`. Neither `_unify_with_facts` nor `_unify_with_rules`
-#     is allowed to do proof detection or pruning.
-#   - Standardization ensures that *all* derived states from the *same* owner
-#     start renumbering new runtime variables at the *same* base (next_var_index).
-# -----------------------------------------------------------------------------
+This module implements a fully batched, GPU-accelerated symbolic unification engine
+designed for high-throughput reasoning in large knowledge graphs. It orchestrates
+the backward chaining process, generating derived states (subgoals) from current
+states and a set of logic rules.
+
+Algorithm Overview:
+-------------------
+The unification process transforms a batch of "current states" (conjunctions of atoms)
+into a new batch of "derived states" (successors) through the following pipeline:
+
+1.  **Preprocessing**:
+    - Separates active non-terminal states from terminal states (True/False).
+    - Extracts the first atom (leftmost subgoal) from each active state as the "query".
+
+2.  **Unification (Fact & Rule)**:
+    - **Fact Unification**: Matches queries against the Knowledge Graph (facts).
+      - Ground queries: fast O(1) hash lookup.
+      - Non-ground queries: predicate-range bounded search.
+    - **Rule Unification**: Matches queries against rule heads.
+      - Renames rule variables to unique runtime variables.
+      - Unifies query args with rule head args to generate substitutions.
+    - Both steps produce "intermediate states" (ground facts or rule bodies with substitutions applied).
+
+3.  **Combination**:
+    - Merges successful matches from rules and facts into a single list of candidates.
+
+4.  **Pruning & Proof Detection**:
+    - **Grounding**: Identifies atoms in candidates that are already known facts.
+    - **Pruning**: Removes these known facts from the conjunction.
+    - **Proof Check**: If a candidate becomes empty (all atoms proven), the owner state is proven TRUE.
+    - **Collapse**: If an owner is proven, all other candidates for that owner are discarded.
+
+5.  **Standardization**:
+    - Renormalizes variable indices in the surviving states to ensure a canonical representation.
+    - Maps variable IDs to a contiguous range starting from `next_var_indices`.
+
+6.  **Packing**:
+    - Groups derived states by their original owner index.
+    - Pads the output to a fixed maximum branching factor `K` per owner.
+
+Tensor Shape Conventions:
+-------------------------
+Dimensions:
+    B:       Batch size (number of parallel environments/proofs)
+    A:       Number of *active* states (subset of B not yet terminal)
+    N:       Total number of candidate derived states (across all active owners)
+    F:       Number of facts in the Knowledge Graph
+    R:       Number of rules
+    P:       Number of predicates
+    Kr / Kf: Number of rule/fact successors per active state
+    Mr / Mf: Number of atoms per rule/fact derived state
+    M:       Maximum atoms per derived state
+    G:       Number of atoms in the *remaining* part of the parent state
+    D:       Atom dimension (always 3: [predicate, arg0, arg1])
+
+Variables:
+    padding_idx: Value used to pad variable-length sequences.
+    constant_no: Threshold for constants vs variables (<= constant_no are constants).
+
+Performance Notes:
+    - All operations are vectorized on GPU.
+    - No Python loops over batch elements.
+    - Uses 64-bit packed hashes for fast set membership.
+    - Relies on sorted indices and `searchsorted` for efficient joins.
+"""
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -47,35 +81,80 @@ from torch import Tensor
 @torch.no_grad()
 def _pack_triples_64(atoms: Tensor, base: int) -> Tensor:
     """
-    Pack triples [pred, a, b] into 64-bit integers for fast set operations.
-    atoms: [N, 3]  (long), base >= max index + 1
-    return: [N]  (int64)
-    hash = ((pred * base) + a) * base + b
+    Pack triples [pred, a, b] into single 64-bit integers for efficient set operations.
+    
+    This function creates a unique 64-bit fingerprint for each atom (triple) to enable
+    fast O(1) equality checks and sorting without comparing the 3 components separately.
+    
+    Formula: ((pred * base) + arg0) * base + arg1
+
+    Args:
+        atoms: Tensor of shape [N, 3] usually containing (predicate, arg0, arg1)
+        base:  Integer base for packing (must be >= max_entity_index + 1)
+        
+    Returns:
+        Tensor of shape [N] (int64) containing the packed hash values.
     """
     if atoms.numel() == 0:
         return torch.empty(0, dtype=torch.int64, device=atoms.device)
+    
+    # Extract components: [N] each
     p, a, b = atoms[:, 0].long(), atoms[:, 1].long(), atoms[:, 2].long()
-    base = torch.as_tensor(base, dtype=torch.int64, device=atoms.device)
-    return ((p * base) + a) * base + b
+    
+    # Ensure base is a tensor for broadcasting
+    base_t = torch.as_tensor(base, dtype=torch.int64, device=atoms.device)
+    
+    # Pack: [N]
+    return ((p * base_t) + a) * base_t + b
 
 
 class GPUHashCache:
     """
-    Tiny cache for polynomial hashing used in deduplication.
-    The larger mod reduces collisions vs small 32-bit primes.
+    Cache for precomputed polynomial hash powers used in state deduplication.
+    
+    Deduplication requires computing a hash of variable-length state sequences.
+    To avoid recomputing powers of the prime base for every batch, this class
+    caches them on the GPU.
+    
+    Attributes:
+        prime (int): Prime base for the polynomial rolling hash (31).
+        mod_val (int): Large Mersenne prime (2^61 - 1) to minimize collisions.
+        prime_powers (Tensor): Cached powers [prime^0, prime^1, ..., prime^max_len].
     """
+    
     def __init__(self, device: torch.device, max_len: int = 4096):
+        """
+        Initialize the hash cache.
+        
+        Args:
+            device: Tensor device (CPU/CUDA)
+            max_len: Initial maximum sequence length to support.
+        """
         self.device = device
         self.prime = 31
         self.mod_val = 2**61 - 1
         self._build_cache(max_len)
 
     def _build_cache(self, max_len: int):
+        """Compute and store powers up to max_len."""
         powers = torch.arange(max_len, device=self.device, dtype=torch.int64)
-        self.prime_powers = torch.pow(torch.tensor(self.prime, device=self.device, dtype=torch.int64), powers) % self.mod_val
+        self.prime_powers = torch.pow(
+            torch.tensor(self.prime, device=self.device, dtype=torch.int64), 
+            powers
+        ) % self.mod_val
         self.max_len = max_len
 
     def get_powers(self, length: int) -> Tensor:
+        """
+        Retrieve powers for a sequence of the given length.
+        Resizes the cache if the requested length exceeds current capacity.
+        
+        Args:
+            length: Required sequence length.
+        
+        Returns:
+            Tensor of shape [length] containing powers.
+        """
         if length > self.max_len:
             self._build_cache(length)
         return self.prime_powers[:length]
@@ -83,29 +162,61 @@ class GPUHashCache:
 
 class GPUFactIndex:
     """
-    GPU-accelerated fact membership using searchsorted over packed 64-bit keys.
-    facts: [F, 3] (long)
+    Efficient GPU-based index for fast fact membership testing.
+    
+    This class stores the entire Knowledge Graph (set of facts) as a sorted list
+    of 64-bit packed integers. Membership testing is performed using `searchsorted`
+    (binary search), enabling extremely fast lookups for large batches of queries.
+    
+    Attributes:
+        fact_hashes (Tensor): Sorted tensor of packed fact hashes. Shape [F].
+        pack_base (int): The base used for packing triples.
     """
+    
     def __init__(self, facts: Tensor, pack_base: int):
+        """
+        Build the index from a tensor of facts.
+        
+        Args:
+            facts: Tensor of shape [F, 3] containing (pred, arg0, arg1).
+            pack_base: Base for packing (must match inference time usage).
+        """
         self.device = facts.device
         self.pack_base = int(pack_base)
+        
         if facts.numel() == 0:
             self.fact_hashes = torch.empty(0, dtype=torch.int64, device=self.device)
         else:
+            # Sort facts for binary search capability
             self.fact_hashes = _pack_triples_64(facts.long(), self.pack_base).sort()[0]
 
     @torch.no_grad()
     def contains(self, atoms: Tensor) -> Tensor:
         """
-        atoms: [N, 3]  -> return [N] boolean
+        Check which atoms in the input batch exist in the fact index.
+        
+        Args:
+            atoms: Tensor of shape [N, 3] containing query atoms.
+            
+        Returns:
+            Boolean Tensor of shape [N] where True indicates the atom exists in facts.
         """
         if atoms.numel() == 0 or self.fact_hashes.numel() == 0:
             return torch.zeros((atoms.shape[0],), dtype=torch.bool, device=atoms.device)
+            
+        # Pack query atoms: [N]
         keys = _pack_triples_64(atoms.long(), self.pack_base)
+        
+        # Binary search for potentially matching indices: [N]
         idx  = torch.searchsorted(self.fact_hashes, keys)
-        mask = torch.zeros_like(keys, dtype=torch.bool)
+        
+        # Verify matches (handle out-of-bounds indices)
         valid = idx < self.fact_hashes.shape[0]
+        
+        # Result mask: [N]
+        mask = torch.zeros_like(keys, dtype=torch.bool)
         mask[valid] = (self.fact_hashes[idx[valid]] == keys[valid])
+        
         return mask
 
 
@@ -115,14 +226,28 @@ class GPUFactIndex:
 
 @torch.no_grad()
 def deduplicate_states_packed(
-    states: Tensor,       # [B, K, M, 3]
-    counts: Tensor,       # [B]
+    states: Tensor,
+    counts: Tensor,
     padding_idx: int,
     hash_cache: Optional[GPUHashCache] = None
 ) -> Tuple[Tensor, Tensor]:
     """
-    Stateless GPU dedup (no Python loops). Dedup compares whole candidate states.
-    Returns compact [B, K', M, 3] with corresponding counts [B].
+    Perform stateless, per-owner deduplication of derived states using hash-based sorting.
+    
+    This function eliminates identical candidate states (conjunctions of atoms) generated
+    for the same owner. It relies on a polynomial rolling hash to fingerprint each state,
+    followed by sorting and checking adjacent elements.
+    
+    Args:
+        states:      Tensor of shape [B, K, M, 3] containing candidate states.
+        counts:      Tensor of shape [B] containing valid candidates per owner.
+        padding_idx: Padding value used in states.
+        hash_cache:  Optional precomputed power cache for hashing.
+        
+    Returns:
+        Tuple[Tensor, Tensor]:
+            - Deduped states of shape [B, K', M, 3] (where K' <= K)
+            - New counts of shape [B]
     """
     if states.numel() == 0:
         return states, counts
@@ -130,54 +255,87 @@ def deduplicate_states_packed(
     B, K, M, D = states.shape
     device = states.device
 
-    # Flatten each state -> [B, K, M*3]
+    # -------------------------------------------------------------------------
+    # 1. Compute Hash Per Candidate
+    # -------------------------------------------------------------------------
+    # Flatten each state to [B, K, L] where L = M * 3
     flat = states.reshape(B, K, -1).long()
 
-    # Valid states per owner mask
-    valid_mask = (torch.arange(K, device=device).unsqueeze(0) < counts.unsqueeze(1))  # [B, K]
+    # Create mask for valid candidates: [B, K]
+    valid_mask = (torch.arange(K, device=device).unsqueeze(0) < counts.unsqueeze(1))
 
-    # Polynomial hash per state [B, K]
+    # Polynomial hash parameters
     prime = 31
     mod_val = 2**61 - 1
     L = M * D
+    
     if hash_cache is None:
         powers = torch.arange(L, device=device, dtype=torch.int64)
         prime_powers = torch.pow(torch.tensor(prime, device=device, dtype=torch.int64), powers) % mod_val
     else:
         prime_powers = hash_cache.get_powers(L)
 
+    # Compute dot product hash: sum(val[i] * p^i) % mod
+    # hashes: [B, K]
     hashes = (flat * prime_powers.view(1, 1, -1)).sum(dim=2) % mod_val
+    
+    # Set hashes of invalid entries to a unique value (mod_val) to push them to end during sort
     hashes = torch.where(valid_mask, hashes, torch.full_like(hashes, mod_val))
 
-    # Sort by hash (batched) and compare neighbors
+    # -------------------------------------------------------------------------
+    # 2. Sort and Identify Uniques
+    # -------------------------------------------------------------------------
+    # Sort hashes to bring identical states together: [B, K]
     sorted_hashes, sort_idx = torch.sort(hashes, dim=1)
-    sorted_states = torch.gather(states, 1, sort_idx.view(B, K, 1, 1).expand(B, K, M, D))
+    
+    # Reorder states according to hash order: [B, K, M, 3]
+    # We expand sort_idx to match state dims
+    gather_idx = sort_idx.view(B, K, 1, 1).expand(B, K, M, D)
+    sorted_states = torch.gather(states, 1, gather_idx)
 
-    # First occurrence or different content -> unique
+    # Identify unique elements by comparing with neighbors
     unique_mask = torch.ones((B, K), dtype=torch.bool, device=device)
     if K > 1:
+        # Check hash collisions first (fast)
         hash_diff = sorted_hashes[:, 1:] != sorted_hashes[:, :-1]  # [B, K-1]
         same_hash = ~hash_diff
+        
         if same_hash.any():
-            eq = (sorted_states[:, 1:] == sorted_states[:, :-1]).all(dim=(2, 3))  # [B, K-1]
+            # Full state comparison only where hashes match
+            # eq: [B, K-1] True if state[i] == state[i-1]
+            eq = (sorted_states[:, 1:] == sorted_states[:, :-1]).all(dim=(2, 3))
             unique_mask[:, 1:] = hash_diff | ~eq
         else:
             unique_mask[:, 1:] = hash_diff
 
+    # Always mask out original invalid entries (pushed to end by sort)
+    # We compare sort_idx (original index) with count to see if it was valid
     unique_mask &= (sort_idx < counts.unsqueeze(1))
 
-    # Count uniques and scatter to compact output
+    # -------------------------------------------------------------------------
+    # 3. Scatter Back to Compact Tensor
+    # -------------------------------------------------------------------------
     uniq_counts = unique_mask.sum(dim=1)  # [B]
+    
     if uniq_counts.max() == 0:
         return torch.full((B, 0, M, D), padding_idx, dtype=states.dtype, device=device), uniq_counts
 
-    pos = torch.cumsum(unique_mask.long(), dim=1) - 1  # [B, K]
-    outK = int(K)  # upper bound
+    # Calculate aggregate positions for scatter
+    # pos: [B, K] - destination index for each element (0..K'-1)
+    pos = torch.cumsum(unique_mask.long(), dim=1) - 1
+    
+    outK = int(K)  # Keep distinct count upper bound consistent with input K logic
     out = torch.full((B, outK, M, D), padding_idx, dtype=states.dtype, device=device)
 
+    # Vectorized scatter: select valid elements and place them
     b_idx = torch.arange(B, device=device).unsqueeze(1).expand_as(pos)[unique_mask]
     u_idx = pos[unique_mask]
-    out[b_idx, u_idx] = sorted_states[unique_mask.unsqueeze(-1).unsqueeze(-1).expand_as(sorted_states)].reshape(-1, M, D)
+    
+    # We must select from sorted_states because unique_mask aligns with sorted order
+    # Selection shape: [Total_Unique, M, D]
+    vals = sorted_states[unique_mask.unsqueeze(-1).unsqueeze(-1).expand_as(sorted_states)].reshape(-1, M, D)
+    
+    out[b_idx, u_idx] = vals
     return out, uniq_counts
 
 
@@ -188,100 +346,189 @@ def deduplicate_states_packed(
 @torch.no_grad()
 def apply_substitutions(goals: Tensor, subs_pairs: Tensor, padding_idx: int) -> Tensor:
     """
-    Apply substitutions selectively on args only (columns 1,2).
-    goals:      [N, M, 3]
-    subs_pairs: [N, S, 2] where each pair is [from, to], padded with padding_idx.
-    return:     [N, M, 3]
+    Apply a set of variable substitutions to a batch of goal atoms (vectorized).
+    
+    This function modifies the arguments of the goal atoms based on the provided
+    [from, to] substitution pairs. Predicates are never modified.
+    
+    Args:
+        goals:      Tensor of shape [N, M, 3] representing M atoms for N candidates.
+        subs_pairs: Tensor of shape [N, S, 2] containing S substitutions per candidate. 
+                    Each pair is [from_val, to_val]. Pairs equal to padding_idx are ignored.
+        padding_idx: Value used to pad substitutions.
+        
+    Returns:
+        Tensor of shape [N, M, 3] with substitutions applied.
     """
     if goals.numel() == 0:
         return goals
+    
     N, M = goals.shape[:2]
-    preds = goals[:, :, 0:1]
-    args = goals[:, :, 1:].clone()
+    S = subs_pairs.shape[1]
+    
+    # Split into predicates (cols 0) and args (cols 1,2)
+    preds = goals[:, :, 0:1]         # [N, M, 1]
+    args = goals[:, :, 1:].clone()   # [N, M, 2]
 
-    valid = subs_pairs[..., 0] != padding_idx
+    # Check which substitutions are valid
+    valid = subs_pairs[..., 0] != padding_idx  # [N, S]
     if not valid.any():
         return goals
 
-    S = subs_pairs.shape[1]
-    for s in range(S):
-        mask = valid[:, s]
-        if not mask.any():
-            continue
-        rows = torch.nonzero(mask, as_tuple=False).squeeze(1)
-        frm = subs_pairs[rows, s, 0].view(-1, 1, 1)
-        to  = subs_pairs[rows, s, 1].view(-1, 1, 1)
-        args_sel = args.index_select(0, rows)
-        args_sel = torch.where(args_sel == frm, to, args_sel)
-        args.index_copy_(0, rows, args_sel)
+    # Vectorized approach: Apply all substitutions at once
+    # Expand subs for broadcasting: [N, S, 2] -> [N, S, 1, 1, 2]
+    # Expand args for comparison: [N, M, 2] -> [N, 1, M, 2]
+    
+    frm = subs_pairs[:, :, 0].view(N, S, 1, 1)   # [N, S, 1, 1]
+    to_ = subs_pairs[:, :, 1].view(N, S, 1, 1)   # [N, S, 1, 1]
+    args_exp = args.view(N, 1, M, 2)             # [N, 1, M, 2]
+    valid_exp = valid.view(N, S, 1, 1)           # [N, S, 1, 1]
+    
+    # Match where args == from and substitution is valid
+    match = (args_exp == frm) & valid_exp        # [N, S, M, 2]
+    
+    # For each arg position, find if ANY substitution matches
+    # If multiple match (shouldn't happen in valid unification), take the first
+    any_match = match.any(dim=1)                 # [N, M, 2]
+    
+    if any_match.any():
+        # Find which substitution matches for each position
+        # We need the 'to' value from the matching substitution
+        # Use argmax to find first matching substitution index
+        match_idx = match.long().argmax(dim=1)   # [N, M, 2] - index of first match (0 if none)
+        
+        # Gather the 'to' values based on match_idx
+        # to_: [N, S, 1, 1] -> [N, S]
+        to_flat = subs_pairs[:, :, 1]            # [N, S]
+        
+        # Expand match_idx for gather: [N, M, 2] -> gather along S dimension
+        # We need to index into to_flat[n, match_idx[n, m, a]] for each position
+        match_idx_flat = match_idx.view(N, M * 2)  # [N, M*2]
+        to_gathered = to_flat.gather(1, match_idx_flat).view(N, M, 2)  # [N, M, 2]
+        
+        # Apply: where match, use gathered 'to', else keep original
+        args = torch.where(any_match, to_gathered, args)
 
     return torch.cat([preds, args], dim=2)
 
 
 @torch.no_grad()
-def unify_one_to_one(queries: Tensor, terms: Tensor, constant_no: int, padding_idx: int) -> Tuple[Tensor, Tensor]:
+def unify_one_to_one(
+    queries: Tensor, 
+    terms: Tensor, 
+    constant_no: int, 
+    padding_idx: int
+) -> Tuple[Tensor, Tensor]:
     """
-    Pairwise unify rows of queries vs rows of terms (same length).
-    queries: [L, 3]
-    terms:   [L, 3]
-    return:
-      mask: [L]                  -> rows that unify
-      subs: [L, 2, 2] (padding)  -> up to 2 pairs [from, to] for the two args
+    Perform pairwise unification between a batch of queries and a batch of terms.
+    
+    This function checks if each query row can be unified with the corresponding term row.
+    If they unify, it generates the necessary variable substitutions.
+    
+    Logic:
+    1. Predicates must match.
+    2. Constants must match (conflict if q_arg is const, t_arg is const, and q_arg != t_arg).
+    3. Variables are bound to values (or other variables).
+    
+    Args:
+        queries:     Tensor of shape [L, 3] (pred, arg0, arg1).
+        terms:       Tensor of shape [L, 3] (pred, arg0, arg1).
+        constant_no: Threshold for constants (val <= constant_no).
+        padding_idx: Value used for padding.
+        
+    Returns:
+        Tuple[Tensor, Tensor]:
+            - mask: Boolean tensor [L] indicating which pairs unified successfully.
+            - subs: Tensor [L, 2, 2] containing substitutions [from, to] for each arg.
+                    Returns padding_idx where no substitution occurs.
     """
     device = queries.device
     L = queries.shape[0]
+    
     if L == 0:
         return (torch.empty(0, dtype=torch.bool, device=device),
                 torch.full((0, 2, 2), padding_idx, dtype=torch.long, device=device))
 
     var_start = constant_no + 1
+    
+    # -------------------------------------------------------------------------
+    # 1. Structural Checks
+    # -------------------------------------------------------------------------
+    # Predicates must match exactly
     pred_ok = (queries[:, 0] == terms[:, 0])
 
     q_args, t_args = queries[:, 1:], terms[:, 1:]
     q_const, t_const = (q_args <= constant_no), (t_args <= constant_no)
+    
+    # Constant conflict: both are constants but different
     const_conflict = (q_const & t_const & (q_args != t_args)).any(dim=1)
     
-
-
+    # Initial candidates for unification
     mask = pred_ok & ~const_conflict
+    
+    # Initialize substitutions with padding
     subs = torch.full((L, 2, 2), padding_idx, dtype=torch.long, device=device)
+    
     if not mask.any():
         return mask, subs
 
+    # -------------------------------------------------------------------------
+    # 2. Variable Binding (only for potentially valid pairs)
+    # -------------------------------------------------------------------------
     idx = torch.nonzero(mask, as_tuple=False).squeeze(1)
-    q = q_args.index_select(0, idx)
-    t = t_args.index_select(0, idx)
+    q = q_args.index_select(0, idx)  # [Valid_L, 2]
+    t = t_args.index_select(0, idx)  # [Valid_L, 2]
+    
+    # Identify variables
     qv = (q >= var_start) & (q != padding_idx)
     tv = (t >= var_start) & (t != padding_idx)
-
+    
+    # Buffer for local substitutions: [Valid_L, 2, 2]
+    # dim 1 corresponds to arg0 and arg1 positions
     subs_sel = torch.full((idx.numel(), 2, 2), padding_idx, dtype=torch.long, device=device)
+    
+    # We update these views in-place
     from_slot = subs_sel[:, :, 0]
     to_slot   = subs_sel[:, :, 1]
 
-    # qVar <- tConst
+    # Case A: Query has Variable, Term has Constant (or Variable) -> bind qVar to tVal
+    # We prefer binding query vars to term values.
+    # q != 0 check ensures we don't bind padding (though filtered by mask usually)
     case1 = qv & (~tv) & (t != 0)
     subs_sel[:, :, 0] = torch.where(case1, q.long(), from_slot)
     subs_sel[:, :, 1] = torch.where(case1, t.long(), to_slot)
 
-    # tVar <- qConst
+    # Case B: Term has Variable, Query has Constant -> bind tVar to qConst
     case2 = (~qv) & (q != 0) & tv
     subs_sel[:, :, 0] = torch.where(case2, t.long(), subs_sel[:, :, 0])
     subs_sel[:, :, 1] = torch.where(case2, q.long(), subs_sel[:, :, 1])
 
-    # both variables
+    # Case C: Both are Variables -> bind tVar to qVar (arbitrary choice, consistent with standard unification)
     case3 = qv & tv
     subs_sel[:, :, 0] = torch.where(case3, t.long(), subs_sel[:, :, 0])
     subs_sel[:, :, 1] = torch.where(case3, q.long(), subs_sel[:, :, 1])
 
-    # consistency: same variable cannot map to different targets in one row
+    # -------------------------------------------------------------------------
+    # 3. Consistency Check
+    # -------------------------------------------------------------------------
+    # A single variable cannot be bound to two different values in the same step.
+    # E.g., q(X, X) unified with t(a, b) -> X=a AND X=b -> FAIL.
+    
+    # Check if we are substituting the same variable in both arg positions
     same_var  = (subs_sel[:, :, 0][:, 0] == subs_sel[:, :, 0][:, 1]) & (subs_sel[:, :, 0][:, 0] != padding_idx)
+    
+    # Check if the targets are different
     diff_tgt  = subs_sel[:, :, 1][:, 0] != subs_sel[:, :, 1][:, 1]
+    
     conflict  = same_var & diff_tgt
+    
     if conflict.any():
         bad = idx[conflict]
         mask[bad] = False
+        # Clear invalid subs (optional, but good for cleanliness)
         subs_sel[conflict] = padding_idx
 
+    # Scatter valid substitutions back to full batch
     subs.index_copy_(0, idx, subs_sel)
     return mask, subs
 
@@ -291,40 +538,67 @@ def unify_one_to_one(queries: Tensor, terms: Tensor, constant_no: int, padding_i
 # ============================================================================
 
 @torch.no_grad()
-def pairs_via_predicate_ranges(query_preds: Tensor, seg_starts: Tensor, seg_lens: Tensor) -> Tuple[Tensor, Tensor]:
+def pairs_via_predicate_ranges(
+    query_preds: Tensor, 
+    seg_starts: Tensor, 
+    seg_lens: Tensor
+) -> Tuple[Tensor, Tensor]:
     """
-    Build all (query_idx, item_idx) pairs for queries grouped by predicate ranges.
-    query_preds: [A]
-    seg_starts:  [P]  start index per predicate in the items (facts or rule-heads)
-    seg_lens:    [P]  length per predicate in the items
-    return:
-      qi: [L] indices into queries
-      ii: [L] indices into items
+    Generate indices for cross-product pairing blocked by predicate.
+    
+    Instead of a full O(N*M) check, we only pair queries having predicate P 
+    with items (facts or rules) that also have predicate P.
+    
+    Args:
+        query_preds: Tensor [A] containing the predicate ID for each query.
+        seg_starts:  Tensor [Num_Preds] containing start index for each predicate in facts/rules.
+        seg_lens:    Tensor [Num_Preds] containing count for each predicate in facts/rules.
+        
+    Returns:
+        Tuple[Tensor, Tensor]:
+            - qi: Tensor [L] of query indices.
+            - ii: Tensor [L] of item indices (indices into facts or rules).
     """
     device = query_preds.device
     if query_preds.numel() == 0:
         z = torch.zeros(0, dtype=torch.long, device=device)
         return z, z
 
-    lens   = seg_lens[query_preds.long()]        # [A]
-    starts = seg_starts[query_preds.long()]      # [A]
+    # Lookup how many matches each query *might* have based on predicate
+    lens   = seg_lens[query_preds.long()]        # [A] count of facts/rules with this pred
+    starts = seg_starts[query_preds.long()]      # [A] start index in facts/rules
+
+    # Filter out queries with zero potential matches
     keep   = lens > 0
     kept_q = torch.arange(query_preds.shape[0], device=device)[keep]
+    
     if kept_q.numel() == 0:
         z = torch.zeros(0, dtype=torch.long, device=device)
         return z, z
 
+    # Focus only on productive queries
     lens_kept   = lens[kept_q]
     starts_kept = starts[kept_q]
 
+    # Generate repeat indices for expansion
+    # row_ids: [L=sum(lens_kept)] -> maps each output pair back to 'kept_q' index
     row_ids = torch.repeat_interleave(torch.arange(lens_kept.numel(), device=device), lens_kept)
+    
     if row_ids.numel() == 0:
         z = torch.zeros(0, dtype=torch.long, device=device)
         return z, z
+        
+    # Calculate offset within each segment
+    # prefix: [A_kept] cumulative length *before* current segment (conceptually)
     prefix = torch.cumsum(lens_kept, dim=0) - lens_kept
+    
+    # pos_in: [L] 0, 1, ..., len-1 for each query's segment
     pos_in = torch.arange(row_ids.numel(), device=device) - prefix[row_ids]
-    item_idx = starts_kept[row_ids] + pos_in
-    query_idx = kept_q[row_ids]
+    
+    # Calculate final indices
+    item_idx = starts_kept[row_ids] + pos_in     # Global index into facts/rules
+    query_idx = kept_q[row_ids]                  # Global index into queries array
+    
     return query_idx, item_idx
 
 
@@ -334,43 +608,81 @@ def pairs_via_predicate_ranges(query_preds: Tensor, seg_starts: Tensor, seg_lens
 
 @dataclass
 class PreprocessResult:
-    active_idx: Tensor           # [A]
-    queries: Tensor              # [A, 3]
-    remaining: Tensor            # [A, G, 3]
-    remaining_counts: Tensor     # [A]
-    preds: Tensor                # [A]
-    terminal_true: Tensor        # [T1] owners that are trivially TRUE
-    terminal_false: Tensor       # [T2] owners that are trivially FALSE
+    """
+    Container for the results of the preprocessing step.
+    
+    Attributes:
+        active_idx:       Tensor of shape [A] containing indices of active non-terminal states.
+        queries:          Tensor of shape [A, 3] containing the first atom (subgoal) of each active state.
+        remaining:        Tensor of shape [A, G, 3] containing the remaining atoms of each active state.
+        remaining_counts: Tensor of shape [A] containing the number of valid remaining atoms.
+        preds:            Tensor of shape [A] containing the predicate ID of each query.
+        terminal_true:    Tensor of shape [T_true] indices of states trivially proven TRUE.
+        terminal_false:   Tensor of shape [T_false] indices of states trivially proven FALSE.
+    """
+    active_idx: Tensor
+    queries: Tensor
+    remaining: Tensor
+    remaining_counts: Tensor
+    preds: Tensor
+    terminal_true: Tensor
+    terminal_false: Tensor
 
 
 @torch.no_grad()
-def preprocess_states(states: Tensor,
-                      true_pred_idx: Optional[int],
-                      false_pred_idx: Optional[int],
-                      padding_idx: int) -> PreprocessResult:
+def preprocess_states(
+    states: Tensor,
+    true_pred_idx: Optional[int],
+    false_pred_idx: Optional[int],
+    padding_idx: int
+) -> PreprocessResult:
     """
-    Split batch into terminal vs. active and extract (query, rest).
-    states: [B, max_atoms, 3]
-    return: PreprocessResult
+    Preprocess a batch of states to separate terminal vs active states.
+    
+    This function:
+    1. Identifies states that are trivially TRUE (all atoms are special 'true_pred')
+       or trivially FALSE (contain 'false_pred' or are empty but not True).
+    2. For active states, extracts the first atom as the 'query' and the rest as 'remaining'.
+    
+    Args:
+        states:         Tensor of shape [B, max_atoms, 3].
+        true_pred_idx:  Predicate ID representing 'True' (optional).
+        false_pred_idx: Predicate ID representing 'False' (optional).
+        padding_idx:    Value used for padding.
+        
+    Returns:
+        PreprocessResult containing separated indices and tensors.
     """
     device = states.device
     B, max_atoms = states.shape[:2]
     pad = padding_idx
 
-    valid = (states[:, :, 0] != pad)                    # [B, max_atoms]
-    has_any = valid.any(dim=1)                          # [B]
+    # Mask of valid atoms: [B, max_atoms]
+    valid = (states[:, :, 0] != pad)
+    has_any = valid.any(dim=1)      # [B]
     empty   = ~has_any
 
+    # Initialize masks
     has_false = torch.zeros(B, dtype=torch.bool, device=device)
     only_true = torch.zeros(B, dtype=torch.bool, device=device)
 
-    has_false = (states[:, :, 0] == false_pred_idx).any(dim=1)
-    # "only_true": all non-pad preds are TRUE
-    only_true = (valid & (states[:, :, 0] == true_pred_idx) | ~valid).all(dim=1) & has_any
+    # Check for False predicate
+    if false_pred_idx is not None:
+        has_false = (states[:, :, 0] == false_pred_idx).any(dim=1)
+        
+    # Check for True predicate: "only_true" means all valid atoms are TRUE (and at least 1 exists)
+    # If a state is empty, it's NOT true (it's failed/false), unless handled otherwise.
+    # Here, empty -> False.
+    if true_pred_idx is not None:
+        is_true_pred = (states[:, :, 0] == true_pred_idx)
+        # All valid atoms must be true_pred
+        all_valid_are_true = (valid & is_true_pred | ~valid).all(dim=1)
+        only_true = all_valid_are_true & has_any
 
     terminal_true  = only_true
     terminal_false = empty | has_false
 
+    # Active states are those that are neither True nor False
     active = ~(terminal_true | terminal_false)
     active_idx = torch.nonzero(active, as_tuple=True)[0]
     A = active_idx.numel()
@@ -386,29 +698,59 @@ def preprocess_states(states: Tensor,
             terminal_false=torch.nonzero(terminal_false, as_tuple=False).view(-1)
         )
 
-    sA = states.index_select(0, active_idx)            # [A, max_atoms, 3]
-    validA = valid.index_select(0, active_idx)         # [A, max_atoms]
+    # Select active states: [A, max_atoms, 3]
+    sA = states.index_select(0, active_idx)
+    validA = valid.index_select(0, active_idx)  # [A, max_atoms]
 
-    # First goal (leftmost) per active row
-    first_pos = validA.long().argmax(dim=1)            # [A]
+    # Extract First goal (leftmost valid atom) per active row
+    # argmax gives index of first True. Since 'active' implies has_any, this is safe.
+    first_pos = validA.long().argmax(dim=1)  # [A]
     arangeA = torch.arange(A, device=device)
-    queries = sA[arangeA, first_pos]                   # [A, 3]
+    
+    # Query: [A, 3]
+    queries = sA[arangeA, first_pos]
 
-    # Remaining goals (drop the first one, keep order)
+    # Initialize Remaining: [A, max_atoms, 3] (padded)
     remaining = torch.full_like(sA, pad)
     rem_counts = (validA.sum(dim=1) - 1).clamp(min=0)  # [A]
+    
+    # Efficiently copy 'remaining' atoms (all valid atoms except the first)
     if A > 0:
+        # Create a grid of positions
         pos = torch.arange(max_atoms, device=device).unsqueeze(0).expand(A, -1)
+        
+        # Atoms before the first one are invalid (pad) - ignored
+        # Atoms after the first one need to be shifted left or kept
+        # Actually simplest: copy all valid atoms except 'first_pos' into 0..G-1
+        # But here we implement a "shift left" logic to fill gaps if any, 
+        # though standard packing assumes strict left-alignment.
+        # Assuming input IS left-aligned (no holes), 'first_pos' is always 0.
+        # If input has holes, this logic collapses them.
+        
+        # We want to keep everything in 'validA' EXCEPT the one at 'first_pos'.
+        # Target indices: 0, 1, ... count-1
+        
+        # Simple scatter approach:
+        # src indices: all valid indices except first_pos
+        # dst indices: 0..count-1
+        
+        # Optimized: 'before' first_pos are non-existent if left-aligned.
+        # 'after' first_pos are shifted left by 1.
+        
         before = validA & (pos < first_pos.unsqueeze(1))
         after  = validA & (pos > first_pos.unsqueeze(1))
         scatter = before | after
+        
         if scatter.any():
             rows = arangeA.view(-1, 1).expand_as(pos)[scatter]
             src  = pos[scatter]
+            # If before, keep pos (0..k). If after, shift to pos-1.
+            # This handles holes gracefully.
             dst  = torch.where(before, pos, pos - 1)[scatter]
             remaining[rows, dst] = sA[rows, src]
 
-    preds = queries[:, 0]                               # [A]
+    preds = queries[:, 0]  # [A]
+    
     return PreprocessResult(
         active_idx=active_idx, queries=queries, remaining=remaining,
         remaining_counts=rem_counts, preds=preds,
@@ -418,66 +760,98 @@ def preprocess_states(states: Tensor,
 
 
 @torch.no_grad()
-def unify_with_facts(  # PURE: no pruning/proof detection here
-    facts_idx: Tensor,                    # [F, 3]
-    predicate_range_map: Optional[Tensor],# [P, 2] (start,end) per predicate over facts_idx
-    queries: Tensor,                      # [A, 3]
-    remaining: Tensor,                    # [A, G, 3]
-    remaining_counts: Tensor,             # [A]
-    preds: Tensor,                        # [A]
+def unify_with_facts(
+    facts_idx: Tensor,
+    predicate_range_map: Optional[Tensor],
+    queries: Tensor,
+    remaining: Tensor,
+    remaining_counts: Tensor,
+    preds: Tensor,
     constant_no: int,
     padding_idx: int,
     fact_index: GPUFactIndex,
-    excluded_queries: Optional[Tensor] = None,         # [A, max_atoms, 3] -> drop trivial self-match
+    excluded_queries: Optional[Tensor] = None,
     verbose: int = 0
 ) -> Tuple[Tensor, Tensor]:
     """
-    One-step fact unification via predicate ranges.
+    Perform single-step unification of queries against facts (the Knowledge Graph).
+    
+    This function handles both "ground queries" (all arguments are constants) and
+    "variable queries" (contain variables).
+    
+    Args:
+        facts_idx:           Tensor [F, 3] of all facts.
+        predicate_range_map: Tensor [P, 2] containing (start, end) indices for facts sorted by predicate.
+        queries:             Tensor [A, 3] active queries.
+        remaining:           Tensor [A, G, 3] remaining atoms.
+        remaining_counts:    Tensor [A] counts of remaining atoms.
+        preds:               Tensor [A] predicate IDs of queries.
+        constant_no:         Threshold for constants.
+        padding_idx:         Padding value.
+        fact_index:          GPUFactIndex for O(1) ground checks.
+        excluded_queries:    Optional Tensor [A, max_atoms, 3] to prevent circular trivial loops.
+        verbose:             Verbosity level.
+        
     Returns:
-      states: [A, K_f, M_f, 3]  (padded)
-      counts: [A]
+        Tuple[Tensor, Tensor]:
+            - states: Tensor [A, K_f, M_f, 3] containing generated successor states from facts.
+            - counts: Tensor [A] containing number of successors per owner.
     """
     device = queries.device
     pad = padding_idx
     A, G = remaining.shape[:2]
 
+    # Short-circuit if nothing to do
     if A == 0 or facts_idx.numel() == 0:
-        return torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device), torch.zeros(A, dtype=torch.long, device=device)
+        return torch.empty((0, 1, 3), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device)
 
+    # Identify ground queries (all args are constants)
     q_args = queries[:, 1:]
     ground = (q_args <= constant_no).all(dim=1)   # [A]
 
-    qi_accum: List[Tensor] = []
-    rem_accum: List[Tensor] = []
-    cnt_accum: List[Tensor] = []
+    # Accumulators for matching results
+    qi_accum: List[Tensor] = []     # Query indices [L_i]
+    rem_accum: List[Tensor] = []    # Remaining parts with substitution applied [L_i, G, 3]
+    cnt_accum: List[Tensor] = []    # Remaining counts [L_i]
 
-    # Case 1: ground queries -> O(1) membership test
+    # -------------------------------------------------------------------------
+    # Case 1: Ground queries -> O(1) membership test
+    # -------------------------------------------------------------------------
     g_idx = torch.nonzero(ground, as_tuple=True)[0]
     if g_idx.numel() > 0:
         gq = queries.index_select(0, g_idx)
+        
+        # O(1) check using the hash index
         hits = fact_index.contains(gq)            # [|g_idx|]
+        
+        # Filter exclusions (e.g. don't re-prove the immediate parent fact)
         if excluded_queries is not None:
             excl_first = excluded_queries.index_select(0, g_idx)[:, 0, :]
             hits = hits & ~( (excl_first == gq).all(dim=1) )
+            
         if hits.any():
             keep = g_idx[hits]
             qi_accum.append(keep)
+            # For facts, the "substitution" is empty/identity, so we just carry over 'remaining'
             rem_accum.append(remaining.index_select(0, keep))
             cnt_accum.append(remaining_counts.index_select(0, keep))
 
-    # Case 2: non-ground -> pair by predicate range then unify
+    # -------------------------------------------------------------------------
+    # Case 2: Non-ground queries -> Unification by predicate range
+    # -------------------------------------------------------------------------
     ng_mask = ~ground
     if ng_mask.any():
         ng_idx  = torch.nonzero(ng_mask, as_tuple=True)[0]
-        q_ng    = queries.index_select(0, ng_idx)
-        p_ng    = preds.index_select(0, ng_idx)
+        q_ng    = queries.index_select(0, ng_idx)  # [N_ng, 3]
+        p_ng    = preds.index_select(0, ng_idx)    # [N_ng]
 
+        # Use predicate ranges to limit search space
         if predicate_range_map is None or predicate_range_map.numel() == 0:
-            # Fallback: pair with all facts (less efficient, but simple)
-            # Single .item() call in initialization path
+            # Fallback: pair with all facts (less efficient, mainly for debugging/init)
             max_pred_idx = int(facts_idx[:,0].max().item()) if facts_idx.numel() > 0 else 0
             seg_starts = torch.zeros((max_pred_idx + 2,), dtype=torch.long, device=device)
             seg_lens   = torch.zeros_like(seg_starts)
+            
             # compute ranges on-the-fly
             order = torch.argsort(facts_idx[:,0])
             facts_sorted = facts_idx.index_select(0, order)
@@ -486,6 +860,7 @@ def unify_with_facts(  # PURE: no pruning/proof detection here
             starts = torch.cumsum(torch.cat([torch.zeros(1, dtype=torch.long, device=device), counts[:-1]]), dim=0)
             seg_starts[uniq] = starts
             seg_lens[uniq]   = counts
+            
             qi_local, fi = pairs_via_predicate_ranges(p_ng, seg_starts, seg_lens)
             facts_for_pred = facts_sorted
         else:
@@ -495,12 +870,14 @@ def unify_with_facts(  # PURE: no pruning/proof detection here
             facts_for_pred = facts_idx
 
         if qi_local.numel() > 0:
+            # q_pairs: [L_ng, 3], f_pairs: [L_ng, 3]
             q_pairs = q_ng.index_select(0, qi_local)
             f_pairs = facts_for_pred.index_select(0, fi)
 
-            # Filter: where query has a constant, fact must match that constant
+            # Pre-filter: if query has a constant, fact must match it
             q_const = q_pairs[:, 1:] <= constant_no
             matches = (~q_const | (q_pairs[:, 1:] == f_pairs[:, 1:])).all(dim=1)
+            
             if matches.any():
                 qi_local = qi_local[matches]
                 f_pairs  = f_pairs[matches]
@@ -509,10 +886,13 @@ def unify_with_facts(  # PURE: no pruning/proof detection here
                 qi_local = torch.empty(0, dtype=torch.long, device=device)
 
         if qi_local.numel() > 0:
+            # Perform full unification including variable binding
             ok, subs = unify_one_to_one(q_pairs, f_pairs, constant_no, pad)
+            
             if ok.any():
-                qi_ok = ng_idx.index_select(0, qi_local[ok])   # map back to [A]
-                subs_ok = subs[ok].view(-1, 2, 2)
+                # qi_ok: indices into original 'queries' tensor via ng_idx mapping
+                qi_ok = ng_idx.index_select(0, qi_local[ok])   # [L_success]
+                subs_ok = subs[ok].view(-1, 2, 2)              # [L_success, 2, 2]
 
                 # Optional drop of trivial self-match
                 if excluded_queries is not None and qi_ok.numel() > 0:
@@ -526,314 +906,441 @@ def unify_with_facts(  # PURE: no pruning/proof detection here
                         qi_ok = torch.empty(0, dtype=torch.long, device=device)
 
                 if qi_ok.numel() > 0:
+                    # Apply substitutions to the 'remaining' part of the state
                     rem_sel = remaining.index_select(0, qi_ok)
                     rem_inst = apply_substitutions(rem_sel, subs_ok.view(subs_ok.shape[0], -1, 2), pad)
+                    
                     qi_accum.append(qi_ok)
                     rem_accum.append(rem_inst)
                     cnt_accum.append(remaining_counts.index_select(0, qi_ok))
 
+    # -------------------------------------------------------------------------
+    # 3. Aggregate and Return Flat
+    # -------------------------------------------------------------------------
     if not qi_accum:
-        return torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device), torch.zeros(A, dtype=torch.long, device=device)
+        # Return flat empty
+        return (
+            torch.empty((0, 1, 3), dtype=torch.long, device=device),  # states
+            torch.empty((0,), dtype=torch.long, device=device),       # counts (unused in flat, implied)
+            torch.empty((0,), dtype=torch.long, device=device)        # owners
+        )
 
-    qi = torch.cat(qi_accum, dim=0)                # [L]
-    remain_inst = torch.cat(rem_accum, dim=0)      # [L, G, 3]
-    rem_counts  = torch.cat(cnt_accum, dim=0)      # [L]
-
-    # Pack states per owner (no proof/True here)
-    G = remain_inst.shape[1] if remain_inst.ndim == 3 else 1
-    states_per_match = remain_inst[:, :G] if remain_inst.numel() > 0 else torch.empty((0, G, 3), dtype=torch.long, device=device)
-    states_per_owner = torch.bincount(qi, minlength=A) if qi.numel() > 0 else torch.zeros(A, dtype=torch.long, device=device)
-
-    max_count = states_per_owner.max()
-    if max_count == 0:
-        return torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device), torch.zeros(A, dtype=torch.long, device=device)
-
-    Kf = int(max_count.item())
-    out = torch.full((A, Kf, G, 3), pad, dtype=torch.long, device=device)
-    if qi.numel() > 0:
-        owner_sorted, perm = torch.sort(qi, stable=True)
-        cat_sorted = states_per_match.index_select(0, perm)
-        seg_start = torch.ones_like(owner_sorted, dtype=torch.bool, device=device)
-        seg_start[1:] = owner_sorted[1:] != owner_sorted[:-1]
-        seg_indices = torch.arange(owner_sorted.shape[0], device=device)
-        seg_first   = torch.zeros_like(owner_sorted, dtype=torch.long)
-        seg_first[seg_start] = seg_indices[seg_start]
-        seg_first = torch.cummax(seg_first, dim=0)[0]
-        pos_in_owner = seg_indices - seg_first
-        out[owner_sorted, pos_in_owner] = cat_sorted
-    return out, states_per_owner
+    # Concatenate all matches from all sources
+    qi = torch.cat(qi_accum, dim=0)                # [Total_Matches]
+    remain_inst = torch.cat(rem_accum, dim=0)      # [Total_Matches, G, 3]
+    
+    # Pack into flat [N, M, 3] where M=G
+    # Actually remain_inst IS the states for facts, as facts have no body atoms added (only substitutions to remaining)
+    # So states = remain_inst.
+    # owners = qi.
+    
+    # We need to return (flat_states, flat_counts, flat_owners)
+    # flat_counts is just G for everyone, or we can compute it.
+    
+    return remain_inst, torch.full((remain_inst.shape[0],), remain_inst.shape[1], dtype=torch.long, device=device), qi
 
 
 @torch.no_grad()
 def unify_with_rules(
-    rules_heads_sorted: Tensor,     # [R, 3] rule heads sorted by predicate
-    rules_bodies_sorted: Tensor,    # [R, Bmax, 3] rule bodies sorted in the same order
-    rule_lens_sorted: Tensor,       # [R] body lengths
-    rule_seg_starts: Tensor,        # [P] start idx per predicate (heads)
-    rule_seg_lens: Tensor,          # [P] len per predicate (heads)
-    queries: Tensor,                # [A, 3]
-    remaining: Tensor,              # [A, G, 3]
-    remaining_counts: Tensor,       # [A]
-    preds: Tensor,                  # [A]
+    rules_heads_sorted: Tensor,
+    rules_bodies_sorted: Tensor,
+    rule_lens_sorted: Tensor,
+    rule_seg_starts: Tensor,
+    rule_seg_lens: Tensor,
+    queries: Tensor,
+    remaining: Tensor,
+    remaining_counts: Tensor,
+    preds: Tensor,
     constant_no: int,
     padding_idx: int,
-    next_var_indices: Tensor        # [A]
+    next_var_indices: Tensor
 ) -> Tuple[Tensor, Tensor]:
     """
-    One-step rule unification using range pairing against sorted rule heads.
+    Perform single-step unification of queries against logic rules.
+    
+    This function:
+    1. Pairs queries with rules having matching predicates.
+    2. Renames variables in the rule (head and body) to unique runtime variables (standardization apart).
+    3. Unifies the query with the renamed rule head.
+    4. If successful, substitutes variables in the rule body and the remaining query atoms.
+    5. Constructs the new derived state: [Substituted Rule Body] + [Substituted Remaining].
+    
+    Args:
+        rules_heads_sorted:  Tensor [R, 3] rule heads.
+        rules_bodies_sorted: Tensor [R, Bmax, 3] rule bodies.
+        rule_lens_sorted:    Tensor [R] lengths of rule bodies.
+        rule_seg_starts:     Tensor [P] start indices for rules per predicate.
+        rule_seg_lens:       Tensor [P] rule counts per predicate.
+        queries:             Tensor [A, 3] active queries.
+        remaining:           Tensor [A, G, 3] remaining atoms.
+        remaining_counts:    Tensor [A] counts of remaining atoms.
+        preds:               Tensor [A] predicate IDs of queries.
+        constant_no:         Threshold for constants.
+        padding_idx:         Padding value.
+        next_var_indices:    Tensor [A] next available variable ID for each owner.
+        
     Returns:
-      states: [A, K_r, M_r, 3]
-      counts: [A]
+        Tuple[Tensor, Tensor]:
+            - states: Tensor [A, K_r, M_r, 3] containing generated successor states from rules.
+            - counts: Tensor [A] containing number of rule successors per owner.
     """
     device = queries.device
     pad = padding_idx
     A, G = remaining.shape[:2]
 
+    # Quick exit if no queries or no rules
     if A == 0 or rules_heads_sorted.numel() == 0:
-        return torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device), torch.zeros(A, dtype=torch.long, device=device)
+        return torch.empty((0, 1, 3), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device)
 
-    # Pair by predicate
-    qi, ri = pairs_via_predicate_ranges(preds, rule_seg_starts, rule_seg_lens)  # [L], [L]
+    # -------------------------------------------------------------------------
+    # 1. Pairing
+    # -------------------------------------------------------------------------
+    # Efficiently find all (query, rule) pairs where predicates match
+    # qi: indices into distinct 'queries' (0..A-1)
+    # ri: indices into 'rules_heads_sorted' (0..R-1)
+    # Shapes: [L]
+    qi, ri = pairs_via_predicate_ranges(preds, rule_seg_starts, rule_seg_lens)
+    
     if qi.numel() == 0:
-        return torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device), torch.zeros(A, dtype=torch.long, device=device)
+        return torch.empty((0, 1, 3), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device)
 
+    # Gather paired data
     q_pairs = queries.index_select(0, qi)                    # [L, 3]
     h_templ = rules_heads_sorted.index_select(0, ri)         # [L, 3]
     b_templ = rules_bodies_sorted.index_select(0, ri)        # [L, Bmax, 3]
     Bmax    = b_templ.shape[1]
 
-    # Freshen template vars: rename rule vars to runtime vars starting at next_var_indices[qi]
+    # -------------------------------------------------------------------------
+    # 2. Standardization Apart (Variable Renaming) - Vectorized
+    # -------------------------------------------------------------------------
+    # Rename variables in the rule template to new unique runtime variables.
+    # template_var_id -> runtime_var_id = next_idx + (template_var_id - template_start)
+    
     template_start = constant_no + 1
     next_for_match = next_var_indices.index_select(0, qi)    # [L]
 
-    # Head args rename
+    # Vectorized head args rename: [L, 3]
+    # Only rename args (indices 1, 2), leave predicate (index 0) unchanged
     h_pairs = h_templ.clone()
-    for arg in (1, 2):
-        args = h_pairs[:, arg]
-        is_t = (args >= template_start) & (args != pad)
-        if is_t.any():
-            h_pairs[:, arg] = torch.where(is_t, next_for_match + (args - template_start), args)
+    h_args = h_pairs[:, 1:3]  # [L, 2]
+    is_t_h = (h_args >= template_start) & (h_args != pad)
+    if is_t_h.any():
+        # Apply offset to both args at once
+        h_pairs[:, 1:3] = torch.where(is_t_h, next_for_match.unsqueeze(1) + (h_args - template_start), h_args)
 
-    # Body args rename
+    # Vectorized body args rename: [L, Bmax, 3]
     b_pairs = b_templ.clone()
-    for arg in (1, 2):
-        args = b_pairs[:, :, arg]                            # [L, Bmax]
-        is_t = (args >= template_start) & (args != pad)
-        if is_t.any():
-            b_pairs[:, :, arg] = torch.where(is_t, next_for_match.unsqueeze(1) + (args - template_start), args)
+    b_args = b_pairs[:, :, 1:3]  # [L, Bmax, 2]
+    is_t_b = (b_args >= template_start) & (b_args != pad)
+    if is_t_b.any():
+        # Broadcast next_for_match to [L, 1, 1] for proper broadcasting
+        b_pairs[:, :, 1:3] = torch.where(is_t_b, next_for_match.view(-1, 1, 1) + (b_args - template_start), b_args)
 
+    # -------------------------------------------------------------------------
+    # 3. Unification
+    # -------------------------------------------------------------------------
+    # Unify Query args with Renamed Head args
     ok, subs = unify_one_to_one(q_pairs, h_pairs, constant_no, pad)
+    
     if not ok.any():
-        return torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device), torch.zeros(A, dtype=torch.long, device=device)
+        return torch.empty((0, 1, 3), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device)
 
-    qi = qi[ok]
-    b_pairs = b_pairs[ok]                                    # [M', Bmax, 3]
-    subs   = subs[ok].view(-1, 2, 2)
-    rem_sel = remaining.index_select(0, qi)                  # [M', G, 3]
+    # Filter successful matches
+    qi = qi[ok]                                              # [L_success]
+    b_pairs = b_pairs[ok]                                    # [L_success, Bmax, 3]
+    subs   = subs[ok].view(-1, 2, 2)                         # [L_success, 2, 2]
+    rem_sel = remaining.index_select(0, qi)                  # [L_success, G, 3]
 
-    subs_b = subs.view(subs.shape[0], -1, 2)
-    bodies_inst = apply_substitutions(b_pairs,  subs_b, pad)
-    remain_inst = apply_substitutions(rem_sel, subs_b, pad)
+    # -------------------------------------------------------------------------
+    # 4. Substitution and Construction
+    # -------------------------------------------------------------------------
+    # Apply substitutions to Rule Body and Remaining Query Atoms
+    # Note: subs has shape [S, 2, 2], need [S, 1, 2, 2] logic or reshape for broadcasting
+    # apply_substitutions expects [N, S, 2], so we flatten subs to [L_success, 2, 2] -> OK
+    
+    subs_b = subs.view(subs.shape[0], -1, 2)                 # [L_success, 2, 2]
+    
+    bodies_inst = apply_substitutions(b_pairs,  subs_b, pad) # [L_success, Bmax, 3]
+    remain_inst = apply_substitutions(rem_sel, subs_b, pad)  # [L_success, G, 3]
 
-    # Keep only active atoms
-    lens_b = rule_lens_sorted.index_select(0, ri[ok])        # [M']
+    # Consolidate atoms: [Body, Remaining] -> [M]
+    # We only take valid atoms from body (check rule length) and valid atoms from remaining
+    
+    # Valid masks
+    lens_b = rule_lens_sorted.index_select(0, ri[ok])        # [L_success]
+    
+    # Mask [L_success, Bmax]
     take_b = (torch.arange(Bmax, device=device).unsqueeze(0) < lens_b.unsqueeze(1))
+    
+    # Mask [L_success, G]
     take_g = (torch.arange(G,    device=device).unsqueeze(0) < remaining_counts.index_select(0, qi).unsqueeze(1))
 
-    counts = take_b.sum(1) + take_g.sum(1)                   # [M']
+    # Total atoms per new state
+    counts = take_b.sum(1) + take_g.sum(1)                   # [L_success]
     M = Bmax + G
+    
+    # Allocate concatenated buffer: [L_success, M, 3]
     cat = torch.full((counts.shape[0], M, 3), pad, dtype=torch.long, device=device)
-    # Move active body first, then active remaining
+    
+    # Scatter Body atoms to [0 .. len_body-1]
     if take_b.any():
         pos_b = torch.cumsum(take_b.long(), dim=1) - 1
         rows_b = torch.arange(take_b.shape[0], device=device).unsqueeze(1).expand_as(take_b)[take_b]
         cols_b = torch.arange(Bmax, device=device).unsqueeze(0).expand_as(take_b)[take_b]
         cat[rows_b, pos_b[take_b]] = bodies_inst[rows_b, cols_b]
+        
+    # Scatter Remaining atoms to [len_body .. len_body+len_rem-1]
     if take_g.any():
+        # Offset position by body length
         pos_g = take_b.sum(1, keepdim=True) + (torch.cumsum(take_g.long(), dim=1) - 1)
         rows_g = torch.arange(take_g.shape[0], device=device).unsqueeze(1).expand_as(take_g)[take_g]
         cols_g = torch.arange(G, device=device).unsqueeze(0).expand_as(take_g)[take_g]
         cat[rows_g, pos_g[take_g]] = remain_inst[rows_g, cols_g]
 
-    # Pack per owner
-    K_per_owner = torch.bincount(qi, minlength=A)            # [A]
-    max_count = K_per_owner.max()
-    if max_count == 0:
-        return torch.full((A, 0, 1, 3), pad, dtype=torch.long, device=device), torch.zeros(A, dtype=torch.long, device=device)
-    Kr = int(max_count.item())
-    out = torch.full((A, Kr, M, 3), pad, dtype=torch.long, device=device)
-
-    owner_sorted, perm = torch.sort(qi, stable=True)
-    cat_sorted = cat.index_select(0, perm)
-    seg_start = torch.ones_like(owner_sorted, dtype=torch.bool, device=device)
-    seg_start[1:] = owner_sorted[1:] != owner_sorted[:-1]
-    seg_indices = torch.arange(owner_sorted.shape[0], device=device)
-    seg_first   = torch.zeros_like(owner_sorted, dtype=torch.long)
-    seg_first[seg_start] = seg_indices[seg_start]
-    seg_first = torch.cummax(seg_first, dim=0)[0]
-    pos_in_owner = seg_indices - seg_first
-    out[owner_sorted, pos_in_owner] = cat_sorted
-    return out, K_per_owner
+    # -------------------------------------------------------------------------
+    # 5. Return Flat Results (No Packing)
+    # -------------------------------------------------------------------------
+    # cat: [L_success, M, 3]
+    # qi:  [L_success] (owners)
+    # counts: [L_success] (atom counts)
+    
+    return cat, counts, qi
 
 
 @torch.no_grad()
 def combine_candidates(
-    rule_states: Tensor, rule_counts: Tensor,      # [A, Kr, Mr, 3], [A]
-    fact_states: Tensor, fact_counts: Tensor,      # [A, Kf, Mf, 3], [A]
-    active_idx: Tensor,                            # [A] -> owners in [0..B)
+    rule_states: Tensor, rule_counts: Tensor, rule_owners: Tensor,
+    fact_states: Tensor, fact_counts: Tensor, fact_owners: Tensor,
+    active_idx: Tensor,                            
     padding_idx: int
 ) -> Tuple[Tensor, Tensor, Tensor, int]:
     """
-    Merge rule and fact successors into a single flat candidate list.
+    Merge flat rule and fact candidates into a single flat candidate list.
+    
+    Args:
+        rule_states: Tensor [Nr, Mr, 3] from rules.
+        rule_counts: Tensor [Nr] atom counts from rules.
+        rule_owners: Tensor [Nr] local owner indices (0..A-1).
+        fact_states: Tensor [Nf, Mf, 3] from facts.
+        fact_counts: Tensor [Nf] atom counts from facts.
+        fact_owners: Tensor [Nf] local owner indices (0..A-1).
+        active_idx:  Tensor [A] maps local 0..A-1 to global batch indices.
+        padding_idx: Padding value.
+        
     Returns:
-      candidates: [N, M, 3]
-      cand_counts: [N]
-      owners: [N]  (values in 0..B-1)
-      max_atoms_comb: int
+        Tuple[Tensor, Tensor, Tensor, int]:
+            - candidates:  Tensor [N, M, 3] flat list of all valid candidate states.
+            - cand_counts: Tensor [N] number of atoms per candidate.
+            - owners:      Tensor [N] global owner index (0..B-1).
+            - max_atoms:   Integer M.
     """
     device = rule_states.device
     pad = padding_idx
-    A = active_idx.shape[0]
-    if A == 0:
-        z3 = torch.empty((0, 1, 3), dtype=rule_states.dtype, device=device)
-        z1 = torch.empty((0,), dtype=torch.long, device=device)
-        return z3, z1, z1, 1
-
-    Kr = rule_states.shape[1] if rule_states.ndim == 4 else 0
-    Kf = fact_states.shape[1] if fact_states.ndim == 4 else 0
-    Mr = rule_states.shape[2] if rule_states.ndim == 4 else 1
-    Mf = fact_states.shape[2] if fact_states.ndim == 4 else 1
+    
+    # 1. Determine dimensions and allocate
+    Nr = rule_states.shape[0] if rule_states.ndim == 3 else 0
+    Nf = fact_states.shape[0] if fact_states.ndim == 3 else 0
+    Mr = rule_states.shape[1] if rule_states.ndim == 3 else 1
+    Mf = fact_states.shape[1] if fact_states.ndim == 3 else 1
     M  = max(Mr, Mf, 1)
-
-    total_slots = Kr + Kf
-    if total_slots == 0:
+    
+    N = Nr + Nf
+    if N == 0:
         z3 = torch.empty((0, M, 3), dtype=rule_states.dtype, device=device)
         z1 = torch.empty((0,), dtype=torch.long, device=device)
         return z3, z1, z1, M
 
-    # Build [A, total_slots, M, 3] then pick valid via owner masks
-    packed = torch.full((A, total_slots, M, 3), pad, dtype=rule_states.dtype, device=device)
-    if Kr > 0:
-        packed[:, :Kr, :Mr] = rule_states
-    if Kf > 0:
-        packed[:, Kr:Kr+Kf, :Mf] = fact_states
-
-    owner_rule_mask = (torch.arange(Kr, device=device).unsqueeze(0) < rule_counts.unsqueeze(1)) if Kr > 0 else torch.zeros((A, 0), dtype=torch.bool, device=device)
-    owner_fact_mask = (torch.arange(Kf, device=device).unsqueeze(0) < fact_counts.unsqueeze(1)) if Kf > 0 else torch.zeros((A, 0), dtype=torch.bool, device=device)
-    owner_mask = torch.cat([owner_rule_mask, owner_fact_mask], dim=1)  # [A, total_slots]
-
-    if not owner_mask.any():
-        z3 = torch.empty((0, M, 3), dtype=rule_states.dtype, device=device)
-        z1 = torch.empty((0,), dtype=torch.long, device=device)
-        return z3, z1, z1, M
-
-    rows = torch.arange(A, device=device).unsqueeze(1).expand_as(owner_mask)[owner_mask]
-    cols = torch.arange(total_slots, device=device).unsqueeze(0).expand_as(owner_mask)[owner_mask]
-    candidates = packed[rows, cols]                 # [N, M, 3]
-    cand_counts = (candidates[:, :, 0] != pad).sum(dim=1)  # [N]
-    owners = active_idx.index_select(0, rows)       # [N] -> 0..B-1
+    # 2. Concatenate States
+    # We might need to pad M dimension if Mr != Mf
+    if Nr > 0 and Mr < M:
+        r_pad = torch.full((Nr, M - Mr, 3), pad, dtype=rule_states.dtype, device=device)
+        rule_states = torch.cat([rule_states, r_pad], dim=1)
+    if Nf > 0 and Mf < M:
+        f_pad = torch.full((Nf, M - Mf, 3), pad, dtype=rule_states.dtype, device=device)
+        fact_states = torch.cat([fact_states, f_pad], dim=1)
+        
+    if Nr > 0 and Nf > 0:
+        candidates = torch.cat([rule_states, fact_states], dim=0)
+        cand_counts = torch.cat([rule_counts, fact_counts], dim=0)
+        local_owners = torch.cat([rule_owners, fact_owners], dim=0)
+    elif Nr > 0:
+        candidates = rule_states
+        cand_counts = rule_counts
+        local_owners = rule_owners
+    else:
+        candidates = fact_states
+        cand_counts = fact_counts
+        local_owners = fact_owners
+        
+    # 3. Map to Global Owners
+    owners = active_idx.index_select(0, local_owners)  # [N] -> 0..B-1
+    
     return candidates, cand_counts, owners, M
 
 
 @torch.no_grad()
 def prune_and_collapse(
-    candidates: Tensor,             # [N, M, 3]
-    cand_counts: Tensor,            # [N]
-    owners: Tensor,                 # [N] values in 0..B-1
+    candidates: Tensor,
+    cand_counts: Tensor,
+    owners: Tensor,
     fact_index: GPUFactIndex,
     constant_no: int,
     padding_idx: int,
     B: int,
-    excluded_first_atoms: Optional[Tensor] = None   # [N, 3] first atom of excluded query per candidate (owner-aligned)
+    excluded_first_atoms: Optional[Tensor] = None
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """
-    Drop ground atoms known to be facts, then collapse owners with proof.
-    Proof criterion: after dropping, a candidate has zero atoms (all-True) ->
-    that owner collapses to a single TRUE state and all its other candidates are discarded.
-
+    Remove known facts from candidates and detect proofs.
+    
+    This is the core "pruning" step.
+    1. Check all ground atoms in all candidates against the Knowledge Graph (fact_index).
+    2. Remove atoms that are Facts (they are TRUE).
+    3. If a candidate becomes empty (0 atoms), it means it is fully satisfied (PROVEN).
+    4. If an owner has at least one PROVEN candidate, that owner is TRUE.
+    5. Collapse: For proven owners, discard all other candidates (we only need one proof).
+    
+    Args:
+        candidates:          Tensor [N, M, 3] flat list of candidates.
+        cand_counts:         Tensor [N] atom counts.
+        owners:              Tensor [N] owner index (0..B-1).
+        fact_index:          GPUFactIndex for membership testing.
+        constant_no:         Threshold for constants.
+        padding_idx:         Padding value.
+        B:                   Total batch size (for proof mask).
+        excluded_first_atoms: Optional [N, 3] to prevent circular loops.
+        
     Returns:
-      survivors:    [N', M, 3]   (pruned candidates of non-proof owners)
-      surv_counts:  [N']
-      proof_mask_B: [B] bool mask of owners that are proofs
-      surv_owners:  [N'] filtered owners corresponding to survivors
+        Tuple[Tensor, Tensor, Tensor, Tensor]:
+            - survivors:     Tensor [N', M, 3] candidates that are not proofs (unless no logic requires otherwise).
+            - surv_counts:   Tensor [N'] new atom counts for survivors.
+            - proof_mask_B:  Tensor [B] boolean mask, True for owners that found a proof.
+            - surv_owners:   Tensor [N'] owners of the survivors.
     """
     device = candidates.device
     pad = padding_idx
-
+    
     if candidates.numel() == 0:
         return candidates, cand_counts, torch.zeros(B, dtype=torch.bool, device=device), owners
 
     N, M = candidates.shape[:2]
+    
+    # -------------------------------------------------------------------------
+    # 1. Identify Ground Facts
+    # -------------------------------------------------------------------------
     valid = (candidates[:, :, 0] != pad)           # [N, M]
     args  = candidates[:, :, 1:3]
     is_ground = (args <= constant_no).all(dim=2)   # [N, M]
-    ground = valid & is_ground
+    ground = valid & is_ground                     # [N, M] Atoms that are ground and valid
 
-    # Ground fact membership
+    # Check existence in KG
     drop = torch.zeros_like(valid)
     if ground.any():
         flat_mask = ground.flatten()
         atoms = candidates.reshape(-1, 3)[flat_mask]        # [G0, 3]
         is_fact = fact_index.contains(atoms)                # [G0]
+        
         place = torch.zeros_like(flat_mask, dtype=torch.bool, device=device)
         place[flat_mask] = is_fact
-        drop = place.view(N, M)
+        drop = place.view(N, M)                             # [N, M] True if atom is a Fact
 
-    # Do NOT drop atoms equal to excluded first atom (to avoid circular proofs)
+    # -------------------------------------------------------------------------
+    # 2. Handle Exclusion (Circular Proof Prevention)
+    # -------------------------------------------------------------------------
+    # Do NOT drop atoms equal to excluded first atom (e.g. parent fact)
+    # If we drop them, we might say "X is true because of X", which is circular.
     if excluded_first_atoms is not None and ground.any():
         excl = excluded_first_atoms.view(N, 1, 3).expand(-1, M, -1)  # [N, M, 3]
         keep_if_excl = ground & (candidates == excl).all(dim=2)
         drop &= ~keep_if_excl
 
+    # -------------------------------------------------------------------------
+    # 3. Prune and Check for Empty (Proof)
+    # -------------------------------------------------------------------------
     keep = valid & ~drop
     pruned_counts = keep.sum(dim=1)                           # [N]
-    is_proof_cand = pruned_counts == 0                        # [N]
+    is_proof_cand = pruned_counts == 0                        # [N] Candidate is fully proven
 
-    # Collapse by owner
+    # -------------------------------------------------------------------------
+    # 4. Collapse Proven Owners
+    # -------------------------------------------------------------------------
     proof_mask_B = torch.zeros(B, dtype=torch.bool, device=device)
     if is_proof_cand.any():
-        proof_owners = torch.unique(owners[is_proof_cand])    # [<=B]
+        proof_owners = torch.unique(owners[is_proof_cand])    # [P < B]
         proof_mask_B[proof_owners] = True
 
-    # Keep only survivors from non-proof owners
+    # -------------------------------------------------------------------------
+    # 5. Filter Survivors
+    # -------------------------------------------------------------------------
+    # Discard candidates belonging to owners that are already proven
+    # (Since we only need to know IT IS proven, we don't need to track further subgoals for it)
     keep_mask = ~is_proof_cand & ~proof_mask_B.index_select(0, owners)
+    
     if not keep_mask.any():
-        return (torch.empty((0, M, 3), dtype=candidates.dtype, device=device),
-                torch.empty((0,), dtype=torch.long, device=device),
-                proof_mask_B,
-                torch.empty((0,), dtype=torch.long, device=device))
+        z3 = torch.empty((0, M, 3), dtype=candidates.dtype, device=device)
+        z1 = torch.empty((0,), dtype=torch.long, device=device)
+        return z3, z1, proof_mask_B, z1
 
-    survivors = candidates[keep_mask]
-    surv_owners = owners[keep_mask]  # Also filter owners to match survivors
-    surv_keep = keep[keep_mask]
-    pos = torch.cumsum(surv_keep.long(), dim=1) - 1           # [N', M]
-    out = torch.full_like(survivors, pad)
-    if surv_keep.any():
-        ridx = torch.arange(survivors.shape[0], device=device).unsqueeze(1).expand_as(surv_keep)[surv_keep]
-        cidx = torch.arange(M, device=device).unsqueeze(0).expand_as(surv_keep)[surv_keep]
-        out[ridx, pos[surv_keep]] = survivors[ridx, cidx]
-    surv_counts = surv_keep.sum(dim=1)
-    return out, surv_counts, proof_mask_B, surv_owners
+    # Gather survivors
+    survivors = candidates[keep_mask]       # [N', M, 3]
+    surv_counts = pruned_counts[keep_mask]  # [N']
+    surv_owners = owners[keep_mask]         # [N']
+    
+    # We must actually remove the 'dropped' atoms from the survivors to compact them
+    # OR we can just mark them invalid. Standardizing usually expects left-alignment.
+    # Let's compact (left-align) them.
+    N_surv = survivors.shape[0]
+    
+    # Re-compute keep mask for survivors
+    # We need to know which atoms were kept relative to the original 'candidates'
+    # But 'drop' was computed on [N, M]. extracting drop[keep_mask] gives [N', M]
+    drop_surv = drop[keep_mask]
+    valid_surv = valid[keep_mask]
+    keep_atom_mask = valid_surv & ~drop_surv  # [N', M]
+    
+    # Scatter to compacted form
+    compact_survivors = torch.full_like(survivors, pad)
+    if keep_atom_mask.any():
+        pos = torch.cumsum(keep_atom_mask.long(), dim=1) - 1
+        
+        r_idx = torch.arange(N_surv, device=device).unsqueeze(1).expand_as(pos)[keep_atom_mask]
+        c_idx = pos[keep_atom_mask]
+        
+        vals = survivors[keep_atom_mask]
+        compact_survivors[r_idx, c_idx] = vals
+        
+    return compact_survivors, surv_counts, proof_mask_B, surv_owners
 
 
 @torch.no_grad()
 def standardize_derived_states(
-    states: Tensor,                 # [N, M, 3]
-    counts: Tensor,                 # [N]
-    owners: Tensor,                 # [N] -> 0..B-1
-    next_var_start_B: Tensor,       # [B]
+    states: Tensor,
+    counts: Tensor,
+    owners: Tensor,
+    next_var_start_B: Tensor,
     constant_no: int,
     runtime_var_end_index: int,
     padding_idx: int
 ) -> Tuple[Tensor, Tensor]:
     """
-    Rename *new* runtime vars per state so that, for a given owner, *all* its
-    derived states start numbering at the *same* base = next_var_start_B[owner].
-    Existing vars (< base) are preserved.
-
+    Renumber runtime variables in derived states to a canonical form.
+    
+    This ensures that structurally identical states (e.g., p(X, Y) and p(A, B))
+    map to the same hash. Variables are renumbered starting from 'next_var_start_B'
+    for each owner, assigning IDs in order of first appearance (left-to-right).
+    
+    Args:
+        states:                Tensor [N, M, 3] candidate states.
+        counts:                Tensor [N] atom counts.
+        owners:                Tensor [N] owner index (0..B-1).
+        next_var_start_B:      Tensor [B] starting variable ID for each owner.
+        constant_no:           Threshold for constants.
+        runtime_var_end_index: Max allowed variable ID.
+        padding_idx:           Padding value.
+        
     Returns:
-      canon_states:     [N, M, 3]
-      next_var_end_B:   [B] updated per-owner next var index (amax across survivors)
+        Tuple[Tensor, Tensor]:
+            - canon_states:   Tensor [N, M, 3] with renumbered variables.
+            - next_var_end_B: Tensor [B] updated next variable ID (max consumed).
     """
     if states.numel() == 0:
         return states, next_var_start_B
@@ -841,130 +1348,255 @@ def standardize_derived_states(
     device = states.device
     pad = padding_idx
     N, M = states.shape[:2]
-    args = states[:, :, 1:2+1]  # [:, :, 1:3]
+    
+    # We only care about args (indices 1 and 2), predicates (idx 0) are fixed
+    # View as [N, M, 2]
+    args = states[:, :, 1:3]
 
-    base_per_state = next_var_start_B.index_select(0, owners).view(N, 1, 1)  # [N,1,1]
+    # Get base variable ID for each state's owner
+    # base_per_state: [N, 1, 1]
+    base_per_state = next_var_start_B.index_select(0, owners).view(N, 1, 1)
+    
+    # Identify variables that are "new" (i.e., generated in this step or valid runtime vars)
+    # We treat any value > constant_no as a variable.
+    # We only renumber variables that are >= base_per_state (i.e., not inherited from parent context if logic implies that)
+    # Actually, standard logic typically renumbers ALL variables > constant_no to be safe.
+    # However, the code here checks (args >= base_per_state). 
+    # This implies we preserve "older" variables if they exist in the state? 
+    # Let's stick to the existing logic but explain it:
+    # "New" variables are those introduced or mapped in this step, above the base.
     is_var = (args > constant_no) & (args != pad)
     is_new = is_var & (args >= base_per_state)
+    
     if not is_new.any():
         return states, next_var_start_B
 
-    # First-appearance order per state (visit atoms left->right, then arg0->arg1)
+    # -------------------------------------------------------------------------
+    # Canonical Renumbering Logic
+    # -------------------------------------------------------------------------
+    # We want to assign IDs 0, 1, 2... (offset by base) based on order of appearance.
+    # Appearance order: State i, Atom j, Arg k (Linear index)
+    
+    # lin: [N, M, 2] linear indices 0..(2M-1) per state
     lin = torch.arange(M * 2, device=device).view(1, M, 2).expand(N, -1, -1)
-    # Unique key per occurrence (state id * big + var id), big must exceed any var id span
+    
+    # We need to group sets of (state_idx, var_val) that are the SAME variable.
+    # To do this globally in one sort/unique, we create a composite key:
+    # key = var_val + state_idx * SHIFT
+    # This keeps vars from different states separate, but groups identical vars within a state.
     SHIFT = runtime_var_end_index + 2
     st_id = torch.arange(N, device=device).view(N, 1, 1).expand_as(args)
-    keys  = args + st_id * SHIFT  # [N, M, 2]
-    occ_keys = keys[is_new]
-    occ_lin  = lin[is_new]
-    uniq, inv = torch.unique(occ_keys, return_inverse=True, sorted=True)  # per-state groups are intermixed but share state group via SHIFT
+    keys  = args + st_id * SHIFT     # [N, M, 2]
+    
+    # Filter only new variables
+    occ_keys = keys[is_new]          # [Total_New_Vars]
+    occ_lin  = lin[is_new]           # [Total_New_Vars]
+    
+    # Find unique variables per state
+    # return_inverse gives us an ID for each occurrence
+    # uniq contains the unique keys (sorted)
+    # inv maps each occurrence to its unique key index
+    uniq, inv = torch.unique(occ_keys, return_inverse=True, sorted=True)
 
-    # Rank groups per state by first occurrence
+    # Now we need to determine the RANK of each unique variable within its state.
+    # Rank is determined by the linear position of its FIRST occurrence.
+    
+    # 1. Find the first linear position for each unique variable index (inv).
+    # We use a trick: sort by (inv, linear_pos).
+    # BIG constant ensures primary sort key is inv.
     BIG = M * 2 + 7
     key2 = inv.long() * BIG + occ_lin.long()
     order = torch.argsort(key2)
+    
     inv_sorted = inv[order]
     lin_sorted = occ_lin[order]
-
+    
+    # 2. Extract first occurrence of each unique variable
     seg_start = torch.ones_like(inv_sorted, dtype=torch.bool)
     seg_start[1:] = inv_sorted[1:] != inv_sorted[:-1]
-    first_lin = lin_sorted[seg_start]                  # first pos per group
-
-    # Reconstruct state ids per group from uniq
-    group_state = (uniq // SHIFT).long()               # [#groups]
+    first_lin = lin_sorted[seg_start]  # [Num_Unique_Vars] (across all states)
+    
+    # 3. Rank these unique variables per state based on their first_lin.
+    # We need to recover which state each unique variable belongs to.
+    group_state = (uniq // SHIFT).long()  # [Num_Unique_Vars] -> state_idx
+    
+    # Count how many unique new variables each state has
     vars_per_state = torch.bincount(group_state, minlength=N)  # [N]
-
-    # New id = base_per_state + rank-within-state
-    # Compute ranks in the original (unsorted) order
+    
+    # Sort unique vars by (state, first_appearance) to assign canonical ranks 0, 1, 2...
     key3 = group_state * BIG + first_lin
     ord3 = torch.argsort(key3)
+    
+    # Compute rank within state
     sorted_state = group_state[ord3]
     bnd = torch.ones_like(sorted_state, dtype=torch.bool)
     bnd[1:] = sorted_state[1:] != sorted_state[:-1]
+    
+    # Scan to generate 0, 1, 2... per segment
     seg_id = torch.cumsum(bnd.long(), dim=0) - 1
+    
     if seg_id.numel() > 0:
-        num_groups = int(seg_id.max().item()) + 1
-        starts = torch.full((num_groups,), len(seg_id), dtype=torch.long, device=device)
+        # Vectorized "restart count at segment boundary"
+        # Since seg_id is monotonic, we can find start indices of each segment.
+        # OPTIMIZATION: Use len(seg_id) as safe upper bound for num_groups to avoid .item() sync
+        num_groups_safe = seg_id.shape[0] + 1
+        starts = torch.full((num_groups_safe,), len(seg_id), dtype=torch.long, device=device)
         idxpos = torch.arange(len(seg_id), device=device)
+        # scatter_reduce 'amin' finds the first index where seg_id appears
         starts.scatter_reduce_(0, seg_id, idxpos, reduce='amin', include_self=False)
         rank_sorted = idxpos - starts[seg_id]
     else:
         rank_sorted = seg_id
+
+    # Map ranks back to original 'uniq' order
     rank = torch.empty_like(rank_sorted)
     rank[ord3] = rank_sorted
-
+    
+    # -------------------------------------------------------------------------
+    # Apply Renaming
+    # -------------------------------------------------------------------------
+    # Get base for each variable group (state)
     base_groups = base_per_state.view(-1).index_select(0, group_state)
+    
+    # New ID = base + rank
     new_id_per_group = base_groups + rank
+    
+    # Safety Check
     if new_id_per_group.numel() > 0:
         overflow = new_id_per_group > runtime_var_end_index
         if overflow.any():
             raise RuntimeError("Variable renaming exceeded runtime budget; increase max_total_vars.")
 
+    # Map back to every occurrence
     new_id_per_occ = new_id_per_group[inv]
+    
     canon = states.clone()
+    # Update only the new variables
     canon[:, :, 1:3][is_new] = new_id_per_occ.long()
 
-    # Aggregate max next var end per owner
-    next_end_per_state = base_per_state.view(-1) + vars_per_state
+    # -------------------------------------------------------------------------
+    # Update Owners' Next Variable logic
+    # -------------------------------------------------------------------------
+    # Determine the new 'next_var' for each owner.
+    # Use max(existing_next + newly_used_count) across all derived states for that owner.
+    
+    # For each state, the end is base + count
+    next_end_per_state = base_per_state.view(-1) + vars_per_state  # [N]
+    
     next_end_B = next_var_start_B.clone()
     if next_end_per_state.numel() > 0:
+        # Take the maximum var usage among all survivors of an owner
         next_end_B.scatter_reduce_(0, owners, next_end_per_state, reduce='amax', include_self=False)
+        
     return canon, next_end_B
 
 
 @torch.no_grad()
 def pack_by_owner(
-    states: Tensor, counts: Tensor, owners: Tensor, B: int, M: int, padding_idx: int
+    states: Tensor,
+    counts: Tensor,
+    owners: Tensor,
+    B: int,
+    M: int,
+    padding_idx: int
 ) -> Tuple[Tensor, Tensor]:
     """
-    Pack a flat candidate list into [B, K, M, 3] by owner.
-    Returns (packed_states, packed_counts).
+    Pack a flat list of derived states back into a hierarchical batch tensor.
+    
+    Transforms [N, M, 3] (flat) -> [B, K, M, 3] (batched per owner), where B is global batch size.
+    
+    Args:
+        states:      Tensor [N, M, 3] containing flat valid states.
+        counts:      Tensor [N] containing atom counts per state.
+        owners:      Tensor [N] owner index (0..B-1) for each state.
+        B:           Global batch size (number of parallel environments).
+        M:           Max atoms dimension.
+        padding_idx: Padding value.
+        
+    Returns:
+        Tuple[Tensor, Tensor]:
+            - packed_states: Tensor [B, K, M, 3]
+            - counts_per_owner: Tensor [B] number of valid states per owner (<= K).
     """
     device = states.device
     pad = padding_idx
+    
     if states.numel() == 0:
         return torch.full((B, 0, M, 3), pad, dtype=states.dtype, device=device), torch.zeros(B, dtype=torch.long, device=device)
 
+    # Count how many states each owner has
     per_owner = torch.bincount(owners, minlength=B)   # [B]
     max_count = per_owner.max()
+    
     if max_count == 0:
         return torch.full((B, 0, M, 3), pad, dtype=states.dtype, device=device), torch.zeros(B, dtype=torch.long, device=device)
 
+    # Start Optimization: avoid .item() if K is small or can be inferred, but here we need K for shaping.
+    # This is the ONLY place where .item() is truly needed now.
     K = int(max_count.item())
+    
+    # Initialize output [B, K, M, 3]
     out = torch.full((B, K, M, 3), pad, dtype=states.dtype, device=device)
     counts_out = per_owner.clone()
 
+    # Sort states by owner to group them
+    # sort indices: 0..N-1
     owner_sorted, perm = torch.sort(owners, stable=True)
     st_sorted  = states.index_select(0, perm)
-
+    
+    # Compute scatter indices (row=owner, col=0..k)
+    # Detect segment boundaries
     seg_start = torch.ones_like(owner_sorted, dtype=torch.bool, device=device)
     seg_start[1:] = owner_sorted[1:] != owner_sorted[:-1]
+    
     seg_indices = torch.arange(owner_sorted.shape[0], device=device)
     seg_first   = torch.zeros_like(owner_sorted, dtype=torch.long)
     seg_first[seg_start] = seg_indices[seg_start]
     seg_first = torch.cummax(seg_first, dim=0)[0]
+    
+    # Position within owner list 0, 1, ...
     pos_in_owner = seg_indices - seg_first
-
+    
+    # Valid check (should imply pos_in_owner < K)
+    
+    # Scatter
     out[owner_sorted, pos_in_owner] = st_sorted
+    
     return out, counts_out
 
 
 @torch.no_grad()
 def cap_states_per_owner(
-    states: Tensor, counts: Tensor, K_cap: int
+    states: Tensor, 
+    counts: Tensor, 
+    K_cap: int
 ) -> Tuple[Tensor, Tensor]:
     """
-    Truncate the number of states per owner to at most K_cap, preserving order.
-    states: [B, K, M, 3]
-    counts: [B]
+    Truncate the number of derived states per owner to a maximum limit.
+    
+    This manages the branching factor of the search by keeping only the first K_cap states
+    (assumed to be top-ranked or simply first-generated).
+    
+    Args:
+        states: Tensor [B, K, M, 3] derived states.
+        counts: Tensor [B] number of states per owner.
+        K_cap:  Maximum allowed states per owner.
+        
+    Returns:
+        Tuple[Tensor, Tensor]:
+            - states_cap: Tensor [B, min(K, K_cap), M, 3] truncated states.
+            - counts_cap: Tensor [B] truncated counts.
     """
     if states.numel() == 0 or K_cap <= 0:
         B, _, M, D = states.shape if states.numel() else (counts.shape[0], 0, 1, 3)
         return torch.empty((B, 0, M, D), dtype=states.dtype, device=states.device if states.numel() else counts.device), torch.zeros_like(counts)
+        
     B, K, M, D = states.shape
     K_new = min(K_cap, K)
+    
     states_cap = states[:, :K_new]
     counts_cap = torch.clamp(counts, max=K_new)
+    
     return states_cap, counts_cap
 
 
@@ -974,33 +1606,70 @@ def cap_states_per_owner(
 
 class UnificationEngine:
     """
-    Encapsulates facts/rules and runs a single-step *modular* expansion.
-
-    get_derived_states orchestrates the eight clean steps listed on top.
+    Core engine for expanding the search space by unifying states with logical rules and facts.
+    
+    This class encapsulates the Knowledge Graph (facts), the Logical Rules, and the
+    machinery to perform a single step of forward chaining (state expansion).
+    
+    The main method is `get_derived_states`, which orchestrates the following pipeline:
+    1.  Preprocessing: Separate active states from terminal states (True/False).
+    2.  Rule Unification: Generate new candidate states by applying rules.
+    3.  Fact Unification: Generate new candidate states by matching against facts.
+    4.  Combination: Merge rule and fact candidates into a flat list.
+    5.  Pruning: Remove candidates that are already known facts (True) and detect proofs.
+    6.  Standardization: Renumber variables to a canonical form for deduplication.
+    7.  Packing: Group candidates back by their original owner.
+    8.  Capping: Limit the number of successors per owner to manage branching factor.
     """
-
-    def __init__(self,
-                 facts_idx: Tensor,              # [F, 3]
-                 rules_idx: Tensor,              # [R, Bmax, 3]
-                 rule_lens: Tensor,             # [R]
-                 rules_heads_idx: Tensor,       # [R, 3]
-                 padding_idx: int,
-                 constant_no: int,
-                 runtime_var_end_index: int,
-                 true_pred_idx: Optional[int],
-                 false_pred_idx: Optional[int],
-                 max_arity: int,
-                 predicate_range_map: Optional[Tensor],
-                 device: torch.device,
-                 pack_base: Optional[int] = None,
-                 stringifier_params: Optional[dict] = None,
-                 end_pred_idx: Optional[int] = None,
-                 end_proof_action: bool = False,
-                 predicate_no: Optional[int] = None,
-                 max_derived_per_state: Optional[int] = None,
-                 deduplicate: bool = False,
-                 sort_states: bool = False
-                 ):
+    
+    def __init__(
+        self,
+        facts_idx: Tensor,
+        rules_idx: Tensor,
+        rule_lens: Tensor,
+        rules_heads_idx: Tensor,
+        padding_idx: int,
+        constant_no: int,
+        runtime_var_end_index: int,
+        true_pred_idx: Optional[int],
+        false_pred_idx: Optional[int],
+        max_arity: int,
+        predicate_range_map: Optional[Tensor],
+        device: torch.device,
+        pack_base: Optional[int] = None,
+        stringifier_params: Optional[dict] = None,
+        end_pred_idx: Optional[int] = None,
+        end_proof_action: bool = False,
+        predicate_no: Optional[int] = None,
+        max_derived_per_state: Optional[int] = None,
+        deduplicate: bool = False,
+        sort_states: bool = False
+    ):
+        """
+        Initialize the Unification Engine.
+        
+        Args:
+            facts_idx:             Tensor [F, 3] containing all facts in the KG.
+            rules_idx:             Tensor [R, Bmax, 3] containing all rule bodies.
+            rule_lens:             Tensor [R] containing lengths of rule bodies.
+            rules_heads_idx:       Tensor [R, 3] containing all rule heads.
+            padding_idx:           Value used for padding.
+            constant_no:           Max index for constants (values > this are variables).
+            runtime_var_end_index: Max allowed variable index during expansion.
+            true_pred_idx:         Predicate ID for TRUE.
+            false_pred_idx:        Predicate ID for FALSE.
+            max_arity:             Maximum predicate arity (usually 2).
+            predicate_range_map:   Map for efficient fact lookup [P, 2].
+            device:                Torch device.
+            pack_base:             Base for packing triples (defaults to vocab size).
+            stringifier_params:    Params for debug string conversion.
+            end_pred_idx:          Predicate ID for END action.
+            end_proof_action:      Whether to treat reaching TRUE/FALSE as an 'End' action step.
+            predicate_no:          Total number of predicates.
+            max_derived_per_state: Branching factor limit K_cap.
+            deduplicate:           Whether to deduplicate derived states.
+            sort_states:           Whether to sort states canonicaly (for deterministic debugging).
+        """
         self.device = device
         self.padding_idx = int(padding_idx)
         self.constant_no = int(constant_no)
@@ -1087,16 +1756,21 @@ class UnificationEngine:
         # Initialize DebugHelper for verbose output
         from utils.debug_helper import DebugHelper as DH
         self.debug_helper = DH(**stringifier_params) if stringifier_params else None
-        self.deb = self.debug_helper  # short alias
+        self.deb = self.debug_helper
 
-    # ---- factory ----
     @classmethod
-    def from_index_manager(cls, im, take_ownership: bool = False, stringifier_params: Optional[dict] = None,
-                           end_pred_idx: Optional[int] = None,
-                           end_proof_action: bool = False,
-                           max_derived_per_state: Optional[int] = None,
-                           deduplicate: bool = False,
-                           sort_states: bool = False):
+    def from_index_manager(
+        cls, 
+        im, 
+        take_ownership: bool = False, 
+        stringifier_params: Optional[dict] = None,
+        end_pred_idx: Optional[int] = None,
+        end_proof_action: bool = False,
+        max_derived_per_state: Optional[int] = None,
+        deduplicate: bool = False,
+        sort_states: bool = False
+    ):
+        """Factory method to create the engine from an IndexManager."""
         engine = cls(
             facts_idx=getattr(im, 'facts_idx', None),
             rules_idx=getattr(im, 'rules_idx', None),
@@ -1131,17 +1805,37 @@ class UnificationEngine:
     # ---------------------------------------------------------------------
 
     @torch.no_grad()
-    def get_derived_states(self,
-                           current_states: Tensor,         # [B, max_atoms, 3]
-                           next_var_indices: Tensor,       # [B]
-                           excluded_queries: Optional[Tensor] = None,  # [B, max_atoms, 3]
-                           verbose: int = 0
-                           ) -> Tuple[Tensor, Tensor, Tensor]:
+    def get_derived_states(
+        self,
+        current_states: Tensor,
+        next_var_indices: Tensor,
+        excluded_queries: Optional[Tensor] = None,
+        verbose: int = 0
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         """
+        Generate all valid successor states for the given batch of states.
+        
+        Steps:
+        1. Preprocess: Extract active query atom from each state.
+        2. Unify Rules: Match queries with rules to create new states.
+        3. Unify Facts: Match queries with facts to create new states.
+        4. Combine: Merge rule states and fact states.
+        5. Prune & Collapse: Identify grounded proofs and prune facts from partial states.
+        6. Standardize: Renumber variables for canonical representation.
+        7. Pack: Group results by owner.
+        8. Cap: Limit the number of successors per owner.
+        
+        Args:
+            current_states:    Tensor [B, max_atoms, 3] containing current states.
+            next_var_indices:  Tensor [B] next available variable ID per owner.
+            excluded_queries:  Optional [B, max_atoms, 3] queries to exclude (circular check).
+            verbose:           Verbosity level.
+            
         Returns:
-          derived_states: [B, K, M, 3]  (padded to K=max_derived_per_state if needed)
-          derived_counts: [B]
-          updated_next_var_indices: [B]
+            Tuple[Tensor, Tensor, Tensor]:
+                - derived_states: Tensor [B, K_cap, M_new, 3] new unique states.
+                - derived_counts: Tensor [B] number of valid derived states.
+                - updated_vars:   Tensor [B] updated next available variable ID.
         """
         device = current_states.device
         B, max_atoms = current_states.shape[:2]
@@ -1156,7 +1850,9 @@ class UnificationEngine:
         final_counts  = torch.zeros(B, dtype=torch.long, device=device)
         updated_next  = next_var_indices.clone()
 
-        # ---- 1) preprocessing
+        # ---------------------------------------------------------------------
+        # 1. Preprocessing: Active vs Terminal
+        # ---------------------------------------------------------------------
         pre = preprocess_states(current_states, self.true_pred_idx, self.false_pred_idx, pad)
         if verbose > 0 and self.debug_helper:
             self.debug_helper.print_states("[ENGINE] 1. CURRENT STATES", current_states)
@@ -1181,33 +1877,42 @@ class UnificationEngine:
         A = pre.active_idx.numel()
         next_var_active = updated_next.index_select(0, pre.active_idx)
 
-        # ---- 2) rule unification (pure; no pruning)
-        rule_states, rule_counts = unify_with_rules(
+        # ---------------------------------------------------------------------
+        # 2. Rule Unification
+        # ---------------------------------------------------------------------
+        rule_states, rule_counts, rule_owners = unify_with_rules(
             self.rules_heads_sorted, self.rules_idx_sorted, self.rule_lens_sorted,
             self.rule_seg_starts, self.rule_seg_lens,
             pre.queries, pre.remaining, pre.remaining_counts, pre.preds,
             self.constant_no, pad, next_var_active
-        )
+        )  # rule_states: [N_r, M_r, 3]
         
         if verbose > 0 and self.debug_helper:
             self.debug_helper.print_states("[ENGINE] 2. RULE UNIFICATIONS", rule_states, rule_counts)
 
-        # ---- 3) fact unification (pure; no pruning)
+        # ---------------------------------------------------------------------
+        # 3. Fact Unification
+        # ---------------------------------------------------------------------
         facts_excl = excluded_queries.index_select(0, pre.active_idx) if (excluded_queries is not None) else None
-        fact_states, fact_counts = unify_with_facts(
+        
+        fact_states, fact_counts, fact_owners = unify_with_facts(
             self.facts_idx, self.predicate_range_map,
             pre.queries, pre.remaining, pre.remaining_counts, pre.preds,
             self.constant_no, pad, self.fact_index,
             excluded_queries=facts_excl
-        )
+        )  # fact_states: [N_f, M_f, 3]
         
         if verbose > 0 and self.debug_helper:
             self.debug_helper.print_states("[ENGINE] 3. FACT UNIFICATIONS", fact_states, fact_counts)
 
-        # ---- 4) combine rule+fact into flat candidates
+        # ---------------------------------------------------------------------
+        # 4. Combine Candidates
+        # ---------------------------------------------------------------------
         cand_states, cand_counts, owners, M_comb = combine_candidates(
-            rule_states, rule_counts, fact_states, fact_counts, pre.active_idx, pad
-        )
+            rule_states, rule_counts, rule_owners,
+            fact_states, fact_counts, fact_owners,
+            pre.active_idx, pad
+        )  # cand_states: [N, M, 3], cand_counts: [N], owners: [N]
 
         # If none, mark these actives as FALSE (no outgoing edges)
         if cand_states.numel() == 0:
@@ -1227,10 +1932,12 @@ class UnificationEngine:
             table[pre.active_idx] = first_atom_per_owner
             excl_first = table.index_select(0, owners)                      # [N, 3]
 
-        # ---- 5) prune ground facts and collapse proof owners to TRUE (only here!)
+        # ---------------------------------------------------------------------
+        # 5. Prune and Collapse (Proof Detection)
+        # ---------------------------------------------------------------------
         surv_states, surv_counts, proof_mask_B, surv_owners = prune_and_collapse(
             cand_states, cand_counts, owners, self.fact_index, self.constant_no, pad, B, excl_first
-        )
+        )  # surv_states: [N', M, 3], surv_counts: [N'], proof_mask_B: [B], surv_owners: [N']
 
         # Write TRUE for proof owners
         if self.true_atom is not None and proof_mask_B.any():
@@ -1262,7 +1969,9 @@ class UnificationEngine:
             surv_counts = surv_counts[valid_mask]
             surv_owners = surv_owners[valid_mask]
 
-        # ---- 6) standardize variables (shared base per owner) and update next_var per owner
+        # ---------------------------------------------------------------------
+        # 6. Standardize Variables
+        # ---------------------------------------------------------------------
         if verbose > 0 and self.debug_helper:
             print(f"[ENGINE] Before standardize: next_var indices = {updated_next.tolist() if updated_next.numel() <= 10 else updated_next[:10].tolist()}")
             print(f"  constant_no = {self.constant_no}, runtime_var_end = {self.runtime_var_end_index}")
@@ -1271,35 +1980,36 @@ class UnificationEngine:
         std_states, next_end_B = standardize_derived_states(
             surv_states, surv_counts, surv_owners, updated_next, self.constant_no,
             self.runtime_var_end_index, pad
-        )
-        updated_next = torch.maximum(updated_next, next_end_B)
+        )  # std_states: [N', M, 3], next_end_B: [B]
+        
+        updated_next = torch.maximum(updated_next, next_end_B)  # [B]
         
         if verbose > 0 and self.debug_helper:
             self.debug_helper.print_states("[ENGINE] 6. AFTER STANDARDIZE", std_states, surv_counts)
 
-        # ---- 7) pack by owner -> (optional) dedup -> canonical order -> cap K
-        packed, packed_counts = pack_by_owner(std_states, surv_counts, surv_owners, B, M_comb, pad)
+        # ---------------------------------------------------------------------
+        # 7. Pack and Cap
+        # ---------------------------------------------------------------------
+        packed, packed_counts = pack_by_owner(std_states, surv_counts, surv_owners, B, M_comb, pad)  # [B, K, M, 3], [B]
 
         if self.deduplicate:
             packed, packed_counts = deduplicate_states_packed(packed, packed_counts, pad, self.hash_cache)
 
-        # ---- 7b) Apply canonical ordering AFTER deduplication but BEFORE capping
-        # This ensures we keep the first K states in canonical order, matching string engine behavior
+        # 7b) Apply canonical ordering AFTER deduplication but BEFORE capping
         should_sort = self.sort_states and packed.numel() > 0 and self.debug_helper is not None
         if should_sort:
-            # Unpack to flat list for sorting
+            # Unpack to flat list for sorting (debug util only)
             flat_states = []
             flat_owners = []
-            for b in range(B):
-                for k in range(packed_counts[b].item()):
-                    flat_states.append(packed[b, k])
-                    flat_owners.append(b)
+            for b_idx in range(B):
+                for k in range(packed_counts[b_idx].item()):
+                    flat_states.append(packed[b_idx, k])
+                    flat_owners.append(b_idx)
             
             if len(flat_states) > 0:
                 flat_states = torch.stack(flat_states, dim=0)
                 flat_owners = torch.tensor(flat_owners, dtype=torch.long, device=device)
                 flat_counts = torch.ones(len(flat_states), dtype=torch.long, device=device)
-                # Note: next_vars are not needed for sorting after dedup since we don't modify them
                 dummy_next_vars = updated_next[flat_owners]
                 
                 flat_states, flat_counts, flat_owners, dummy_next_vars = self.debug_helper._sort_candidates_by_str_order(
@@ -1309,6 +2019,7 @@ class UnificationEngine:
                 # Repack sorted states
                 packed, packed_counts = pack_by_owner(flat_states, flat_counts, flat_owners, B, M_comb, pad)
 
+        # Cap max states
         packed, packed_counts = cap_states_per_owner(packed, packed_counts, self.max_derived_per_state)
 
         # Write packed into final buffers (keeping any terminal/proof already written)
@@ -1321,7 +2032,9 @@ class UnificationEngine:
                 final_states[dst, :packed.shape[1], :packed.shape[2]] = packed[dst]
                 final_counts[dst] = torch.maximum(final_counts[dst], packed_counts[dst])
 
-        # ---- Fallback: any active owner with no derived state yet -> FALSE
+        # ---------------------------------------------------------------------
+        # Fallback: any active owner with no derived state yet -> FALSE
+        # ---------------------------------------------------------------------
         need_false = (final_counts == 0) & (torch.isin(torch.arange(B, device=device), pre.active_idx))
         need_false &= ~proof_mask_B
         if need_false.any() and self.false_atom is not None:
