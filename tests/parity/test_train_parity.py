@@ -11,7 +11,6 @@ SB3 training, including:
 Uses deterministic seeds and aligned environments to ensure reproducible comparisons.
 
 Usage:
-    pytest tests/parity/test_train_parity.py -v
     python tests/parity/test_train_parity.py --dataset countries_s3 --n-steps 20 --n-envs 3
 """
 import gc
@@ -27,7 +26,6 @@ from dataclasses import dataclass, field
 import json
 import time
 
-import pytest
 import torch
 import torch.nn as nn
 import numpy as np
@@ -35,6 +33,7 @@ from collections import deque
 
 # Import seeding utilities (must be before other local imports to set up paths correctly)
 from seed_utils import ParityTestSeeder, ParityTestConfig, seed_all
+from parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 # Setup paths
 ROOT = Path(__file__).resolve().parents[2]
@@ -943,7 +942,7 @@ def run_train_parity(
         results.tensor_mrr = tensor_eval_results.get('MRR', 0.0)
         results.tensor_hits1 = tensor_eval_results.get('Hits@1', 0.0)
         
-        # Compare evaluation results
+        # Compare evaluation results - exact match expected
         results.eval_mrr_match = abs(results.sb3_mrr - results.tensor_mrr) < 0.01
         results.eval_hits1_match = abs(results.sb3_hits1 - results.tensor_hits1) < 0.01
         
@@ -978,126 +977,173 @@ def run_train_parity(
 # Pytest Test Cases
 # ==============================================================================
 
-class TestTrainParity:
-    """Tests for training parity between SB3 and tensor implementations."""
+# ============================================================
+# Test Functions (callable from __main__)
+# ============================================================
+
+def test_train_parity(dataset: str, n_envs: int, n_steps: int, total_timesteps: int,
+                     n_corruptions: int, batch_size: int, n_epochs: int, 
+                     lr: float, ent_coef: float) -> bool:
+    """Test that SB3 and tensor training produce similar results."""
+    config = TrainParityConfig(
+        dataset=dataset,
+        n_envs=n_envs,
+        n_steps=n_steps,
+        total_timesteps=total_timesteps,
+        n_corruptions=n_corruptions,
+        batch_size=batch_size,
+        n_epochs=n_epochs,
+        learning_rate=lr,
+        ent_coef=ent_coef,
+        seed=42,
+        device="cpu",
+        verbose=True,
+    )
     
-    @pytest.mark.parametrize("dataset,n_envs,n_steps,total_timesteps,n_corruptions,batch_size,n_epochs,lr,ent_coef", [
-        ("countries_s3", 3, 20, 60, 10, 64, 4, 3e-4, 0.0),
-        ("countries_s3", 4, 32, 256, 10, 4096, 20, 5e-5, 0.2),
-    ])
-    def test_train_parity(self, dataset, n_envs, n_steps, total_timesteps, n_corruptions, batch_size, n_epochs, lr, ent_coef):
-        """Test that SB3 and tensor training produce similar results."""
-        config = TrainParityConfig(
-            dataset=dataset,
-            n_envs=n_envs,
-            n_steps=n_steps,
-            total_timesteps=total_timesteps,
-            n_corruptions=n_corruptions,
-            batch_size=batch_size,
-            n_epochs=n_epochs,
-            learning_rate=lr,
-            ent_coef=ent_coef,
-            seed=42,
-            device="cpu",
-            verbose=True,
-        )
-        
-        results = run_train_parity(config, verbose=True)
-        
-        # Assert key parity checks
-        assert results.rollout_actions_match, "Rollout actions should match"
-        assert results.rollout_rewards_match, "Rollout rewards should match"
-        assert results.eval_mrr_match, f"Eval MRR should match: SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}"
+    results = run_train_parity(config, verbose=True)
     
-    @pytest.mark.parametrize("dataset", ["countries_s3"])
-    def test_single_rollout_parity(self, dataset):
-        """Test that a single rollout produces identical traces."""
-        config = TrainParityConfig(
-            dataset=dataset,
-            n_envs=2,
-            n_steps=10,
-            total_timesteps=0,  # No training
-            seed=42,
-            device="cpu",
-            verbose=True,
-        )
-        
-        seed_all(config.seed)
-        sb3_comp = create_sb3_components(config)
-        
-        seed_all(config.seed)
-        tensor_comp = create_tensor_components(config)
-        
-        seed_all(config.seed)
-        sb3_trace = run_sb3_rollout(
-            sb3_comp['model'], sb3_comp['train_env'], config.n_steps, config.seed
-        )
-        
-        seed_all(config.seed)
-        tensor_trace = run_tensor_rollout(
-            tensor_comp['policy'], tensor_comp['train_env'], config.n_steps, config.seed, tensor_comp['device']
-        )
-        
-        comparison = compare_rollout_traces(sb3_trace, tensor_trace, verbose=True)
-        
-        assert comparison['actions_match'], "Actions should match in single rollout"
-        assert comparison['rewards_match'], "Rewards should match in single rollout"
+    # Check key parity results
+    passed = True
+    if not results.rollout_actions_match:
+        print("✗ Rollout actions should match")
+        passed = False
+    if not results.rollout_rewards_match:
+        print("✗ Rollout rewards should match")
+        passed = False
+    if not results.eval_mrr_match:
+        print(f"✗ Eval MRR should match: SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f}")
+        passed = False
+    
+    return passed and results.overall_success
+
+
+def test_single_rollout_parity(dataset: str) -> bool:
+    """Test that a single rollout produces identical traces."""
+    config = TrainParityConfig(
+        dataset=dataset,
+        n_envs=2,
+        n_steps=10,
+        total_timesteps=0,  # No training
+        seed=42,
+        device="cpu",
+        verbose=True,
+    )
+    
+    seed_all(config.seed)
+    sb3_comp = create_sb3_components(config)
+    
+    seed_all(config.seed)
+    tensor_comp = create_tensor_components(config)
+    
+    seed_all(config.seed)
+    sb3_trace = run_sb3_rollout(
+        sb3_comp['model'], sb3_comp['train_env'], config.n_steps, config.seed
+    )
+    
+    seed_all(config.seed)
+    tensor_trace = run_tensor_rollout(
+        tensor_comp['policy'], tensor_comp['train_env'], config.n_steps, config.seed, tensor_comp['device']
+    )
+    
+    comparison = compare_rollout_traces(sb3_trace, tensor_trace, verbose=True)
+    
+    passed = True
+    if not comparison['actions_match']:
+        print("✗ Actions should match in single rollout")
+        passed = False
+    if not comparison['rewards_match']:
+        print("✗ Rewards should match in single rollout")
+        passed = False
+    
+    return passed
 
 
 # ==============================================================================
 # Main Entry Point
 # ==============================================================================
 
+def run_all_tests(args) -> bool:
+    """Run all train parity tests."""
+    all_passed = True
+    
+    print(f"\n{'='*70}")
+    print("TRAIN PARITY TESTS")
+    print(f"Tolerance: {TOLERANCE}")
+    print(f"{'='*70}")
+    
+    # Default test configurations
+    default_params = [
+        # (dataset, n_envs, n_steps, total_timesteps, n_corruptions, batch_size, n_epochs, lr, ent_coef)
+        ("countries_s3", 3, 20, 60, 10, 64, 4, 3e-4, 0.0),
+        ("countries_s3", 4, 32, 256, 10, 4096, 20, 5e-5, 0.2),
+    ]
+    
+    # If user provides specific arguments, use them instead of defaults
+    if args.n_envs is not None and args.n_steps is not None:
+        # User specified custom parameters
+        test_params = [(
+            args.dataset,
+            args.n_envs,
+            args.n_steps,
+            getattr(args, 'total_timesteps', args.n_envs * args.n_steps * 2),
+            getattr(args, 'n_corruptions', 10),
+            args.batch_size,
+            getattr(args, 'n_epochs', 4),
+            args.learning_rate,
+            args.ent_coef,
+        )]
+    elif getattr(args, 'run_all_params', False):
+        test_params = default_params
+    else:
+        # Just run first default
+        test_params = [default_params[0]]
+    
+    # Test 1: test_train_parity
+    for dataset, n_envs, n_steps, total_timesteps, n_corruptions, batch_size, n_epochs, lr, ent_coef in test_params:
+        print(f"\n{'='*70}")
+        print(f"Running test_train_parity[{dataset}-{n_envs}-{n_steps}-{total_timesteps}]")
+        print(f"{'='*70}")
+        
+        if test_train_parity(dataset, n_envs, n_steps, total_timesteps, n_corruptions, batch_size, n_epochs, lr, ent_coef):
+            print(f"✓ PASSED: test_train_parity[{dataset}-{n_envs}-{n_steps}-{total_timesteps}]")
+        else:
+            print(f"✗ FAILED: test_train_parity[{dataset}-{n_envs}-{n_steps}-{total_timesteps}]")
+            all_passed = False
+    
+    # Test 2: test_single_rollout_parity
+    print(f"\n{'='*70}")
+    print(f"Running test_single_rollout_parity[{args.dataset}]")
+    print(f"{'='*70}")
+    
+    if test_single_rollout_parity(args.dataset):
+        print(f"✓ PASSED: test_single_rollout_parity[{args.dataset}]")
+    else:
+        print(f"✗ FAILED: test_single_rollout_parity[{args.dataset}]")
+        all_passed = False
+    
+    return all_passed
+
+
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Train Parity Test")
-    parser.add_argument("--dataset", type=str, default="countries_s3")
-    parser.add_argument("--n-envs", type=int, default=20)
-    parser.add_argument("--n-steps", type=int, default=40)
-    parser.add_argument("--total-timesteps", type=int, default=90)
-    parser.add_argument("--n-corruptions", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=4096)
-    parser.add_argument("--n-epochs", type=int, default=5)
-    parser.add_argument("--learning-rate", type=float, default=5e-5)
-    parser.add_argument("--ent-coef", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--verbose", action="store_true", default=True)
-    parser.add_argument("--skip-training", action="store_true", default=False,
-                        help="Skip training and evaluation (for faster testing)")
+    # Use shared parser with all relevant parameters
+    parser = create_parser(description="Train Parity Test")
+    parser.add_argument("--run-all-params", action="store_true", default=False,
+                        help="Run all test parametrizations (default: run first only)")
+    # Note: --skip-training is already in the shared parser
     
     args = parser.parse_args()
     
-    config = TrainParityConfig(
-        dataset=args.dataset,
-        n_envs=args.n_envs,
-        n_steps=args.n_steps,
-        total_timesteps=args.total_timesteps,
-        n_corruptions=args.n_corruptions,
-        batch_size=args.batch_size,
-        n_epochs=args.n_epochs,
-        learning_rate=args.learning_rate,
-        ent_coef=args.ent_coef,
-        seed=args.seed,
-        device=args.device,
-        verbose=args.verbose,
-        skip_training=args.skip_training,
-    )
+    all_passed = run_all_tests(args)
     
-    results = run_train_parity(config, verbose=args.verbose)
-    
-    # Print summary
-    print("\n" + "=" * 70)
+    # Summary
+    print(f"\n{'='*70}")
     print("SUMMARY")
-    print("=" * 70)
-    print(f"Initial weights match: {results.initial_weights_match}")
-    print(f"Rollout actions match: {results.rollout_actions_match}")
-    print(f"Rollout rewards match: {results.rollout_rewards_match}")
-    print(f"Rollout values match: {results.rollout_values_match}")
-    print(f"Rollout log_probs match: {results.rollout_logprobs_match}")
-    print(f"Final weights match: {results.final_weights_match}")
-    print(f"Eval MRR match: {results.eval_mrr_match} (SB3={results.sb3_mrr:.4f}, Tensor={results.tensor_mrr:.4f})")
-    print(f"Eval Hits@1 match: {results.eval_hits1_match} (SB3={results.sb3_hits1:.4f}, Tensor={results.tensor_hits1:.4f})")
-    print(f"Overall success: {results.overall_success}")
-    if results.error_message:
-        print(f"Error: {results.error_message}")
+    print(f"{'='*70}")
+    if all_passed:
+        print("All train parity tests PASSED")
+    else:
+        print("Some train parity tests FAILED")
+    
+    sys.exit(0 if all_passed else 1)
+
+

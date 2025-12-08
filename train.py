@@ -214,8 +214,15 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         rules=dh.rules,
     )
     
+    # PARITY DEBUG: Log IndexManager state
+    print(f"[PARITY] IndexManager: constants={im.constant_no}, predicates={im.predicate_no}, vars={im.variable_no}")
+    
     # Materialize indices (tensor-specific)
     dh.materialize_indices(im=im, device=device)
+    
+    # PARITY DEBUG: Log RNG state before sampler
+    rng_state = torch.get_rng_state().sum().item()
+    print(f"[PARITY] RNG state before sampler: {rng_state}")
     
     # Sampler
     domain2idx, entity2domain = dh.get_sampler_domain_info()
@@ -235,11 +242,11 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     torch.manual_seed(args.seed_run_i)
     
     # Embedder
-    n_vars_for_embedder = 1000
+
     embedder = TensorEmbedder(
         n_constants=im.constant_no,
         n_predicates=im.predicate_no,
-        n_vars=n_vars_for_embedder,
+        n_vars=im.variable_no,
         max_arity=dh.max_arity,
         padding_atoms=args.padding_atoms,
         atom_embedder=getattr(args, 'atom_embedder', 'transe'),
@@ -249,6 +256,13 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         atom_embedding_size=args.atom_embedding_size,
         device=str(device),
     )
+    
+    # PARITY DEBUG: Log embedding checksum for verification
+    # This allows comparing embeddings between runners
+    embedder_params = list(embedder.parameters())
+    if embedder_params:
+        checksum = sum(p.sum().item() for p in embedder_params)
+        print(f"[PARITY] Embedder checksum: {checksum:.6f}")
     
     # Derived dims for concat options (matching sb3)
     args.atom_embedding_size = (
@@ -435,8 +449,19 @@ def _evaluate(args: Any, policy, eval_env, sampler, dh: DataHandler, im: IndexMa
         query_atoms.append(query_atom)
     queries_tensor = torch.stack(query_atoms, dim=0)
     
-    n_corruptions = getattr(args, 'test_neg_samples', 10) or 10
+    # PARITY DEBUG: Log evaluation inputs
+    print(f"[PARITY] Eval: n_queries={len(test_queries)}, queries_sum={queries_tensor.sum().item():.6f}")
+    
+    # Pass None if test_neg_samples is None (matching SB3 which passes args.test_neg_samples directly)
+    n_corruptions = getattr(args, 'test_neg_samples', None)
     corruption_scheme = getattr(args, 'corruption_scheme', ['tail'])
+    
+    # PARITY DEBUG: Log n_corruptions
+    print(f"[PARITY] n_corruptions={n_corruptions}, corruption_scheme={corruption_scheme}")
+    
+    # PARITY DEBUG: Log RNG state before eval
+    rng_before_eval = torch.get_rng_state().sum().item()
+    print(f"[PARITY] RNG before eval: {rng_before_eval}")
     
     eval_results = tensor_eval_corruptions(
         actor=policy,
@@ -594,6 +619,10 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         device=device,
     ).to(device)
     
+    # PARITY DEBUG: Log policy parameter checksum
+    policy_checksum = sum(p.sum().item() for p in policy.parameters())
+    print(f"[PARITY] Policy checksum after creation: {policy_checksum:.6f}")
+    
     ppo = TensorPPO(
         policy=policy,
         env=env,
@@ -604,36 +633,144 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         clip_range=args.clip_range,
         ent_coef=args.ent_coef,
         gamma=args.gamma,
+        target_kl=getattr(args, 'target_kl', None),  # Early stopping threshold (aligned with SB3)
         device=device,
         verbose=1,
+        seed=args.seed_run_i,  # For RNG synchronization between rollouts
     )
     
-    # Step 6.5: Initial evaluation with untrained model (matching sb3 eval callback at step 0)
-    print("\n" + "="*60)
-    print("Initial evaluation (untrained model)")
-    print("="*60)
-    policy.eval()
-    initial_eval_results = tensor_eval_corruptions(
-        actor=policy,
-        env=eval_env,
-        queries=torch.stack([
+    # NOTE: Initial evaluation commented out for SB3 parity.
+    # Running eval here consumes RNG for negative sampling BEFORE training,
+    # but SB3's EvalCallback runs AFTER the first rollout. This causes rollout
+    # data divergence. For exact parity, skip initial eval.
+    # 
+    # # Step 6.5: Initial evaluation with untrained model (matching sb3 eval callback at step 0)
+    # print("\n" + "="*60)
+    # print("Initial evaluation (untrained model)")
+    # print("="*60)
+    # policy.eval()
+    # initial_eval_results = tensor_eval_corruptions(
+    #     actor=policy,
+    #     env=eval_env,
+    #     queries=torch.stack([
+    #         index_manager.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+    #         for q in dh.valid_queries[:getattr(args, 'n_eval_queries', 10) or 10]
+    #     ]),
+    #     sampler=sampler,
+    #     n_corruptions=getattr(args, 'eval_neg_samples', 10) or 10,
+    #     corruption_modes=tuple(getattr(args, 'corruption_scheme', ['tail'])),
+    #     verbose=0,
+    # )
+    # print(f"Initial MRR: {initial_eval_results.get('MRR', 0.0):.4f}")
+    # print(f"Initial Hits@1: {initial_eval_results.get('Hits@1', 0.0):.4f}")
+    # print(f"Initial success_rate: {initial_eval_results.get('success_rate', 0.0):.4f}")
+    # print("="*60 + "\n")
+    
+    # Configure callbacks (PARITY)
+    # We manually construct the callback system to match SB3's functionality
+    from callbacks import TorchRLCallbackManager, MRREvaluationCallback, TrainingMetricsCallback
+    from pathlib import Path
+
+    callback_manager = None
+    callbacks_list = []
+    
+    # 1. Training metrics callback
+    callbacks_list.append(TrainingMetricsCallback(
+        log_interval=1,
+        verbose=True,
+        collect_detailed=True
+    ))
+
+    # 2. Evaluation callback (for finding Best Model)
+    best_model_path = None
+    if getattr(args, 'save_model', False):
+        save_path = Path(args.models_path) / args.run_signature
+        best_model_path = save_path / "best_model.pt"
+        
+        # Create evaluation callback
+        # Get validation queries as tensor
+        valid_queries_tensor = torch.stack([
             index_manager.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-            for q in dh.valid_queries[:getattr(args, 'n_eval_queries', 10) or 10]
-        ]),
-        sampler=sampler,
-        n_corruptions=getattr(args, 'eval_neg_samples', 10) or 10,
-        corruption_modes=tuple(getattr(args, 'corruption_scheme', ['tail'])),
-        verbose=0,
-    )
-    print(f"Initial MRR: {initial_eval_results.get('MRR', 0.0):.4f}")
-    print(f"Initial Hits@1: {initial_eval_results.get('Hits@1', 0.0):.4f}")
-    print(f"Initial success_rate: {initial_eval_results.get('success_rate', 0.0):.4f}")
-    print("="*60 + "\n")
-    
+            for q in dh.valid_queries
+        ])
+        
+        # Use full validation set or subset
+        n_eval = getattr(args, 'n_eval_queries', None)
+        if n_eval:
+           valid_queries_tensor = valid_queries_tensor[:n_eval]
+           
+        best_metric = getattr(args, 'eval_best_metric', 'mrr_mean')
+        if best_metric == 'mrr':
+            best_metric = 'mrr_mean'
+            
+        eval_cb = MRREvaluationCallback(
+            eval_env=eval_env,
+            sampler=sampler,
+            eval_data=valid_queries_tensor,
+            n_corruptions=getattr(args, 'eval_neg_samples', 10),
+            eval_freq=1,  # Evaluate every iteration for best model tracking
+            best_metric=best_metric,
+            save_path=save_path,
+            model_name="model",
+            verbose=True,
+            policy=policy,  # Pass policy to enable saving
+            corruption_scheme=getattr(args, 'corruption_scheme', ['tail']),
+        )
+        callbacks_list.append(eval_cb)
+
+    if callbacks_list:
+        # Create manager
+        callback_manager = TorchRLCallbackManager(
+            train_callback=callbacks_list[0] if isinstance(callbacks_list[0], TrainingMetricsCallback) else None,
+            eval_callback=callbacks_list[1] if len(callbacks_list) > 1 else None
+        )
+
+        # Create wrapper for PPO.learn
+        def ppo_callback(locals_, globals_):
+            # Extract info needed by manager
+            iteration = locals_.get('iteration', 0)
+            total_steps = locals_.get('total_steps_done', 0)
+            
+            # Evaluation callback (saves best model during training)
+            if callback_manager.eval_callback:
+                if callback_manager.eval_callback.should_evaluate(iteration):
+                    callback_manager.on_evaluation_start(iteration, total_steps)
+                    mrr_metrics = callback_manager.eval_callback.evaluate_mrr(policy)
+                    callback_manager.on_evaluation_end(iteration, total_steps, mrr_metrics)
+
+            # Training metrics callback
+            if callback_manager.train_callback:
+                 callback_manager.train_callback.on_iteration_end(iteration, total_steps, n_envs=env.batch_size)
+
+            return True
+
     # Step 7: Train (matching sb3 flow)
     if args.timesteps_train > 0 and not getattr(args, 'load_model', False):
-        ppo.learn(total_timesteps=args.timesteps_train)
+        # PARITY: Reseed before training starts to align with sb3_train.py
+        # This is critical for achieving exact parity in subprocess execution
+        if deterministic:
+            _set_seeds(args.seed_run_i)
+        
+        cb_func = ppo_callback if callback_manager else None
+        ppo.learn(total_timesteps=args.timesteps_train, callback=cb_func)
     
+    # PARITY DEBUG: Log policy checksum after training
+    policy_checksum_trained = sum(p.sum().item() for p in policy.parameters())
+    print(f"[PARITY] Policy checksum after training: {policy_checksum_trained:.6f}")
+    
+    # Restore best model if configured (PARITY with SB3)
+    # Only restore if training actually occurred (timesteps_train > 0)
+    save_model = getattr(args, 'save_model', False)
+    restore_best = getattr(args, 'restore_best_val_model', True)
+    training_occurred = args.timesteps_train > 0 and not getattr(args, 'load_model', False)
+        
+    if training_occurred and save_model and restore_best and best_model_path and best_model_path.exists():
+        print(f"Restored best val model from {best_model_path}")
+        policy.load_state_dict(torch.load(best_model_path, map_location=device))
+        # PARITY DEBUG: Log policy checksum after restoration
+        policy_checksum_restored = sum(p.sum().item() for p in policy.parameters())
+        print(f"[PARITY] Policy checksum after restoration: {policy_checksum_restored:.6f}")
+
     # Step 8: Evaluate (matching sb3)
     metrics_train, metrics_valid, metrics_test = _evaluate(
         args, policy, eval_env, sampler, dh, index_manager, device

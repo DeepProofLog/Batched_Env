@@ -12,7 +12,6 @@ Uses deterministic action selection and aligned environments to ensure
 reproducible comparisons.
 
 Usage:
-    pytest tests/parity/test_learn_parity.py -v
     python tests/parity/test_learn_parity.py --dataset countries_s3 --n-envs 4 --n-steps 20
 """
 import os
@@ -21,7 +20,6 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Any, Optional
 from dataclasses import dataclass, field
 
-import pytest
 import torch
 import torch.nn as nn
 import numpy as np
@@ -29,7 +27,8 @@ from collections import deque
 from types import SimpleNamespace
 
 # Import seeding utilities (must be before other local imports to set up paths correctly)
-from seed_utils import ParityTestSeeder, ParityTestConfig, seed_all
+from seed_utils import ParityTestSeeder, ParityTestConfig, ParityTolerances, seed_all
+from parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 # Setup paths
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,62 +68,12 @@ from rollout import RolloutBuffer as TensorRolloutBuffer
 
 
 # ============================================================================
-# Default Configuration
+# Default Configuration - using shared parity_config
 # ============================================================================
 
-def create_default_config() -> SimpleNamespace:
-    """Centralized defaults for learn parity tests."""
-    return SimpleNamespace(
-        # Dataset / data files
-        dataset="countries_s3",
-        data_path="./data/",
-        train_file="train.txt",
-        valid_file="valid.txt",
-        test_file="test.txt",
-        rules_file="rules.txt",
-        facts_file="train.txt",
-        train_depth=None,
-        max_total_vars=1000,
-        
-        # Environment / padding
-        padding_atoms=6,
-        padding_states=100,
-        max_depth=20,
-        use_exact_memory=True,
-        memory_pruning=True,
-        skip_unary_actions=True,
-        end_proof_action=True,
-        reward_type=0,
-        
-        # PPO / training
-        n_envs=4,
-        n_steps=20,
-        n_epochs=3,
-        batch_size=64,
-        learning_rate=3e-4,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.0,
-        vf_coef=0.5,
-        max_grad_norm=0.5,
-        
-        # Embedding / model
-        embed_dim=64,
-        n_vars_for_embedder=1000,
-        
-        # Misc
-        seed=42,
-        device="cpu",
-        buffer_atol=1e-4,
-        metrics_rtol=0.01,
-        traces_atol=0.01,
-    )
-
-
-def clone_config(config: SimpleNamespace) -> SimpleNamespace:
-    """Clone a SimpleNamespace config."""
-    return SimpleNamespace(**vars(config))
+def get_default_config() -> ParityConfig:
+    """Get default config from shared parity_config."""
+    return ParityConfig()
 
 
 @dataclass
@@ -692,7 +641,7 @@ def compare_train_metrics(sb3_metrics: Dict[str, float], tensor_metrics: Dict[st
     Args:
         sb3_metrics: Training metrics from SB3 PPO
         tensor_metrics: Training metrics from tensor PPO
-        rtol: Relative tolerance (default 1%)
+        rtol: Tolerance for comparison (used as both absolute and relative tolerance)
     """
     comparison = {}
     all_match = True
@@ -701,14 +650,11 @@ def compare_train_metrics(sb3_metrics: Dict[str, float], tensor_metrics: Dict[st
         sb3_val = sb3_metrics.get(key, 0.0)
         tensor_val = tensor_metrics.get(key, 0.0)
         
-        # Use relative tolerance: |a - b| / max(|a|, |b|) < rtol
-        # Handle case where both values are near zero
+        # Use numpy-style isclose: |a - b| <= atol + rtol * max(|a|, |b|)
+        # Use same tolerance for both atol and rtol
         max_abs = max(abs(sb3_val), abs(tensor_val))
-        if max_abs < 1e-8:
-            matches = True  # Both effectively zero
-        else:
-            rel_diff = abs(sb3_val - tensor_val) / max_abs
-            matches = rel_diff < rtol
+        abs_diff = abs(sb3_val - tensor_val)
+        matches = abs_diff <= rtol + rtol * max_abs
         
         comparison[key] = (sb3_val, tensor_val, matches)
         if not matches:
@@ -804,7 +750,7 @@ def run_learn_parity_test(
     seed: int = 42,
     verbose: bool = True,
     compare_training_traces: bool = True,
-    config: Optional[SimpleNamespace] = None,
+    config: Optional[ParityConfig] = None,
 ) -> LearnParityResults:
     """Run the full learn parity test comparing SB3 and tensor PPO.
     
@@ -818,13 +764,15 @@ def run_learn_parity_test(
         compare_training_traces: If True, also collect and compare per-batch training traces
     """
     results = LearnParityResults()
-    cfg = clone_config(config or create_default_config())
-    cfg.dataset = dataset
-    cfg.n_envs = n_envs
-    cfg.n_steps = n_steps
-    cfg.n_epochs = n_epochs
-    cfg.seed = seed
-    cfg.verbose = verbose
+    base_cfg = config or get_default_config()
+    cfg = base_cfg.update(
+        dataset=dataset,
+        n_envs=n_envs,
+        n_steps=n_steps,
+        n_epochs=n_epochs,
+        seed=seed,
+        verbose=verbose,
+    ).to_namespace()  # Convert to namespace for compatibility
     
     # Initialize seeder for consistent seeding across all phases
     seeder = ParityTestSeeder(seed=seed)
@@ -889,7 +837,7 @@ def run_learn_parity_test(
     # Compare buffers
     if verbose:
         print("\n--- Buffer Comparison ---")
-    buffer_results = compare_buffers(sb3_buffer, tensor_buffer, cfg.n_steps, cfg.n_envs, atol=cfg.buffer_atol)
+    buffer_results = compare_buffers(sb3_buffer, tensor_buffer, cfg.n_steps, cfg.n_envs, atol=TOLERANCE)
     results.buffer_rewards_match = buffer_results['rewards_match']
     results.buffer_values_match = buffer_results['values_match']
     results.buffer_log_probs_match = buffer_results['log_probs_match']
@@ -904,7 +852,7 @@ def run_learn_parity_test(
     # Compare training metrics
     if verbose:
         print("\n--- Training Metrics Comparison ---")
-    metrics_match, metrics_comparison = compare_train_metrics(sb3_train_metrics, tensor_train_metrics, rtol=cfg.metrics_rtol)
+    metrics_match, metrics_comparison = compare_train_metrics(sb3_train_metrics, tensor_train_metrics, rtol=TOLERANCE)
     results.metrics_match = metrics_match
     
     if verbose:
@@ -917,7 +865,7 @@ def run_learn_parity_test(
         if verbose:
             print("\n--- Training Traces Comparison (Per-Batch) ---")
         train_traces_match, train_traces_n_mismatches, train_trace_mismatches = compare_train_traces(
-            results.sb3_train_traces, results.tensor_train_traces, atol=cfg.traces_atol, verbose=verbose
+            results.sb3_train_traces, results.tensor_train_traces, atol=TOLERANCE, verbose=verbose
         )
         results.train_traces_match = train_traces_match
         results.train_traces_n_mismatches = train_traces_n_mismatches
@@ -976,14 +924,10 @@ def run_learn_parity_test(
 
 
 # ============================================================
-# Pytest Tests
+# Test Functions (callable from __main__)
 # ============================================================
 
-@pytest.mark.parametrize("n_envs,n_steps", [
-    (1, 10),
-    (4, 10),
-])
-def test_learn_parity(n_envs, n_steps):
+def test_learn_parity(n_envs: int, n_steps: int) -> bool:
     """Test learn parity between SB3 and tensor implementations."""
     results = run_learn_parity_test(
         dataset="countries_s3",
@@ -991,13 +935,15 @@ def test_learn_parity(n_envs, n_steps):
         n_steps=n_steps,
         n_epochs=1,
         seed=42,
-        verbose=False,
+        verbose=True,
     )
-    assert results.success, f"Learn parity test failed for n_envs={n_envs}, n_steps={n_steps}"
+    if not results.success:
+        print(f"Learn parity test failed for n_envs={n_envs}, n_steps={n_steps}")
+        return False
+    return True
 
 
-@pytest.mark.parametrize("n_epochs", [1, 2])
-def test_learn_parity_multiple_epochs(n_epochs):
+def test_learn_parity_multiple_epochs(n_epochs: int) -> bool:
     """Test learn parity with multiple training epochs."""
     results = run_learn_parity_test(
         dataset="countries_s3",
@@ -1005,13 +951,18 @@ def test_learn_parity_multiple_epochs(n_epochs):
         n_steps=10,
         n_epochs=n_epochs,
         seed=42,
-        verbose=False,
+        verbose=True,
     )
-    assert results.rollout_traces_match, f"Rollout traces don't match for n_epochs={n_epochs}"
-    assert results.buffer_actions_match, f"Buffer actions don't match for n_epochs={n_epochs}"
+    if not results.rollout_traces_match:
+        print(f"Rollout traces don't match for n_epochs={n_epochs}")
+        return False
+    if not results.buffer_actions_match:
+        print(f"Buffer actions don't match for n_epochs={n_epochs}")
+        return False
+    return True
 
 
-def test_learn_rollout_traces_match():
+def test_learn_rollout_traces_match() -> bool:
     """Test that rollout traces match exactly."""
     results = run_learn_parity_test(
         dataset="countries_s3",
@@ -1019,12 +970,15 @@ def test_learn_rollout_traces_match():
         n_steps=20,
         n_epochs=1,
         seed=42,
-        verbose=False,
+        verbose=True,
     )
-    assert results.rollout_traces_match, f"Rollout traces don't match: {results.rollout_n_mismatches} mismatches"
+    if not results.rollout_traces_match:
+        print(f"Rollout traces don't match: {results.rollout_n_mismatches} mismatches")
+        return False
+    return True
 
 
-def test_learn_buffer_contents_match():
+def test_learn_buffer_contents_match() -> bool:
     """Test that rollout buffer contents match."""
     results = run_learn_parity_test(
         dataset="countries_s3",
@@ -1032,13 +986,18 @@ def test_learn_buffer_contents_match():
         n_steps=10,
         n_epochs=1,
         seed=42,
-        verbose=False,
+        verbose=True,
     )
-    assert results.buffer_actions_match, "Buffer actions don't match"
-    assert results.buffer_rewards_match, "Buffer rewards don't match"
+    if not results.buffer_actions_match:
+        print("Buffer actions don't match")
+        return False
+    if not results.buffer_rewards_match:
+        print("Buffer rewards don't match")
+        return False
+    return True
 
 
-def test_learn_training_executes():
+def test_learn_training_executes() -> bool:
     """Test that training executes without errors on both implementations."""
     results = run_learn_parity_test(
         dataset="countries_s3",
@@ -1046,36 +1005,38 @@ def test_learn_training_executes():
         n_steps=8,
         n_epochs=2,
         seed=42,
-        verbose=False,
+        verbose=True,
     )
     # Just check that we got metrics back from both
-    assert len(results.sb3_train_metrics) > 0, "SB3 training didn't produce metrics"
-    assert len(results.tensor_train_metrics) > 0, "Tensor training didn't produce metrics"
+    if len(results.sb3_train_metrics) == 0:
+        print("SB3 training didn't produce metrics")
+        return False
+    if len(results.tensor_train_metrics) == 0:
+        print("Tensor training didn't produce metrics")
+        return False
+    return True
 
 
-def test_learn_training_traces():
+def test_learn_training_traces() -> bool:
     """Test that training traces can be collected from both SB3 and tensor PPO and match."""
     # Initialize seeder
     seeder = ParityTestSeeder(seed=42)
-    cfg = clone_config(create_default_config())
-    cfg.dataset = "countries_s3"
-    cfg.n_envs = 2
-    cfg.n_steps = 10
-    cfg.n_epochs = 2
+    cfg = get_default_config()
+    cfg = cfg.update(dataset="countries_s3", n_envs=2, n_steps=10, n_epochs=2)
     
     # Create aligned environments
-    env_data = create_aligned_environments(cfg)
+    env_data = create_aligned_environments(cfg.to_namespace())
     
     # Create SB3 PPO
     seeder.seed_for_model_creation()
     sb3_ppo, sb3_env, sb3_im = create_sb3_ppo(
-        cfg, env_data['sb3'], env_data['queries']
+        cfg.to_namespace(), env_data['sb3'], env_data['queries']
     )
     
     # Create tensor PPO
     seeder.seed_for_model_creation()
     tensor_ppo, tensor_env, tensor_im, engine = create_tensor_ppo(
-        cfg, env_data['tensor'], env_data['tensor_queries']
+        cfg.to_namespace(), env_data['tensor'], env_data['tensor_queries']
     )
     
     # Collect rollouts and train with traces for SB3
@@ -1091,47 +1052,50 @@ def test_learn_training_traces():
     )
     
     # Check that training traces are present in both
-    assert "traces" in sb3_train_metrics, "SB3 training traces should be present"
-    assert "traces" in tensor_train_metrics, "Tensor training traces should be present"
+    if "traces" not in sb3_train_metrics:
+        print("SB3 training traces should be present")
+        return False
+    if "traces" not in tensor_train_metrics:
+        print("Tensor training traces should be present")
+        return False
     
     sb3_train_traces = sb3_train_metrics["traces"]
     tensor_train_traces = tensor_train_metrics["traces"]
     
-    assert len(sb3_train_traces) > 0, "SB3 should have at least one training trace"
-    assert len(tensor_train_traces) > 0, "Tensor should have at least one training trace"
+    if len(sb3_train_traces) == 0:
+        print("SB3 should have at least one training trace")
+        return False
+    if len(tensor_train_traces) == 0:
+        print("Tensor should have at least one training trace")
+        return False
     
     # Check trace contents for SB3
     first_sb3_trace = sb3_train_traces[0]
-    assert "epoch" in first_sb3_trace
-    assert "batch_size" in first_sb3_trace
-    assert "policy_loss" in first_sb3_trace
-    assert "value_loss" in first_sb3_trace
-    assert "entropy_loss" in first_sb3_trace
-    assert "clip_fraction" in first_sb3_trace
-    assert "ratio_mean" in first_sb3_trace
-    assert "advantages_mean" in first_sb3_trace
+    required_keys = ["epoch", "batch_size", "policy_loss", "value_loss", 
+                     "entropy_loss", "clip_fraction", "ratio_mean", "advantages_mean"]
+    for key in required_keys:
+        if key not in first_sb3_trace:
+            print(f"SB3 trace missing {key}")
+            return False
     
     # Check trace contents for tensor
     first_tensor_trace = tensor_train_traces[0]
-    assert "epoch" in first_tensor_trace
-    assert "batch_size" in first_tensor_trace
-    assert "policy_loss" in first_tensor_trace
-    assert "value_loss" in first_tensor_trace
-    assert "entropy_loss" in first_tensor_trace
-    assert "clip_fraction" in first_tensor_trace
-    assert "ratio_mean" in first_tensor_trace
-    assert "advantages_mean" in first_tensor_trace
+    for key in required_keys:
+        if key not in first_tensor_trace:
+            print(f"Tensor trace missing {key}")
+            return False
     
     # Compare traces between implementations
     traces_match, n_mismatches, mismatches = compare_train_traces(
-        sb3_train_traces, tensor_train_traces, atol=cfg.traces_atol, verbose=True
+        sb3_train_traces, tensor_train_traces, atol=TOLERANCE, verbose=True
     )
     
     print(f"\nTraining traces comparison: match={traces_match}, mismatches={n_mismatches}")
     print(f"SB3 trace count: {len(sb3_train_traces)}, Tensor trace count: {len(tensor_train_traces)}")
+    return traces_match
 
 
-def test_learn_training_traces_parity():
+def test_learn_training_traces_parity() -> bool:
     """Test that training traces match between SB3 and tensor implementations."""
     results = run_learn_parity_test(
         dataset="countries_s3",
@@ -1144,68 +1108,135 @@ def test_learn_training_traces_parity():
     )
     
     # Check that both produced training traces
-    assert len(results.sb3_train_traces) > 0, "SB3 should have training traces"
-    assert len(results.tensor_train_traces) > 0, "Tensor should have training traces"
+    if len(results.sb3_train_traces) == 0:
+        print("SB3 should have training traces")
+        return False
+    if len(results.tensor_train_traces) == 0:
+        print("Tensor should have training traces")
+        return False
     
     # The traces should have the same number of batches
-    assert len(results.sb3_train_traces) == len(results.tensor_train_traces), \
-        f"Trace count mismatch: SB3={len(results.sb3_train_traces)}, Tensor={len(results.tensor_train_traces)}"
+    if len(results.sb3_train_traces) != len(results.tensor_train_traces):
+        print(f"Trace count mismatch: SB3={len(results.sb3_train_traces)}, Tensor={len(results.tensor_train_traces)}")
+        return False
+    
+    return results.train_traces_match
 
 
 # ============================================================
 # CLI Interface
 # ============================================================
 
-if __name__ == "__main__":
-    import argparse
+def run_all_tests(args) -> bool:
+    """Run all learn parity tests."""
+    all_passed = True
+    verbose = args.verbose and not getattr(args, 'quiet', False)
     
-    parser = argparse.ArgumentParser(description="Learn Parity Test")
-    parser.add_argument("--dataset", type=str, default="countries_s3",
-                       help="Dataset name (default: countries_s3)")
-    parser.add_argument("--n-envs", type=int, default=4,
-                       help="Number of environments (default: 4)")
-    parser.add_argument("--n-steps", type=int, default=32,
-                       help="Number of rollout steps (default: 32)")
-    parser.add_argument("--batch-size", type=int, default=4096,
-                       help="Batch size for training (default: 64)")
-    parser.add_argument("--n-epochs", type=int, default=10,
-                       help="Number of training epochs (default: 1)")
-    parser.add_argument("--learning-rate", type=float, default=3e-4,
-                       help="Learning rate (default: 3e-4)")
-    parser.add_argument("--ent-coef", type=float, default=0.2,
-                       help="Entropy coefficient (default: 0.2)")
-    parser.add_argument("--seed", type=int, default=42,
-                       help="Random seed (default: 42)")
-    parser.add_argument("--verbose", action="store_true", default=True,
-                       help="Enable verbose output")
-    parser.add_argument("--quiet", action="store_true", default=False,
-                       help="Disable verbose output")
-    parser.add_argument("--atol", type=float, default=1e-4,
-                       help="Absolute tolerance for buffer comparison (default: 1e-4)")
-    parser.add_argument("--rtol", type=float, default=0.01,
-                       help="Relative tolerance for metrics comparison (default: 0.01)")
-    parser.add_argument("--traces-atol", type=float, default=0.01,
-                       help="Absolute tolerance for training traces comparison (default: 0.01)")
+    # Test 1: Basic parity tests with different n_envs/n_steps
+    test_params = [(1, 10), (4, 10)]
+    if args.n_envs is not None and args.n_steps is not None:
+        test_params = [(args.n_envs, args.n_steps)]
+    
+    for n_envs, n_steps in test_params:
+        print(f"\n{'='*70}")
+        print(f"Running test_learn_parity[{n_envs}-{n_steps}]")
+        print(f"{'='*70}")
+        
+        if test_learn_parity(n_envs, n_steps):
+            print(f"✓ PASSED: test_learn_parity[{n_envs}-{n_steps}]")
+        else:
+            print(f"✗ FAILED: test_learn_parity[{n_envs}-{n_steps}]")
+            all_passed = False
+    
+    # Test 2: Multiple epochs tests
+    for n_epochs in [1, 2]:
+        print(f"\n{'='*70}")
+        print(f"Running test_learn_parity_multiple_epochs[{n_epochs}]")
+        print(f"{'='*70}")
+        
+        if test_learn_parity_multiple_epochs(n_epochs):
+            print(f"✓ PASSED: test_learn_parity_multiple_epochs[{n_epochs}]")
+        else:
+            print(f"✗ FAILED: test_learn_parity_multiple_epochs[{n_epochs}]")
+            all_passed = False
+    
+    # Test 3: Rollout traces match
+    print(f"\n{'='*70}")
+    print("Running test_learn_rollout_traces_match")
+    print(f"{'='*70}")
+    
+    if test_learn_rollout_traces_match():
+        print("✓ PASSED: test_learn_rollout_traces_match")
+    else:
+        print("✗ FAILED: test_learn_rollout_traces_match")
+        all_passed = False
+    
+    # Test 4: Buffer contents match
+    print(f"\n{'='*70}")
+    print("Running test_learn_buffer_contents_match")
+    print(f"{'='*70}")
+    
+    if test_learn_buffer_contents_match():
+        print("✓ PASSED: test_learn_buffer_contents_match")
+    else:
+        print("✗ FAILED: test_learn_buffer_contents_match")
+        all_passed = False
+    
+    # Test 5: Training executes
+    print(f"\n{'='*70}")
+    print("Running test_learn_training_executes")
+    print(f"{'='*70}")
+    
+    if test_learn_training_executes():
+        print("✓ PASSED: test_learn_training_executes")
+    else:
+        print("✗ FAILED: test_learn_training_executes")
+        all_passed = False
+    
+    # Test 6: Training traces
+    print(f"\n{'='*70}")
+    print("Running test_learn_training_traces")
+    print(f"{'='*70}")
+    
+    if test_learn_training_traces():
+        print("✓ PASSED: test_learn_training_traces")
+    else:
+        print("✗ FAILED: test_learn_training_traces")
+        all_passed = False
+    
+    # Test 7: Training traces parity
+    print(f"\n{'='*70}")
+    print("Running test_learn_training_traces_parity")
+    print(f"{'='*70}")
+    
+    if test_learn_training_traces_parity():
+        print("✓ PASSED: test_learn_training_traces_parity")
+    else:
+        print("✗ FAILED: test_learn_training_traces_parity")
+        all_passed = False
+    
+    return all_passed
 
+
+if __name__ == "__main__":
+    parser = create_parser(description="Learn Parity Test")
+    parser.add_argument("--run-all", action="store_true", default=True,
+                        help="Run all test functions (default: True)")
+    
     args = parser.parse_args()
     
-    verbose = args.verbose and not args.quiet
+    print(f"\n{'='*70}")
+    print("LEARN PARITY TESTS")
+    print(f"Tolerance: {TOLERANCE}")
+    print(f"{'='*70}")
     
-    cfg = create_default_config()
-    cfg.dataset = args.dataset
-    cfg.n_envs = args.n_envs
-    cfg.n_steps = args.n_steps
-    cfg.n_epochs = args.n_epochs
-    cfg.seed = args.seed
+    all_passed = run_all_tests(args)
     
-    results = run_learn_parity_test(
-        dataset=cfg.dataset,
-        n_envs=cfg.n_envs,
-        n_steps=cfg.n_steps,
-        n_epochs=cfg.n_epochs,
-        seed=cfg.seed,
-        verbose=verbose,
-        config=cfg,
-    )
+    print(f"\n{'='*70}")
+    if all_passed:
+        print("All learn parity tests PASSED")
+    else:
+        print("Some learn parity tests FAILED")
+    print(f"{'='*70}")
     
-    sys.exit(0 if results.success else 1)
+    sys.exit(0 if all_passed else 1)

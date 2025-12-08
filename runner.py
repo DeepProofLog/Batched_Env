@@ -37,7 +37,7 @@ from itertools import product
 from typing import List, Optional
 
 from utils.utils import FileLogger
-from train import main
+from train_new import main, run_experiment, TrainParityConfig
 from utils.utils_config import (
     load_experiment_configs,
     parse_scalar,
@@ -73,13 +73,14 @@ if __name__ == "__main__":
         'model_name': 'PPO',
         'ent_coef': 0.2,
         'clip_range': 0.2,
-        'n_epochs': 20,  # Aligned with SB3 (was 10)
-        'lr': 5e-5,  # Aligned with SB3 (was 3e-4)
+        'n_epochs': 5, 
+        'lr': 5e-5,
         'gamma': 0.99,
+        'target_kl': 0.03,  # KL divergence limit for early stopping (aligned with SB3)
 
         # Training params
         'seed': [0],
-        'timesteps_train': 2000,  # Aligned with SB3 (was 200000)
+        'timesteps_train': 90,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
@@ -99,6 +100,8 @@ if __name__ == "__main__":
         'max_depth': 20,
         'memory_pruning': True,
         'corruption_mode': 'dynamic',  # Aligned with SB3 (was True)
+        'corruption_scheme': ['head', 'tail'],
+        'canonical_action_order': False,
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -167,7 +170,13 @@ if __name__ == "__main__":
         base_config['load_model'] = True
         base_config['timesteps_train'] = 0
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Determine device
+    requested_device = base_config.get('device', 'auto')
+    if requested_device == 'auto':
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = requested_device
+
     print(f"Using device: {device}\n")
 
     # Prepare grid search
@@ -267,7 +276,7 @@ if __name__ == "__main__":
 
 
 
-        # Corruption scheme
+        # Corruption scheme - matches SB3's behavior (unconditional override based on dataset)
         namespace.corruption_scheme = ['head', 'tail']
         if 'countries' in namespace.dataset_name or 'ablation' in namespace.dataset_name:
             namespace.corruption_scheme = ['tail']

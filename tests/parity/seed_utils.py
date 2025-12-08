@@ -65,6 +65,7 @@ __all__ = [
     'set_rng_states',
     'ParityTestSeeder',
     'ParityTestConfig',
+    'ParityTolerances',
 ]
 
 import random
@@ -228,6 +229,55 @@ class ParityTestSeeder:
             'negative_sampling': self._negative_sampling_seed,
         }
         return seeds.get(phase, self.seed)
+
+
+@dataclass
+class ParityTolerances:
+    """
+    Unified tolerance settings for parity tests.
+    
+    These tolerances are designed to catch real bugs while allowing for 
+    expected floating-point differences between implementations.
+    
+    Usage:
+        tol = ParityTolerances()
+        np.allclose(sb3_values, tensor_values, rtol=tol.values_rtol)
+    """
+    # Exact match - must be identical
+    buffer_actions_atol: float = 0.0
+    buffer_rewards_atol: float = 1e-6
+    traces_atol: float = 1e-6
+    
+    # Loose match for values that accumulate float errors
+    values_rtol: float = 0.01
+    log_probs_rtol: float = 0.01
+    advantages_rtol: float = 0.01
+    returns_rtol: float = 0.01
+    
+    # Training metrics - use relative tolerance with zero-handling
+    train_metrics_rtol: float = 0.01
+    train_metrics_atol: float = 1e-6  # For near-zero values
+    
+    # Small tolerance for weights (expected to diverge due to float accumulation)
+    weights_atol: float = 1e-3
+    weights_rtol: float = 1e-4
+    
+    # Tight tolerance for eval metrics
+    eval_metrics_atol: float = 1e-3
+    
+    def metrics_close(self, val1: float, val2: float) -> bool:
+        """
+        Compare two metric values handling near-zero cases.
+        
+        Returns True if values match within tolerance, considering both
+        relative tolerance (for large values) and absolute tolerance (for near-zero).
+        """
+        max_abs = max(abs(val1), abs(val2))
+        if max_abs < self.train_metrics_atol:
+            # Both effectively zero
+            return True
+        rel_diff = abs(val1 - val2) / max_abs
+        return rel_diff < self.train_metrics_rtol
 
 
 class ParityTestConfig:

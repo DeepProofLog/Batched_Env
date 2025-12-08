@@ -370,6 +370,7 @@ class PPO_custom(PPO):
             "policy_loss": np.mean(pg_losses) if pg_losses else 0.0,
             "value_loss": np.mean(value_losses) if value_losses else 0.0,
             "entropy": -np.mean(entropy_losses) if entropy_losses else 0.0,
+            "approx_kl": np.mean(approx_kl_divs) if approx_kl_divs else 0.0,
             "clip_fraction": np.mean(clip_fractions) if clip_fractions else 0.0,
         }
         
@@ -412,7 +413,8 @@ class PPO_custom(PPO):
             # Train the model
             print('Training model')
             start = time.time()
-            self.train()
+            train_metrics = self.train()
+            self.last_train_metrics = train_metrics  # Store for external access
             print('Time to train', round(time.time()-start,2))
 
             if not callback.on_step():

@@ -83,6 +83,7 @@ class PPO:
         trace_dir: Optional[str] = None,
         trace_prefix: str = "batched",
         trace_recorder: Optional[TraceRecorder] = None,
+        seed: Optional[int] = None,
     ):
         """
         Initialize the PPO algorithm.
@@ -108,6 +109,7 @@ class PPO:
             trace_dir (Optional[str]): Directory to save traces.
             trace_prefix (str): Prefix for trace files.
             trace_recorder (Optional[TraceRecorder]): Existing recorder instance.
+            seed (Optional[int]): Random seed for RNG synchronization between rollouts.
         """
         self.policy = policy
         self.env = env
@@ -126,6 +128,7 @@ class PPO:
         self.target_kl = target_kl
         self.device = device if device is not None else torch.device('cpu')
         self.verbose = verbose
+        self.seed = seed  # For RNG synchronization in parity testing
         self.trace_recorder = trace_recorder or (TraceRecorder(trace_dir, prefix=trace_prefix) if trace_dir else None)
         self._trace_episode_ids = None
         self._trace_lengths = None
@@ -154,6 +157,7 @@ class PPO:
         self.num_timesteps = 0
         
         # Initialize optimizer
+        # NOTE: eps=1e-5 matches SB3's default (not PyTorch's 1e-8) - critical for parity!
         self.optimizer = torch.optim.Adam(
             self.policy.parameters(),
             lr=self.learning_rate,
@@ -560,6 +564,16 @@ class PPO:
                         "new_log_probs_mean": log_probs.mean().item(),
                     })
                 
+                # Check KL divergence for early stopping BEFORE optimizer step (matching SB3)
+                # This prevents applying the update when KL exceeds threshold
+                if self.target_kl is not None:
+                    approx_kl_div = approx_kl_div_t.item()
+                    if approx_kl_div > 1.5 * self.target_kl:
+                        continue_training = False
+                        if self.verbose >= 1:
+                            print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                        break
+                
                 # Optimization step
                 # --------------------
                 self.optimizer.zero_grad()
@@ -573,7 +587,7 @@ class PPO:
                     )
                 
                 self.optimizer.step()
-                
+
                 if self.target_kl is not None:
                     # Sync only if needed for early stopping (once per batch)
                     # We can optimize this if target_kl is None, but usually we check it.
@@ -655,7 +669,16 @@ class PPO:
         
         # Only reset environment if needed (first call or explicit reset)
         if reset_num_timesteps or self._last_obs is None:
+            # RNG TRACE: Before env.reset()
+            rng_before_reset = torch.get_rng_state().sum().item()
+            print(f"[RNG_TRACE] Before env.reset(): {rng_before_reset}")
+            
             current_obs = self.env.reset()
+            
+            # RNG TRACE: After env.reset()
+            rng_after_reset = torch.get_rng_state().sum().item()
+            print(f"[RNG_TRACE] After env.reset(): {rng_after_reset}")
+            
             current_episode_reward = torch.zeros(self.n_envs, device=self.device)
             current_episode_length = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
             episode_starts = torch.ones(self.n_envs, dtype=torch.float32, device=self.device)
@@ -728,6 +751,9 @@ class PPO:
             train_time = time.time() - train_start_time
             train_extra = {**train_metrics, "total_timesteps": total_steps_done, "iterations": iteration}
             print_formatted_metrics(metrics={}, prefix="train", extra_metrics=train_extra)
+            
+            # Store last training metrics for external access
+            self.last_train_metrics = train_metrics
             
             if self.verbose:
                 print(f"[PPO] Training completed in {train_time:.2f}s")

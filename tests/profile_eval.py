@@ -27,7 +27,11 @@ from time import time
 
 import numpy as np
 import torch
-from torch.profiler import profile, ProfilerActivity
+try:
+    from torch.profiler import profile, ProfilerActivity
+except (ImportError, ModuleNotFoundError):
+    profile = None
+    ProfilerActivity = None
 
 from utils.seeding import seed_all
 

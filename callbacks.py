@@ -935,6 +935,7 @@ class MRREvaluationCallback(EvaluationCallback):
         collect_detailed: bool = True,
         verbose_cb: bool = False,
         corruption_scheme: Optional[List[str]] = None,
+        policy: Optional[nn.Module] = None,
     ):
         """
         Args:
@@ -951,6 +952,7 @@ class MRREvaluationCallback(EvaluationCallback):
             collect_detailed: If True, collect detailed breakdown by depth
             verbose_cb: If True, print debug information during callback collection
             corruption_scheme: List of corruption modes (e.g., ['head', 'tail'])
+            policy: Policy network to save (if provided)
         """
         # Convert eval_data to list format if needed for parent class compatibility
         if isinstance(eval_data, torch.Tensor):
@@ -979,6 +981,7 @@ class MRREvaluationCallback(EvaluationCallback):
         self.model_name = model_name
         self.corruption_scheme = corruption_scheme or ["head", "tail"]
         self.best_epoch_step = None
+        self.policy = policy
         
         # Metric configuration
         metric_options = {
@@ -1109,7 +1112,7 @@ class MRREvaluationCallback(EvaluationCallback):
             return {}
         
         # Import here to avoid circular imports
-        from model_eval import evaluate_ranking_metrics, evaluate_policy
+        from model_eval import eval_corruptions, evaluate_policy
         
         try:
             # Use the policy's _predict_actions method which handles embeddings correctly
@@ -1138,6 +1141,9 @@ class MRREvaluationCallback(EvaluationCallback):
                         "action": actions,
                         "sample_log_prob": log_probs
                     }, batch_size=obs_td.batch_size)
+                
+                def parameters(self):
+                    return self.policy.parameters()
             
             wrapped_policy = PolicyWrapper(policy)
             
@@ -1151,12 +1157,11 @@ class MRREvaluationCallback(EvaluationCallback):
                 query_depths_tensor = torch.tensor(depths_clean, dtype=torch.long, device=device)
 
             # Do MRR evaluation (internally calls evaluate_policy which collects episode stats)
-            metrics = evaluate_ranking_metrics(
+            metrics = eval_corruptions(
                 actor=wrapped_policy,
                 env=self.eval_env,
                 queries=self.eval_queries_tensor,
                 sampler=self.sampler,
-                query_depths=query_depths_tensor,
                 n_corruptions=self.n_corruptions,
                 corruption_modes=self.corruption_scheme,
                 deterministic=True,
@@ -1184,6 +1189,8 @@ class MRREvaluationCallback(EvaluationCallback):
             return transformed_metrics
         except Exception as e:
             if self.verbose:
+                import traceback
+                traceback.print_exc()
                 print(f"Warning: MRR evaluation failed: {e}")
             return {}
     
@@ -1206,6 +1213,13 @@ class MRREvaluationCallback(EvaluationCallback):
         info_path = save_dir / f'info_best_eval_{self.model_name}.json'
         with open(info_path, 'w') as f:
             json.dump(info, f, indent=4)
+        
+        # Save actual model if policy is available
+        if self.policy is not None:
+            model_path = save_dir / f'best_model.pt'
+            torch.save(self.policy.state_dict(), model_path)
+            if self.verbose:
+                print(f"  Saved best model to {model_path}")
         
         if self.verbose:
             print(f"  Saved checkpoint info to {info_path}")

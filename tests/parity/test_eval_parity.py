@@ -10,7 +10,6 @@ Uses deterministic action selection and aligned environments to ensure
 reproducible comparisons.
 
 Usage:
-    pytest tests/parity/test_eval_parity.py -v
     python tests/parity/test_eval_parity.py --dataset countries_s3 --n-eval-episodes 10
 """
 import os
@@ -20,7 +19,6 @@ from typing import List, Dict, Tuple, Any, Optional
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-import pytest
 import torch
 import torch.nn as nn
 import numpy as np
@@ -28,6 +26,7 @@ from collections import deque
 
 # Import seeding utilities (must be before other local imports to set up paths correctly)
 from seed_utils import ParityTestSeeder, ParityTestConfig, seed_all
+from parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 # Setup paths
 ROOT = Path(__file__).resolve().parents[2]
@@ -911,6 +910,7 @@ def run_evaluate_policy_parity(
             env=tensor_env,
             target_episodes=targets,  # Use per-env targets like SB3
             track_logprobs=True,
+            verbose=True
         )
         
         tensor_rewards = tensor_results['rewards'].numpy()

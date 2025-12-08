@@ -83,6 +83,12 @@ class TrainParityConfig:
     # Embedding / model
     atom_embedding_size: int = 64
     
+    # Model saving / evaluation
+    eval_freq: int = 0  # Evaluate every N timesteps (0 = only at end)
+    save_model: bool = False  # Save model checkpoints
+    model_path: str = "./models/"  # Path to save models
+    restore_best: bool = True  # Restore best model after training
+    
     # Misc
     seed: int = 42
     device: str = "cpu"
@@ -226,6 +232,59 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
 
 def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     """Run full training experiment and return evaluation metrics."""
+    from pathlib import Path
+    from stable_baselines3.common.callbacks import BaseCallback
+    
+    # Custom callback for MRR evaluation during training
+    class MRREvalCallback(BaseCallback):
+        """Callback that evaluates MRR and saves best model."""
+        def __init__(self, eval_env, sampler, data_handler, config, model_path=None):
+            super().__init__()
+            self.eval_env = eval_env
+            self.sampler = sampler
+            self.data_handler = data_handler
+            self.config = config
+            self.model_path = Path(model_path) if model_path else None
+            self.best_mrr = -1.0
+            self.best_weights = None
+            self.eval_count = 0
+            
+        def _on_step(self) -> bool:
+            # Check if it's time to evaluate
+            if self.config.eval_freq <= 0:
+                return True
+            if self.num_timesteps > 0 and self.num_timesteps % self.config.eval_freq == 0:
+                self.eval_count += 1
+                
+                # Run evaluation
+                test_queries = self.data_handler.valid_queries[:self.config.n_envs * 4]
+                eval_results = sb3_eval_corruptions(
+                    model=self.model,
+                    env=self.eval_env,
+                    data=test_queries,
+                    sampler=self.sampler,
+                    n_corruptions=self.config.n_corruptions,
+                    corruption_scheme=['tail'],
+                    verbose=0,
+                )
+                
+                current_mrr = eval_results.get('mrr_mean', 0.0)
+                print(f"[Eval {self.eval_count}] timesteps={self.num_timesteps}, MRR={current_mrr:.4f}", end="")
+                
+                # Check if new best
+                if current_mrr > self.best_mrr:
+                    self.best_mrr = current_mrr
+                    self.best_weights = {k: v.cpu().clone() for k, v in self.model.policy.state_dict().items()}
+                    print(f" ★ New best!")
+                    
+                    if self.model_path and self.config.save_model:
+                        self.model_path.mkdir(parents=True, exist_ok=True)
+                        self.model.save(self.model_path / "best_model")
+                        print(f"    Saved to {self.model_path / 'best_model'}")
+                else:
+                    print()
+            return True
+    
     print("=" * 70)
     print("SB3 TRAINING")
     print(f"Dataset: {config.dataset}")
@@ -239,14 +298,56 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     seed_all(config.seed)
     sb3_comp = create_sb3_components(config)
     
+    # [PARITY] Output IndexManager info
+    im = sb3_comp['im']
+    print(f"[PARITY] IndexManager: constants={im.constant_no}, predicates={im.predicate_no}")
+    
+    # [PARITY] Output Embedder checksum
+    embedder = sb3_comp['embedder']
+    embedder_checksum = sum(p.sum().item() for p in embedder.parameters())
+    print(f"[PARITY] Embedder checksum: {embedder_checksum:.6f}")
+    
+    # [PARITY] Output Policy init checksum
+    policy = sb3_comp['model'].policy
+    policy_checksum_init = sum(p.sum().item() for p in policy.parameters())
+    print(f"[PARITY] Policy checksum after creation: {policy_checksum_init:.6f}")
+    
+    # [PARITY] Output RNG state before sampler
+    print(f"[PARITY] RNG state before sampler: {torch.get_rng_state().sum().item():.0f}")
+    
+    # Create callback if eval_freq is set
+    callback = None
+    if config.eval_freq > 0:
+        callback = MRREvalCallback(
+            eval_env=sb3_comp['eval_env'],
+            sampler=sb3_comp['sampler'],
+            data_handler=sb3_comp['dh'],
+            config=config,
+            model_path=config.model_path if config.save_model else None,
+        )
+        print(f"[Callback] Evaluating every {config.eval_freq} timesteps")
+    
     # SB3 training
     print("\n[2/3] Running training...")
     seed_all(config.seed)
-    sb3_comp['model'].learn(total_timesteps=config.total_timesteps, progress_bar=False)
+    sb3_comp['model'].learn(total_timesteps=config.total_timesteps, progress_bar=False, callback=callback)
+    
+    # Restore best model if we tracked it
+    if callback is not None and callback.best_weights is not None and config.restore_best:
+        print(f"\n[Best Model] Restoring best model (MRR={callback.best_mrr:.4f})")
+        sb3_comp['model'].policy.load_state_dict(callback.best_weights)
+    
+    # [PARITY] Output Policy trained checksum
+    policy_checksum_trained = sum(p.sum().item() for p in policy.parameters())
+    print(f"[PARITY] Policy checksum after training: {policy_checksum_trained:.6f}")
     
     # SB3 evaluation
     print("\n[3/3] Running evaluation...")
     seed_all(config.seed + 1000)
+    
+    # [PARITY] Output RNG state before eval
+    print(f"[PARITY] RNG before eval: {torch.get_rng_state().sum().item():.0f}")
+    
     test_queries = sb3_comp['dh'].test_queries[:config.n_envs * 4]
     
     sb3_eval_results = sb3_eval_corruptions(
@@ -259,14 +360,43 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
         verbose=0,
     )
     
-    results = {
-        "MRR": sb3_eval_results.get('mrr_mean', 0.0),
-        "Hits@1": sb3_eval_results.get('hits1_mean', 0.0)
-    }
+    # Extract results
+    mrr = sb3_eval_results.get('mrr_mean', 0.0)
+    hits1 = sb3_eval_results.get('hits1_mean', 0.0)
+    hits3 = sb3_eval_results.get('hits3_mean', 0.0)
+    hits10 = sb3_eval_results.get('hits10_mean', 0.0)
     
-    print("\nEvaluation Results:")
-    print(f"  SB3 MRR: {results['MRR']:.4f}")
-    print(f"  SB3 Hits@1: {results['Hits@1']:.4f}")
+    # [PARITY] Output metrics in format parse_metrics expects
+    print(f"\n[PARITY] Evaluation Results:")
+    print(f"[PARITY] SB3 MRR: {mrr:.4f}")
+    print(f"[PARITY] SB3 Hits@1: {hits1:.4f}")
+    print(f"[PARITY] SB3 Hits@3: {hits3:.4f}")
+    print(f"[PARITY] SB3 Hits@10: {hits10:.4f}")
+    
+    # Get training stats from SB3 model
+    model = sb3_comp['model']
+    train_stats = getattr(model, 'last_train_metrics', {})
+    
+    # Comprehensive results dict
+    results = {
+        # Evaluation metrics
+        "MRR": mrr,
+        "Hits@1": hits1,
+        "Hits@3": hits3,
+        "Hits@10": hits10,
+        # Checksums
+        "index_manager_constants": im.constant_no,
+        "index_manager_predicates": im.predicate_no,
+        "embedder_checksum": embedder_checksum,
+        "policy_checksum_init": policy_checksum_init,
+        "policy_checksum_trained": policy_checksum_trained,
+        # Training losses (from last epoch)
+        "policy_loss": train_stats.get('policy_loss', 0.0),
+        "value_loss": train_stats.get('value_loss', 0.0),
+        "entropy": train_stats.get('entropy', 0.0),
+        "approx_kl": train_stats.get('approx_kl', 0.0),
+        "clip_fraction": train_stats.get('clip_fraction', 0.0),
+    }
     
     return results
 
@@ -284,6 +414,15 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--ent-coef", type=float, default=0.0)
+    # Callback / model saving options
+    parser.add_argument("--eval-freq", type=int, default=0,
+                        help="Evaluate every N timesteps (0=only at end)")
+    parser.add_argument("--save-model", action="store_true", default=False,
+                        help="Save model checkpoints")
+    parser.add_argument("--model-path", type=str, default="./models/",
+                        help="Path to save models")
+    parser.add_argument("--no-restore-best", action="store_true", default=False,
+                        help="Don't restore best model after training")
     
     args = parser.parse_args()
     
@@ -300,6 +439,10 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         ent_coef=args.ent_coef,
+        eval_freq=args.eval_freq,
+        save_model=args.save_model,
+        model_path=args.model_path,
+        restore_best=not args.no_restore_best,
     )
     
     run_experiment(config)

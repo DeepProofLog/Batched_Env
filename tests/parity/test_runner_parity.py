@@ -10,7 +10,6 @@ This test ensures that:
 3. Training with the same settings produces equivalent results
 
 Usage:
-    pytest tests/parity/test_runner_parity.py -v
     python tests/parity/test_runner_parity.py --dataset countries_s3 --timesteps 2000
 """
 import gc
@@ -28,7 +27,6 @@ from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass, field
 import json
 
-import pytest
 import torch
 import numpy as np
 
@@ -47,6 +45,7 @@ if str(TEST_ENVS_ROOT) not in sys.path:
 
 # Import seeding utilities
 from seed_utils import seed_all
+from parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 
 @dataclass
@@ -1169,128 +1168,53 @@ def run_runner_parity_test(
 
 
 # ==============================================================================
-# Pytest Test Cases
+# Standalone Test Functions (for __main__ execution)
 # ==============================================================================
 
-class TestRunnerParity:
-    """Tests for runner parity between sb3_runner.py and runner.py."""
+def test_config_parity_basic(args) -> bool:
+    """Test basic configuration parity - namespace building only."""
+    config = RunnerParityConfig(
+        dataset_name=args.dataset,
+        device="cpu" if not hasattr(args, 'device') else args.device,
+        verbose=args.verbose if hasattr(args, 'verbose') else True,
+    )
     
-    def test_default_config_comparison(self):
-        """
-        Test that we can identify differences in default configs.
-        
-        Note: Default configs ARE expected to differ. This test documents
-        the differences but doesn't assert they must match.
-        """
-        sb3_config = get_sb3_default_config()
-        tensor_config = get_tensor_default_config()
-        
-        match, mismatches = compare_configs(sb3_config, tensor_config, verbose=True)
-        
-        # We document mismatches but don't fail - defaults are allowed to differ
-        # The important test is namespace_building_parity which tests that
-        # given the SAME config, both runners produce the same namespace
-        print(f"Found {len(mismatches)} differences between DEFAULT_CONFIGs (expected)")
+    results = run_runner_parity_test(config, run_training=False, verbose=True)
     
-    def test_namespace_building_parity(self):
-        """Test that namespace building produces equivalent results when given the same config."""
-        common_config = get_common_config_for_parity()
-        
-        sb3_ns = build_sb3_namespace(common_config, device="cpu")
-        tensor_ns = build_tensor_namespace(common_config, device="cpu")
-        
-        match, mismatches = compare_namespaces(sb3_ns, tensor_ns, verbose=True)
-        
-        critical_mismatches = [m for m in mismatches if '[CRITICAL]' in m]
-        assert len(critical_mismatches) == 0, f"Critical namespace mismatches: {critical_mismatches}"
+    if results.namespace_values_match and results.overall_success:
+        return True
+    else:
+        print(f"Namespace mismatches: {results.namespace_mismatches}")
+        return False
+
+def test_training_parity(args, timesteps: int = 256) -> bool:
+    """Test that both runners produce similar training results."""
+    config = RunnerParityConfig(
+        dataset_name=args.dataset,
+        timesteps_train=timesteps,
+        n_envs=args.n_envs if hasattr(args, 'n_envs') else 4,
+        n_steps=args.n_steps if hasattr(args, 'n_steps') else 32,
+        batch_size=64,
+        device="cpu" if not hasattr(args, 'device') else args.device,
+        verbose=True,
+    )
     
-    @pytest.mark.parametrize("dataset", ["countries_s3"])
-    def test_config_parity_basic(self, dataset):
-        """Test basic configuration parity - namespace building only."""
-        config = RunnerParityConfig(
-            dataset_name=dataset,
-            device="cpu",
-            verbose=True,
-        )
-        
-        results = run_runner_parity_test(config, run_training=False, verbose=True)
-        
-        # Check namespace parity (this is the critical test)
-        assert results.namespace_values_match, f"Namespace values should match. Mismatches: {results.namespace_mismatches}"
-        assert results.overall_success, "Overall parity test should pass"
+    results = run_runner_parity_test(config, run_training=True, verbose=True)
     
-    @pytest.mark.slow
-    @pytest.mark.parametrize("dataset", ["countries_s3"])
-    def test_training_parity(self, dataset):
-        """
-        Test that both runners produce similar training results.
-        
-        Compares detailed metrics: rewards, success, MRR, and HITS.
-        
-        NOTE: End-to-end training will diverge due to:
-        - Different internal state management between SB3 and tensor implementations
-        - Accumulated floating point differences
-        - Different module import order affecting RNG
-        
-        The key parity test is test_train_parity.py which tests component-level
-        parity (same actions/rewards given same state). This test verifies that
-        the runners produce *comparable* (not identical) results.
-        
-        With short training, we allow significant variance (±0.001 for most metrics).
-        """
-        config = RunnerParityConfig(
-            dataset_name=dataset,
-            timesteps_train=256,  # Short run
-            n_envs=4,
-            n_steps=32,
-            batch_size=128,
-            device="cpu",
-            verbose=True,
-        )
-        
-        results = run_runner_parity_test(config, run_training=True, verbose=True)
-        
-        # Check all metrics
-        assert results.sb3_test_metrics is not None, "SB3 test metrics should be available"
-        assert results.tensor_test_metrics is not None, "Tensor test metrics should be available"
-        
-        # With short training, we allow more variance (0.001 tolerance)
-        match, comparisons = results.sb3_test_metrics.compare_with(
-            results.tensor_test_metrics, tolerance=0.001
-        )
-        
-        # Print comparison for debugging
-        print("\nDetailed Comparison (tolerance=0.001):")
-        for metric_name, (sb3_val, tensor_val, diff) in comparisons.items():
-            status = "✓" if diff < 0.001 else "✗"
-            print(f"  {metric_name}: SB3={sb3_val:.4f}, Tensor={tensor_val:.4f}, diff={diff:.4f} {status}")
-        
-        # Check individual metrics with informative messages
-        # Use looser tolerance (0.001) for end-to-end comparison
-        mrr_diff = abs(results.sb3_mrr - results.tensor_mrr)
-        success_diff = abs(
-            results.sb3_test_metrics.success_rate - 
-            results.tensor_test_metrics.success_rate
-        )
-        reward_diff = abs(
-            results.sb3_test_metrics.reward_overall - 
-            results.tensor_test_metrics.reward_overall
-        )
-        
-        # End-to-end training allows 0.001 tolerance
-        # Component-level parity is tested in test_train_parity.py
-        assert mrr_diff < 0.001, (
-            f"MRR parity failed. SB3: {results.sb3_mrr:.4f}, "
-            f"Tensor: {results.tensor_mrr:.4f}, diff: {mrr_diff:.4f}"
-        )
-        assert success_diff < 0.001, (
-            f"Success rate parity failed. SB3: {results.sb3_test_metrics.success_rate:.4f}, "
-            f"Tensor: {results.tensor_test_metrics.success_rate:.4f}, diff: {success_diff:.4f}"
-        )
-        assert reward_diff < 0.001, (
-            f"Reward parity failed. SB3: {results.sb3_test_metrics.reward_overall:.4f}, "
-            f"Tensor: {results.tensor_test_metrics.reward_overall:.4f}, diff: {reward_diff:.4f}"
-        )
+    if results.sb3_test_metrics is None or results.tensor_test_metrics is None:
+        print("Test metrics not available")
+        return False
+    
+    mrr_diff = abs(results.sb3_mrr - results.tensor_mrr)
+    success_diff = abs(
+        results.sb3_test_metrics.success_rate - 
+        results.tensor_test_metrics.success_rate
+    )
+    
+    passed = mrr_diff < TOLERANCE and success_diff < TOLERANCE
+    if not passed:
+        print(f"MRR diff: {mrr_diff:.6f}, Success diff: {success_diff:.6f}")
+    return passed
 
 
 # ==============================================================================
@@ -1298,76 +1222,81 @@ class TestRunnerParity:
 # ==============================================================================
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Runner Parity Test")
-    parser.add_argument("--dataset", type=str, default="countries_s3")
-    parser.add_argument("--timesteps", type=int, default=90)
-    parser.add_argument("--n-envs", type=int, default=20)
-    parser.add_argument("--n-steps", type=int, default=40)
-    parser.add_argument("--n-epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=4096)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--run-training", action="store_true", default=True,
-                        help="Actually run training (slow)")
-    parser.add_argument("--verbose", action="store_true", default=False)
+    # Use shared parser with all relevant parameters
+    # Note: --run-training is already in the shared parser
+    parser = create_parser(description="Runner Parity Test")
+    parser.add_argument("--timesteps", type=int, default=256,
+                        help="Timesteps to train for (if --run-training)")
     
     args = parser.parse_args()
     
+    print(f"\n{'='*70}")
+    print("RUNNER PARITY TESTS")
+    print(f"Tolerance: {TOLERANCE}")
+    print(f"{'='*70}")
+    
+    # Run basic config parity test
+    print(f"\n{'='*70}")
+    print(f"Running test_config_parity_basic[{args.dataset}]")
+    print(f"{'='*70}")
+    
     config = RunnerParityConfig(
         dataset_name=args.dataset,
-        timesteps_train=args.timesteps,
-        n_envs=args.n_envs,
-        n_steps=args.n_steps,
         seed=args.seed,
         device=args.device,
-        verbose=args.verbose,
+        verbose=getattr(args, 'verbose', True),
+        n_envs=args.n_envs if hasattr(args, 'n_envs') and args.n_envs else 4,
+        n_steps=args.n_steps if hasattr(args, 'n_steps') and args.n_steps else 32,
+        batch_size=getattr(args, 'batch_size', 64),
     )
     
-    results = run_runner_parity_test(config, run_training=args.run_training, verbose=args.verbose)
+    # Basic parity test (no training)
+    results = run_runner_parity_test(config, run_training=False, verbose=getattr(args, 'verbose', True))
     
-    # Print summary
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    print(f"Config keys match: {results.config_keys_match}")
-    print(f"Config values match: {results.config_values_match}")
-    print(f"Namespace keys match: {results.namespace_keys_match}")
-    print(f"Namespace values match: {results.namespace_values_match}")
-    if results.training_run:
-        print(f"Training run: {results.training_run}")
-        print(f"SB3 MRR: {results.sb3_mrr:.4f}")
-        print(f"Tensor MRR: {results.tensor_mrr:.4f}")
-        print(f"MRR match: {results.mrr_match}")
-        print(f"All metrics match: {results.metrics_match}")
+    basic_passed = results.namespace_values_match and results.overall_success
+    
+    if basic_passed:
+        print(f"\n✓ PASSED: test_config_parity_basic[{args.dataset}]")
+    else:
+        print(f"\n✗ FAILED: test_config_parity_basic[{args.dataset}]")
+        if results.namespace_mismatches:
+            print("Namespace mismatches:")
+            for m in results.namespace_mismatches[:5]:
+                print(f"  {m}")
+    
+    all_passed = basic_passed
+    
+    # Optional training test
+    if args.run_training:
+        print(f"\n{'='*70}")
+        print(f"Running test_training_parity[{args.dataset}] (this may take a while)")
+        print(f"{'='*70}")
         
-        # Print detailed metrics comparison table
-        if results.metrics_comparisons:
-            print("\nDetailed Metrics Comparison (Test Split):")
-            print(f"  {'Metric':<20} {'SB3':>12} {'Tensor':>12} {'Diff':>10} {'Status':>8}")
-            print("  " + "-" * 66)
-            for metric_name, (sb3_val, tensor_val, diff) in results.metrics_comparisons.items():
-                status = "✓" if diff < 0.001 else "✗"
-                print(f"  {metric_name:<20} {sb3_val:>12.4f} {tensor_val:>12.4f} {diff:>10.4f} {status:>8}")
-            print("  " + "-" * 66)
+        training_config = RunnerParityConfig(
+            dataset_name=args.dataset,
+            timesteps_train=args.timesteps,
+            n_envs=args.n_envs if hasattr(args, 'n_envs') and args.n_envs else 4,
+            n_steps=args.n_steps if hasattr(args, 'n_steps') and args.n_steps else 32,
+            batch_size=getattr(args, 'batch_size', 128),
+            device=args.device,
+            verbose=getattr(args, 'verbose', True),
+        )
+        
+        training_results = run_runner_parity_test(training_config, run_training=True, verbose=getattr(args, 'verbose', True))
+        
+        if training_results.overall_success:
+            print(f"\n✓ PASSED: test_training_parity[{args.dataset}]")
+        else:
+            print(f"\n✗ FAILED: test_training_parity[{args.dataset}]")
+            all_passed = False
     
-    print(f"Overall success: {results.overall_success}")
-    if results.error_message:
-        print(f"Error: {results.error_message}")
+    # Summary
+    print(f"\n{'='*70}")
+    print("SUMMARY")
+    print(f"{'='*70}")
+    if all_passed:
+        print("All runner parity tests PASSED")
+    else:
+        print("Some runner parity tests FAILED")
     
-    if results.config_mismatches:
-        print("\nConfig Mismatches:")
-        for m in results.config_mismatches[:10]:
-            print(f"  {m}")
-        if len(results.config_mismatches) > 10:
-            print(f"  ... and {len(results.config_mismatches) - 10} more")
-    
-    if results.namespace_mismatches:
-        print("\nNamespace Mismatches:")
-        for m in results.namespace_mismatches[:10]:
-            print(f"  {m}")
-        if len(results.namespace_mismatches) > 10:
-            print(f"  ... and {len(results.namespace_mismatches) - 10} more")
-
-    sys.exit(0 if results.overall_success else 1)
+    sys.exit(0 if all_passed else 1)

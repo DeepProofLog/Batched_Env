@@ -562,11 +562,21 @@ class BatchedEnv(EnvBase):
         
         # Vectorized corruption: corrupt ALL N atoms in one call
         # This ensures RNG is consumed in sequential order for all N envs
+        
+        # RNG TRACE: Before sampler.corrupt()
+        import torch
+        rng_before_corrupt = torch.get_rng_state().sum().item()
+        print(f"[RNG_TRACE] Before sampler.corrupt(): {rng_before_corrupt}, N={N}")
+        
         corrupted_atoms = self.sampler.corrupt(
             batch_first_atoms,  # [N, D]
             num_negatives=1,
             device=device
         )  # [N, 1, D] or [N, D]
+        
+        # RNG TRACE: After sampler.corrupt()
+        rng_after_corrupt = torch.get_rng_state().sum().item()
+        print(f"[RNG_TRACE] After sampler.corrupt(): {rng_after_corrupt} (consumed: {rng_after_corrupt - rng_before_corrupt})")
         
         # Normalize shape to [N, D]
         if corrupted_atoms.dim() == 3:

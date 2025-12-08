@@ -70,6 +70,12 @@ class TrainParityConfig:
     # Embedding / model
     atom_embedding_size: int = 64
     
+    # Model saving / evaluation
+    eval_freq: int = 0  # Evaluate every N timesteps (0 = only at end)
+    save_model: bool = False  # Save model checkpoints
+    model_path: str = "./models/"  # Path to save models
+    restore_best: bool = True  # Restore best model after training
+    
     # Misc
     seed: int = 42
     device: str = "cpu"
@@ -83,6 +89,93 @@ def seed_all(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def make_eval_callback(
+    eval_env,
+    eval_queries,
+    sampler,
+    policy,
+    config: TrainParityConfig,
+    model_path: str = None,
+):
+    """
+    Create an evaluation callback that:
+    1. Evaluates MRR periodically during training
+    2. Saves model when a new best MRR is achieved
+    3. Returns the callback function and a state dict for tracking best model
+    
+    Args:
+        eval_env: Evaluation environment
+        eval_queries: Tensor of evaluation queries
+        sampler: Sampler for corruption generation
+        policy: Policy network to save
+        config: Training config
+        model_path: Path to save best model (None = no saving)
+    
+    Returns:
+        Tuple of (callback_fn, state_dict)
+    """
+    from pathlib import Path
+    
+    # State dict to track best model across callback invocations
+    state = {
+        'best_mrr': -1.0,
+        'best_weights': None,
+        'eval_count': 0,
+        'total_timesteps_at_eval': [],
+    }
+    
+    def callback(locals_dict, globals_dict):
+        """Callback invoked at end of each learn iteration."""
+        iteration = locals_dict.get('iteration', 0)
+        total_steps_done = locals_dict.get('total_steps_done', 0)
+        
+        # Only evaluate if eval_freq is set and it's time
+        if config.eval_freq <= 0:
+            return True  # Continue training
+        
+        if total_steps_done > 0 and total_steps_done % config.eval_freq == 0:
+            state['eval_count'] += 1
+            state['total_timesteps_at_eval'].append(total_steps_done)
+            
+            # Run evaluation
+            policy.eval()
+            with torch.no_grad():
+                eval_results = tensor_eval_corruptions(
+                    actor=policy,
+                    env=eval_env,
+                    queries=eval_queries,
+                    sampler=sampler,
+                    n_corruptions=config.n_corruptions,
+                    corruption_modes=('tail',),
+                    verbose=False,
+                )
+            policy.train()
+            
+            current_mrr = eval_results.get('MRR', 0.0)
+            
+            print(f"[Eval {state['eval_count']}] timesteps={total_steps_done}, MRR={current_mrr:.4f}", end="")
+            
+            # Check if new best
+            if current_mrr > state['best_mrr']:
+                state['best_mrr'] = current_mrr
+                # Save current weights as best
+                state['best_weights'] = {k: v.clone() for k, v in policy.state_dict().items()}
+                print(f" ★ New best!")
+                
+                # Save to disk if path specified
+                if model_path and config.save_model:
+                    save_path = Path(model_path)
+                    save_path.mkdir(parents=True, exist_ok=True)
+                    torch.save(policy.state_dict(), save_path / "best_model.pt")
+                    print(f"    Saved to {save_path / 'best_model.pt'}")
+            else:
+                print()
+        
+        return True  # Continue training
+    
+    return callback, state
 
 def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
     """Create tensor training components (data handler, index manager, env, model)."""
@@ -275,6 +368,46 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     seed_all(config.seed)
     tensor_comp = create_tensor_components(config)
     
+    # [PARITY] Output IndexManager info
+    im = tensor_comp['im']
+    print(f"[PARITY] IndexManager: constants={im.constant_no}, predicates={im.predicate_no}")
+    
+    # [PARITY] Output Embedder checksum
+    embedder = tensor_comp['embedder']
+    embedder_checksum = sum(p.sum().item() for p in embedder.parameters())
+    print(f"[PARITY] Embedder checksum: {embedder_checksum:.6f}")
+    
+    # [PARITY] Output Policy init checksum
+    policy = tensor_comp['policy']
+    policy_checksum_init = sum(p.sum().item() for p in policy.parameters())
+    print(f"[PARITY] Policy checksum after creation: {policy_checksum_init:.6f}")
+    
+    # [PARITY] Output RNG state before sampler
+    print(f"[PARITY] RNG state before sampler: {torch.get_rng_state().sum().item():.0f}")
+    
+    # Prepare eval queries for callback (do this before training to avoid RNG drift)
+    tensor_im = tensor_comp['im']
+    eval_query_objs = tensor_comp['dh'].valid_queries[:config.n_envs * 4]  # Use valid for eval during training
+    eval_query_atoms = []
+    for q in eval_query_objs:
+        query_atom = tensor_im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+        eval_query_atoms.append(query_atom)
+    eval_queries = torch.stack(eval_query_atoms, dim=0)
+    
+    # Create evaluation callback if eval_freq is set
+    callback = None
+    callback_state = None
+    if config.eval_freq > 0:
+        callback, callback_state = make_eval_callback(
+            eval_env=tensor_comp['eval_env'],
+            eval_queries=eval_queries,
+            sampler=tensor_comp['sampler'],
+            policy=tensor_comp['policy'],
+            config=config,
+            model_path=config.model_path if config.save_model else None,
+        )
+        print(f"[Callback] Evaluating every {config.eval_freq} timesteps")
+    
     # Tensor training
     print("\n[2/3] Running training...")
     seed_all(config.seed)
@@ -291,11 +424,24 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
         device=tensor_comp['device'],
         verbose=True,
     )
-    tensor_ppo.learn(total_timesteps=config.total_timesteps)
+    tensor_ppo.learn(total_timesteps=config.total_timesteps, callback=callback)
+    
+    # Restore best model if we tracked it
+    if callback_state is not None and callback_state['best_weights'] is not None and config.restore_best:
+        print(f"\n[Best Model] Restoring best model (MRR={callback_state['best_mrr']:.4f})")
+        policy.load_state_dict(callback_state['best_weights'])
+    
+    # [PARITY] Output Policy trained checksum
+    policy_checksum_trained = sum(p.sum().item() for p in policy.parameters())
+    print(f"[PARITY] Policy checksum after training: {policy_checksum_trained:.6f}")
     
     # Tensor evaluation
     print("\n[3/3] Running evaluation...")
     seed_all(config.seed + 1000)
+    
+    # [PARITY] Output RNG state before eval
+    print(f"[PARITY] RNG before eval: {torch.get_rng_state().sum().item():.0f}")
+    
     tensor_comp['policy'].eval()
     
     # Get test queries and convert to tensor
@@ -317,14 +463,42 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
         verbose=False,
     )
     
-    results = {
-        "MRR": tensor_eval_results.get('MRR', 0.0),
-        "Hits@1": tensor_eval_results.get('Hits@1', 0.0)
-    }
+    # Extract results
+    mrr = tensor_eval_results.get('MRR', 0.0)
+    hits1 = tensor_eval_results.get('Hits@1', 0.0)
+    hits3 = tensor_eval_results.get('Hits@3', 0.0)
+    hits10 = tensor_eval_results.get('Hits@10', 0.0)
     
-    print("\nEvaluation Results:")
-    print(f"  Tensor MRR: {results['MRR']:.4f}")
-    print(f"  Tensor Hits@1: {results['Hits@1']:.4f}")
+    # [PARITY] Output metrics in format parse_metrics expects
+    print(f"\n[PARITY] Evaluation Results:")
+    print(f"[PARITY] Tensor MRR: {mrr:.4f}")
+    print(f"[PARITY] Tensor Hits@1: {hits1:.4f}")
+    print(f"[PARITY] Tensor Hits@3: {hits3:.4f}")
+    print(f"[PARITY] Tensor Hits@10: {hits10:.4f}")
+    
+    # Get training stats from PPO
+    train_stats = getattr(tensor_ppo, 'last_train_metrics', {})
+    
+    # Comprehensive results dict
+    results = {
+        # Evaluation metrics
+        "MRR": mrr,
+        "Hits@1": hits1,
+        "Hits@3": hits3,
+        "Hits@10": hits10,
+        # Checksums
+        "index_manager_constants": im.constant_no,
+        "index_manager_predicates": im.predicate_no,
+        "embedder_checksum": embedder_checksum,
+        "policy_checksum_init": policy_checksum_init,
+        "policy_checksum_trained": policy_checksum_trained,
+        # Training losses (from last epoch)
+        "policy_loss": train_stats.get('policy_loss', 0.0),
+        "value_loss": train_stats.get('value_loss', 0.0),
+        "entropy": train_stats.get('entropy', 0.0),
+        "approx_kl": train_stats.get('approx_kl', 0.0),
+        "clip_fraction": train_stats.get('clip_fraction', 0.0),
+    }
     
     return results
 
@@ -342,6 +516,15 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--ent-coef", type=float, default=0.0)
+    # Callback / model saving options
+    parser.add_argument("--eval-freq", type=int, default=0,
+                        help="Evaluate every N timesteps (0=only at end)")
+    parser.add_argument("--save-model", action="store_true", default=False,
+                        help="Save model checkpoints")
+    parser.add_argument("--model-path", type=str, default="./models/",
+                        help="Path to save models")
+    parser.add_argument("--no-restore-best", action="store_true", default=False,
+                        help="Don't restore best model after training")
     
     args = parser.parse_args()
     
@@ -358,6 +541,10 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         ent_coef=args.ent_coef,
+        eval_freq=args.eval_freq,
+        save_model=args.save_model,
+        model_path=args.model_path,
+        restore_best=not args.no_restore_best,
     )
     
     run_experiment(config)

@@ -152,6 +152,13 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         include_kge_predicates=args.kge_action,
     )
     im.build_fact_index(dh.facts)
+    
+    # PARITY DEBUG: Log IndexManager state
+    print(f"[PARITY] IndexManager: constants={im.constant_no}, predicates={im.predicate_no}, vars={im.variable_no}")
+    
+    # PARITY DEBUG: Log RNG state before sampler
+    rng_state = torch.get_rng_state().sum().item()
+    print(f"[PARITY] RNG state before sampler: {rng_state}")
 
     # Negative sampler
     dh.sampler = get_sampler(
@@ -168,6 +175,12 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     torch.manual_seed(args.seed_run_i)
     embedder_getter = get_embedder(args, dh, im, device)
     embedder = embedder_getter.embedder
+    
+    # PARITY DEBUG: Log embedding checksum for verification
+    embedder_params = list(embedder.parameters())
+    if embedder_params:
+        checksum = sum(p.sum().item() for p in embedder_params)
+        print(f"[PARITY] Embedder checksum: {checksum:.6f}")
 
     # Derived dims for concat options
     args.atom_embedding_size = (
@@ -445,9 +458,19 @@ def _train_if_needed(
     run = None  # Placeholder for wandb run (currently disabled)
     # run = _maybe_enable_wandb(use_WB, args, WB_path, model_name)
 
+    # PARITY: Reseed before training starts to align with test_runner_parity.py
+    deterministic = getattr(args, 'deterministic', False)
+    if deterministic:
+        _set_seeds(args.seed_run_i)
+
     training_fn = model.learn
     training_args = {"total_timesteps": args.timesteps_train, "callback": callbacks}
     profile_code('False', training_fn, **training_args)  # cProfile
+    
+    # PARITY DEBUG: Log policy checksum after training
+    policy_checksum_trained = sum(p.sum().item() for p in model.policy.parameters())
+    print(f"[PARITY] Policy checksum after training: {policy_checksum_trained:.6f}")
+    
     # exit(0)
     # Restore desired checkpoint (if model saving is enabled)
     if args.save_model:
@@ -455,6 +478,9 @@ def _train_if_needed(
             restored_model = eval_cb.restore_best_ckpt(model.get_env())
             if restored_model is not None:
                 model = restored_model
+                # PARITY DEBUG: Log policy checksum after restoration
+                policy_checksum_restored = sum(p.sum().item() for p in model.policy.parameters())
+                print(f"[PARITY] Policy checksum after restoration: {policy_checksum_restored:.6f}")
         else:
             restored_model = train_ckpt_cb.restore_last_ckpt(model.get_env())
             if restored_model is not None:
@@ -479,6 +505,18 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
         np.random.seed(eval_seed)
 
     depth_reward_tracker = _EvalDepthRewardTracker()
+
+    # PARITY DEBUG: Log evaluation inputs
+    test_queries = data_handler.test_queries
+    print(f"[PARITY] Eval: n_queries={len(test_queries)}, first_query={test_queries[0] if test_queries else 'N/A'}")
+    
+    # PARITY DEBUG: Log RNG state before eval
+    rng_before_eval = torch.get_rng_state().sum().item()
+    print(f"[PARITY] RNG before eval: {rng_before_eval}")
+
+    # PARITY DEBUG: Log n_corruptions
+    n_corruptions = args.test_neg_samples
+    print(f"[PARITY] n_corruptions={n_corruptions}, corruption_scheme={args.corruption_scheme}")
 
     eval_args = {
         "model": model,
@@ -645,6 +683,10 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         trace_prefix="sb3",
         seed=args.seed_run_i,
     )
+    
+    # PARITY DEBUG: Log policy parameter checksum
+    policy_checksum = sum(p.sum().item() for p in model.policy.parameters())
+    print(f"[PARITY] Policy checksum after creation: {policy_checksum:.6f}")
 
     if getattr(args, "trace_dir", None):
         print(f"[TRACE] SB3 trace recorder: {model.trace_recorder}")
@@ -699,7 +741,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         args,
     )
 
-    model.policy = torch.compile(model.policy, mode="reduce-overhead", fullgraph=False)
+    if getattr(args, 'use_compile', True):
+        model.policy = torch.compile(model.policy, mode="reduce-overhead", fullgraph=False)
     model.policy.set_training_mode(False)
 
     # ------- Evaluate -------

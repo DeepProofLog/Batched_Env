@@ -41,7 +41,7 @@ from typing import Optional, List
 try:
     # Try relative import first (when sb3/ is in sys.path)
     from sb3_utils import FileLogger
-    from sb3_train import main
+    from sb3_train_new import main, run_experiment, TrainParityConfig
     from sb3_utils_config import (
         load_experiment_configs,
         parse_scalar,
@@ -54,7 +54,7 @@ try:
 except ImportError:
     # Fallback to package import (when imported as sb3.sb3_runner)
     from sb3.sb3_utils import FileLogger
-    from sb3.sb3_train import main
+    from sb3.sb3_train_new import main, run_experiment, TrainParityConfig
     from sb3.sb3_utils_config import (
         load_experiment_configs,
         parse_scalar,
@@ -95,7 +95,7 @@ if __name__ == "__main__":
         'model_name': 'PPO',
         'ent_coef': 0.2,
         'clip_range': 0.2,
-        'n_epochs': 20,
+        'n_epochs': 5,
         'lr': 5e-5,
         'gamma': 0.99,
         'clip_range_vf': None,
@@ -103,7 +103,7 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 2000,
+        'timesteps_train': 90,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
@@ -123,8 +123,11 @@ if __name__ == "__main__":
         'skip_unary_actions': True,
         'max_depth': 20,
         'memory_pruning': True,
-        'corruption_mode': 'dynamic',
+        'corruption_mode': 'dynamic',  # or True for tensor
+        'corruption_scheme': ['head', 'tail'],
+        'train_neg_ratio': 4,
         'false_rules': False,
+        'canonical_action_order': False,
 
         # Entropy coefficient decay params
         'ent_coef_decay': False,  # Enable entropy coefficient decay
@@ -207,6 +210,8 @@ if __name__ == "__main__":
         # Determinism settings
         'deterministic': True,  # Enable strict reproducibility (slower, set False for production)
         'eval_deterministic': True,  # Use argmax in evaluation (vs sampling)
+        'deterministic_parity': False,  # Enable deterministic query sampling for parity with Tensor runner
+        'use_compile': True,  # Enable torch.compile for policy
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())
@@ -220,6 +225,8 @@ if __name__ == "__main__":
         help="Grid search values for a parameter, e.g. --grid reward_type=2,3 --grid ent_coef=0.2,0.5.",)
     parser.add_argument("--eval",action='store_true',
         help="Shortcut: load model and skip training (timesteps=0).",)
+    parser.add_argument("--use-compile", action='store_true', default=True, help="Use torch.compile")
+    parser.add_argument("--no-compile", action='store_false', dest='use_compile', help="Disable torch.compile")
 
     args = parser.parse_args()
 
@@ -233,6 +240,7 @@ if __name__ == "__main__":
         key, raw_value = parse_assignment(assignment)
         parsed_value = parse_scalar(raw_value)
         update_config_value(base_config, key, parsed_value, DEFAULT_CONFIG)
+
 
     if args.eval:
         base_config['load_model'] = True
@@ -709,6 +717,24 @@ if __name__ == "__main__":
                 date,
             )
 
+            # The following lines are inserted based on the user's request.
+            # Note: 'model', 'index_manager', 'kge_engine', 'device' are not defined in this scope.
+            # Assuming they are defined in the 'main' function or a higher scope not provided.
+            # model.policy.set_training_mode(False) # This line was in the user's diff but seems out of place here.
+    
+            # Re-attach KGE (if loaded model or after compile) and compile policy
+            # _attach_kge_to_policy(
+            #     model,
+            #     index_manager,
+            #     kge_engine,
+            #     device,
+            #     args,
+            # )
+
+            # if getattr(args, 'use_compile', True):
+            #     model.policy = torch.compile(model.policy, mode="reduce-overhead", fullgraph=False)
+            # End of inserted lines.
+
             if args.use_logger and logger is not None:
                 logged_data = copy.deepcopy(args)
                 dicts_to_log = {
@@ -732,6 +758,18 @@ if __name__ == "__main__":
             logger.log_avg_results(args.__dict__, args.run_signature, args.seed)
 
     total_experiments = len(all_args)
+    print(f"\n{'='*60}")
+    print(f"Starting experiments with config:")
+    # Assuming run_configs is not empty and base_config refers to the first config
+    # If run_configs can be empty, this would need a check.
+    base_config = run_configs[0] if run_configs else {} 
+    print(f"  LR: {base_config.get('lr')}")
+    print(f"  Epochs: {base_config.get('n_epochs')}")
+    print(f"  Batch Size: {base_config.get('batch_size')}")
+    print(f"  Ent Coef: {base_config.get('ent_coef')}")
+    print(f"{'='*60}\n")
+
+    # Run all experiments
     for idx, experiment_args in enumerate(all_args, start=1):
         print(f"Experiment {idx}/{total_experiments}")
         main_wrapper(experiment_args)

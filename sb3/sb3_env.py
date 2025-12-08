@@ -342,9 +342,18 @@ class LogicEnv_gym(gym.Env):
             # Retry sampling if negative generation fails
             max_retries = 5
             for attempt in range(max_retries):
+                # RNG TRACE: Before sampler.get_negatives_from_states()
+                import torch
+                rng_before_neg = torch.get_rng_state().sum().item()
+                print(f"[RNG_TRACE SB3] Before sampler.get_negatives_from_states(): {rng_before_neg}")
+                
                 negative_samples = self.sampler.get_negatives_from_states(
                     state, self.device, num_negs=num_to_generate
                 )
+                
+                # RNG TRACE: After sampler.get_negatives_from_states()
+                rng_after_neg = torch.get_rng_state().sum().item()
+                print(f"[RNG_TRACE SB3] After sampler.get_negatives_from_states(): {rng_after_neg} (consumed: {rng_after_neg - rng_before_neg})")
                 selected = negative_samples
                 if not isinstance(selected, list):
                     selected = [selected]

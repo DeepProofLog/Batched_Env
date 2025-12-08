@@ -77,6 +77,12 @@ def create_environments(args, data_handler, index_manager, kge_engine=None, deta
     eval_env_seeds = rng_eval.integers(0, 2**10, size=args.n_eval_envs)
     callback_env_seeds = rng_callback.integers(0, 2**10, size=1)
 
+    # PARITY: For deterministic parity, use the same seed for all envs (matching test_train_parity.py)
+    if deterministic_parity:
+        env_seeds = [args.seed_run_i] * args.n_envs
+        eval_env_seeds = [args.seed_run_i] * args.n_eval_envs
+        callback_env_seeds = [args.seed_run_i] * 1
+
     env_fns = [make_env(
         mode='train',
         seed=int(env_seeds[i]),
