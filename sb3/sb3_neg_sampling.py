@@ -150,58 +150,65 @@ class BasicNegativeSamplerDomain(BasicNegativeSampler):
     def corrupt_batch(self, positive_batch: torch.Tensor, num_negs_per_pos: int) -> torch.Tensor:
         """
         Vectorized corruption for head/tail within the same domain and (optional) relation.
+        Uses [B, K] shaped random generation for consistent RNG consumption.
         """
-        batch_shape = positive_batch.shape[:-1]
-        neg = positive_batch.view(-1, 3).repeat_interleave(num_negs_per_pos, dim=0)
-        total = neg.size(0)
-        if total == 0:
-            return neg.view(*batch_shape, num_negs_per_pos, 3)
-
-        # Split work roughly equally across the selected indices (0/1/2)
-        step = math.ceil(total / max(1, len(self._corruption_indices)))
-        for col, start in zip(self._corruption_indices, range(0, total, step)):
-            stop = min(start + step, total)
-            sel = slice(start, stop)
+        B = positive_batch.shape[0]
+        K = num_negs_per_pos
+        device = positive_batch.device
+        
+        if B == 0:
+            return positive_batch.unsqueeze(1).repeat(1, K, 1)
+        
+        # Create output tensor [B, K, 3]
+        neg = positive_batch.unsqueeze(1).repeat(1, K, 1)
+        
+        # Split K samples across corruption indices
+        n_cols = len(self._corruption_indices)
+        samples_per_col = K // n_cols
+        remainder = K % n_cols
+        
+        start_idx = 0
+        for i, col in enumerate(self._corruption_indices):
+            count = samples_per_col + (1 if i < remainder else 0)
+            end_idx = start_idx + count
+            
+            if count == 0:
+                continue
+            
             if col == 1:
-                # relation corruption (rarely used in domain datasets)
-                self._replace_relation_uniform_(neg, sel)
-                continue
-
-            # ---- entity corruption within the same domain ----
-            orig = neg[sel, col]
-            valid = orig > 0  # ignore padding rows defensively
-            if not valid.any():
-                continue
-            orig_valid = orig[valid]
-            if orig_valid.numel() == 0:
-                continue
-
-            orig_valid_long = orig_valid.to(torch.int64)
-            d_ids = self.ent2dom[orig_valid_long]                 # (N,)
-            d_ids_long = d_ids.to(torch.int64)
-            pool_len = self.domain_len[d_ids_long]                # (N,)
-            pos = self.pos_in_dom[orig_valid_long].to(torch.int64)  # (N,)
-
-            # rows where the domain only has one entity cannot be corrupted
-            can = pool_len > 1
-            if not can.any():
-                continue
-
-            # Draw per-row index in [0, pool_len-2] then add +1 for rows where idx >= pos
-            # Implement per-row high via rand()* (L-1)
-            Lm1 = (pool_len[can] - 1).to(torch.float32)
-            rnd = torch.floor(torch.rand(Lm1.shape, device=neg.device) * Lm1).to(torch.int64)
-            adj = rnd + (rnd >= pos[can].to(torch.int64))
-            repl = self.domain_padded[d_ids_long[can], adj].to(orig.dtype)  # ensure dtype matches target tensor
-
-            # write back only for rows that can be corrupted
-            if can.any():
-                orig_valid = orig_valid.clone()
-                orig_valid[can] = repl
-                orig[valid] = orig_valid
-                neg[sel, col] = orig
-
-        return neg.view(*batch_shape, num_negs_per_pos, 3)
+                # Relation corruption
+                if self.num_relations > 1:
+                    orig = neg[:, start_idx:end_idx, 1]  # [B, count]
+                    rnd = torch.randint(0, self.num_relations - 1, orig.shape, device=device)
+                    neg[:, start_idx:end_idx, 1] = rnd + (rnd >= orig)
+            else:
+                # Entity corruption within domain
+                orig = neg[:, start_idx:end_idx, col]  # [B, count]
+                orig_flat = orig.reshape(-1)
+                valid = orig_flat > 0
+                
+                if valid.any():
+                    orig_valid = orig_flat[valid].to(torch.int64)
+                    d_ids = self.ent2dom[orig_valid].to(torch.int64)
+                    pool_len = self.domain_len[d_ids]
+                    pos_orig = self.pos_in_dom[orig_valid].to(torch.int64)
+                    
+                    can_sample = pool_len > 1
+                    result = orig_valid.clone()
+                    
+                    if can_sample.any():
+                        Lm1 = (pool_len[can_sample] - 1).float()
+                        rnd = torch.floor(torch.rand(can_sample.sum(), device=device) * Lm1).long()
+                        adj = rnd + (rnd >= pos_orig[can_sample])
+                        result[can_sample] = self.domain_padded[d_ids[can_sample], adj].to(torch.int64)
+                    
+                    out_flat = orig_flat.clone()
+                    out_flat[valid] = result.to(orig_flat.dtype)
+                    neg[:, start_idx:end_idx, col] = out_flat.reshape(orig.shape)
+            
+            start_idx = end_idx
+        
+        return neg
 
     def corrupt_batch_all(self, positive_batch: torch.Tensor) -> List[torch.Tensor]:
         """
