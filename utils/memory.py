@@ -104,21 +104,21 @@ class BloomFilter:
         A, K, M, D = states.shape
         
         # Filter out terminal predicates (must match add_current behavior)
-        states_filtered = states.clone()
+        # Use torch.where without cloning - creates new tensor only where needed
         pad = self.padding_idx
-        preds = states_filtered[:, :, :, 0]  # [A, K, M]
+        preds = states[:, :, :, 0]  # [A, K, M]
         is_terminal = torch.zeros_like(preds, dtype=torch.bool)
         if self.true_pred_idx is not None:
-            is_terminal |= (preds == self.true_pred_idx)
+            is_terminal = is_terminal | (preds == self.true_pred_idx)
         if self.false_pred_idx is not None:
-            is_terminal |= (preds == self.false_pred_idx)
+            is_terminal = is_terminal | (preds == self.false_pred_idx)
         if self.end_pred_idx is not None:
-            is_terminal |= (preds == self.end_pred_idx)
+            is_terminal = is_terminal | (preds == self.end_pred_idx)
         
         # Zero out terminal atoms by setting all components to padding
         # Expand mask to cover all D dimensions: [A, K, M] -> [A, K, M, D]
-        is_terminal_expanded = is_terminal.unsqueeze(-1).expand_as(states_filtered)
-        states_filtered = torch.where(is_terminal_expanded, pad, states_filtered)
+        is_terminal_expanded = is_terminal.unsqueeze(-1).expand_as(states)
+        states_filtered = torch.where(is_terminal_expanded, pad, states)  # No clone needed
         
         h1, h2 = self._state_hash64(states_filtered)                      # [A, K], [A, K]
         salt = self._mem_salt.index_select(0, owners).view(A, 1)          # [A,1]
@@ -149,9 +149,9 @@ class BloomFilter:
         
         # Check if current_queries is the full batch (indexed by env_idx) or a subset (aligned with rows)
         if current_queries.shape[0] == self.batch_size:
-            states = current_queries.index_select(0, rows).clone()      # [N, M, D]
+            states = current_queries.index_select(0, rows)  # [N, M, D] - no clone needed
         elif current_queries.shape[0] == rows.shape[0]:
-            states = current_queries.clone()                            # [N, M, D]
+            states = current_queries  # [N, M, D] - no clone needed
         else:
             raise ValueError(f"Shape mismatch: rows={rows.shape}, current_queries={current_queries.shape}, batch_size={self.batch_size}")
         
@@ -161,16 +161,16 @@ class BloomFilter:
         preds = states[:, :, 0]  # [N, M]
         is_terminal = torch.zeros_like(preds, dtype=torch.bool)
         if self.true_pred_idx is not None:
-            is_terminal |= (preds == self.true_pred_idx)
+            is_terminal = is_terminal | (preds == self.true_pred_idx)
         if self.false_pred_idx is not None:
-            is_terminal |= (preds == self.false_pred_idx)
+            is_terminal = is_terminal | (preds == self.false_pred_idx)
         if self.end_pred_idx is not None:
-            is_terminal |= (preds == self.end_pred_idx)
+            is_terminal = is_terminal | (preds == self.end_pred_idx)
         
         # Zero out terminal atoms by setting all components to padding
         # Use torch.where for consistent behavior with membership()
         is_terminal_expanded = is_terminal.unsqueeze(-1).expand(states.shape[0], states.shape[1], states.shape[2])
-        states = torch.where(is_terminal_expanded, pad, states)
+        states = torch.where(is_terminal_expanded, pad, states)  # Creates new tensor, no mutation
         
         h1, h2 = self._state_hash64(states)                              # [N], [N]
         salt = self._mem_salt.index_select(0, rows)                      # [N]

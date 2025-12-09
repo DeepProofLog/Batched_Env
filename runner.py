@@ -5,10 +5,6 @@ This module provides the command-line interface and experiment management,
 migrated from the original Stable-Baselines3 version to use TorchRL.
 """
 
-# ==============================================================================
-# CRITICAL: Early seeding for deterministic initialization
-# Must happen BEFORE importing train (which triggers many nested imports)
-# ==============================================================================
 import os
 
 # # Set environment variables for determinism before any CUDA operations
@@ -27,9 +23,6 @@ seed_all(_INIT_SEED, deterministic=False, warn=False)
 # Set float32 matmul precision
 torch.set_float32_matmul_precision('high')
 
-# ==============================================================================
-# Now import remaining modules (order matches sb3_runner.py)
-# ==============================================================================
 import argparse
 import copy
 import datetime

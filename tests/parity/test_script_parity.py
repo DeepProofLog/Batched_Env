@@ -76,6 +76,7 @@ def parity_config_to_train_config(parity_config: ParityConfig) -> TensorConfig:
         seed=parity_config.seed,
         device=parity_config.device,
         verbose=parity_config.verbose,
+        parity=parity_config.parity,
     )
 
 

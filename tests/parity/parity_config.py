@@ -99,6 +99,7 @@ class ParityConfig:
     verbose: bool = True
     skip_training: bool = False
     skip_eval: bool = False
+    parity: bool = True
     
     # For runner parity
     timesteps_train: int = 120
@@ -179,6 +180,8 @@ def create_parser(description: str = "Parity Test") -> argparse.ArgumentParser:
                         help="Disable verbose output")
     parser.add_argument("--skip-training", action="store_true", default=False)
     parser.add_argument("--skip-eval", action="store_true", default=False)
+    parser.add_argument("--parity-mode", action="store_true", default=True,
+                       help="Enable strict parity mode (slower)")
     
     # Runner-specific
     parser.add_argument("--timesteps-train", type=int, default=256)
@@ -224,6 +227,7 @@ def config_from_args(args: argparse.Namespace, base: ParityConfig = None) -> Par
         'ent_coef': 'ent_coef',
         'skip_training': 'skip_training',
         'skip_eval': 'skip_eval',
+        'parity_mode': 'parity',
     }
     
     # Update base_dict with args

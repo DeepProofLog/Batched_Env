@@ -39,14 +39,20 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     Returns:
         Tuple of (ppo, policy, env, eval_env, sampler, dh, im)
     """
+    # Enable TF32 for maximum performance on Ampere+ GPUs
+    torch.set_float32_matmul_precision('high')
+    
     from data_handler import DataHandler
     from index_manager import IndexManager
-    from unification import UnificationEngine
+    from unification import UnificationEngine, set_compile_mode
     from env import BatchedEnv
     from embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
     from ppo import PPO as TensorPPO
     from sampler import Sampler
+    
+    # Enable compile mode for maximum performance
+    set_compile_mode(True)
     
     # Set seeds for reproducibility
     seed_all(config.seed, deterministic=False, warn=False)
@@ -111,7 +117,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     
     # Create stringifier params
     stringifier_params = {
-        'verbose': 0,
+        'verbose': 1,
         'idx2predicate': im.idx2predicate,
         'idx2constant': im.idx2constant,
         'idx2template_var': im.idx2template_var,
@@ -209,6 +215,8 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         num_layers=8,
         dropout_prob=0.0,
         device=device,
+        compile_model=config.compile,
+        use_amp=config.use_amp,
     ).to(device)
     
     # PPO
@@ -223,7 +231,8 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         ent_coef=config.ent_coef,
         gamma=config.gamma,
         device=device,
-        verbose=0,  # Quiet for profiling
+        verbose=1,  # Quiet for profiling
+        use_amp=config.use_amp,
     )
     
     return ppo, policy, train_env, eval_env, sampler, dh, im
@@ -355,14 +364,18 @@ def main():
                         help='Dataset name')
     parser.add_argument('--total-timesteps', type=int, default=90,
                         help='Total training timesteps')
-    parser.add_argument('--batch-size-env', type=int, default=128,
+    parser.add_argument('--batch-size-env', type=int, default=32,
                         help='Environment batch size')
-    parser.add_argument('--n-steps', type=int, default=128,
+    parser.add_argument('--n-steps', type=int, default=64,
                         help='Steps per rollout')
     parser.add_argument('--n-epochs', type=int, default=5,
                         help='PPO epochs per update')
     parser.add_argument('--batch-size', type=int, default=2048,
                         help='PPO minibatch size')
+    parser.add_argument('--compile', action='store_true',
+                        help='Enable torch.compile')
+    parser.add_argument('--amp', action='store_true',
+                        help='Enable Automatic Mixed Precision (AMP)')
     args = parser.parse_args()
     
     # Configuration matching runner.py defaults
@@ -379,15 +392,17 @@ def main():
         clip_range=0.2,
         ent_coef=0.2,
         padding_atoms=6,
-        padding_states=20,
+        padding_states=150,
         max_depth=20,
         memory_pruning=True,
-        skip_unary_actions=True,
+        skip_unary_actions=False,  # Disabled for max FPS - unary actions have log_prob=0 so don't affect learning
         end_proof_action=True,
         reward_type=0,
         max_total_vars=100,
         atom_embedding_size=250,
         seed=0,
+        compile=args.compile,
+        use_amp=args.amp,
     )
     
     if args.use_gpu_profiler:

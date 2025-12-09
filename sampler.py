@@ -693,12 +693,15 @@ class Sampler:
             # Batched unique-per-row using sorting + deduplication
             # This matches SB3's get_negatives exactly
             # -------------------------------------------------------
+            # -------------------------------------------------------
+            # Batched unique-per-row using sorting + deduplication
+            # This matches SB3's get_negatives exactly
+            # -------------------------------------------------------
             # Create hash for each candidate: h*N^2 + r*N + t where N = max_entity_id+1
-            N = max(
-                cand_flat[:, 0].max().item() if cand_flat.numel() > 0 else 0,
-                cand_flat[:, 1].max().item() if cand_flat.numel() > 0 else 0,
-                cand_flat[:, 2].max().item() if cand_flat.numel() > 0 else 0,
-            ) + 1
+            # User Optimization: Use fixed N (vocab size) instead of dynamic max().item()
+            # This assumes all IDs (h, r, t) are < (num_entities + num_relations + padding)
+            # A safe upper bound is sufficient for hashing uniqueness.
+            N = self.num_entities + 1000 # Safety buffer, or better: use what we know
             N = max(N, 1)  # Ensure N >= 1
             
             # Reshape cand_hrt for hash computation: (B, M, 3)

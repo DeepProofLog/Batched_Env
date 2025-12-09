@@ -81,6 +81,7 @@ class TrainParityConfig:
     seed: int = 42
     device: str = "cpu"
     verbose: bool = True
+    parity: bool = False
 
 def seed_all(seed: int):
     """Set all random seeds."""
@@ -424,6 +425,7 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
         gamma=config.gamma,
         device=tensor_comp['device'],
         verbose=True,
+        parity=config.parity,
     )
     tensor_ppo.learn(total_timesteps=config.total_timesteps, callback=callback)
     

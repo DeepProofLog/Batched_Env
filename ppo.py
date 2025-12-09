@@ -79,11 +79,13 @@ class PPO:
         max_grad_norm: float = 0.5,
         target_kl: Optional[float] = None,
         device: torch.device = None,
-        verbose: bool = False,
+        verbose: bool = True,
         trace_dir: Optional[str] = None,
         trace_prefix: str = "batched",
         trace_recorder: Optional[TraceRecorder] = None,
         seed: Optional[int] = None,
+        use_amp: bool = False,  # Enable AMP for mixed precision training
+        parity: bool = False,   # Enable parity mode (e.g. numpy RNG for rollouts)
     ):
         """
         Initialize the PPO algorithm.
@@ -97,7 +99,7 @@ class PPO:
             batch_size (int): Minibatch size.
             gamma (float): Discount factor.
             gae_lambda (float): Factor for trade-off of bias vs variance for GAE.
-            clip_range (float): Clipping parameter espilon.
+            clip_range (float): Clipping parameter epsilon.
             clip_range_vf (Optional[float]): Clipping parameter for value function.
             normalize_advantage (bool): Whether to normalize or not the advantage.
             ent_coef (float): Entropy coefficient for the loss calculation.
@@ -110,6 +112,7 @@ class PPO:
             trace_prefix (str): Prefix for trace files.
             trace_recorder (Optional[TraceRecorder]): Existing recorder instance.
             seed (Optional[int]): Random seed for RNG synchronization between rollouts.
+            parity (bool): If True, use older/slower methods (e.g. numpy RNG) to match SB3 exactly.
         """
         self.policy = policy
         self.env = env
@@ -135,6 +138,31 @@ class PPO:
         self.env_device = getattr(env, "_device", None) or getattr(env, "device", None) or torch.device("cpu")
         if not isinstance(self.env_device, torch.device):
             self.env_device = torch.device(self.env_device)
+        # Optimization: skip .to() calls when devices match
+        # Normalize devices to ensure "cuda" == "cuda:0" if index is 0
+        if self.device.type == 'cuda' and self.device.index is None:
+            self.device = torch.device(f"cuda:{torch.cuda.current_device()}")
+        if self.env_device.type == 'cuda' and self.env_device.index is None:
+            self.env_device = torch.device(f"cuda:{torch.cuda.current_device()}")
+            
+        self._same_device = (self.device == self.env_device) or \
+                            (self.device.type == self.env_device.type and self.device.index == self.env_device.index)
+        
+        # AMP (Automatic Mixed Precision) - configure via use_amp parameter
+        self.use_amp = use_amp and (self.device.type == "cuda")
+        if self.use_amp:
+            # If BF16 is supported, we don't need GradScaler
+            if torch.cuda.is_bf16_supported():
+                self.scaler = None
+                print("[PPO] AMP enabled with bfloat16 (no GradScaler required)")
+            else:
+                self.scaler = torch.amp.GradScaler('cuda')
+                print("[PPO] AMP enabled with GradScaler")
+        else:
+            self.scaler = None
+        
+        print(f"[PPO] Device sync optimization: _same_device={self._same_device} (self.device={self.device}, env.device={self.env_device})")
+        
         self.metrics_collector = DetailedMetricsCollector(collect_detailed=True, verbose=False)
         
         # Get number of environments
@@ -147,6 +175,7 @@ class PPO:
             device=self.device,
             gamma=gamma,
             gae_lambda=gae_lambda,
+            parity=parity,
         )
         
         # Persistent state for consecutive learn() calls
@@ -212,18 +241,29 @@ class PPO:
         dones = torch.zeros(self.n_envs, dtype=torch.bool, device=self.device)
         
         with torch.no_grad():
+            # Keys that rollout buffer stores and model uses
+            _obs_keys = ("sub_index", "derived_sub_indices", "action_mask")
+            
             while n_collected < self.n_steps:
                 log_interval = max(1, self.n_steps // 5)
                 if n_collected % log_interval == 0:
                     print(f"Collecting rollouts: {n_collected}/{self.n_steps} steps")
-                # Clone the current observation so env.step() cannot mutate the
-                # data we store in the buffer or write to trace.
-                obs_snapshot = current_obs.clone()
-                obs_device = obs_snapshot.to(self.device)
+                # Shallow clone - only clone tensors needed by buffer/model
+                # This is faster than full TensorDict.clone()
+                obs_snapshot = TensorDict(
+                    {k: current_obs[k].clone() for k in _obs_keys if k in current_obs.keys()},
+                    batch_size=current_obs.batch_size,
+                    device=current_obs.device
+                )
+                # Skip .to() if devices already match
+                obs_device = obs_snapshot if self._same_device else obs_snapshot.to(self.device)
 
                 # Get action from policy - always sample (not deterministic)
                 # With same model weights and RNG state, sampling produces identical results
-                actions, values, log_probs = self.policy(obs_device, deterministic=False)
+                # Use bfloat16 for AMP if available to avoid GradScaler
+                amp_dtype = torch.bfloat16 if self.use_amp and torch.cuda.is_bf16_supported() else torch.float16
+                with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=amp_dtype):
+                    actions, values, log_probs = self.policy(obs_device, deterministic=False)
                 
                 dist_logits = None
                 try:
@@ -233,8 +273,8 @@ class PPO:
                 except Exception:
                     dist_logits = None
                 
-                # Step environment
-                actions_env = actions.to(self.env_device)
+                # Step environment - skip .to() if devices match
+                actions_env = actions if self._same_device else actions.to(self.env_device)
                 action_td = TensorDict({"action": actions_env}, batch_size=current_obs.batch_size, device=self.env_device)
                 step_result, next_obs = self.env.step_and_maybe_reset(action_td)
                 
@@ -252,8 +292,9 @@ class PPO:
                     rewards_env = rewards_env.squeeze(-1)
                 if dones_env.dim() > 1:
                     dones_env = dones_env.squeeze(-1)
-                rewards = rewards_env.to(self.device)
-                dones = dones_env.to(self.device)
+                # Skip .to() if devices match
+                rewards = rewards_env if self._same_device else rewards_env.to(self.device)
+                dones = dones_env if self._same_device else dones_env.to(self.device)
                 
                 # Store transition
                 self.rollout_buffer.add(
@@ -394,7 +435,8 @@ class PPO:
                 current_obs = next_obs
             
             # Compute last values for bootstrapping
-            last_values = self.policy.predict_values(current_obs.to(self.device))
+            last_obs = current_obs if self._same_device else current_obs.to(self.device)
+            last_values = self.policy.predict_values(last_obs)
         
         # Compute advantages and returns
         if dones.dim() > 1:
@@ -474,64 +516,65 @@ class PPO:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
                 
                 # --------------------
-                # Forward pass - evaluate actions with current policy
+                # Forward pass with AMP autocast
                 # --------------------
-                values, log_probs, entropy = self.policy.evaluate_actions(obs, actions)
-                
-                # Flatten values to match returns shape
-                values = values.flatten()
-                
-                # --------------------
-                # Policy loss - PPO clipped objective
-                # --------------------
-                # Ratio between old and new policy
-                log_ratio = log_probs - old_log_probs
-                ratio = torch.exp(log_ratio)
-                
-                # Clipped surrogate loss
-                policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * torch.clamp(
-                    ratio,
-                    1.0 - self.clip_range,
-                    1.0 + self.clip_range,
-                )
-                policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
-                
-                # Logging: clip fraction
-                with torch.no_grad():
-                    clip_fraction_t = torch.mean((torch.abs(ratio - 1) > self.clip_range).float())
-                    clip_fractions_t.append(clip_fraction_t)
-                
-                # --------------------
-                # Value loss calculation with optional clipping
-                # --------------------
-                if self.clip_range_vf is None:
-                    # No clipping
-                    values_pred = values
-                else:
-                    # Clip the difference between old and new value
-                    values_pred = old_values + torch.clamp(
-                        values - old_values,
-                        -self.clip_range_vf,
-                        self.clip_range_vf,
+                with torch.amp.autocast('cuda', enabled=self.use_amp):
+                    values, log_probs, entropy = self.policy.evaluate_actions(obs, actions)
+                    
+                    # Flatten values to match returns shape
+                    values = values.flatten()
+                    
+                    # --------------------
+                    # Policy loss - PPO clipped objective
+                    # --------------------
+                    # Ratio between old and new policy
+                    log_ratio = log_probs - old_log_probs
+                    ratio = torch.exp(log_ratio)
+                    
+                    # Clipped surrogate loss
+                    policy_loss_1 = advantages * ratio
+                    policy_loss_2 = advantages * torch.clamp(
+                        ratio,
+                        1.0 - self.clip_range,
+                        1.0 + self.clip_range,
                     )
-                
-                # Value loss using the TD(gae_lambda) target
-                value_loss = F.mse_loss(returns, values_pred)
-                
-                # --------------------
-                # Entropy loss calculation
-                # --------------------
-                if entropy is None:
-                    # Approximate entropy when no analytical form
-                    entropy_loss = -torch.mean(-log_probs)
-                else:
-                    entropy_loss = -torch.mean(entropy)
-                
-                # --------------------
-                # Total loss
-                # --------------------
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                    policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+                    
+                    # Logging: clip fraction
+                    with torch.no_grad():
+                        clip_fraction_t = torch.mean((torch.abs(ratio - 1) > self.clip_range).float())
+                        clip_fractions_t.append(clip_fraction_t)
+                    
+                    # --------------------
+                    # Value loss calculation with optional clipping
+                    # --------------------
+                    if self.clip_range_vf is None:
+                        # No clipping
+                        values_pred = values
+                    else:
+                        # Clip the difference between old and new value
+                        values_pred = old_values + torch.clamp(
+                            values - old_values,
+                            -self.clip_range_vf,
+                            self.clip_range_vf,
+                        )
+                    
+                    # Value loss using the TD(gae_lambda) target
+                    value_loss = F.mse_loss(returns, values_pred)
+                    
+                    # --------------------
+                    # Entropy loss calculation
+                    # --------------------
+                    if entropy is None:
+                        # Approximate entropy when no analytical form
+                        entropy_loss = -torch.mean(-log_probs)
+                    else:
+                        entropy_loss = -torch.mean(entropy)
+                    
+                    # --------------------
+                    # Total loss
+                    # --------------------
+                    loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
                 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -574,19 +617,24 @@ class PPO:
                             print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
                         break
                 
-                # Optimization step
+                # Optimization step with AMP
                 # --------------------
                 self.optimizer.zero_grad()
-                loss.backward()
                 
-                # Clip gradients
-                if self.max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.policy.parameters(),
-                        self.max_grad_norm,
-                    )
-                
-                self.optimizer.step()
+                if self.use_amp and self.scaler is not None:
+                    # AMP: scale loss for backward, then scaler.step
+                    self.scaler.scale(loss).backward()
+                    if self.max_grad_norm is not None:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    # Normal backward/step
+                    loss.backward()
+                    if self.max_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
 
                 if self.target_kl is not None:
                     # Sync only if needed for early stopping (once per batch)
@@ -606,7 +654,8 @@ class PPO:
             approx_kl_divs_t.extend(approx_kl_divs_epoch_t)
             
             # Print epoch stats (Sync ONCE per epoch)
-            if self.verbose or epoch == self.n_epochs - 1:
+            print(f"Epoch {epoch+1}/{self.n_epochs}. ")
+            if self.verbose and epoch == self.n_epochs - 1:
                 # Compute means on GPU then sync
                 with torch.no_grad():
                    mean_pg = torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0
@@ -615,7 +664,7 @@ class PPO:
                    mean_kl = torch.stack(approx_kl_divs_t).mean().item() if approx_kl_divs_t else 0.0
                    mean_clip = torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0
                    
-                   print(f"Epoch {epoch+1}/{self.n_epochs}. Losses: total {loss.item():.5f}, "
+                   print(f"Losses: total {loss.item():.5f}, "
                         f"policy {mean_pg:.5f}, "
                         f"value {mean_val:.5f}, "
                         f"entropy {mean_ent:.5f}, "
@@ -669,15 +718,7 @@ class PPO:
         
         # Only reset environment if needed (first call or explicit reset)
         if reset_num_timesteps or self._last_obs is None:
-            # RNG TRACE: Before env.reset()
-            rng_before_reset = torch.get_rng_state().sum().item()
-            print(f"[RNG_TRACE] Before env.reset(): {rng_before_reset}")
-            
             current_obs = self.env.reset()
-            
-            # RNG TRACE: After env.reset()
-            rng_after_reset = torch.get_rng_state().sum().item()
-            print(f"[RNG_TRACE] After env.reset(): {rng_after_reset}")
             
             current_episode_reward = torch.zeros(self.n_envs, device=self.device)
             current_episode_length = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
@@ -747,6 +788,8 @@ class PPO:
             # ============================================================
             # Train policy
             # ============================================================
+            if self.verbose:
+                print("\n[PPO] ===== Training policy =====")
             train_start_time = time.time()
             train_metrics = self.train()
             train_time = time.time() - train_start_time

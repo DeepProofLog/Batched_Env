@@ -53,12 +53,14 @@ class RolloutBuffer:
         device: torch.device,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
+        parity: bool = False,
     ):
         self.buffer_size = buffer_size
         self.n_envs = n_envs
         self.device = device
         self.gamma = gamma
         self.gae_lambda = gae_lambda
+        self.parity = parity
         
         # Current position in buffer
         self.pos = 0
@@ -258,9 +260,15 @@ class RolloutBuffer:
             raise RuntimeError("Buffer is not full. Cannot sample.")
         
         # Create random permutation of indices
-        # Ensures consistent random state consumption independent of generator readiness
         total_size = self.buffer_size * self.n_envs
-        indices = np.random.permutation(total_size)
+        
+        if self.parity:
+            # Use numpy for exact parity with SB3
+            indices = np.random.permutation(total_size)
+            indices = torch.from_numpy(indices).to(self.device)
+        else:
+            # Use torch.randperm for efficiency (avoids CPU->GPU transfer)
+            indices = torch.randperm(total_size, device=self.device)
         
         # Prepare flattened data on first call
         if not self.generator_ready:
@@ -278,9 +286,6 @@ class RolloutBuffer:
             
             self.generator_ready = True
         
-        # Convert indices to torch tensor
-        indices = torch.from_numpy(indices).to(self.device)
-        
         # Default to full batch if batch_size not specified
         if batch_size is None:
             batch_size = total_size
@@ -294,8 +299,7 @@ class RolloutBuffer:
             # Create observation TensorDict for this batch
             batch_obs = TensorDict(
                 {key: self.flat_observations[key][batch_indices] for key in self.obs_keys},
-                batch_size=len(batch_indices),
-                device=self.device
+                batch_size=len(batch_indices)
             )
             
             yield (

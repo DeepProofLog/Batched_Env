@@ -230,10 +230,12 @@ class SharedPolicyValueNetwork(nn.Module):
     
     The policy uses dot-product attention between observation and action
     embeddings to compute action logits.
-    """
-    
+    """    
+
     def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, 
-                 num_layers: int = 8, dropout_prob: float = 0.0):
+                 num_layers: int = 8, dropout_prob: float = 0.0,
+                 compile_model: bool = False,
+                 use_amp: bool = False):
         """Initialize the policy-value network.
         
         Args:
@@ -241,12 +243,21 @@ class SharedPolicyValueNetwork(nn.Module):
             hidden_dim: Hidden dimension in residual blocks.
             num_layers: Number of residual blocks in shared body.
             dropout_prob: Dropout probability (0.0 recommended).
+            compile_model: Whether to apply torch.compile for speed.
+            use_amp: Whether to use automatic mixed precision.
         """
         super().__init__()
+        self.embed_dim = embed_dim
+        self.hidden_dim = hidden_dim
         self.shared_body = SharedBody(embed_dim, hidden_dim, num_layers, dropout_prob)
         self.policy_head = PolicyHead(hidden_dim, embed_dim)
         self.value_head = ValueHead(hidden_dim)
-
+        self._use_amp = use_amp        
+        # Apply torch.compile with bucketing strategy for maximum performance
+        if compile_model:
+            self.forward_policy = torch.compile(self.forward_policy)
+            print(f"[Model] torch.compile applied to forward_policy")
+            
     def _encode_with_shared_body(self, embeddings: torch.Tensor) -> torch.Tensor:
         """Process embeddings through the shared backbone.
         
@@ -312,18 +323,26 @@ class CustomNetwork(nn.Module):
     """
     
     def __init__(self, last_layer_dim_pi: int = 64, last_layer_dim_vf: int = 1, 
-                 embed_dim: int = 200):
+                 embed_dim: int = 200, 
+                 compile_model: bool = False, 
+                 use_amp: bool = False):
         """Initialize the custom network.
         
         Args:
             last_layer_dim_pi: Policy output dimension (unused, kept for compatibility).
             last_layer_dim_vf: Value output dimension (unused, kept for compatibility).
             embed_dim: Embedding dimension for the shared network.
+            compile_model: Whether to apply torch.compile.
+            use_amp: Whether to use AMP.
         """
         super().__init__()
         self.latent_dim_pi = last_layer_dim_pi
         self.latent_dim_vf = last_layer_dim_vf
-        self.shared_network = SharedPolicyValueNetwork(embed_dim)
+        self.shared_network = SharedPolicyValueNetwork(
+            embed_dim, 
+            compile_model=compile_model,
+            use_amp=use_amp
+        )
 
     def forward(self, features: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
                 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -405,6 +424,7 @@ class ActorCriticPolicy(nn.Module):
         share_features_extractor: bool = True,
         init_seed: Optional[int] = None,
         action_dim: Optional[int] = None,
+        **kwargs
     ):
         super().__init__()
         
@@ -427,6 +447,8 @@ class ActorCriticPolicy(nn.Module):
             last_layer_dim_pi=self.features_extractor._features_dim,
             last_layer_dim_vf=1,
             embed_dim=getattr(self.features_extractor, "embed_dim", embed_dim),
+            compile_model=kwargs.get('compile_model', False),
+            use_amp=kwargs.get('use_amp', False),
         )
         # Dummy action/value heads created during _build in SB3
         latent_pi = getattr(self.mlp_extractor, "latent_dim_pi", 1)
