@@ -90,7 +90,40 @@ class CustomCombinedExtractor(nn.Module):
         obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices)  # [B, 1, A, E]
         action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices)  # [B, S, A, E]
         
-        return obs_embeddings, action_embeddings, action_mask
+        # Extract valid_indices if present (e.g. from env optimization)
+        valid_indices = obs.get("valid_indices", None)
+        
+        # If not provided by env, generate locally using CPU to avoid GPU-nonzero sync
+        if valid_indices is None and action_mask is not None:
+             # Detach and move to CPU to avoid GPU serialization bubble
+             # Use persistent pinned memory buffer to speed up D2H transfer
+             if not hasattr(self, '_pinned_mask_buffer'):
+                 # Max size: 32 * 150 = 4800 (hardcoded for now as reasonable upper bound, or can resize dyn)
+                 # We alloc slightly more to be safe
+                 self._pinned_mask_buffer = torch.zeros(10000, dtype=torch.bool).pin_memory()
+             
+             flat_mask = action_mask.detach().view(-1)
+             numel = flat_mask.numel()
+             
+             # Resize buffer if needed (rare)
+             if numel > self._pinned_mask_buffer.numel():
+                 self._pinned_mask_buffer = torch.zeros(numel * 2, dtype=torch.bool).pin_memory()
+                 
+             # Copy to pinned memory (async if standard)
+             self._pinned_mask_buffer[:numel].copy_(flat_mask, non_blocking=True)
+             
+             # Sync happens here when we access the tensor content
+             mask_cpu = self._pinned_mask_buffer[:numel]
+             
+             if mask_cpu.any():
+                 # nonzero on CPU is fast
+                 indices = torch.nonzero(mask_cpu).squeeze(-1)
+                 # Move back to GPU (fast copy for small indices)
+                 valid_indices = indices.to(action_mask.device)
+             else:
+                 valid_indices = torch.zeros(0, dtype=torch.long, device=action_mask.device)
+
+        return obs_embeddings, action_embeddings, action_mask, valid_indices
 
 
 class SharedBody(nn.Module):
@@ -132,12 +165,15 @@ class SharedBody(nn.Module):
         
         self.hidden_dim = hidden_dim
 
-    def forward(self, embeddings: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, embeddings: torch.Tensor, mask: Optional[torch.Tensor] = None, valid_indices: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Apply shared residual network to embeddings.
         
         Args:
             embeddings: Input embeddings of shape [..., embed_dim].
-            mask: Optional boolean mask (unused in dense path, kept for interface).
+            mask: Optional boolean mask of shape matching embeddings[:-1].
+            valid_indices: Optional pre-calculated indices of valid elements [N_valid].
+                  If provided, avoids 'nonzero' synchronization.
+                  If provided, mask is ignored for index calculation but output relies on implicit shape.
             
         Returns:
             Processed features of shape [..., hidden_dim].
@@ -145,14 +181,45 @@ class SharedBody(nn.Module):
         original_shape = embeddings.shape
         flat_embeddings = embeddings.view(-1, original_shape[-1])  # [N, embed_dim]
         
-        # Process everything (dense/padded path)
-        x = self.input_transform(flat_embeddings)  # [N, hidden_dim]
+        # Optimization: Process only valid (masked) elements
+        # If valid_indices provided (Strategy B - CPU Gen), use it to avoid sync.
+        # Otherwise fallback to mask.
+        indices = valid_indices
         
-        for block in self.res_blocks:
-            residual = x
-            x = block(x) + residual  # [N, hidden_dim]
-        
-        return x.view(*original_shape[:-1], -1)  # [..., hidden_dim]
+        if indices is None and mask is not None:
+             # Fallback: compute indices from mask (incurs sync in eager)
+             # We use nonzero here for robustness as it works with index_copy_
+             indices = torch.nonzero(mask.reshape(-1)).squeeze(-1)
+             
+        if indices is not None:
+            # Gather valid inputs
+            # flat_embeddings is [N_total, E], indices is [N_valid]
+            x_valid = flat_embeddings.index_select(0, indices)
+            
+            # Process valid inputs through network
+            x_valid = self.input_transform(x_valid)
+            for block in self.res_blocks:
+                x_valid = block(x_valid) + x_valid
+                
+            # Scatter back to full shape
+            output_flat = torch.zeros(flat_embeddings.shape[0], self.hidden_dim, 
+                                    device=embeddings.device, dtype=embeddings.dtype)
+            
+            # Place processed values back
+            output_flat.index_copy_(0, indices, x_valid)
+            
+            return output_flat.view(*original_shape[:-1], -1)
+            
+        else:
+            # Fallback (slow path): Process everything
+            x = self.input_transform(flat_embeddings)  # [N, hidden_dim]
+            
+            # Apply residual blocks
+            for block in self.res_blocks:
+                residual = x
+                x = block(x) + residual  # [N, hidden_dim]
+            
+            return x.view(*original_shape[:-1], -1)  # [..., hidden_dim]
 
 
 class PolicyHead(nn.Module):
@@ -257,25 +324,25 @@ class SharedPolicyValueNetwork(nn.Module):
         # Apply torch.compile with bucketing strategy for maximum performance
         if compile_model:
             self.forward_policy = torch.compile(self.forward_policy)
-            self.forward_value = torch.compile(self.forward_value)
-            self.forward_joint = torch.compile(self.forward_joint)
-            print(f"[Model] torch.compile applied to forward_policy, forward_value, and forward_joint")
+            print(f"[Model] torch.compile applied to forward_policy")
             
-    def _encode_with_shared_body(self, embeddings: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _encode_with_shared_body(self, embeddings: torch.Tensor, mask: Optional[torch.Tensor] = None, valid_indices: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Process embeddings through the shared backbone.
         
         Args:
             embeddings: Input embeddings [..., embed_dim].
             mask: Optional mask for embeddings.
+            valid_indices: Optional valid indices.
             
         Returns:
             Processed features [..., hidden_dim].
         """
-        return self.shared_body(embeddings, mask=mask)
+        return self.shared_body(embeddings, mask=mask, valid_indices=valid_indices)
 
     def forward_policy(self, obs_embeddings: torch.Tensor, 
                        action_embeddings: torch.Tensor, 
-                       action_mask: torch.Tensor) -> torch.Tensor:
+                       action_mask: torch.Tensor,
+                       valid_indices: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Compute action logits via observation-action similarity.
         
         Args:
@@ -292,7 +359,7 @@ class SharedPolicyValueNetwork(nn.Module):
         # action_mask is [B, S], embeddings are [B, S, E] (aggregated over atoms)
         # So mask matches directly. NO expansion needed.
         
-        shared_actions = self._encode_with_shared_body(action_embeddings, mask=action_mask)  # [B, S, H]
+        shared_actions = self._encode_with_shared_body(action_embeddings, mask=action_mask, valid_indices=valid_indices)  # [B, S, H]
         encoded_actions = self.policy_head(shared_actions)  # [B, S, E]
         
         # Compute dot-product similarity for action selection
@@ -316,37 +383,8 @@ class SharedPolicyValueNetwork(nn.Module):
             Value estimates [B].
         """
         shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, A, H]
-        return self.value_head(shared_obs)  # [B]
-
-    def forward_joint(self, obs_embeddings: torch.Tensor, 
-                      action_embeddings: torch.Tensor, 
-                      action_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Compute both action logits and value estimate sharing the body.
-        
-        Args:
-            obs_embeddings: Observation embeddings.
-            action_embeddings: Action embeddings.
-            action_mask: Action mask.
-            
-        Returns:
-             logits, values
-        """
-        # Encode observations ONCE
-        shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, A, H]
-        
-        # Policy Head path
-        encoded_obs = self.policy_head(shared_obs)  # [B, 1, A, E]
-        shared_actions = self._encode_with_shared_body(action_embeddings, mask=action_mask)
-        encoded_actions = self.policy_head(shared_actions)
-        
-        logits = torch.matmul(encoded_obs, encoded_actions.transpose(-2, -1)).squeeze(-2)
-        logits = logits / (obs_embeddings.shape[-1] ** 0.5)
-        logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
-        
-        # Value Head path (reusing shared_obs)
-        value = self.value_head(shared_obs)
-        
-        return logits, value
+        value = self.value_head(shared_obs)  # [B]
+        return value
 
 
 class CustomNetwork(nn.Module):
@@ -389,8 +427,14 @@ class CustomNetwork(nn.Module):
         Returns:
             Tuple of (action_logits [B, S], value_estimates [B]).
         """
-        obs_embeddings, action_embeddings, action_mask = features
-        return self.shared_network.forward_joint(obs_embeddings, action_embeddings, action_mask)
+        if len(features) == 4:
+            obs_embeddings, action_embeddings, action_mask, valid_indices = features
+            logits = self.shared_network.forward_policy(obs_embeddings, action_embeddings, action_mask, valid_indices)
+        else:
+            obs_embeddings, action_embeddings, action_mask = features
+            logits = self.shared_network.forward_policy(obs_embeddings, action_embeddings, action_mask)
+        value = self.shared_network.forward_value(obs_embeddings).squeeze(-1)  # [B]
+        return logits, value
     
     def forward_actor(self, features: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
                       ) -> torch.Tensor:
@@ -402,8 +446,12 @@ class CustomNetwork(nn.Module):
         Returns:
             Action logits [B, S].
         """
-        obs_embeddings, action_embeddings, action_mask = features
-        return self.shared_network.forward_policy(obs_embeddings, action_embeddings, action_mask)
+        if len(features) == 4:
+            obs_embeddings, action_embeddings, action_mask, valid_indices = features
+            return self.shared_network.forward_policy(obs_embeddings, action_embeddings, action_mask, valid_indices)
+        else:
+             obs_embeddings, action_embeddings, action_mask = features
+             return self.shared_network.forward_policy(obs_embeddings, action_embeddings, action_mask)
 
     def forward_critic(self, features: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
                        ) -> torch.Tensor:
@@ -460,10 +508,6 @@ class ActorCriticPolicy(nn.Module):
         **kwargs
     ):
         super().__init__()
-        
-        if kwargs.get('compile_model', False):
-             self.evaluate_actions = torch.compile(self.evaluate_actions)
-             print(f"[Policy] torch.compile applied to evaluate_actions")
         
         self.embed_dim = embed_dim
         self.device = device if device is not None else torch.device('cpu')
@@ -551,9 +595,9 @@ class ActorCriticPolicy(nn.Module):
         if self.share_features_extractor:
             logits, values = self.mlp_extractor(features)
         else:
-            (obs_embeddings, action_embeddings, action_mask), (obs_embeddings_vf, _, _) = features
-            logits = self.mlp_extractor.forward_actor((obs_embeddings, action_embeddings, action_mask))
-            values = self.mlp_extractor.forward_critic((obs_embeddings_vf, None, None))
+            pi_features, vf_features = features
+            logits = self.mlp_extractor.forward_actor(pi_features)
+            values = self.mlp_extractor.forward_critic(vf_features)
 
         distribution = self.action_dist.proba_distribution(action_logits=logits)
         if deterministic:
@@ -587,9 +631,9 @@ class ActorCriticPolicy(nn.Module):
         if self.share_features_extractor:
             logits, values = self.mlp_extractor(features)
         else:
-            (obs_embeddings, action_embeddings, action_mask), (obs_embeddings_vf, _, _) = features
-            logits = self.mlp_extractor.forward_actor((obs_embeddings, action_embeddings, action_mask))
-            values = self.mlp_extractor.forward_critic((obs_embeddings_vf, None, None))
+            pi_features, vf_features = features
+            logits = self.mlp_extractor.forward_actor(pi_features)
+            values = self.mlp_extractor.forward_critic(vf_features)
 
         # Create distribution and evaluate - exactly as in SB3
         distribution = self.action_dist.proba_distribution(action_logits=logits)
@@ -606,8 +650,11 @@ class ActorCriticPolicy(nn.Module):
         if self.share_features_extractor:
             _, values = self.mlp_extractor(features)
         else:
-            (_, _, _), (obs_embeddings_vf, _, _) = features
-            values = self.mlp_extractor.forward_critic((obs_embeddings_vf, None, None))
+            # When share_features_extractor is False, extract_features returns (pi_features, vf_features)
+            # but since we passed self.vf_features_extractor, the first element (pi_features) is not used.
+            # We only need vf_features for the critic.
+            vf_features = features[1]
+            values = self.mlp_extractor.forward_critic(vf_features)
         return values
 
 

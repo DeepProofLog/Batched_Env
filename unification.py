@@ -1617,6 +1617,7 @@ def pack_by_owner(
     else:
         # Start Optimization: avoid .item() if K is small or can be inferred, but here we need K for shaping.
         # This is the ONLY place where .item() is truly needed now.
+        print(f"DEBUG: pack_by_owner K_fixed is None! max_count={max_count.item()}")
         K = int(max_count.item())
     
     # Initialize output [B, K, M, 3]
@@ -2136,7 +2137,12 @@ class UnificationEngine:
         # Optimization: Always use max_derived_per_state as fixed K if available.
         # This completely avoids the .item() synchronization in pack_by_owner
         # We accept some padding overhead (up to K) to gain speed parity.
+        # Optimization: Always use max_derived_per_state as fixed K if available.
+        # This completely avoids the .item() synchronization in pack_by_owner
+        # We accept some padding overhead (up to K) to gain speed parity.
         pack_K_limit = self.max_derived_per_state
+        if pack_K_limit is None:
+            raise ValueError("max_derived_per_state must be set")
         
         packed, packed_counts = pack_by_owner(std_states, surv_counts, surv_owners, B, M_comb, pad, K_fixed=pack_K_limit)  # [B, K, M, 3], [B]
 

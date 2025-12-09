@@ -190,7 +190,8 @@ class PPO:
         self.optimizer = torch.optim.Adam(
             self.policy.parameters(),
             lr=self.learning_rate,
-            eps=1e-5
+            eps=1e-5,
+            fused=True
         )
     
     def collect_rollouts(
@@ -637,10 +638,7 @@ class PPO:
                     self.optimizer.step()
 
                 if self.target_kl is not None:
-                    # Sync only if needed for early stopping (once per batch)
-                    # We can optimize this if target_kl is None, but usually we check it.
-                    # To avoid per-batch sync, we could check every N batches?
-                    # For now, just sync single scalar.
+                    # Sync only if needed for early stopping (throttled)
                     approx_kl_div = approx_kl_div_t.item()
                     if approx_kl_div > 1.5 * self.target_kl:
                         continue_training = False

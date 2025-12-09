@@ -231,10 +231,10 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         ent_coef=config.ent_coef,
         gamma=config.gamma,
         device=device,
-        verbose=1,  # Quiet for profiling
+        verbose=0,  # Quiet for profiling
+        max_grad_norm=None,
         use_amp=config.use_amp,
     )
-    
     return ppo, policy, train_env, eval_env, sampler, dh, im
 
 
@@ -295,7 +295,12 @@ def profile_learn_cprofile(config: SimpleNamespace):
         f.write("="*80 + "\n")
         ps.sort_stats('cumulative')
         ps.print_stats(n_functions)
-        
+    
+        f.write("\n" + "="*80 + "\n")
+        f.write("Callers of .item()\n")
+        f.write("="*80 + "\n")
+        ps.print_callers('item', 20)
+    
         f.write("\n\n" + "="*80 + "\n")
         f.write("Top by Total Time\n")
         f.write("="*80 + "\n")
@@ -364,17 +369,17 @@ def main():
                         help='Dataset name')
     parser.add_argument('--total-timesteps', type=int, default=90,
                         help='Total training timesteps')
-    parser.add_argument('--batch-size-env', type=int, default=32,
+    parser.add_argument('--batch-size-env', type=int, default=128,
                         help='Environment batch size')
-    parser.add_argument('--n-steps', type=int, default=64,
+    parser.add_argument('--n-steps', type=int, default=128,
                         help='Steps per rollout')
     parser.add_argument('--n-epochs', type=int, default=5,
                         help='PPO epochs per update')
     parser.add_argument('--batch-size', type=int, default=2048,
                         help='PPO minibatch size')
-    parser.add_argument('--compile', action='store_true',
+    parser.add_argument('--compile', default=True,
                         help='Enable torch.compile')
-    parser.add_argument('--amp', action='store_true',
+    parser.add_argument('--amp', default=True,
                         help='Enable Automatic Mixed Precision (AMP)')
     args = parser.parse_args()
     
