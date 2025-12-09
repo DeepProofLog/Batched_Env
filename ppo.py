@@ -739,6 +739,7 @@ class PPO:
             extra_rollout = {
                 "total_timesteps": total_steps_done,
             }
+            print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
             if rollout_time > 0:
                 extra_rollout["fps"] = int((self.n_envs * self.n_steps) / rollout_time)
             print_formatted_metrics(metrics=rollout_metrics, prefix="rollout", extra_metrics=extra_rollout)
@@ -755,8 +756,8 @@ class PPO:
             # Store last training metrics for external access
             self.last_train_metrics = train_metrics
             
+            print(f"[PPO] Training completed in {train_time:.2f}s")
             if self.verbose:
-                print(f"[PPO] Training completed in {train_time:.2f}s")
                 print(f"[PPO] Metrics: policy_loss={train_metrics['policy_loss']:.4f}, value_loss={train_metrics['value_loss']:.4f}, entropy={train_metrics['entropy']:.4f}")
             
             # ============================================================

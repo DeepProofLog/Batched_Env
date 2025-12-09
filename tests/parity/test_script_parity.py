@@ -42,9 +42,9 @@ import numpy as np
 
 from parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
-# Import train functions via runner modules - must be after setting env vars
-from runner import run_experiment as tensor_run_experiment, TrainParityConfig as TensorConfig
-from sb3.sb3_runner import run_experiment as sb3_run_experiment, TrainParityConfig as SB3Config
+# Import train functions directly from train files - must be after setting env vars
+from train_new import run_experiment as tensor_run_experiment, TrainParityConfig as TensorConfig
+from sb3.sb3_train_new import run_experiment as sb3_run_experiment, TrainParityConfig as SB3Config
 
 
 def parity_config_to_train_config(parity_config: ParityConfig) -> TensorConfig:
@@ -60,6 +60,8 @@ def parity_config_to_train_config(parity_config: ParityConfig) -> TensorConfig:
         padding_atoms=parity_config.padding_atoms,
         padding_states=parity_config.padding_states,
         max_steps=parity_config.max_depth,
+        use_exact_memory=parity_config.use_exact_memory,
+        sample_deterministic_per_env=parity_config.sample_deterministic_per_env,
         n_envs=parity_config.n_envs,
         n_steps=parity_config.n_steps,
         n_epochs=parity_config.n_epochs,

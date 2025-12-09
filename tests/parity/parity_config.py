@@ -62,6 +62,7 @@ class ParityConfig:
     skip_unary_actions: bool = True
     end_proof_action: bool = True
     reward_type: int = 0
+    sample_deterministic_per_env: bool = True  # For parity testing
     
     # PPO / training
     n_envs: int = 4

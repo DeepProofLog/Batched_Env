@@ -14,10 +14,6 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Set determinism environment variables before any CUDA operations
-os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
-os.environ.setdefault('PYTHONHASHSEED', '0')
-
 import argparse
 import cProfile
 import pstats
@@ -53,7 +49,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from sampler import Sampler
     
     # Set seeds for reproducibility
-    seed_all(config.seed, deterministic=True, warn=False)
+    seed_all(config.seed, deterministic=False, warn=False)
     
     # Load data
     dh = DataHandler(
@@ -170,7 +166,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         device=device,
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
-        sample_deterministic_per_env=True,
+        sample_deterministic_per_env=False,
     )
     
     # Eval environment
@@ -197,11 +193,11 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         device=device,
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
-        sample_deterministic_per_env=True,
+        sample_deterministic_per_env=False,
     )
     
     # Reseed before model creation
-    seed_all(config.seed, deterministic=True, warn=False)
+    seed_all(config.seed, deterministic=False, warn=False)
     
     # Policy
     action_size = config.padding_states
@@ -359,7 +355,7 @@ def main():
                         help='Dataset name')
     parser.add_argument('--total-timesteps', type=int, default=90,
                         help='Total training timesteps')
-    parser.add_argument('--batch-size-env', type=int, default=16,
+    parser.add_argument('--batch-size-env', type=int, default=128,
                         help='Environment batch size')
     parser.add_argument('--n-steps', type=int, default=128,
                         help='Steps per rollout')

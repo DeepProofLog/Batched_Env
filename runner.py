@@ -11,9 +11,9 @@ migrated from the original Stable-Baselines3 version to use TorchRL.
 # ==============================================================================
 import os
 
-# Set environment variables for determinism before any CUDA operations
-os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
-os.environ.setdefault('PYTHONHASHSEED', '0')
+# # Set environment variables for determinism before any CUDA operations
+# os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+# os.environ.setdefault('PYTHONHASHSEED', '0')
 
 # Early imports for seeding
 import numpy as np
@@ -22,7 +22,7 @@ from utils.seeding import seed_all
 
 # Default seed for module initialization - will be overridden by config
 _INIT_SEED = 0
-seed_all(_INIT_SEED, deterministic=True, warn=False)
+seed_all(_INIT_SEED, deterministic=False, warn=False)
 
 # Set float32 matmul precision
 torch.set_float32_matmul_precision('high')
@@ -88,8 +88,8 @@ if __name__ == "__main__":
         'use_compile': True,
         'n_steps': 128,
         'eval_freq': 1,  # In multiples of n_steps (matches SB3)
-        'batch_size_env': 16,
-        'batch_size_env_eval': 16,
+        'batch_size_env': 128,
+        'batch_size_env_eval': 128,
         'batch_size': 4096,  # Aligned with SB3 (was 1024)
 
         # Env params

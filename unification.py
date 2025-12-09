@@ -1024,17 +1024,15 @@ def unify_with_rules(
     h_pairs = h_templ.clone()
     h_args = h_pairs[:, 1:3]  # [L, 2]
     is_t_h = (h_args >= template_start) & (h_args != pad)
-    if is_t_h.any():
-        # Apply offset to both args at once
-        h_pairs[:, 1:3] = torch.where(is_t_h, next_for_match.unsqueeze(1) + (h_args - template_start), h_args)
+    # Apply offset unconditionally (torch.where is efficient even for empty masks)
+    h_pairs[:, 1:3] = torch.where(is_t_h, next_for_match.unsqueeze(1) + (h_args - template_start), h_args)
 
     # Vectorized body args rename: [L, Bmax, 3]
     b_pairs = b_templ.clone()
     b_args = b_pairs[:, :, 1:3]  # [L, Bmax, 2]
     is_t_b = (b_args >= template_start) & (b_args != pad)
-    if is_t_b.any():
-        # Broadcast next_for_match to [L, 1, 1] for proper broadcasting
-        b_pairs[:, :, 1:3] = torch.where(is_t_b, next_for_match.view(-1, 1, 1) + (b_args - template_start), b_args)
+    # Broadcast next_for_match to [L, 1, 1] for proper broadcasting
+    b_pairs[:, :, 1:3] = torch.where(is_t_b, next_for_match.view(-1, 1, 1) + (b_args - template_start), b_args)
 
     # -------------------------------------------------------------------------
     # 3. Unification
@@ -1232,23 +1230,23 @@ def prune_and_collapse(
     is_ground = (args <= constant_no).all(dim=2)   # [N, M]
     ground = valid & is_ground                     # [N, M] Atoms that are ground and valid
 
-    # Check existence in KG
+    # Check existence in KG - compute flat_mask unconditionally
+    flat_mask = ground.flatten()
     drop = torch.zeros_like(valid)
-    if ground.any():
-        flat_mask = ground.flatten()
-        atoms = candidates.reshape(-1, 3)[flat_mask]        # [G0, 3]
-        is_fact = fact_index.contains(atoms)                # [G0]
+    if flat_mask.any():  # Only check if there are ground atoms to test
+        atoms = candidates.view(-1, 3)[flat_mask]             # [G0, 3]
+        is_fact = fact_index.contains(atoms)                  # [G0]
         
-        place = torch.zeros_like(flat_mask, dtype=torch.bool, device=device)
+        place = torch.zeros(flat_mask.shape[0], dtype=torch.bool, device=device)
         place[flat_mask] = is_fact
-        drop = place.view(N, M)                             # [N, M] True if atom is a Fact
+        drop = place.view(N, M)                               # [N, M] True if atom is a Fact
 
     # -------------------------------------------------------------------------
     # 2. Handle Exclusion (Circular Proof Prevention)
     # -------------------------------------------------------------------------
     # Do NOT drop atoms equal to excluded first atom (e.g. parent fact)
     # If we drop them, we might say "X is true because of X", which is circular.
-    if excluded_first_atoms is not None and ground.any():
+    if excluded_first_atoms is not None and flat_mask.any():
         excl = excluded_first_atoms.view(N, 1, 3).expand(-1, M, -1)  # [N, M, 3]
         keep_if_excl = ground & (candidates == excl).all(dim=2)
         drop &= ~keep_if_excl
@@ -1752,6 +1750,13 @@ class UnificationEngine:
             self.end_tensor = torch.tensor([[self.end_pred_idx, pad, pad]], dtype=torch.long, device=device)
         else:
             self.end_tensor = None
+        
+        # Cached arange tensors for hot paths (avoids repeated creation)
+        # These are used in standardize, pack_by_owner, and other frequently called ops
+        max_states_cap = max_derived_per_state if max_derived_per_state is not None else 64
+        max_atoms_cap = self.max_rule_body_size + 10 if self.max_rule_body_size else 16
+        self._cached_arange_states = torch.arange(max_states_cap, device=device, dtype=torch.long)
+        self._cached_arange_atoms = torch.arange(max_atoms_cap * 2, device=device, dtype=torch.long)
         
         # Initialize DebugHelper for verbose output
         from utils.debug_helper import DebugHelper as DH

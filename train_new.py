@@ -51,6 +51,7 @@ class TrainParityConfig:
     end_proof_action: bool = True
     reward_type: int = 0
     max_total_vars: int = 1000
+    sample_deterministic_per_env: bool = True  # For parity testing
     
     # PPO / training
     n_envs: int = 3
@@ -281,7 +282,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         device=device,
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
-        sample_deterministic_per_env=False,
+        sample_deterministic_per_env=config.sample_deterministic_per_env,
     )
     
     eval_env = BatchedEnv(
@@ -293,7 +294,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         mode='eval',
         max_depth=config.max_steps,
         memory_pruning=config.memory_pruning,
-        use_exact_memory=False,
+        use_exact_memory=config.use_exact_memory,
         skip_unary_actions=config.skip_unary_actions,
         end_proof_action=config.end_proof_action,
         reward_type=config.reward_type,
@@ -307,7 +308,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         device=device,
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
-        sample_deterministic_per_env=False,
+        sample_deterministic_per_env=config.sample_deterministic_per_env,
     )
     
     # Create embedder with fixed seed - match SB3 exactly

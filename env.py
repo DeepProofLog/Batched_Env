@@ -1416,7 +1416,7 @@ class BatchedEnv(EnvBase):
             target_pos = pos[keep_mask]
             compact[target_rows, target_pos] = states[keep_mask]
         
-        counts_out = new_counts.clone()
+        counts_out = new_counts
 
         # Step 5: Inject FALSE where needed - any row with 0 states needs FALSE
         # This matches SB3 behavior where empty derived_states (after memory pruning) -> end_in_false()
