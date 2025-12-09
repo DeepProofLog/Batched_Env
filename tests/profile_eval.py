@@ -14,9 +14,6 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Set determinism environment variables before any CUDA operations
-os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
-os.environ.setdefault('PYTHONHASHSEED', '0')
 
 import argparse
 import cProfile

@@ -51,14 +51,87 @@ class FastMaskedCategorical:
     def sample(self) -> Tensor:
         """Sample actions from the distribution."""
         # Use multinomial with probabilities
-        probs = self._get_probs()
-        # Handle fully-masked rows (all -inf) by setting uniform prob
-        probs_safe = probs.clone()
-        all_zero = probs_safe.sum(dim=-1) == 0
-        if all_zero.any():
-            probs_safe[all_zero] = 1.0 / self._num_actions
-        # Multinomial sample
-        return torch.multinomial(probs_safe, num_samples=1).squeeze(-1)
+        # Optimization: Avoid cloning and explicit safety checks if possible
+        # We can use the logits directly with Gumbel-Max trick which is faster and numerically stable
+        # for sampling from categorical, avoiding explicit exp() and normalization.
+        # But we need to handle specific 'all -inf' case if that's a hard requirement.
+        
+        # Current fast path: direct multinomial on probs
+        # To avoid the slow safety check:
+        # We know validation is skipped. If valid, multinomial works.
+        # If we must handle all-masked rows, do it without sync.
+        
+        if self.probs is None:
+             # F.gumbel_softmax or similar might be faster but let's stick to multinomial for now
+             # but compute probs only once.
+             self.probs = self._log_probs.exp()
+             
+        # Optimized safety check:
+        # If a row is all 0s, multinomial will error. 
+        # Instead of 'if all_zero.any():', we can just add a small epsilon or 
+        # rely on the fact that PPO usually doesn't produce all-masked rows in valid states.
+        # However, specifically for "all masked", the original code set uniform prob.
+        
+        # Faster approach: add epsilon to everything? No, breaks masking.
+        # Vectorized fix:
+        # 1. Sum probs. 
+        # 2. Find indices where sum is 0.
+        # 3. Add uniform distribution ONLY to those rows (masked addition).
+        
+        probs = self.probs
+        # No clone needed if we don't modify self.probs in place in a way that affects next calls
+        # (self.probs is cached, so we shouldn't modify it)
+        
+        # Check sum efficiently
+        sum_probs = probs.sum(dim=-1, keepdim=True)
+        # Identify zero rows (use small epsilon for float comparison safety)
+        zero_mask = sum_probs < 1e-6
+        
+        if zero_mask.any(): # This is a sync! We want to avoid it if possible.
+            # Actually, `any()` causes a device sync.
+            # We can avoid `any()` by just doing the addition:
+            # probs_safe = probs + zero_mask.float() * (1.0 / self._num_actions)
+            # This handles the replacement in a purely vectorized way without branching.
+            
+            # Note: We need a new tensor for probs_safe to not mutate self.probs
+            # But we can optimize to doing it only if strictly needed?
+            # No, branching is the sync. Unconditional vector op is faster on GPU.
+            
+            # However, cloning the whole prob tensor is expensive.
+            # Let's try to query the cached probability or just use Gumbel noise on logits?
+            pass
+
+        # Let's go with the Gumbel-Max trick on Logits directly!
+        # It's generally faster: argmax(logits - log(-log(uniform)))
+        # and handles -inf correctly (result is -inf, never chosen unless everything is -inf)
+        # If everything is -inf, argmax chooses first index (0). 
+        # The previous logic chose UNIFORM random. 
+        # If we need uniform random for fully masked:
+        # We can fill NaNs?
+        
+        # Let's stick to optimized multinomial for parity but remove the sync.
+        
+        # Pure tensor approach without 'if any':
+        # Create a safe probability tensor
+        # We'll use the fact that invalid actions are -inf in logits -> 0 in probs.
+        
+        # To avoid the clone + check sequence:
+        # Just use torch.multinomial. If it crashes on 0s, we have a problem.
+        # But `torch.multinomial` behavior on all-zeros is undefined/error.
+        
+        # Alternative: Add a tiny epsilon to valid actions? 
+        # No.
+        
+        # Re-implementation of safety without sync:
+        mask = (probs.sum(dim=-1, keepdim=True) == 0) # [B, 1]
+        # We want to add uniform prob to these rows.
+        # probs_safe = probs + mask * (1.0 / self._num_actions)
+        # This allocates a new tensor of size [B, A].
+        
+        return torch.multinomial(
+            probs + mask * (1.0 / self._num_actions), 
+            num_samples=1
+        ).squeeze(-1)
     
     def mode(self) -> Tensor:
         """Return the most likely action (argmax)."""

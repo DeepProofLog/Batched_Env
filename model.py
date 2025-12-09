@@ -256,10 +256,11 @@ class SharedPolicyValueNetwork(nn.Module):
         self._use_amp = use_amp        
         # Apply torch.compile with bucketing strategy for maximum performance
         if compile_model:
-            self.forward_policy = torch.compile(self.forward_policy)
-            self.forward_value = torch.compile(self.forward_value)
-            self.forward_joint = torch.compile(self.forward_joint)
-            print(f"[Model] torch.compile applied to forward_policy, forward_value, and forward_joint")
+            # Use reduce-overhead (CUDA Graphs) to eliminate the massive kernel launch bottleneck
+            self.forward_policy = torch.compile(self.forward_policy, mode='reduce-overhead')
+            self.forward_value = torch.compile(self.forward_value, mode='reduce-overhead')
+            self.forward_joint = torch.compile(self.forward_joint, mode='reduce-overhead')
+            print(f"[Model] torch.compile applied to forward_policy, forward_value, and forward_joint (mode='reduce-overhead')")
             
     def _encode_with_shared_body(self, embeddings: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Process embeddings through the shared backbone.
@@ -462,8 +463,9 @@ class ActorCriticPolicy(nn.Module):
         super().__init__()
         
         if kwargs.get('compile_model', False):
-             self.evaluate_actions = torch.compile(self.evaluate_actions)
-             print(f"[Policy] torch.compile applied to evaluate_actions")
+             # Use reduce-overhead to match the shared network optimization
+             self.evaluate_actions = torch.compile(self.evaluate_actions, mode='reduce-overhead')
+             print(f"[Policy] torch.compile applied to evaluate_actions (mode='reduce-overhead')")
         
         self.embed_dim = embed_dim
         self.device = device if device is not None else torch.device('cpu')
@@ -534,17 +536,23 @@ class ActorCriticPolicy(nn.Module):
     def forward(
         self,
         obs: TensorDict,
-        deterministic: bool = False
+        deterministic: bool = False,
+        actions: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass - exactly matches SB3's forward.
         
+        When `actions` is None: samples actions and returns (actions, values, log_probs)
+        When `actions` is provided: evaluates given actions  and returns (values, log_probs, entropy)
+        
         Args:
             obs: Observations as TensorDict
             deterministic: If True, select argmax action instead of sampling
+            actions: Optional actions to evaluate (for functional gradient computation)
         
         Returns:
-            Tuple of (actions, values, log_probs)
+            If actions is None: Tuple of (actions, values, log_probs)
+            If actions is provided: Tuple of (values, log_probs, entropy)
         """
         # Extract features following sb3 pattern
         features = self.extract_features(obs)
@@ -556,15 +564,23 @@ class ActorCriticPolicy(nn.Module):
             values = self.mlp_extractor.forward_critic((obs_embeddings_vf, None, None))
 
         distribution = self.action_dist.proba_distribution(action_logits=logits)
+        
+        # Evaluation mode: when actions are provided, evaluate them (like evaluate_actions)
+        if actions is not None:
+            action_log_probs = distribution.log_prob(actions)
+            entropy = distribution.entropy()
+            return values, action_log_probs, entropy
+        
+        # Sampling mode: sample or select deterministic action
         if deterministic:
-            actions = distribution.mode()
+            sampled_actions = distribution.mode()
         else:
-            actions = distribution.sample()
+            sampled_actions = distribution.sample()
         
         # Compute log probabilities
-        action_log_probs = distribution.log_prob(actions)
+        action_log_probs = distribution.log_prob(sampled_actions)
         
-        return actions, values, action_log_probs
+        return sampled_actions, values, action_log_probs
     
     def evaluate_actions(
         self,

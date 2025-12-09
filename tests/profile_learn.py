@@ -23,7 +23,6 @@ from time import time
 
 import numpy as np
 import torch
-from torch.profiler import profile, ProfilerActivity
 
 from utils.seeding import seed_all
 
@@ -244,7 +243,10 @@ def profile_learn_cprofile(config: SimpleNamespace):
     print(f"Using device: {device}")
     
     print("\nSetting up components...")
+    init_start = time()
     ppo, policy, train_env, eval_env, sampler, dh, im = setup_components(device, config)
+    init_time = time() - init_start
+    print(f"Initialization time: {init_time:.2f}s")
     
     print(f"\nProfiling PPO.learn() for {config.total_timesteps} timesteps...")
     profiler = cProfile.Profile()
@@ -296,11 +298,6 @@ def profile_learn_cprofile(config: SimpleNamespace):
         ps.sort_stats('cumulative')
         ps.print_stats(n_functions)
     
-        f.write("\n" + "="*80 + "\n")
-        f.write("Callers of .item()\n")
-        f.write("="*80 + "\n")
-        ps.print_callers('item', 20)
-    
         f.write("\n\n" + "="*80 + "\n")
         f.write("Top by Total Time\n")
         f.write("="*80 + "\n")
@@ -324,6 +321,7 @@ def profile_learn_gpu(config: SimpleNamespace):
     
     print(f"\nGPU Profiling PPO.learn() for {config.total_timesteps} timesteps...")
     
+    from torch.profiler import profile, ProfilerActivity
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
         start_time = time()
         ppo.learn(total_timesteps=config.total_timesteps)
@@ -373,7 +371,7 @@ def main():
                         help='Environment batch size')
     parser.add_argument('--n-steps', type=int, default=128,
                         help='Steps per rollout')
-    parser.add_argument('--n-epochs', type=int, default=5,
+    parser.add_argument('--n-epochs', type=int, default=10,
                         help='PPO epochs per update')
     parser.add_argument('--batch-size', type=int, default=2048,
                         help='PPO minibatch size')
