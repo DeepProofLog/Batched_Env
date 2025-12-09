@@ -80,20 +80,20 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 90,
+        'timesteps_train': 700000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
         'use_amp': True,
         'use_compile': True,
-        'n_steps': 40,
+        'n_steps': 128,
         'eval_freq': 1,  # In multiples of n_steps (matches SB3)
-        'batch_size_env': 20,
-        'batch_size_env_eval': 20,
+        'batch_size_env': 16,
+        'batch_size_env_eval': 16,
         'batch_size': 4096,  # Aligned with SB3 (was 1024)
 
         # Env params
-        'reward_type': 0,  # Aligned with SB3 (was 4)
+        'reward_type': 4,  # Aligned with SB3 (was 4)
         'train_neg_ratio': 4,
         'end_proof_action': True,
         'skip_unary_actions': True,
@@ -137,8 +137,7 @@ if __name__ == "__main__":
         'debug_ppo': False,
         
         # Determinism settings
-        'deterministic': True,  # Enable strict reproducibility (slower, set False for production)
-        'eval_deterministic': True,  # Use argmax in evaluation (vs sampling)
+        'deterministic': False,  # Enable strict reproducibility (slower, set False for production)
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())

@@ -281,7 +281,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         device=device,
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
-        sample_deterministic_per_env=True,
+        sample_deterministic_per_env=False,
     )
     
     eval_env = BatchedEnv(
@@ -293,7 +293,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         mode='eval',
         max_depth=config.max_steps,
         memory_pruning=config.memory_pruning,
-        use_exact_memory=True,
+        use_exact_memory=False,
         skip_unary_actions=config.skip_unary_actions,
         end_proof_action=config.end_proof_action,
         reward_type=config.reward_type,
@@ -307,7 +307,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         device=device,
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
-        sample_deterministic_per_env=True,
+        sample_deterministic_per_env=False,
     )
     
     # Create embedder with fixed seed - match SB3 exactly
@@ -502,7 +502,101 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     
     return results
 
-def main():
+
+def main(args, log_filename=None, use_logger=False, use_WB=False, WB_path=None, date=None, external_components=None):
+    """
+    Main entry point for runner.py compatibility.
+    
+    Accepts runner.py arguments and converts them to TrainParityConfig
+    for use with train_new's run_experiment() function.
+    
+    Args:
+        args: Namespace with config from runner.py
+        log_filename: Path to log file (for compatibility, not used)
+        use_logger: Whether to enable logging (for compatibility)  
+        use_WB: Whether to use Weights & Biases (for compatibility)
+        WB_path: W&B run path (for compatibility)
+        date: Timestamp string (for compatibility)
+        external_components: Pre-initialized components for testing
+    
+    Returns:
+        Tuple[Dict, Dict, Dict]: Metrics (train, valid, test)
+    """
+    # Build config from runner args namespace
+    config = TrainParityConfig(
+        # Dataset / data files
+        dataset=getattr(args, 'dataset_name', 'countries_s3'),
+        data_path=getattr(args, 'data_path', './data/'),
+        train_file=getattr(args, 'train_file', 'train.txt'),
+        valid_file=getattr(args, 'valid_file', 'valid.txt'),
+        test_file=getattr(args, 'test_file', 'test.txt'),
+        rules_file=getattr(args, 'rules_file', 'rules.txt'),
+        facts_file=getattr(args, 'facts_file', 'train.txt'),
+        train_depth=getattr(args, 'train_depth', None),
+        
+        # Environment / padding
+        padding_atoms=getattr(args, 'padding_atoms', 6),
+        padding_states=getattr(args, 'padding_states', 64),
+        max_steps=getattr(args, 'max_depth', 20),
+        use_exact_memory=getattr(args, 'use_exact_memory', True),
+        memory_pruning=getattr(args, 'memory_pruning', True),
+        skip_unary_actions=getattr(args, 'skip_unary_actions', True),
+        end_proof_action=getattr(args, 'end_proof_action', True),
+        reward_type=getattr(args, 'reward_type', 0),
+        max_total_vars=getattr(args, 'max_total_vars', 1000),
+        
+        # PPO / training
+        n_envs=getattr(args, 'batch_size_env', 3),
+        n_steps=getattr(args, 'n_steps', 20),
+        n_epochs=getattr(args, 'n_epochs', 4),
+        batch_size=getattr(args, 'batch_size', 64),
+        learning_rate=getattr(args, 'lr', 3e-4),
+        gamma=getattr(args, 'gamma', 0.99),
+        gae_lambda=getattr(args, 'gae_lambda', 0.95),
+        clip_range=getattr(args, 'clip_range', 0.2),
+        ent_coef=getattr(args, 'ent_coef', 0.2),
+        vf_coef=getattr(args, 'vf_coef', 0.5),
+        max_grad_norm=getattr(args, 'max_grad_norm', 0.5),
+        total_timesteps=getattr(args, 'timesteps_train', 120),
+        n_corruptions=getattr(args, 'eval_neg_samples', 10) or 10,
+        
+        # Embedding / model
+        atom_embedding_size=getattr(args, 'atom_embedding_size', 64),
+        
+        # Model saving / evaluation
+        eval_freq=getattr(args, 'eval_freq', 0),
+        save_model=getattr(args, 'save_model', False),
+        model_path=getattr(args, 'models_path', './models/'),
+        restore_best=getattr(args, 'restore_best_val_model', True),
+        
+        # Misc
+        seed=getattr(args, 'seed_run_i', 42),
+        device=getattr(args, 'device', 'cpu'),
+        verbose=getattr(args, 'verbose', True),
+    )
+    
+    # Run training
+    results = run_experiment(config)
+    
+    # Convert results to expected format for runner.py
+    # runner.py expects (train_metrics, valid_metrics, test_metrics)
+    test_metrics = {
+        'mrr_mean': results.get('MRR', 0.0),
+        'hits1_mean': results.get('Hits@1', 0.0),
+        'hits3_mean': results.get('Hits@3', 0.0),
+        'hits10_mean': results.get('Hits@10', 0.0),
+        'rewards_pos_mean': 0.0,  # Not tracked in simple experiment
+        'rewards_neg_mean': 0.0,
+        'success_rate': 0.0,
+    }
+    train_metrics = {k: 0 for k in test_metrics.keys()}
+    valid_metrics = {k: 0 for k in test_metrics.keys()}
+    
+    return train_metrics, valid_metrics, test_metrics
+
+
+def main_cli():
+    """Command-line interface for train_new.py (standalone use)."""
     parser = argparse.ArgumentParser(description="Train New (Tensor)")
     parser.add_argument("--dataset", type=str, default="countries_s3")
     parser.add_argument("--n-envs", type=int, default=16)
@@ -550,4 +644,4 @@ def main():
     run_experiment(config)
 
 if __name__ == "__main__":
-    main()
+    main_cli()

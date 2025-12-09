@@ -359,11 +359,11 @@ def main():
                         help='Dataset name')
     parser.add_argument('--total-timesteps', type=int, default=90,
                         help='Total training timesteps')
-    parser.add_argument('--batch-size-env', type=int, default=512,
+    parser.add_argument('--batch-size-env', type=int, default=16,
                         help='Environment batch size')
-    parser.add_argument('--n-steps', type=int, default=32,
+    parser.add_argument('--n-steps', type=int, default=128,
                         help='Steps per rollout')
-    parser.add_argument('--n-epochs', type=int, default=10,
+    parser.add_argument('--n-epochs', type=int, default=5,
                         help='PPO epochs per update')
     parser.add_argument('--batch-size', type=int, default=2048,
                         help='PPO minibatch size')

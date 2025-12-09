@@ -139,6 +139,10 @@ class BatchedEnv(EnvBase):
         self.corruption_mode = bool(corruption_mode)
         self.corruption_scheme = tuple(corruption_scheme) if corruption_scheme is not None else ('head','tail')
         self.train_neg_ratio = float(train_neg_ratio)
+        if self.train_neg_ratio > 0:
+            self.rejection_weight = 1 / self.train_neg_ratio
+        else:
+            self.rejection_weight = 1
         self.sampler = sampler
 
         # Action modifiers
@@ -1541,7 +1545,7 @@ class BatchedEnv(EnvBase):
             rewards[tp, 0] = 1.0
             rewards[fn, 0] = -1.0
             rewards[fp, 0] = -1.0
-            rewards[tn, 0] = 1.0
+            rewards[tn, 0] = self.rejection_weight
         else:
             raise ValueError(f"Invalid reward_type: {self.reward_type}. Choose 0-4.")
 
