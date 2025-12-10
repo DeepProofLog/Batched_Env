@@ -7,8 +7,12 @@ import pickle
 from typing import Tuple, Optional
 import math
 
-from sb3_dataset import DataHandler
-from sb3_index_manager import IndexManager
+try:
+    from sb3_dataset import DataHandler
+    from sb3_index_manager import IndexManager
+except ImportError:
+    from sb3.sb3_dataset import DataHandler
+    from sb3.sb3_index_manager import IndexManager
 
 
 # ------------------ Load embeddings functions------------------

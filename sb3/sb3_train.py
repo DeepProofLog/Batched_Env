@@ -88,12 +88,6 @@ def _attach_kge_to_policy(
 
 def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler, IndexManager, Any, Any]:
     """Prepare DataHandler, IndexManager, sampler and embedder."""
-    
-    # PARITY: Reseed at start for deterministic alignment
-    deterministic = getattr(args, 'deterministic', False)
-    if deterministic:
-        _set_seeds(args.seed_run_i)
-    
     # Dataset
     dh = DataHandler(
         dataset_name=args.dataset_name,
@@ -115,8 +109,6 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         topk_facts=args.topk_facts,
         topk_facts_threshold=args.topk_facts_threshold,
     )
-    print(f"DEBUG: SB3 DataHandler n_train_queries={args.n_train_queries}")
-    print(f"DEBUG: SB3 DataHandler predicates ({len(dh.predicates)}): {sorted(list(dh.predicates))}")
 
     # Respect caps from args while ensuring >1 eval query for callbacks
     args.n_train_queries = (
@@ -153,13 +145,6 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     )
     im.build_fact_index(dh.facts)
     
-    # PARITY DEBUG: Log IndexManager state
-    print(f"[PARITY] IndexManager: constants={im.constant_no}, predicates={im.predicate_no}, vars={im.variable_no}")
-    
-    # PARITY DEBUG: Log RNG state before sampler
-    rng_state = torch.get_rng_state().sum().item()
-    print(f"[PARITY] RNG state before sampler: {rng_state}")
-
     # Negative sampler
     dh.sampler = get_sampler(
         data_handler=dh,
@@ -171,17 +156,9 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     sampler = dh.sampler
 
     # Embedder
-    # Seed is already set at the beginning of main(), but reseed to align with torchrl stack
-    torch.manual_seed(args.seed_run_i)
     embedder_getter = get_embedder(args, dh, im, device)
     embedder = embedder_getter.embedder
     
-    # PARITY DEBUG: Log embedding checksum for verification
-    embedder_params = list(embedder.parameters())
-    if embedder_params:
-        checksum = sum(p.sum().item() for p in embedder_params)
-        print(f"[PARITY] Embedder checksum: {checksum:.6f}")
-
     # Derived dims for concat options
     args.atom_embedding_size = (
         args.atom_embedding_size
@@ -456,22 +433,11 @@ def _train_if_needed(
         return model
 
     run = None  # Placeholder for wandb run (currently disabled)
-    # run = _maybe_enable_wandb(use_WB, args, WB_path, model_name)
-
-    # PARITY: Reseed before training starts to align with test_runner_parity.py
-    deterministic = getattr(args, 'deterministic', False)
-    if deterministic:
-        _set_seeds(args.seed_run_i)
 
     training_fn = model.learn
     training_args = {"total_timesteps": args.timesteps_train, "callback": callbacks}
     profile_code('False', training_fn, **training_args)  # cProfile
     
-    # PARITY DEBUG: Log policy checksum after training
-    policy_checksum_trained = sum(p.sum().item() for p in model.policy.parameters())
-    print(f"[PARITY] Policy checksum after training: {policy_checksum_trained:.6f}")
-    
-    # exit(0)
     # Restore desired checkpoint (if model saving is enabled)
     if args.save_model:
         if args.restore_best_val_model:
@@ -494,29 +460,8 @@ def _train_if_needed(
 def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler: DataHandler) -> Tuple[dict, dict, dict]:
     print("\nTest set evaluation...")
     eval_mode = "hybrid" if bool(getattr(args, "inference_fusion", False)) else "rl_only"
-    
-    # Reseed before evaluation for deterministic parity testing
-    # This ensures negative sampling in eval_corruptions matches tensor implementation
-    deterministic = getattr(args, "deterministic", False)
-    if deterministic:
-        import numpy as np
-        eval_seed = 12345  # Fixed seed for eval_corruptions parity (same as test_eval_parity.py)
-        torch.manual_seed(eval_seed)
-        np.random.seed(eval_seed)
 
     depth_reward_tracker = _EvalDepthRewardTracker()
-
-    # PARITY DEBUG: Log evaluation inputs
-    test_queries = data_handler.test_queries
-    print(f"[PARITY] Eval: n_queries={len(test_queries)}, first_query={test_queries[0] if test_queries else 'N/A'}")
-    
-    # PARITY DEBUG: Log RNG state before eval
-    rng_before_eval = torch.get_rng_state().sum().item()
-    print(f"[PARITY] RNG before eval: {rng_before_eval}")
-
-    # PARITY DEBUG: Log n_corruptions
-    n_corruptions = args.test_neg_samples
-    print(f"[PARITY] n_corruptions={n_corruptions}, corruption_scheme={args.corruption_scheme}")
 
     eval_args = {
         "model": model,
@@ -524,7 +469,7 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
         "data": data_handler.test_queries,
         "sampler": sampler,
         "n_corruptions": args.test_neg_samples,
-        "verbose": 0,
+        "verbose": 2,
         "kge_inference_engine": kge_engine,
         "evaluation_mode": eval_mode,
         "plot": args.plot,
@@ -579,37 +524,14 @@ def _evaluate(args: Any, model: PPO, eval_env, kge_engine, sampler, data_handler
         metrics_train = {k: 0 for k in metrics_test.keys()}
         metrics_valid = {k: 0 for k in metrics_test.keys()}
 
-    # Mirror torchrl trace logging: record eval metrics when trace recorder is available
-    trace_recorder = getattr(model, "trace_recorder", None)
-    if trace_recorder is not None:
-        if metrics_valid:
-            trace_recorder.log_eval("valid", metrics_valid)
-        if metrics_test:
-            trace_recorder.log_eval("test", metrics_test)
-        trace_recorder.flush(f"{model.trace_prefix}_trace.jsonl")
-
     return metrics_train, metrics_valid, metrics_test
 
 
 
-def main(args, log_filename, use_logger, use_WB, WB_path, date, external_components=None):
-    """Main training function.
-    
-    Args:
-        args: Configuration namespace
-        log_filename: Log file path
-        use_logger: Whether to use logging
-        use_WB: Whether to use Weights & Biases
-        WB_path: W&B path
-        date: Date string
-        external_components: Optional dict with pre-created components for parity testing:
-            {'dh': DataHandler, 'index_manager': IndexManager, 'sampler': Sampler, 'embedder': Embedder}
-    """
+def main(args, log_filename, use_logger, use_WB, WB_path, date):
+
     _warn_non_reproducible(args)
     _set_seeds(args.seed_run_i)
-    
-    # Deterministic parity mode for exact alignment with tensor implementation
-    deterministic = getattr(args, 'deterministic', False)
 
     # Normalize KGE flags
     args.kge_action = bool(getattr(args, "kge_action", False))
@@ -624,18 +546,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
 
     # Build pieces - use external components if provided (for parity testing)
     kge_engine = None
-    if external_components is not None:
-        dh = external_components['dh']
-        index_manager = external_components['index_manager']
-        sampler = external_components['sampler']
-        embedder = external_components['embedder']
-    else:
-        dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
-    
-    # PARITY: Reseed before environment creation for deterministic alignment
-    if deterministic:
-        _set_seeds(args.seed_run_i)
-    
+    dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
     env, eval_env, callback_env = create_environments(
         args,
         dh,
@@ -660,10 +571,6 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         # 'kge_logit_eps': getattr(args, 'kge_logit_eps', 1e-6),
     }
 
-    # PARITY: Reseed before model creation for deterministic alignment
-    if deterministic:
-        _set_seeds(args.seed_run_i)
-    
     model = PPO(
         CustomActorCriticPolicy,
         env,
@@ -678,18 +585,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         gamma=args.gamma,
         clip_range_vf=args.clip_range_vf,
         target_kl=args.target_kl,
-        policy_kwargs=policy_kwargs,
-        trace_dir=getattr(args, "trace_dir", None),
-        trace_prefix="sb3",
-        seed=args.seed_run_i,
-    )
-    
-    # PARITY DEBUG: Log policy parameter checksum
-    policy_checksum = sum(p.sum().item() for p in model.policy.parameters())
-    print(f"[PARITY] Policy checksum after creation: {policy_checksum:.6f}")
-
-    if getattr(args, "trace_dir", None):
-        print(f"[TRACE] SB3 trace recorder: {model.trace_recorder}")
+        policy_kwargs=policy_kwargs)
     
     # Optional policy KGE wiring
     _attach_kge_to_policy(

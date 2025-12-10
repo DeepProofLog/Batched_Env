@@ -342,25 +342,19 @@ class LogicEnv_gym(gym.Env):
             # Retry sampling if negative generation fails
             max_retries = 5
             for attempt in range(max_retries):
-                # RNG TRACE: Before sampler.get_negatives_from_states()
-                import torch
-                rng_before_neg = torch.get_rng_state().sum().item()
-                print(f"[RNG_TRACE SB3] Before sampler.get_negatives_from_states(): {rng_before_neg}")
-                
                 negative_samples = self.sampler.get_negatives_from_states(
                     state, self.device, num_negs=num_to_generate
                 )
-                
-                # RNG TRACE: After sampler.get_negatives_from_states()
-                rng_after_neg = torch.get_rng_state().sum().item()
-                print(f"[RNG_TRACE SB3] After sampler.get_negatives_from_states(): {rng_after_neg} (consumed: {rng_after_neg - rng_before_neg})")
                 selected = negative_samples
                 if not isinstance(selected, list):
                     selected = [selected]
                 if len(self.corruption_scheme) > 1:
                     if not hasattr(self, "negation_toggle"):
                         self.negation_toggle = 0
-                    selected = [negative_samples[self.negation_toggle]]
+                    if self.negation_toggle < len(negative_samples):
+                        selected = [negative_samples[self.negation_toggle]]
+                    else:
+                        selected = [] # Signal failure to pick
                     self.negation_toggle = 1 - self.negation_toggle
 
                 # Check if we successfully generated a negative sample

@@ -56,12 +56,16 @@ if __name__ == "__main__":
 
         # Model params
         'model_name': 'PPO',
-        'ent_coef': 0.2,
+        'ent_coef': 0.05,  # Reduced from 0.2 - high ent_coef causes too much exploration
         'clip_range': 0.2,
-        'n_epochs': 20, 
-        'lr': 5e-5,
+        'clip_range_vf': None,  # Value function clipping (None = no clipping)
+        'n_epochs': 10,  # Balanced epochs for stable learning
+        'lr': 5e-5,  # Conservative learning rate for stable value learning
         'gamma': 0.99,
-        'target_kl': 0.03,  # KL divergence limit for early stopping (aligned with SB3)
+        'gae_lambda': 0.95,  # GAE lambda for advantage estimation
+        'vf_coef': 1.0,  # Value function coefficient - increased from 0.5 for better value learning
+        'max_grad_norm': 0.5,  # Gradient clipping for stability
+        'target_kl': 0.02,  # Moderate KL constraint
 
         # Training params
         'seed': [0],
@@ -71,11 +75,11 @@ if __name__ == "__main__":
         'save_model': True,
         'use_amp': True,
         'use_compile': True,
-        'n_steps': 32,
+        'n_steps': 128,  # Increased from 32 - more samples per rollout for stable learning
         'eval_freq': 1,  # In multiples of n_steps (matches SB3)
-        'batch_size_env': 64,
+        'batch_size_env': 64,  # Number of parallel environments
         'batch_size_env_eval': 64,
-        'batch_size': 4096,  # Aligned with SB3 (was 1024)
+        'batch_size': 2048,  # Reduced from 4096 - should be <= n_steps * batch_size_env (8192)
 
         # Env params
         'reward_type': 4,  # Aligned with SB3 (was 4)
@@ -125,6 +129,22 @@ if __name__ == "__main__":
         # Determinism settings
         'deterministic': False,  # Enable strict reproducibility (slower, set False for production)
         'sample_deterministic_per_env': False,  # Sample deterministic per environment (slower, set False for production)
+        
+        # Learning rate decay params
+        'lr_decay': True,  # Enable learning rate decay
+        'lr_init_value': 1e-4,  # Initial value - moderate start
+        'lr_final_value': 1e-6,  # Final value
+        'lr_start': 0.0,  # Fraction of training when decay starts
+        'lr_end': 1.0,  # Fraction of training when decay ends
+        'lr_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
+        
+        # Entropy coefficient decay params
+        'ent_coef_decay': True,  # Enable entropy coefficient decay
+        'ent_coef_init_value': 0.1,  # Initial value (start with more exploration)
+        'ent_coef_final_value': 0.01,  # Final value
+        'ent_coef_start': 0.0,  # Fraction of training when decay starts
+        'ent_coef_end': 1.0,  # Fraction of training when decay ends
+        'ent_coef_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())

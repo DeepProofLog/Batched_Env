@@ -47,6 +47,13 @@ from model_eval import eval_corruptions as tensor_eval_corruptions
 from sampler import Sampler
 
 from utils.seeding import seed_all
+from callbacks import (
+    TorchRLCallbackManager, 
+    MRREvaluationCallback, 
+    TrainingMetricsCallback, 
+    ScalarAnnealingCallback, 
+    AnnealingTarget
+)
 
 
 def _set_seeds(seed: int) -> None:
@@ -494,6 +501,56 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     ).to(device)
     
     
+    # Get schedule parameters if available
+    gae_lambda = getattr(args, 'gae_lambda', 0.95)
+    vf_coef = getattr(args, 'vf_coef', 0.5)
+    clip_range_vf = getattr(args, 'clip_range_vf', None)
+    
+    # Build schedule configs for lr and entropy if enabled
+    # Build schedule configs for lr and entropy if enabled
+    annealing_targets = []
+    
+    if getattr(args, 'lr_decay', False):
+        lr_init = getattr(args, 'lr_init_value', args.lr)
+        lr_final = getattr(args, 'lr_final_value', 1e-6)
+        
+        def _set_lr(value: float) -> None:
+            # Update the learning rate for all parameter groups
+            for param_group in ppo.optimizer.param_groups:
+                param_group['lr'] = float(value)
+            ppo.learning_rate = float(value)
+
+        annealing_targets.append(AnnealingTarget(
+            name='lr',
+            setter=_set_lr,
+            initial=float(lr_init),
+            final=float(lr_final),
+            start_point=float(getattr(args, 'lr_start', 0.0)),
+            end_point=float(getattr(args, 'lr_end', 1.0)),
+            transform=getattr(args, 'lr_transform', 'linear'),
+            value_type='float',
+        ))
+        print(f"LR Decay: {lr_init} -> {lr_final}")
+    
+    if getattr(args, 'ent_coef_decay', False):
+        ent_init = getattr(args, 'ent_coef_init_value', args.ent_coef)
+        ent_final = getattr(args, 'ent_coef_final_value', 0.01)
+        
+        def _set_ent_coef(value: float) -> None:
+            ppo.ent_coef = float(value)
+
+        annealing_targets.append(AnnealingTarget(
+            name='ent_coef',
+            setter=_set_ent_coef,
+            initial=float(ent_init),
+            final=float(ent_final),
+            start_point=float(getattr(args, 'ent_coef_start', 0.0)),
+            end_point=float(getattr(args, 'ent_coef_end', 1.0)),
+            transform=getattr(args, 'ent_coef_transform', 'linear'),
+            value_type='float',
+        ))
+        print(f"Entropy Decay: {ent_init} -> {ent_final}")
+    
     ppo = TensorPPO(
         policy=policy,
         env=env,
@@ -502,13 +559,19 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         n_epochs=args.n_epochs,
         batch_size=args.batch_size,
         clip_range=args.clip_range,
+        clip_range_vf=clip_range_vf,
         ent_coef=args.ent_coef,
+        vf_coef=vf_coef,
+        max_grad_norm=getattr(args, 'max_grad_norm', 0.5),
         gamma=args.gamma,
+        gae_lambda=gae_lambda,
         target_kl=args.target_kl,  # Early stopping threshold (aligned with SB3)
         device=device,
         verbose=1,
         seed=args.seed_run_i,  # For RNG synchronization between rollouts
         use_amp=True,
+        total_timesteps=args.timesteps_train,  # For schedule computation
+
     )
     
     # NOTE: Initial evaluation commented out for SB3 parity.
@@ -540,9 +603,6 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     
     # Configure callbacks (PARITY)
     # We manually construct the callback system to match SB3's functionality
-    from callbacks import TorchRLCallbackManager, MRREvaluationCallback, TrainingMetricsCallback
-    from pathlib import Path
-
     callback_manager = None
     callbacks_list = []
     
@@ -594,14 +654,27 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
             policy=policy,  # Pass policy to enable saving
             corruption_scheme=args.corruption_scheme,
         )
+        if annealing_targets:
+            callbacks_list.append(ScalarAnnealingCallback(
+                total_timesteps=args.timesteps_train,
+                targets=annealing_targets,
+                verbose=1
+            ))
+            
         callbacks_list.append(eval_cb)
 
     if callbacks_list:
         # Create manager
+
         callback_manager = TorchRLCallbackManager(
-            train_callback=callbacks_list[0] if isinstance(callbacks_list[0], TrainingMetricsCallback) else None,
-            eval_callback=callbacks_list[1] if len(callbacks_list) > 1 else None
+            train_callback=next((cb for cb in callbacks_list if isinstance(cb, TrainingMetricsCallback)), None),
+            eval_callback=next((cb for cb in callbacks_list if isinstance(cb, MRREvaluationCallback)), None)
         )
+        
+        # Register other callbacks
+        for cb in callbacks_list:
+            if isinstance(cb, ScalarAnnealingCallback):
+                callback_manager.add_callback(cb)
 
         # Create wrapper for PPO.learn
         def ppo_callback(locals_, globals_):
@@ -625,7 +698,17 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     # Step 7: Train (matching sb3 flow)
     if args.timesteps_train > 0 and not getattr(args, 'load_model', False): 
         cb_func = ppo_callback if callback_manager else None
-        ppo.learn(total_timesteps=args.timesteps_train, callback=cb_func)
+        iteration_start_cb = callback_manager.on_iteration_start if callback_manager else None
+        
+        # Ensure initial values are set before training starts
+        if callback_manager:
+            callback_manager.on_training_start()
+            
+        ppo.learn(
+            total_timesteps=args.timesteps_train, 
+            callback=cb_func,
+            on_iteration_start_callback=iteration_start_cb
+        )
 
     
     # Restore best model if configured (PARITY with SB3)

@@ -58,6 +58,8 @@ def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
     return float(1.0 - (y_true - y_pred).var() / var_y)
 
 
+
+
 class PPO:
     """
     Proximal Policy Optimization (PPO) algorithm.
@@ -119,7 +121,8 @@ class PPO:
         seed: Optional[int] = None,
         use_amp: bool = False,  # Enable AMP for mixed precision training
         parity: bool = False,   # Enable parity mode (e.g. numpy RNG for rollouts)
-    ):
+            total_timesteps: Optional[int] = None,  # Total training timesteps for schedule computation
+        ):
         """
         Initialize the PPO algorithm.
         
@@ -146,6 +149,7 @@ class PPO:
             trace_recorder (Optional[TraceRecorder]): Existing recorder instance.
             seed (Optional[int]): Random seed for RNG synchronization between rollouts.
             parity (bool): If True, use older/slower methods (e.g. numpy RNG) to match SB3 exactly.
+            total_timesteps (Optional[int]): Total training timesteps for schedule computation.
         """
         self.policy = policy
         self.env = env
@@ -159,6 +163,7 @@ class PPO:
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
         self.ent_coef = ent_coef
+        self.ent_coef_initial = ent_coef  # Store initial value
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
@@ -180,6 +185,10 @@ class PPO:
             
         self._same_device = (self.device == self.env_device) or \
                             (self.device.type == self.env_device.type and self.device.index == self.env_device.index)
+        
+        
+        # Schedule configuration
+        self.total_timesteps = total_timesteps or 100000  # Default if not specified
         
         # AMP (Automatic Mixed Precision) - configure via use_amp parameter
         self.use_amp = use_amp and (self.device.type == "cuda")
@@ -861,6 +870,14 @@ class PPO:
             # This is done OUTSIDE the compiled training loop for efficiency
             ev = explained_variance(self.rollout_buffer.values, self.rollout_buffer.returns)
             
+            # Debug: log value and return statistics
+            if self.verbose:
+                values_flat = self.rollout_buffer.values.flatten()
+                returns_flat = self.rollout_buffer.returns.flatten()
+                print(f"[PPO] Values: min={values_flat.min().item():.3f}, max={values_flat.max().item():.3f}, mean={values_flat.mean().item():.3f}, std={values_flat.std().item():.3f}")
+                print(f"[PPO] Returns: min={returns_flat.min().item():.3f}, max={returns_flat.max().item():.3f}, mean={returns_flat.mean().item():.3f}, std={returns_flat.std().item():.3f}")
+                print(f"[PPO] Explained variance: {ev:.4f}")
+            
             metrics = {
                 "policy_loss": torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0,
                 "value_loss": torch.stack(value_losses_t).mean().item() if value_losses_t else 0.0,
@@ -880,6 +897,7 @@ class PPO:
         total_timesteps: int,
         callback=None,
         reset_num_timesteps: bool = True,
+        on_iteration_start_callback=None,
     ) -> None:
         """
         Execute the PPO main loop: alternate between collecting rollouts and training.
@@ -889,6 +907,7 @@ class PPO:
             callback (Optional[Callable]): Callback called at every step.
             reset_num_timesteps (bool): If True, reset the timestep counter.
                                         Set False to continue training.
+            on_iteration_start_callback (Optional[Callable]): Callback called at the start of each iteration.
         """
         from tensordict import TensorDict
         
@@ -929,10 +948,20 @@ class PPO:
         
         while total_steps_done < total_timesteps:
             iteration += 1
+                        
             
+            # ============================================================
+            # Callbacks (Start of Iteration)
+            # ============================================================
+            if on_iteration_start_callback is not None:
+                on_iteration_start_callback(total_steps_done)
+            
+            # ============================================================
+            # Logging
+            # ============================================================
             if self.verbose:
                 print(f"\n[PPO] ===== Iteration {iteration} ({total_steps_done}/{total_timesteps} steps) =====")
-            
+
             # ============================================================
             # Collect rollouts
             # ============================================================

@@ -377,8 +377,6 @@ def get_next_unification_python(state: List[Term],
                Default is 500 to match tensor engine behavior.
     canonical_order: If True, derived states are sorted deterministically using a
              canonical key (requires ``index_manager``).
-    index_manager: Index manager that provides predicate/constant mappings for
-               canonical ordering. Required when ``canonical_order`` is True.
 
     Returns:
         A tuple containing:

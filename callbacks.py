@@ -24,6 +24,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import numpy as np
 from tensordict import TensorDict
 
 def _format_depth_key(depth_value: Any) -> str:
@@ -765,11 +770,25 @@ class TorchRLCallbackManager:
         self.eval_callback = eval_callback
         self.train_callback = train_callback  # Expose publicly for direct access
         self.checkpoint_callback = checkpoint_callback
+        # Support generic list of callbacks in future, but for now specific slots
+        self.annealing_callback: Optional[ScalarAnnealingCallback] = None
+        
+    def add_callback(self, callback: Any) -> None:
+        """Add a callback based on its type."""
+        if isinstance(callback, ScalarAnnealingCallback):
+            self.annealing_callback = callback
     
+    def on_iteration_start(self, total_steps_done: int) -> None:
+        """Called at start of iteration."""
+        if self.annealing_callback:
+            self.annealing_callback.on_iteration_start(total_steps_done)
+
     def on_training_start(self) -> None:
         """Called at the start of training."""
         if self.train_callback:
             self.train_callback.on_training_start()
+        if self.annealing_callback:
+            self.annealing_callback.on_training_start()
     
     def on_rollout_start(self) -> None:
         """Called at the start of rollout collection."""
@@ -1454,3 +1473,99 @@ class _EvalDepthRewardTracker:
             metrics[f"{base}_count"] = int(count)
         
         return metrics
+
+# ============================================================================
+# Annealing Callback
+# ============================================================================
+
+@dataclass
+class AnnealingTarget:
+    """Target parameter for annealing."""
+    name: str
+    setter: Callable[[float], None]
+    initial: float
+    final: float
+    start_point: float = 0.0  # Percentage of training [0, 1]
+    end_point: float = 1.0  # Percentage of training [0, 1]
+    transform: str = 'linear'  # 'linear', 'exp', 'cos', 'log'
+    value_type: str = 'float'  # 'float' or 'int'
+
+
+class ScalarAnnealingCallback:
+    """
+    Callback for annealing scalar parameters (like LR, entropy coef).
+    """
+    def __init__(
+        self,
+        total_timesteps: int,
+        targets: List[AnnealingTarget],
+        verbose: int = 0,
+    ):
+        self.total_timesteps = total_timesteps
+        self.targets = targets
+        self.verbose = verbose
+        self.current_progress = 0.0
+        
+        # Set initial values immediately
+        self._update_values(0.0)
+    
+    def on_training_start(self) -> None:
+        """Called at start of training."""
+        self._update_values(0.0)
+        
+    def on_iteration_start(self, total_steps_done: int) -> None:
+        """Called at start of each iteration."""
+        progress = total_steps_done / max(1, self.total_timesteps)
+        self._update_values(progress)
+    
+    def _compute_value(self, target: AnnealingTarget, progress: float) -> float:
+        """Compute current value for a target based on progress."""
+        if progress < target.start_point:
+            return target.initial
+        if progress >= target.end_point:
+            return target.final
+        
+        # Normalize progress to [0, 1] within the active window
+        window = target.end_point - target.start_point
+        if window <= 0:
+            return target.final
+        
+        t = (progress - target.start_point) / window
+        t = max(0.0, min(1.0, t))
+        
+        initial = target.initial
+        final = target.final
+        
+        if target.transform == 'linear':
+            val = initial + (final - initial) * t
+        elif target.transform == 'exp':
+            if initial <= 0 or final <= 0:
+                val = initial + (final - initial) * t
+            else:
+                val = initial * math.pow(final / initial, t)
+        elif target.transform == 'cos':
+             val = final + (initial - final) * (1 + math.cos(math.pi * t)) / 2
+        elif target.transform == 'log':
+             if initial <= 0 or final <= 0:
+                val = initial + (final - initial) * t
+             else:
+                log_initial = math.log(initial)
+                log_final = math.log(final)
+                val = math.exp(log_initial + (log_final - log_initial) * t)
+        else:
+            val = initial + (final - initial) * t
+            
+        if target.value_type == 'int':
+            return int(round(val))
+        return val
+
+    def _update_values(self, progress: float) -> None:
+        for target in self.targets:
+            new_value = self._compute_value(target, progress)
+            try:
+                target.setter(new_value)
+                if self.verbose:
+                    print(f"[Annealing] Set {target.name} to {new_value} (progress={progress:.3f})")
+            except Exception as e:
+                print(f"Error setting annealing target {target.name}: {e}")
+

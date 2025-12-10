@@ -653,15 +653,7 @@ class BaseAlgorithm(ABC):
         if reset_num_timesteps or self._last_obs is None:
             assert self.env is not None
             
-            # RNG TRACE: Before SB3 env.reset()
-            rng_before_reset = th.get_rng_state().sum().item()
-            print(f"[RNG_TRACE SB3] Before env.reset(): {rng_before_reset}")
-            
             self._last_obs = self.env.reset()  # type: ignore[assignment]
-            
-            # RNG TRACE: After SB3 env.reset()
-            rng_after_reset = th.get_rng_state().sum().item()
-            print(f"[RNG_TRACE SB3] After env.reset(): {rng_after_reset}")
             
             self._last_episode_starts = np.ones((self.env.num_envs,), dtype=bool)
             # Retrieve unnormalized observation for saving into the buffer

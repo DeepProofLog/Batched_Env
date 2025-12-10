@@ -14,7 +14,10 @@ from stable_baselines3.common.vec_env.util import dict_to_obs, obs_space_info
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
-from sb3_env import LogicEnv_gym
+try:
+    from sb3_env import LogicEnv_gym
+except ImportError:
+    from sb3.sb3_env import LogicEnv_gym
 
 def create_environments(args, data_handler, index_manager, kge_engine=None, detailed_eval_env=False):
     """

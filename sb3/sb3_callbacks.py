@@ -10,7 +10,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 # from model_eval import evaluate_policy as evaluate_policy_mrr
-from sb3_model_eval import eval_corruptions as eval_corruptions_mrr
+try:
+    from sb3_model_eval import eval_corruptions as eval_corruptions_mrr
+except ImportError:
+    from sb3.sb3_model_eval import eval_corruptions as eval_corruptions_mrr
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization

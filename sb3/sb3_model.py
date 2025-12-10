@@ -637,7 +637,6 @@ class CustomCombinedExtractor(BaseFeaturesExtractor):
 
 
 
-
 class CustomActorCriticPolicy(MultiInputActorCriticPolicy):
     def __init__(
         self,

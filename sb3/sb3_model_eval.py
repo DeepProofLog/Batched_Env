@@ -274,8 +274,8 @@ def evaluate_policy(
         acts_tensor, values_tensor, lp_tensor = model.policy(obs_tensor, deterministic=deterministic)
 
         # Extract pre-step state for tracing
-        pre_step_obs = {}
         if return_traces:
+            pre_step_obs = {}
             for i, env_i in enumerate(active_np):
                 pre_step_obs[env_i] = _extract_state_obs(observations, env_i)
 
