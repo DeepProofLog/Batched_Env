@@ -6,21 +6,10 @@ migrated from the original Stable-Baselines3 version to use TorchRL.
 """
 
 import os
-
-# # Set environment variables for determinism before any CUDA operations
-# os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
-# os.environ.setdefault('PYTHONHASHSEED', '0')
-
-# Early imports for seeding
 import numpy as np
 import torch
 from utils.seeding import seed_all
 
-# Default seed for module initialization - will be overridden by config
-_INIT_SEED = 0
-seed_all(_INIT_SEED, deterministic=False, warn=False)
-
-# Set float32 matmul precision
 torch.set_float32_matmul_precision('high')
 
 import argparse
@@ -30,7 +19,7 @@ from itertools import product
 from typing import List, Optional
 
 from utils.utils import FileLogger
-from train_new import main, run_experiment, TrainParityConfig
+from train_new import main
 from utils.utils_config import (
     load_experiment_configs,
     parse_scalar,
@@ -95,6 +84,7 @@ if __name__ == "__main__":
         'corruption_mode': 'dynamic',  # Aligned with SB3 (was True)
         'corruption_scheme': ['head', 'tail'],
         'canonical_action_order': False,
+        'use_exact_memory': False,
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -131,6 +121,7 @@ if __name__ == "__main__":
         
         # Determinism settings
         'deterministic': False,  # Enable strict reproducibility (slower, set False for production)
+        'sample_deterministic_per_env': False,  # Sample deterministic per environment (slower, set False for production)
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())

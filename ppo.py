@@ -265,6 +265,28 @@ class PPO:
         approx_kl_div_t = torch.mean(ratio_minus_one - log_ratio)
         
         return loss, policy_loss, value_loss, entropy_loss, approx_kl_div_t, clip_fraction_t
+    
+    def _apply_optimizer_step(
+        self,
+        loss: torch.Tensor,
+        max_grad_norm: Optional[float],
+    ) -> None:
+        """
+        Apply optimizer update: zero grad, backward, clip grad, step.
+        
+        This function is compiled for maximum performance.
+        Only call this after KL divergence check passes.
+        """
+        self.optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping
+        if max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_grad_norm)
+        
+        # Fused Adam step
+        self.optimizer.step()
+    
     @staticmethod
     def functional_adam_step(params, grads, exp_avgs, exp_avg_sqs, state_steps, lr, beta1, beta2, eps, max_grad_norm):
         """
@@ -370,9 +392,9 @@ class PPO:
     def _compile_components(self):
         # Compile loss computation for kernel fusion
         self._compute_loss_compiled = torch.compile(self._compute_loss_components, mode='reduce-overhead')
-        # Use _train_minibatch directly (eager execution for backward/optimizer)
-        # Full compilation of backward+optimizer is not yet supported in PyTorch 2.9
-        self._train_step_compiled = self._train_minibatch
+        # Compile optimizer step for maximum performance
+        # NOTE: compiled_autograd is enabled at module level (line 25) to support backward() compilation
+        self._apply_optimizer_step_compiled = torch.compile(self._apply_optimizer_step, mode='reduce-overhead')
     
     def collect_rollouts(
         self,
@@ -667,11 +689,12 @@ class PPO:
         self.policy.train()
         
         # Accumulators for logging (Tensors)
+        # NOTE: pg_losses, value_losses, entropy_losses, clip_fractions accumulate across ALL epochs
+        # But approx_kl_divs should only contain values from the LAST epoch (matching SB3)
         pg_losses_t = []
         value_losses_t = []
         entropy_losses_t = []
         clip_fractions_t = []
-        approx_kl_divs_t = []
         
         # Training traces for detailed comparison
         train_traces = [] if return_traces else None
@@ -684,7 +707,9 @@ class PPO:
         # --------------------
         continue_training = True
         for epoch in range(self.n_epochs):
-            approx_kl_divs_epoch_t = []
+            # Reset KL divergence list for each epoch (matching SB3 behavior)
+            # SB3 declares approx_kl_divs inside the epoch loop, so only last epoch is reported
+            approx_kl_divs_t = []
             # Minibatch loop
             for batch_data in self.rollout_buffer.get(batch_size=self.batch_size):
                 obs, actions, old_values, old_log_probs, advantages, returns = batch_data
@@ -714,7 +739,12 @@ class PPO:
                                     'exp_avg_sq': torch.zeros_like(p)
                                 }
 
+                # Compute forward pass and losses (compiled)
                 with torch.amp.autocast('cuda', enabled=self.use_amp):
+                    values, log_probs, entropy = self.policy.evaluate_actions(obs, actions)
+                    values = values.flatten()
+                    
+                    # Compute Loss using compiled function (kernel fusion happens here)
                     (
                         loss,
                         policy_loss,
@@ -722,24 +752,15 @@ class PPO:
                         entropy_loss,
                         approx_kl_div_t,
                         clip_fraction_t
-                    ) = self._train_step_compiled(
-                        obs=obs,
-                        actions=actions,
-                        old_values=old_values,
-                        old_log_probs=old_log_probs,
-                        advantages=advantages,
-                        returns=returns,
-                        clip_range=self.clip_range,
-                        clip_range_vf=self.clip_range_vf,
-                        ent_coef=self.ent_coef,
-                        vf_coef=self.vf_coef,
-                        max_grad_norm=self.max_grad_norm,
+                    ) = self._compute_loss_compiled(
+                        advantages, log_probs, old_log_probs, returns, values, old_values,
+                        entropy, self.clip_range, self.clip_range_vf, self.ent_coef, self.vf_coef
                     )
 
-                # Log approx KL for early stopping
+                # Log approx KL for tracking
                 # Clone to safe memory because graph output memory is recycled
                 with torch.no_grad():
-                     approx_kl_divs_epoch_t.append(approx_kl_div_t.detach().clone())
+                     approx_kl_divs_t.append(approx_kl_div_t.detach().clone())
                 
                 # Log losses (Keep as tensors)
                 # Must clone because these are graph outputs that will be overwritten
@@ -772,12 +793,13 @@ class PPO:
                             print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
                         break
                 
-                # Update happened inside _train_step_compiled! 
-                # No need for manual step here.
+                # Apply optimizer step only if KL check passed
+                # This is compiled for maximum performance (includes backward, clip_grad, step)
+                self._apply_optimizer_step_compiled(loss, self.max_grad_norm)
+            
             
             if not continue_training:
                 break
-            approx_kl_divs_t.extend(approx_kl_divs_epoch_t)
             
             # Print epoch stats (Sync ONCE per epoch)
             print(f"Epoch {epoch+1}/{self.n_epochs}. ")

@@ -76,6 +76,7 @@ class ParityConfig:
     ent_coef: float = 0.2
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
+    target_kl: Optional[float] = 0.03  # KL divergence threshold for early stopping
     total_timesteps: int = 120  # n_steps * n_envs * 2 default
     
     # Embedding / model

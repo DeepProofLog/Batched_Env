@@ -77,8 +77,19 @@ class TrainParityConfig:
     ent_coef: float = 0.2
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
+    target_kl: Optional[float] = 0.03  # KL divergence threshold for early stopping
     total_timesteps: int = 120
     n_corruptions: int = 10
+    corruption_scheme: List[str] = None  # ['head'], ['tail'], or ['head', 'tail']
+    sampler_default_mode: List[str] = "both"
+
+    def __post_init__(self):
+        # Set default corruption_scheme based on dataset if not specified
+        if self.corruption_scheme is None:
+            if 'countries' in self.dataset or 'ablation' in self.dataset:
+                self.corruption_scheme = ['tail']
+            else:
+                self.corruption_scheme = ['head', 'tail']
     
     # Embedding / model
     atom_embedding_size: int = 64
@@ -137,7 +148,7 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
     sampler = get_sb3_sampler(
         data_handler=dh,
         index_manager=im,
-        corruption_scheme=['head', 'tail'],
+        corruption_scheme=['head', 'tail'] if config.sampler_default_mode == 'both' else config.sampler_default_mode,
         device=device,
         corruption_mode=True,
     )
@@ -215,6 +226,7 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
         ent_coef=config.ent_coef,
         clip_range=config.clip_range,
         gamma=config.gamma,
+        target_kl=config.target_kl,
         policy_kwargs=policy_kwargs,
         seed=config.seed,
     )
@@ -264,7 +276,7 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
                     data=test_queries,
                     sampler=self.sampler,
                     n_corruptions=self.config.n_corruptions,
-                    corruption_scheme=['tail'],
+                    corruption_scheme=self.config.corruption_scheme,
                     verbose=0,
                 )
                 
@@ -350,13 +362,21 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     
     test_queries = sb3_comp['dh'].test_queries[:config.n_envs * 4]
     
+    # [DEBUG] Log evaluation setup
+    print(f"\n[SB3 EVAL DEBUG]")
+    print(f"  corruption_scheme: {config.corruption_scheme if getattr(config, 'corruption_scheme', None) else 'default'}")
+    print(f"  n_corruptions: {config.n_corruptions}")
+    print(f"  num test queries: {len(test_queries)}")
+    print(f"  sampler default_mode: {config.sampler_default_mode}")
+    print(f"  first query: {test_queries[0]}")
+    
     sb3_eval_results = sb3_eval_corruptions(
         model=sb3_comp['model'],
         env=sb3_comp['eval_env'],
         data=test_queries,
         sampler=sb3_comp['sampler'],
         n_corruptions=config.n_corruptions,
-        corruption_scheme=['tail'],
+        corruption_scheme=config.corruption_scheme,  # Use config instead of hardcoded
         verbose=0,
     )
     

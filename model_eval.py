@@ -183,7 +183,7 @@ def evaluate_policy(
             break
 
         if verbose_level > 0:
-             print(f"\r[eval] ep_counts: {ep_count.tolist()}", end="", flush=True)
+             print(f"\r[eval] ep_counts: {ep_count.tolist()[:20]}...", end="", flush=True)
 
         pre_step_obs = {}
         if return_traces:

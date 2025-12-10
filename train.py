@@ -231,7 +231,7 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
         num_entities=im.constant_no,
         num_relations=im.predicate_no,
         device=device,
-        default_mode="both",
+        default_mode="both" if args.corruption_scheme == ['head', 'tail'] else args.corruption_scheme[0],
         seed=args.seed_run_i,
         domain2idx=domain2idx,
         entity2domain=entity2domain,
@@ -350,21 +350,21 @@ def create_environments(args: Any, dh: DataHandler, im: IndexManager, **kwargs):
         mode='train',
         max_depth=getattr(args, 'max_depth', 20),
         memory_pruning=args.memory_pruning,
-        use_exact_memory=True,
+        use_exact_memory=args.use_exact_memory,
         skip_unary_actions=args.skip_unary_actions,
-        end_proof_action=getattr(args, 'end_proof_action', True) or getattr(args, 'endf_action', True),
+        end_proof_action=args.end_proof_action,
         reward_type=args.reward_type,
         padding_atoms=args.padding_atoms,
         padding_states=args.padding_states,
         true_pred_idx=im.predicate_str2idx.get('True'),
         false_pred_idx=im.predicate_str2idx.get('False'),
         end_pred_idx=im.predicate_str2idx.get('Endf'),
-        verbose=0,
-        prover_verbose=0,
+        verbose=args.verbose_env,
+        prover_verbose=args.prover_verbose,
         device=device,
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + args.max_total_vars,
-        sample_deterministic_per_env=True,
+        sample_deterministic_per_env=args.sample_deterministic_per_env,
     )
     
     # Eval environment
@@ -377,31 +377,27 @@ def create_environments(args: Any, dh: DataHandler, im: IndexManager, **kwargs):
         mode='eval',
         max_depth=getattr(args, 'max_depth', 20),
         memory_pruning=args.memory_pruning,
-        use_exact_memory=True,
+        use_exact_memory=args.use_exact_memory,
         skip_unary_actions=args.skip_unary_actions,
-        end_proof_action=getattr(args, 'end_proof_action', True) or getattr(args, 'endf_action', True),
+        end_proof_action=args.end_proof_action,
         reward_type=args.reward_type,
         padding_atoms=args.padding_atoms,
         padding_states=args.padding_states,
         true_pred_idx=im.predicate_str2idx.get('True'),
         false_pred_idx=im.predicate_str2idx.get('False'),
         end_pred_idx=im.predicate_str2idx.get('Endf'),
-        verbose=0,
-        prover_verbose=0,
+        verbose=args.verbose_env,
+        prover_verbose=args.prover_verbose,
         device=device,
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + args.max_total_vars,
-        sample_deterministic_per_env=True,
+        sample_deterministic_per_env=args.sample_deterministic_per_env,
     )
     
     # Return train_env, eval_env, callback_env (matching sb3 signature)
     callback_env = eval_env  # Use eval_env for callbacks
     return train_env, eval_env, callback_env
 
-
-# ==============================================================================
-# _evaluate - MATCHING sb3_train._evaluate
-# ==============================================================================
 
 def _evaluate(args: Any, policy, eval_env, sampler, dh: DataHandler, im: IndexManager, device: torch.device) -> Tuple[dict, dict, dict]:
     """
@@ -537,9 +533,6 @@ def _evaluate(args: Any, policy, eval_env, sampler, dh: DataHandler, im: IndexMa
     return metrics_train, metrics_valid, metrics_test
 
 
-# ==============================================================================
-# main - MATCHING sb3_train.main signature and flow EXACTLY
-# ==============================================================================
 
 def main(args, log_filename, use_logger, use_WB, WB_path, date, external_components=None):
     """
@@ -633,7 +626,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         clip_range=args.clip_range,
         ent_coef=args.ent_coef,
         gamma=args.gamma,
-        target_kl=getattr(args, 'target_kl', None),  # Early stopping threshold (aligned with SB3)
+        target_kl=args.target_kl,  # Early stopping threshold (aligned with SB3)
         device=device,
         verbose=1,
         seed=args.seed_run_i,  # For RNG synchronization between rollouts
@@ -707,14 +700,14 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
             eval_env=eval_env,
             sampler=sampler,
             eval_data=valid_queries_tensor,
-            n_corruptions=getattr(args, 'eval_neg_samples', 10),
+            n_corruptions=args.eval_neg_samples,
             eval_freq=1,  # Evaluate every iteration for best model tracking
             best_metric=best_metric,
             save_path=save_path,
             model_name="model",
             verbose=True,
             policy=policy,  # Pass policy to enable saving
-            corruption_scheme=getattr(args, 'corruption_scheme', ['tail']),
+            corruption_scheme=args.corruption_scheme,
         )
         callbacks_list.append(eval_cb)
 

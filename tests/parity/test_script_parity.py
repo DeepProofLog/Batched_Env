@@ -70,6 +70,7 @@ def parity_config_to_train_config(parity_config: ParityConfig) -> TensorConfig:
         gamma=parity_config.gamma,
         clip_range=parity_config.clip_range,
         ent_coef=parity_config.ent_coef,
+        target_kl=parity_config.target_kl,
         total_timesteps=parity_config.total_timesteps,
         n_corruptions=parity_config.n_corruptions,
         atom_embedding_size=parity_config.embed_dim,
@@ -105,7 +106,7 @@ def compare_results(sb3_results: dict, tensor_results: dict) -> bool:
         'policy_loss': 0.1,
         'value_loss': 0.5,
         'entropy': 0.1,
-        'approx_kl': 0.5,
+        'approx_kl': 0.001,  # Strict tolerance for KL divergence parity
         'clip_fraction': 0.1,
     }
     

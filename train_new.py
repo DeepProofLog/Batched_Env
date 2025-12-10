@@ -65,8 +65,19 @@ class TrainParityConfig:
     ent_coef: float = 0.2
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
+    target_kl: Optional[float] = 0.03  # KL divergence threshold for early stopping
     total_timesteps: int = 120
     n_corruptions: int = 10
+    corruption_scheme: List[str] = None  # ['head'], ['tail'], or ['head', 'tail']
+    sampler_default_mode: str = "both"
+    
+    def __post_init__(self):
+        # Set default corruption_scheme based on dataset if not specified
+        if self.corruption_scheme is None:
+            if 'countries' in self.dataset or 'ablation' in self.dataset:
+                self.corruption_scheme = ['tail']
+            else:
+                self.corruption_scheme = ['head', 'tail']
     
     # Embedding / model
     atom_embedding_size: int = 64
@@ -150,7 +161,7 @@ def make_eval_callback(
                     queries=eval_queries,
                     sampler=sampler,
                     n_corruptions=config.n_corruptions,
-                    corruption_modes=('tail',),
+                    corruption_modes=tuple(config.corruption_scheme),
                     verbose=False,
                 )
             policy.train()
@@ -212,12 +223,13 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
     
     # Sampler
     domain2idx, entity2domain = dh.get_sampler_domain_info()
+   
     sampler = Sampler.from_data(
         all_known_triples_idx=dh.all_known_triples_idx,
         num_entities=im.constant_no,
         num_relations=im.predicate_no,
         device=device,
-        default_mode="both",
+        default_mode=config.sampler_default_mode,
         seed=config.seed,
         domain2idx=domain2idx,
         entity2domain=entity2domain,
@@ -423,6 +435,7 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
         clip_range=config.clip_range,
         ent_coef=config.ent_coef,
         gamma=config.gamma,
+        target_kl=config.target_kl,
         device=tensor_comp['device'],
         verbose=True,
         parity=config.parity,
@@ -447,14 +460,22 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     
     tensor_comp['policy'].eval()
     
-    # Get test queries and convert to tensor
-    tensor_im = tensor_comp['im']
-    test_query_objs = tensor_comp['dh'].test_queries[:config.n_envs * 4]
+    test_queries = tensor_comp['dh'].test_queries[:config.n_envs * 4]
+    
     tensor_query_atoms = []
-    for q in test_query_objs:
+    tensor_im = tensor_comp['im']
+    for q in test_queries:
         query_atom = tensor_im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
         tensor_query_atoms.append(query_atom)
     tensor_queries = torch.stack(tensor_query_atoms, dim=0)
+    
+    # [DEBUG] Log evaluation setup
+    print(f"\n[TENSOR EVAL DEBUG]")
+    print(f"  corruption_scheme: {config.corruption_scheme if getattr(config, 'corruption_scheme', None) else 'default'}")
+    print(f"  n_corruptions: {config.n_corruptions}")
+    print(f"  num test queries: {len(test_queries)}")
+    print(f"  sampler default_mode: {config.sampler_default_mode}")
+    print(f"  first query: {test_queries[0]}")
     
     tensor_eval_results = tensor_eval_corruptions(
         actor=tensor_comp['policy'],
@@ -462,7 +483,7 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
         queries=tensor_queries,
         sampler=tensor_comp['sampler'],
         n_corruptions=config.n_corruptions,
-        corruption_modes=('tail',),
+        corruption_modes=tuple(config.corruption_scheme),  # Use config instead of hardcoded
         verbose=False,
     )
     

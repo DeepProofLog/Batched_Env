@@ -55,6 +55,17 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     # Enable compile mode for maximum performance
     set_compile_mode(True)
     
+    # Configure torch.compile mode for unification engine only when CUDA graphs are enabled
+    # Note: CUDA graphs require static shapes (large bucket_size recommended)
+    if config.cuda_graphs:
+        # Set environment variable to enable reduce-overhead mode in unification.py
+        import os
+        os.environ['UNIFICATION_COMPILE_MODE'] = 'reduce-overhead'
+        if config.bucket_size < 64:
+            print(f"WARNING: CUDA graphs enabled with small bucket_size={config.bucket_size}. "
+                  f"Consider using 64, 128, or 256 for better performance.")
+    # Don't set the environment variable otherwise - let unification.py use its default
+    
     # Set seeds for reproducibility (deterministic=False for performance)
     seed_all(config.seed, deterministic=False, warn=False)
     
@@ -298,6 +309,8 @@ def profile_eval_cprofile(config: SimpleNamespace):
         f.write(f"Device: {device}\n")
         f.write(f"Number of queries: {n_queries}\n")
         f.write(f"Corruptions per query: {config.n_corruptions}\n")
+        f.write(f"Bucket size (max_derived_per_state): {config.bucket_size}\n")
+        f.write(f"CUDA graphs enabled: {config.cuda_graphs}\n")
         f.write(f"Evaluation time: {elapsed:.2f}s\n")
         f.write(f"MRR: {results.get('MRR', 0.0):.4f}\n")
         f.write(f"Hits@1: {results.get('Hits@1', 0.0):.4f}\n\n")
@@ -383,11 +396,11 @@ def main():
                         help='Use torch.profiler for GPU profiling instead of cProfile')
     parser.add_argument('--dataset', type=str, default='family',
                         help='Dataset name')
-    parser.add_argument('--n-test-queries', type=int, default=10,
+    parser.add_argument('--n-test-queries', type=int, default=100,
                         help='Number of test queries (None = all)')
     parser.add_argument('--n-corruptions', type=int, default=100,
                         help='Number of corruptions per query')
-    parser.add_argument('--batch-size-env', type=int, default=10,
+    parser.add_argument('--batch-size-env', type=int, default=100,
                         help='Environment batch size')
     parser.add_argument('--corruption-modes', type=str, nargs='+', default=['both'],
                         help='Corruption modes (head, tail, or both)')
@@ -397,6 +410,10 @@ def main():
                         help='Enable torch.compile for model (default: True)')
     parser.add_argument('--warmup-runs', type=int, default=1,
                         help='Number of warmup runs before profiling (default: 1)')
+    parser.add_argument('--padding-states', type=int, default=120,
+                        help='Padding states for derived states (max_derived_per_state). Use 64, 128, or 256 for CUDA graphs (default: 20)')
+    parser.add_argument('--cuda-graphs', default=False, type=lambda x: x.lower() in ('true', '1', 'yes'),
+                        help='Enable CUDA graph capture (requires larger bucket-size, default: False)')
     args = parser.parse_args()
     
     # Configuration matching runner.py defaults
@@ -409,7 +426,7 @@ def main():
         corruption_modes=args.corruption_modes,
         verbose=args.verbose,
         padding_atoms=6,
-        padding_states=20,
+        padding_states=args.padding_states,
         max_depth=20,
         memory_pruning=True,
         skip_unary_actions=False,
@@ -420,6 +437,8 @@ def main():
         seed=0,
         compile=args.compile,
         warmup_runs=args.warmup_runs,
+        cuda_graphs=args.cuda_graphs,
+        bucket_size=args.padding_states,
     )
     
     if args.use_gpu_profiler:

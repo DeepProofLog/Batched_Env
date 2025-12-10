@@ -295,7 +295,7 @@ class Sampler:
         # Sort if requested - vectorized
         if self.order_negatives and M > 0:
             keys = output[:, :, 0] * 10000000 + output[:, :, 1] * 10000 + output[:, :, 2]
-            keys = keys.masked_fill(output.sum(-1) == 0, float('inf'))
+            keys = keys.masked_fill(output.sum(-1) == 0, 2**62)
             _, idx = torch.sort(keys, dim=1)
             batch_i = torch.arange(B, device=device).unsqueeze(1).expand(-1, M)
             output = output[batch_i, idx]
