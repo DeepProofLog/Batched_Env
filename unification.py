@@ -101,16 +101,69 @@ def get_compile_mode() -> bool:
 # Cache for compiled functions - avoids recompiling on each call
 _compiled_cache = {}
 
-def maybe_compile(fn, name: str):
+# Cache for arange tensors - reduces repeated allocations
+class ArangeCache:
+    """
+    Cache for pre-computed torch.arange tensors.
+    
+    Many unification functions call torch.arange repeatedly with the same size.
+    This cache avoids repeated GPU memory allocations.
+    """
+    def __init__(self, max_cached_size: int = 4096):
+        self._cache: Dict[Tuple[int, torch.device], Tensor] = {}
+        self._max_size = max_cached_size
+    
+    def get(self, size: int, device: torch.device) -> Tensor:
+        """Get an arange tensor of the given size, using cache if available."""
+        if size > self._max_size or size <= 0:
+            return torch.arange(size, device=device, dtype=torch.long)
+        
+        key = (size, device)
+        if key not in self._cache:
+            self._cache[key] = torch.arange(size, device=device, dtype=torch.long)
+        return self._cache[key]
+    
+    def clear(self):
+        """Clear the cache."""
+        self._cache.clear()
+
+# Global arange cache instance
+_arange_cache = ArangeCache()
+
+def maybe_compile(fn, name: str, dynamic: bool = True):
     """
     Conditionally compile a function with torch.compile when COMPILE_MODE is True.
     Uses caching to avoid recompilation.
+    
+    Args:
+        fn: Function to compile
+        name: Cache key for the compiled function
+        dynamic: If True, allows dynamic shapes (for varying batch sizes)
     """
     if not COMPILE_MODE:
         return fn
-    if name not in _compiled_cache:
-        _compiled_cache[name] = torch.compile(fn, mode='reduce-overhead', fullgraph=False)
-    return _compiled_cache[name]
+    cache_key = f"{name}_dyn{dynamic}"
+    if cache_key not in _compiled_cache:
+        # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph 
+        # memory issues with dynamic tensor shapes in unification functions
+        _compiled_cache[cache_key] = torch.compile(
+            fn, 
+            mode='default',  # 'reduce-overhead' uses CUDA graphs which conflict with dynamic tensors
+            fullgraph=False,
+            dynamic=dynamic
+        )
+    return _compiled_cache[cache_key]
+
+
+def compile_if_enabled(fn):
+    """
+    Decorator to conditionally compile a function when COMPILE_MODE is True.
+    Uses function name as cache key.
+    """
+    def wrapper(*args, **kwargs):
+        compiled_fn = maybe_compile(fn, fn.__name__, dynamic=True)
+        return compiled_fn(*args, **kwargs)
+    return wrapper
 
 
 # ============================================================================
@@ -446,59 +499,49 @@ def deduplicate_states_packed(
 @torch.no_grad()
 def apply_substitutions(goals: Tensor, subs_pairs: Tensor, padding_idx: int) -> Tensor:
     """
-    Apply a set of variable substitutions to a batch of goal atoms (vectorized).
-    
-    This function modifies the arguments of the goal atoms based on the provided
-    [from, to] substitution pairs. Predicates are never modified.
-    
-    Args:
-        goals:      Tensor of shape [N, M, 3] representing M atoms for N candidates.
-        subs_pairs: Tensor of shape [N, S, 2] containing S substitutions per candidate. 
-                    Each pair is [from_val, to_val]. Pairs equal to padding_idx are ignored.
-        padding_idx: Value used to pad substitutions.
-        
-    Returns:
-        Tensor of shape [N, M, 3] with substitutions applied.
+    Apply variable substitutions to goal atoms (optimized for S=2).
     """
     if goals.numel() == 0:
         return goals
     
     N, M = goals.shape[:2]
     S = subs_pairs.shape[1]
+    pad = padding_idx
     
-    # Split into predicates (cols 0) and args (cols 1,2)
-    preds = goals[:, :, 0:1]         # [N, M, 1]
-    args = goals[:, :, 1:]           # [N, M, 2] - no clone needed, we use torch.where
-
-    # Check which substitutions are valid
-    valid = subs_pairs[..., 0] != padding_idx  # [N, S]
+    preds = goals[:, :, 0:1]
+    args = goals[:, :, 1:]
     
-    # OPTIMIZATION: Remove early return with .any() - compute unconditionally
-    # Vectorized approach: Apply all substitutions at once
-    # Expand subs for broadcasting
-    frm = subs_pairs[:, :, 0].view(N, S, 1, 1)   # [N, S, 1, 1]
-    to_ = subs_pairs[:, :, 1].view(N, S, 1, 1)   # [N, S, 1, 1]
-    args_exp = args.view(N, 1, M, 2)             # [N, 1, M, 2]
-    valid_exp = valid.view(N, S, 1, 1)           # [N, S, 1, 1]
+    # OPTIMIZATION: Loop-unrolled for common S=2 case
+    if S == 2:
+        frm_0 = subs_pairs[:, 0, 0].view(N, 1, 1)
+        to_0 = subs_pairs[:, 0, 1].view(N, 1, 1)
+        frm_1 = subs_pairs[:, 1, 0].view(N, 1, 1)
+        to_1 = subs_pairs[:, 1, 1].view(N, 1, 1)
+        
+        valid_0 = (frm_0 != pad)
+        valid_1 = (frm_1 != pad)
+        
+        result_args = torch.where((args == frm_0) & valid_0, to_0.expand_as(args), args)
+        result_args = torch.where((result_args == frm_1) & valid_1, to_1.expand_as(result_args), result_args)
+        
+        return torch.cat([preds, result_args], dim=2)
     
-    # Match where args == from and substitution is valid
-    match = (args_exp == frm) & valid_exp        # [N, S, M, 2]
+    # General case for S != 2
+    valid = subs_pairs[..., 0] != pad
+    frm = subs_pairs[:, :, 0].view(N, S, 1, 1)
+    to_ = subs_pairs[:, :, 1].view(N, S, 1, 1)
+    args_exp = args.view(N, 1, M, 2)
+    valid_exp = valid.view(N, S, 1, 1)
     
-    # Find if ANY substitution matches (no sync, just tensor op)
-    any_match = match.any(dim=1)                 # [N, M, 2]
+    match = (args_exp == frm) & valid_exp
+    any_match = match.any(dim=1)
+    match_idx = match.long().argmax(dim=1)
     
-    # Find which substitution matches for each position
-    # Use argmax to find first matching substitution index (0 if none, but we'll mask)
-    match_idx = match.long().argmax(dim=1)       # [N, M, 2]
+    to_flat = subs_pairs[:, :, 1]
+    match_idx_flat = match_idx.view(N, M * 2)
+    to_gathered = to_flat.gather(1, match_idx_flat).view(N, M, 2)
     
-    # Gather the 'to' values based on match_idx
-    to_flat = subs_pairs[:, :, 1]                # [N, S]
-    match_idx_flat = match_idx.view(N, M * 2)    # [N, M*2]
-    to_gathered = to_flat.gather(1, match_idx_flat).view(N, M, 2)  # [N, M, 2]
-    
-    # Apply: where match, use gathered 'to', else keep original (no sync needed)
     result_args = torch.where(any_match, to_gathered, args)
-
     return torch.cat([preds, result_args], dim=2)
 
 
@@ -510,27 +553,7 @@ def unify_one_to_one(
     padding_idx: int
 ) -> Tuple[Tensor, Tensor]:
     """
-    Perform pairwise unification between a batch of queries and a batch of terms.
-    
-    This function checks if each query row can be unified with the corresponding term row.
-    If they unify, it generates the necessary variable substitutions.
-    
-    Logic:
-    1. Predicates must match.
-    2. Constants must match (conflict if q_arg is const, t_arg is const, and q_arg != t_arg).
-    3. Variables are bound to values (or other variables).
-    
-    Args:
-        queries:     Tensor of shape [L, 3] (pred, arg0, arg1).
-        terms:       Tensor of shape [L, 3] (pred, arg0, arg1).
-        constant_no: Threshold for constants (val <= constant_no).
-        padding_idx: Value used for padding.
-        
-    Returns:
-        Tuple[Tensor, Tensor]:
-            - mask: Boolean tensor [L] indicating which pairs unified successfully.
-            - subs: Tensor [L, 2, 2] containing substitutions [from, to] for each arg.
-                    Returns padding_idx where no substitution occurs.
+    Perform pairwise unification between queries and terms (optimized).
     """
     device = queries.device
     L = queries.shape[0]
@@ -540,63 +563,61 @@ def unify_one_to_one(
                 torch.full((0, 2, 2), padding_idx, dtype=torch.long, device=device))
 
     var_start = constant_no + 1
+    pad = padding_idx
     
-    # -------------------------------------------------------------------------
-    # 1. Structural Checks (all vectorized, no sync)
-    # -------------------------------------------------------------------------
+    # Extract predicates and args
     pred_ok = (queries[:, 0] == terms[:, 0])
-
     q_args, t_args = queries[:, 1:], terms[:, 1:]  # [L, 2]
+    
+    # Compute masks once
     q_const = (q_args <= constant_no)
     t_const = (t_args <= constant_no)
+    qv = (q_args >= var_start) & (q_args != pad)
+    tv = (t_args >= var_start) & (t_args != pad)
     
-    # Constant conflict: both are constants but different
+    # Constant conflict check
     const_conflict = (q_const & t_const & (q_args != t_args)).any(dim=1)
-    
-    # Initial candidates for unification
     mask = pred_ok & ~const_conflict
     
-    # Initialize substitutions with padding
-    subs = torch.full((L, 2, 2), padding_idx, dtype=torch.long, device=device)
-    
     # -------------------------------------------------------------------------
-    # 2. Variable Binding (compute for all, mask later - no sync!)
+    # OPTIMIZED: Compute substitutions in single vectorized pass
     # -------------------------------------------------------------------------
-    # Identify variables [L, 2]
-    qv = (q_args >= var_start) & (q_args != padding_idx)
-    tv = (t_args >= var_start) & (t_args != padding_idx)
+    # Case priority: case1 > case2 > case3
+    # case1: qVar + tConst -> bind qVar to tConst
+    # case2: qConst + tVar -> bind tVar to qConst  
+    # case3: qVar + tVar -> bind tVar to qVar
     
-    # Case A: Query has Variable, Term has Constant -> bind qVar to tVal
-    case1 = qv & (~tv) & (t_args != 0)
-    subs[:, :, 0] = torch.where(case1, q_args.long(), subs[:, :, 0])
-    subs[:, :, 1] = torch.where(case1, t_args.long(), subs[:, :, 1])
-
-    # Case B: Term has Variable, Query has Constant -> bind tVar to qConst
-    case2 = (~qv) & (q_args != 0) & tv
-    subs[:, :, 0] = torch.where(case2, t_args.long(), subs[:, :, 0])
-    subs[:, :, 1] = torch.where(case2, q_args.long(), subs[:, :, 1])
-
-    # Case C: Both are Variables -> bind tVar to qVar
+    case1 = qv & ~tv & (t_args != 0)
+    case2 = ~qv & (q_args != 0) & tv
     case3 = qv & tv
-    subs[:, :, 0] = torch.where(case3, t_args.long(), subs[:, :, 0])
-    subs[:, :, 1] = torch.where(case3, q_args.long(), subs[:, :, 1])
-
-    # -------------------------------------------------------------------------
-    # 3. Consistency Check (vectorized, no sync)
-    # -------------------------------------------------------------------------
-    # Same variable bound to different targets -> conflict
-    same_var = (subs[:, 0, 0] == subs[:, 1, 0]) & (subs[:, 0, 0] != padding_idx)
+    
+    # Compute from/to for each case, then select based on case priority
+    # Default: padding
+    from_val = torch.full_like(q_args, pad)
+    to_val = torch.full_like(q_args, pad)
+    
+    # Apply in reverse priority (case3 last gets overwritten by case2, then case1)
+    from_val = torch.where(case3, t_args, from_val)
+    to_val = torch.where(case3, q_args, to_val)
+    
+    from_val = torch.where(case2, t_args, from_val)
+    to_val = torch.where(case2, q_args, to_val)
+    
+    from_val = torch.where(case1, q_args, from_val)
+    to_val = torch.where(case1, t_args, to_val)
+    
+    # Stack into subs: [L, 2, 2]
+    subs = torch.stack([from_val, to_val], dim=2)  # [L, 2, 2]
+    
+    # Consistency check: same var bound to different values
+    same_var = (subs[:, 0, 0] == subs[:, 1, 0]) & (subs[:, 0, 0] != pad)
     diff_tgt = subs[:, 0, 1] != subs[:, 1, 1]
     conflict = same_var & diff_tgt
-    
-    # Update mask to exclude conflicts (no sync, just tensor op)
     mask = mask & ~conflict
     
-    # Clear subs for failed unifications (optional, for cleanliness)
-    # Use expand to avoid sync
+    # Clear subs for failed unifications
     fail_mask = ~mask
-    subs = torch.where(fail_mask.view(L, 1, 1).expand_as(subs), 
-                       torch.full_like(subs, padding_idx), subs)
+    subs = torch.where(fail_mask.view(L, 1, 1), torch.full_like(subs, pad), subs)
     
     return mask, subs
 
@@ -638,7 +659,8 @@ def pairs_via_predicate_ranges(
 
     # Filter out queries with zero potential matches
     keep   = lens > 0
-    kept_q = torch.arange(query_preds.shape[0], device=device)[keep]
+    A = query_preds.shape[0]
+    kept_q = _arange_cache.get(A, device)[keep]
     
     if kept_q.numel() == 0:
         z = torch.zeros(0, dtype=torch.long, device=device)
@@ -650,7 +672,8 @@ def pairs_via_predicate_ranges(
 
     # Generate repeat indices for expansion
     # row_ids: [L=sum(lens_kept)] -> maps each output pair back to 'kept_q' index
-    row_ids = torch.repeat_interleave(torch.arange(lens_kept.numel(), device=device), lens_kept)
+    num_kept = lens_kept.numel()
+    row_ids = torch.repeat_interleave(_arange_cache.get(num_kept, device), lens_kept)
     
     if row_ids.numel() == 0:
         z = torch.zeros(0, dtype=torch.long, device=device)
@@ -661,7 +684,8 @@ def pairs_via_predicate_ranges(
     prefix = torch.cumsum(lens_kept, dim=0) - lens_kept
     
     # pos_in: [L] 0, 1, ..., len-1 for each query's segment
-    pos_in = torch.arange(row_ids.numel(), device=device) - prefix[row_ids]
+    L = row_ids.numel()
+    pos_in = _arange_cache.get(L, device) - prefix[row_ids]
     
     # Calculate final indices
     item_idx = starts_kept[row_ids] + pos_in     # Global index into facts/rules
@@ -705,125 +729,67 @@ def preprocess_states(
     padding_idx: int
 ) -> PreprocessResult:
     """
-    Preprocess a batch of states to separate terminal vs active states.
-    
-    This function:
-    1. Identifies states that are trivially TRUE (all atoms are special 'true_pred')
-       or trivially FALSE (contain 'false_pred' or are empty but not True).
-    2. For active states, extracts the first atom as the 'query' and the rest as 'remaining'.
-    
-    Args:
-        states:         Tensor of shape [B, max_atoms, 3].
-        true_pred_idx:  Predicate ID representing 'True' (optional).
-        false_pred_idx: Predicate ID representing 'False' (optional).
-        padding_idx:    Value used for padding.
-        
-    Returns:
-        PreprocessResult containing separated indices and tensors.
+    Preprocess states to separate terminal vs active (optimized).
     """
     device = states.device
     B, max_atoms = states.shape[:2]
     pad = padding_idx
 
-    # Mask of valid atoms: [B, max_atoms]
+    # Valid atoms mask
     valid = (states[:, :, 0] != pad)
-    has_any = valid.any(dim=1)      # [B]
-    empty   = ~has_any
+    has_any = valid.any(dim=1)
+    empty = ~has_any
 
-    # Initialize masks
+    # Terminal state detection
     has_false = torch.zeros(B, dtype=torch.bool, device=device)
     only_true = torch.zeros(B, dtype=torch.bool, device=device)
 
-    # Check for False predicate
     if false_pred_idx is not None:
         has_false = (states[:, :, 0] == false_pred_idx).any(dim=1)
         
-    # Check for True predicate: "only_true" means all valid atoms are TRUE (and at least 1 exists)
-    # If a state is empty, it's NOT true (it's failed/false), unless handled otherwise.
-    # Here, empty -> False.
     if true_pred_idx is not None:
         is_true_pred = (states[:, :, 0] == true_pred_idx)
-        # All valid atoms must be true_pred
         all_valid_are_true = (valid & is_true_pred | ~valid).all(dim=1)
         only_true = all_valid_are_true & has_any
 
-    terminal_true  = only_true
+    terminal_true = only_true
     terminal_false = empty | has_false
-
-    # Active states are those that are neither True nor False
     active = ~(terminal_true | terminal_false)
-    active_idx = torch.nonzero(active, as_tuple=True)[0]
-    A = active_idx.numel()
+    
+    active_idx = active.nonzero(as_tuple=True)[0]
+    A = active_idx.shape[0]
 
     if A == 0:
-        # Return empty placeholders for active pieces
-        z3  = torch.empty((0, 3), dtype=states.dtype, device=device)
+        z3 = torch.empty((0, 3), dtype=states.dtype, device=device)
         z33 = torch.empty((0, max_atoms, 3), dtype=states.dtype, device=device)
-        zA  = torch.empty((0,), dtype=torch.long, device=device)
+        zA = torch.empty((0,), dtype=torch.long, device=device)
         return PreprocessResult(
             active_idx=zA, queries=z3, remaining=z33, remaining_counts=zA,
-            preds=zA, terminal_true=torch.nonzero(terminal_true, as_tuple=False).view(-1),
-            terminal_false=torch.nonzero(terminal_false, as_tuple=False).view(-1)
+            preds=zA, terminal_true=terminal_true.nonzero(as_tuple=True)[0],
+            terminal_false=terminal_false.nonzero(as_tuple=True)[0]
         )
 
-    # Select active states: [A, max_atoms, 3]
-    sA = states.index_select(0, active_idx)
-    validA = valid.index_select(0, active_idx)  # [A, max_atoms]
+    # Extract active states
+    sA = states[active_idx]
+    validA = valid[active_idx]
 
-    # Extract First goal (leftmost valid atom) per active row
-    # argmax gives index of first True. Since 'active' implies has_any, this is safe.
-    first_pos = validA.long().argmax(dim=1)  # [A]
-    arangeA = torch.arange(A, device=device)
+    # OPTIMIZATION: For left-aligned input, first_pos is always 0
+    # Query is always the first atom
+    queries = sA[:, 0, :]  # [A, 3]
     
-    # Query: [A, 3]
-    queries = sA[arangeA, first_pos]
-
-    # Initialize Remaining: [A, max_atoms, 3] (padded)
-    remaining = torch.full_like(sA, pad)
-    rem_counts = (validA.sum(dim=1) - 1).clamp(min=0)  # [A]
+    # Remaining is simply atoms 1..max_atoms-1, shifted left
+    # Since input is left-aligned, this is just sA[:, 1:, :]
+    remaining = torch.full((A, max_atoms, 3), pad, dtype=states.dtype, device=device)
+    remaining[:, :max_atoms-1, :] = sA[:, 1:, :]
     
-    # Efficiently copy 'remaining' atoms (all valid atoms except the first)
-    if A > 0:
-        # Create a grid of positions
-        pos = torch.arange(max_atoms, device=device).unsqueeze(0).expand(A, -1)
-        
-        # Atoms before the first one are invalid (pad) - ignored
-        # Atoms after the first one need to be shifted left or kept
-        # Actually simplest: copy all valid atoms except 'first_pos' into 0..G-1
-        # But here we implement a "shift left" logic to fill gaps if any, 
-        # though standard packing assumes strict left-alignment.
-        # Assuming input IS left-aligned (no holes), 'first_pos' is always 0.
-        # If input has holes, this logic collapses them.
-        
-        # We want to keep everything in 'validA' EXCEPT the one at 'first_pos'.
-        # Target indices: 0, 1, ... count-1
-        
-        # Simple scatter approach:
-        # src indices: all valid indices except first_pos
-        # dst indices: 0..count-1
-        
-        # Optimized: 'before' first_pos are non-existent if left-aligned.
-        # 'after' first_pos are shifted left by 1.
-        
-        before = validA & (pos < first_pos.unsqueeze(1))
-        after  = validA & (pos > first_pos.unsqueeze(1))
-        scatter = before | after
-        
-        if scatter.any():
-            rows = arangeA.view(-1, 1).expand_as(pos)[scatter]
-            src  = pos[scatter]
-            # If before, keep pos (0..k). If after, shift to pos-1.
-            # This handles holes gracefully.
-            dst  = torch.where(before, pos, pos - 1)[scatter]
-            remaining[rows, dst] = sA[rows, src]
-
-    preds = queries[:, 0]  # [A]
+    rem_counts = (validA.sum(dim=1) - 1).clamp(min=0)
+    preds = queries[:, 0]
     
     return PreprocessResult(
         active_idx=active_idx, queries=queries, remaining=remaining,
         remaining_counts=rem_counts, preds=preds,
-        terminal_true=torch.nonzero(terminal_true, as_tuple=False).view(-1),
-        terminal_false=torch.nonzero(terminal_false, as_tuple=False).view(-1)
+        terminal_true=terminal_true.nonzero(as_tuple=True)[0],
+        terminal_false=terminal_false.nonzero(as_tuple=True)[0]
     )
 
 
@@ -842,173 +808,116 @@ def unify_with_facts(
     verbose: int = 0
 ) -> Tuple[Tensor, Tensor]:
     """
-    Perform single-step unification of queries against facts (the Knowledge Graph).
-    
-    This function handles both "ground queries" (all arguments are constants) and
-    "variable queries" (contain variables).
-    
-    Args:
-        facts_idx:           Tensor [F, 3] of all facts.
-        predicate_range_map: Tensor [P, 2] containing (start, end) indices for facts sorted by predicate.
-        queries:             Tensor [A, 3] active queries.
-        remaining:           Tensor [A, G, 3] remaining atoms.
-        remaining_counts:    Tensor [A] counts of remaining atoms.
-        preds:               Tensor [A] predicate IDs of queries.
-        constant_no:         Threshold for constants.
-        padding_idx:         Padding value.
-        fact_index:          GPUFactIndex for O(1) ground checks.
-        excluded_queries:    Optional Tensor [A, max_atoms, 3] to prevent circular trivial loops.
-        verbose:             Verbosity level.
-        
-    Returns:
-        Tuple[Tensor, Tensor]:
-            - states: Tensor [A, K_f, M_f, 3] containing generated successor states from facts.
-            - counts: Tensor [A] containing number of successors per owner.
+    Perform single-step unification of queries against facts (optimized).
     """
     device = queries.device
     pad = padding_idx
     A, G = remaining.shape[:2]
 
-    # Short-circuit if nothing to do
     if A == 0 or facts_idx.numel() == 0:
         return torch.empty((0, 1, 3), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device)
 
     # Identify ground queries (all args are constants)
     q_args = queries[:, 1:]
-    ground = (q_args <= constant_no).all(dim=1)   # [A]
+    ground = (q_args <= constant_no).all(dim=1)
 
-    # Accumulators for matching results
-    qi_accum: List[Tensor] = []     # Query indices [L_i]
-    rem_accum: List[Tensor] = []    # Remaining parts with substitution applied [L_i, G, 3]
-    cnt_accum: List[Tensor] = []    # Remaining counts [L_i]
+    # Pre-allocate result tensors - will trim at end
+    max_results = A * 10  # Upper bound estimate
+    qi_results = []
+    rem_results = []
 
     # -------------------------------------------------------------------------
     # Case 1: Ground queries -> O(1) membership test
     # -------------------------------------------------------------------------
-    g_idx = torch.nonzero(ground, as_tuple=True)[0]
-    if g_idx.numel() > 0:
-        gq = queries.index_select(0, g_idx)
+    ground_sum = ground.sum()
+    if ground_sum > 0:
+        g_idx = ground.nonzero(as_tuple=True)[0]
+        gq = queries[g_idx]
         
-        # O(1) check using the hash index
-        hits = fact_index.contains(gq)            # [|g_idx|]
+        hits = fact_index.contains(gq)
         
-        # Filter exclusions (e.g. don't re-prove the immediate parent fact)
         if excluded_queries is not None:
-            excl_first = excluded_queries.index_select(0, g_idx)[:, 0, :]
-            hits = hits & ~( (excl_first == gq).all(dim=1) )
+            excl_first = excluded_queries[g_idx, 0, :]
+            hits = hits & ~((excl_first == gq).all(dim=1))
             
-        if hits.any():
+        if hits.sum() > 0:
             keep = g_idx[hits]
-            qi_accum.append(keep)
-            # For facts, the "substitution" is empty/identity, so we just carry over 'remaining'
-            rem_accum.append(remaining.index_select(0, keep))
-            cnt_accum.append(remaining_counts.index_select(0, keep))
+            qi_results.append(keep)
+            rem_results.append(remaining[keep])
 
     # -------------------------------------------------------------------------
     # Case 2: Non-ground queries -> Unification by predicate range
     # -------------------------------------------------------------------------
     ng_mask = ~ground
-    if ng_mask.any():
-        ng_idx  = torch.nonzero(ng_mask, as_tuple=True)[0]
-        q_ng    = queries.index_select(0, ng_idx)  # [N_ng, 3]
-        p_ng    = preds.index_select(0, ng_idx)    # [N_ng]
+    ng_sum = ng_mask.sum()
+    if ng_sum > 0:
+        ng_idx = ng_mask.nonzero(as_tuple=True)[0]
+        q_ng = queries[ng_idx]
+        p_ng = preds[ng_idx]
 
-        # Use predicate_ranges to limit search space
-        if predicate_range_map is None or predicate_range_map.numel() == 0:
-            # Fallback: pair with all facts (less efficient, mainly for debugging/init)
-            # Use self.predicate_no if available to avoid .item() sync
-            if self.predicate_no is not None:
-                max_pred_idx = self.predicate_no
-            else:
-                max_pred_idx = int(facts_idx[:,0].max().item()) if facts_idx.numel() > 0 else 0
-                
-            seg_starts = torch.zeros((max_pred_idx + 2,), dtype=torch.long, device=device)
-            seg_lens   = torch.zeros_like(seg_starts)
-            
-            # compute ranges on-the-fly
-            order = torch.argsort(facts_idx[:,0])
-            facts_sorted = facts_idx.index_select(0, order)
-            preds_sorted = facts_sorted[:,0]
-            uniq, counts = torch.unique_consecutive(preds_sorted, return_counts=True)
-            starts = torch.cumsum(torch.cat([torch.zeros(1, dtype=torch.long, device=device), counts[:-1]]), dim=0)
-            seg_starts[uniq] = starts
-            seg_lens[uniq]   = counts
-            
+        if predicate_range_map is not None and predicate_range_map.numel() > 0:
+            seg_starts = predicate_range_map[:, 0].long()
+            seg_lens = (predicate_range_map[:, 1] - predicate_range_map[:, 0]).long()
             qi_local, fi = pairs_via_predicate_ranges(p_ng, seg_starts, seg_lens)
-            facts_for_pred = facts_sorted
+            facts_for_pred = facts_idx
         else:
-            seg_starts = predicate_range_map[:,0].long()
-            seg_lens   = (predicate_range_map[:,1] - predicate_range_map[:,0]).long()
-            qi_local, fi = pairs_via_predicate_ranges(p_ng, seg_starts, seg_lens)
+            # Fallback - rare path
+            qi_local = torch.empty(0, dtype=torch.long, device=device)
+            fi = torch.empty(0, dtype=torch.long, device=device)
             facts_for_pred = facts_idx
 
         if qi_local.numel() > 0:
-            # q_pairs: [L_ng, 3], f_pairs: [L_ng, 3]
-            q_pairs = q_ng.index_select(0, qi_local)
-            f_pairs = facts_for_pred.index_select(0, fi)
+            q_pairs = q_ng[qi_local]
+            f_pairs = facts_for_pred[fi]
 
-            # Pre-filter: if query has a constant, fact must match it
+            # Pre-filter: constants must match
             q_const = q_pairs[:, 1:] <= constant_no
             matches = (~q_const | (q_pairs[:, 1:] == f_pairs[:, 1:])).all(dim=1)
             
-            if matches.any():
+            match_sum = matches.sum()
+            if match_sum > 0:
                 qi_local = qi_local[matches]
-                f_pairs  = f_pairs[matches]
-                q_pairs  = q_pairs[matches]
-            else:
-                qi_local = torch.empty(0, dtype=torch.long, device=device)
+                f_pairs = f_pairs[matches]
+                q_pairs = q_pairs[matches]
 
-        if qi_local.numel() > 0:
-            # Perform full unification including variable binding
-            ok, subs = unify_one_to_one(q_pairs, f_pairs, constant_no, pad)
-            
-            if ok.any():
-                # qi_ok: indices into original 'queries' tensor via ng_idx mapping
-                qi_ok = ng_idx.index_select(0, qi_local[ok])   # [L_success]
-                subs_ok = subs[ok].view(-1, 2, 2)              # [L_success, 2, 2]
+                # Full unification
+                ok, subs = unify_one_to_one(q_pairs, f_pairs, constant_no, pad)
+                
+                ok_sum = ok.sum()
+                if ok_sum > 0:
+                    qi_ok = ng_idx[qi_local[ok]]
+                    subs_ok = subs[ok]
 
-                # Optional drop of trivial self-match
-                if excluded_queries is not None and qi_ok.numel() > 0:
-                    f_ok = f_pairs[ok]
-                    excl_atoms = excluded_queries.index_select(0, qi_ok)[:, 0, :]
-                    not_excluded = (f_ok != excl_atoms).any(dim=1)
-                    if not_excluded.any():
-                        qi_ok   = qi_ok[not_excluded]
-                        subs_ok = subs_ok[not_excluded]
-                    else:
-                        qi_ok = torch.empty(0, dtype=torch.long, device=device)
+                    # Handle exclusions
+                    if excluded_queries is not None and qi_ok.numel() > 0:
+                        f_ok = f_pairs[ok]
+                        excl_atoms = excluded_queries[qi_ok, 0, :]
+                        not_excluded = (f_ok != excl_atoms).any(dim=1)
+                        if not_excluded.sum() > 0:
+                            qi_ok = qi_ok[not_excluded]
+                            subs_ok = subs_ok[not_excluded]
+                        else:
+                            qi_ok = torch.empty(0, dtype=torch.long, device=device)
 
-                if qi_ok.numel() > 0:
-                    # Apply substitutions to the 'remaining' part of the state
-                    rem_sel = remaining.index_select(0, qi_ok)
-                    rem_inst = apply_substitutions(rem_sel, subs_ok.view(subs_ok.shape[0], -1, 2), pad)
-                    
-                    qi_accum.append(qi_ok)
-                    rem_accum.append(rem_inst)
-                    cnt_accum.append(remaining_counts.index_select(0, qi_ok))
+                    if qi_ok.numel() > 0:
+                        rem_sel = remaining[qi_ok]
+                        rem_inst = apply_substitutions(rem_sel, subs_ok.view(subs_ok.shape[0], -1, 2), pad)
+                        
+                        qi_results.append(qi_ok)
+                        rem_results.append(rem_inst)
 
     # -------------------------------------------------------------------------
-    # 3. Aggregate and Return Flat
+    # Aggregate results
     # -------------------------------------------------------------------------
-    if not qi_accum:
-        # Return flat empty
+    if not qi_results:
         return (
-            torch.empty((0, 1, 3), dtype=torch.long, device=device),  # states
-            torch.empty((0,), dtype=torch.long, device=device),       # counts (unused in flat, implied)
-            torch.empty((0,), dtype=torch.long, device=device)        # owners
+            torch.empty((0, 1, 3), dtype=torch.long, device=device),
+            torch.empty((0,), dtype=torch.long, device=device),
+            torch.empty((0,), dtype=torch.long, device=device)
         )
 
-    # Concatenate all matches from all sources
-    qi = torch.cat(qi_accum, dim=0)                # [Total_Matches]
-    remain_inst = torch.cat(rem_accum, dim=0)      # [Total_Matches, G, 3]
-    
-    # Pack into flat [N, M, 3] where M=G
-    # Actually remain_inst IS the states for facts, as facts have no body atoms added (only substitutions to remaining)
-    # So states = remain_inst.
-    # owners = qi.
-    
-    # We need to return (flat_states, flat_counts, flat_owners)
-    # flat_counts is just G for everyone, or we can compute it.
+    qi = torch.cat(qi_results, dim=0)
+    remain_inst = torch.cat(rem_results, dim=0)
     
     return remain_inst, torch.full((remain_inst.shape[0],), remain_inst.shape[1], dtype=torch.long, device=device), qi
 
@@ -1092,20 +1001,18 @@ def unify_with_rules(
     template_start = constant_no + 1
     next_for_match = next_var_indices.index_select(0, qi)    # [L]
 
-    # Vectorized head args rename: [L, 3]
+    # Vectorized head args rename: [L, 3] - FUSED (no clone)
     # Only rename args (indices 1, 2), leave predicate (index 0) unchanged
-    h_pairs = h_templ.clone()
-    h_args = h_pairs[:, 1:3]  # [L, 2]
-    is_t_h = (h_args >= template_start) & (h_args != pad)
-    # Apply offset unconditionally (torch.where is efficient even for empty masks)
-    h_pairs[:, 1:3] = torch.where(is_t_h, next_for_match.unsqueeze(1) + (h_args - template_start), h_args)
+    h_args_orig = h_templ[:, 1:3]  # [L, 2]
+    is_t_h = (h_args_orig >= template_start) & (h_args_orig != pad)
+    h_args_renamed = torch.where(is_t_h, next_for_match.unsqueeze(1) + (h_args_orig - template_start), h_args_orig)
+    h_pairs = torch.cat([h_templ[:, :1], h_args_renamed], dim=1)  # [L, 3]
 
-    # Vectorized body args rename: [L, Bmax, 3]
-    b_pairs = b_templ.clone()
-    b_args = b_pairs[:, :, 1:3]  # [L, Bmax, 2]
-    is_t_b = (b_args >= template_start) & (b_args != pad)
-    # Broadcast next_for_match to [L, 1, 1] for proper broadcasting
-    b_pairs[:, :, 1:3] = torch.where(is_t_b, next_for_match.view(-1, 1, 1) + (b_args - template_start), b_args)
+    # Vectorized body args rename: [L, Bmax, 3] - FUSED (no clone)
+    b_args_orig = b_templ[:, :, 1:3]  # [L, Bmax, 2]
+    is_t_b = (b_args_orig >= template_start) & (b_args_orig != pad)
+    b_args_renamed = torch.where(is_t_b, next_for_match.view(-1, 1, 1) + (b_args_orig - template_start), b_args_orig)
+    b_pairs = torch.cat([b_templ[:, :, :1], b_args_renamed], dim=2)  # [L, Bmax, 3]
 
     # -------------------------------------------------------------------------
     # 3. Unification
@@ -1118,66 +1025,74 @@ def unify_with_rules(
     if ok_sum == 0:
         return torch.empty((0, 1, 3), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device), torch.empty((0,), dtype=torch.long, device=device)
 
-    # Filter successful matches
-    qi = qi[ok]                                              # [L_success]
-    b_pairs = b_pairs[ok]                                    # [L_success, Bmax, 3]
-    subs   = subs[ok].view(-1, 2, 2)                         # [L_success, 2, 2]
-    rem_sel = remaining.index_select(0, qi)                  # [L_success, G, 3]
+    # Filter successful matches using boolean indexing
+    qi_ok = qi[ok]                                            # [L_success]
+    b_pairs_ok = b_pairs[ok]                                  # [L_success, Bmax, 3]
+    subs_ok = subs[ok]                                        # [L_success, 2, 2]
+    ri_ok = ri[ok]                                            # [L_success]
+    
+    L_success = qi_ok.shape[0]
+    
+    # Batch all index_select operations
+    rem_sel = remaining[qi_ok]                                # [L_success, G, 3]
+    lens_b = rule_lens_sorted[ri_ok]                          # [L_success]
+    rem_cnts = remaining_counts[qi_ok]                        # [L_success]
 
     # -------------------------------------------------------------------------
-    # 4. Substitution and Construction
+    # 4. OPTIMIZED Substitution - Vectorized with minimal allocations
     # -------------------------------------------------------------------------
-    # Apply substitutions to Rule Body and Remaining Query Atoms
-    # Note: subs has shape [S, 2, 2], need [S, 1, 2, 2] logic or reshape for broadcasting
-    # apply_substitutions expects [N, S, 2], so we flatten subs to [L_success, 2, 2] -> OK
-    
-    subs_b = subs.view(subs.shape[0], -1, 2)                 # [L_success, 2, 2]
-    
-    bodies_inst = apply_substitutions(b_pairs,  subs_b, pad) # [L_success, Bmax, 3]
-    remain_inst = apply_substitutions(rem_sel, subs_b, pad)  # [L_success, G, 3]
-
-    # Consolidate atoms: [Body, Remaining] -> [M]
-    # We only take valid atoms from body (check rule length) and valid atoms from remaining
-    
-    # Valid masks
-    lens_b = rule_lens_sorted.index_select(0, ri[ok])        # [L_success]
-    
-    # Mask [L_success, Bmax]
-    take_b = (torch.arange(Bmax, device=device).unsqueeze(0) < lens_b.unsqueeze(1))
-    
-    # Mask [L_success, G]
-    take_g = (torch.arange(G,    device=device).unsqueeze(0) < remaining_counts.index_select(0, qi).unsqueeze(1))
-
-    # Total atoms per new state
-    counts = take_b.sum(1) + take_g.sum(1)                   # [L_success]
     M = Bmax + G
     
-    # Allocate concatenated buffer: [L_success, M, 3]
-    cat = torch.full((counts.shape[0], M, 3), pad, dtype=torch.long, device=device)
+    # Concatenate body + remaining for single substitution pass
+    combined = torch.cat([b_pairs_ok, rem_sel], dim=1)        # [L_success, M, 3]
+    args = combined[:, :, 1:3]                                # [L_success, M, 2]
     
-    # OPTIMIZATION: Remove .any() checks - scatter operations handle empty masks correctly
-    # Scatter Body atoms to [0 .. len_body-1]
-    pos_b = torch.cumsum(take_b.long(), dim=1) - 1
-    rows_b = torch.arange(take_b.shape[0], device=device).unsqueeze(1).expand_as(take_b)[take_b]
-    cols_b = torch.arange(Bmax, device=device).unsqueeze(0).expand_as(take_b)[take_b]
-    if rows_b.numel() > 0:
-        cat[rows_b, pos_b[take_b]] = bodies_inst[rows_b, cols_b]
+    # Vectorized substitution - apply both substitutions in parallel
+    # subs_ok: [L_success, 2, 2] -> frm[i], to[i]
+    frm = subs_ok[:, :, 0]                                    # [L_success, 2]
+    to_ = subs_ok[:, :, 1]                                    # [L_success, 2]
+    
+    # Check matches for both substitutions at once
+    # args: [L, M, 2], frm: [L, 2] -> need [L, 1, 2] for broadcasting
+    match_0 = (args == frm[:, 0:1].unsqueeze(1)) & (frm[:, 0:1].unsqueeze(1) != pad)
+    match_1 = (args == frm[:, 1:2].unsqueeze(1)) & (frm[:, 1:2].unsqueeze(1) != pad)
+    
+    # Apply substitutions - match_0 takes priority
+    result = torch.where(match_0, to_[:, 0:1].unsqueeze(1).expand_as(args), args)
+    result = torch.where(match_1, to_[:, 1:2].unsqueeze(1).expand_as(args), result)
+    
+    # Reconstruct combined with substituted args
+    combined_inst = torch.stack([combined[:, :, 0], result[:, :, 0], result[:, :, 1]], dim=2)
+    
+    # -------------------------------------------------------------------------
+    # 5. Construction - Direct copy + scatter
+    # -------------------------------------------------------------------------
+    cat = torch.full((L_success, M, 3), pad, dtype=torch.long, device=device)
+    
+    arange_Bmax = _arange_cache.get(Bmax, device)
+    arange_G = _arange_cache.get(G, device)
+    
+    # Valid masks
+    valid_b = (arange_Bmax.unsqueeze(0) < lens_b.unsqueeze(1))       # [L_success, Bmax]
+    valid_g = (arange_G.unsqueeze(0) < rem_cnts.unsqueeze(1))        # [L_success, G]
+    
+    # Copy body atoms directly - masked copy
+    bodies_inst = combined_inst[:, :Bmax, :]
+    cat[:, :Bmax, :] = torch.where(valid_b.unsqueeze(2), bodies_inst, 
+                                    torch.full_like(bodies_inst, pad))
+    
+    counts = valid_b.sum(1) + valid_g.sum(1)
+    
+    # Scatter remaining atoms at offset positions
+    if valid_g.sum() > 0:
+        arange_L = _arange_cache.get(L_success, device)
+        dst_cols = lens_b.unsqueeze(1) + arange_G.unsqueeze(0)       # [L_success, G]
         
-    # Scatter Remaining atoms to [len_body .. len_body+len_rem-1]
-    pos_g = take_b.sum(1, keepdim=True) + (torch.cumsum(take_g.long(), dim=1) - 1)
-    rows_g = torch.arange(take_g.shape[0], device=device).unsqueeze(1).expand_as(take_g)[take_g]
-    cols_g = torch.arange(G, device=device).unsqueeze(0).expand_as(take_g)[take_g]
-    if rows_g.numel() > 0:
-        cat[rows_g, pos_g[take_g]] = remain_inst[rows_g, cols_g]
+        rows_g = arange_L.unsqueeze(1).expand_as(valid_g)[valid_g]
+        cols_g = dst_cols[valid_g]
+        cat[rows_g, cols_g] = combined_inst[:, Bmax:, :][valid_g]
 
-    # -------------------------------------------------------------------------
-    # 5. Return Flat Results (No Packing)
-    # -------------------------------------------------------------------------
-    # cat: [L_success, M, 3]
-    # qi:  [L_success] (owners)
-    # counts: [L_success] (atom counts)
-    
-    return cat, counts, qi
+    return cat, counts, qi_ok
 
 
 @torch.no_grad()
@@ -1264,30 +1179,7 @@ def prune_and_collapse(
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """
     Remove known facts from candidates and detect proofs.
-    
-    This is the core "pruning" step.
-    1. Check all ground atoms in all candidates against the Knowledge Graph (fact_index).
-    2. Remove atoms that are Facts (they are TRUE).
-    3. If a candidate becomes empty (0 atoms), it means it is fully satisfied (PROVEN).
-    4. If an owner has at least one PROVEN candidate, that owner is TRUE.
-    5. Collapse: For proven owners, discard all other candidates (we only need one proof).
-    
-    Args:
-        candidates:          Tensor [N, M, 3] flat list of candidates.
-        cand_counts:         Tensor [N] atom counts.
-        owners:              Tensor [N] owner index (0..B-1).
-        fact_index:          GPUFactIndex for membership testing.
-        constant_no:         Threshold for constants.
-        padding_idx:         Padding value.
-        B:                   Total batch size (for proof mask).
-        excluded_first_atoms: Optional [N, 3] to prevent circular loops.
-        
-    Returns:
-        Tuple[Tensor, Tensor, Tensor, Tensor]:
-            - survivors:     Tensor [N', M, 3] candidates that are not proofs (unless no logic requires otherwise).
-            - surv_counts:   Tensor [N'] new atom counts for survivors.
-            - proof_mask_B:  Tensor [B] boolean mask, True for owners that found a proof.
-            - surv_owners:   Tensor [N'] owners of the survivors.
+    Aggressively optimized version (No nonzero, fully vectorized).
     """
     device = candidates.device
     pad = padding_idx
@@ -1298,93 +1190,77 @@ def prune_and_collapse(
     N, M = candidates.shape[:2]
     
     # -------------------------------------------------------------------------
-    # 1. Identify Ground Facts
+    # 1. Identify Ground Facts - FUSED computation
     # -------------------------------------------------------------------------
-    valid = (candidates[:, :, 0] != pad)           # [N, M]
-    args  = candidates[:, :, 1:3]
-    is_ground = (args <= constant_no).all(dim=2)   # [N, M]
-    ground = valid & is_ground                     # [N, M] Atoms that are ground and valid
-
-    # Check existence in KG - compute flat_mask unconditionally
-    flat_mask = ground.flatten()
-    drop = torch.zeros_like(valid)
-    if flat_mask.any():  # Only check if there are ground atoms to test
-        atoms = candidates.view(-1, 3)[flat_mask]             # [G0, 3]
-        is_fact = fact_index.contains(atoms)                  # [G0]
-        
-        place = torch.zeros(flat_mask.shape[0], dtype=torch.bool, device=device)
-        place[flat_mask] = is_fact
-        drop = place.view(N, M)                               # [N, M] True if atom is a Fact
-
-    # -------------------------------------------------------------------------
-    # 2. Handle Exclusion (Circular Proof Prevention)
-    # -------------------------------------------------------------------------
-    # Do NOT drop atoms equal to excluded first atom (e.g. parent fact)
-    # If we drop them, we might say "X is true because of X", which is circular.
-    if excluded_first_atoms is not None and flat_mask.any():
-        excl = excluded_first_atoms.view(N, 1, 3).expand(-1, M, -1)  # [N, M, 3]
-        keep_if_excl = ground & (candidates == excl).all(dim=2)
-        drop &= ~keep_if_excl
-
-    # -------------------------------------------------------------------------
-    # 3. Prune and Check for Empty (Proof)
-    # -------------------------------------------------------------------------
-    keep = valid & ~drop
-    pruned_counts = keep.sum(dim=1)                           # [N]
-    is_proof_cand = pruned_counts == 0                        # [N] Candidate is fully proven
-
-    # -------------------------------------------------------------------------
-    # 4. Collapse Proven Owners
-    # -------------------------------------------------------------------------
-    proof_mask_B = torch.zeros(B, dtype=torch.bool, device=device)
-    # OPTIMIZATION: Use sum() instead of any() to avoid sync when possible
-    proof_count = is_proof_cand.sum()
-    if proof_count > 0:
-        proof_owners = torch.unique(owners[is_proof_cand])    # [P < B]
-        proof_mask_B[proof_owners] = True
-
-    # -------------------------------------------------------------------------
-    # 5. Filter Survivors
-    # -------------------------------------------------------------------------
-    # Discard candidates belonging to owners that are already proven
-    # (Since we only need to know IT IS proven, we don't need to track further subgoals for it)
-    keep_mask = ~is_proof_cand & ~proof_mask_B.index_select(0, owners)
+    # Compute all masks in a single pass
+    preds = candidates[:, :, 0]                       # [N, M]
+    args = candidates[:, :, 1:3]                      # [N, M, 2]
     
-    keep_sum = keep_mask.sum()
-    if keep_sum == 0:
+    valid = (preds != pad)                            # [N, M]
+    is_ground = (args <= constant_no).all(dim=2)      # [N, M]
+    ground = valid & is_ground                        # [N, M]
+
+    # Pre-allocate drop mask
+    drop = torch.zeros(N, M, dtype=torch.bool, device=device)
+    
+    # Check existence in KG - Vectorized Boolean Indexing
+    ground_flat = ground.view(-1)
+    if ground_flat.any():
+        cand_flat = candidates.view(-1, 3)
+        # Select candidates where ground is true
+        # This triggers a sync to get size, but better than nonzero+gather
+        atoms_to_check = cand_flat[ground_flat]
+        
+        # Check against index
+        is_fact = fact_index.contains(atoms_to_check)
+        
+        # Write back results
+        drop.view(-1)[ground_flat] = is_fact
+
+    # -------------------------------------------------------------------------
+    # 2. Handle Exclusion (Circular Proof Prevention) - FUSED
+    # -------------------------------------------------------------------------
+    if excluded_first_atoms is not None and ground_flat.any():
+        # Only check ground atoms that would be dropped
+        # (Assuming exclusion check is relatively cheap compared to not filtering)
+        excl = excluded_first_atoms.unsqueeze(1).expand(-1, M, -1)  # [N, M, 3]
+        is_excluded = (candidates == excl).all(dim=2) & ground      # [N, M]
+        drop = drop & ~is_excluded  # Keep excluded atoms
+
+    # -------------------------------------------------------------------------
+    # 3. Compute pruned counts and proof detection - FUSED
+    # -------------------------------------------------------------------------
+    keep_atom = valid & ~drop                         # [N, M]
+    pruned_counts = keep_atom.sum(dim=1)              # [N]
+    is_proof_cand = (pruned_counts == 0)              # [N]
+
+    # -------------------------------------------------------------------------
+    # 4. Collapse Proven Owners - Optimized unique
+    # -------------------------------------------------------------------------
+    # Use scatter_add_ to verify proofs without boolean indexing sync
+    proof_counts = torch.zeros(B, dtype=torch.long, device=device)
+    # Cast boolean to long for scatter_add
+    proof_counts.scatter_add_(0, owners, is_proof_cand.long())
+    proof_mask_B = proof_counts > 0
+
+    # -------------------------------------------------------------------------
+    # 5. Filter Survivors - Single pass
+    # -------------------------------------------------------------------------
+    owner_is_proven = proof_mask_B[owners]            # [N]
+    keep_cand = ~is_proof_cand & ~owner_is_proven     # [N]
+    
+    if not keep_cand.any():
         z3 = torch.empty((0, M, 3), dtype=candidates.dtype, device=device)
         z1 = torch.empty((0,), dtype=torch.long, device=device)
         return z3, z1, proof_mask_B, z1
 
-    # Gather survivors
-    survivors = candidates[keep_mask]       # [N', M, 3]
-    surv_counts = pruned_counts[keep_mask]  # [N']
-    surv_owners = owners[keep_mask]         # [N']
-    
-    # We must actually remove the 'dropped' atoms from the survivors to compact them
-    # OR we can just mark them invalid. Standardizing usually expects left-alignment.
-    # Let's compact (left-align) them.
-    N_surv = survivors.shape[0]
-    
-    # Re-compute keep mask for survivors
-    # We need to know which atoms were kept relative to the original 'candidates'
-    # But 'drop' was computed on [N, M]. extracting drop[keep_mask] gives [N', M]
-    drop_surv = drop[keep_mask]
-    valid_surv = valid[keep_mask]
-    keep_atom_mask = valid_surv & ~drop_surv  # [N', M]
-    
-    # OPTIMIZATION: Compute unconditionally - handle empty case gracefully
-    compact_survivors = torch.full_like(survivors, pad)
-    pos = torch.cumsum(keep_atom_mask.long(), dim=1) - 1
-    
-    r_idx = torch.arange(N_surv, device=device).unsqueeze(1).expand_as(pos)[keep_atom_mask]
-    c_idx = pos[keep_atom_mask]
-    
-    if r_idx.numel() > 0:
-        vals = survivors[keep_atom_mask]
-        compact_survivors[r_idx, c_idx] = vals
-        
-    return compact_survivors, surv_counts, proof_mask_B, surv_owners
+    # Use boolean indexing directly for compaction (implicit nonzero, unavoidable for compaction)
+    surv_states = candidates[keep_cand]
+    # Use the UPDATED counts (pruned_counts)
+    surv_counts = pruned_counts[keep_cand]
+    surv_owners = owners[keep_cand]
+
+    return surv_states, surv_counts, proof_mask_B, surv_owners
 
 
 @torch.no_grad()
@@ -1444,7 +1320,7 @@ def standardize_derived_states(
     is_var = (args > constant_no) & (args != pad)
     is_new = is_var & (args >= base_per_state)
     
-    if not is_new.any():
+    if is_new.sum() == 0:
         return states, next_var_start_B
 
     # -------------------------------------------------------------------------
@@ -1454,14 +1330,14 @@ def standardize_derived_states(
     # Appearance order: State i, Atom j, Arg k (Linear index)
     
     # lin: [N, M, 2] linear indices 0..(2M-1) per state
-    lin = torch.arange(M * 2, device=device).view(1, M, 2).expand(N, -1, -1)
+    lin = _arange_cache.get(M * 2, device).view(1, M, 2).expand(N, -1, -1)
     
     # We need to group sets of (state_idx, var_val) that are the SAME variable.
     # To do this globally in one sort/unique, we create a composite key:
     # key = var_val + state_idx * SHIFT
     # This keeps vars from different states separate, but groups identical vars within a state.
     SHIFT = runtime_var_end_index + 2
-    st_id = torch.arange(N, device=device).view(N, 1, 1).expand_as(args)
+    st_id = _arange_cache.get(N, device).view(N, 1, 1).expand_as(args)
     keys  = args + st_id * SHIFT     # [N, M, 2]
     
     # Filter only new variables
@@ -1517,7 +1393,7 @@ def standardize_derived_states(
         # OPTIMIZATION: Use len(seg_id) as safe upper bound for num_groups to avoid .item() sync
         num_groups_safe = seg_id.shape[0] + 1
         starts = torch.full((num_groups_safe,), len(seg_id), dtype=torch.long, device=device)
-        idxpos = torch.arange(len(seg_id), device=device)
+        idxpos = _arange_cache.get(len(seg_id), device)
         # scatter_reduce 'amin' finds the first index where seg_id appears
         starts.scatter_reduce_(0, seg_id, idxpos, reduce='amin', include_self=False)
         rank_sorted = idxpos - starts[seg_id]
@@ -1617,7 +1493,7 @@ def pack_by_owner(
     else:
         # Start Optimization: avoid .item() if K is small or can be inferred, but here we need K for shaping.
         # This is the ONLY place where .item() is truly needed now.
-        print(f"DEBUG: pack_by_owner K_fixed is None! max_count={max_count.item()}")
+        # Avoid .item() sync if possible - fallback
         K = int(max_count.item())
     
     # Initialize output [B, K, M, 3]
@@ -1634,7 +1510,7 @@ def pack_by_owner(
     seg_start = torch.ones_like(owner_sorted, dtype=torch.bool, device=device)
     seg_start[1:] = owner_sorted[1:] != owner_sorted[:-1]
     
-    seg_indices = torch.arange(owner_sorted.shape[0], device=device)
+    seg_indices = _arange_cache.get(owner_sorted.shape[0], device)
     seg_first   = torch.zeros_like(owner_sorted, dtype=torch.long)
     seg_first[seg_start] = seg_indices[seg_start]
     seg_first = torch.cummax(seg_first, dim=0)[0]
@@ -2085,14 +1961,33 @@ class UnificationEngine:
 
         # Write TRUE for proof owners
         if self.true_atom is not None and proof_mask_B.any():
-            dst = torch.nonzero(proof_mask_B, as_tuple=True)[0]
-            final_states[dst, 0, 0] = self.true_atom
-            final_counts[dst] = 1
+            # OPTIMIZATION: Use scatter instead of nonzero indexing
+            # final_states[dst, 0, 0] = self.true_atom -> scatter_ on mask
+            
+            # Create update tensor for true_atom
+            true_atom_tensor = self.true_atom[0]
+            
+            # Scatter true_atom into final_states where proof_mask_B is true
+            # This avoids nonzero() sync and indexing
+            # final_states[:, 0, 0] is [B]
+            if proof_mask_B.any():
+                final_states[:, 0, 0, 0] = torch.where(proof_mask_B, true_atom_tensor, final_states[:, 0, 0, 0])
+                final_counts = torch.where(proof_mask_B, torch.tensor(1, device=device), final_counts)
 
         # If all active owners are proofs, we are done.
+        # Check if any active owner is NOT a proof
+        # active_owners_mask = zeros(B); active_owners_mask[active_idx] = 1;
+        # remaining = active_owners_mask & ~proof_mask_B
+        # if not remaining.any(): return...
+        
+        # Optimized check:
+        # We need to return if no non-proof active owners remain.
+        # But we also need to handle the "no survivors -> false" logic for those.
+        
         nonproof_mask_B = torch.zeros(B, dtype=torch.bool, device=device)
         nonproof_mask_B[owners] = True
         nonproof_mask_B &= ~proof_mask_B
+        
         if not nonproof_mask_B.any():
             return final_states, final_counts, updated_next
 
@@ -2100,9 +1995,17 @@ class UnificationEngine:
         if surv_states.numel() == 0:
             # No survivors for non-proof owners -> FALSE
             if self.false_atom is not None:
-                nonproof_idx = torch.nonzero(nonproof_mask_B, as_tuple=True)[0]
-                final_states[nonproof_idx, 0, 0] = self.false_atom
-                final_counts[nonproof_idx] = 1
+                # Use boolean mask assignment instead of nonzero
+                false_atom_tensor = self.false_atom[0]
+                
+                # Only overwrite where we haven't already marked TRUE (proof_mask_B)
+                # and where we have active owners that failed (nonproof_mask_B)
+                # Note: nonproof_mask_B identifies active owners that didn't generate a proof.
+                # If surv_states is empty, ALL of them failed.
+                
+                final_states[:, 0, 0, 0] = torch.where(nonproof_mask_B, false_atom_tensor, final_states[:, 0, 0, 0])
+                final_counts = torch.where(nonproof_mask_B, torch.tensor(1, device=device), final_counts)
+                
             return final_states, final_counts, updated_next
 
         # surv_owners is already filtered to match surv_states and surv_counts

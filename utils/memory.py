@@ -73,13 +73,14 @@ class BloomFilter:
             packed = ((s[..., 0] * base + s[..., 1]) * base + s[..., 2]) & mask63  # [N, M]
             valid_mask = s[..., 0] != pad  # [N, M]
             packed_masked = torch.where(valid_mask, packed, invalid_value)
-            packed_sorted, _ = torch.sort(packed_masked, dim=1)  # [N, M]
-            num_valid = valid_mask.sum(dim=1)  # [N]
-            valid_sorted_mask = torch.arange(M, device=self._device).unsqueeze(0) < num_valid.unsqueeze(1)  # [N, M]
-            pv1_exp = self._pos_vec1[:M].unsqueeze(0).expand(N, -1)  # [N, M]
-            pv2_exp = self._pos_vec2[:M].unsqueeze(0).expand(N, -1)  # [N, M]
-            h1 = torch.where(valid_sorted_mask, packed_sorted ^ pv1_exp, 0).sum(dim=1) & mask63
-            h2 = torch.where(valid_sorted_mask, packed_sorted ^ pv2_exp, 0).sum(dim=1) & mask63
+            # Optimized: No sort. Use order-independent Sum/XOR hash.
+            # h(state) = sum(hash(atom))
+            # We use a mixer to better distribute atom hashes before summing
+            packed_mixed1 = (packed * 0x9E3779B97F4A7C15) & mask63
+            packed_mixed2 = (packed * 0xC2B2AE3D27D4EB4F) & mask63
+            
+            h1 = torch.where(valid_mask, packed_mixed1, 0).sum(dim=1) & mask63
+            h2 = torch.where(valid_mask, packed_mixed2, 0).sum(dim=1) & mask63
             return h1, h2
         elif states.dim() == 4:
             A, K, M, D = states.shape
@@ -494,20 +495,11 @@ class GPUExactMemory:
         base = self._pack_base
         packed = ((s[:, :, 0] * base + s[:, :, 1]) * base + s[:, :, 2]) & self._mask63  # [N, M]
         
-        # Mask invalid atoms with sentinel for sorting
-        sentinel = torch.iinfo(torch.long).max
-        packed_masked = torch.where(valid, packed, sentinel)
-        
-        # Sort for order-independence
-        packed_sorted, _ = torch.sort(packed_masked, dim=1)  # [N, M]
-        
-        # Count valid atoms
-        num_valid = valid.sum(dim=1)  # [N]
-        valid_sorted_mask = torch.arange(M, device=self._device).unsqueeze(0) < num_valid.unsqueeze(1)
-        
-        # XOR with position vector for hash
-        pos_vec = self._pos_vec[:M].unsqueeze(0).expand(N, -1)
-        h = torch.where(valid_sorted_mask, packed_sorted ^ pos_vec, 0).sum(dim=1) & self._mask63
+        # Optimized: No sort. Use order-independent Sum/XOR hash.
+        # h(state) = sum(mix(atom))
+        mix_const = 0x9E3779B97F4A7C15
+        val = (packed * mix_const) & self._mask63
+        h = torch.where(valid, val, 0).sum(dim=1) & self._mask63
         
         return h
     

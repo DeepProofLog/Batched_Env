@@ -46,14 +46,17 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     """
     from data_handler import DataHandler
     from index_manager import IndexManager
-    from unification import UnificationEngine
+    from unification import UnificationEngine, set_compile_mode
     from env import BatchedEnv
     from embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
     from sampler import Sampler
     
-    # Set seeds for reproducibility
-    seed_all(config.seed, deterministic=True, warn=False)
+    # Enable compile mode for maximum performance
+    set_compile_mode(True)
+    
+    # Set seeds for reproducibility (deterministic=False for performance)
+    seed_all(config.seed, deterministic=False, warn=False)
     
     # Load data
     dh = DataHandler(
@@ -180,13 +183,13 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         device=device,
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
-        sample_deterministic_per_env=True,
+        sample_deterministic_per_env=False,  # Disabled for performance
     )
     
-    # Reseed before model creation
-    seed_all(config.seed, deterministic=True, warn=False)
+    # Reseed before model creation (deterministic=False for performance)
+    seed_all(config.seed, deterministic=False, warn=False)
     
-    # Policy
+    # Policy - with compilation enabled for performance
     action_size = config.padding_states
     policy = TensorPolicy(
         embedder=embedder,
@@ -196,6 +199,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         num_layers=8,
         dropout_prob=0.0,
         device=device,
+        compile_policy=config.compile,  # Enable torch.compile
     ).to(device)
     
     return policy, eval_env, sampler, dh, im, test_queries_unpadded
@@ -232,6 +236,23 @@ def profile_eval_cprofile(config: SimpleNamespace):
     policy, eval_env, sampler, dh, im, test_queries_tensor = setup_components(device, config)
     
     n_queries = config.n_test_queries or len(test_queries_tensor)
+    
+    # Warmup runs to amortize torch.compile overhead
+    warmup_runs = config.warmup_runs
+    if warmup_runs > 0:
+        print(f"\nRunning {warmup_runs} warmup iteration(s)...")
+        for i in range(warmup_runs):
+            # Use smaller subset for warmup to save time
+            warmup_config = SimpleNamespace(**vars(config))
+            warmup_config.n_test_queries = min(2, n_queries)
+            warmup_config.n_corruptions = min(10, config.n_corruptions)
+            _ = run_eval_corruptions(policy, eval_env, sampler, test_queries_tensor, warmup_config)
+            print(f"  Warmup {i+1}/{warmup_runs} complete")
+        
+        # Synchronize GPU before profiling
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    
     print(f"\nProfiling eval_corruptions() on {n_queries} queries with {config.n_corruptions} corruptions each...")
     
     profiler = cProfile.Profile()
@@ -366,12 +387,16 @@ def main():
                         help='Number of test queries (None = all)')
     parser.add_argument('--n-corruptions', type=int, default=100,
                         help='Number of corruptions per query')
-    parser.add_argument('--batch-size-env', type=int, default=128,
+    parser.add_argument('--batch-size-env', type=int, default=10,
                         help='Environment batch size')
     parser.add_argument('--corruption-modes', type=str, nargs='+', default=['both'],
                         help='Corruption modes (head, tail, or both)')
-    parser.add_argument('--verbose', action='store_true',
+    parser.add_argument('--verbose', default=True, type=lambda x: x.lower() != 'false',
                         help='Enable verbose output during evaluation')
+    parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false',
+                        help='Enable torch.compile for model (default: True)')
+    parser.add_argument('--warmup-runs', type=int, default=1,
+                        help='Number of warmup runs before profiling (default: 1)')
     args = parser.parse_args()
     
     # Configuration matching runner.py defaults
@@ -387,12 +412,14 @@ def main():
         padding_states=20,
         max_depth=20,
         memory_pruning=True,
-        skip_unary_actions=True,
+        skip_unary_actions=False,
         end_proof_action=True,
         reward_type=0,
         max_total_vars=100,
         atom_embedding_size=250,
         seed=0,
+        compile=args.compile,
+        warmup_runs=args.warmup_runs,
     )
     
     if args.use_gpu_profiler:
