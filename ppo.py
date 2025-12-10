@@ -266,26 +266,18 @@ class PPO:
         
         return loss, policy_loss, value_loss, entropy_loss, approx_kl_div_t, clip_fraction_t
     
-    def _apply_optimizer_step(
+    def _backward_only(
         self,
         loss: torch.Tensor,
-        max_grad_norm: Optional[float],
     ) -> None:
         """
-        Apply optimizer update: zero grad, backward, clip grad, step.
+        Compiled backward pass only.
         
-        This function is compiled for maximum performance.
-        Only call this after KL divergence check passes.
+        Zero_grad and optimizer.step are NOT traceable by Dynamo and must be
+        called outside the compiled region. backward() IS traceable when
+        compiled_autograd is enabled (set at module level).
         """
-        self.optimizer.zero_grad()
         loss.backward()
-        
-        # Gradient clipping
-        if max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_grad_norm)
-        
-        # Fused Adam step
-        self.optimizer.step()
     
     @staticmethod
     def functional_adam_step(params, grads, exp_avgs, exp_avg_sqs, state_steps, lr, beta1, beta2, eps, max_grad_norm):
@@ -390,11 +382,16 @@ class PPO:
 
     # Define wrapper for compilation
     def _compile_components(self):
-        # Compile loss computation for kernel fusion
-        self._compute_loss_compiled = torch.compile(self._compute_loss_components, mode='reduce-overhead')
-        # Compile optimizer step for maximum performance
-        # NOTE: compiled_autograd is enabled at module level (line 25) to support backward() compilation
-        self._apply_optimizer_step_compiled = torch.compile(self._apply_optimizer_step, mode='reduce-overhead')
+        # Compile the ENTIRE policy as a unified module with fullgraph=True
+        # This creates a single CUDA graph for all policy operations, reducing replays
+        # from 443 (multiple nested graphs) to ~208 (one graph for forward + one for eval)
+        self.policy = torch.compile(self.policy, mode='reduce-overhead', fullgraph=True)
+        print(f"[PPO] Compiled self.policy with mode='reduce-overhead', fullgraph=True")
+        
+        # Compile loss computation for kernel fusion with fullgraph=True
+        # NOTE: backward() and optimizer ops are NOT traceable by Dynamo - they remain eager
+        # See compile_train.md for detailed investigation of this fundamental PyTorch limitation
+        self._compute_loss_compiled = torch.compile(self._compute_loss_components, mode='reduce-overhead', fullgraph=True)
     
     def collect_rollouts(
         self,
@@ -794,8 +791,17 @@ class PPO:
                         break
                 
                 # Apply optimizer step only if KL check passed
-                # This is compiled for maximum performance (includes backward, clip_grad, step)
-                self._apply_optimizer_step_compiled(loss, self.max_grad_norm)
+                # NOTE: backward() is NOT traceable by Dynamo - it must remain eager
+                # Only forward pass and loss computation use fullgraph=True
+                self.optimizer.zero_grad()
+                loss.backward()
+                
+                # Gradient clipping (eager)
+                if self.max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                
+                # Fused Adam step (runs optimized CUDA kernel)
+                self.optimizer.step()
             
             
             if not continue_training:

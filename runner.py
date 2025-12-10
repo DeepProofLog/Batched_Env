@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 700000,
+        'timesteps_train': 2000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,

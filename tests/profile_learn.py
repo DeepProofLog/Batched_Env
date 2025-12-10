@@ -374,7 +374,7 @@ def main():
                         help='Steps per rollout')
     parser.add_argument('--n-epochs', type=int, default=10,
                         help='PPO epochs per update')
-    parser.add_argument('--batch-size', type=int, default=2048,
+    parser.add_argument('--batch-size', type=int, default=1024,
                         help='PPO minibatch size')
     parser.add_argument('--compile', default=True,
                         help='Enable torch.compile')
@@ -383,6 +383,18 @@ def main():
     args = parser.parse_args()
     
     # Configuration matching runner.py defaults
+    # IMPORTANT: batch_size MUST divide evenly into n_steps * batch_size_env
+    # to avoid variable-sized batches that cause CUDA graph recompilation
+    rollout_buffer_size = args.n_steps * args.batch_size_env
+    if rollout_buffer_size % args.batch_size != 0:
+        # Adjust batch_size to be a divisor
+        # Find largest divisor <= original batch_size
+        original_batch_size = args.batch_size
+        while rollout_buffer_size % args.batch_size != 0 and args.batch_size > 1:
+            args.batch_size -= 1
+        print(f"[WARNING] Adjusted batch_size from {original_batch_size} to {args.batch_size} "
+              f"to evenly divide buffer_size ({rollout_buffer_size})")
+    
     config = SimpleNamespace(
         dataset=args.dataset,
         data_path='./data/',

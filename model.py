@@ -254,13 +254,10 @@ class SharedPolicyValueNetwork(nn.Module):
         self.policy_head = PolicyHead(hidden_dim, embed_dim)
         self.value_head = ValueHead(hidden_dim)
         self._use_amp = use_amp        
-        # Apply torch.compile with bucketing strategy for maximum performance
-        if compile_model:
-            # Use reduce-overhead (CUDA Graphs) to eliminate the massive kernel launch bottleneck
-            self.forward_policy = torch.compile(self.forward_policy, mode='reduce-overhead')
-            self.forward_value = torch.compile(self.forward_value, mode='reduce-overhead')
-            self.forward_joint = torch.compile(self.forward_joint, mode='reduce-overhead')
-            print(f"[Model] torch.compile applied to forward_policy, forward_value, and forward_joint (mode='reduce-overhead')")
+        # NOTE: Inner functions (forward_policy, forward_value, forward_joint) are NOT compiled here
+        # because ActorCriticPolicy.forward() is compiled with fullgraph=True, which captures
+        # the entire end-to-end graph including these inner functions. Compiling both inner
+        # and outer functions causes nested CUDA graph replays (443 vs ~288), hurting performance.
             
     def _encode_with_shared_body(self, embeddings: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Process embeddings through the shared backbone.
@@ -462,10 +459,8 @@ class ActorCriticPolicy(nn.Module):
     ):
         super().__init__()
         
-        if kwargs.get('compile_model', False):
-             # Use reduce-overhead to match the shared network optimization
-             self.evaluate_actions = torch.compile(self.evaluate_actions, mode='reduce-overhead')
-             print(f"[Policy] torch.compile applied to evaluate_actions (mode='reduce-overhead')")
+        # NOTE: Policy compilation is handled at the PPO level via torch.compile(policy)
+        # This creates a single unified graph instead of multiple nested graphs
         
         self.embed_dim = embed_dim
         self.device = device if device is not None else torch.device('cpu')
