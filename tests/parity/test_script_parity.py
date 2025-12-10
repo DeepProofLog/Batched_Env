@@ -1,12 +1,12 @@
 """
 Script Parity Tests (In-Process).
 
-Tests verifying that train_new.py and sb3/sb3_train_new.py produce IDENTICAL results
+Tests verifying that train_parity.py and sb3/sb3_train_parity.py produce IDENTICAL results
 when run with the same configuration.
 
 This test validates end-to-end parity by:
-1. Running sb3_train_new.run_experiment() 
-2. Running train_new.run_experiment()  
+1. Running sb3_train_parity.run_experiment() 
+2. Running train_parity.run_experiment()  
 3. Comparing comprehensive metrics (MRR, Hits@1/3/10, checksums, etc.)
 
 Usage:
@@ -43,12 +43,12 @@ import numpy as np
 from parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 # Import train functions directly from train files - must be after setting env vars
-from train_new import run_experiment as tensor_run_experiment, TrainParityConfig as TensorConfig
-from sb3.sb3_train_new import run_experiment as sb3_run_experiment, TrainParityConfig as SB3Config
+from train_parity import run_experiment as tensor_run_experiment, TrainParityConfig as TensorConfig
+from sb3.sb3_train_parity import run_experiment as sb3_run_experiment, TrainParityConfig as SB3Config
 
 
 def parity_config_to_train_config(parity_config: ParityConfig) -> TensorConfig:
-    """Convert ParityConfig to TrainParityConfig for train_new.py."""
+    """Convert ParityConfig to TrainParityConfig for train_parity.py."""
     return TensorConfig(
         dataset=parity_config.dataset,
         data_path=parity_config.data_path,
@@ -161,7 +161,7 @@ def test_script_parity(config: ParityConfig = None):
     if config is None:
         config = ParityConfig()
     
-    # Convert to train_new config format
+    # Convert to train_parity config format
     train_config = parity_config_to_train_config(config)
     
     print("\n" + "=" * 80)

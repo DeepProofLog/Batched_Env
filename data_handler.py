@@ -219,6 +219,7 @@ class DataHandler:
         train_limit = None if filter_queries_by_rules else n_train_queries
         if os.path.exists(train_path):
             self._load_queries_from_file(train_path, 'train', train_limit, train_depth, load_depth_info=load_depth_info)
+        initial_train_count = len(self.train_queries)
         if os.path.exists(valid_path):
             self._load_queries_from_file(valid_path, 'valid', n_eval_queries, valid_depth, load_depth_info=load_depth_info)
         if os.path.exists(test_path):
@@ -237,6 +238,8 @@ class DataHandler:
         # Load domain mapping for countries/ablation datasets
         if corruption_mode and ('countries' in dataset_name or 'ablation' in dataset_name):
             self._load_domain_mapping(dataset_path)
+
+        print(f"Queries loaded - Train: {len(self.train_queries)}/{initial_train_count}, Valid: {len(self.valid_queries)}, Test: {len(self.test_queries)}")
         
         # Discover vocabulary
         self._discover_vocabulary()
@@ -497,8 +500,8 @@ class DataHandler:
                 filtered_labels.append(self.train_labels[i] if i < len(self.train_labels) else 1)
         
         removed = len(self.train_queries) - len(filtered_queries)
-        if removed > 0:
-            print(f"Filtered {removed} training queries whose predicates don't match rule heads")
+        if removed > 0 and self.train_queries:
+            print(f"Number of train queries excluded: {removed}. Ratio excluded: {round(removed/len(self.train_queries),3)}")
             self.train_queries = filtered_queries
             self.train_queries_str = filtered_queries_str
             self.train_depths = filtered_depths

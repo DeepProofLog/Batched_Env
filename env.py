@@ -661,9 +661,12 @@ class BatchedEnv(EnvBase):
         # In eval mode, don't clear inactive (done) envs - they need to keep their terminal state with valid actions
         # In train mode, clearing is OK because envs will be reset immediately
         should_clear_inactive = (self.mode == 'train')
+        
+        # TRACE: Before compute
+        # print(f"[TRACE] Step start Label[0]={self.current_labels[0].item()}") # Assuming captured at top
+        
         self._compute_derived_states(active_mask=active_mask_for_derived, clear_inactive=should_clear_inactive)
 
-        # NOW check termination AFTER skip_unary has been applied
         if self.verbose >= 2:
             self.debug_helper._log(2, f"[_step] Before _get_done_reward, current_queries[0,0]: {self.current_queries[0, 0]}")
         rewards, terminated, truncated, is_success = self._get_done_reward()  # [B,1], [B,1], [B,1], [B,1]
@@ -693,6 +696,18 @@ class BatchedEnv(EnvBase):
         if self.debug_config.is_enabled('env') and self.debug_config.debug_env_action_spaces:
             self._debug_action_space(obs, dones, is_success)
         
+        # Clone label, query_depth, and length ONLY when episodes end to prevent mutation by subsequent reset().
+        # When dones.any() is False, no reset happens so no clone needed.
+        # This avoids unnecessary memory overhead while preserving episode info for callbacks.
+        if dones.any():
+            label_val = self.current_labels.clone()
+            depth_val = self.proof_depths.clone()
+            length_val = self.current_depths.clone()
+        else:
+            label_val = self.current_labels
+            depth_val = self.proof_depths
+            length_val = self.current_depths
+        
         td = TensorDict(
             {
                 **obs, 
@@ -700,9 +715,9 @@ class BatchedEnv(EnvBase):
                 "done": dones, 
                 "terminated": terminated, 
                 "truncated": truncated,
-                "label": self.current_labels,
-                "query_depth": self.proof_depths,
-                "length": self.current_depths
+                "label": label_val,
+                "query_depth": depth_val,
+                "length": length_val
             },
             batch_size=self.batch_size, device=self._device
         )
@@ -909,19 +924,30 @@ class BatchedEnv(EnvBase):
                 counts[inactive_idx] = 0
 
         # Force a terminal action for depth-capped rows
+        # IMPORTANT: Only apply to non-terminal rows. Terminal states (True/False) should NOT
+        # be overwritten with Endf - they already have their terminal state as derived.
         if self.max_depth is not None:
-            depth_mask = active_mask & (self.current_depths >= self.max_depth)
-            if depth_mask.any():
-                rows = torch.arange(active_mask.shape[0], device=self._device)[depth_mask]
-                batched_derived[rows] = self.padding_idx
-                if self.end_proof_action and self.end_pred_idx is not None:
-                    end_state = self.unification_engine.get_end_state()
-                    expanded = self._build_single_atom_state(rows.shape[0], end_state)
-                else:
+            # First identify rows that hit depth cap
+            depth_capped = active_mask & (self.current_depths >= self.max_depth)
+            
+            if depth_capped.any():
+                # Exclude rows that are already terminal (True/False/Endf)
+                # These have already been handled by create_terminal_derived above
+                current_preds = self.current_queries[:, 0, 0]  # First predicate of current state
+                already_terminal = self.unification_engine.is_terminal_pred(current_preds)
+                
+                # Only force terminal action on non-terminal rows that hit depth cap
+                depth_mask = depth_capped & ~already_terminal
+                
+                if depth_mask.any():
+                    rows = torch.arange(active_mask.shape[0], device=self._device)[depth_mask]
+                    batched_derived[rows] = self.padding_idx
+                    # Always use False() for depth-capped rows, NOT Endf()
+                    # Endf is an agent-chosen action (to give up) and should never be forced
                     false_state = self.unification_engine.get_false_state()
                     expanded = self._build_single_atom_state(rows.shape[0], false_state)
-                batched_derived[rows, 0] = expanded
-                counts[rows] = 1
+                    batched_derived[rows, 0] = expanded
+                    counts[rows] = 1
 
         # Safety check: any active env with zero states is a bug since _postprocess should inject FALSE
         need_fallback = active_mask & (counts == 0)

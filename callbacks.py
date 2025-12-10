@@ -313,12 +313,12 @@ class DetailedMetricsCollector:
         if all_rewards:
             metrics["ep_rew_mean"] = float(np.mean(all_rewards))
         if all_rewards:
-            metrics["reward_overall"] = _format_stat_string(
+            metrics["reward"] = _format_stat_string(
                 np.mean(all_rewards), np.std(all_rewards), len(all_rewards)
             )
         if all_lengths:
             metrics["ep_len_mean"] = float(np.mean(all_lengths))
-            metrics["length mean +/- std"] = _format_stat_string(
+            metrics["len"] = _format_stat_string(
                 np.mean(all_lengths), np.std(all_lengths), len(all_lengths)
             )
         if all_successes:
@@ -356,12 +356,9 @@ class DetailedMetricsCollector:
                     np.mean(successes), np.std(successes), len(successes)
                 )
             
-            # Reward by label (with both naming conventions)
+            # Reward by label
             if rewards:
-                metrics[f"rwd_{label_str}"] = _format_stat_string(
-                    np.mean(rewards), np.std(rewards), len(rewards)
-                )
-                metrics[f"reward_label_{label_str}"] = _format_stat_string(
+                metrics[f"reward_{label_str}"] = _format_stat_string(
                     np.mean(rewards), np.std(rewards), len(rewards)
                 )
         
@@ -1050,7 +1047,7 @@ class MRREvaluationCallback(EvaluationCallback):
     def on_evaluation_start(self, iteration: int, global_step: int):
         """Called at start of evaluation - reset eval episode buffer."""
         if self.verbose:
-            print(f"[MRREvaluationCallback] Starting evaluation at iter {iteration}, step {global_step}. Resetting collector.")
+            print(f"[MRREvaluationCallback] Starting evaluation of {len(self.eval_data)} queries, at iter {iteration}, step {global_step}. Resetting collector.")
         self._eval_episode_buffer = []
         # Reset metrics collector for eval mode
         self.metrics_collector.reset()
@@ -1150,11 +1147,19 @@ class MRREvaluationCallback(EvaluationCallback):
             # Convert depths to tensor if available
             query_depths_tensor = None
             if self.eval_data_depths is not None:
-                # Handle None values in list (replace with -1)
-                depths_clean = [d if d is not None else -1 for d in self.eval_data_depths]
-                # Ensure device matches queries
-                device = self.eval_queries_tensor.device if self.eval_queries_tensor is not None else torch.device('cpu')
-                query_depths_tensor = torch.tensor(depths_clean, dtype=torch.long, device=device)
+                # Handle both list and tensor inputs
+                if isinstance(self.eval_data_depths, torch.Tensor):
+                    query_depths_tensor = self.eval_data_depths
+                    # Ensure device matches queries
+                    device = self.eval_queries_tensor.device if self.eval_queries_tensor is not None else torch.device('cpu')
+                    if query_depths_tensor.device != device:
+                        query_depths_tensor = query_depths_tensor.to(device)
+                else:
+                    # Handle None values in list (replace with -1)
+                    depths_clean = [d if d is not None else -1 for d in self.eval_data_depths]
+                    # Ensure device matches queries
+                    device = self.eval_queries_tensor.device if self.eval_queries_tensor is not None else torch.device('cpu')
+                    query_depths_tensor = torch.tensor(depths_clean, dtype=torch.long, device=device)
 
             # Do MRR evaluation (internally calls evaluate_policy which collects episode stats)
             metrics = eval_corruptions(
@@ -1167,24 +1172,16 @@ class MRREvaluationCallback(EvaluationCallback):
                 deterministic=True,
                 verbose=False,
                 info_callback=self._collect_eval_episode_info,  # Pass callback to collect stats
+                query_depths=query_depths_tensor,  # Pass depths for detailed logging
             )
             
-            # Transform keys to match expected format
+            # Transform keys to match expected format (aggregated across modes)
             transformed_metrics = {
-                'mrr_mean': metrics.get('MRR', 0.0),
-                'hits1_mean': metrics.get('Hits@1', 0.0),
-                'hits3_mean': metrics.get('Hits@3', 0.0),
-                'hits10_mean': metrics.get('Hits@10', 0.0),
+                '_mrr': metrics.get('MRR', 0.0),
+                'hits1': metrics.get('Hits@1', 0.0),
+                'hits3': metrics.get('Hits@3', 0.0),
+                'hits10': metrics.get('Hits@10', 0.0),
             }
-            
-            # Add per-mode metrics if available
-            if 'per_mode' in metrics:
-                per_mode = metrics['per_mode']
-                for mode, mode_metrics in per_mode.items():
-                    transformed_metrics[f'{mode}_mrr_mean'] = mode_metrics.get('MRR', 0.0)
-                    transformed_metrics[f'{mode}_hits1_mean'] = mode_metrics.get('Hits@1', 0.0)
-                    transformed_metrics[f'{mode}_hits3_mean'] = mode_metrics.get('Hits@3', 0.0)
-                    transformed_metrics[f'{mode}_hits10_mean'] = mode_metrics.get('Hits@10', 0.0)
             
             return transformed_metrics
         except Exception as e:

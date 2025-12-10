@@ -294,7 +294,20 @@ def evaluate_policy(
             td = next_td
 
         if info_callback is not None:
-            info_callback(step_td)
+            # Only report done for slots that actually finished this step
+            # (i.e., done AND were unfinished before this step)
+            # This prevents inactive slots from being counted as episodes every step
+            filtered_done = finished_this_step.clone()
+            
+            # Create filtered step_td with corrected done signals
+            callback_td = step_td.clone()
+            if "next" in callback_td.keys():
+                next_dict = callback_td.get("next")
+                next_dict.set("done", filtered_done.view_as(next_dict.get("done")))
+            else:
+                callback_td.set("done", filtered_done.view_as(callback_td.get("done")))
+            
+            info_callback(callback_td)
 
     if actor_was_training:
         actor.train()
@@ -420,29 +433,55 @@ def eval_corruptions(
         pos = queries[start:start + Q].to(device)
         pos_triples = pos.squeeze(1) if (A == 1 and D == 3) else pos
 
-        # Generate corruptions
+        # Generate corruptions using sampler.corrupt() directly
+        # For RNG parity: always call head then tail (matching sampler.default_mode='both' order)
+        # Then filter to only use what's needed based on corruption_modes
+        need_head = "head" in corruption_modes
+        need_tail = "tail" in corruption_modes
+        print(f"DEBUG: eval_corruptions called with n_corruptions={n_corruptions}, corruption_modes={corruption_modes}")
+        print(f"DEBUG: need_head={need_head}, need_tail={need_tail}")
+        
+        sampler_mode = getattr(sampler, 'default_mode', 'both')
+        
+        def extract_valid(result_tensor):
+            """Extract valid (non-zero) corruptions from each row."""
+            return [result_tensor[i][result_tensor[i].sum(-1) != 0] for i in range(result_tensor.shape[0])]
+        
+        head_corrs_list = [torch.empty((0, 3), dtype=pos_triples.dtype, device=device) for _ in range(Q)]
+        tail_corrs_list = [torch.empty((0, 3), dtype=pos_triples.dtype, device=device) for _ in range(Q)]
+        
         if n_corruptions == 0:
-            head_corrs_list = [torch.empty((0, 3), dtype=pos_triples.dtype, device=device) for _ in range(Q)]
-            tail_corrs_list = [torch.empty((0, 3), dtype=pos_triples.dtype, device=device) for _ in range(Q)]
-        elif hasattr(sampler, 'get_negatives_from_states_separate'):
-            head_corrs_list, tail_corrs_list = sampler.get_negatives_from_states_separate(
-                 pos_triples, num_negatives=n_corruptions, device=device
-            )
+            pass  # Keep empty lists
+        elif n_corruptions is None:
+            # Exhaustive mode: generate only required corruption types to respect domain constraints
+            if need_head:
+                head_result = sampler.corrupt(pos_triples, num_negatives=None, mode='head', device=device)
+                head_corrs_list = extract_valid(head_result)
+            
+            if need_tail:
+                tail_result = sampler.corrupt(pos_triples, num_negatives=None, mode='tail', device=device)
+                tail_corrs_list = extract_valid(tail_result)
         else:
-            if n_corruptions is None:
-                head_corrs_list, _ = sampler.corrupt_all(pos_triples, mode='head')
-                _, tail_corrs_list = sampler.corrupt_all(pos_triples, mode='tail')
-            else:
-                K = int(n_corruptions)
-                head_neg = sampler.corrupt(pos_triples, num_negatives=K, mode='head').to(device)
-                tail_neg = sampler.corrupt(pos_triples, num_negatives=K, mode='tail').to(device)
-                head_corrs_list = [head_neg[i] for i in range(Q)]
-                tail_corrs_list = [tail_neg[i] for i in range(Q)]
+            # Sampled mode: generate in same order as sampler.default_mode for RNG parity
+            K = int(n_corruptions)
+            
+            # Always generate in head-then-tail order if sampler_mode is 'both' for RNG parity
+            if sampler_mode in ('head', 'both'):
+                head_result = sampler.corrupt(pos_triples, num_negatives=K, mode='head', device=device)
+                head_corrs_list = extract_valid(head_result)
+            
+            if sampler_mode in ('tail', 'both'):
+                tail_result = sampler.corrupt(pos_triples, num_negatives=K, mode='tail', device=device)
+                tail_corrs_list = extract_valid(tail_result)
 
         for mode in corruption_modes:
             if verbose:
                 print(f"Processing mode {mode}")
             corrs_list = head_corrs_list if mode == "head" else tail_corrs_list
+            
+            # DEBUG: Print size of corruptions
+            if len(corrs_list) > 0:
+                 print(f"DEBUG: mode={mode}, corrs_list[0] shape={corrs_list[0].shape}, total corruptions for query 0: {len(corrs_list[0])}")
             
             # Prepare ragged lists
             ragged_lists = []
@@ -604,14 +643,14 @@ def eval_corruptions(
         def fmt(t):
             return _format_stat_string(t.mean().item(), t.std().item(), t.numel())
             
-        agg["length mean +/- std"] = fmt(all_lens)
+        agg["len"] = fmt(all_lens)
         agg["ep_len_mean"] = getattr(all_lens.mean(), 'item', lambda: 0.0)()
         
         pos_idxs = torch.nonzero(all_pos).view(-1)
         neg_idxs = torch.nonzero(~all_pos).view(-1)
         
         if pos_idxs.numel() > 0:
-            agg["reward_overall"] = fmt(all_rews[pos_idxs])
+            agg["reward"] = fmt(all_rews[pos_idxs])
             agg["ep_rew_mean"] = getattr(all_rews.mean(), 'item', lambda: 0.0)() 
             if all_succ is not None:
                 agg["success_rate"] = getattr(all_succ[pos_idxs].mean(), 'item', lambda: 0.0)()
@@ -619,7 +658,7 @@ def eval_corruptions(
         for lbl_bool, lbl_key, idxs in [(True, "pos", pos_idxs), (False, "neg", neg_idxs)]:
             if idxs.numel() > 0:
                 agg[f"len_{lbl_key}"] = fmt(all_lens[idxs])
-                agg[f"reward_label_{lbl_key}"] = fmt(all_rews[idxs])
+                agg[f"reward_{lbl_key}"] = fmt(all_rews[idxs])
                 if all_succ is not None:
                     agg[f"proven_{lbl_key}"] = fmt(all_succ[idxs])
 

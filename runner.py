@@ -19,7 +19,7 @@ from itertools import product
 from typing import List, Optional
 
 from utils.utils import FileLogger
-from train_new import main
+from train import main
 from utils.utils_config import (
     load_experiment_configs,
     parse_scalar,
@@ -32,7 +32,10 @@ if __name__ == "__main__":
 
     DEFAULT_CONFIG = {
         # General experiment configuration
-        # NOTE: These defaults are aligned with sb3_runner.py for parity testing
+        # Countries: (lr, entropy) decay true, else 5e-5 and 0.2, train_neg_ratio 4, envsxsteps=16x128. 
+        # family: (lr, entropy) decay false, 5e-5 and 0.05, train_neg_ratio 0 (nothing to learn from neg), envsxsteps=128x128, train depth check with {1,2,3,4}. 
+        # countries: 111(train queries)x5(pos+4 neg)x4(avg_len)=2,220 steps. set 16(envs)x128(steps)=2048. Recomended to cover 10%
+        # family: 20k(train queries)x5(pos+4 neg)x3(avg_len)=300k-->cover 30k steps= 128x12
 
         # Dataset params
         'dataset_name': 'countries_s3',
@@ -55,23 +58,23 @@ if __name__ == "__main__":
         'model_name': 'PPO',
         'ent_coef': 0.2,
         'clip_range': 0.2,
-        'n_epochs': 5, 
+        'n_epochs': 20, 
         'lr': 5e-5,
         'gamma': 0.99,
         'target_kl': 0.03,  # KL divergence limit for early stopping (aligned with SB3)
 
         # Training params
         'seed': [0],
-        'timesteps_train': 2000,
+        'timesteps_train': 1000000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
         'use_amp': True,
         'use_compile': True,
-        'n_steps': 128,
+        'n_steps': 32,
         'eval_freq': 1,  # In multiples of n_steps (matches SB3)
-        'batch_size_env': 128,
-        'batch_size_env_eval': 128,
+        'batch_size_env': 64,
+        'batch_size_env_eval': 64,
         'batch_size': 4096,  # Aligned with SB3 (was 1024)
 
         # Env params
@@ -259,7 +262,7 @@ if __name__ == "__main__":
 
 
 
-        # Corruption scheme - matches SB3's behavior (unconditional override based on dataset)
+        # Corruption scheme - unconditional override based on dataset
         namespace.corruption_scheme = ['head', 'tail']
         if 'countries' in namespace.dataset_name or 'ablation' in namespace.dataset_name:
             namespace.corruption_scheme = ['tail']

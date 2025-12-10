@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project version="4">
-  <component name="SshConfigs">
-    <configs>
-      <sshConfig host="pinac35.cs.kuleuven.be" id="2c4bf005-4e88-4dc3-bdc4-fe196c3b1ab6" keyPath="$USER_HOME$/.ssh/id_rsa" port="22" nameFormat="DESCRIPTIVE" username="ying" useOpenSSHConfig="true" />
-    </configs>
-  </component>
-</project>

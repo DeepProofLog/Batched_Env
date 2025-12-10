@@ -31,6 +31,33 @@ from utils.trace_utils import TraceRecorder
 from callbacks import print_formatted_metrics, DetailedMetricsCollector
 
 
+def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
+    """
+    Compute fraction of variance that y_pred explains about y_true.
+    
+    Returns 1 - Var[y_true - y_pred] / Var[y_true]
+    
+    Interpretation:
+        ev=0  =>  might as well have predicted zero
+        ev=1  =>  perfect prediction
+        ev<0  =>  worse than just predicting zero
+    
+    Args:
+        y_pred: Predicted values (values from rollout buffer)
+        y_true: True values (returns from rollout buffer)
+        
+    Returns:
+        Explained variance as a float
+    """
+    y_pred = y_pred.flatten()
+    y_true = y_true.flatten()
+    
+    var_y = y_true.var()
+    if var_y == 0:
+        return float('nan')
+    return float(1.0 - (y_true - y_pred).var() / var_y)
+
+
 class PPO:
     """
     Proximal Policy Optimization (PPO) algorithm.
@@ -577,11 +604,12 @@ class PPO:
                     # Helper to safely batch-extract
                     def extract_batch(key, tensor_val):
                         if tensor_val is not None and tensor_val.shape[0] >= self.n_envs:
-                            # It's a batch tensor, allow indexing
-                            return tensor_val[done_indices].tolist() 
+                            # Extract and flatten to 1D in a compile-friendly way
+                            # Using view(-1) instead of while loop for static reshape
+                            extracted = tensor_val[done_indices].view(-1)
+                            return extracted.tolist() 
                         elif tensor_val is not None:
                             # It might be a scalar or weird shape - fallback to list of None (safe)
-                            # Or repeat? Assuming batch tensor for now.
                             return None
                         return None
 
@@ -809,7 +837,7 @@ class PPO:
             
             # Print epoch stats (Sync ONCE per epoch)
             print(f"Epoch {epoch+1}/{self.n_epochs}. ")
-            if self.verbose and epoch == self.n_epochs - 1:
+            if self.verbose: # and epoch == self.n_epochs - 1:
                 # Compute means on GPU then sync
                    mean_pg = torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0
                    mean_val = torch.stack(value_losses_t).mean().item() if value_losses_t else 0.0
@@ -829,12 +857,17 @@ class PPO:
         
         # Return average metrics (Sync ONCE at end)
         with torch.no_grad():
+            # Compute explained variance from rollout buffer
+            # This is done OUTSIDE the compiled training loop for efficiency
+            ev = explained_variance(self.rollout_buffer.values, self.rollout_buffer.returns)
+            
             metrics = {
                 "policy_loss": torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0,
                 "value_loss": torch.stack(value_losses_t).mean().item() if value_losses_t else 0.0,
                 "entropy": -torch.stack(entropy_losses_t).mean().item() if entropy_losses_t else 0.0, # entropy_loss is already negative of entropy
                 "clip_fraction": torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0,
                 "approx_kl": torch.stack(approx_kl_divs_t).mean().item() if approx_kl_divs_t else 0.0,
+                "explained_var": ev,
             }
         
         if return_traces:

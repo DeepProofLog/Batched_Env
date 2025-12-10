@@ -276,7 +276,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         batch_size=config.n_envs,
         queries=train_queries_tensor,
         labels=torch.ones(len(train_queries), dtype=torch.long, device=device),
-        query_depths=torch.ones(len(train_queries), dtype=torch.long, device=device),
+        query_depths=torch.as_tensor(dh.train_depths, dtype=torch.long, device=device),
         unification_engine=engine,
         mode='train',
         max_depth=config.max_steps,
@@ -302,7 +302,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         batch_size=config.n_envs,
         queries=test_queries_tensor,
         labels=torch.ones(len(test_queries), dtype=torch.long, device=device),
-        query_depths=torch.ones(len(test_queries), dtype=torch.long, device=device),
+        query_depths=torch.as_tensor(dh.test_depths, dtype=torch.long, device=device),
         unification_engine=engine,
         mode='eval',
         max_depth=config.max_steps,
@@ -484,6 +484,7 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
         sampler=tensor_comp['sampler'],
         n_corruptions=config.n_corruptions,
         corruption_modes=tuple(config.corruption_scheme),  # Use config instead of hardcoded
+        query_depths=torch.as_tensor(tensor_comp['dh'].test_depths[:config.n_envs * 4], dtype=torch.long, device=tensor_comp['device']),
         verbose=False,
     )
     

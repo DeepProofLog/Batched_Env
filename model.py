@@ -355,8 +355,12 @@ class CustomNetwork(nn.Module):
     PPO trainer and other training components.
     """
     
-    def __init__(self, last_layer_dim_pi: int = 64, last_layer_dim_vf: int = 1, 
-                 embed_dim: int = 200, 
+    def __init__(self, last_layer_dim_pi: int = 64, 
+                 last_layer_dim_vf: int = 1, 
+                 embed_dim: int = 200,
+                 hidden_dim: int = 256,
+                 num_layers: int = 8, 
+                 dropout_prob: float = 0.0,
                  compile_model: bool = False, 
                  use_amp: bool = False):
         """Initialize the custom network.
@@ -373,6 +377,9 @@ class CustomNetwork(nn.Module):
         self.latent_dim_vf = last_layer_dim_vf
         self.shared_network = SharedPolicyValueNetwork(
             embed_dim, 
+            hidden_dim,
+            num_layers,
+            dropout_prob=0.0,
             compile_model=compile_model,
             use_amp=use_amp
         )
@@ -481,6 +488,9 @@ class ActorCriticPolicy(nn.Module):
             last_layer_dim_pi=self.features_extractor._features_dim,
             last_layer_dim_vf=1,
             embed_dim=getattr(self.features_extractor, "embed_dim", embed_dim),
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout_prob=dropout_prob,
             compile_model=kwargs.get('compile_model', False),
             use_amp=kwargs.get('use_amp', False),
         )

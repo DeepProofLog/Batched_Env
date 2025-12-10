@@ -747,6 +747,8 @@ class FileLogger:
             run_signature (str): Identifier present in each run filename.
             seeds (List[int]): List of seed integers used for runs.
         """
+        if not os.path.exists(self.folder_run):
+            os.makedirs(self.folder_run)
         all_files = os.listdir(self.folder_run)
         run_files = [file for file in all_files if run_signature in file]
 
@@ -766,8 +768,9 @@ class FileLogger:
                         data = self._parse_line(line)
                         results_time = {k: v for k, v in data.items() if k in 
                                         ['time_train', 'time_inference', 'time_ground_train', 'time_ground_valid', 'time_ground_test']}
-                        for name in results_time.keys():
-                            avg_results[name].append(results_time[name])
+                        for name, value in results_time.items():
+                            if isinstance(value, (int, float, np.number)):
+                                avg_results[name].append(value)
                         seed = data['seed_run_i']
                         if seed in seeds:
                             seeds_found.add(seed)
@@ -776,8 +779,9 @@ class FileLogger:
                         data = self._parse_line(line)
                         dataset = line.split(';')[0]
                         data = {f'{dataset}_{k}': v for k, v in data.items()}
-                        for name in data.keys():
-                            avg_results[name].append(data[name])
+                        for name, value in data.items():
+                            if isinstance(value, (int, float, np.number)):
+                                avg_results[name].append(value)
 
         len_keys = [len(v) for v in avg_results.values()]
         assert all([l == len_keys[0] for l in len_keys]), f'Not all the keys in avg_results have the same length! {[(k, len(v)) for k, v in avg_results.items()], avg_results}'                  
