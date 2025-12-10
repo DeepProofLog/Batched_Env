@@ -77,11 +77,11 @@ class TrainParityConfig:
     ent_coef: float = 0.2
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    target_kl: Optional[float] = 0.03  # KL divergence threshold for early stopping
+    target_kl: Optional[float] = None #0.03  # KL divergence threshold for early stopping
     total_timesteps: int = 120
     n_corruptions: int = 10
     corruption_scheme: List[str] = None  # ['head'], ['tail'], or ['head', 'tail']
-    sampler_default_mode: List[str] = "both"
+    sampler_default_mode: str = "both" # this allows the sampler to corrupt both head and tail by default. Can be overridden per-eval.
 
     def __post_init__(self):
         # Set default corruption_scheme based on dataset if not specified
@@ -145,10 +145,20 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
     im.build_fact_index(list(facts_set), deterministic=True)
     
     # Sampler
+    # Convert sampler_default_mode string to list format expected by corruption_scheme
+    if config.sampler_default_mode == 'both':
+        sampler_corruption_scheme = ['head', 'tail']
+    elif config.sampler_default_mode == 'head':
+        sampler_corruption_scheme = ['head']
+    elif config.sampler_default_mode == 'tail':
+        sampler_corruption_scheme = ['tail']
+    else:
+        sampler_corruption_scheme = ['head', 'tail']  # Default fallback
+    
     sampler = get_sb3_sampler(
         data_handler=dh,
         index_manager=im,
-        corruption_scheme=['head', 'tail'] if config.sampler_default_mode == 'both' else config.sampler_default_mode,
+        corruption_scheme=sampler_corruption_scheme,
         device=device,
         corruption_mode=True,
     )

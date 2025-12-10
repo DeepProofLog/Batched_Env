@@ -218,7 +218,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         use_amp=config.use_amp,
     ).to(device)
     
-    # PPO
+    # PPO - configured for maximum profiling performance
     ppo = TensorPPO(
         policy=policy,
         env=train_env,
@@ -230,9 +230,10 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         ent_coef=config.ent_coef,
         gamma=config.gamma,
         device=device,
-        verbose=0,  # Quiet for profiling
-        max_grad_norm=None,
+        verbose=False,  # Completely quiet for profiling
+        max_grad_norm=None,  # Disable grad clipping for profiling
         use_amp=config.use_amp,
+        target_kl=None,  # Disable KL checks for profiling
     )
     return ppo, policy, train_env, eval_env, sampler, dh, im
 

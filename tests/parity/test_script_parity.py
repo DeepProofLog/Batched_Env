@@ -78,6 +78,9 @@ def parity_config_to_train_config(parity_config: ParityConfig) -> TensorConfig:
         device=parity_config.device,
         verbose=parity_config.verbose,
         parity=parity_config.parity,
+        # Note: sampler_default_mode defaults to 'both' in TrainParityConfig,
+        # allowing the sampler to generate all corruption types.
+        # The actual corruption_scheme used during evaluation is set by __post_init__.
     )
 
 
