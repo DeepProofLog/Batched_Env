@@ -24,7 +24,6 @@ import torch
 import torch.nn as nn
 import numpy as np
 from collections import deque
-import pytest
 
 # Import seeding utilities (must be before other local imports to set up paths correctly)
 from seed_utils import ParityTestSeeder, ParityTestConfig, seed_all
