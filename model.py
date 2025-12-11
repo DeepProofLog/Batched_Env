@@ -236,7 +236,10 @@ class SharedPolicyValueNetwork(nn.Module):
     def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, 
                  num_layers: int = 8, dropout_prob: float = 0.0,
                  compile_model: bool = False,
-                 use_amp: bool = False):
+                 use_amp: bool = False,
+                 temperature: float = 1.0,
+                 use_l2_norm: bool = True,
+                 sqrt_scale: bool = False):
         """Initialize the policy-value network.
         
         Args:
@@ -246,10 +249,16 @@ class SharedPolicyValueNetwork(nn.Module):
             dropout_prob: Dropout probability (0.0 recommended).
             compile_model: Whether to apply torch.compile for speed.
             use_amp: Whether to use automatic mixed precision.
+            temperature: Temperature for softening logits.
+            use_l2_norm: If True, L2 normalize embeddings before dot product (cosine similarity).
+            sqrt_scale: If True, divide logits by sqrt(embed_dim) (attention-style scaling).
         """
         super().__init__()
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
+        self.temperature = temperature
+        self.use_l2_norm = use_l2_norm
+        self.sqrt_scale = sqrt_scale
         self.shared_body = SharedBody(embed_dim, hidden_dim, num_layers, dropout_prob)
         self.policy_head = PolicyHead(hidden_dim, embed_dim)
         self.value_head = ValueHead(hidden_dim)
@@ -277,32 +286,42 @@ class SharedPolicyValueNetwork(nn.Module):
         """Compute action logits via observation-action similarity.
         
         Args:
-            obs_embeddings: Observation embeddings [B, 1, A, E].
-            action_embeddings: Action embeddings [B, S, A, E].
+            obs_embeddings: Observation embeddings [B, 1, E] (after state aggregation).
+            action_embeddings: Action embeddings [B, S, E] (after state aggregation).
             action_mask: Boolean mask for valid actions [B, S].
             
         Returns:
             Action logits with invalid actions masked to -inf [B, S].
         """
         # Encode observations and actions through shared body + policy head
-        shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, A, H]
-        encoded_obs = self.policy_head(shared_obs)  # [B, 1, A, E]
+        shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, H]
+        encoded_obs = self.policy_head(shared_obs)  # [B, 1, E]
         # action_mask is [B, S], embeddings are [B, S, E] (aggregated over atoms)
         # So mask matches directly. NO expansion needed.
         
         shared_actions = self._encode_with_shared_body(action_embeddings, mask=action_mask)  # [B, S, H]
         encoded_actions = self.policy_head(shared_actions)  # [B, S, E]
         
-        # Compute dot-product similarity for action selection
+        # Optional L2 normalization for cosine similarity
+        if self.use_l2_norm:
+            encoded_obs = F.normalize(encoded_obs, dim=-1)  # [B, 1, E], ||v||=1
+            encoded_actions = F.normalize(encoded_actions, dim=-1)  # [B, S, E], ||v||=1
+        
+        # Compute dot product
         logits = torch.matmul(encoded_obs, encoded_actions.transpose(-2, -1)).squeeze(-2)  # [B, S]
         
-        # Scale logits by embedding dimension for stable gradients
-        logits = logits / (obs_embeddings.shape[-1] ** 0.5)
+        # Optional sqrt(E) scaling (attention-style)
+        if self.sqrt_scale:
+            logits = logits / (obs_embeddings.shape[-1] ** 0.5)
+        
+        # Apply temperature scaling to control entropy
+        logits = logits / self.temperature
         
         # Mask invalid actions
         logits = logits.masked_fill(~action_mask.bool(), float("-inf"))  # [B, S]
         
         return logits
+
 
     def forward_value(self, obs_embeddings: torch.Tensor) -> torch.Tensor:
         """Compute state value estimate.
@@ -322,29 +341,41 @@ class SharedPolicyValueNetwork(nn.Module):
         """Compute both action logits and value estimate sharing the body.
         
         Args:
-            obs_embeddings: Observation embeddings.
-            action_embeddings: Action embeddings.
-            action_mask: Action mask.
+            obs_embeddings: Observation embeddings [B, 1, E].
+            action_embeddings: Action embeddings [B, S, E].
+            action_mask: Action mask [B, S].
             
         Returns:
              logits, values
         """
         # Encode observations ONCE
-        shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, A, H]
+        shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, H]
         
         # Policy Head path
-        encoded_obs = self.policy_head(shared_obs)  # [B, 1, A, E]
+        encoded_obs = self.policy_head(shared_obs)  # [B, 1, E]
         shared_actions = self._encode_with_shared_body(action_embeddings, mask=action_mask)
         encoded_actions = self.policy_head(shared_actions)
         
+        # Optional L2 normalization for cosine similarity
+        if self.use_l2_norm:
+            encoded_obs = F.normalize(encoded_obs, dim=-1)
+            encoded_actions = F.normalize(encoded_actions, dim=-1)
+        
+        # Compute dot product
         logits = torch.matmul(encoded_obs, encoded_actions.transpose(-2, -1)).squeeze(-2)
-        logits = logits / (obs_embeddings.shape[-1] ** 0.5)
+        
+        # Optional sqrt(E) scaling (attention-style)
+        if self.sqrt_scale:
+            logits = logits / (obs_embeddings.shape[-1] ** 0.5)
+        
+        logits = logits / self.temperature
         logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
         
         # Value Head path (reusing shared_obs)
         value = self.value_head(shared_obs)
         
         return logits, value
+
 
 
 class CustomNetwork(nn.Module):
@@ -362,7 +393,10 @@ class CustomNetwork(nn.Module):
                  num_layers: int = 8, 
                  dropout_prob: float = 0.0,
                  compile_model: bool = False, 
-                 use_amp: bool = False):
+                 use_amp: bool = False,
+                 temperature: float = 1.0,
+                 use_l2_norm: bool = True,
+                 sqrt_scale: bool = False):
         """Initialize the custom network.
         
         Args:
@@ -371,6 +405,9 @@ class CustomNetwork(nn.Module):
             embed_dim: Embedding dimension for the shared network.
             compile_model: Whether to apply torch.compile.
             use_amp: Whether to use AMP.
+            temperature: Temperature for policy softmax. Higher = more exploration.
+            use_l2_norm: If True, L2 normalize embeddings (cosine similarity).
+            sqrt_scale: If True, divide logits by sqrt(embed_dim).
         """
         super().__init__()
         self.latent_dim_pi = last_layer_dim_pi
@@ -381,8 +418,12 @@ class CustomNetwork(nn.Module):
             num_layers,
             dropout_prob=0.0,
             compile_model=compile_model,
-            use_amp=use_amp
+            use_amp=use_amp,
+            temperature=temperature,
+            use_l2_norm=use_l2_norm,
+            sqrt_scale=sqrt_scale
         )
+
 
     def forward(self, features: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
                 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -462,6 +503,7 @@ class ActorCriticPolicy(nn.Module):
         share_features_extractor: bool = True,
         init_seed: Optional[int] = None,
         action_dim: Optional[int] = None,
+        parity: bool = False,  # If True, use SB3-identical initialization for parity testing
         **kwargs
     ):
         super().__init__()
@@ -493,7 +535,11 @@ class ActorCriticPolicy(nn.Module):
             dropout_prob=dropout_prob,
             compile_model=kwargs.get('compile_model', False),
             use_amp=kwargs.get('use_amp', False),
+            temperature=kwargs.get('temperature', 1.0),  # Temperature for entropy control
+            use_l2_norm=kwargs.get('use_l2_norm', True),  # L2 norm for cosine similarity
+            sqrt_scale=kwargs.get('sqrt_scale', False),  # sqrt(E) attention scaling
         )
+
         # Dummy action/value heads created during _build in SB3
         latent_pi = getattr(self.mlp_extractor, "latent_dim_pi", 1)
         latent_vf = getattr(self.mlp_extractor, "latent_dim_vf", 1)
@@ -514,6 +560,16 @@ class ActorCriticPolicy(nn.Module):
             module_gains[self.vf_features_extractor] = math.sqrt(2.0)
         for module, gain in module_gains.items():
             module.apply(partial(BasePolicy.init_weights, gain=gain))
+        
+        # Custom initialization for better training stability (skip in parity mode)
+        if not parity:
+            # IMPORTANT: Re-initialize the value_head with gain=1.0 (matching SB3's value_net concept)
+            # The mlp_extractor was initialized with gain=sqrt(2), but value networks should use gain=1.0
+            # to produce smaller initial values and thus smaller gradients
+            value_head = self.mlp_extractor.shared_network.value_head
+            value_head.apply(partial(BasePolicy.init_weights, gain=1.0))
+            # NOTE: We don't re-initialize the policy_head because it's part of the shared network
+            # and its output scaling is handled by the logit scaling in forward_policy()
 
         # Action distribution - use fast version that skips Categorical validation
         self.action_dist = CategoricalDistribution(action_dim)

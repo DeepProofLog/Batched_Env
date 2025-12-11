@@ -54,6 +54,11 @@ from callbacks import (
     ScalarAnnealingCallback, 
     AnnealingTarget
 )
+try:
+    from training_stability import MRRTracker
+    MRR_TRACKER_AVAILABLE = True
+except ImportError:
+    MRR_TRACKER_AVAILABLE = False
 
 
 def _set_seeds(seed: int) -> None:
@@ -498,7 +503,12 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         num_layers=8,
         dropout_prob=0.0,
         device=device,
+        temperature=getattr(args, 'temperature', 1.0),  # Temperature for entropy control
+        use_l2_norm=getattr(args, 'use_l2_norm', True),  # L2 norm for cosine similarity
+        sqrt_scale=getattr(args, 'sqrt_scale', False),  # sqrt(E) attention scaling
+        # parity=False is default - uses custom value_head initialization for better training stability
     ).to(device)
+
     
     
     # Get schedule parameters if available
@@ -569,9 +579,10 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         device=device,
         verbose=1,
         seed=args.seed_run_i,  # For RNG synchronization between rollouts
-        use_amp=True,
+        use_amp=getattr(args, 'use_amp', True),
         total_timesteps=args.timesteps_train,  # For schedule computation
-
+        use_compile=getattr(args, 'use_compile', True),
+        debug_ppo=getattr(args, 'debug_ppo', False),  # Enable detailed training diagnostics
     )
     
     # NOTE: Initial evaluation commented out for SB3 parity.
@@ -579,27 +590,27 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     # but SB3's EvalCallback runs AFTER the first rollout. This causes rollout
     # data divergence. For exact parity, skip initial eval.
     # 
-    # # Step 6.5: Initial evaluation with untrained model (matching sb3 eval callback at step 0)
-    # print("\n" + "="*60)
-    # print("Initial evaluation (untrained model)")
-    # print("="*60)
-    # policy.eval()
-    # initial_eval_results = tensor_eval_corruptions(
-    #     actor=policy,
-    #     env=eval_env,
-    #     queries=torch.stack([
-    #         index_manager.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-    #         for q in dh.valid_queries[:getattr(args, 'n_eval_queries', 10) or 10]
-    #     ]),
-    #     sampler=sampler,
-    #     n_corruptions=getattr(args, 'eval_neg_samples', 10) or 10,
-    #     corruption_modes=tuple(getattr(args, 'corruption_scheme', ['tail'])),
-    #     verbose=0,
-    # )
-    # print(f"Initial MRR: {initial_eval_results.get('MRR', 0.0):.4f}")
-    # print(f"Initial Hits@1: {initial_eval_results.get('Hits@1', 0.0):.4f}")
-    # print(f"Initial success_rate: {initial_eval_results.get('success_rate', 0.0):.4f}")
-    # print("="*60 + "\n")
+    # Step 6.5: Initial evaluation with untrained model (matching sb3 eval callback at step 0)
+    print("\n" + "="*60)
+    print("Initial evaluation (untrained model)")
+    print("="*60)
+    policy.eval()
+    initial_eval_results = tensor_eval_corruptions(
+        actor=policy,
+        env=eval_env,
+        queries=torch.stack([
+            index_manager.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            for q in dh.valid_queries[:getattr(args, 'n_eval_queries', 10) or 10]
+        ]),
+        sampler=sampler,
+        n_corruptions=getattr(args, 'eval_neg_samples', 10) or 10,
+        corruption_modes=tuple(getattr(args, 'corruption_scheme', ['tail'])),
+        verbose=0,
+    )
+    print(f"Initial MRR: {initial_eval_results.get('MRR', 0.0):.4f}")
+    print(f"Initial Hits@1: {initial_eval_results.get('Hits@1', 0.0):.4f}")
+    print(f"Initial success_rate: {initial_eval_results.get('success_rate', 0.0):.4f}")
+    print("="*60 + "\n")
     
     # Configure callbacks (PARITY)
     # We manually construct the callback system to match SB3's functionality
@@ -676,6 +687,9 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
             if isinstance(cb, ScalarAnnealingCallback):
                 callback_manager.add_callback(cb)
 
+        # Initialize MRR tracker for monitoring training progress
+        mrr_tracker = MRRTracker(patience=20) if MRR_TRACKER_AVAILABLE else None
+
         # Create wrapper for PPO.learn
         def ppo_callback(locals_, globals_):
             # Extract info needed by manager
@@ -688,6 +702,21 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
                     callback_manager.on_evaluation_start(iteration, total_steps)
                     mrr_metrics = callback_manager.eval_callback.evaluate_mrr(policy)
                     callback_manager.on_evaluation_end(iteration, total_steps, mrr_metrics)
+                    
+                    # Track MRR for monitoring
+                    if mrr_tracker is not None:
+                        current_mrr = mrr_metrics.get('_mrr', 0.0)
+                        if isinstance(current_mrr, str):
+                            try:
+                                current_mrr = float(current_mrr)
+                            except ValueError:
+                                current_mrr = 0.0
+                        track_result = mrr_tracker.update(current_mrr, iteration)
+                        
+                        # Log MRR tracking info
+                        if track_result['is_best']:
+                            print(f"[MRR] New best: {track_result['best_mrr']:.4f} at iteration {iteration}")
+                        print(f"[MRR] {mrr_tracker.get_summary()}")
 
             # Training metrics callback
             if callback_manager.train_callback:

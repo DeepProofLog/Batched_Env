@@ -29,14 +29,21 @@ from utils.utils_config import (
 )
 
 if __name__ == "__main__":
+    """
+        General experiment configuration
+        
+        countries: 
+        - (lr, entropy) decay true, else 5e-5 and 0.2, train_neg_ratio 4, envsxsteps=16x128. 
+        - adviced before: clip_range=0.2, lr=5e-5, ent_coef=0.2, n_epochs=10, batch_size_env=64, 
+        batch_size_env_eval=64, vf_coef=1.0, max_grad_norm=0.5, target_kl=0.02, gae_lambda=0.95, gamma=0.99, 
+        - 111(train queries)x5(pos+4 neg)x4(avg_len)=2,220 steps. set 16(envs)x128(steps)=2048. Recomended to cover 10%
+        
+        family: 
+        - (lr, entropy) decay false, 5e-5 and 0.05, train_neg_ratio 0 (nothing to learn from neg), envsxsteps=128x128, train depth check with {1,2,3,4}. 
+        - 20k(train queries)x5(pos+4 neg)x3(avg_len)=300k-->cover 30k steps= 128x12
 
+    """
     DEFAULT_CONFIG = {
-        # General experiment configuration
-        # Countries: (lr, entropy) decay true, else 5e-5 and 0.2, train_neg_ratio 4, envsxsteps=16x128. 
-        # family: (lr, entropy) decay false, 5e-5 and 0.05, train_neg_ratio 0 (nothing to learn from neg), envsxsteps=128x128, train depth check with {1,2,3,4}. 
-        # countries: 111(train queries)x5(pos+4 neg)x4(avg_len)=2,220 steps. set 16(envs)x128(steps)=2048. Recomended to cover 10%
-        # family: 20k(train queries)x5(pos+4 neg)x3(avg_len)=300k-->cover 30k steps= 128x12
-
         # Dataset params
         'dataset_name': 'countries_s3',
 
@@ -56,30 +63,30 @@ if __name__ == "__main__":
 
         # Model params
         'model_name': 'PPO',
-        'ent_coef': 0.05,  # Reduced from 0.2 - high ent_coef causes too much exploration
+        'ent_coef': 0.5,  # Base entropy coefficient (will be scheduled from higher value)
         'clip_range': 0.2,
-        'clip_range_vf': None,  # Value function clipping (None = no clipping)
-        'n_epochs': 10,  # Balanced epochs for stable learning
-        'lr': 5e-5,  # Conservative learning rate for stable value learning
+        'n_epochs': 5,  # REDUCED from 10 - prevents KL spikes without reducing LR
+        'lr': 3e-5,  # Keep learning rate - use other methods to control KL
         'gamma': 0.99,
         'gae_lambda': 0.95,  # GAE lambda for advantage estimation
-        'vf_coef': 1.0,  # Value function coefficient - increased from 0.5 for better value learning
+        'clip_range_vf': 0.5,  # Enable value function clipping for stability
+        'vf_coef': 2.0,  # INCREASED from 1.0 - fixes negative explained variance
         'max_grad_norm': 0.5,  # Gradient clipping for stability
-        'target_kl': 0.02,  # Moderate KL constraint
+        'target_kl': 0.07,  # INCREASED from 0.05 - allow more epochs before early stopping
 
         # Training params
         'seed': [0],
-        'timesteps_train': 1000000,
+        'timesteps_train': 7000000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
-        'use_amp': True,
-        'use_compile': True,
-        'n_steps': 128,  # Increased from 32 - more samples per rollout for stable learning
-        'eval_freq': 1,  # In multiples of n_steps (matches SB3)
-        'batch_size_env': 64,  # Number of parallel environments
-        'batch_size_env_eval': 64,
-        'batch_size': 2048,  # Reduced from 4096 - should be <= n_steps * batch_size_env (8192)
+        'use_amp': True,  # Enable AMP for performance
+        'use_compile': True,  # Enable torch.compile for performance
+        'batch_size_env': 128,  # Number of parallel environments
+        'batch_size_env_eval': 128,
+        'n_steps': 256,  # INCREASED from 128 - more samples = better return estimates
+        'batch_size': 8192,  # INCREASED from 4096 - larger batches = more stable gradients
+        'eval_freq': 4,  # In multiples of n_steps (matches SB3)
 
         # Env params
         'reward_type': 4,  # Aligned with SB3 (was 4)
@@ -89,9 +96,25 @@ if __name__ == "__main__":
         'max_depth': 20,
         'memory_pruning': True,
         'corruption_mode': 'dynamic',  # Aligned with SB3 (was True)
-        'corruption_scheme': ['head', 'tail'],
-        'canonical_action_order': False,
         'use_exact_memory': False,
+
+
+        # Entropy coefficient decay params
+        'ent_coef_decay': True,  # Enable entropy coefficient decay
+        'ent_coef_init_value': 0.5,  # Start with moderate exploration
+        'ent_coef_final_value': 0.01,  # End with low exploration
+        'ent_coef_start': 0.0,  # Fraction of training when decay starts
+        'ent_coef_end': 1.0,  # Fraction of training when decay ends
+        'ent_coef_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
+        
+        # Learning rate decay params
+        'lr_decay': True,  # Enable learning rate decay
+        'lr_init_value': 3e-5,  # Reduced from 5e-5 for more stable updates
+        'lr_final_value': 1e-6,  # Final value
+        'lr_start': 0.0,  # Fraction of training when decay starts
+        'lr_end': 1.0,  # Fraction of training when decay ends
+        'lr_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
+        
 
         # Embedding params
         'atom_embedder': 'transe',
@@ -101,6 +124,16 @@ if __name__ == "__main__":
         'padding_atoms': 6,
         'padding_states': -1,  # Aligned with SB3 (was 20), auto-computed from dataset
         'max_total_vars': 100,  # Aligned with SB3 (was 1000000)
+        
+        # Policy logit scaling options (can be combined)
+        # use_l2_norm: L2 normalize embeddings before dot product (cosine similarity ∈ [-1, +1])
+        # sqrt_scale: Divide logits by sqrt(embed_dim) (attention-style scaling)
+        # temperature: Lower = sharper distribution, Higher = more uniform
+
+        'use_l2_norm': False,  # DISABLED - was causing policy to be too uniform
+        'sqrt_scale': True,    # Enable sqrt(embed_dim) scaling for stable logits
+        'temperature': 1.0,    # Standard temperature
+
 
         # Other params
         'device': 'auto',  # Aligned with SB3 (was 'cuda:1')
@@ -129,22 +162,9 @@ if __name__ == "__main__":
         # Determinism settings
         'deterministic': False,  # Enable strict reproducibility (slower, set False for production)
         'sample_deterministic_per_env': False,  # Sample deterministic per environment (slower, set False for production)
-        
-        # Learning rate decay params
-        'lr_decay': True,  # Enable learning rate decay
-        'lr_init_value': 1e-4,  # Initial value - moderate start
-        'lr_final_value': 1e-6,  # Final value
-        'lr_start': 0.0,  # Fraction of training when decay starts
-        'lr_end': 1.0,  # Fraction of training when decay ends
-        'lr_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
-        
-        # Entropy coefficient decay params
-        'ent_coef_decay': True,  # Enable entropy coefficient decay
-        'ent_coef_init_value': 0.1,  # Initial value (start with more exploration)
-        'ent_coef_final_value': 0.01,  # Final value
-        'ent_coef_start': 0.0,  # Fraction of training when decay starts
-        'ent_coef_end': 1.0,  # Fraction of training when decay ends
-        'ent_coef_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
+        'canonical_action_order': False,
+
+
     }
 
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())

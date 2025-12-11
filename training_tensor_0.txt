@@ -1,0 +1,1920 @@
+(rl) castellanoontiv@MSI:~/Batched_env$ /home/castellanoontiv/miniconda3/envs/rl/bin/python /home/castellanoontiv/Batched_env/runner.py
+Using device: cuda
+
+
+============================================================
+Experiment 1/1
+============================================================
+
+
+============================================================
+Seed 0 in [0]
+============================================================
+
+Run vars: countries_s3-250-True-0.5-0.2-4-4-5-3e-05-128-torchrl 
+ {'atom_embedder': 'transe', 'atom_embedding_size': 250, 'batch_size': 8192, 'batch_size_env': 128, 'batch_size_env_eval': 128, 'canonical_action_order': False, 'clip_range': 0.2, 'clip_range_vf': 0.5, 'constant_embedding_size': 250, 'corruption_mode': 'dynamic', 'corruption_scheme': ['tail'], 'data_path': './data/', 'dataset_name': 'countries_s3', 'debug_ppo': False, 'depth_info': True, 'deterministic': False, 'device': 'cuda', 'end_proof_action': True, 'ent_coef': 0.5, 'ent_coef_decay': True, 'ent_coef_end': 1.0, 'ent_coef_final_value': 0.01, 'ent_coef_init_value': 0.5, 'ent_coef_start': 0.0, 'ent_coef_transform': 'linear', 'eval_best_metric': 'mrr', 'eval_freq': 1024, 'eval_neg_samples': None, 'extended_eval_info': True, 'facts_file': 'train.txt', 'gae_lambda': 0.95, 'gamma': 0.99, 'learn_embeddings': True, 'load_depth_info': True, 'load_model': False, 'logger_path': './runs/', 'lr': 3e-05, 'lr_decay': True, 'lr_end': 1.0, 'lr_final_value': 1e-06, 'lr_init_value': 3e-05, 'lr_start': 0.0, 'lr_transform': 'linear', 'max_depth': 20, 'max_grad_norm': 0.5, 'max_total_vars': 100, 'memory_pruning': True, 'min_gpu_memory_gb': 2.0, 'model_name': 'PPO', 'models_path': 'models/', 'n_epochs': 5, 'n_eval_queries': None, 'n_steps': 256, 'n_test_queries': None, 'n_train_queries': None, 'padding_atoms': 6, 'padding_states': 20, 'plot': False, 'plot_trajectories': False, 'predicate_embedding_size': 250, 'prover_verbose': False, 'restore_best_val_model': True, 'reward_type': 4, 'rollout_device': None, 'rules_file': 'rules.txt', 'run_signature': 'countries_s3-250-True-0.5-0.2-4-4-5-3e-05-128-torchrl', 'sample_deterministic_per_env': False, 'save_model': True, 'seed': [0], 'seed_run_i': 0, 'skip_unary_actions': True, 'sqrt_scale': True, 'state_embedder': 'mean', 'state_embedding_size': 250, 'target_kl': 0.07, 'temperature': 1.0, 'test_depth': None, 'test_file': 'test.txt', 'test_neg_samples': None, 'timesteps_train': 7000000, 'train_depth': None, 'train_file': 'train.txt', 'train_neg_ratio': 4, 'use_amp': True, 'use_compile': True, 'use_exact_memory': False, 'use_l2_norm': False, 'use_logger': True, 'use_wb': False, 'valid_depth': None, 'valid_file': 'valid.txt', 'verbose': False, 'verbose_cb': False, 'verbose_env': 0, 'verbose_prover': 0, 'vf_coef': 2.0, 'wb_path': './../wandb/'} 
+
+Device: cuda. CUDA available: True, Device count: 1
+Queries loaded - Train: 111/111, Valid: 24, Test: 24
+[Create Environments] Predicate Mapping: True=5, False=6, Endf=7
+LR Decay: 3e-05 -> 1e-06
+Entropy Decay: 0.5 -> 0.01
+[PPO] AMP enabled with bfloat16 (no GradScaler required)
+[PPO] Device sync optimization: _same_device=True (self.device=cuda:0, env.device=cuda:0)
+[PPO] Compiled self.policy with mode='reduce-overhead', fullgraph=True
+[Annealing] Set lr to 3e-05 (progress=0.000)
+[Annealing] Set ent_coef to 0.5 (progress=0.000)
+[Annealing] Set lr to 3e-05 (progress=0.000)
+[Annealing] Set ent_coef to 0.5 (progress=0.000)
+
+[PPO] Starting training for 7000000 timesteps
+[PPO] Rollout size: 256 steps x 128 envs = 32768 samples per rollout
+[Annealing] Set lr to 3e-05 (progress=0.000)
+[Annealing] Set ent_coef to 0.5 (progress=0.000)
+
+[PPO] ===== Iteration 1 (0/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 24.57s
+[PPO] Recent episodes: reward=-0.250, length=10.3
+[PPO] Rollout collected in 24.57s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.714                    |
+|    ep_rew_mean          | 0.027                    |
+|    fps                  | 1333                     |
+|    len                  | 8.714 +/- 7.95 (3653)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (100)     |
+|    len_d_2_pos          | 7.310 +/- 4.35 (113)     |
+|    len_d_3_pos          | 8.933 +/- 2.41 (15)      |
+|    len_d_4_pos          | 15.091 +/- 4.70 (11)     |
+|    len_d_unknown_neg    | 10.270 +/- 8.18 (2863)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (551)     |
+|    len_neg              | 10.270 +/- 8.18 (2863)   |
+|    len_pos              | 3.073 +/- 3.05 (790)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (100)     |
+|    proven_d_2_pos       | 0.867 +/- 0.34 (113)     |
+|    proven_d_3_pos       | 0.667 +/- 0.47 (15)      |
+|    proven_d_4_pos       | 0.636 +/- 0.48 (11)      |
+|    proven_d_unknown_neg | 0.072 +/- 0.26 (2863)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (551)     |
+|    proven_neg           | 0.072 +/- 0.26 (2863)    |
+|    proven_pos           | 0.272 +/- 0.45 (790)     |
+|    reward               | 0.027 +/- 0.56 (3653)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (100)     |
+|    reward_d_2_pos       | 0.735 +/- 0.68 (113)     |
+|    reward_d_3_pos       | 0.333 +/- 0.94 (15)      |
+|    reward_d_4_pos       | 0.273 +/- 0.96 (11)      |
+|    reward_d_unknown_neg | 0.160 +/- 0.32 (2863)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (551)    |
+|    reward_neg           | 0.160 +/- 0.32 (2863)    |
+|    reward_pos           | -0.456 +/- 0.89 (790)    |
+|    success_rate         | 0.116                    |
+|    total_timesteps      | 32768                    |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 4.95388, policy 0.00187, value 2.75945, entropy -0.03791, approx_kl 0.00362 clip_fraction 0.01761. 
+Epoch 2/5. 
+Losses: total 4.64716, policy 0.00314, value 2.55816, entropy -0.03968, approx_kl 0.01064 clip_fraction 0.02635. 
+Epoch 3/5. 
+Losses: total 4.43847, policy 0.00352, value 2.45219, entropy -0.04115, approx_kl 0.01457 clip_fraction 0.03038. 
+Epoch 4/5. 
+Losses: total 4.34992, policy 0.00361, value 2.38182, entropy -0.04247, approx_kl 0.01851 clip_fraction 0.03458. 
+Epoch 5/5. 
+Losses: total 4.16281, policy 0.00376, value 2.33062, entropy -0.04412, approx_kl 0.02058 clip_fraction 0.03823. 
+[PPO] Values: min=-4.656, max=6.719, mean=0.932, std=1.804
+[PPO] Returns: min=-2.792, max=5.836, mean=0.385, std=0.613
+[PPO] Explained variance: -6.6106
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.021                    |
+|    clip_fraction        | 0.038                    |
+|    entropy              | 0.044                    |
+|    explained_var        | -6.611                   |
+|    iterations           | 1                        |
+|    policy_loss          | 0.004                    |
+|    total_timesteps      | 32768                    |
+|    value_loss           | 2.331                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.51s
+[PPO] Metrics: policy_loss=0.0038, value_loss=2.3306, entropy=0.0441
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 1, step 32768. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+/home/castellanoontiv/Batched_env/model_eval.py:644: UserWarning: std(): degrees of freedom is <= 0. Correction should be strictly less than the reduction factor (input numel divided by output numel). (Triggered internally at /pytorch/aten/src/ATen/native/ReduceOps.cpp:1857.)
+  return _format_stat_string(t.mean().item(), t.std().item(), t.numel())
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.873                    |
+|    ep_len_mean          | 14.325                   |
+|    ep_rew_mean          | 0.833                    |
+|    hits1                | 0.833                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.833                    |
+|    len                  | 14.325 +/- 6.54 (120)    |
+|    len_d_1_pos          | 4.400 +/- 3.32 (10)      |
+|    len_d_2_pos          | 6.500 +/- 4.48 (12)      |
+|    len_d_3_pos          | 9.000 +/- 0.00 (1)       |
+|    len_d_4_pos          | 16.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.375 +/- 5.23 (96)     |
+|    len_neg              | 16.375 +/- 5.23 (96)     |
+|    len_pos              | 6.125 +/- 4.51 (24)      |
+|    proven_d_1_pos       | 0.800 +/- 0.40 (10)      |
+|    proven_d_2_pos       | 0.750 +/- 0.43 (12)      |
+|    proven_d_3_pos       | 0.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.042 +/- 0.20 (96)      |
+|    proven_neg           | 0.042 +/- 0.20 (96)      |
+|    proven_pos           | 0.750 +/- 0.43 (24)      |
+|    reward               | 0.833 +/- 0.55 (120)     |
+|    reward_d_1_pos       | 0.600 +/- 0.80 (10)      |
+|    reward_d_2_pos       | 0.500 +/- 0.87 (12)      |
+|    reward_d_3_pos       | -1.000 +/- 0.00 (1)      |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.917 +/- 0.40 (96)      |
+|    reward_neg           | 0.917 +/- 0.40 (96)      |
+|    reward_pos           | 0.500 +/- 0.87 (24)      |
+|    success_rate         | 0.183                    |
+|    total_timesteps      | 32768                    |
+----------------------------------------------------
+
+[MRR] New best: 0.8729 at iteration 1
+[MRR] MRR: current=0.873, best=0.873 (iter 1), trend=insufficient_data
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 891                      |
+|    iterations           | 1                        |
+|    total_timesteps      | 32768                    |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.986424685714286e-05 (progress=0.005)
+[Annealing] Set ent_coef to 0.49770624 (progress=0.005)
+
+[PPO] ===== Iteration 2 (32768/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 22.39s
+[PPO] Recent episodes: reward=0.125, length=6.7
+[PPO] Rollout collected in 22.39s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 9.235                    |
+|    ep_rew_mean          | 0.035                    |
+|    fps                  | 1463                     |
+|    len                  | 9.235 +/- 8.09 (3550)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (81)      |
+|    len_d_2_pos          | 7.606 +/- 4.15 (99)      |
+|    len_d_3_pos          | 8.857 +/- 2.01 (21)      |
+|    len_d_4_pos          | 17.000 +/- 4.12 (12)     |
+|    len_d_unknown_neg    | 10.729 +/- 8.24 (2842)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (495)     |
+|    len_neg              | 10.729 +/- 8.24 (2842)   |
+|    len_pos              | 3.242 +/- 3.30 (708)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (81)      |
+|    proven_d_2_pos       | 0.859 +/- 0.35 (99)      |
+|    proven_d_3_pos       | 0.762 +/- 0.43 (21)      |
+|    proven_d_4_pos       | 0.500 +/- 0.50 (12)      |
+|    proven_d_unknown_neg | 0.072 +/- 0.26 (2842)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (495)     |
+|    proven_neg           | 0.072 +/- 0.26 (2842)    |
+|    proven_pos           | 0.266 +/- 0.44 (708)     |
+|    reward               | 0.035 +/- 0.55 (3550)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (81)      |
+|    reward_d_2_pos       | 0.717 +/- 0.70 (99)      |
+|    reward_d_3_pos       | 0.524 +/- 0.85 (21)      |
+|    reward_d_4_pos       | 0.000 +/- 1.00 (12)      |
+|    reward_d_unknown_neg | 0.160 +/- 0.32 (2842)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (495)    |
+|    reward_neg           | 0.160 +/- 0.32 (2842)    |
+|    reward_pos           | -0.469 +/- 0.88 (708)    |
+|    success_rate         | 0.110                    |
+|    total_timesteps      | 65536                    |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 2.77459, policy 0.00343, value 1.47273, entropy -0.04871, approx_kl 0.00558 clip_fraction 0.02887. 
+Epoch 2/5. 
+Losses: total 2.25928, policy 0.00532, value 1.35631, entropy -0.04881, approx_kl 0.01619 clip_fraction 0.03622. 
+Epoch 3/5. 
+Losses: total 2.06911, policy 0.00687, value 1.26215, entropy -0.04944, approx_kl 0.02716 clip_fraction 0.04329. 
+Epoch 4/5. 
+Losses: total 1.91615, policy 0.00709, value 1.20001, entropy -0.05071, approx_kl 0.02704 clip_fraction 0.04690. 
+Epoch 5/5. 
+Losses: total 1.81909, policy 0.00687, value 1.15320, entropy -0.05173, approx_kl 0.02858 clip_fraction 0.04954. 
+[PPO] Values: min=-3.594, max=5.250, mean=0.609, std=1.245
+[PPO] Returns: min=-3.317, max=3.929, mean=0.283, std=0.455
+[PPO] Explained variance: -5.8145
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.029                    |
+|    clip_fraction        | 0.050                    |
+|    entropy              | 0.052                    |
+|    explained_var        | -5.814                   |
+|    iterations           | 2                        |
+|    policy_loss          | 0.007                    |
+|    total_timesteps      | 65536                    |
+|    value_loss           | 1.153                    |
+----------------------------------------------------
+
+[PPO] Training completed in 8.76s
+[PPO] Metrics: policy_loss=0.0069, value_loss=1.1532, entropy=0.0517
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 2, step 65536. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+/home/castellanoontiv/Batched_env/model_eval.py:644: UserWarning: std(): degrees of freedom is <= 0. Correction should be strictly less than the reduction factor (input numel divided by output numel). (Triggered internally at /pytorch/aten/src/ATen/native/ReduceOps.cpp:1857.)
+  return _format_stat_string(t.mean().item(), t.std().item(), t.numel())
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.856                    |
+|    ep_len_mean          | 14.633                   |
+|    ep_rew_mean          | 0.867                    |
+|    hits1                | 0.792                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.875                    |
+|    len                  | 14.633 +/- 6.62 (120)    |
+|    len_d_1_pos          | 4.200 +/- 3.16 (10)      |
+|    len_d_2_pos          | 6.500 +/- 4.48 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 20.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.729 +/- 5.17 (96)     |
+|    len_neg              | 16.729 +/- 5.17 (96)     |
+|    len_pos              | 6.250 +/- 4.94 (24)      |
+|    proven_d_1_pos       | 0.800 +/- 0.40 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.021 +/- 0.14 (96)      |
+|    proven_neg           | 0.021 +/- 0.14 (96)      |
+|    proven_pos           | 0.750 +/- 0.43 (24)      |
+|    reward               | 0.867 +/- 0.50 (120)     |
+|    reward_d_1_pos       | 0.600 +/- 0.80 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.958 +/- 0.29 (96)      |
+|    reward_neg           | 0.958 +/- 0.29 (96)      |
+|    reward_pos           | 0.500 +/- 0.87 (24)      |
+|    success_rate         | 0.167                    |
+|    total_timesteps      | 65536                    |
+----------------------------------------------------
+
+[MRR] MRR: current=0.856, best=0.873 (iter 1), trend=insufficient_data
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 902                      |
+|    iterations           | 2                        |
+|    total_timesteps      | 65536                    |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.9728493714285716e-05 (progress=0.009)
+[Annealing] Set ent_coef to 0.49541248 (progress=0.009)
+
+[PPO] ===== Iteration 3 (65536/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 23.19s
+[PPO] Recent episodes: reward=0.250, length=7.4
+[PPO] Rollout collected in 23.19s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.970                    |
+|    ep_rew_mean          | 0.042                    |
+|    fps                  | 1413                     |
+|    len                  | 8.970 +/- 8.04 (3646)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (105)     |
+|    len_d_2_pos          | 6.777 +/- 4.29 (103)     |
+|    len_d_3_pos          | 12.429 +/- 4.42 (14)     |
+|    len_d_4_pos          | 17.455 +/- 3.20 (11)     |
+|    len_d_unknown_neg    | 10.452 +/- 8.21 (2911)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (502)     |
+|    len_neg              | 10.452 +/- 8.21 (2911)   |
+|    len_pos              | 3.099 +/- 3.28 (735)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (105)     |
+|    proven_d_2_pos       | 0.854 +/- 0.35 (103)     |
+|    proven_d_3_pos       | 0.500 +/- 0.50 (14)      |
+|    proven_d_4_pos       | 0.545 +/- 0.50 (11)      |
+|    proven_d_unknown_neg | 0.069 +/- 0.25 (2911)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (502)     |
+|    proven_neg           | 0.069 +/- 0.25 (2911)    |
+|    proven_pos           | 0.280 +/- 0.45 (735)     |
+|    reward               | 0.042 +/- 0.55 (3646)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (105)     |
+|    reward_d_2_pos       | 0.709 +/- 0.71 (103)     |
+|    reward_d_3_pos       | 0.000 +/- 1.00 (14)      |
+|    reward_d_4_pos       | 0.091 +/- 1.00 (11)      |
+|    reward_d_unknown_neg | 0.164 +/- 0.32 (2911)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (502)    |
+|    reward_neg           | 0.164 +/- 0.32 (2911)    |
+|    reward_pos           | -0.439 +/- 0.90 (735)    |
+|    success_rate         | 0.112                    |
+|    total_timesteps      | 98304                    |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 1.69094, policy 0.00179, value 0.89947, entropy -0.05388, approx_kl 0.00412 clip_fraction 0.02771. 
+Epoch 2/5. 
+Losses: total 1.54257, policy 0.00296, value 0.84929, entropy -0.05389, approx_kl 0.01012 clip_fraction 0.03479. 
+Epoch 3/5. 
+Losses: total 1.28504, policy 0.00372, value 0.79370, entropy -0.05481, approx_kl 0.01399 clip_fraction 0.03996. 
+Epoch 4/5. 
+Losses: total 1.22852, policy 0.00388, value 0.75088, entropy -0.05564, approx_kl 0.01534 clip_fraction 0.04216. 
+Epoch 5/5. 
+Losses: total 1.16117, policy 0.00380, value 0.72014, entropy -0.05651, approx_kl 0.01616 clip_fraction 0.04411. 
+[PPO] Values: min=-2.906, max=4.156, mean=0.494, std=0.918
+[PPO] Returns: min=-1.784, max=2.829, mean=0.230, std=0.374
+[PPO] Explained variance: -5.1627
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.016                    |
+|    clip_fraction        | 0.044                    |
+|    entropy              | 0.057                    |
+|    explained_var        | -5.163                   |
+|    iterations           | 3                        |
+|    policy_loss          | 0.004                    |
+|    total_timesteps      | 98304                    |
+|    value_loss           | 0.720                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.15s
+[PPO] Metrics: policy_loss=0.0038, value_loss=0.7201, entropy=0.0565
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 3, step 98304. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.917                    |
+|    ep_len_mean          | 14.842                   |
+|    ep_rew_mean          | 0.867                    |
+|    hits1                | 0.875                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.917                    |
+|    len                  | 14.842 +/- 6.54 (120)    |
+|    len_d_1_pos          | 4.400 +/- 3.56 (10)      |
+|    len_d_2_pos          | 6.667 +/- 4.42 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 20.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.948 +/- 5.00 (96)     |
+|    len_neg              | 16.948 +/- 5.00 (96)     |
+|    len_pos              | 6.417 +/- 5.00 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.031 +/- 0.17 (96)      |
+|    proven_neg           | 0.031 +/- 0.17 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.867 +/- 0.50 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.938 +/- 0.35 (96)      |
+|    reward_neg           | 0.938 +/- 0.35 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.183                    |
+|    total_timesteps      | 98304                    |
+----------------------------------------------------
+
+[MRR] New best: 0.9167 at iteration 3
+[MRR] MRR: current=0.917, best=0.917 (iter 3), trend=insufficient_data
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 910                      |
+|    iterations           | 3                        |
+|    total_timesteps      | 98304                    |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.9592740571428574e-05 (progress=0.014)
+[Annealing] Set ent_coef to 0.49311872 (progress=0.014)
+
+[PPO] ===== Iteration 4 (98304/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 20.49s
+[PPO] Recent episodes: reward=0.000, length=14.7
+[PPO] Rollout collected in 20.49s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 9.017                    |
+|    ep_rew_mean          | 0.047                    |
+|    fps                  | 1598                     |
+|    len                  | 9.017 +/- 8.08 (3633)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (84)      |
+|    len_d_2_pos          | 6.897 +/- 4.48 (97)      |
+|    len_d_3_pos          | 10.095 +/- 2.99 (21)     |
+|    len_d_4_pos          | 18.250 +/- 2.54 (8)      |
+|    len_d_unknown_neg    | 10.489 +/- 8.25 (2912)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (511)     |
+|    len_neg              | 10.489 +/- 8.25 (2912)   |
+|    len_pos              | 3.075 +/- 3.15 (721)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (84)      |
+|    proven_d_2_pos       | 0.887 +/- 0.32 (97)      |
+|    proven_d_3_pos       | 0.905 +/- 0.29 (21)      |
+|    proven_d_4_pos       | 0.375 +/- 0.48 (8)       |
+|    proven_d_unknown_neg | 0.061 +/- 0.24 (2912)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (511)     |
+|    proven_neg           | 0.061 +/- 0.24 (2912)    |
+|    proven_pos           | 0.266 +/- 0.44 (721)     |
+|    reward               | 0.047 +/- 0.54 (3633)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (84)      |
+|    reward_d_2_pos       | 0.773 +/- 0.63 (97)      |
+|    reward_d_3_pos       | 0.810 +/- 0.59 (21)      |
+|    reward_d_4_pos       | -0.250 +/- 0.97 (8)      |
+|    reward_d_unknown_neg | 0.174 +/- 0.30 (2912)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (511)    |
+|    reward_neg           | 0.174 +/- 0.30 (2912)    |
+|    reward_pos           | -0.467 +/- 0.88 (721)    |
+|    success_rate         | 0.102                    |
+|    total_timesteps      | 131072                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.85897, policy 0.00231, value 0.46184, entropy -0.06041, approx_kl 0.00460 clip_fraction 0.03223. 
+Epoch 2/5. 
+Losses: total 0.71821, policy 0.00283, value 0.43291, entropy -0.06224, approx_kl 0.00876 clip_fraction 0.04056. 
+Epoch 3/5. 
+Losses: total 0.66156, policy 0.00320, value 0.40567, entropy -0.06335, approx_kl 0.01602 clip_fraction 0.04555. 
+Epoch 4/5. 
+Losses: total 0.59207, policy 0.00326, value 0.38410, entropy -0.06422, approx_kl 0.01810 clip_fraction 0.04771. 
+Epoch 5/5. 
+Losses: total 0.52721, policy 0.00335, value 0.36474, entropy -0.06497, approx_kl 0.01861 clip_fraction 0.04969. 
+[PPO] Values: min=-2.516, max=3.391, mean=0.340, std=0.643
+[PPO] Returns: min=-1.029, max=1.710, mean=0.212, std=0.327
+[PPO] Explained variance: -3.4137
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.019                    |
+|    clip_fraction        | 0.050                    |
+|    entropy              | 0.065                    |
+|    explained_var        | -3.414                   |
+|    iterations           | 4                        |
+|    policy_loss          | 0.003                    |
+|    total_timesteps      | 131072                   |
+|    value_loss           | 0.365                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.25s
+[PPO] Metrics: policy_loss=0.0033, value_loss=0.3647, entropy=0.0650
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 4, step 131072. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.917                    |
+|    ep_len_mean          | 14.725                   |
+|    ep_rew_mean          | 0.833                    |
+|    hits1                | 0.875                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.917                    |
+|    len                  | 14.725 +/- 6.46 (120)    |
+|    len_d_1_pos          | 4.600 +/- 3.69 (10)      |
+|    len_d_2_pos          | 6.833 +/- 4.36 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 20.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.760 +/- 5.02 (96)     |
+|    len_neg              | 16.760 +/- 5.02 (96)     |
+|    len_pos              | 6.583 +/- 4.98 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.052 +/- 0.22 (96)      |
+|    proven_neg           | 0.052 +/- 0.22 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.833 +/- 0.55 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.896 +/- 0.44 (96)      |
+|    reward_neg           | 0.896 +/- 0.44 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.200                    |
+|    total_timesteps      | 131072                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.917, best=0.917 (iter 3), trend=insufficient_data
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 934                      |
+|    iterations           | 4                        |
+|    total_timesteps      | 131072                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.9456987428571428e-05 (progress=0.019)
+[Annealing] Set ent_coef to 0.49082496 (progress=0.019)
+
+[PPO] ===== Iteration 5 (131072/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 20.29s
+[PPO] Recent episodes: reward=0.250, length=12.2
+[PPO] Rollout collected in 20.29s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.766                    |
+|    ep_rew_mean          | 0.051                    |
+|    fps                  | 1615                     |
+|    len                  | 8.766 +/- 7.91 (3755)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (103)     |
+|    len_d_2_pos          | 6.971 +/- 4.09 (102)     |
+|    len_d_3_pos          | 9.143 +/- 1.70 (21)      |
+|    len_d_4_pos          | 15.800 +/- 4.77 (10)     |
+|    len_d_unknown_neg    | 10.202 +/- 8.11 (3001)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (518)     |
+|    len_neg              | 10.202 +/- 8.11 (3001)   |
+|    len_pos              | 3.054 +/- 2.97 (754)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (103)     |
+|    proven_d_2_pos       | 0.882 +/- 0.32 (102)     |
+|    proven_d_3_pos       | 0.905 +/- 0.29 (21)      |
+|    proven_d_4_pos       | 0.500 +/- 0.50 (10)      |
+|    proven_d_unknown_neg | 0.064 +/- 0.24 (3001)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (518)     |
+|    proven_neg           | 0.064 +/- 0.24 (3001)    |
+|    proven_pos           | 0.288 +/- 0.45 (754)     |
+|    reward               | 0.051 +/- 0.54 (3755)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (103)     |
+|    reward_d_2_pos       | 0.765 +/- 0.64 (102)     |
+|    reward_d_3_pos       | 0.810 +/- 0.59 (21)      |
+|    reward_d_4_pos       | 0.000 +/- 1.00 (10)      |
+|    reward_d_unknown_neg | 0.170 +/- 0.31 (3001)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (518)    |
+|    reward_neg           | 0.170 +/- 0.31 (3001)    |
+|    reward_pos           | -0.424 +/- 0.91 (754)    |
+|    success_rate         | 0.109                    |
+|    total_timesteps      | 163840                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.43374, policy 0.00299, value 0.24307, entropy -0.06482, approx_kl 0.00764 clip_fraction 0.04395. 
+Epoch 2/5. 
+Losses: total 0.35507, policy 0.00336, value 0.22600, entropy -0.06588, approx_kl 0.01576 clip_fraction 0.05112. 
+Epoch 3/5. 
+Losses: total 0.32255, policy 0.00326, value 0.21181, entropy -0.06709, approx_kl 0.02217 clip_fraction 0.05390. 
+Epoch 4/5. 
+Losses: total 0.27163, policy 0.00321, value 0.19928, entropy -0.06803, approx_kl 0.03143 clip_fraction 0.05745. 
+Epoch 5/5. 
+Losses: total 0.25077, policy 0.00301, value 0.18849, entropy -0.06885, approx_kl 0.02771 clip_fraction 0.05966. 
+[PPO] Values: min=-2.391, max=2.734, mean=0.245, std=0.461
+[PPO] Returns: min=-1.015, max=1.728, mean=0.175, std=0.323
+[PPO] Explained variance: -1.4275
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.028                    |
+|    clip_fraction        | 0.060                    |
+|    entropy              | 0.069                    |
+|    explained_var        | -1.427                   |
+|    iterations           | 5                        |
+|    policy_loss          | 0.003                    |
+|    total_timesteps      | 163840                   |
+|    value_loss           | 0.188                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.12s
+[PPO] Metrics: policy_loss=0.0030, value_loss=0.1885, entropy=0.0689
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 5, step 163840. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.917                    |
+|    ep_len_mean          | 14.642                   |
+|    ep_rew_mean          | 0.867                    |
+|    hits1                | 0.875                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.917                    |
+|    len                  | 14.642 +/- 6.42 (120)    |
+|    len_d_1_pos          | 4.600 +/- 3.69 (10)      |
+|    len_d_2_pos          | 6.833 +/- 4.36 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.740 +/- 4.99 (96)     |
+|    len_neg              | 16.740 +/- 4.99 (96)     |
+|    len_pos              | 6.250 +/- 4.29 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.031 +/- 0.17 (96)      |
+|    proven_neg           | 0.031 +/- 0.17 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.867 +/- 0.50 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.938 +/- 0.35 (96)      |
+|    reward_neg           | 0.938 +/- 0.35 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.183                    |
+|    total_timesteps      | 163840                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.917, best=0.917 (iter 3), trend=insufficient_data
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 955                      |
+|    iterations           | 5                        |
+|    total_timesteps      | 163840                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.9321234285714285e-05 (progress=0.023)
+[Annealing] Set ent_coef to 0.4885312 (progress=0.023)
+
+[PPO] ===== Iteration 6 (163840/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 22.56s
+[PPO] Recent episodes: reward=-0.125, length=9.3
+[PPO] Rollout collected in 22.56s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.723                    |
+|    ep_rew_mean          | 0.038                    |
+|    fps                  | 1452                     |
+|    len                  | 8.723 +/- 7.97 (3728)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (79)      |
+|    len_d_2_pos          | 6.951 +/- 3.48 (103)     |
+|    len_d_3_pos          | 9.895 +/- 2.00 (19)      |
+|    len_d_4_pos          | 13.667 +/- 4.61 (12)     |
+|    len_d_unknown_neg    | 10.136 +/- 8.20 (2982)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (533)     |
+|    len_neg              | 10.136 +/- 8.20 (2982)   |
+|    len_pos              | 3.072 +/- 2.85 (746)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (79)      |
+|    proven_d_2_pos       | 0.932 +/- 0.25 (103)     |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (19)      |
+|    proven_d_4_pos       | 0.583 +/- 0.49 (12)      |
+|    proven_d_unknown_neg | 0.070 +/- 0.25 (2982)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (533)     |
+|    proven_neg           | 0.070 +/- 0.25 (2982)    |
+|    proven_pos           | 0.269 +/- 0.44 (746)     |
+|    reward               | 0.038 +/- 0.55 (3728)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (79)      |
+|    reward_d_2_pos       | 0.864 +/- 0.50 (103)     |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (19)      |
+|    reward_d_4_pos       | 0.167 +/- 0.99 (12)      |
+|    reward_d_unknown_neg | 0.163 +/- 0.32 (2982)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (533)    |
+|    reward_neg           | 0.163 +/- 0.32 (2982)    |
+|    reward_pos           | -0.461 +/- 0.89 (746)    |
+|    success_rate         | 0.110                    |
+|    total_timesteps      | 196608                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.26690, policy 0.00233, value 0.15200, entropy -0.07187, approx_kl 0.00674 clip_fraction 0.04041. 
+Epoch 2/5. 
+Losses: total 0.23340, policy 0.00282, value 0.14322, entropy -0.07355, approx_kl 0.01437 clip_fraction 0.05096. 
+Epoch 3/5. 
+Losses: total 0.20279, policy 0.00321, value 0.13594, entropy -0.07562, approx_kl 0.02677 clip_fraction 0.06064. 
+Epoch 4/5. 
+Losses: total 0.17225, policy 0.00354, value 0.12916, entropy -0.07715, approx_kl 0.03193 clip_fraction 0.06550. 
+Epoch 5/5. 
+Losses: total 0.15811, policy 0.00362, value 0.12303, entropy -0.07844, approx_kl 0.03071 clip_fraction 0.06814. 
+[PPO] Values: min=-2.250, max=2.453, mean=0.192, std=0.365
+[PPO] Returns: min=-1.031, max=1.386, mean=0.170, std=0.324
+[PPO] Explained variance: -0.5674
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.031                    |
+|    clip_fraction        | 0.068                    |
+|    entropy              | 0.078                    |
+|    explained_var        | -0.567                   |
+|    iterations           | 6                        |
+|    policy_loss          | 0.004                    |
+|    total_timesteps      | 196608                   |
+|    value_loss           | 0.123                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.27s
+[PPO] Metrics: policy_loss=0.0036, value_loss=0.1230, entropy=0.0784
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 6, step 196608. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.948                    |
+|    ep_len_mean          | 14.600                   |
+|    ep_rew_mean          | 0.883                    |
+|    hits1                | 0.917                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.958                    |
+|    len                  | 14.600 +/- 6.55 (120)    |
+|    len_d_1_pos          | 4.400 +/- 3.56 (10)      |
+|    len_d_2_pos          | 6.667 +/- 4.42 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.729 +/- 5.13 (96)     |
+|    len_neg              | 16.729 +/- 5.13 (96)     |
+|    len_pos              | 6.083 +/- 4.30 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.021 +/- 0.14 (96)      |
+|    proven_neg           | 0.021 +/- 0.14 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.883 +/- 0.47 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.958 +/- 0.29 (96)      |
+|    reward_neg           | 0.958 +/- 0.29 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.175                    |
+|    total_timesteps      | 196608                   |
+----------------------------------------------------
+
+[MRR] New best: 0.9479 at iteration 6
+[MRR] MRR: current=0.948, best=0.948 (iter 6), trend=insufficient_data
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 956                      |
+|    iterations           | 6                        |
+|    total_timesteps      | 196608                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.9185481142857143e-05 (progress=0.028)
+[Annealing] Set ent_coef to 0.48623744 (progress=0.028)
+
+[PPO] ===== Iteration 7 (196608/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 20.98s
+[PPO] Recent episodes: reward=0.000, length=6.4
+[PPO] Rollout collected in 20.98s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.983                    |
+|    ep_rew_mean          | 0.044                    |
+|    fps                  | 1562                     |
+|    len                  | 8.983 +/- 8.02 (3658)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (79)      |
+|    len_d_2_pos          | 6.541 +/- 3.46 (98)      |
+|    len_d_3_pos          | 9.700 +/- 1.93 (20)      |
+|    len_d_4_pos          | 16.167 +/- 4.65 (12)     |
+|    len_d_unknown_neg    | 10.461 +/- 8.19 (2928)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (521)     |
+|    len_neg              | 10.461 +/- 8.19 (2928)   |
+|    len_pos              | 3.053 +/- 2.94 (730)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (79)      |
+|    proven_d_2_pos       | 0.929 +/- 0.26 (98)      |
+|    proven_d_3_pos       | 0.950 +/- 0.22 (20)      |
+|    proven_d_4_pos       | 0.333 +/- 0.47 (12)      |
+|    proven_d_unknown_neg | 0.062 +/- 0.24 (2928)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (521)     |
+|    proven_neg           | 0.062 +/- 0.24 (2928)    |
+|    proven_pos           | 0.264 +/- 0.44 (730)     |
+|    reward               | 0.044 +/- 0.54 (3658)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (79)      |
+|    reward_d_2_pos       | 0.857 +/- 0.52 (98)      |
+|    reward_d_3_pos       | 0.900 +/- 0.44 (20)      |
+|    reward_d_4_pos       | -0.333 +/- 0.94 (12)     |
+|    reward_d_unknown_neg | 0.173 +/- 0.30 (2928)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (521)    |
+|    reward_neg           | 0.173 +/- 0.30 (2928)    |
+|    reward_pos           | -0.471 +/- 0.88 (730)    |
+|    success_rate         | 0.102                    |
+|    total_timesteps      | 229376                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.23367, policy 0.00229, value 0.16302, entropy -0.08419, approx_kl 0.01018 clip_fraction 0.06180. 
+Epoch 2/5. 
+Losses: total 0.24791, policy 0.00262, value 0.15506, entropy -0.08484, approx_kl 0.01703 clip_fraction 0.06960. 
+Epoch 3/5. 
+Losses: total 0.22382, policy 0.00256, value 0.15022, entropy -0.08654, approx_kl 0.02185 clip_fraction 0.07332. 
+Epoch 4/5. 
+Losses: total 0.24111, policy 0.00260, value 0.14626, entropy -0.08780, approx_kl 0.02664 clip_fraction 0.07602. 
+Epoch 5/5. 
+Losses: total 0.22227, policy 0.00248, value 0.14281, entropy -0.08886, approx_kl 0.02741 clip_fraction 0.07790. 
+[PPO] Values: min=-2.094, max=3.234, mean=0.223, std=0.430
+[PPO] Returns: min=-1.000, max=1.000, mean=0.170, std=0.315
+[PPO] Explained variance: -0.8514
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.027                    |
+|    clip_fraction        | 0.078                    |
+|    entropy              | 0.089                    |
+|    explained_var        | -0.851                   |
+|    iterations           | 7                        |
+|    policy_loss          | 0.002                    |
+|    total_timesteps      | 229376                   |
+|    value_loss           | 0.143                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.18s
+[PPO] Metrics: policy_loss=0.0025, value_loss=0.1428, entropy=0.0889
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 7, step 229376. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.948                    |
+|    ep_len_mean          | 13.992                   |
+|    ep_rew_mean          | 0.900                    |
+|    hits1                | 0.917                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.958                    |
+|    len                  | 13.992 +/- 6.36 (120)    |
+|    len_d_1_pos          | 4.400 +/- 3.56 (10)      |
+|    len_d_2_pos          | 7.583 +/- 5.25 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 15.854 +/- 5.23 (96)     |
+|    len_neg              | 15.854 +/- 5.23 (96)     |
+|    len_pos              | 6.542 +/- 4.82 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.010 +/- 0.10 (96)      |
+|    proven_neg           | 0.010 +/- 0.10 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.900 +/- 0.44 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.979 +/- 0.20 (96)      |
+|    reward_neg           | 0.979 +/- 0.20 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.167                    |
+|    total_timesteps      | 229376                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.948, best=0.948 (iter 6), trend=insufficient_data
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 963                      |
+|    iterations           | 7                        |
+|    total_timesteps      | 229376                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.9049728e-05 (progress=0.033)
+[Annealing] Set ent_coef to 0.48394368 (progress=0.033)
+
+[PPO] ===== Iteration 8 (229376/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 23.99s
+[PPO] Recent episodes: reward=0.200, length=4.6
+[PPO] Rollout collected in 23.99s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 9.044                    |
+|    ep_rew_mean          | 0.054                    |
+|    fps                  | 1366                     |
+|    len                  | 9.044 +/- 8.04 (3636)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (89)      |
+|    len_d_2_pos          | 7.010 +/- 4.46 (104)     |
+|    len_d_3_pos          | 9.238 +/- 1.80 (21)      |
+|    len_d_4_pos          | 10.417 +/- 2.06 (12)     |
+|    len_d_unknown_neg    | 10.544 +/- 8.22 (2907)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (503)     |
+|    len_neg              | 10.544 +/- 8.22 (2907)   |
+|    len_pos              | 3.062 +/- 2.85 (729)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (89)      |
+|    proven_d_2_pos       | 0.885 +/- 0.32 (104)     |
+|    proven_d_3_pos       | 0.952 +/- 0.21 (21)      |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (12)      |
+|    proven_d_unknown_neg | 0.063 +/- 0.24 (2907)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (503)     |
+|    proven_neg           | 0.063 +/- 0.24 (2907)    |
+|    proven_pos           | 0.292 +/- 0.45 (729)     |
+|    reward               | 0.054 +/- 0.54 (3636)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (89)      |
+|    reward_d_2_pos       | 0.769 +/- 0.64 (104)     |
+|    reward_d_3_pos       | 0.905 +/- 0.43 (21)      |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (12)      |
+|    reward_d_unknown_neg | 0.171 +/- 0.30 (2907)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (503)    |
+|    reward_neg           | 0.171 +/- 0.30 (2907)    |
+|    reward_pos           | -0.416 +/- 0.91 (729)    |
+|    success_rate         | 0.109                    |
+|    total_timesteps      | 262144                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.07945, policy 0.00206, value 0.06203, entropy -0.08718, approx_kl 0.00817 clip_fraction 0.05249. 
+Epoch 2/5. 
+Losses: total 0.07233, policy 0.00225, value 0.06028, entropy -0.08704, approx_kl 0.01668 clip_fraction 0.06297. 
+Epoch 3/5. 
+Losses: total 0.05857, policy 0.00210, value 0.05848, entropy -0.08826, approx_kl 0.01846 clip_fraction 0.06819. 
+Epoch 4/5. 
+Losses: total 0.05362, policy 0.00218, value 0.05662, entropy -0.08926, approx_kl 0.02334 clip_fraction 0.07104. 
+Epoch 5/5. 
+Losses: total 0.04926, policy 0.00234, value 0.05482, entropy -0.08972, approx_kl 0.02444 clip_fraction 0.07404. 
+[PPO] Values: min=-2.062, max=2.094, mean=0.169, std=0.272
+[PPO] Returns: min=-1.000, max=1.003, mean=0.170, std=0.314
+[PPO] Explained variance: 0.3475
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.024                    |
+|    clip_fraction        | 0.074                    |
+|    entropy              | 0.090                    |
+|    explained_var        | 0.348                    |
+|    iterations           | 8                        |
+|    policy_loss          | 0.002                    |
+|    total_timesteps      | 262144                   |
+|    value_loss           | 0.055                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.25s
+[PPO] Metrics: policy_loss=0.0023, value_loss=0.0548, entropy=0.0897
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 8, step 262144. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.941                    |
+|    ep_len_mean          | 14.058                   |
+|    ep_rew_mean          | 0.900                    |
+|    hits1                | 0.917                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.958                    |
+|    len                  | 14.058 +/- 6.39 (120)    |
+|    len_d_1_pos          | 4.400 +/- 3.56 (10)      |
+|    len_d_2_pos          | 7.583 +/- 5.25 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 15.938 +/- 5.26 (96)     |
+|    len_neg              | 15.938 +/- 5.26 (96)     |
+|    len_pos              | 6.542 +/- 4.82 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.010 +/- 0.10 (96)      |
+|    proven_neg           | 0.010 +/- 0.10 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.900 +/- 0.44 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.979 +/- 0.20 (96)      |
+|    reward_neg           | 0.979 +/- 0.20 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.167                    |
+|    total_timesteps      | 262144                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.941, best=0.948 (iter 6), trend=insufficient_data
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 957                      |
+|    iterations           | 8                        |
+|    total_timesteps      | 262144                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.8913974857142858e-05 (progress=0.037)
+[Annealing] Set ent_coef to 0.48164992 (progress=0.037)
+
+[PPO] ===== Iteration 9 (262144/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 20.82s
+[PPO] Recent episodes: reward=0.200, length=15.2
+[PPO] Rollout collected in 20.82s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.847                    |
+|    ep_rew_mean          | 0.050                    |
+|    fps                  | 1574                     |
+|    len                  | 8.847 +/- 7.95 (3702)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (81)      |
+|    len_d_2_pos          | 7.078 +/- 3.95 (102)     |
+|    len_d_3_pos          | 9.833 +/- 2.82 (24)      |
+|    len_d_4_pos          | 9.500 +/- 0.50 (12)      |
+|    len_d_unknown_neg    | 10.275 +/- 8.17 (2967)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (516)     |
+|    len_neg              | 10.275 +/- 8.17 (2967)   |
+|    len_pos              | 3.083 +/- 2.79 (735)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (81)      |
+|    proven_d_2_pos       | 0.922 +/- 0.27 (102)     |
+|    proven_d_3_pos       | 0.958 +/- 0.20 (24)      |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (12)      |
+|    proven_d_unknown_neg | 0.065 +/- 0.25 (2967)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (516)     |
+|    proven_neg           | 0.065 +/- 0.25 (2967)    |
+|    proven_pos           | 0.286 +/- 0.45 (735)     |
+|    reward               | 0.050 +/- 0.54 (3702)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (81)      |
+|    reward_d_2_pos       | 0.843 +/- 0.54 (102)     |
+|    reward_d_3_pos       | 0.917 +/- 0.40 (24)      |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (12)      |
+|    reward_d_unknown_neg | 0.169 +/- 0.31 (2967)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (516)    |
+|    reward_neg           | 0.169 +/- 0.31 (2967)    |
+|    reward_pos           | -0.429 +/- 0.90 (735)    |
+|    success_rate         | 0.109                    |
+|    total_timesteps      | 294912                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.08547, policy 0.00157, value 0.07018, entropy -0.09084, approx_kl 0.00971 clip_fraction 0.05792. 
+Epoch 2/5. 
+Losses: total 0.08192, policy 0.00227, value 0.06673, entropy -0.09324, approx_kl 0.01800 clip_fraction 0.07010. 
+Epoch 3/5. 
+Losses: total 0.07542, policy 0.00234, value 0.06455, entropy -0.09493, approx_kl 0.02280 clip_fraction 0.07690. 
+Epoch 4/5. 
+Losses: total 0.05878, policy 0.00227, value 0.06275, entropy -0.09632, approx_kl 0.02144 clip_fraction 0.08070. 
+Epoch 5/5. 
+Losses: total 0.06756, policy 0.00226, value 0.06114, entropy -0.09748, approx_kl 0.02875 clip_fraction 0.08318. 
+[PPO] Values: min=-1.805, max=2.031, mean=0.185, std=0.323
+[PPO] Returns: min=-1.000, max=1.003, mean=0.171, std=0.316
+[PPO] Explained variance: 0.1933
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.029                    |
+|    clip_fraction        | 0.083                    |
+|    entropy              | 0.097                    |
+|    explained_var        | 0.193                    |
+|    iterations           | 9                        |
+|    policy_loss          | 0.002                    |
+|    total_timesteps      | 294912                   |
+|    value_loss           | 0.061                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.16s
+[PPO] Metrics: policy_loss=0.0023, value_loss=0.0611, entropy=0.0975
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 9, step 294912. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.938                    |
+|    ep_len_mean          | 14.450                   |
+|    ep_rew_mean          | 0.900                    |
+|    hits1                | 0.917                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.917                    |
+|    len                  | 14.450 +/- 6.37 (120)    |
+|    len_d_1_pos          | 4.600 +/- 3.69 (10)      |
+|    len_d_2_pos          | 7.333 +/- 4.57 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.438 +/- 5.10 (96)     |
+|    len_neg              | 16.438 +/- 5.10 (96)     |
+|    len_pos              | 6.500 +/- 4.44 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.010 +/- 0.10 (96)      |
+|    proven_neg           | 0.010 +/- 0.10 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.900 +/- 0.44 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.979 +/- 0.20 (96)      |
+|    reward_neg           | 0.979 +/- 0.20 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.167                    |
+|    total_timesteps      | 294912                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.938, best=0.948 (iter 6), trend=insufficient_data
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 964                      |
+|    iterations           | 9                        |
+|    total_timesteps      | 294912                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.8778221714285716e-05 (progress=0.042)
+[Annealing] Set ent_coef to 0.47935616 (progress=0.042)
+
+[PPO] ===== Iteration 10 (294912/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 21.19s
+[PPO] Recent episodes: reward=0.250, length=15.7
+[PPO] Rollout collected in 21.19s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.742                    |
+|    ep_rew_mean          | 0.059                    |
+|    fps                  | 1546                     |
+|    len                  | 8.742 +/- 7.93 (3741)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (90)      |
+|    len_d_2_pos          | 6.702 +/- 4.01 (94)      |
+|    len_d_3_pos          | 9.524 +/- 1.94 (21)      |
+|    len_d_4_pos          | 9.714 +/- 0.45 (14)      |
+|    len_d_unknown_neg    | 10.188 +/- 8.16 (2994)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (528)     |
+|    len_neg              | 10.188 +/- 8.16 (2994)   |
+|    len_pos              | 2.948 +/- 2.59 (747)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (90)      |
+|    proven_d_2_pos       | 0.947 +/- 0.22 (94)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (21)      |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (14)      |
+|    proven_d_unknown_neg | 0.056 +/- 0.23 (2994)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (528)     |
+|    proven_neg           | 0.056 +/- 0.23 (2994)    |
+|    proven_pos           | 0.286 +/- 0.45 (747)     |
+|    reward               | 0.059 +/- 0.54 (3741)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (90)      |
+|    reward_d_2_pos       | 0.894 +/- 0.45 (94)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (21)      |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (14)      |
+|    reward_d_unknown_neg | 0.180 +/- 0.29 (2994)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (528)    |
+|    reward_neg           | 0.180 +/- 0.29 (2994)    |
+|    reward_pos           | -0.427 +/- 0.90 (747)    |
+|    success_rate         | 0.102                    |
+|    total_timesteps      | 327680                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.04258, policy 0.00332, value 0.04603, entropy -0.09703, approx_kl 0.01028 clip_fraction 0.06250. 
+Epoch 2/5. 
+Losses: total 0.03111, policy 0.00255, value 0.04409, entropy -0.09725, approx_kl 0.01566 clip_fraction 0.07434. 
+Epoch 3/5. 
+Losses: total 0.03321, policy 0.00235, value 0.04280, entropy -0.09873, approx_kl 0.02175 clip_fraction 0.08015. 
+Epoch 4/5. 
+Losses: total 0.02551, policy 0.00222, value 0.04168, entropy -0.09992, approx_kl 0.02616 clip_fraction 0.08324. 
+Epoch 5/5. 
+Losses: total 0.02782, policy 0.00205, value 0.04066, entropy -0.10131, approx_kl 0.03575 clip_fraction 0.08630. 
+[PPO] Values: min=-1.961, max=1.922, mean=0.167, std=0.276
+[PPO] Returns: min=-1.000, max=1.000, mean=0.176, std=0.310
+[PPO] Explained variance: 0.4735
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.036                    |
+|    clip_fraction        | 0.086                    |
+|    entropy              | 0.101                    |
+|    explained_var        | 0.473                    |
+|    iterations           | 10                       |
+|    policy_loss          | 0.002                    |
+|    total_timesteps      | 327680                   |
+|    value_loss           | 0.041                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.20s
+[PPO] Metrics: policy_loss=0.0020, value_loss=0.0407, entropy=0.1013
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 10, step 327680. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.948                    |
+|    ep_len_mean          | 14.283                   |
+|    ep_rew_mean          | 0.900                    |
+|    hits1                | 0.917                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.958                    |
+|    len                  | 14.283 +/- 6.45 (120)    |
+|    len_d_1_pos          | 5.600 +/- 5.78 (10)      |
+|    len_d_2_pos          | 6.667 +/- 4.42 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.208 +/- 5.20 (96)     |
+|    len_neg              | 16.208 +/- 5.20 (96)     |
+|    len_pos              | 6.583 +/- 5.08 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.010 +/- 0.10 (96)      |
+|    proven_neg           | 0.010 +/- 0.10 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.900 +/- 0.44 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.979 +/- 0.20 (96)      |
+|    reward_neg           | 0.979 +/- 0.20 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.167                    |
+|    total_timesteps      | 327680                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.948, best=0.948 (iter 6), trend=improving
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 970                      |
+|    iterations           | 10                       |
+|    total_timesteps      | 327680                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.8642468571428573e-05 (progress=0.047)
+[Annealing] Set ent_coef to 0.4770624 (progress=0.047)
+
+[PPO] ===== Iteration 11 (327680/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 21.28s
+[PPO] Recent episodes: reward=-0.125, length=8.6
+[PPO] Rollout collected in 21.28s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.914                    |
+|    ep_rew_mean          | 0.057                    |
+|    fps                  | 1540                     |
+|    len                  | 8.914 +/- 7.97 (3684)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (81)      |
+|    len_d_2_pos          | 7.286 +/- 4.55 (119)     |
+|    len_d_3_pos          | 9.714 +/- 1.98 (14)      |
+|    len_d_4_pos          | 9.615 +/- 0.49 (13)      |
+|    len_d_unknown_neg    | 10.387 +/- 8.18 (2937)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (520)     |
+|    len_neg              | 10.387 +/- 8.18 (2937)   |
+|    len_pos              | 3.119 +/- 2.95 (747)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (81)      |
+|    proven_d_2_pos       | 0.958 +/- 0.20 (119)     |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (14)      |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (13)      |
+|    proven_d_unknown_neg | 0.061 +/- 0.24 (2937)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (520)     |
+|    proven_neg           | 0.061 +/- 0.24 (2937)    |
+|    proven_pos           | 0.297 +/- 0.46 (747)     |
+|    reward               | 0.057 +/- 0.54 (3684)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (81)      |
+|    reward_d_2_pos       | 0.916 +/- 0.40 (119)     |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (14)      |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (13)      |
+|    reward_d_unknown_neg | 0.174 +/- 0.30 (2937)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (520)    |
+|    reward_neg           | 0.174 +/- 0.30 (2937)    |
+|    reward_pos           | -0.406 +/- 0.91 (747)    |
+|    success_rate         | 0.109                    |
+|    total_timesteps      | 360448                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.05359, policy 0.00107, value 0.05432, entropy -0.09906, approx_kl 0.00905 clip_fraction 0.06161. 
+Epoch 2/5. 
+Losses: total 0.05333, policy 0.00149, value 0.05127, entropy -0.09921, approx_kl 0.02076 clip_fraction 0.07359. 
+Epoch 3/5. 
+Losses: total 0.04740, policy 0.00156, value 0.04968, entropy -0.10034, approx_kl 0.02569 clip_fraction 0.07908. 
+Epoch 4/5. 
+Losses: total 0.04367, policy 0.00149, value 0.04848, entropy -0.10121, approx_kl 0.02400 clip_fraction 0.08241. 
+Epoch 5/5. 
+Losses: total 0.03808, policy 0.00144, value 0.04744, entropy -0.10221, approx_kl 0.02500 clip_fraction 0.08423. 
+[PPO] Values: min=-1.953, max=1.664, mean=0.194, std=0.310
+[PPO] Returns: min=-1.000, max=1.059, mean=0.179, std=0.312
+[PPO] Explained variance: 0.3593
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.025                    |
+|    clip_fraction        | 0.084                    |
+|    entropy              | 0.102                    |
+|    explained_var        | 0.359                    |
+|    iterations           | 11                       |
+|    policy_loss          | 0.001                    |
+|    total_timesteps      | 360448                   |
+|    value_loss           | 0.047                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.18s
+[PPO] Metrics: policy_loss=0.0014, value_loss=0.0474, entropy=0.1022
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 11, step 360448. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.941                    |
+|    ep_len_mean          | 14.042                   |
+|    ep_rew_mean          | 0.900                    |
+|    hits1                | 0.917                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.958                    |
+|    len                  | 14.042 +/- 6.39 (120)    |
+|    len_d_1_pos          | 5.600 +/- 5.78 (10)      |
+|    len_d_2_pos          | 6.667 +/- 4.42 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 15.906 +/- 5.22 (96)     |
+|    len_neg              | 15.906 +/- 5.22 (96)     |
+|    len_pos              | 6.583 +/- 5.08 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.010 +/- 0.10 (96)      |
+|    proven_neg           | 0.010 +/- 0.10 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.900 +/- 0.44 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.979 +/- 0.20 (96)      |
+|    reward_neg           | 0.979 +/- 0.20 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.167                    |
+|    total_timesteps      | 360448                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.941, best=0.948 (iter 6), trend=improving
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 971                      |
+|    iterations           | 11                       |
+|    total_timesteps      | 360448                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.8506715428571428e-05 (progress=0.051)
+[Annealing] Set ent_coef to 0.47476864 (progress=0.051)
+
+[PPO] ===== Iteration 12 (360448/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 23.85s
+[PPO] Recent episodes: reward=0.200, length=8.1
+[PPO] Rollout collected in 23.85s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.896                    |
+|    ep_rew_mean          | 0.050                    |
+|    fps                  | 1373                     |
+|    len                  | 8.896 +/- 7.94 (3676)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (84)      |
+|    len_d_2_pos          | 7.767 +/- 5.16 (90)      |
+|    len_d_3_pos          | 9.556 +/- 1.95 (18)      |
+|    len_d_4_pos          | 9.500 +/- 0.50 (10)      |
+|    len_d_unknown_neg    | 10.366 +/- 8.11 (2943)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (531)     |
+|    len_neg              | 10.366 +/- 8.11 (2943)   |
+|    len_pos              | 2.996 +/- 2.94 (733)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (84)      |
+|    proven_d_2_pos       | 0.944 +/- 0.23 (90)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (18)      |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (10)      |
+|    proven_d_unknown_neg | 0.058 +/- 0.23 (2943)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (531)     |
+|    proven_neg           | 0.058 +/- 0.23 (2943)    |
+|    proven_pos           | 0.269 +/- 0.44 (733)     |
+|    reward               | 0.050 +/- 0.54 (3676)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (84)      |
+|    reward_d_2_pos       | 0.889 +/- 0.46 (90)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (18)      |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (10)      |
+|    reward_d_unknown_neg | 0.178 +/- 0.29 (2943)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (531)    |
+|    reward_neg           | 0.178 +/- 0.29 (2943)    |
+|    reward_pos           | -0.462 +/- 0.89 (733)    |
+|    success_rate         | 0.100                    |
+|    total_timesteps      | 393216                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.02793, policy 0.00150, value 0.03659, entropy -0.10298, approx_kl 0.00809 clip_fraction 0.06259. 
+Epoch 2/5. 
+Losses: total 0.01989, policy 0.00188, value 0.03580, entropy -0.10418, approx_kl 0.01665 clip_fraction 0.07295. 
+Epoch 3/5. 
+Losses: total 0.01585, policy 0.00175, value 0.03512, entropy -0.10528, approx_kl 0.02158 clip_fraction 0.08029. 
+Epoch 4/5. 
+Losses: total 0.00695, policy 0.00154, value 0.03444, entropy -0.10613, approx_kl 0.01929 clip_fraction 0.08257. 
+Epoch 5/5. 
+Losses: total 0.01177, policy 0.00150, value 0.03378, entropy -0.10699, approx_kl 0.02422 clip_fraction 0.08528. 
+[PPO] Values: min=-1.680, max=1.375, mean=0.173, std=0.268
+[PPO] Returns: min=-1.000, max=1.000, mean=0.175, std=0.310
+[PPO] Explained variance: 0.5989
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.024                    |
+|    clip_fraction        | 0.085                    |
+|    entropy              | 0.107                    |
+|    explained_var        | 0.599                    |
+|    iterations           | 12                       |
+|    policy_loss          | 0.002                    |
+|    total_timesteps      | 393216                   |
+|    value_loss           | 0.034                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.11s
+[PPO] Metrics: policy_loss=0.0015, value_loss=0.0338, entropy=0.1070
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 12, step 393216. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.920                    |
+|    ep_len_mean          | 14.400                   |
+|    ep_rew_mean          | 0.900                    |
+|    hits1                | 0.875                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.958                    |
+|    len                  | 14.400 +/- 6.47 (120)    |
+|    len_d_1_pos          | 5.600 +/- 5.78 (10)      |
+|    len_d_2_pos          | 6.833 +/- 4.43 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.333 +/- 5.22 (96)     |
+|    len_neg              | 16.333 +/- 5.22 (96)     |
+|    len_pos              | 6.667 +/- 5.09 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.010 +/- 0.10 (96)      |
+|    proven_neg           | 0.010 +/- 0.10 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.900 +/- 0.44 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.979 +/- 0.20 (96)      |
+|    reward_neg           | 0.979 +/- 0.20 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.167                    |
+|    total_timesteps      | 393216                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.920, best=0.948 (iter 6), trend=stable
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 968                      |
+|    iterations           | 12                       |
+|    total_timesteps      | 393216                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.8370962285714285e-05 (progress=0.056)
+[Annealing] Set ent_coef to 0.47247488 (progress=0.056)
+
+[PPO] ===== Iteration 13 (393216/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 24.15s
+[PPO] Recent episodes: reward=0.125, length=4.7
+[PPO] Rollout collected in 24.15s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.768                    |
+|    ep_rew_mean          | 0.052                    |
+|    fps                  | 1357                     |
+|    len                  | 8.768 +/- 7.96 (3734)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (89)      |
+|    len_d_2_pos          | 7.833 +/- 5.20 (102)     |
+|    len_d_3_pos          | 8.667 +/- 1.49 (12)      |
+|    len_d_4_pos          | 9.385 +/- 0.49 (13)      |
+|    len_d_unknown_neg    | 10.183 +/- 8.16 (2994)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (524)     |
+|    len_neg              | 10.183 +/- 8.16 (2994)   |
+|    len_pos              | 3.042 +/- 3.01 (740)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (89)      |
+|    proven_d_2_pos       | 0.912 +/- 0.28 (102)     |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (12)      |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (13)      |
+|    proven_d_unknown_neg | 0.061 +/- 0.24 (2994)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (524)     |
+|    proven_neg           | 0.061 +/- 0.24 (2994)    |
+|    proven_pos           | 0.280 +/- 0.45 (740)     |
+|    reward               | 0.052 +/- 0.54 (3734)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (89)      |
+|    reward_d_2_pos       | 0.824 +/- 0.57 (102)     |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (12)      |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (13)      |
+|    reward_d_unknown_neg | 0.174 +/- 0.30 (2994)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (524)    |
+|    reward_neg           | 0.174 +/- 0.30 (2994)    |
+|    reward_pos           | -0.441 +/- 0.90 (740)    |
+|    success_rate         | 0.104                    |
+|    total_timesteps      | 425984                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.09350, policy 0.00183, value 0.07058, entropy -0.10645, approx_kl 0.01146 clip_fraction 0.06931. 
+Epoch 2/5. 
+Losses: total 0.07095, policy 0.00252, value 0.06559, entropy -0.10640, approx_kl 0.01812 clip_fraction 0.07584. 
+Epoch 3/5. 
+Losses: total 0.05849, policy 0.00249, value 0.06348, entropy -0.10705, approx_kl 0.02586 clip_fraction 0.08311. 
+Epoch 4/5. 
+Losses: total 0.06270, policy 0.00236, value 0.06212, entropy -0.10770, approx_kl 0.02169 clip_fraction 0.08584. 
+Epoch 5/5. 
+Losses: total 0.05928, policy 0.00232, value 0.06110, entropy -0.10825, approx_kl 0.02416 clip_fraction 0.08794. 
+[PPO] Values: min=-1.172, max=2.281, mean=0.200, std=0.353
+[PPO] Returns: min=-1.000, max=1.000, mean=0.173, std=0.313
+[PPO] Explained variance: 0.1607
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.024                    |
+|    clip_fraction        | 0.088                    |
+|    entropy              | 0.108                    |
+|    explained_var        | 0.161                    |
+|    iterations           | 13                       |
+|    policy_loss          | 0.002                    |
+|    total_timesteps      | 425984                   |
+|    value_loss           | 0.061                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.14s
+[PPO] Metrics: policy_loss=0.0023, value_loss=0.0611, entropy=0.1083
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 13, step 425984. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.917                    |
+|    ep_len_mean          | 13.917                   |
+|    ep_rew_mean          | 0.900                    |
+|    hits1                | 0.875                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.917                    |
+|    len                  | 13.917 +/- 6.55 (120)    |
+|    len_d_1_pos          | 5.100 +/- 5.77 (10)      |
+|    len_d_2_pos          | 7.167 +/- 4.36 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 15.740 +/- 5.52 (96)     |
+|    len_neg              | 15.740 +/- 5.52 (96)     |
+|    len_pos              | 6.625 +/- 5.11 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.010 +/- 0.10 (96)      |
+|    proven_neg           | 0.010 +/- 0.10 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.900 +/- 0.44 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.979 +/- 0.20 (96)      |
+|    reward_neg           | 0.979 +/- 0.20 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.167                    |
+|    total_timesteps      | 425984                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.917, best=0.948 (iter 6), trend=stable
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 963                      |
+|    iterations           | 13                       |
+|    total_timesteps      | 425984                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.8235209142857143e-05 (progress=0.061)
+[Annealing] Set ent_coef to 0.47018112 (progress=0.061)
+
+[PPO] ===== Iteration 14 (425984/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 22.97s
+[PPO] Recent episodes: reward=-0.050, length=10.5
+[PPO] Rollout collected in 22.97s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.806                    |
+|    ep_rew_mean          | 0.046                    |
+|    fps                  | 1426                     |
+|    len                  | 8.806 +/- 7.99 (3726)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (98)      |
+|    len_d_2_pos          | 7.268 +/- 4.71 (82)      |
+|    len_d_3_pos          | 10.000 +/- 2.00 (22)     |
+|    len_d_4_pos          | 9.500 +/- 0.50 (6)       |
+|    len_d_unknown_neg    | 10.300 +/- 8.19 (2977)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (541)     |
+|    len_neg              | 10.300 +/- 8.19 (2977)   |
+|    len_pos              | 2.872 +/- 2.68 (749)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (98)      |
+|    proven_d_2_pos       | 0.927 +/- 0.26 (82)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (22)      |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (6)       |
+|    proven_d_unknown_neg | 0.061 +/- 0.24 (2977)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (541)     |
+|    proven_neg           | 0.061 +/- 0.24 (2977)    |
+|    proven_pos           | 0.270 +/- 0.44 (749)     |
+|    reward               | 0.046 +/- 0.54 (3726)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (98)      |
+|    reward_d_2_pos       | 0.854 +/- 0.52 (82)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (22)      |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (6)       |
+|    reward_d_unknown_neg | 0.173 +/- 0.30 (2977)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (541)    |
+|    reward_neg           | 0.173 +/- 0.30 (2977)    |
+|    reward_pos           | -0.461 +/- 0.89 (749)    |
+|    success_rate         | 0.103                    |
+|    total_timesteps      | 458752                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.00615, policy 0.00135, value 0.02875, entropy -0.10687, approx_kl 0.01001 clip_fraction 0.06906. 
+Epoch 2/5. 
+Losses: total 0.01078, policy 0.00159, value 0.02853, entropy -0.10562, approx_kl 0.02309 clip_fraction 0.08101. 
+Epoch 3/5. 
+Losses: total 0.00116, policy 0.00153, value 0.02821, entropy -0.10662, approx_kl 0.02340 clip_fraction 0.08533. 
+Epoch 4/5. 
+Losses: total -0.00100, policy 0.00148, value 0.02783, entropy -0.10774, approx_kl 0.02109 clip_fraction 0.08691. 
+Epoch 5/5. 
+Losses: total -0.00008, policy 0.00141, value 0.02739, entropy -0.10821, approx_kl 0.01895 clip_fraction 0.08749. 
+[PPO] Values: min=-1.258, max=1.359, mean=0.169, std=0.270
+[PPO] Returns: min=-1.000, max=1.000, mean=0.171, std=0.311
+[PPO] Explained variance: 0.7007
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.019                    |
+|    clip_fraction        | 0.087                    |
+|    entropy              | 0.108                    |
+|    explained_var        | 0.701                    |
+|    iterations           | 14                       |
+|    policy_loss          | 0.001                    |
+|    total_timesteps      | 458752                   |
+|    value_loss           | 0.027                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.03s
+[PPO] Metrics: policy_loss=0.0014, value_loss=0.0274, entropy=0.1082
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 14, step 458752. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.927                    |
+|    ep_len_mean          | 14.492                   |
+|    ep_rew_mean          | 0.883                    |
+|    hits1                | 0.875                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.958                    |
+|    len                  | 14.492 +/- 6.51 (120)    |
+|    len_d_1_pos          | 5.600 +/- 5.78 (10)      |
+|    len_d_2_pos          | 6.833 +/- 4.43 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.448 +/- 5.22 (96)     |
+|    len_neg              | 16.448 +/- 5.22 (96)     |
+|    len_pos              | 6.667 +/- 5.09 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.021 +/- 0.14 (96)      |
+|    proven_neg           | 0.021 +/- 0.14 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.883 +/- 0.47 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.958 +/- 0.29 (96)      |
+|    reward_neg           | 0.958 +/- 0.29 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.175                    |
+|    total_timesteps      | 458752                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.927, best=0.948 (iter 6), trend=stable
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 961                      |
+|    iterations           | 14                       |
+|    total_timesteps      | 458752                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.8099456e-05 (progress=0.066)
+[Annealing] Set ent_coef to 0.46788736 (progress=0.066)
+
+[PPO] ===== Iteration 15 (458752/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps
+Collecting rollouts: 153/256 steps
+Collecting rollouts: 204/256 steps
+Collecting rollouts: 255/256 steps
+[PPO] Rollout collected in 22.86s
+[PPO] Recent episodes: reward=0.075, length=5.5
+[PPO] Rollout collected in 22.86s
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 8.724                    |
+|    ep_rew_mean          | 0.062                    |
+|    fps                  | 1433                     |
+|    len                  | 8.724 +/- 7.94 (3741)    |
+|    len_d_1_pos          | 2.000 +/- 0.00 (90)      |
+|    len_d_2_pos          | 7.472 +/- 5.02 (108)     |
+|    len_d_3_pos          | 9.143 +/- 1.81 (21)      |
+|    len_d_4_pos          | 9.091 +/- 0.29 (11)      |
+|    len_d_unknown_neg    | 10.139 +/- 8.16 (2990)   |
+|    len_d_unknown_pos    | 2.000 +/- 0.00 (521)     |
+|    len_neg              | 10.139 +/- 8.16 (2990)   |
+|    len_pos              | 3.091 +/- 3.00 (751)     |
+|    proven_d_1_pos       | 1.000 +/- 0.00 (90)      |
+|    proven_d_2_pos       | 0.917 +/- 0.28 (108)     |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (21)      |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (11)      |
+|    proven_d_unknown_neg | 0.056 +/- 0.23 (2990)    |
+|    proven_d_unknown_pos | 0.000 +/- 0.00 (521)     |
+|    proven_neg           | 0.056 +/- 0.23 (2990)    |
+|    proven_pos           | 0.294 +/- 0.46 (751)     |
+|    reward               | 0.062 +/- 0.54 (3741)    |
+|    reward_d_1_pos       | 1.000 +/- 0.00 (90)      |
+|    reward_d_2_pos       | 0.833 +/- 0.55 (108)     |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (21)      |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (11)      |
+|    reward_d_unknown_neg | 0.181 +/- 0.29 (2990)    |
+|    reward_d_unknown_pos | -1.000 +/- 0.00 (521)    |
+|    reward_neg           | 0.181 +/- 0.29 (2990)    |
+|    reward_pos           | -0.411 +/- 0.91 (751)    |
+|    success_rate         | 0.103                    |
+|    total_timesteps      | 491520                   |
+----------------------------------------------------
+
+
+[PPO] ===== Training policy =====
+[PPO] Training for 5 epochs...
+Epoch 1/5. 
+Losses: total 0.01205, policy 0.00103, value 0.03014, entropy -0.11022, approx_kl 0.00918 clip_fraction 0.06299. 
+Epoch 2/5. 
+Losses: total 0.01239, policy 0.00110, value 0.02979, entropy -0.11073, approx_kl 0.01748 clip_fraction 0.07475. 
+Epoch 3/5. 
+Losses: total 0.00711, policy 0.00115, value 0.02942, entropy -0.11054, approx_kl 0.01900 clip_fraction 0.08049. 
+Epoch 4/5. 
+Losses: total 0.00586, policy 0.00111, value 0.02911, entropy -0.11087, approx_kl 0.01722 clip_fraction 0.08278. 
+Epoch 5/5. 
+Losses: total 0.00754, policy 0.00109, value 0.02883, entropy -0.11108, approx_kl 0.01992 clip_fraction 0.08427. 
+[PPO] Values: min=-1.109, max=1.320, mean=0.180, std=0.270
+[PPO] Returns: min=-1.000, max=1.000, mean=0.176, std=0.314
+[PPO] Explained variance: 0.6939
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.020                    |
+|    clip_fraction        | 0.084                    |
+|    entropy              | 0.111                    |
+|    explained_var        | 0.694                    |
+|    iterations           | 15                       |
+|    policy_loss          | 0.001                    |
+|    total_timesteps      | 491520                   |
+|    value_loss           | 0.029                    |
+----------------------------------------------------
+
+[PPO] Training completed in 7.20s
+[PPO] Metrics: policy_loss=0.0011, value_loss=0.0288, entropy=0.1111
+[MRREvaluationCallback] Starting evaluation of 24 queries, at iter 15, step 491520. Resetting collector.
+DEBUG: eval_corruptions called with n_corruptions=None, corruption_modes=['tail']
+DEBUG: need_head=False, need_tail=True
+DEBUG: mode=tail, corrs_list[0] shape=torch.Size([4, 3]), total corruptions for query 0: 4
+----------------------------------------------------
+| eval/                   |                          |
+|    _mrr                 | 0.927                    |
+|    ep_len_mean          | 14.183                   |
+|    ep_rew_mean          | 0.900                    |
+|    hits1                | 0.875                    |
+|    hits10               | 1.000                    |
+|    hits3                | 0.958                    |
+|    len                  | 14.183 +/- 6.53 (120)    |
+|    len_d_1_pos          | 5.100 +/- 5.77 (10)      |
+|    len_d_2_pos          | 6.833 +/- 4.43 (12)      |
+|    len_d_3_pos          | 10.000 +/- 0.00 (1)      |
+|    len_d_4_pos          | 12.000 +/- 0.00 (1)      |
+|    len_d_unknown_neg    | 16.115 +/- 5.29 (96)     |
+|    len_neg              | 16.115 +/- 5.29 (96)     |
+|    len_pos              | 6.458 +/- 5.13 (24)      |
+|    proven_d_1_pos       | 0.900 +/- 0.30 (10)      |
+|    proven_d_2_pos       | 0.667 +/- 0.47 (12)      |
+|    proven_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    proven_d_unknown_neg | 0.010 +/- 0.10 (96)      |
+|    proven_neg           | 0.010 +/- 0.10 (96)      |
+|    proven_pos           | 0.792 +/- 0.41 (24)      |
+|    reward               | 0.900 +/- 0.44 (120)     |
+|    reward_d_1_pos       | 0.800 +/- 0.60 (10)      |
+|    reward_d_2_pos       | 0.333 +/- 0.94 (12)      |
+|    reward_d_3_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_4_pos       | 1.000 +/- 0.00 (1)       |
+|    reward_d_unknown_neg | 0.979 +/- 0.20 (96)      |
+|    reward_neg           | 0.979 +/- 0.20 (96)      |
+|    reward_pos           | 0.583 +/- 0.81 (24)      |
+|    success_rate         | 0.167                    |
+|    total_timesteps      | 491520                   |
+----------------------------------------------------
+
+[MRR] MRR: current=0.927, best=0.948 (iter 6), trend=declining
+----------------------------------------------------
+| rollout/                |                          |
+|    fps                  | 960                      |
+|    iterations           | 15                       |
+|    total_timesteps      | 491520                   |
+----------------------------------------------------
+
+[Annealing] Set lr to 2.7963702857142858e-05 (progress=0.070)
+[Annealing] Set ent_coef to 0.4655936 (progress=0.070)
+
+[PPO] ===== Iteration 16 (491520/7000000 steps) =====
+Collecting rollouts: 0/256 steps
+Collecting rollouts: 51/256 steps
+Collecting rollouts: 102/256 steps

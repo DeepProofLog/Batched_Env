@@ -134,7 +134,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     model = PPO(
         CustomActorCriticPolicy,
         env,
-        learning_rate=config.lr,
+        learning_rate=config.learning_rate,
         n_steps=config.n_steps,
         batch_size=config.batch_size,
         n_epochs=config.n_epochs,

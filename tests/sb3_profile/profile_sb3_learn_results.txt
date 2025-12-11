@@ -1,46 +1,46 @@
 Device: cuda
 Total timesteps: 640
-Training time: 27.96s
+Training time: 23.54s
 
 ================================================================================
 Top by Cumulative Time
 ================================================================================
-         39720178 function calls (39540551 primitive calls) in 26.287 seconds
+         29618841 function calls (29436123 primitive calls) in 21.832 seconds
 
    Ordered by: cumulative time
-   List reduced from 589 to 30 due to restriction <30>
+   List reduced from 588 to 30 due to restriction <30>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        1    0.000    0.000   26.687   26.687 sb3_model.py:382(learn)
-        1    0.007    0.007   24.060   24.060 sb3_model.py:47(collect_rollouts)
-      128    0.001    0.000   20.431    0.160 base_vec_env.py:214(step)
-      128    0.038    0.000   20.430    0.160 dummy_vec_env.py:56(step_wait)
-     4096    0.045    0.000   16.596    0.004 monitor.py:85(step)
-     4096    0.296    0.000   16.541    0.004 sb3_env.py:456(step)
-     4922    0.229    0.000   15.141    0.003 sb3_env.py:533(get_next_states)
-     7075    3.530    0.000   13.633    0.002 sb3_unification.py:348(get_next_unification_python)
-     6993    3.819    0.001    5.656    0.001 sb3_unification.py:129(rename_vars_local)
-24201/793    0.029    0.000    4.062    0.005 module.py:1771(_wrapped_call_impl)
-24201/793    0.049    0.000    4.058    0.005 module.py:1779(_call_impl)
-      826    0.002    0.000    3.666    0.004 monitor.py:64(reset)
-      826    0.003    0.000    3.664    0.004 sb3_env.py:388(reset)
-      128    0.001    0.000    3.324    0.026 sb3_model.py:678(forward)
-      135    0.002    0.000    3.139    0.023 distributions.py:287(proba_distribution)
-      135    0.005    0.000    3.138    0.023 categorical.py:56(__init__)
-      826    0.001    0.000    3.086    0.004 sb3_env.py:283(_select_query_for_reset)
-      826    0.009    0.000    3.085    0.004 sb3_env.py:316(_sample_train_query)
-      648    0.026    0.000    3.059    0.005 sb3_neg_sampling.py:628(get_negatives_from_states)
-      135    3.029    0.022    3.056    0.023 distribution.py:47(__init__)
-        1    0.007    0.007    2.597    2.597 sb3_model.py:216(train)
-      648    0.598    0.001    2.213    0.003 sb3_neg_sampling.py:423(get_negatives)
-     7075    0.339    0.000    1.599    0.000 sb3_unification.py:48(unify_with_facts)
-  4517298    0.962    0.000    1.312    0.000 sb3_unification.py:423(<genexpr>)
-   531499    0.881    0.000    1.166    0.000 sb3_unification.py:13(unify_terms)
-        7    0.000    0.000    0.996    0.142 sb3_model.py:704(evaluate_actions)
-     7508    0.941    0.000    0.941    0.000 {built-in method torch.tensor}
-        9    0.000    0.000    0.911    0.101 buffers.py:802(get)
-        7    0.017    0.002    0.890    0.127 buffers.py:828(_get_samples)
-       56    0.000    0.000    0.873    0.016 buffers.py:128(to_torch)
+        1    0.000    0.000   22.311   22.311 sb3_model.py:382(learn)
+        1    0.008    0.008   19.386   19.386 sb3_model.py:47(collect_rollouts)
+      128    0.001    0.000   16.142    0.126 base_vec_env.py:214(step)
+      128    0.044    0.000   16.140    0.126 dummy_vec_env.py:56(step_wait)
+     4096    0.055    0.000   12.307    0.003 monitor.py:85(step)
+     4096    0.328    0.000   12.241    0.003 sb3_env.py:456(step)
+     4937    0.239    0.000   10.747    0.002 sb3_env.py:533(get_next_states)
+     7088    2.656    0.000    9.125    0.001 sb3_unification.py:371(get_next_unification_python)
+24215/807    0.031    0.000    3.812    0.005 module.py:1771(_wrapped_call_impl)
+24215/807    0.054    0.000    3.808    0.005 module.py:1779(_call_impl)
+      841    0.003    0.000    3.653    0.004 monitor.py:64(reset)
+      841    0.003    0.000    3.650    0.004 sb3_env.py:388(reset)
+      841    0.002    0.000    3.061    0.004 sb3_env.py:283(_select_query_for_reset)
+      841    0.010    0.000    3.059    0.004 sb3_env.py:316(_sample_train_query)
+      662    0.028    0.000    3.029    0.005 sb3_neg_sampling.py:628(get_negatives_from_states)
+      128    0.002    0.000    2.953    0.023 sb3_model.py:678(forward)
+        1    0.011    0.011    2.889    2.889 sb3_model.py:216(train)
+      135    0.002    0.000    2.614    0.019 distributions.py:287(proba_distribution)
+      135    0.005    0.000    2.612    0.019 categorical.py:56(__init__)
+      135    2.472    0.018    2.503    0.019 distribution.py:47(__init__)
+      662    0.588    0.001    2.231    0.003 sb3_neg_sampling.py:423(get_negatives)
+  1553897    1.100    0.000    2.058    0.000 sb3_unification.py:14(_apply_subs)
+     7088    0.366    0.000    1.564    0.000 sb3_unification.py:90(unify_with_facts)
+     7005    0.273    0.000    1.421    0.000 sb3_unification.py:175(rename_vars_local)
+        7    0.000    0.000    1.184    0.169 sb3_model.py:704(evaluate_actions)
+   550888    0.794    0.000    1.090    0.000 sb3_unification.py:38(unify_terms)
+      135    0.002    0.000    1.067    0.008 sb3_model.py:572(forward)
+   557594    0.652    0.000    1.016    0.000 sb3_unification.py:164(_needs_renaming)
+     7568    0.931    0.000    0.931    0.000 {built-in method torch.tensor}
+    66380    0.090    0.000    0.903    0.000 sb3_index_manager.py:212(get_atom_sub_index)
 
 
 
@@ -48,41 +48,41 @@ Top by Cumulative Time
 ================================================================================
 Top by Total Time
 ================================================================================
-         39720178 function calls (39540551 primitive calls) in 26.287 seconds
+         29618841 function calls (29436123 primitive calls) in 21.832 seconds
 
    Ordered by: internal time
-   List reduced from 589 to 30 due to restriction <30>
+   List reduced from 588 to 30 due to restriction <30>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-     6993    3.819    0.001    5.656    0.001 sb3_unification.py:129(rename_vars_local)
-     7075    3.530    0.000   13.633    0.002 sb3_unification.py:348(get_next_unification_python)
-      135    3.029    0.022    3.056    0.023 distribution.py:47(__init__)
-  4517298    0.962    0.000    1.312    0.000 sb3_unification.py:423(<genexpr>)
-     7508    0.941    0.000    0.941    0.000 {built-in method torch.tensor}
-   531499    0.881    0.000    1.166    0.000 sb3_unification.py:13(unify_terms)
-  4127967    0.603    0.000    0.603    0.000 {method 'startswith' of 'str' objects}
-      648    0.598    0.001    2.213    0.003 sb3_neg_sampling.py:423(get_negatives)
-  5283026    0.544    0.000    0.544    0.000 {method 'isupper' of 'str' objects}
-      648    0.542    0.001    0.644    0.001 sb3_neg_sampling.py:45(forward)
-    71031    0.500    0.000    0.500    0.000 {method 'to' of 'torch._C.TensorBase' objects}
-  3965881    0.499    0.000    0.499    0.000 {method 'get' of 'dict' objects}
-  2022056    0.364    0.000    0.364    0.000 {built-in method builtins.max}
-     6623    0.362    0.000    0.362    0.000 {method 'item' of 'torch._C.TensorBase' objects}
-  1842220    0.353    0.000    0.564    0.000 <string>:2(__hash__)
-     7075    0.339    0.000    1.599    0.000 sb3_unification.py:48(unify_with_facts)
-  2302717    0.306    0.000    0.306    0.000 {method 'append' of 'list' objects}
-        6    0.304    0.051    0.304    0.051 {method 'run_backward' of 'torch._C._EngineBase' objects}
-     4096    0.296    0.000   16.541    0.004 sb3_env.py:456(step)
-    58694    0.286    0.000    0.286    0.000 {built-in method torch.as_tensor}
-3292054/3291770    0.285    0.000    0.324    0.000 {built-in method builtins.isinstance}
-  2620387    0.265    0.000    0.265    0.000 {built-in method builtins.len}
-    63565    0.263    0.000    0.385    0.000 sb3_index_manager.py:179(state_to_tuple)
-     4466    0.261    0.000    0.261    0.000 {built-in method torch._C._nn.linear}
-     4922    0.229    0.000   15.141    0.003 sb3_env.py:533(get_next_states)
-     2592    0.224    0.000    0.224    0.000 {method 'tolist' of 'torch._C.TensorBase' objects}
-  1842222    0.211    0.000    0.211    0.000 {built-in method builtins.hash}
-     1296    0.176    0.000    0.307    0.000 sb3_neg_sampling.py:294(_efficient_replacement)
-    23350    0.162    0.000    0.162    0.000 {method 'cpu' of 'torch._C.TensorBase' objects}
-      648    0.146    0.000    0.470    0.001 sb3_index_manager.py:217(subindices_to_terms)
+     7088    2.656    0.000    9.125    0.001 sb3_unification.py:371(get_next_unification_python)
+      135    2.472    0.018    2.503    0.019 distribution.py:47(__init__)
+  1553897    1.100    0.000    2.058    0.000 sb3_unification.py:14(_apply_subs)
+     7568    0.931    0.000    0.931    0.000 {built-in method torch.tensor}
+   550888    0.794    0.000    1.090    0.000 sb3_unification.py:38(unify_terms)
+   557594    0.652    0.000    1.016    0.000 sb3_unification.py:164(_needs_renaming)
+      662    0.588    0.001    2.231    0.003 sb3_neg_sampling.py:423(get_negatives)
+  4026076    0.533    0.000    0.533    0.000 {method 'get' of 'dict' objects}
+      662    0.519    0.001    0.626    0.001 sb3_neg_sampling.py:45(forward)
+  5429652    0.496    0.000    0.496    0.000 {method 'isupper' of 'str' objects}
+    73980    0.470    0.000    0.470    0.000 {method 'to' of 'torch._C.TensorBase' objects}
+  1867382    0.370    0.000    0.595    0.000 <string>:2(__hash__)
+     7088    0.366    0.000    1.564    0.000 sb3_unification.py:90(unify_with_facts)
+  1069386    0.366    0.000    0.366    0.000 sb3_unification.py:459(<genexpr>)
+        6    0.348    0.058    0.348    0.058 {method 'run_backward' of 'torch._C._EngineBase' objects}
+  3714812    0.342    0.000    0.342    0.000 {built-in method builtins.len}
+     6665    0.339    0.000    0.339    0.000 {method 'item' of 'torch._C.TensorBase' objects}
+     4466    0.338    0.000    0.338    0.000 {built-in method torch._C._nn.linear}
+     4096    0.328    0.000   12.241    0.003 sb3_env.py:456(step)
+  2533869    0.324    0.000    0.324    0.000 {method 'append' of 'list' objects}
+    61473    0.305    0.000    0.305    0.000 {built-in method torch.as_tensor}
+    66380    0.285    0.000    0.412    0.000 sb3_index_manager.py:179(state_to_tuple)
+     7005    0.273    0.000    1.421    0.000 sb3_unification.py:175(rename_vars_local)
+     4937    0.239    0.000   10.747    0.002 sb3_env.py:533(get_next_states)
+  1867384    0.225    0.000    0.225    0.000 {built-in method builtins.hash}
+     2648    0.208    0.000    0.208    0.000 {method 'tolist' of 'torch._C.TensorBase' objects}
+     1324    0.184    0.000    0.328    0.000 sb3_neg_sampling.py:294(_efficient_replacement)
+     4060    0.151    0.000    0.151    0.000 {built-in method torch.relu}
+    23395    0.149    0.000    0.149    0.000 {method 'cpu' of 'torch._C.TensorBase' objects}
+      662    0.144    0.000    0.454    0.001 sb3_index_manager.py:217(subindices_to_terms)
 
 

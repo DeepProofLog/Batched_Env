@@ -552,10 +552,11 @@ class BatchedEnv(EnvBase):
         if not ((self.mode == 'train') and self.corruption_mode and (self.train_neg_ratio > 0)):
             return batch_q, batch_labels, proof_depths
 
+        # Validate cycle
         ratio = int(round(float(self.train_neg_ratio)))
         if ratio <= 0:
             return batch_q, batch_labels, proof_depths
-
+            
         cycle = ratio + 1
         local_counters = self._train_neg_counters.index_select(0, env_idx)  # [N]
         
@@ -564,26 +565,37 @@ class BatchedEnv(EnvBase):
         batch_labels = batch_labels.clone()
         proof_depths = proof_depths.clone()
         
-        # Vectorized corruption: corrupt ALL N atoms in one call
-        # This ensures RNG is consumed in sequential order for all N envs
-        
-        corrupted_atoms = self.sampler.corrupt(
-            batch_first_atoms,  # [N, D]
-            num_negatives=1,
-            device=device
-        )  # [N, 1, D] or [N, D]
-        
-        # Normalize shape to [N, D]
-        if corrupted_atoms.dim() == 3:
-            corrupted_atoms = corrupted_atoms[:, 0, :]  # [N, D]
-        
-        # Determine which envs need negative samples (counter % cycle != 0)
+        # Determine which envs need negative samples
+        # Logic: ratio=4 => cycle=5. if counter % 5 != 0 (1,2,3,4) -> negative. if 0 -> positive.
         needs_negative = (local_counters % cycle) != 0  # [N] boolean tensor
         
-        # Apply corrupted atoms only to envs that need negatives
-        # Use masked indexing for efficient vectorized update
-        if needs_negative.any():
-            batch_q[needs_negative, 0, :D] = corrupted_atoms[needs_negative]
+        num_negs = needs_negative.sum().item()
+        if num_negs > 0:
+            # Only corrupt atoms that need it to avoid wasting RNG (parity fix)
+            atoms_to_corrupt = batch_first_atoms[needs_negative]  # [M, D]
+            
+            if self.sample_deterministic_per_env:
+                # Sequential corruption for parity with SB3
+                # Loop allows RNG consumption order to match sequential env execution
+                corrupted_list = []
+                for i in range(num_negs):
+                     atom_i = atoms_to_corrupt[i:i+1] # [1, D]
+                     c = self.sampler.corrupt(atom_i, num_negatives=1, device=device)
+                     if c.dim() == 3: c = c[:, 0, :]
+                     corrupted_list.append(c)
+                corrupted_atoms = torch.cat(corrupted_list, dim=0) # [M, D]
+            else:
+                # Vectorized corruption (standard)
+                corrupted_atoms = self.sampler.corrupt(
+                    atoms_to_corrupt, 
+                    num_negatives=1,
+                    device=device
+                )
+                if corrupted_atoms.dim() == 3:
+                     corrupted_atoms = corrupted_atoms[:, 0, :]
+            
+            # Apply to batch_q
+            batch_q[needs_negative, 0, :D] = corrupted_atoms
             batch_labels[needs_negative] = 0
             proof_depths[needs_negative] = -1
 

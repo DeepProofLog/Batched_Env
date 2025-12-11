@@ -8,7 +8,32 @@ except ImportError:
 
 def is_variable(arg: str) -> bool:
     """Check if an argument is a variable."""
-    return arg[0].isupper() or arg[0] == '_'
+    c = arg[0]
+    return c.isupper() or c == '_'
+
+def _apply_subs(term: Term, subs: Dict[str, str]) -> Term:
+    args = term.args
+    if len(args) == 2:
+        a0 = args[0]
+        a1 = args[1]
+        s0 = subs.get(a0, a0)
+        s1 = subs.get(a1, a1)
+        if s0 is a0 and s1 is a1:
+            return term
+        return Term(term.predicate, (s0, s1))
+    
+    # Fallback
+    changed = False
+    new_args = []
+    for arg in args:
+        s = subs.get(arg, arg)
+        if s is not arg:
+             changed = True
+        new_args.append(s)
+    
+    if changed:
+        return Term(term.predicate, tuple(new_args))
+    return term
 
 def unify_terms(term1: Term, term2: Term, verbose: int=0) -> Dict[str, str]:
     """
@@ -23,26 +48,43 @@ def unify_terms(term1: Term, term2: Term, verbose: int=0) -> Dict[str, str]:
     Returns:
         Dictionary mapping variables to their substitutions, or None if unification fails
     """
-    assert len(term1.args) == len(term2.args) == 2, 'only support binary predicates'
+    # Optimized check: most terms are binary
+    args1 = term1.args
+    args2 = term2.args
+    if len(args1) != 2 or len(args2) != 2:
+        assert len(args1) == len(args2) == 2, 'only support binary predicates'
+    
     print('\nterm1:', term1, 'term2:', term2) if verbose else None
     substitutions = {}
-    for arg1, arg2 in zip(term1.args, term2.args):
-        print('arg1:', arg1, 'arg2:', arg2) if verbose else None
+    
+    # Unroll for binary (most common case)
+    # Arg 1
+    arg1 = args1[0]
+    arg2 = args2[0]
+    
+    # If both are constants, they must be equal
+    c1 = arg1[0]
+    c2 = arg2[0]
+    if not (c1.isupper() or c1 == '_') and not (c2.isupper() or c2 == '_'):
+        if arg1 != arg2: return None
+    elif arg2 in substitutions:
+        if substitutions[arg2] != arg1: return None
+    else:
+        substitutions[arg2] = arg1
+        
+    # Arg 2
+    arg1 = args1[1]
+    arg2 = args2[1]
+    
+    c1 = arg1[0]
+    c2 = arg2[0]
+    if not (c1.isupper() or c1 == '_') and not (c2.isupper() or c2 == '_'):
+        if arg1 != arg2: return None
+    elif arg2 in substitutions:
+        if substitutions[arg2] != arg1: return None
+    else:
+        substitutions[arg2] = arg1
 
-        # If both are constants, they must be equal
-        if not (arg1[0].isupper() or arg1[0] == '_') and not (arg2[0].isupper() or arg2[0] == '_'):
-            print('both are constants') if verbose else None
-            if arg1 != arg2:
-                print('constants are different') if verbose else None
-                return None
-        elif arg2 in substitutions:
-            print('arg2 in substitutions') if verbose else None
-            if substitutions[arg2] != arg1:
-                print('different substitution') if verbose else None
-                return None
-        else:
-            substitutions[arg2] = arg1
-            print('substitutions:', substitutions) if verbose else None
     return substitutions
 
 def unify_with_facts(query: Term, 
@@ -122,8 +164,12 @@ def unify_with_rules(query: Term, rules_by_pred, verbose: int=0) -> List[Tuple[L
 def _needs_renaming(state: List[Term]) -> bool:
     for t in state:
         for a in t.args:
-            if a and (a[0].isupper() or a[0] == '_') and not a.startswith('Var_'):
-                return True
+            if a:
+                c = a[0]
+                if c.isupper() or c == '_':
+                    # Only return True if it DOES NOT start with 'Var_'
+                    if not (c == 'V' and a.startswith('Var_')):
+                         return True
     return False
 
 def rename_vars_local(next_states: List[List[Term]],
@@ -153,77 +199,54 @@ def rename_vars_local(next_states: List[List[Term]],
     if not any(_needs_renaming(s) for s in next_states):
         return next_states, global_next_var_index
 
-    renamed_states_outer = []    # Initialize the variable here before the loop
-    current_state_var_index = global_next_var_index 
+    renamed_states_outer = []
     max_index_seen = global_next_var_index
-    for idx, state in enumerate(next_states):
-        local_var_mapping: Dict[str, str] = {} # Mapping is local to this state
-        renamed_state_inner = [None] * len(state)
 
-        # --- Collision Avoidance Step (only executed if we actually rename) ---
-        # Find the max 'Var_k' index already in use in this state
-        max_existing_k = -1
-        existing_vars_in_state = set()
+    # We assume global_next_var_index is always greater than any existing 'Var_k' 
+    # in the state, maintaining the invariant that indices increase monotonically.
+    # This avoids the expensive O(N) scan for max_existing_k.
+    
+    for state in next_states:
+        if not _needs_renaming(state):
+             renamed_states_outer.append(state)
+             continue
+
+        local_var_mapping: Dict[str, str] = {}
+        current_state_var_index = global_next_var_index
+        renamed_state_inner = []
+
         for term in state:
-            for arg in term.args:
-                 if isinstance(arg, str) and arg.startswith('Var_'):
-                      existing_vars_in_state.add(arg)
-                      try:
-                           k = int(arg[4:])
-                           max_existing_k = max(max_existing_k, k)
-                      except ValueError:
-                           raise ValueError(f"Invalid variable format: {arg}")
-
-        local_start_index = max(global_next_var_index, max_existing_k + 1)
-        current_state_var_index = local_start_index # Counter for new vars in this state
-
-        # --- Renaming Loop ---
-        # Iterate over terms and their arguments to rename variables safely 
-        # We only rename variables that are not already 'Var_...'
-        # We build new args list only if a change is needed (optimization)
-        # This avoids unnecessary object creation
-        # We also track if any term changed to avoid unnecessary Term creation
-
-        for i, term in enumerate(state):
-            original_args = term.args
-            new_args_list = None
+            new_args_list = []
             term_changed = False
+            
+            for arg in term.args:
+                # Optimized check: variable that needs renaming
+                if arg and (arg[0].isupper() or arg[0] == '_'):
+                    if not (arg[0] == 'V' and arg.startswith('Var_')):
+                         # It is a variable to rename (X, Y, _A...)
+                         mapped_arg = local_var_mapping.get(arg)
+                         if mapped_arg is None:
+                             mapped_arg = f"Var_{current_state_var_index}"
+                             local_var_mapping[arg] = mapped_arg
+                             current_state_var_index += 1
+                         
+                         new_args_list.append(mapped_arg)
+                         if mapped_arg != arg:
+                             term_changed = True
+                         continue
 
-            for j, arg in enumerate(original_args):
-                renamed_arg = arg
-
-                # Only rename non-'Var_' variables
-                if arg and (arg[0].isupper() or arg[0] == '_') and not arg.startswith('Var_'):
-                    mapped_arg = local_var_mapping.get(arg)
-                    if mapped_arg is None:
-                        new_var_name = f"Var_{current_state_var_index}"
-                        local_var_mapping[arg] = new_var_name
-                        current_state_var_index += 1 # Increment index for next new var *in this state*
-                        renamed_arg = new_var_name
-                        term_changed = True
-                    else:
-                        renamed_arg = mapped_arg
-                        if renamed_arg != arg: # Should always be true if mapped
-                            term_changed = True
-                # Else: Keep constants and existing 'Var_' variables as they are
-
-                # --- Optimization: Build new args list only if necessary ---
-                if term_changed and new_args_list is None:
-                    new_args_list = list(original_args[:j])
-                if new_args_list is not None:
-                    new_args_list.append(renamed_arg)
-
+                # Fallback: constant or existing Var_
+                new_args_list.append(arg)
+            
             if term_changed:
-                renamed_state_inner[i] = Term(term.predicate, tuple(new_args_list))
+                renamed_state_inner.append(Term(term.predicate, tuple(new_args_list)))
             else:
-                renamed_state_inner[i] = term
-
+                renamed_state_inner.append(term)
+        
         renamed_states_outer.append(renamed_state_inner)
-        max_index_seen = max(max_index_seen, current_state_var_index)
+        if current_state_var_index > max_index_seen:
+            max_index_seen = current_state_var_index
 
-    if renamed_states_outer != next_states:
-        print('\n\nRenamed states:', renamed_states_outer) if verbose else None
-        print('Original states:', next_states) if verbose else None
     return renamed_states_outer, max_index_seen
 
 
@@ -419,11 +442,10 @@ def get_next_unification_python(state: List[Term],
             print(f"    Fact next state for sub {subs}") if verbose else None
             fact_derived_states.append(remaining_state)
         else: # Apply substitutions to the remaining goals
-            new_state = [
-                (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
-                    else Term(term.predicate, substituted_args))
-                for term in remaining_state
-            ]
+            if not subs: # Trivial substitution
+                 new_state = list(remaining_state)
+            else:
+                 new_state = [_apply_subs(term, subs) for term in remaining_state]
 
             # substitute the facts by True
             # NOTE: We MUST check excluded_fact here! After substitution, a remaining goal
@@ -450,11 +472,10 @@ def get_next_unification_python(state: List[Term],
     print('\nUnification with rules') if verbose else None
     rule_results = unify_with_rules(query, rules, verbose=verbose)
     for body, subs in rule_results:
-        new_remaining = [
-            (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
-                else Term(term.predicate, substituted_args))
-            for term in remaining_state
-        ]
+        if not subs:
+             new_remaining = list(remaining_state)
+        else:
+             new_remaining = [_apply_subs(term, subs) for term in remaining_state]
         new_state = body + new_remaining
         
         # Prune ground facts from rule-derived states
@@ -501,12 +522,10 @@ def get_next_unification_python(state: List[Term],
                 
                 if subs.get('True') == 'True':
                     new_state = r_remaining
+                elif not subs:
+                    new_state = list(r_remaining)
                 else:
-                    new_state = [ # Apply subs to the rest of the rule-derived state
-                        (term if (substituted_args := tuple(subs.get(arg, arg) for arg in term.args)) == term.args
-                            else Term(term.predicate, substituted_args))
-                        for term in r_remaining
-                    ]
+                    new_state = [_apply_subs(term, subs) for term in r_remaining]
                     
                 # substitute the facts by True
                 # NOTE: We MUST check excluded_fact here! After rule+fact unification and substitution,

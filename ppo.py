@@ -29,6 +29,11 @@ from tensordict import TensorDict
 from rollout import RolloutBuffer
 from utils.trace_utils import TraceRecorder
 from callbacks import print_formatted_metrics, DetailedMetricsCollector
+try:
+    from debug_training import analyze_logits, analyze_values_returns, analyze_advantages, print_training_health_report
+    DEBUG_TRAINING_AVAILABLE = True
+except ImportError:
+    DEBUG_TRAINING_AVAILABLE = False
 
 
 def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
@@ -121,8 +126,10 @@ class PPO:
         seed: Optional[int] = None,
         use_amp: bool = False,  # Enable AMP for mixed precision training
         parity: bool = False,   # Enable parity mode (e.g. numpy RNG for rollouts)
-            total_timesteps: Optional[int] = None,  # Total training timesteps for schedule computation
-        ):
+        total_timesteps: Optional[int] = None,  # Total training timesteps for schedule computation
+        use_compile: bool = True,  # Enable torch.compile for policy optimization
+        debug_ppo: bool = False,  # Enable detailed training diagnostics
+    ):
         """
         Initialize the PPO algorithm.
         
@@ -233,11 +240,18 @@ class PPO:
             self.policy.parameters(),
             lr=self.learning_rate,
             eps=1e-5,
-            fused=True
+            fused=True  # Use fused kernel for performance
         )
         
-        # Compile components
-        self._compile_components()
+        # Compile components (if enabled)
+        self.use_compile = use_compile
+        self.debug_ppo = debug_ppo  # Enable detailed diagnostics
+        if use_compile:
+            self._compile_components()
+        else:
+            print("[PPO] torch.compile disabled")
+            # Set uncompiled versions
+            self._compute_loss_compiled = self._compute_loss_components
 
     def _compute_loss_components(
         self,
@@ -750,10 +764,10 @@ class PPO:
                 
                 # Flatten actions if needed
                 actions = actions.squeeze(-1) if actions.dim() > 1 else actions
-                
                 # Normalize advantages per minibatch
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                
                 
                 # --------------------
                 # --------------------
@@ -774,7 +788,9 @@ class PPO:
                                 }
 
                 # Compute forward pass and losses (compiled)
-                with torch.amp.autocast('cuda', enabled=self.use_amp):
+                # IMPORTANT: Must use same amp_dtype as rollout collection to avoid KL divergence
+                amp_dtype = torch.bfloat16 if self.use_amp and torch.cuda.is_bf16_supported() else torch.float16
+                with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=amp_dtype):
                     values, log_probs, entropy = self.policy.evaluate_actions(obs, actions)
                     values = values.flatten()
                     
@@ -886,6 +902,35 @@ class PPO:
                 "approx_kl": torch.stack(approx_kl_divs_t).mean().item() if approx_kl_divs_t else 0.0,
                 "explained_var": ev,
             }
+            
+            # Detailed training diagnostics when debug_ppo is enabled
+            if getattr(self, 'debug_ppo', False) and DEBUG_TRAINING_AVAILABLE:
+                # Analyze values and returns
+                values_flat = self.rollout_buffer.values.flatten()
+                returns_flat = self.rollout_buffer.returns.flatten()
+                advantages_flat = self.rollout_buffer.advantages.flatten()
+                
+                value_stats = analyze_values_returns(values_flat, returns_flat)
+                advantage_stats = analyze_advantages(advantages_flat)
+                
+                print_training_health_report(
+                    logit_stats={  # Empty for now - would need to capture from forward pass
+                        "logits_valid_min": 0.0,
+                        "logits_valid_max": 0.0,
+                        "logits_valid_mean": 0.0,
+                        "logits_valid_std": 0.0,
+                        "probs_valid_min": 0.0,
+                        "probs_valid_max": 0.0,
+                        "entropy_mean": metrics.get("entropy", 0.0),
+                        "entropy_min": metrics.get("entropy", 0.0),
+                        "entropy_max": metrics.get("entropy", 0.0),
+                        "relative_entropy_mean": 0.5,
+                        "num_valid_actions_mean": 5.0,
+                    },
+                    value_stats=value_stats,
+                    advantage_stats=advantage_stats,
+                    loss_stats=metrics,
+                )
         
         if return_traces:
             metrics["traces"] = train_traces
