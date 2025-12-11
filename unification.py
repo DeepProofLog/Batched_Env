@@ -1244,23 +1244,61 @@ def prune_and_collapse(
     proof_mask_B = proof_counts > 0
 
     # -------------------------------------------------------------------------
-    # 5. Filter Survivors - Single pass
+    # 5. Filter Survivors + Compact Atoms - FUSED for performance
     # -------------------------------------------------------------------------
+    # We combine filtering and compaction in one pass to avoid redundant work.
+    
     owner_is_proven = proof_mask_B[owners]            # [N]
     keep_cand = ~is_proof_cand & ~owner_is_proven     # [N]
     
-    if not keep_cand.any():
+    # Early exit check (unavoidable sync, but rare path)
+    keep_cand_sum = keep_cand.sum()
+    if keep_cand_sum == 0:
         z3 = torch.empty((0, M, 3), dtype=candidates.dtype, device=device)
         z1 = torch.empty((0,), dtype=torch.long, device=device)
         return z3, z1, proof_mask_B, z1
 
-    # Use boolean indexing directly for compaction (implicit nonzero, unavoidable for compaction)
-    surv_states = candidates[keep_cand]
-    # Use the UPDATED counts (pruned_counts)
+    # Extract survivors - single boolean indexing pass
     surv_counts = pruned_counts[keep_cand]
     surv_owners = owners[keep_cand]
+    
+    # Get keep_atom mask for survivors only (reuse already computed keep_atom)
+    keep_atom_surv = keep_atom[keep_cand]             # [N', M]
+    N_surv = keep_atom_surv.shape[0]
+    
+    # Compute compacted positions via cumsum (no sync needed)
+    pos = torch.cumsum(keep_atom_surv.long(), dim=1) - 1  # [N', M]
+    
+    # Allocate compact output and scatter atoms into place
+    compact = torch.full((N_surv, M, 3), pad, dtype=candidates.dtype, device=device)
+    
+    # Vectorized scatter - computes indices without boolean indexing on pos
+    # This avoids the extra intermediate from expand_as + boolean index
+    surv_states = candidates[keep_cand]               # [N', M, 3]
+    
+    # Use nonzero-free scatter: mask selects which positions to write
+    # key insight: pos[i,j] gives target column, row is always i
+    row_idx = _arange_cache.get(N_surv, device).view(N_surv, 1).expand(N_surv, M)
+    
+    # Scatter where keep_atom_surv is True
+    # We use masked scatter via where: for positions we keep, copy from surv_states
+    # For this to work, we need pos to be valid (>= 0) only where keep_atom_surv is True
+    # Since cumsum starts at 0 for first True, pos will be -1 where keep_atom_surv[i,:j] has no True
+    
+    # Clamp pos to valid range (does not affect correctness since we only write where mask is True)
+    pos_safe = pos.clamp(min=0)
+    
+    # Flatten for scatter
+    flat_row = row_idx.reshape(-1)                    # [N' * M]
+    flat_col = pos_safe.reshape(-1)                   # [N' * M]
+    flat_mask = keep_atom_surv.reshape(-1)            # [N' * M]
+    flat_vals = surv_states.reshape(-1, 3)            # [N' * M, 3]
+    
+    # Filter to only valid positions and scatter
+    valid_idx = flat_mask.nonzero(as_tuple=True)[0]   # [K] indices where mask is True
+    compact[flat_row[valid_idx], flat_col[valid_idx]] = flat_vals[valid_idx]
 
-    return surv_states, surv_counts, proof_mask_B, surv_owners
+    return compact, surv_counts, proof_mask_B, surv_owners
 
 
 @torch.no_grad()

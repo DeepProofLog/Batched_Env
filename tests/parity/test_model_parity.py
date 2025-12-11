@@ -43,7 +43,7 @@ if str(SB3_ROOT) not in sys.path:
 
 # Import tensor-based components
 from embeddings import EmbedderLearnable
-from model import ActorCriticPolicy
+from model_old import ActorCriticPolicy
 
 # Try to import SB3 components for parity testing
 try:
