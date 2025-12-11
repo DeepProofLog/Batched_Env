@@ -65,7 +65,7 @@ class TrainParityConfig:
     ent_coef: float = 0.2
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    target_kl: Optional[float] = 0.03 #0.03  # KL divergence threshold for early stopping
+    target_kl: Optional[float] = None #0.03  # KL divergence threshold for early stopping
     total_timesteps: int = 120
     n_corruptions: int = 10
     corruption_scheme: List[str] = None  # ['head'], ['tail'], or ['head', 'tail']

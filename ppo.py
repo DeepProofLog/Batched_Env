@@ -14,7 +14,7 @@ Key Components:
 """
 
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Callable
 import numpy as np
 import torch
 import torch.nn as nn
@@ -28,7 +28,7 @@ from tensordict import TensorDict
 
 from rollout import RolloutBuffer
 from utils.trace_utils import TraceRecorder
-from callbacks import print_formatted_metrics, DetailedMetricsCollector
+from callbacks import Display
 try:
     from debug_training import analyze_logits, analyze_values_returns, analyze_advantages, print_training_health_report
     DEBUG_TRAINING_AVAILABLE = True
@@ -212,7 +212,8 @@ class PPO:
         
         print(f"[PPO] Device sync optimization: _same_device={self._same_device} (self.device={self.device}, env.device={self.env_device})")
         
-        self.metrics_collector = DetailedMetricsCollector(collect_detailed=True, verbose=False)
+        
+        # self.metrics_collector = DetailedMetricsCollector(collect_detailed=True, verbose=False)
         
         # Get number of environments
         self.n_envs = int(env.batch_size[0]) if isinstance(env.batch_size, torch.Size) else int(env.batch_size)
@@ -453,6 +454,7 @@ class PPO:
         episode_lengths: list,
         iteration: int,
         return_traces: bool = False,
+        on_step_callback: Optional[Callable] = None,
     ) -> tuple:
         """
         Collect experiences using the current policy and fill the rollout buffer.
@@ -484,7 +486,7 @@ class PPO:
         
         self.policy.eval()
         self.rollout_buffer.reset()
-        self.metrics_collector.reset()
+        # self.metrics_collector.reset()
         
         traces = [] if return_traces else None
         n_collected = 0
@@ -668,7 +670,10 @@ class PPO:
                                 else:
                                     info_dict[key] = int(val)
                                     
-                        self.metrics_collector.accumulate([info_dict])
+                        infos_list = [info_dict]
+                        # self.metrics_collector.accumulate(infos_list)
+                        if on_step_callback:
+                            on_step_callback(infos_list)
                         
                         # Reset episode stats
                         current_episode_reward[idx] = 0.0
@@ -871,8 +876,8 @@ class PPO:
                    mean_clip = torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0
                    
                    print(f"Losses: total {loss.item():.5f}, "
-                        f"policy {mean_pg:.5f}, "
                         f"value {mean_val:.5f}, "
+                        f"policy {mean_pg:.5f}, "
                         f"entropy {mean_ent:.5f}, "
                         f"approx_kl {mean_kl:.5f} "
                         f"clip_fraction {mean_clip:.5f}. ")
@@ -943,6 +948,7 @@ class PPO:
         callback=None,
         reset_num_timesteps: bool = True,
         on_iteration_start_callback=None,
+        on_step_callback=None,
     ) -> None:
         """
         Execute the PPO main loop: alternate between collecting rollouts and training.
@@ -999,7 +1005,7 @@ class PPO:
             # Callbacks (Start of Iteration)
             # ============================================================
             if on_iteration_start_callback is not None:
-                on_iteration_start_callback(total_steps_done)
+                on_iteration_start_callback(iteration, total_steps_done)
             
             # ============================================================
             # Logging
@@ -1026,6 +1032,7 @@ class PPO:
                 episode_rewards=episode_rewards,
                 episode_lengths=episode_lengths,
                 iteration=iteration,
+                on_step_callback=on_step_callback,
             )
             
             total_steps_done += steps_collected
@@ -1035,16 +1042,7 @@ class PPO:
                 if episode_rewards:
                     recent_rewards = episode_rewards[-10:]
                     print(f"[PPO] Recent episodes: reward={sum(recent_rewards)/len(recent_rewards):.3f}, length={sum(episode_lengths[-10:])/len(episode_lengths[-10:]):.1f}")
-            # Display detailed rollout metrics
-            rollout_metrics = self.metrics_collector.compute_metrics()
-            extra_rollout = {
-                "total_timesteps": total_steps_done,
-            }
-            print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
-            if rollout_time > 0:
-                extra_rollout["fps"] = int((self.n_envs * self.n_steps) / rollout_time)
-            print_formatted_metrics(metrics=rollout_metrics, prefix="rollout", extra_metrics=extra_rollout)
-            
+
             # ============================================================
             # Train policy
             # ============================================================
@@ -1054,7 +1052,7 @@ class PPO:
             train_metrics = self.train()
             train_time = time.time() - train_start_time
             train_extra = {**train_metrics, "total_timesteps": total_steps_done, "iterations": iteration}
-            print_formatted_metrics(metrics={}, prefix="train", extra_metrics=train_extra)
+            Display.print_formatted_metrics(metrics={}, prefix="train", extra_metrics=train_extra)
             
             # Store last training metrics for external access
             self.last_train_metrics = train_metrics

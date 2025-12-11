@@ -424,6 +424,8 @@ def get_alternative_solutions_for_negative_ev() -> str:
     Get detailed recommendations for fixing negative explained variance.
     """
     return """
+"""
+"""
 ## Solutions for Negative Explained Variance (without reducing LR)
 
 ### 1. Increase vf_coef (RECOMMENDED)
@@ -459,6 +461,78 @@ def get_alternative_solutions_for_negative_ev() -> str:
    - More robust to outliers than MSE
    - Less affected by extreme returns
 """
+
+class RewardTracker:
+    """
+    Tracks training rewards for monitoring purposes.
+    """
+    
+    def __init__(self, patience: int = 10):
+        self.history: list = []
+        self.best_reward: float = float('-inf')
+        self.best_iteration: int = 0
+        self.patience = patience
+        self.no_improvement_count: int = 0
+        
+    def update(self, reward: float, iteration: int) -> Dict[str, Any]:
+        """
+        Update tracker with new reward value.
+        
+        Returns:
+            Dict with tracking information
+        """
+        self.history.append({'iteration': iteration, 'reward': reward})
+        
+        is_best = reward > self.best_reward
+        if is_best:
+            self.best_reward = reward
+            self.best_iteration = iteration
+            self.no_improvement_count = 0
+        else:
+            self.no_improvement_count += 1
+        
+        # Compute trend (last 5 vs previous 5)
+        trend = self._compute_trend()
+        
+        return {
+            'current_reward': reward,
+            'best_reward': self.best_reward,
+            'best_iteration': self.best_iteration,
+            'is_best': is_best,
+            'trend': trend,  # 'improving', 'declining', 'stable'
+        }
+    
+    def _compute_trend(self) -> str:
+        """Compute reward trend based on recent history."""
+        if len(self.history) < 10:
+            return 'insufficient_data'
+        
+        recent = [h['reward'] for h in self.history[-5:]]
+        previous = [h['reward'] for h in self.history[-10:-5]]
+        
+        recent_mean = np.mean(recent)
+        previous_mean = np.mean(previous)
+        
+        diff = recent_mean - previous_mean
+        
+        # Use smaller threshold for rewards maybe? or keep 0.01
+        if diff > 0.005: 
+            return 'improving'
+        elif diff < -0.005:
+            return 'declining'
+        else:
+            return 'stable'
+    
+    def get_summary(self) -> str:
+        """Get a formatted summary of reward tracking."""
+        if not self.history:
+            return "No reward data recorded"
+        
+        current = self.history[-1]['reward']
+        return (
+            f"Reward (train): current={current:.3f}, best={self.best_reward:.3f} "
+            f"(iter {self.best_iteration}), trend={self._compute_trend()}"
+        )
 
 
 if __name__ == "__main__":

@@ -37,7 +37,14 @@ if __name__ == "__main__":
         - adviced before: clip_range=0.2, lr=5e-5, ent_coef=0.2, n_epochs=10, batch_size_env=64, 
         batch_size_env_eval=64, vf_coef=1.0, max_grad_norm=0.5, target_kl=0.02, gae_lambda=0.95, gamma=0.99, 
         - 111(train queries)x5(pos+4 neg)x4(avg_len)=2,220 steps. set 16(envs)x128(steps)=2048. Recomended to cover 10%
-        
+    
+        countries_s3 (Solved/Optimal Config): 
+        - Strategy: Balanced training + L2 Normalization + Early Stopping.
+        - Architecture: use_l2_norm=True, temperature=0.1, hidden_dim=256, dropout_prob=0.0.
+        - PPO Args: lr=3e-5, ent_coef=0.01 (low), clip_range_vf=None (unclipped critic).
+        - Data: train_neg_ratio=1 (Balanced), 16 envs x 256 steps.
+        - Result: consistently achieves MRR > 0.95.
+
         family: 
         - (lr, entropy) decay false, 5e-5 and 0.05, train_neg_ratio 0 (nothing to learn from neg), envsxsteps=128x128, train depth check with {1,2,3,4}. 
         - 20k(train queries)x5(pos+4 neg)x3(avg_len)=300k-->cover 30k steps= 128x12
@@ -50,7 +57,7 @@ if __name__ == "__main__":
         'eval_neg_samples': None,
         'test_neg_samples': None,
 
-        'train_depth': None,
+        'train_depth': {1,2,3,4,5,6},
         'valid_depth': None,
         'test_depth': None,
 
@@ -63,21 +70,23 @@ if __name__ == "__main__":
 
         # Model params
         'model_name': 'PPO',
-        'ent_coef': 0.5,  # Base entropy coefficient (will be scheduled from higher value)
         'clip_range': 0.2,
         'n_epochs': 5,  # REDUCED from 10 - prevents KL spikes without reducing LR
-        'lr': 3e-5,  # Keep learning rate - use other methods to control KL
         'gamma': 0.99,
         'gae_lambda': 0.95,  # GAE lambda for advantage estimation
-        'clip_range_vf': 0.5,  # Enable value function clipping for stability
+        'clip_range_vf': None,# 0.5,  # Enable value function clipping for stability
         'vf_coef': 2.0,  # INCREASED from 1.0 - fixes negative explained variance
         'max_grad_norm': 0.5,  # Gradient clipping for stability
         'target_kl': 0.07,  # INCREASED from 0.05 - allow more epochs before early stopping
+        'hidden_dim': 128,
+        'num_layers': 8,
+        'dropout_prob': 0.1,
 
         # Training params
         'seed': [0],
-        'timesteps_train': 7000000,
+        'timesteps_train': 1000000,
         'restore_best_val_model': True,
+        'load_best_metric': 'eval', # 'eval' (best MRR) or 'train' (best reward)
         'load_model': False,
         'save_model': True,
         'use_amp': True,  # Enable AMP for performance
@@ -90,7 +99,7 @@ if __name__ == "__main__":
 
         # Env params
         'reward_type': 4,  # Aligned with SB3 (was 4)
-        'train_neg_ratio': 4,
+        'train_neg_ratio': 1,
         'end_proof_action': True,
         'skip_unary_actions': True,
         'max_depth': 20,
@@ -100,14 +109,18 @@ if __name__ == "__main__":
 
 
         # Entropy coefficient decay params
+        'ent_coef': 0.1,  # Base entropy coefficient (will be scheduled from higher value)
+
         'ent_coef_decay': True,  # Enable entropy coefficient decay
-        'ent_coef_init_value': 0.5,  # Start with moderate exploration
+        'ent_coef_init_value': 0.01,  # Start with moderate exploration
         'ent_coef_final_value': 0.01,  # End with low exploration
         'ent_coef_start': 0.0,  # Fraction of training when decay starts
         'ent_coef_end': 1.0,  # Fraction of training when decay ends
         'ent_coef_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
         
         # Learning rate decay params
+        'lr': 3e-5,  # Keep learning rate - use other methods to control KL
+
         'lr_decay': True,  # Enable learning rate decay
         'lr_init_value': 3e-5,  # Reduced from 5e-5 for more stable updates
         'lr_final_value': 1e-6,  # Final value
@@ -130,9 +143,9 @@ if __name__ == "__main__":
         # sqrt_scale: Divide logits by sqrt(embed_dim) (attention-style scaling)
         # temperature: Lower = sharper distribution, Higher = more uniform
 
-        'use_l2_norm': False,  # DISABLED - was causing policy to be too uniform
-        'sqrt_scale': True,    # Enable sqrt(embed_dim) scaling for stable logits
-        'temperature': 1.0,    # Standard temperature
+        'use_l2_norm': True,  # DISABLED - was causing policy to be too uniform
+        'sqrt_scale': False,    # Enable sqrt(embed_dim) scaling for stable logits
+        'temperature': 0.1,    # Standard temperature
 
 
         # Other params
@@ -178,6 +191,8 @@ if __name__ == "__main__":
         help="Grid search values, e.g. --grid reward_type=2,3.")
     parser.add_argument("--eval", action='store_true',
         help="Shortcut: load model and skip training (timesteps=0).")
+    parser.add_argument("--profile", action='store_true',
+        help="Enable cProfile profiling for the training loop.")
 
     args = parser.parse_args()
 
@@ -342,6 +357,7 @@ if __name__ == "__main__":
 
         namespace.device = device
         namespace.eval_freq = int(namespace.n_steps * namespace.eval_freq)
+        namespace.profile = args.profile
 
         return namespace
 
@@ -408,6 +424,7 @@ if __name__ == "__main__":
                 args.use_wb,
                 args.wb_path,
                 date,
+                profile_run=args.profile,  # Pass profile flag
             )
 
             if args.use_logger and logger is not None:

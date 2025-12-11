@@ -30,6 +30,9 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 import numpy as np
+import cProfile
+import pstats
+import io
 
 # Add root to path
 ROOT = Path(__file__).resolve().parent
@@ -49,16 +52,13 @@ from sampler import Sampler
 from utils.seeding import seed_all
 from callbacks import (
     TorchRLCallbackManager, 
-    MRREvaluationCallback, 
-    TrainingMetricsCallback, 
+    MetricsCallback, 
+    RankingCallback,
+    CheckpointCallback,
     ScalarAnnealingCallback, 
     AnnealingTarget
 )
-try:
-    from training_stability import MRRTracker
-    MRR_TRACKER_AVAILABLE = True
-except ImportError:
-    MRR_TRACKER_AVAILABLE = False
+
 
 
 def _set_seeds(seed: int) -> None:
@@ -440,7 +440,102 @@ def _evaluate(args: Any, policy, eval_env, sampler, dh: DataHandler, im: IndexMa
 
 
 
-def main(args, log_filename, use_logger, use_WB, WB_path, date, external_components=None):
+def build_callbacks(
+    args, 
+    eval_env, 
+    policy, 
+    sampler, 
+    dh, 
+    index_manager, 
+    annealing_targets
+):
+    """
+    Constructs and returns the callback manager and paths to best models.
+    """
+    callbacks_list = []
+    
+    # 1. Training metrics callback
+    # Collects aggregated and detailed stats (depth/label) and prints every log_interval
+    callbacks_list.append(MetricsCallback(
+        log_interval=1,
+        verbose=True,
+        collect_detailed=True
+    ))
+
+    # 2. Evaluation callback (for finding Best Model)
+    best_model_path_train = None
+    best_model_path_eval = None
+    
+    if getattr(args, 'save_model', False):
+        save_path = Path(args.models_path) / args.run_signature
+        
+        # Define paths for potential best models
+        best_model_path_train = save_path / "best_model_train.pt"
+        best_model_path_eval = save_path / "best_model_eval.pt"
+        
+        # Prepare Eval Data for RankingCallback
+        valid_queries_tensor = torch.stack([
+            index_manager.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            for q in dh.valid_queries
+        ])
+        
+        valid_depths_tensor = None
+        if hasattr(dh, 'valid_depths') and dh.valid_depths is not None:
+             valid_depths_tensor = torch.tensor(dh.valid_depths, dtype=torch.long)
+        
+        # Use subset if configured
+        n_eval = getattr(args, 'n_eval_queries', None)
+        if n_eval:
+           valid_queries_tensor = valid_queries_tensor[:n_eval]
+           if valid_depths_tensor is not None:
+               valid_depths_tensor = valid_depths_tensor[:n_eval]
+           
+        best_metric_key = getattr(args, 'eval_best_metric', 'mrr_mean')
+        # Map nice name to callback output key
+        if best_metric_key == 'mrr': best_metric_key = 'mrr_mean'
+        if best_metric_key == 'auc_pr': best_metric_key = 'auc_pr'
+
+        # Ranking Callback (Evaluates MRR)
+        ranking_cb = RankingCallback(
+            eval_env=eval_env,
+            policy=policy,
+            sampler=sampler,
+            eval_data=valid_queries_tensor,
+            eval_data_depths=valid_depths_tensor,
+            eval_freq=1,
+            n_corruptions=args.eval_neg_samples,
+            corruption_scheme=tuple(args.corruption_scheme)
+        )
+        callbacks_list.append(ranking_cb)
+        
+        # Checkpoint Callback (Saves best models)
+        ckpt_cb = CheckpointCallback(
+            save_path=save_path,
+            policy=policy,
+            best_model_name_train="best_model_train.pt",
+            best_model_name_eval="best_model_eval.pt",
+            train_metric="ep_rew_mean",
+            eval_metric=best_metric_key,
+            verbose=True
+        )
+        callbacks_list.append(ckpt_cb)
+
+        # Annealing
+        if annealing_targets:
+            callbacks_list.append(ScalarAnnealingCallback(
+                total_timesteps=args.timesteps_train,
+                targets=annealing_targets,
+                verbose=1
+            ))
+
+    callback_manager = None
+    if callbacks_list:
+        # Create manager
+        callback_manager = TorchRLCallbackManager(callbacks=callbacks_list)
+        
+    return callback_manager, best_model_path_train, best_model_path_eval
+
+def main(args, log_filename, use_logger, use_WB, WB_path, date, external_components=None, profile_run=False):
     """
     Main training entry point.
     
@@ -499,9 +594,9 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         embedder=embedder,
         embed_dim=args.state_embedding_size,
         action_dim=action_size,
-        hidden_dim=256,
-        num_layers=8,
-        dropout_prob=0.0,
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        dropout_prob=args.dropout_prob,
         device=device,
         temperature=getattr(args, 'temperature', 1.0),  # Temperature for entropy control
         use_l2_norm=getattr(args, 'use_l2_norm', True),  # L2 norm for cosine similarity
@@ -613,142 +708,100 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     print("="*60 + "\n")
     
     # Configure callbacks (PARITY)
-    # We manually construct the callback system to match SB3's functionality
-    callback_manager = None
-    callbacks_list = []
-    
-    # 1. Training metrics callback
-    callbacks_list.append(TrainingMetricsCallback(
-        log_interval=1,
-        verbose=True,
-        collect_detailed=True
-    ))
-
-    # 2. Evaluation callback (for finding Best Model)
-    best_model_path = None
-    if getattr(args, 'save_model', False):
-        save_path = Path(args.models_path) / args.run_signature
-        best_model_path = save_path / "best_model.pt"
+    callback_manager, best_model_path_train, best_model_path_eval = build_callbacks(
+        args, eval_env, policy, sampler, dh, index_manager, annealing_targets
+    )
+    callbacks_list = callback_manager.callbacks if callback_manager else []
+    # Create wrapper for PPO.learn
+    def ppo_callback(locals_, globals_):
+        iteration = locals_.get('iteration', 0)
+        total_steps = locals_.get('total_steps_done', 0)
         
-        # Create evaluation callback
-        # Get validation queries as tensor
-        valid_queries_tensor = torch.stack([
-            index_manager.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-            for q in dh.valid_queries
-        ])
+        # Dispatch to manager
+        # We call on_iteration_end which calls all sub-callbacks
+        # Note: We don't need to manually distinguish because Manager does it
+        # But the Manager.on_iteration_end needs to merge metrics for CheckpointCallback
         
-        # Use full validation set or subset
-        n_eval = getattr(args, 'n_eval_queries', None)
-        if n_eval:
-           valid_queries_tensor = valid_queries_tensor[:n_eval]
-           
-        best_metric = getattr(args, 'eval_best_metric', 'mrr_mean')
-        if best_metric == 'mrr':
-            best_metric = 'mrr_mean'
+        # NOTE: Manager.on_iteration_end returns aggregated metrics
+        metrics = callback_manager.on_iteration_end(iteration, total_steps, n_envs=env.batch_size)
         
-        # Get validation depths
-        valid_depths = torch.as_tensor(dh.valid_depths, dtype=torch.long, device=device)
-        if n_eval:
-            valid_depths = valid_depths[:n_eval]
-            
-        eval_cb = MRREvaluationCallback(
-            eval_env=eval_env,
-            sampler=sampler,
-            eval_data=valid_queries_tensor,
-            eval_data_depths=valid_depths,
-            n_corruptions=args.eval_neg_samples,
-            eval_freq=1,  # Evaluate every iteration for best model tracking
-            best_metric=best_metric,
-            save_path=save_path,
-            model_name="model",
-            verbose=True,
-            policy=policy,  # Pass policy to enable saving
-            corruption_scheme=args.corruption_scheme,
-        )
-        if annealing_targets:
-            callbacks_list.append(ScalarAnnealingCallback(
-                total_timesteps=args.timesteps_train,
-                targets=annealing_targets,
-                verbose=1
-            ))
-            
-        callbacks_list.append(eval_cb)
-
-    if callbacks_list:
-        # Create manager
-
-        callback_manager = TorchRLCallbackManager(
-            train_callback=next((cb for cb in callbacks_list if isinstance(cb, TrainingMetricsCallback)), None),
-            eval_callback=next((cb for cb in callbacks_list if isinstance(cb, MRREvaluationCallback)), None)
-        )
+        # Explicitly manually trigger checkpoint check if not handled automagically
+        # My implementation of CheckpointCallback.check_and_save is separate.
+        # I can call it here with the metrics.
         
-        # Register other callbacks
-        for cb in callbacks_list:
-            if isinstance(cb, ScalarAnnealingCallback):
-                callback_manager.add_callback(cb)
+        # Find ckpt callback if it exists
+        ckpt_cb = next((cb for cb in callbacks_list if isinstance(cb, CheckpointCallback)), None)
+        if ckpt_cb:
+            ckpt_cb.check_and_save(metrics, iteration)
 
-        # Initialize MRR tracker for monitoring training progress
-        mrr_tracker = MRRTracker(patience=20) if MRR_TRACKER_AVAILABLE else None
-
-        # Create wrapper for PPO.learn
-        def ppo_callback(locals_, globals_):
-            # Extract info needed by manager
-            iteration = locals_.get('iteration', 0)
-            total_steps = locals_.get('total_steps_done', 0)
-            
-            # Evaluation callback (saves best model during training)
-            if callback_manager.eval_callback:
-                if callback_manager.eval_callback.should_evaluate(iteration):
-                    callback_manager.on_evaluation_start(iteration, total_steps)
-                    mrr_metrics = callback_manager.eval_callback.evaluate_mrr(policy)
-                    callback_manager.on_evaluation_end(iteration, total_steps, mrr_metrics)
-                    
-                    # Track MRR for monitoring
-                    if mrr_tracker is not None:
-                        current_mrr = mrr_metrics.get('_mrr', 0.0)
-                        if isinstance(current_mrr, str):
-                            try:
-                                current_mrr = float(current_mrr)
-                            except ValueError:
-                                current_mrr = 0.0
-                        track_result = mrr_tracker.update(current_mrr, iteration)
-                        
-                        # Log MRR tracking info
-                        if track_result['is_best']:
-                            print(f"[MRR] New best: {track_result['best_mrr']:.4f} at iteration {iteration}")
-                        print(f"[MRR] {mrr_tracker.get_summary()}")
-
-            # Training metrics callback
-            if callback_manager.train_callback:
-                 callback_manager.train_callback.on_iteration_end(iteration, total_steps, n_envs=env.batch_size)
-
-            return True
+        return True
 
     # Step 7: Train (matching sb3 flow)
     if args.timesteps_train > 0 and not getattr(args, 'load_model', False): 
         cb_func = ppo_callback if callback_manager else None
         iteration_start_cb = callback_manager.on_iteration_start if callback_manager else None
+        step_cb = callback_manager.on_step if callback_manager else None
         
         # Ensure initial values are set before training starts
         if callback_manager:
             callback_manager.on_training_start()
             
+        if profile_run:
+            print(f"\nProfiling PPO.learn() for {args.timesteps_train} timesteps...")
+            profiler = cProfile.Profile()
+            profiler.enable()
+
         ppo.learn(
             total_timesteps=args.timesteps_train, 
             callback=cb_func,
-            on_iteration_start_callback=iteration_start_cb
+            on_iteration_start_callback=iteration_start_cb,
+            on_step_callback=step_cb
         )
 
+        if profile_run:
+            profiler.disable()
+            print("\nProfiling completed.")
+            
+            # Save results to file
+            output_path = 'profile_results.txt'
+            n_functions = 30
+            with open(output_path, 'w') as f:
+                f.write(f"Device: {device}\n")
+                f.write(f"Total timesteps: {args.timesteps_train}\n")
+                f.write(f"Dataset: {args.dataset_name}\n\n")
+                
+                ps = pstats.Stats(profiler, stream=f)
+                ps.strip_dirs()
+                f.write("="*80 + "\n")
+                f.write("Top by Cumulative Time\n")
+                f.write("="*80 + "\n")
+                ps.sort_stats('cumulative')
+                ps.print_stats(n_functions)
+            
+                f.write("\n\n" + "="*80 + "\n")
+                f.write("Top by Total Time\n")
+                f.write("="*80 + "\n")
+                ps.sort_stats('tottime')
+                ps.print_stats(n_functions)
+            
+            print(f"\nResults saved to {output_path}")
+
+
+
     
-    # Restore best model if configured (PARITY with SB3)
-    # Only restore if training actually occurred (timesteps_train > 0)
+    # Restore best model if configured
     save_model = getattr(args, 'save_model', False)
     restore_best = getattr(args, 'restore_best_val_model', True)
+    load_metric = getattr(args, 'load_best_metric', 'eval')
     training_occurred = args.timesteps_train > 0 and not getattr(args, 'load_model', False)
         
-    if training_occurred and save_model and restore_best and best_model_path and best_model_path.exists():
-        print(f"Restored best val model from {best_model_path}")
-        policy.load_state_dict(torch.load(best_model_path, map_location=device))
+
+        
+    if training_occurred and save_model and restore_best and callback_manager:
+        # Find ckpt callback
+        ckpt_cb = next((cb for cb in callbacks_list if isinstance(cb, CheckpointCallback)), None)
+        if ckpt_cb:
+            ckpt_cb.load_best_model(load_metric=load_metric, device=device)
 
     # Step 8: Evaluate (matching sb3)
     metrics_train, metrics_valid, metrics_test = _evaluate(

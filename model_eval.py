@@ -21,7 +21,7 @@ import torch.nn as nn
 from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
-from callbacks import _format_stat_string, _format_depth_key
+from callbacks import Display
 
 DEBUG_EVAL = os.environ.get("NGG_DEBUG_EVAL", "").lower() in {"1", "true", "yes"}
 
@@ -438,8 +438,6 @@ def eval_corruptions(
         # Then filter to only use what's needed based on corruption_modes
         need_head = "head" in corruption_modes
         need_tail = "tail" in corruption_modes
-        print(f"DEBUG: eval_corruptions called with n_corruptions={n_corruptions}, corruption_modes={corruption_modes}")
-        print(f"DEBUG: need_head={need_head}, need_tail={need_tail}")
         
         sampler_mode = getattr(sampler, 'default_mode', 'both')
         
@@ -478,10 +476,6 @@ def eval_corruptions(
             if verbose:
                 print(f"Processing mode {mode}")
             corrs_list = head_corrs_list if mode == "head" else tail_corrs_list
-            
-            # DEBUG: Print size of corruptions
-            if len(corrs_list) > 0:
-                 print(f"DEBUG: mode={mode}, corrs_list[0] shape={corrs_list[0].shape}, total corruptions for query 0: {len(corrs_list[0])}")
             
             # Prepare ragged lists
             ragged_lists = []
@@ -641,7 +635,7 @@ def eval_corruptions(
         all_depths = torch.cat(acc_depths) if acc_depths else None
         
         def fmt(t):
-            return _format_stat_string(t.mean().item(), t.std().item(), t.numel())
+            return Display._format_stat_string(t.mean().item(), t.std().item(), t.numel())
             
         agg["len"] = fmt(all_lens)
         agg["ep_len_mean"] = getattr(all_lens.mean(), 'item', lambda: 0.0)()
@@ -673,7 +667,7 @@ def eval_corruptions(
                 for is_p, lbl in [(True, "pos"), (False, "neg")]:
                     mask_dp = mask_d & (all_pos if is_p else ~all_pos)
                     if mask_dp.any():
-                        depth_key = _format_depth_key(d_val if is_p else -1)
+                        depth_key = Display._format_depth_key(d_val if is_p else -1)
                         agg[f"len_d_{depth_key}_{lbl}"] = fmt(all_lens[mask_dp])
                         agg[f"reward_d_{depth_key}_{lbl}"] = fmt(all_rews[mask_dp])
                         if all_succ is not None:
