@@ -32,7 +32,7 @@ from parity_config import ParityConfig, TOLERANCE, create_parser, config_from_ar
 # Setup paths
 ROOT = Path(__file__).resolve().parents[2]
 SB3_ROOT = ROOT / "sb3"
-TEST_ENVS_ROOT = ROOT / "test_envs"
+TEST_ENVS_ROOT = ROOT / "tests" / "other" / "test_envs"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
