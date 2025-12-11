@@ -263,11 +263,7 @@ class SharedPolicyValueNetwork(nn.Module):
         self.policy_head = PolicyHead(hidden_dim, embed_dim)
         self.value_head = ValueHead(hidden_dim)
         self._use_amp = use_amp        
-        # NOTE: Inner functions (forward_policy, forward_value, forward_joint) are NOT compiled here
-        # because ActorCriticPolicy.forward() is compiled with fullgraph=True, which captures
-        # the entire end-to-end graph including these inner functions. Compiling both inner
-        # and outer functions causes nested CUDA graph replays (443 vs ~288), hurting performance.
-            
+
     def _encode_with_shared_body(self, embeddings: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Process embeddings through the shared backbone.
         
@@ -296,9 +292,8 @@ class SharedPolicyValueNetwork(nn.Module):
         # Encode observations and actions through shared body + policy head
         shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, H]
         encoded_obs = self.policy_head(shared_obs)  # [B, 1, E]
-        # action_mask is [B, S], embeddings are [B, S, E] (aggregated over atoms)
-        # So mask matches directly. NO expansion needed.
         
+        # action_mask is [B, S], embeddings are [B, S, E]
         shared_actions = self._encode_with_shared_body(action_embeddings, mask=action_mask)  # [B, S, H]
         encoded_actions = self.policy_head(shared_actions)  # [B, S, E]
         

@@ -219,27 +219,12 @@ class BatchedEnv(EnvBase):
         self.memory_pruning = bool(memory_pruning)
         self.use_exact_memory = bool(use_exact_memory)
         if self.use_exact_memory:
-            # Use GPU-based exact memory when device is CUDA, otherwise fallback to CPU ExactMemory
-            if self._device.type == 'cuda':
-                self.memory_backend = GPUExactMemory(
-                    batch_size=batch_size,
-                    device=self._device,
-                    padding_idx=self.padding_idx,
-                    padding_atoms=self.padding_atoms,
-                    max_arity=self.max_arity,
-                    total_vocab_size=self.total_vocab_size,
-                    true_pred_idx=self.true_pred_idx,
-                    false_pred_idx=self.false_pred_idx,
-                    end_pred_idx=self.end_pred_idx,
-                )
-            else:
-                # Fallback to CPU-based exact memory
-                self.memory_backend = ExactMemory(
-                    batch_size=batch_size,
-                    padding_idx=self.padding_idx,
-                    true_pred_idx=self.true_pred_idx,
-                    false_pred_idx=self.false_pred_idx,
-                    end_pred_idx=self.end_pred_idx,
+            self.memory_backend = ExactMemory(
+                batch_size=batch_size,
+                padding_idx=self.padding_idx,
+                true_pred_idx=self.true_pred_idx,
+                false_pred_idx=self.false_pred_idx,
+                end_pred_idx=self.end_pred_idx,
                 )
         else:
             self.memory_backend = BloomFilter(

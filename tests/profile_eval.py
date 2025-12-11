@@ -30,8 +30,6 @@ except (ImportError, ModuleNotFoundError):
     profile = None
     ProfilerActivity = None
 
-from utils.seeding import seed_all
-
 
 def setup_components(device: torch.device, config: SimpleNamespace):
     """
@@ -65,9 +63,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
             print(f"WARNING: CUDA graphs enabled with small bucket_size={config.bucket_size}. "
                   f"Consider using 64, 128, or 256 for better performance.")
     # Don't set the environment variable otherwise - let unification.py use its default
-    
-    # Set seeds for reproducibility (deterministic=False for performance)
-    seed_all(config.seed, deterministic=False, warn=False)
+
     
     # Load data
     dh = DataHandler(
@@ -196,9 +192,6 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         total_vocab_size=im.constant_no + config.max_total_vars,
         sample_deterministic_per_env=False,  # Disabled for performance
     )
-    
-    # Reseed before model creation (deterministic=False for performance)
-    seed_all(config.seed, deterministic=False, warn=False)
     
     # Policy - with compilation enabled for performance
     action_size = config.padding_states

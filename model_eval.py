@@ -433,9 +433,6 @@ def eval_corruptions(
         pos = queries[start:start + Q].to(device)
         pos_triples = pos.squeeze(1) if (A == 1 and D == 3) else pos
 
-        # Generate corruptions using sampler.corrupt() directly
-        # For RNG parity: always call head then tail (matching sampler.default_mode='both' order)
-        # Then filter to only use what's needed based on corruption_modes
         need_head = "head" in corruption_modes
         need_tail = "tail" in corruption_modes
         
@@ -635,7 +632,12 @@ def eval_corruptions(
         all_depths = torch.cat(acc_depths) if acc_depths else None
         
         def fmt(t):
-            return Display._format_stat_string(t.mean().item(), t.std().item(), t.numel())
+            count = t.numel()
+            if count == 0:
+                return Display._format_stat_string(None, None, 0)
+            elif count == 1:
+                return Display._format_stat_string(t.mean().item(), 0.0, 1)
+            return Display._format_stat_string(t.mean().item(), t.std().item(), count)
             
         agg["len"] = fmt(all_lens)
         agg["ep_len_mean"] = getattr(all_lens.mean(), 'item', lambda: 0.0)()

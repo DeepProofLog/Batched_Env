@@ -570,17 +570,26 @@ class CustomEvalCallback(EvalCallback):
             print("Warning: `model_path` is not set. Cannot restore model.")
             return
 
-        model_files = [f for f in os.listdir(self.model_path) if '.zip' in f and 'best_eval_' in f]
+        # Filter files to match the CURRENT run (self.name)
+        model_files = [
+            f for f in os.listdir(self.model_path) 
+            if '.zip' in f and f'best_eval_{self.name}' in f
+        ]
+
         if len(model_files) >= 1:
             model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
+            best_model_file = model_files[0]
+            
             self.model = PPO.load(
-                os.path.join(self.model_path, model_files[0]),
+                os.path.join(self.model_path, best_model_file),
                 env=env,          # or whatever env you need
                 device=self.model.device,
                 print_system_info=False
             )
-            # load the info file to get the best epoch and value
-            info_path = os.path.join(self.model_path, f'info_best_eval_{self.name}.json')
+            # load the info file. derive name from the zip file to be safe
+            info_filename = f"info_{best_model_file.replace('.zip', '.json')}"
+            info_path = os.path.join(self.model_path, info_filename)
+            
             if os.path.exists(info_path):
                 with open(info_path, 'r') as f:
                     info = json.load(f)
@@ -590,7 +599,8 @@ class CustomEvalCallback(EvalCallback):
             else:
                 raise ValueError(f"Warning: Info file not found: {info_path}")
         else:
-            raise ValueError("No best model found to restore.")
+            print("No best model found to restore for this run.")
+            return None
         return self.model
 
 
@@ -846,16 +856,26 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             print("Warning: `model_path` is not set. Cannot restore model.")
             return
 
-        model_files = [f for f in os.listdir(self.model_path) if '.zip' in f and 'best_eval_' in f]
+        # Filter files to match the CURRENT run (self.name)
+        model_files = [
+            f for f in os.listdir(self.model_path) 
+            if '.zip' in f and f'best_eval_{self.name}' in f
+        ]
+
         if len(model_files) >= 1:
             model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
+            best_model_file = model_files[0]
+            
             self.model = PPO.load(
-                os.path.join(self.model_path, model_files[0]),
+                os.path.join(self.model_path, best_model_file),
                 env=env,
                 device=self.model.device,
                 print_system_info=False
             )
-            info_path = os.path.join(self.model_path, f'info_best_eval_{self.name}.json')
+            
+            info_filename = f"info_{best_model_file.replace('.zip', '.json')}"
+            info_path = os.path.join(self.model_path, info_filename)
+            
             if os.path.exists(info_path):
                 with open(info_path, 'r') as f:
                     info = json.load(f)
@@ -879,7 +899,8 @@ class CustomEvalCallbackMRR(CustomEvalCallback):
             else:
                 raise ValueError(f"Warning: Info file not found: {info_path}")
         else:
-            raise ValueError("No best model found to restore.")
+            print("No best model found to restore for this run.")
+            return None
         return self.model
 
 @dataclass
@@ -1276,17 +1297,27 @@ class SB3TrainCheckpoint(BaseCallback):
             print("Warning: `model_path` is not set. Cannot restore model.")
             return
         
-        model_files = [f for f in os.listdir(self.model_path) if '.zip' in f and 'last_epoch_' in f]
+        # Filter files to match the CURRENT run (self.name)
+        model_files = [
+            f for f in os.listdir(self.model_path)
+            if '.zip' in f and f'last_epoch_{self.name}' in f
+        ]
+        
         # if there's more than one, choose the most recent
         if len(model_files) >= 1:
             model_files = sorted(model_files, key=lambda x: os.path.getmtime(os.path.join(self.model_path, x)), reverse=True)
+            last_model_file = model_files[0]
+            
             self.model = PPO.load(
-                os.path.join(self.model_path, model_files[0]),
+                os.path.join(self.model_path, last_model_file),
                 env=env,          # or whatever env you need
                 device=self.model.device,
                 print_system_info=False
-            )        # load the info file to get the best epoch and value
-            info_path = os.path.join(self.model_path, f'info_last_epoch_{self.name}.json')
+            )        
+            
+            info_filename = f"info_{last_model_file.replace('.zip', '.json')}"
+            info_path = os.path.join(self.model_path, info_filename)
+            
             if os.path.exists(info_path):
                 with open(info_path, 'r') as f:
                     info = json.load(f)
@@ -1296,7 +1327,8 @@ class SB3TrainCheckpoint(BaseCallback):
             else:
                 raise ValueError(f"Info file not found: {info_path}")
         else:
-            raise ValueError("No last model found to restore.")
+             print("No last_epoch model found to restore for this run.")
+             return None
         return self.model
 
 

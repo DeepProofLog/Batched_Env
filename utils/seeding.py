@@ -204,7 +204,7 @@ def create_numpy_rng(seed: Optional[int] = None) -> np.random.Generator:
 
 def create_torch_generator(
     seed: Optional[int] = None,
-    device: Optional[Union[str, torch.device]] = None
+    device: Optional[Union[str, object]] = None
 ) -> torch.Generator:
     """
     Create a local PyTorch Generator instance.

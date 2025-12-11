@@ -1,8 +1,7 @@
 """
 Training script for Neural-Guided Logical Reasoning (Batched Version).
 
-This module manages the training loop for the Agent, ensuring functional parity
-with the SB3 implementation where applicable.
+This module manages the training loop for the Agent
 
 Key Components:
 1. **Data Handler**: Loads and processes the knowledge graph data.
@@ -11,14 +10,8 @@ Key Components:
 4. **Policy**: Instantiates the Actor-Critic network with Embedder.
 5. **PPO**: Runs the Proximal Policy Optimization algorithm.
 6. **Evaluation**: Periodically evaluates performance on test queries.
-
-Usage:
-    Run directly or via `test_runner_simple.py` for parity checks.
-    
-    ```bash
-    python train.py --dataset countries_s3
-    ```
 """
+
 import gc
 import os
 import sys
@@ -49,7 +42,6 @@ from ppo import PPO as TensorPPO
 from model_eval import eval_corruptions as tensor_eval_corruptions
 from sampler import Sampler
 
-from utils.seeding import seed_all
 from callbacks import (
     TorchRLCallbackManager, 
     MetricsCallback, 
@@ -59,42 +51,17 @@ from callbacks import (
     AnnealingTarget
 )
 
-
-
-def _set_seeds(seed: int) -> None:
-    """Match sb3_utils._set_seeds exactly."""
-    seed_all(seed,
-            deterministic=False,
-            deterministic_cudnn=False)
-
-def _warn_non_reproducible(args: Any) -> None:
-    """Match sb3_utils._warn_non_reproducible."""
-    if getattr(args, 'restore_best_val_model', True) is False:
-        print(
-            "Warning: This setting is not reproducible when creating 2 models from scratch, "
-            "but it is when loading pretrained models."
-        )
-
-
-def get_device(device: str = "auto") -> torch.device:
-    """Match sb3_utils.get_device."""
-    if device == "auto":
-        device = "cuda"
-    device = torch.device(device)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        return torch.device("cpu")
-    return device
-
+from utils.utils import save_profile_results
 
 # ==============================================================================
-# _build_data_and_index - MATCHING sb3_train._build_data_and_index exactly
+# _build_data_and_index 
 # ==============================================================================
 
 def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler, IndexManager, Any, Any]:
     """
     Prepare knowledge graph data components and indices.
     
-    Initializes the following components in a deterministic order for SB3 parity:
+    Initializes the following components:
     1. **DataHandler**: Loads raw triples, rules, and splits.
     2. **IndexManager**: Builds integer mappings for entities, predicates, and variables.
     3. **Sampler**: Constructs the negative sampler and corruptor (with domain info).
@@ -169,7 +136,6 @@ def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler,
     )
     
     # Embedder
-
     embedder = TensorEmbedder(
         n_constants=im.constant_no,
         n_predicates=im.predicate_no,
@@ -241,24 +207,17 @@ def create_environments(args: Any, dh: DataHandler, im: IndexManager, sampler: S
     )
     engine.index_manager = im
     
-    # Convert queries to tensor format
-    def convert_queries(queries):
-        tensors = []
-        for q in queries:
-            atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-            padded = torch.full((args.padding_atoms, 3), im.padding_idx, dtype=torch.long, device=device)
-            padded[0] = atom
-            tensors.append(padded)
-        return torch.stack(tensors, dim=0)
-    
-    train_queries_tensor = convert_queries(dh.train_queries)
-    test_queries_tensor = convert_queries(dh.test_queries)
+    # Use pre-materialized tensors from DataHandler
+    train_split = dh.get_materialized_split('train')
+    valid_split = dh.get_materialized_split('valid')
+    test_split = dh.get_materialized_split('test')
+
+    train_queries_tensor = train_split.queries
+    valid_queries_tensor = valid_split.queries
+    test_queries_tensor = test_split.queries
     
     batch_size = args.batch_size_env
     
-    # DEBUG: Check predicate mapping
-    print(f"[Create Environments] Predicate Mapping: True={im.predicate_str2idx.get('True')}, False={im.predicate_str2idx.get('False')}, Endf={im.predicate_str2idx.get('Endf')}")
-
     stringifier_params = im.get_stringifier_params()
 
     # Train environment
@@ -320,8 +279,32 @@ def create_environments(args: Any, dh: DataHandler, im: IndexManager, sampler: S
         stringifier_params=stringifier_params,
     )
     
-    # Return train_env, eval_env, callback_env (matching sb3 signature)
-    callback_env = eval_env  # Use eval_env for callbacks
+    callback_env = BatchedEnv(
+        batch_size=batch_size,
+        queries=valid_split.queries,
+        labels=torch.ones(len(dh.valid_queries), dtype=torch.long, device=device),
+        query_depths=torch.as_tensor(dh.valid_depths, dtype=torch.long, device=device),
+        unification_engine=engine,
+        mode='eval',
+        max_depth=args.max_depth,
+        memory_pruning=args.memory_pruning,
+        use_exact_memory=args.use_exact_memory,
+        skip_unary_actions=args.skip_unary_actions,
+        end_proof_action=args.end_proof_action,
+        reward_type=args.reward_type,
+        padding_atoms=args.padding_atoms,
+        padding_states=args.padding_states,
+        true_pred_idx=im.predicate_str2idx.get('True'),
+        false_pred_idx=im.predicate_str2idx.get('False'),
+        end_pred_idx=im.predicate_str2idx.get('Endf'),
+        verbose=args.verbose_env,
+        prover_verbose=args.prover_verbose,
+        device=device,
+        runtime_var_start_index=im.constant_no + 1,
+        total_vocab_size=im.constant_no + args.max_total_vars,
+        sample_deterministic_per_env=args.sample_deterministic_per_env,
+        stringifier_params=stringifier_params,
+    )
     return train_env, eval_env, callback_env
 
 
@@ -353,22 +336,15 @@ def _evaluate(args: Any, policy, eval_env, sampler, dh: DataHandler, im: IndexMa
     policy.eval()
     
     # Get test queries
-    test_queries = dh.test_queries
     n_test = args.n_test_queries
-    test_queries = test_queries[:n_test]
-    
-    # Convert queries to tensor
-    query_atoms = []
-    for q in test_queries:
-        query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-        query_atoms.append(query_atom)
-    queries_tensor = torch.stack(query_atoms, dim=0)
+    test_queries = dh.get_materialized_split('test').queries
+    test_queries = test_queries[:n_test].squeeze(1)
     
     print(f"Evaluating {len(test_queries)} queries...")
     eval_results = tensor_eval_corruptions(
         actor=policy,
         env=eval_env,
-        queries=queries_tensor,
+        queries=test_queries,
         sampler=sampler,
         n_corruptions=args.test_neg_samples,
         corruption_modes=tuple(args.corruption_scheme),
@@ -447,171 +423,12 @@ def build_callbacks(
     sampler, 
     dh, 
     index_manager, 
-    annealing_targets
+    ppo,
+    date: str
 ):
     """
     Constructs and returns the callback manager and paths to best models.
     """
-    callbacks_list = []
-    
-    # 1. Training metrics callback
-    # Collects aggregated and detailed stats (depth/label) and prints every log_interval
-    callbacks_list.append(MetricsCallback(
-        log_interval=1,
-        verbose=True,
-        collect_detailed=True
-    ))
-
-    # 2. Evaluation callback (for finding Best Model)
-    best_model_path_train = None
-    best_model_path_eval = None
-    
-    if getattr(args, 'save_model', False):
-        save_path = Path(args.models_path) / args.run_signature
-        
-        # Define paths for potential best models
-        best_model_path_train = save_path / "best_model_train.pt"
-        best_model_path_eval = save_path / "best_model_eval.pt"
-        
-        # Prepare Eval Data for RankingCallback
-        valid_queries_tensor = torch.stack([
-            index_manager.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-            for q in dh.valid_queries
-        ])
-        
-        valid_depths_tensor = None
-        if hasattr(dh, 'valid_depths') and dh.valid_depths is not None:
-             valid_depths_tensor = torch.tensor(dh.valid_depths, dtype=torch.long)
-        
-        # Use subset if configured
-        n_eval = getattr(args, 'n_eval_queries', None)
-        if n_eval:
-           valid_queries_tensor = valid_queries_tensor[:n_eval]
-           if valid_depths_tensor is not None:
-               valid_depths_tensor = valid_depths_tensor[:n_eval]
-           
-        best_metric_key = getattr(args, 'eval_best_metric', 'mrr_mean')
-        # Map nice name to callback output key
-        if best_metric_key == 'mrr': best_metric_key = 'mrr_mean'
-        if best_metric_key == 'auc_pr': best_metric_key = 'auc_pr'
-
-        # Ranking Callback (Evaluates MRR)
-        ranking_cb = RankingCallback(
-            eval_env=eval_env,
-            policy=policy,
-            sampler=sampler,
-            eval_data=valid_queries_tensor,
-            eval_data_depths=valid_depths_tensor,
-            eval_freq=1,
-            n_corruptions=args.eval_neg_samples,
-            corruption_scheme=tuple(args.corruption_scheme)
-        )
-        callbacks_list.append(ranking_cb)
-        
-        # Checkpoint Callback (Saves best models)
-        ckpt_cb = CheckpointCallback(
-            save_path=save_path,
-            policy=policy,
-            best_model_name_train="best_model_train.pt",
-            best_model_name_eval="best_model_eval.pt",
-            train_metric="ep_rew_mean",
-            eval_metric=best_metric_key,
-            verbose=True
-        )
-        callbacks_list.append(ckpt_cb)
-
-        # Annealing
-        if annealing_targets:
-            callbacks_list.append(ScalarAnnealingCallback(
-                total_timesteps=args.timesteps_train,
-                targets=annealing_targets,
-                verbose=1
-            ))
-
-    callback_manager = None
-    if callbacks_list:
-        # Create manager
-        callback_manager = TorchRLCallbackManager(callbacks=callbacks_list)
-        
-    return callback_manager, best_model_path_train, best_model_path_eval
-
-def main(args, log_filename, use_logger, use_WB, WB_path, date, external_components=None, profile_run=False):
-    """
-    Main training entry point.
-    
-    Orchestrates the entire training pipeline, designed to match the control flow
-    of the reference SB3 implementation `sb3_train.py` exactly for parity verification.
-    
-    Steps:
-    1. Check reproducibility settings.
-    2. Set random seeds.
-    3. Initialize data components (DataHandler, IndexManager, Sampler, Embedder).
-    4. Create environments (Train, Eval).
-    5. Initialize Policy and PPO algorithm.
-    6. Run training loop (`ppo.learn`).
-    7. Run evaluation (`_evaluate`).
-    
-    Args:
-        args (Namespace): Parsed command-line arguments.
-        log_filename (str): Path to log file.
-        use_logger (bool): Whether to enable logging.
-        use_WB (bool): Whether to use Weights & Biases.
-        WB_path (str): W&B run path.
-        date (str): Timestamp string.
-        external_components (Optional[Dict]): Pre-initialized components (dh, im, sampler, embedder)
-                                              for dependency injection during testing.
-    
-    Returns:
-        Tuple[Dict, Dict, Dict]: Metrics (train, valid, test).
-    """
-    
-    # Step 3: Get device (matching sb3)
-    device = get_device(args.device)
-    print(f"Device: {device}. CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
-    
-    # Build pieces - use external components if provided (for parity testing)
-    if external_components is not None:
-        dh = external_components['dh']
-        index_manager = external_components['index_manager']
-        sampler = external_components['sampler']
-        embedder = external_components['embedder']
-    else:
-        dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
-
-    
-    # Step 5: Create environments (matching sb3)
-    env, eval_env, callback_env = create_environments(
-        args,
-        dh,
-        index_manager,
-        sampler,
-    )
-
-    
-    # Step 6: Create policy/PPO (matching sb3 flow)
-    action_size = args.padding_states
-    policy = TensorPolicy(
-        embedder=embedder,
-        embed_dim=args.state_embedding_size,
-        action_dim=action_size,
-        hidden_dim=args.hidden_dim,
-        num_layers=args.num_layers,
-        dropout_prob=args.dropout_prob,
-        device=device,
-        temperature=getattr(args, 'temperature', 1.0),  # Temperature for entropy control
-        use_l2_norm=getattr(args, 'use_l2_norm', True),  # L2 norm for cosine similarity
-        sqrt_scale=getattr(args, 'sqrt_scale', False),  # sqrt(E) attention scaling
-        # parity=False is default - uses custom value_head initialization for better training stability
-    ).to(device)
-
-    
-    
-    # Get schedule parameters if available
-    gae_lambda = getattr(args, 'gae_lambda', 0.95)
-    vf_coef = getattr(args, 'vf_coef', 0.5)
-    clip_range_vf = getattr(args, 'clip_range_vf', None)
-    
-    # Build schedule configs for lr and entropy if enabled
     # Build schedule configs for lr and entropy if enabled
     annealing_targets = []
     
@@ -655,6 +472,142 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
             value_type='float',
         ))
         print(f"Entropy Decay: {ent_init} -> {ent_final}")
+
+    callbacks_list = []
+    
+    # 1. Training metrics callback
+    # Collects aggregated and detailed stats (depth/label) and prints every log_interval
+    callbacks_list.append(MetricsCallback(
+        log_interval=1,
+        verbose=True,
+        collect_detailed=True
+    ))
+
+    # 2. Evaluation callback (for finding Best Model)
+    best_model_path_train = None
+    best_model_path_eval = None
+    
+    if getattr(args, 'save_model', False):
+        save_path = Path(args.models_path) / args.run_signature
+        
+        # Define paths for potential best models
+        best_model_path_train = save_path / "best_model_train.pt"
+        best_model_path_eval = save_path / "best_model_eval.pt"
+        
+        # Prepare Eval Data for RankingCallback
+        valid_split = dh.get_materialized_split('valid')
+        valid_queries_tensor = valid_split.queries.squeeze(1)
+        valid_depths_tensor = valid_split.depths
+        
+        # Use subset if configured
+        n_eval = getattr(args, 'n_eval_queries', None)
+        if n_eval:
+            valid_queries_tensor = valid_queries_tensor[:n_eval]
+            valid_depths_tensor = valid_depths_tensor[:n_eval]
+           
+        best_metric_key = getattr(args, 'eval_best_metric', 'mrr_mean')
+        # Map nice name to callback output key
+        if best_metric_key == 'mrr': best_metric_key = 'mrr_mean'
+        if best_metric_key == 'auc_pr': best_metric_key = 'auc_pr'
+
+        # Ranking Callback (Evaluates MRR)
+        ranking_cb = RankingCallback(
+            eval_env=eval_env,
+            policy=policy,
+            sampler=sampler,
+            eval_data=valid_queries_tensor,
+            eval_data_depths=valid_depths_tensor,
+            eval_freq=int(args.n_steps * args.eval_freq),
+            n_corruptions=args.eval_neg_samples,
+            corruption_scheme=tuple(args.corruption_scheme)
+        )
+        callbacks_list.append(ranking_cb)
+        
+        # Checkpoint Callback (Saves best models)
+        ckpt_cb = CheckpointCallback(
+            save_path=save_path,
+            policy=policy,
+            best_model_name_train="best_model_train.pt",
+            best_model_name_eval="best_model_eval.pt",
+            train_metric="ep_rew_mean",
+            eval_metric=best_metric_key,
+            verbose=True,
+            date=date
+        )
+        callbacks_list.append(ckpt_cb)
+
+        # Annealing
+        if annealing_targets:
+            callbacks_list.append(ScalarAnnealingCallback(
+                total_timesteps=args.timesteps_train,
+                targets=annealing_targets,
+                verbose=1
+            ))
+
+    callback_manager = None
+    if callbacks_list:
+        # Create manager
+        callback_manager = TorchRLCallbackManager(callbacks=callbacks_list)
+        
+    return callback_manager, best_model_path_train, best_model_path_eval
+
+def main(args, log_filename, use_logger, use_WB, WB_path, date, external_components=None, profile_run=False):
+    """
+    Main training entry point.
+
+    Steps:
+    1. Check reproducibility settings.
+    2. Set random seeds.
+    3. Initialize data components (DataHandler, IndexManager, Sampler, Embedder).
+    4. Create environments (Train, Eval).
+    5. Initialize Policy and PPO algorithm.
+    6. Run training loop (`ppo.learn`).
+    7. Run evaluation (`_evaluate`).
+    
+    Args:
+        args (Namespace): Parsed command-line arguments.
+        log_filename (str): Path to log file.
+        use_logger (bool): Whether to enable logging.
+        use_WB (bool): Whether to use Weights & Biases.
+        WB_path (str): W&B run path.
+        date (str): Timestamp string.
+        external_components (Optional[Dict]): Pre-initialized components (dh, im, sampler, embedder)
+                                              for dependency injection during testing.
+    
+    Returns:
+        Tuple[Dict, Dict, Dict]: Metrics (train, valid, test).
+    """
+    
+    device = torch.device(args.device)
+    print(f"Device: {device}. CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
+    
+    # Step 1: build important components
+    dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
+
+    
+    # Step 2: Create environments (matching sb3)
+    env, eval_env, callback_env = create_environments(
+        args,
+        dh,
+        index_manager,
+        sampler,
+    )
+
+    
+    # Step 3: Create policy/PPO (matching sb3 flow)
+    action_size = args.padding_states
+    policy = TensorPolicy(
+        embedder=embedder,
+        embed_dim=args.state_embedding_size,
+        action_dim=action_size,
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        dropout_prob=args.dropout_prob,
+        device=device,
+        temperature=getattr(args, 'temperature', 1.0),  # Temperature for entropy control
+        use_l2_norm=getattr(args, 'use_l2_norm', True),  # L2 norm for cosine similarity
+        sqrt_scale=getattr(args, 'sqrt_scale', False),  # sqrt(E) attention scaling
+    ).to(device)
     
     ppo = TensorPPO(
         policy=policy,
@@ -664,81 +617,32 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         n_epochs=args.n_epochs,
         batch_size=args.batch_size,
         clip_range=args.clip_range,
-        clip_range_vf=clip_range_vf,
+        clip_range_vf=args.clip_range_vf,
         ent_coef=args.ent_coef,
-        vf_coef=vf_coef,
-        max_grad_norm=getattr(args, 'max_grad_norm', 0.5),
+        vf_coef=args.vf_coef,
+        max_grad_norm=args.max_grad_norm,
         gamma=args.gamma,
-        gae_lambda=gae_lambda,
+        gae_lambda=args.gae_lambda,
         target_kl=args.target_kl,  # Early stopping threshold (aligned with SB3)
         device=device,
         verbose=1,
         seed=args.seed_run_i,  # For RNG synchronization between rollouts
-        use_amp=getattr(args, 'use_amp', True),
+        use_amp=args.use_amp,
         total_timesteps=args.timesteps_train,  # For schedule computation
-        use_compile=getattr(args, 'use_compile', True),
+        use_compile=args.use_compile,
         debug_ppo=getattr(args, 'debug_ppo', False),  # Enable detailed training diagnostics
     )
     
-    # NOTE: Initial evaluation commented out for SB3 parity.
-    # Running eval here consumes RNG for negative sampling BEFORE training,
-    # but SB3's EvalCallback runs AFTER the first rollout. This causes rollout
-    # data divergence. For exact parity, skip initial eval.
-    # 
-    # Step 6.5: Initial evaluation with untrained model (matching sb3 eval callback at step 0)
-    print("\n" + "="*60)
-    print("Initial evaluation (untrained model)")
-    print("="*60)
-    policy.eval()
-    initial_eval_results = tensor_eval_corruptions(
-        actor=policy,
-        env=eval_env,
-        queries=torch.stack([
-            index_manager.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-            for q in dh.valid_queries[:getattr(args, 'n_eval_queries', 10) or 10]
-        ]),
-        sampler=sampler,
-        n_corruptions=getattr(args, 'eval_neg_samples', 10) or 10,
-        corruption_modes=tuple(getattr(args, 'corruption_scheme', ['tail'])),
-        verbose=0,
-    )
-    print(f"Initial MRR: {initial_eval_results.get('MRR', 0.0):.4f}")
-    print(f"Initial Hits@1: {initial_eval_results.get('Hits@1', 0.0):.4f}")
-    print(f"Initial success_rate: {initial_eval_results.get('success_rate', 0.0):.4f}")
-    print("="*60 + "\n")
-    
-    # Configure callbacks (PARITY)
+    # Configure callbacks
     callback_manager, best_model_path_train, best_model_path_eval = build_callbacks(
-        args, eval_env, policy, sampler, dh, index_manager, annealing_targets
+        args, eval_env, policy, sampler, dh, index_manager, ppo, date
     )
     callbacks_list = callback_manager.callbacks if callback_manager else []
-    # Create wrapper for PPO.learn
-    def ppo_callback(locals_, globals_):
-        iteration = locals_.get('iteration', 0)
-        total_steps = locals_.get('total_steps_done', 0)
-        
-        # Dispatch to manager
-        # We call on_iteration_end which calls all sub-callbacks
-        # Note: We don't need to manually distinguish because Manager does it
-        # But the Manager.on_iteration_end needs to merge metrics for CheckpointCallback
-        
-        # NOTE: Manager.on_iteration_end returns aggregated metrics
-        metrics = callback_manager.on_iteration_end(iteration, total_steps, n_envs=env.batch_size)
-        
-        # Explicitly manually trigger checkpoint check if not handled automagically
-        # My implementation of CheckpointCallback.check_and_save is separate.
-        # I can call it here with the metrics.
-        
-        # Find ckpt callback if it exists
-        ckpt_cb = next((cb for cb in callbacks_list if isinstance(cb, CheckpointCallback)), None)
-        if ckpt_cb:
-            ckpt_cb.check_and_save(metrics, iteration)
 
-        return True
 
-    # Step 7: Train (matching sb3 flow)
+    # Step 4: Train (matching sb3 flow)
     if args.timesteps_train > 0 and not getattr(args, 'load_model', False): 
-        cb_func = ppo_callback if callback_manager else None
+        cb_func = callback_manager if callback_manager else None
         iteration_start_cb = callback_manager.on_iteration_start if callback_manager else None
         step_cb = callback_manager.on_step if callback_manager else None
         
@@ -761,32 +665,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
         if profile_run:
             profiler.disable()
             print("\nProfiling completed.")
-            
-            # Save results to file
-            output_path = 'profile_results.txt'
-            n_functions = 30
-            with open(output_path, 'w') as f:
-                f.write(f"Device: {device}\n")
-                f.write(f"Total timesteps: {args.timesteps_train}\n")
-                f.write(f"Dataset: {args.dataset_name}\n\n")
-                
-                ps = pstats.Stats(profiler, stream=f)
-                ps.strip_dirs()
-                f.write("="*80 + "\n")
-                f.write("Top by Cumulative Time\n")
-                f.write("="*80 + "\n")
-                ps.sort_stats('cumulative')
-                ps.print_stats(n_functions)
-            
-                f.write("\n\n" + "="*80 + "\n")
-                f.write("Top by Total Time\n")
-                f.write("="*80 + "\n")
-                ps.sort_stats('tottime')
-                ps.print_stats(n_functions)
-            
-            print(f"\nResults saved to {output_path}")
-
-
+            save_profile_results(profiler, args, device)
 
     
     # Restore best model if configured
@@ -796,7 +675,6 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     training_occurred = args.timesteps_train > 0 and not getattr(args, 'load_model', False)
         
 
-        
     if training_occurred and save_model and restore_best and callback_manager:
         # Find ckpt callback
         ckpt_cb = next((cb for cb in callbacks_list if isinstance(cb, CheckpointCallback)), None)

@@ -330,14 +330,37 @@ class TorchRLCallbackManager:
             if hasattr(cb, 'on_step'):
                 cb.on_step(infos)
 
-    def on_iteration_end(self, iteration: int, global_step: int, n_envs: int = 1) -> Dict[str, Any]:
+    def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
         metrics = {}
         for cb in self.callbacks:
             if hasattr(cb, 'on_iteration_end'):
-                m = cb.on_iteration_end(iteration, global_step, n_envs)
+                m = cb.on_iteration_end(iteration, global_step)
                 if m and isinstance(m, dict):
                     metrics.update(m)
         return metrics
+
+    def __call__(self, locals_: Dict[str, Any], globals_: Dict[str, Any]) -> bool:
+        """
+        PPO callback wrapper.
+        """
+        iteration = locals_.get('iteration', 0)
+        total_steps = locals_.get('total_steps_done', 0)
+        
+        # Call on_iteration_end which aggregates metrics
+        metrics = self.on_iteration_end(iteration, total_steps)
+        
+        # Merge PPO training metrics if available
+        train_metrics = locals_.get('train_metrics', {})
+        if train_metrics:
+            metrics.update(train_metrics)
+            
+        # Trigger CheckpointCallback check_and_save manually with full metrics
+        # This is a bridge between PPO iteration end and CheckpointCallback
+        for cb in self.callbacks:
+            if hasattr(cb, 'check_and_save'):
+                cb.check_and_save(metrics, iteration)
+                
+        return True
 
 # ============================================================================
 # MetricsCallback
@@ -363,7 +386,7 @@ class MetricsCallback:
     def on_step(self, infos: List[Dict[str, Any]]) -> None:
         self.collector.accumulate(infos)
     
-    def on_iteration_end(self, iteration: int, global_step: int, n_envs: int = 1) -> Dict[str, Any]:
+    def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
         if iteration % self.log_interval != 0:
             self.collector.reset()
             return {}
@@ -421,7 +444,8 @@ class CheckpointCallback:
         best_model_name_eval: str = "best_model_eval.pt",
         train_metric: str = "ep_rew_mean",
         eval_metric: str = "mrr_mean",  # Can be 'mrr_mean', 'auc_pr', etc.
-        verbose: bool = True
+        verbose: bool = True,
+        date: str = None
     ):
         self.save_path = Path(save_path)
         self.save_path.mkdir(parents=True, exist_ok=True)
@@ -435,16 +459,9 @@ class CheckpointCallback:
         self.best_train_value = float('-inf')
         self.best_eval_value = float('-inf')
         self.verbose = verbose
+        self.date = date
         
-    def on_iteration_end(self, iteration: int, global_step: int, n_envs: int = 1) -> None:
-        # CheckpointCallback doesn't return metrics, it consumes them. 
-        # But wait, it receives accumulated metrics from TorchRLCallbackManager?
-        # Actually Manager.on_iteration_end aggregates and returns.
-        # But callbacks are called sequentially. This callback needs the current iteration's metrics.
-        # DESIGN FIX: CheckpointCallback should be checking *already computed* metrics?
-        # A simple way: this callback does nothing here, but has a specific method called by Manager 
-        # OR it assumes other callbacks ran first and deposited simple metrics into a shared store?
-        # BETTER: Pass `metrics` to `on_iteration_end`? API change needed for Manager.
+    def on_iteration_end(self, iteration: int, global_step: int) -> None:
         pass
 
     def check_and_save(self, metrics: Dict[str, Any], iteration: int) -> None:
@@ -460,7 +477,14 @@ class CheckpointCallback:
             
             if val > self.best_train_value:
                 self.best_train_value = val
-                path = self.save_path / self.best_model_name_train
+                
+                if self.date:
+                    stem = self.best_model_name_train.replace('.pt', '')
+                    filename = f"{stem}_{self.date}.pt"
+                else:
+                    filename = self.best_model_name_train
+                
+                path = self.save_path / filename
                 torch.save(self.policy.state_dict(), path)
                 if self.verbose:
                     print(f"[Checkpoint] New best train model saved to {path} ({self.train_metric}={val:.4f})")
@@ -477,8 +501,40 @@ class CheckpointCallback:
 
             if val > self.best_eval_value:
                 self.best_eval_value = val
-                path = self.save_path / self.best_model_name_eval
+                
+                if self.date:
+                    stem = self.best_model_name_eval.replace('.pt', '')
+                    filename = f"{stem}_{self.date}.pt"
+                else:
+                    filename = self.best_model_name_eval
+
+                path = self.save_path / filename
                 torch.save(self.policy.state_dict(), path)
+                
+                # SAVE JSON INFO
+                if self.date:
+                    json_filename = f"info_best_eval_{self.date}.json"
+                    json_path = self.save_path / json_filename
+                    
+                    # Try to get simplified types for json
+                    explained_var = metrics.get("explained_var", None)
+                    if isinstance(explained_var, torch.Tensor):
+                        explained_var = explained_var.item()
+                    elif isinstance(explained_var, (np.float32, np.float64)):
+                        explained_var = float(explained_var)
+                        
+                    info = {
+                        "metric": self.eval_metric,
+                        "best_value": float(val),
+                        "timesteps": iteration, 
+                        "explained_variance": explained_var
+                    }
+                    try:
+                        with open(json_path, 'w') as f:
+                            json.dump(info, f, indent=4)
+                    except Exception as e:
+                        print(f"Warning: Failed to save best model info json: {e}")
+
                 if self.verbose:
                     print(f"[Checkpoint] New best eval model saved to {path} ({self.eval_metric}={val:.4f})")
 
@@ -488,8 +544,17 @@ class CheckpointCallback:
         If the preferred model is not found, falls back to the other one if available.
         """
         path_to_load = None
-        best_model_path_train = self.save_path / self.best_model_name_train
-        best_model_path_eval = self.save_path / self.best_model_name_eval
+        if self.date:
+             stem_train = self.best_model_name_train.replace('.pt', '')
+             name_train = f"{stem_train}_{self.date}.pt"
+             stem_eval = self.best_model_name_eval.replace('.pt', '')
+             name_eval = f"{stem_eval}_{self.date}.pt"
+        else:
+             name_train = self.best_model_name_train
+             name_eval = self.best_model_name_eval
+
+        best_model_path_train = self.save_path / name_train
+        best_model_path_eval = self.save_path / name_eval
         
         if load_metric == 'train':
             path_to_load = best_model_path_train
@@ -519,6 +584,19 @@ class CheckpointCallback:
                     device = 'cpu'
             
             self.policy.load_state_dict(torch.load(path_to_load, map_location=device))
+            
+            # Load and print JSON info if available
+            if self.date and load_metric == 'eval':
+                json_filename = f"info_best_eval_{self.date}.json"
+                json_path = self.save_path / json_filename
+                if json_path.exists():
+                    try:
+                        with open(json_path, 'r') as f:
+                            info = json.load(f)
+                        print(f"Loaded best model info: {info}")
+                    except Exception as e:
+                        print(f"Warning: Failed to load info json: {e}")
+            
             return True
         else:
             print("Warning: No best model found to restore.")
@@ -546,7 +624,7 @@ class EvaluationCallback:
     def should_evaluate(self, iteration: int) -> bool:
         return (iteration % self.eval_freq == 0)
 
-    def on_iteration_end(self, iteration: int, global_step: int, n_envs: int = 1) -> Dict[str, Any]:
+    def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
         if not self.should_evaluate(iteration):
             return {}
         
@@ -599,19 +677,22 @@ class RankingCallback:
         
         self.mrr_tracker = MRRTracker(patience=20)
         
+    def on_training_start(self) -> None:
+        """Run initial evaluation before training starts."""
+        print("\n" + "="*60 + "\nInitial evaluation (untrained model)\n" + "="*60)
+        self.on_iteration_end(iteration=0, global_step=0)
+        print("="*60 + "\n")
+
     def should_evaluate(self, iteration: int) -> bool:
         return (iteration % self.eval_freq == 0)
 
-    def on_iteration_end(self, iteration: int, global_step: int, n_envs: int = 1) -> Dict[str, Any]:
+    def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
         if not self.should_evaluate(iteration):
             return {}
-        
-        # if self.verbose:
-            # print(f"\n[RankingCallback] Starting evaluation at iter {iteration}...")
-            
+
         self.policy.eval()
         
-        # Run corruptions
+        start_time = time.time()
         results = tensor_eval_corruptions(
             actor=self.policy,
             env=self.eval_env,
@@ -620,9 +701,9 @@ class RankingCallback:
             sampler=self.sampler,
             n_corruptions=self.n_corruptions,
             corruption_modes=self.corruption_scheme,
-            verbose=0, # Keep internal verbose low
+            verbose=0,
         )
-        
+        print(f"Evaluation took {time.time() - start_time:.2f} seconds")
         self.policy.train()
         
         # Parse metrics for clean dictionary

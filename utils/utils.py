@@ -1,4 +1,5 @@
 import re
+import copy
 from typing import Dict, Union, List, Any, Tuple, Iterable, Optional
 import datetime
 import os
@@ -530,6 +531,40 @@ def get_device(device: Union[torch.device, str] = "auto") -> torch.device:
 
 
 
+
+def save_profile_results(profiler: cProfile.Profile, args: Any, device: Any, output_path: str = 'profile_results.txt', n_functions: int = 30):
+    """
+    Save profiling results to a file.
+    
+    Args:
+        profiler (cProfile.Profile): The profiler object containing stats.
+        args (Any): Configuration namespace (used for metadata).
+        device (Any): Device used for training.
+        output_path (str): Path to save the profile results.
+        n_functions (int): Number of top functions to display.
+    """
+    with open(output_path, 'w') as f:
+        f.write(f"Device: {device}\n")
+        f.write(f"Total timesteps: {args.timesteps_train}\n")
+        f.write(f"Dataset: {args.dataset_name}\n\n")
+        
+        ps = pstats.Stats(profiler, stream=f)
+        ps.strip_dirs()
+        f.write("="*80 + "\n")
+        f.write("Top by Cumulative Time\n")
+        f.write("="*80 + "\n")
+        ps.sort_stats('cumulative')
+        ps.print_stats(n_functions)
+    
+        f.write("\n\n" + "="*80 + "\n")
+        f.write("Top by Total Time\n")
+        f.write("="*80 + "\n")
+        ps.sort_stats('tottime')
+        ps.print_stats(n_functions)
+    
+    print(f"\nResults saved to {output_path}")
+
+
 # ----------------------
 # File logger
 # ----------------------
@@ -609,6 +644,45 @@ class FileLogger:
 
         except IOError as e:
             print(f"Error writing to file {filename}: {e}")
+
+    def get_tmp_log_filename(self, run_signature: str, date: str, seed: int) -> str:
+        """
+        Generate temporary log filename.
+        """
+        return os.path.join(
+            self.folder,
+            f"_tmp_log-{run_signature}-{date}-seed_{seed}.csv",
+        )
+
+    def log_run(self, args, train_metrics, valid_metrics, test_metrics, log_filename_tmp, date, seed):
+        """
+        Log run results and finalize log file.
+        """
+        logged_data = copy.deepcopy(args)
+        dicts_to_log = {
+            'train': train_metrics,
+            'valid': valid_metrics,
+            'test': test_metrics,
+        }
+        self.log(log_filename_tmp, logged_data.__dict__, dicts_to_log)
+
+        # Extract scalar values from metrics (handle both float and list cases)
+        rewards_pos_mean_val = test_metrics.get('rewards_pos_mean', 0)
+        if isinstance(rewards_pos_mean_val, (list, np.ndarray)):
+            rewards_pos_mean_val = np.mean(rewards_pos_mean_val)
+        rewards_pos_mean = np.round(float(rewards_pos_mean_val), 3)
+        
+        mrr_val = test_metrics.get('mrr_mean', 0)
+        if isinstance(mrr_val, (list, np.ndarray)):
+            mrr_val = np.mean(mrr_val)
+        mrr = np.round(float(mrr_val), 3)
+        
+        metrics = f"{rewards_pos_mean:.3f}_{mrr:.3f}"
+        log_filename_run_name = os.path.join(
+            self.folder_run,
+            f"_ind_log-{args.run_signature}-{date}-{metrics}-seed_{seed}.csv",
+        )
+        self.finalize_log_file(log_filename_tmp, log_filename_run_name)
 
     def finalize_log_file(self, tmp_filename: str, log_filename_run: str) -> None:
         """

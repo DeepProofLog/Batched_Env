@@ -8,7 +8,6 @@ migrated from the original Stable-Baselines3 version to use TorchRL.
 import os
 import numpy as np
 import torch
-from utils.seeding import seed_all
 
 torch.set_float32_matmul_precision('high')
 
@@ -21,7 +20,7 @@ from typing import List, Optional
 from utils.utils import FileLogger
 from train import main
 from utils.utils_config import (
-    load_experiment_configs,
+
     parse_scalar,
     coerce_config_value,
     update_config_value,
@@ -29,33 +28,13 @@ from utils.utils_config import (
 )
 
 if __name__ == "__main__":
-    """
-        General experiment configuration
-        
-        countries: 
-        - (lr, entropy) decay true, else 5e-5 and 0.2, train_neg_ratio 4, envsxsteps=16x128. 
-        - adviced before: clip_range=0.2, lr=5e-5, ent_coef=0.2, n_epochs=10, batch_size_env=64, 
-        batch_size_env_eval=64, vf_coef=1.0, max_grad_norm=0.5, target_kl=0.02, gae_lambda=0.95, gamma=0.99, 
-        - 111(train queries)x5(pos+4 neg)x4(avg_len)=2,220 steps. set 16(envs)x128(steps)=2048. Recomended to cover 10%
-    
-        countries_s3 (Solved/Optimal Config): 
-        - Strategy: Balanced training + L2 Normalization + Early Stopping.
-        - Architecture: use_l2_norm=True, temperature=0.1, hidden_dim=256, dropout_prob=0.0.
-        - PPO Args: lr=3e-5, ent_coef=0.01 (low), clip_range_vf=None (unclipped critic).
-        - Data: train_neg_ratio=1 (Balanced), 16 envs x 256 steps.
-        - Result: consistently achieves MRR > 0.95.
 
-        family: 
-        - (lr, entropy) decay false, 5e-5 and 0.05, train_neg_ratio 0 (nothing to learn from neg), envsxsteps=128x128, train depth check with {1,2,3,4}. 
-        - 20k(train queries)x5(pos+4 neg)x3(avg_len)=300k-->cover 30k steps= 128x12
-
-    """
     DEFAULT_CONFIG = {
         # Dataset params
-        'dataset_name': 'countries_s3',
+        'dataset_name': 'family',
 
-        'eval_neg_samples': None,
-        'test_neg_samples': None,
+        'eval_neg_samples': 3,
+        'test_neg_samples': 100,
 
         'train_depth': {1,2,3,4,5,6},
         'valid_depth': None,
@@ -64,52 +43,54 @@ if __name__ == "__main__":
         'load_depth_info': True,
 
         'n_train_queries': None,
-        'n_eval_queries': None,
-        'n_test_queries': None,
-
+        'n_eval_queries': 100,
+        'n_test_queries': 100,
 
         # Model params
+        'use_l2_norm': True,
+        'sqrt_scale': False,
+        'temperature': 0.1,
         'model_name': 'PPO',
         'clip_range': 0.2,
-        'n_epochs': 5,  # REDUCED from 10 - prevents KL spikes without reducing LR
+        'n_epochs': 5,  
         'gamma': 0.99,
-        'gae_lambda': 0.95,  # GAE lambda for advantage estimation
-        'clip_range_vf': None,# 0.5,  # Enable value function clipping for stability
-        'vf_coef': 2.0,  # INCREASED from 1.0 - fixes negative explained variance
-        'max_grad_norm': 0.5,  # Gradient clipping for stability
-        'target_kl': 0.07,  # INCREASED from 0.05 - allow more epochs before early stopping
-        'hidden_dim': 128,
+        'gae_lambda': 0.95,  
+        'clip_range_vf': None,# 0.5,  
+        'vf_coef': 2.0,  
+        'max_grad_norm': 0.5,  
+        'target_kl': 0.07,  
+        'hidden_dim': 256,
         'num_layers': 8,
         'dropout_prob': 0.1,
 
         # Training params
         'seed': [0],
-        'timesteps_train': 1000000,
+        'timesteps_train': 1,
         'restore_best_val_model': True,
         'load_best_metric': 'eval', # 'eval' (best MRR) or 'train' (best reward)
         'load_model': False,
         'save_model': True,
-        'use_amp': True,  # Enable AMP for performance
-        'use_compile': True,  # Enable torch.compile for performance
-        'batch_size_env': 128,  # Number of parallel environments
+        'use_amp': True,  
+        'use_compile': True,  
+        'batch_size_env': 128,  
         'batch_size_env_eval': 128,
-        'n_steps': 256,  # INCREASED from 128 - more samples = better return estimates
-        'batch_size': 8192,  # INCREASED from 4096 - larger batches = more stable gradients
-        'eval_freq': 4,  # In multiples of n_steps (matches SB3)
+        'n_steps': 128,  
+        'batch_size': 4096,  
+        'eval_freq': 1,  
 
         # Env params
-        'reward_type': 4,  # Aligned with SB3 (was 4)
+        'reward_type': 4,  
         'train_neg_ratio': 1,
         'end_proof_action': True,
         'skip_unary_actions': True,
         'max_depth': 20,
         'memory_pruning': True,
-        'corruption_mode': 'dynamic',  # Aligned with SB3 (was True)
+        'corruption_mode': 'dynamic',  
         'use_exact_memory': False,
 
 
         # Entropy coefficient decay params
-        'ent_coef': 0.1,  # Base entropy coefficient (will be scheduled from higher value)
+        'ent_coef': 0.1,  
 
         'ent_coef_decay': True,  # Enable entropy coefficient decay
         'ent_coef_init_value': 0.01,  # Start with moderate exploration
@@ -119,7 +100,7 @@ if __name__ == "__main__":
         'ent_coef_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
         
         # Learning rate decay params
-        'lr': 3e-5,  # Keep learning rate - use other methods to control KL
+        'lr': 3e-5,
 
         'lr_decay': True,  # Enable learning rate decay
         'lr_init_value': 3e-5,  # Reduced from 5e-5 for more stable updates
@@ -132,24 +113,14 @@ if __name__ == "__main__":
         # Embedding params
         'atom_embedder': 'transe',
         'state_embedder': 'mean',
-        'atom_embedding_size': 250,  # Aligned with SB3 (was 256)
+        'atom_embedding_size': 250,  
         'learn_embeddings': True,
         'padding_atoms': 6,
-        'padding_states': -1,  # Aligned with SB3 (was 20), auto-computed from dataset
-        'max_total_vars': 100,  # Aligned with SB3 (was 1000000)
-        
-        # Policy logit scaling options (can be combined)
-        # use_l2_norm: L2 normalize embeddings before dot product (cosine similarity ∈ [-1, +1])
-        # sqrt_scale: Divide logits by sqrt(embed_dim) (attention-style scaling)
-        # temperature: Lower = sharper distribution, Higher = more uniform
-
-        'use_l2_norm': True,  # DISABLED - was causing policy to be too uniform
-        'sqrt_scale': False,    # Enable sqrt(embed_dim) scaling for stable logits
-        'temperature': 0.1,    # Standard temperature
-
+        'padding_states': -1,  # auto-computed from dataset
+        'max_total_vars': 100, # max vars in the embedder
 
         # Other params
-        'device': 'auto',  # Aligned with SB3 (was 'cuda:1')
+        'device': 'cuda',
         'rollout_device': None,  # Device for rollout collection, None means same as device
         'min_gpu_memory_gb': 2.0,
         'extended_eval_info': True,
@@ -157,11 +128,11 @@ if __name__ == "__main__":
         'plot_trajectories': False,
         'plot': False,
         'depth_info': True,  # Enable depth info by default to see metrics by depth
-        'verbose': False,  # Added for SB3 parity
+        'verbose': False,
         'verbose_cb': False,  # Verbose callback debugging
         'verbose_env': 0,  # Environment verbosity level (0=quiet, 1=verbose)
         'verbose_prover': 0,  # Prover verbosity level (0=quiet, 1=verbose)
-        'prover_verbose': False,  # Added for SB3 parity
+        'prover_verbose': False,
         'data_path': './data/',
         'models_path': 'models/',
         'rules_file': 'rules.txt',
@@ -183,8 +154,7 @@ if __name__ == "__main__":
     KNOWN_CONFIG_KEYS = set(DEFAULT_CONFIG.keys())
 
     parser = argparse.ArgumentParser(description='TorchRL Experiment Runner')
-    parser.add_argument("--config", type=str,
-        help="Path to YAML file describing experiments.")
+
     parser.add_argument("--set", action='append', default=[], metavar="KEY=VALUE",
         help="Override config value, e.g. --set reward_type=3 --set seed='[0,1]'.")
     parser.add_argument("--grid", action='append', default=[], metavar="KEY=V1,V2",
@@ -195,9 +165,6 @@ if __name__ == "__main__":
         help="Enable cProfile profiling for the training loop.")
 
     args = parser.parse_args()
-
-    if args.config and args.grid:
-        raise ValueError("Use either --config or --grid, not both.")
 
     base_config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -211,14 +178,7 @@ if __name__ == "__main__":
         base_config['load_model'] = True
         base_config['timesteps_train'] = 0
 
-    # Determine device
-    requested_device = base_config.get('device', 'auto')
-    if requested_device == 'auto':
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    else:
-        device = requested_device
-
-    print(f"Using device: {device}\n")
+    base_config['profile'] = args.profile
 
     # Prepare grid search
     grid_spec = {}
@@ -234,29 +194,9 @@ if __name__ == "__main__":
             ]
             grid_spec[key] = parsed_values
 
-    # Load experiments from config file
-    experiments_from_file = []
-    if args.config:
-        overrides_list = load_experiment_configs(args.config)
-        for idx, overrides in enumerate(overrides_list):
-            unknown_keys = set(overrides) - KNOWN_CONFIG_KEYS
-            if unknown_keys:
-                unknown_list = ", ".join(sorted(unknown_keys))
-                raise ValueError(
-                    f"Unknown parameter(s) in experiment {idx}: {unknown_list}"
-                )
-            experiments_from_file.append(overrides)
-        print(f"\n\nLoaded {len(experiments_from_file)} experiment(s) from {args.config}")
-
     # Generate list of experiment configurations
     run_configs = []
-    if experiments_from_file:
-        for overrides in experiments_from_file:
-            config_copy = copy.deepcopy(base_config)
-            for key, value in overrides.items():
-                update_config_value(config_copy, key, value, DEFAULT_CONFIG)
-            run_configs.append(config_copy)
-    elif grid_spec:
+    if grid_spec:
         grid_keys = sorted(grid_spec.keys())
         for combo in product(*(grid_spec[key] for key in grid_keys)):
             config_copy = copy.deepcopy(base_config)
@@ -275,47 +215,15 @@ if __name__ == "__main__":
         """Build argparse.Namespace from config dict."""
         cfg = copy.deepcopy(config)
 
-        # Best metric for model selection
-        best_metric = cfg.get('eval_best_metric', 'mrr')
-        if not isinstance(best_metric, str):
-            raise ValueError("eval_best_metric must be a string.")
-        metric_normalized = best_metric.strip().lower()
-        allowed_best_metrics = {'auc_pr', 'mrr'}
-        if metric_normalized not in allowed_best_metrics:
-            allowed = ", ".join(sorted(allowed_best_metrics))
-            raise ValueError(
-                f"Unsupported eval_best_metric '{best_metric}'. Allowed: {allowed}."
-            )
-        # Map to actual metric names returned by evaluation
-        metric_name_map = {
-            'mrr': 'mrr',  # Match SB3 naming
-            'auc_pr': 'auc_pr',
-        }
-        cfg['eval_best_metric'] = metric_name_map.get(metric_normalized, metric_normalized)
-
         namespace = argparse.Namespace(**cfg)
-
-        # Keep corruption_mode as-is (matches SB3 behavior)
-        # Can be 'dynamic', 'static', or boolean values
 
         # Auto-configure padding_states based on dataset
         if namespace.padding_states == -1:
-            if namespace.dataset_name in {"countries_s3", "countries_s2", "countries_s1"}:
-                if namespace.test_neg_samples is not None:
-                    print("Overriding test_neg_samples.")
-                namespace.test_neg_samples = None
-                namespace.padding_states = 20
-                # Note: atom_embedding_size is kept as 250 (from DEFAULT_CONFIG) to match SB3
-            elif namespace.dataset_name == "family":
-                namespace.padding_states = 130
-            elif namespace.dataset_name == "wn18rr":
-                namespace.padding_states = 262
-            elif namespace.dataset_name == "fb15k237":
-                namespace.padding_states = 358
-            else:
-                raise ValueError("Unknown dataset name for automatic padding configuration.")
-
-
+            padding_states = {
+                "countries_s3": 20, "countries_s2": 20, "countries_s1": 20,
+                "family": 130, "wn18rr": 262, "fb15k237": 358,
+            }
+            namespace.padding_states = padding_states[namespace.dataset_name]
 
         # Corruption scheme - unconditional override based on dataset
         namespace.corruption_scheme = ['head', 'tail']
@@ -323,22 +231,10 @@ if __name__ == "__main__":
             namespace.corruption_scheme = ['tail']
         namespace.corruption_scheme = list(namespace.corruption_scheme)
 
-        # File names - match SB3 behavior for parity
-        train_file = "train.txt"
-        valid_file = "valid.txt"
-        test_file = "test.txt"
-
-        # Match SB3: only use depth files when depth filter is explicitly set
-        if namespace.train_depth is not None:
-            train_file = train_file.replace('.txt', '_depths.txt')
-        if namespace.valid_depth is not None:
-            valid_file = valid_file.replace('.txt', '_depths.txt')
-        if namespace.test_depth is not None:
-            test_file = test_file.replace('.txt', '_depths.txt')
-
-        namespace.train_file = train_file
-        namespace.valid_file = valid_file
-        namespace.test_file = test_file
+        # File names
+        namespace.train_file = "train_depths.txt" if namespace.train_depth else "train.txt"
+        namespace.valid_file = "valid_depths.txt" if namespace.valid_depth else "valid.txt"
+        namespace.test_file = "test_depths.txt" if namespace.test_depth else "test.txt"
 
         # Embedding sizes
         namespace.state_embedding_size = (
@@ -346,20 +242,19 @@ if __name__ == "__main__":
             if namespace.state_embedder != "concat"
             else namespace.atom_embedding_size * namespace.padding_atoms
         )
-        namespace.constant_embedding_size = namespace.atom_embedding_size
-        namespace.predicate_embedding_size = namespace.atom_embedding_size
-        
-        if namespace.atom_embedder == "complex":
-            namespace.constant_embedding_size = 2 * namespace.atom_embedding_size
-            namespace.predicate_embedding_size = 2 * namespace.atom_embedding_size
-        if namespace.atom_embedder == "rotate":
-            namespace.constant_embedding_size = 2 * namespace.atom_embedding_size
 
-        namespace.device = device
-        namespace.eval_freq = int(namespace.n_steps * namespace.eval_freq)
-        namespace.profile = args.profile
+        embedding_multiplier = 1
+        if namespace.atom_embedder in ["complex", "rotate"]:
+            embedding_multiplier = 2
+        
+        namespace.constant_embedding_size = namespace.atom_embedding_size * embedding_multiplier
+        namespace.predicate_embedding_size = namespace.atom_embedding_size * (
+            2 if namespace.atom_embedder == "complex" else 1
+        )
 
         return namespace
+
+
 
     all_args = []
     for config in run_configs:
@@ -403,59 +298,19 @@ if __name__ == "__main__":
         for seed in args.seed:
             date = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
             args.seed_run_i = seed
-            print(f"\n{'='*60}")
-            print(f"Seed {seed} in {args.seed}")
-            print(f"{'='*60}")
-            dict_ordered = {k: args.__dict__[k] for k in sorted(args.__dict__.keys())}
-            print("\nRun vars:", args.run_signature, '\n', dict_ordered, '\n')
+            print(f"\n{'='*60}\nSeed {seed} in {args.seed}\n{'='*60}")
+            print("\nRun vars:", args.run_signature, '\n', {k: args.__dict__[k] for k in sorted(args.__dict__.keys())}, '\n')
 
-            if args.use_logger:
-                log_filename_tmp = os.path.join(
-                    args.logger_path,
-                    f"_tmp_log-{args.run_signature}-{date}-seed_{seed}.csv",
-                )
-            else:
-                log_filename_tmp = None
+            log_filename_tmp = logger.get_tmp_log_filename(args.run_signature, date, seed) if logger else None
 
             train_metrics, valid_metrics, test_metrics = main(
-                args,
-                log_filename_tmp,
-                args.use_logger,
-                args.use_wb,
-                args.wb_path,
-                date,
-                profile_run=args.profile,  # Pass profile flag
+                args, log_filename_tmp, args.use_logger, args.use_wb, args.wb_path, date, profile_run=args.profile,
             )
 
-            if args.use_logger and logger is not None:
-                logged_data = copy.deepcopy(args)
-                dicts_to_log = {
-                    'train': train_metrics,
-                    'valid': valid_metrics,
-                    'test': test_metrics,
-                }
-                logger.log(log_filename_tmp, logged_data.__dict__, dicts_to_log)
+            if logger:
+                logger.log_run(args, train_metrics, valid_metrics, test_metrics, log_filename_tmp, date, seed)
 
-                # Extract scalar values from metrics (handle both float and list cases)
-                rewards_pos_mean_val = test_metrics.get('rewards_pos_mean', 0)
-                if isinstance(rewards_pos_mean_val, (list, np.ndarray)):
-                    rewards_pos_mean_val = np.mean(rewards_pos_mean_val)
-                rewards_pos_mean = np.round(float(rewards_pos_mean_val), 3)
-                
-                mrr_val = test_metrics.get('mrr_mean', 0)
-                if isinstance(mrr_val, (list, np.ndarray)):
-                    mrr_val = np.mean(mrr_val)
-                mrr = np.round(float(mrr_val), 3)
-                
-                metrics = f"{rewards_pos_mean:.3f}_{mrr:.3f}"
-                log_filename_run_name = os.path.join(
-                    args.logger_path,
-                    'indiv_runs',
-                    f"_ind_log-{args.run_signature}-{date}-{metrics}-seed_{seed}.csv",
-                )
-                logger.finalize_log_file(log_filename_tmp, log_filename_run_name)
-
-        if args.use_logger and logger is not None:
+        if logger:
             logger.log_avg_results(args.__dict__, args.run_signature, args.seed)
 
     # Run all experiments

@@ -203,17 +203,11 @@ class PPO:
             # If BF16 is supported, we don't need GradScaler
             if torch.cuda.is_bf16_supported():
                 self.scaler = None
-                print("[PPO] AMP enabled with bfloat16 (no GradScaler required)")
             else:
                 self.scaler = torch.amp.GradScaler('cuda')
-                print("[PPO] AMP enabled with GradScaler")
         else:
-            self.scaler = None
+            self.scaler = None        
         
-        print(f"[PPO] Device sync optimization: _same_device={self._same_device} (self.device={self.device}, env.device={self.env_device})")
-        
-        
-        # self.metrics_collector = DetailedMetricsCollector(collect_detailed=True, verbose=False)
         
         # Get number of environments
         self.n_envs = int(env.batch_size[0]) if isinstance(env.batch_size, torch.Size) else int(env.batch_size)
@@ -316,119 +310,6 @@ class PPO:
         approx_kl_div_t = torch.mean(ratio_minus_one - log_ratio)
         
         return loss, policy_loss, value_loss, entropy_loss, approx_kl_div_t, clip_fraction_t
-    
-    def _backward_only(
-        self,
-        loss: torch.Tensor,
-    ) -> None:
-        """
-        Compiled backward pass only.
-        
-        Zero_grad and optimizer.step are NOT traceable by Dynamo and must be
-        called outside the compiled region. backward() IS traceable when
-        compiled_autograd is enabled (set at module level).
-        """
-        loss.backward()
-    
-    @staticmethod
-    def functional_adam_step(params, grads, exp_avgs, exp_avg_sqs, state_steps, lr, beta1, beta2, eps, max_grad_norm):
-        """
-        Functional Adam update that is fully traceable by Dynamo.
-        """
-        with torch.no_grad():
-            # Global Gradient Clipping (if requested)
-            if max_grad_norm is not None:
-                 # Calculate norm (functional)
-                 # stack norms of all params
-                 # This might be tricky in graph, but torch.norm is traceable
-                 total_norm = torch.norm(torch.stack([torch.norm(g.detach(), 2) for g in grads]), 2)
-                 clip_coef = max_grad_norm / (total_norm + 1e-6)
-                 # Clamp to max 1.0 (only scale down)
-                 clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
-                 
-                 # Apply clipping
-                 grads = [g * clip_coef_clamped for g in grads]
-                 
-            # Adam Update Loop
-            for i, param in enumerate(params):
-                grad = grads[i]
-                exp_avg = exp_avgs[i]
-                exp_avg_sq = exp_avg_sqs[i]
-                step_t = state_steps[i]
-                
-                # Update step
-                step_t += 1
-                
-                # Decay the first and second moment running average coefficient
-                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-                
-                # Bias correction
-                # Note: We use in-place operations for state where possible, 
-                # but for the update term we compute functionally to avoid complex aliasing issues in graph if any
-                bias_correction1 = 1 - beta1 ** step_t
-                bias_correction2 = 1 - beta2 ** step_t
-                
-                # Compute denom
-                denom = (exp_avg_sq.sqrt() / torch.sqrt(bias_correction2)).add_(eps)
-                
-                # Compute step size
-                step_size = lr / bias_correction1
-                
-                # Update parameters
-                # param.data.addcdiv_(-step_size, exp_avg, denom)
-                # Use addcdiv directly
-                param.addcdiv_(exp_avg, denom, value=-step_size)
-
-    def _train_minibatch(
-        self,
-        obs: TensorDict,
-        actions: torch.Tensor,
-        old_values: torch.Tensor,
-        old_log_probs: torch.Tensor,
-        advantages: torch.Tensor,
-        returns: torch.Tensor,
-        clip_range: float,
-        clip_range_vf: Optional[float],
-        ent_coef: float,
-        vf_coef: float,
-        max_grad_norm: Optional[float],
-    ) -> tuple:
-        """
-        Standard training step: Forward + Compiled Loss + Eager Backward + Fused Adam.
-        
-        NOTE: Full compilation of backward/optimizer is not yet supported in PyTorch 2.9.
-        This approach provides the best balance of performance and stability.
-        """
-        # Forward pass (model is compiled separately)
-        values, log_probs, entropy = self.policy.evaluate_actions(obs, actions)
-        values = values.flatten()
-
-        # Compute Loss using compiled function
-        (
-            loss,
-            policy_loss,
-            value_loss,
-            entropy_loss,
-            approx_kl_div_t,
-            clip_fraction_t
-        ) = self._compute_loss_compiled(
-            advantages, log_probs, old_log_probs, returns, values, old_values,
-            entropy, clip_range, clip_range_vf, ent_coef, vf_coef
-        )
-        
-        # Standard eager backward + optimizer (highly optimized C++ kernels)
-        self.optimizer.zero_grad()
-        loss.backward()
-        
-        # Gradient clipping
-        if max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_grad_norm)
-        
-        # Fused Adam step (runs optimized CUDA kernel)
-        self.optimizer.step()
-        
-        return loss, policy_loss, value_loss, entropy_loss, approx_kl_div_t, clip_fraction_t
 
 
     # Define wrapper for compilation
@@ -437,7 +318,6 @@ class PPO:
         # This creates a single CUDA graph for all policy operations, reducing replays
         # from 443 (multiple nested graphs) to ~208 (one graph for forward + one for eval)
         self.policy = torch.compile(self.policy, mode='reduce-overhead', fullgraph=True)
-        print(f"[PPO] Compiled self.policy with mode='reduce-overhead', fullgraph=True")
         
         # Compile loss computation for kernel fusion with fullgraph=True
         # NOTE: backward() and optimizer ops are NOT traceable by Dynamo - they remain eager
@@ -517,14 +397,10 @@ class PPO:
                 with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=amp_dtype):
                     actions, values, log_probs = self.policy(obs_device, deterministic=False)
                 
-                dist_logits = None
-                try:
-                    dist = getattr(self.policy.action_dist, "distribution", None)
-                    if dist is not None and hasattr(dist, "logits"):
-                        dist_logits = dist.logits.detach().clone()
-                except Exception:
-                    dist_logits = None
-                
+                dist = getattr(self.policy.action_dist, "distribution", None)
+                if dist is not None and hasattr(dist, "logits"):
+                    dist_logits = dist.logits.detach().clone()
+            
                 # Step environment - skip .to() if devices match
                 actions_env = actions if self._same_device else actions.to(self.env_device)
                 action_td = TensorDict({"action": actions_env}, batch_size=current_obs.batch_size, device=self.env_device)
@@ -544,6 +420,7 @@ class PPO:
                     rewards_env = rewards_env.squeeze(-1)
                 if dones_env.dim() > 1:
                     dones_env = dones_env.squeeze(-1)
+
                 # Skip .to() if devices match
                 rewards = rewards_env if self._same_device else rewards_env.to(self.device)
                 dones = dones_env if self._same_device else dones_env.to(self.device)
@@ -1037,8 +914,8 @@ class PPO:
             
             total_steps_done += steps_collected
             rollout_time = time.time() - rollout_start_time
+            print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
             if self.verbose:
-                print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
                 if episode_rewards:
                     recent_rewards = episode_rewards[-10:]
                     print(f"[PPO] Recent episodes: reward={sum(recent_rewards)/len(recent_rewards):.3f}, length={sum(episode_lengths[-10:])/len(episode_lengths[-10:]):.1f}")

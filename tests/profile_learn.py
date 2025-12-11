@@ -24,8 +24,6 @@ from time import time
 import numpy as np
 import torch
 
-from utils.seeding import seed_all
-
 
 def setup_components(device: torch.device, config: SimpleNamespace):
     """
@@ -53,8 +51,6 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     # Enable compile mode for maximum performance
     set_compile_mode(True)
     
-    # Set seeds for reproducibility
-    seed_all(config.seed, deterministic=False, warn=False)
     
     # Load data
     dh = DataHandler(
@@ -200,9 +196,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         total_vocab_size=im.constant_no + config.max_total_vars,
         sample_deterministic_per_env=False,
     )
-    
-    # Reseed before model creation
-    seed_all(config.seed, deterministic=False, warn=False)
+
     
     # Policy
     action_size = config.padding_states

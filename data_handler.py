@@ -217,13 +217,19 @@ class DataHandler:
         test_path = join(dataset_path, test_file)
         
         train_limit = None if filter_queries_by_rules else n_train_queries
+        train_total = 0
         if os.path.exists(train_path):
-            self._load_queries_from_file(train_path, 'train', train_limit, train_depth, load_depth_info=load_depth_info)
+            train_total = self._load_queries_from_file(train_path, 'train', train_limit, train_depth, load_depth_info=load_depth_info)
+        
         initial_train_count = len(self.train_queries)
+        
+        valid_total = 0
         if os.path.exists(valid_path):
-            self._load_queries_from_file(valid_path, 'valid', n_eval_queries, valid_depth, load_depth_info=load_depth_info)
+            valid_total = self._load_queries_from_file(valid_path, 'valid', n_eval_queries, valid_depth, load_depth_info=load_depth_info)
+        
+        test_total = 0
         if os.path.exists(test_path):
-            self._load_queries_from_file(test_path, 'test', n_test_queries, test_depth, load_depth_info=load_depth_info)
+            test_total = self._load_queries_from_file(test_path, 'test', n_test_queries, test_depth, load_depth_info=load_depth_info)
         
         # Filter queries by rules if requested
         if filter_queries_by_rules and self.rules:
@@ -239,7 +245,7 @@ class DataHandler:
         if corruption_mode and ('countries' in dataset_name or 'ablation' in dataset_name):
             self._load_domain_mapping(dataset_path)
 
-        print(f"Queries loaded - Train: {len(self.train_queries)}/{initial_train_count}, Valid: {len(self.valid_queries)}, Test: {len(self.test_queries)}")
+        print(f"Queries loaded - Train: {len(self.train_queries)}/{train_total}, Valid: {len(self.valid_queries)}, Test: {len(self.test_queries)}")
         
         # Discover vocabulary
         self._discover_vocabulary()
@@ -306,7 +312,7 @@ class DataHandler:
         limit: Optional[int] = None,
         depth_filter: Optional[Set[int]] = None,
         load_depth_info: bool = True,
-    ) -> None:
+    ) -> int:
         """Load queries from file with optional depth filtering and sidecar depth support."""
         queries = []
         queries_str = []
@@ -325,12 +331,15 @@ class DataHandler:
             if depth_path is not None:
                 source_path = depth_path
         
+        total_candidates = 0
         with open(source_path, 'r') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('%'):
                     continue
                 
+                total_candidates += 1
+
                 # Check if line contains depth info
                 parts = line.split(' ', 1)
                 if len(parts) == 2:
@@ -347,9 +356,14 @@ class DataHandler:
                             queries_str.append((term.predicate, *term.args))
                             depths.append(query_depth)
                         except Exception:
+                            # If parsing fails, we might ideally decrement total_candidates,
+                            # but keeping it simple as "lines attempt" is usually fine.
+                            # For strictness:
+                            total_candidates -= 1
                             continue
                     except ValueError:
                         # Not a valid depth, skip line
+                        total_candidates -= 1
                         continue
                 else:
                     # No depth info, just query
@@ -359,6 +373,7 @@ class DataHandler:
                         queries_str.append((term.predicate, *term.args))
                         depths.append(-1)  # Unknown depth
                     except Exception:
+                        total_candidates -= 1
                         continue
                 
                 if limit and len(queries) >= limit:
@@ -379,6 +394,8 @@ class DataHandler:
             self.test_queries_str = queries_str
             self.test_depths = depths
             self.test_labels = [1] * len(queries)
+            
+        return total_candidates
 
     def _discover_vocabulary(self) -> None:
         """Discover constants and predicates from loaded data."""
