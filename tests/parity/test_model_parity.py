@@ -43,7 +43,7 @@ if str(SB3_ROOT) not in sys.path:
 
 # Import tensor-based components
 from embeddings import EmbedderLearnable
-from model_old import ActorCriticPolicy
+from model import ActorCriticPolicy
 
 # Try to import SB3 components for parity testing
 try:
@@ -76,9 +76,9 @@ def create_default_config() -> SimpleNamespace:
         max_arity=2,
         padding_atoms=3,
         
-        # Network architecture
-        hidden_dim=128,
-        num_layers=4,
+        # Network architecture (must match model_old.py's SharedPolicyValueNetwork defaults)
+        hidden_dim=256,
+        num_layers=8,
         dropout_prob=0.0,
         
         # Test settings
@@ -279,6 +279,10 @@ def test_forward_parity():
         dropout_prob=config.dropout_prob,
         device=torch.device(config.device),
         action_dim=config.n_actions,
+        parity=True,  # Use SB3-identical initialization
+        use_l2_norm=False,  # Match SB3's logit computation (no L2 norm)
+        sqrt_scale=True,  # Match SB3's attention-style scaling
+        temperature=None,  # No temperature scaling (parity with model_old)
     )
     tensor_policy.eval()
     
@@ -358,6 +362,10 @@ def test_evaluate_actions_parity():
         dropout_prob=config.dropout_prob,
         device=torch.device(config.device),
         action_dim=config.n_actions,
+        parity=True,  # Use SB3-identical initialization
+        use_l2_norm=False,  # Match SB3's logit computation (no L2 norm)
+        sqrt_scale=True,  # Match SB3's attention-style scaling
+        temperature=None,  # No temperature scaling (parity with model_old)
     )
     tensor_policy.eval()
     
@@ -438,6 +446,10 @@ def test_predict_values_parity():
         dropout_prob=config.dropout_prob,
         device=torch.device(config.device),
         action_dim=config.n_actions,
+        parity=True,  # Use SB3-identical initialization
+        use_l2_norm=False,  # Match SB3's logit computation (no L2 norm)
+        sqrt_scale=True,  # Match SB3's attention-style scaling
+        temperature=None,  # No temperature scaling (parity with model_old)
     )
     tensor_policy.eval()
     

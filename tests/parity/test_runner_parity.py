@@ -1050,6 +1050,7 @@ def run_runner_parity_test(
                 gamma=train_config.gamma,
                 device=tensor_comp['device'],
                 verbose=False,
+                parity=True,  # Use numpy RNG for shuffling to match SB3
             )
             tensor_ppo.learn(total_timesteps=train_config.total_timesteps)
             
@@ -1267,28 +1268,27 @@ if __name__ == "__main__":
     all_passed = basic_passed
     
     # Optional training test
-    if args.run_training:
-        print(f"\n{'='*70}")
-        print(f"Running test_training_parity[{args.dataset}] (this may take a while)")
-        print(f"{'='*70}")
-        
-        training_config = RunnerParityConfig(
-            dataset_name=args.dataset,
-            timesteps_train=args.timesteps,
-            n_envs=args.n_envs if hasattr(args, 'n_envs') and args.n_envs else 4,
-            n_steps=args.n_steps if hasattr(args, 'n_steps') and args.n_steps else 32,
-            batch_size=getattr(args, 'batch_size', 128),
-            device=args.device,
-            verbose=getattr(args, 'verbose', True),
-        )
-        
-        training_results = run_runner_parity_test(training_config, run_training=True, verbose=getattr(args, 'verbose', True))
-        
-        if training_results.overall_success:
-            print(f"\n✓ PASSED: test_training_parity[{args.dataset}]")
-        else:
-            print(f"\n✗ FAILED: test_training_parity[{args.dataset}]")
-            all_passed = False
+    print(f"\n{'='*70}")
+    print(f"Running test_training_parity[{args.dataset}] (this may take a while)")
+    print(f"{'='*70}")
+    
+    training_config = RunnerParityConfig(
+        dataset_name=args.dataset,
+        timesteps_train=args.timesteps,
+        n_envs=args.n_envs if hasattr(args, 'n_envs') and args.n_envs else 4,
+        n_steps=args.n_steps if hasattr(args, 'n_steps') and args.n_steps else 32,
+        batch_size=getattr(args, 'batch_size', 128),
+        device=args.device,
+        verbose=getattr(args, 'verbose', True),
+    )
+    
+    training_results = run_runner_parity_test(training_config, run_training=True, verbose=getattr(args, 'verbose', True))
+    
+    if training_results.overall_success:
+        print(f"\n✓ PASSED: test_training_parity[{args.dataset}]")
+    else:
+        print(f"\n✗ FAILED: test_training_parity[{args.dataset}]")
+        all_passed = False
     
     # Summary
     print(f"\n{'='*70}")

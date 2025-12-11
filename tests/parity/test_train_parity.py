@@ -467,6 +467,10 @@ def create_tensor_components(config: TrainParityConfig, sb3_dh: SB3DataHandler =
         num_layers=8,
         dropout_prob=0.0,
         device=device,
+        parity=True,  # Use SB3-identical initialization
+        use_l2_norm=False,  # Match SB3's logit computation (no L2 norm)
+        sqrt_scale=True,  # Match SB3's attention-style scaling
+        temperature=None,  # No temperature scaling (parity with model_old)
     ).to(device)
     
     return {
@@ -856,6 +860,7 @@ def run_train_parity(
             gamma=config.gamma,
             device=tensor_comp['device'],
             verbose=False,
+            parity=True,  # Use numpy RNG for shuffling to match SB3
         )
         tensor_ppo.learn(total_timesteps=config.total_timesteps)
         

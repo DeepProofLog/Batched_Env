@@ -14,7 +14,7 @@ Key Components:
 """
 
 import time
-from typing import Dict, Optional, Callable
+from typing import Dict, Optional
 import numpy as np
 import torch
 import torch.nn as nn
@@ -28,41 +28,7 @@ from tensordict import TensorDict
 
 from rollout import RolloutBuffer
 from utils.trace_utils import TraceRecorder
-from callbacks import Display
-try:
-    from debug_training import analyze_logits, analyze_values_returns, analyze_advantages, print_training_health_report
-    DEBUG_TRAINING_AVAILABLE = True
-except ImportError:
-    DEBUG_TRAINING_AVAILABLE = False
-
-
-def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
-    """
-    Compute fraction of variance that y_pred explains about y_true.
-    
-    Returns 1 - Var[y_true - y_pred] / Var[y_true]
-    
-    Interpretation:
-        ev=0  =>  might as well have predicted zero
-        ev=1  =>  perfect prediction
-        ev<0  =>  worse than just predicting zero
-    
-    Args:
-        y_pred: Predicted values (values from rollout buffer)
-        y_true: True values (returns from rollout buffer)
-        
-    Returns:
-        Explained variance as a float
-    """
-    y_pred = y_pred.flatten()
-    y_true = y_true.flatten()
-    
-    var_y = y_true.var()
-    if var_y == 0:
-        return float('nan')
-    return float(1.0 - (y_true - y_pred).var() / var_y)
-
-
+from callbacks import print_formatted_metrics, DetailedMetricsCollector
 
 
 class PPO:
@@ -126,9 +92,6 @@ class PPO:
         seed: Optional[int] = None,
         use_amp: bool = False,  # Enable AMP for mixed precision training
         parity: bool = False,   # Enable parity mode (e.g. numpy RNG for rollouts)
-        total_timesteps: Optional[int] = None,  # Total training timesteps for schedule computation
-        use_compile: bool = True,  # Enable torch.compile for policy optimization
-        debug_ppo: bool = False,  # Enable detailed training diagnostics
     ):
         """
         Initialize the PPO algorithm.
@@ -156,7 +119,6 @@ class PPO:
             trace_recorder (Optional[TraceRecorder]): Existing recorder instance.
             seed (Optional[int]): Random seed for RNG synchronization between rollouts.
             parity (bool): If True, use older/slower methods (e.g. numpy RNG) to match SB3 exactly.
-            total_timesteps (Optional[int]): Total training timesteps for schedule computation.
         """
         self.policy = policy
         self.env = env
@@ -170,7 +132,6 @@ class PPO:
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
         self.ent_coef = ent_coef
-        self.ent_coef_initial = ent_coef  # Store initial value
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
@@ -193,21 +154,22 @@ class PPO:
         self._same_device = (self.device == self.env_device) or \
                             (self.device.type == self.env_device.type and self.device.index == self.env_device.index)
         
-        
-        # Schedule configuration
-        self.total_timesteps = total_timesteps or 100000  # Default if not specified
-        
         # AMP (Automatic Mixed Precision) - configure via use_amp parameter
         self.use_amp = use_amp and (self.device.type == "cuda")
         if self.use_amp:
             # If BF16 is supported, we don't need GradScaler
             if torch.cuda.is_bf16_supported():
                 self.scaler = None
+                print("[PPO] AMP enabled with bfloat16 (no GradScaler required)")
             else:
                 self.scaler = torch.amp.GradScaler('cuda')
+                print("[PPO] AMP enabled with GradScaler")
         else:
-            self.scaler = None        
+            self.scaler = None
         
+        print(f"[PPO] Device sync optimization: _same_device={self._same_device} (self.device={self.device}, env.device={self.env_device})")
+        
+        self.metrics_collector = DetailedMetricsCollector(collect_detailed=True, verbose=False)
         
         # Get number of environments
         self.n_envs = int(env.batch_size[0]) if isinstance(env.batch_size, torch.Size) else int(env.batch_size)
@@ -235,18 +197,11 @@ class PPO:
             self.policy.parameters(),
             lr=self.learning_rate,
             eps=1e-5,
-            fused=True  # Use fused kernel for performance
+            fused=True
         )
         
-        # Compile components (if enabled)
-        self.use_compile = use_compile
-        self.debug_ppo = debug_ppo  # Enable detailed diagnostics
-        if use_compile:
-            self._compile_components()
-        else:
-            print("[PPO] torch.compile disabled")
-            # Set uncompiled versions
-            self._compute_loss_compiled = self._compute_loss_components
+        # Compile components
+        self._compile_components()
 
     def _compute_loss_components(
         self,
@@ -310,19 +265,114 @@ class PPO:
         approx_kl_div_t = torch.mean(ratio_minus_one - log_ratio)
         
         return loss, policy_loss, value_loss, entropy_loss, approx_kl_div_t, clip_fraction_t
+    @staticmethod
+    def functional_adam_step(params, grads, exp_avgs, exp_avg_sqs, state_steps, lr, beta1, beta2, eps, max_grad_norm):
+        """
+        Functional Adam update that is fully traceable by Dynamo.
+        """
+        with torch.no_grad():
+            # Global Gradient Clipping (if requested)
+            if max_grad_norm is not None:
+                 # Calculate norm (functional)
+                 # stack norms of all params
+                 # This might be tricky in graph, but torch.norm is traceable
+                 total_norm = torch.norm(torch.stack([torch.norm(g.detach(), 2) for g in grads]), 2)
+                 clip_coef = max_grad_norm / (total_norm + 1e-6)
+                 # Clamp to max 1.0 (only scale down)
+                 clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
+                 
+                 # Apply clipping
+                 grads = [g * clip_coef_clamped for g in grads]
+                 
+            # Adam Update Loop
+            for i, param in enumerate(params):
+                grad = grads[i]
+                exp_avg = exp_avgs[i]
+                exp_avg_sq = exp_avg_sqs[i]
+                step_t = state_steps[i]
+                
+                # Update step
+                step_t += 1
+                
+                # Decay the first and second moment running average coefficient
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                
+                # Bias correction
+                # Note: We use in-place operations for state where possible, 
+                # but for the update term we compute functionally to avoid complex aliasing issues in graph if any
+                bias_correction1 = 1 - beta1 ** step_t
+                bias_correction2 = 1 - beta2 ** step_t
+                
+                # Compute denom
+                denom = (exp_avg_sq.sqrt() / torch.sqrt(bias_correction2)).add_(eps)
+                
+                # Compute step size
+                step_size = lr / bias_correction1
+                
+                # Update parameters
+                # param.data.addcdiv_(-step_size, exp_avg, denom)
+                # Use addcdiv directly
+                param.addcdiv_(exp_avg, denom, value=-step_size)
+
+    def _train_minibatch(
+        self,
+        obs: TensorDict,
+        actions: torch.Tensor,
+        old_values: torch.Tensor,
+        old_log_probs: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor,
+        clip_range: float,
+        clip_range_vf: Optional[float],
+        ent_coef: float,
+        vf_coef: float,
+        max_grad_norm: Optional[float],
+    ) -> tuple:
+        """
+        Standard training step: Forward + Compiled Loss + Eager Backward + Fused Adam.
+        
+        NOTE: Full compilation of backward/optimizer is not yet supported in PyTorch 2.9.
+        This approach provides the best balance of performance and stability.
+        """
+        # Forward pass (model is compiled separately)
+        values, log_probs, entropy = self.policy.evaluate_actions(obs, actions)
+        values = values.flatten()
+
+        # Compute Loss using compiled function
+        (
+            loss,
+            policy_loss,
+            value_loss,
+            entropy_loss,
+            approx_kl_div_t,
+            clip_fraction_t
+        ) = self._compute_loss_compiled(
+            advantages, log_probs, old_log_probs, returns, values, old_values,
+            entropy, clip_range, clip_range_vf, ent_coef, vf_coef
+        )
+        
+        # Standard eager backward + optimizer (highly optimized C++ kernels)
+        self.optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping
+        if max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_grad_norm)
+        
+        # Fused Adam step (runs optimized CUDA kernel)
+        self.optimizer.step()
+        
+        return loss, policy_loss, value_loss, entropy_loss, approx_kl_div_t, clip_fraction_t
 
 
     # Define wrapper for compilation
     def _compile_components(self):
-        # Compile the ENTIRE policy as a unified module with fullgraph=True
-        # This creates a single CUDA graph for all policy operations, reducing replays
-        # from 443 (multiple nested graphs) to ~208 (one graph for forward + one for eval)
-        self.policy = torch.compile(self.policy, mode='reduce-overhead', fullgraph=True)
-        
-        # Compile loss computation for kernel fusion with fullgraph=True
-        # NOTE: backward() and optimizer ops are NOT traceable by Dynamo - they remain eager
-        # See compile_train.md for detailed investigation of this fundamental PyTorch limitation
-        self._compute_loss_compiled = torch.compile(self._compute_loss_components, mode='reduce-overhead', fullgraph=True)
+        # Compile loss computation for kernel fusion
+        self._compute_loss_compiled = torch.compile(self._compute_loss_components, mode='reduce-overhead')
+        # Use _train_minibatch directly (eager execution for backward/optimizer)
+        # Full compilation of backward+optimizer is not yet supported in PyTorch 2.9
+        self._train_step_compiled = self._train_minibatch
     
     def collect_rollouts(
         self,
@@ -334,7 +384,6 @@ class PPO:
         episode_lengths: list,
         iteration: int,
         return_traces: bool = False,
-        on_step_callback: Optional[Callable] = None,
     ) -> tuple:
         """
         Collect experiences using the current policy and fill the rollout buffer.
@@ -366,7 +415,7 @@ class PPO:
         
         self.policy.eval()
         self.rollout_buffer.reset()
-        # self.metrics_collector.reset()
+        self.metrics_collector.reset()
         
         traces = [] if return_traces else None
         n_collected = 0
@@ -397,10 +446,14 @@ class PPO:
                 with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=amp_dtype):
                     actions, values, log_probs = self.policy(obs_device, deterministic=False)
                 
-                dist = getattr(self.policy.action_dist, "distribution", None)
-                if dist is not None and hasattr(dist, "logits"):
-                    dist_logits = dist.logits.detach().clone()
-            
+                dist_logits = None
+                try:
+                    dist = getattr(self.policy.action_dist, "distribution", None)
+                    if dist is not None and hasattr(dist, "logits"):
+                        dist_logits = dist.logits.detach().clone()
+                except Exception:
+                    dist_logits = None
+                
                 # Step environment - skip .to() if devices match
                 actions_env = actions if self._same_device else actions.to(self.env_device)
                 action_td = TensorDict({"action": actions_env}, batch_size=current_obs.batch_size, device=self.env_device)
@@ -420,7 +473,6 @@ class PPO:
                     rewards_env = rewards_env.squeeze(-1)
                 if dones_env.dim() > 1:
                     dones_env = dones_env.squeeze(-1)
-
                 # Skip .to() if devices match
                 rewards = rewards_env if self._same_device else rewards_env.to(self.device)
                 dones = dones_env if self._same_device else dones_env.to(self.device)
@@ -506,12 +558,11 @@ class PPO:
                     # Helper to safely batch-extract
                     def extract_batch(key, tensor_val):
                         if tensor_val is not None and tensor_val.shape[0] >= self.n_envs:
-                            # Extract and flatten to 1D in a compile-friendly way
-                            # Using view(-1) instead of while loop for static reshape
-                            extracted = tensor_val[done_indices].view(-1)
-                            return extracted.tolist() 
+                            # It's a batch tensor, allow indexing
+                            return tensor_val[done_indices].tolist() 
                         elif tensor_val is not None:
                             # It might be a scalar or weird shape - fallback to list of None (safe)
+                            # Or repeat? Assuming batch tensor for now.
                             return None
                         return None
 
@@ -547,10 +598,7 @@ class PPO:
                                 else:
                                     info_dict[key] = int(val)
                                     
-                        infos_list = [info_dict]
-                        # self.metrics_collector.accumulate(infos_list)
-                        if on_step_callback:
-                            on_step_callback(infos_list)
+                        self.metrics_collector.accumulate([info_dict])
                         
                         # Reset episode stats
                         current_episode_reward[idx] = 0.0
@@ -619,12 +667,11 @@ class PPO:
         self.policy.train()
         
         # Accumulators for logging (Tensors)
-        # NOTE: pg_losses, value_losses, entropy_losses, clip_fractions accumulate across ALL epochs
-        # But approx_kl_divs should only contain values from the LAST epoch (matching SB3)
         pg_losses_t = []
         value_losses_t = []
         entropy_losses_t = []
         clip_fractions_t = []
+        approx_kl_divs_t = []
         
         # Training traces for detailed comparison
         train_traces = [] if return_traces else None
@@ -637,19 +684,17 @@ class PPO:
         # --------------------
         continue_training = True
         for epoch in range(self.n_epochs):
-            # Reset KL divergence list for each epoch (matching SB3 behavior)
-            # SB3 declares approx_kl_divs inside the epoch loop, so only last epoch is reported
-            approx_kl_divs_t = []
+            approx_kl_divs_epoch_t = []
             # Minibatch loop
             for batch_data in self.rollout_buffer.get(batch_size=self.batch_size):
                 obs, actions, old_values, old_log_probs, advantages, returns = batch_data
                 
                 # Flatten actions if needed
                 actions = actions.squeeze(-1) if actions.dim() > 1 else actions
+                
                 # Normalize advantages per minibatch
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-                
                 
                 # --------------------
                 # --------------------
@@ -669,14 +714,7 @@ class PPO:
                                     'exp_avg_sq': torch.zeros_like(p)
                                 }
 
-                # Compute forward pass and losses (compiled)
-                # IMPORTANT: Must use same amp_dtype as rollout collection to avoid KL divergence
-                amp_dtype = torch.bfloat16 if self.use_amp and torch.cuda.is_bf16_supported() else torch.float16
-                with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=amp_dtype):
-                    values, log_probs, entropy = self.policy.evaluate_actions(obs, actions)
-                    values = values.flatten()
-                    
-                    # Compute Loss using compiled function (kernel fusion happens here)
+                with torch.amp.autocast('cuda', enabled=self.use_amp):
                     (
                         loss,
                         policy_loss,
@@ -684,15 +722,24 @@ class PPO:
                         entropy_loss,
                         approx_kl_div_t,
                         clip_fraction_t
-                    ) = self._compute_loss_components(
-                        advantages, log_probs, old_log_probs, returns, values, old_values,
-                        entropy, self.clip_range, self.clip_range_vf, self.ent_coef, self.vf_coef
+                    ) = self._train_step_compiled(
+                        obs=obs,
+                        actions=actions,
+                        old_values=old_values,
+                        old_log_probs=old_log_probs,
+                        advantages=advantages,
+                        returns=returns,
+                        clip_range=self.clip_range,
+                        clip_range_vf=self.clip_range_vf,
+                        ent_coef=self.ent_coef,
+                        vf_coef=self.vf_coef,
+                        max_grad_norm=self.max_grad_norm,
                     )
 
-                # Log approx KL for tracking
+                # Log approx KL for early stopping
                 # Clone to safe memory because graph output memory is recycled
                 with torch.no_grad():
-                     approx_kl_divs_t.append(approx_kl_div_t.detach().clone())
+                     approx_kl_divs_epoch_t.append(approx_kl_div_t.detach().clone())
                 
                 # Log losses (Keep as tensors)
                 # Must clone because these are graph outputs that will be overwritten
@@ -725,26 +772,16 @@ class PPO:
                             print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
                         break
                 
-                # Apply optimizer step only if KL check passed
-                # NOTE: backward() is NOT traceable by Dynamo - it must remain eager
-                # Only forward pass and loss computation use fullgraph=True
-                self.optimizer.zero_grad()
-                loss.backward()
-                
-                # Gradient clipping (eager)
-                if self.max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                
-                # Fused Adam step (runs optimized CUDA kernel)
-                self.optimizer.step()
-            
+                # Update happened inside _train_step_compiled! 
+                # No need for manual step here.
             
             if not continue_training:
                 break
+            approx_kl_divs_t.extend(approx_kl_divs_epoch_t)
             
             # Print epoch stats (Sync ONCE per epoch)
             print(f"Epoch {epoch+1}/{self.n_epochs}. ")
-            if self.verbose: # and epoch == self.n_epochs - 1:
+            if self.verbose and epoch == self.n_epochs - 1:
                 # Compute means on GPU then sync
                    mean_pg = torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0
                    mean_val = torch.stack(value_losses_t).mean().item() if value_losses_t else 0.0
@@ -753,8 +790,8 @@ class PPO:
                    mean_clip = torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0
                    
                    print(f"Losses: total {loss.item():.5f}, "
-                        f"value {mean_val:.5f}, "
                         f"policy {mean_pg:.5f}, "
+                        f"value {mean_val:.5f}, "
                         f"entropy {mean_ent:.5f}, "
                         f"approx_kl {mean_kl:.5f} "
                         f"clip_fraction {mean_clip:.5f}. ")
@@ -764,55 +801,13 @@ class PPO:
         
         # Return average metrics (Sync ONCE at end)
         with torch.no_grad():
-            # Compute explained variance from rollout buffer
-            # This is done OUTSIDE the compiled training loop for efficiency
-            ev = explained_variance(self.rollout_buffer.values, self.rollout_buffer.returns)
-            
-            # Debug: log value and return statistics
-            if self.verbose:
-                values_flat = self.rollout_buffer.values.flatten()
-                returns_flat = self.rollout_buffer.returns.flatten()
-                print(f"[PPO] Values: min={values_flat.min().item():.3f}, max={values_flat.max().item():.3f}, mean={values_flat.mean().item():.3f}, std={values_flat.std().item():.3f}")
-                print(f"[PPO] Returns: min={returns_flat.min().item():.3f}, max={returns_flat.max().item():.3f}, mean={returns_flat.mean().item():.3f}, std={returns_flat.std().item():.3f}")
-                print(f"[PPO] Explained variance: {ev:.4f}")
-            
             metrics = {
                 "policy_loss": torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0,
                 "value_loss": torch.stack(value_losses_t).mean().item() if value_losses_t else 0.0,
                 "entropy": -torch.stack(entropy_losses_t).mean().item() if entropy_losses_t else 0.0, # entropy_loss is already negative of entropy
                 "clip_fraction": torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0,
                 "approx_kl": torch.stack(approx_kl_divs_t).mean().item() if approx_kl_divs_t else 0.0,
-                "explained_var": ev,
             }
-            
-            # Detailed training diagnostics when debug_ppo is enabled
-            if getattr(self, 'debug_ppo', False) and DEBUG_TRAINING_AVAILABLE:
-                # Analyze values and returns
-                values_flat = self.rollout_buffer.values.flatten()
-                returns_flat = self.rollout_buffer.returns.flatten()
-                advantages_flat = self.rollout_buffer.advantages.flatten()
-                
-                value_stats = analyze_values_returns(values_flat, returns_flat)
-                advantage_stats = analyze_advantages(advantages_flat)
-                
-                print_training_health_report(
-                    logit_stats={  # Empty for now - would need to capture from forward pass
-                        "logits_valid_min": 0.0,
-                        "logits_valid_max": 0.0,
-                        "logits_valid_mean": 0.0,
-                        "logits_valid_std": 0.0,
-                        "probs_valid_min": 0.0,
-                        "probs_valid_max": 0.0,
-                        "entropy_mean": metrics.get("entropy", 0.0),
-                        "entropy_min": metrics.get("entropy", 0.0),
-                        "entropy_max": metrics.get("entropy", 0.0),
-                        "relative_entropy_mean": 0.5,
-                        "num_valid_actions_mean": 5.0,
-                    },
-                    value_stats=value_stats,
-                    advantage_stats=advantage_stats,
-                    loss_stats=metrics,
-                )
         
         if return_traces:
             metrics["traces"] = train_traces
@@ -824,8 +819,6 @@ class PPO:
         total_timesteps: int,
         callback=None,
         reset_num_timesteps: bool = True,
-        on_iteration_start_callback=None,
-        on_step_callback=None,
     ) -> None:
         """
         Execute the PPO main loop: alternate between collecting rollouts and training.
@@ -835,7 +828,6 @@ class PPO:
             callback (Optional[Callable]): Callback called at every step.
             reset_num_timesteps (bool): If True, reset the timestep counter.
                                         Set False to continue training.
-            on_iteration_start_callback (Optional[Callable]): Callback called at the start of each iteration.
         """
         from tensordict import TensorDict
         
@@ -876,20 +868,10 @@ class PPO:
         
         while total_steps_done < total_timesteps:
             iteration += 1
-                        
             
-            # ============================================================
-            # Callbacks (Start of Iteration)
-            # ============================================================
-            if on_iteration_start_callback is not None:
-                on_iteration_start_callback(iteration, total_steps_done)
-            
-            # ============================================================
-            # Logging
-            # ============================================================
             if self.verbose:
                 print(f"\n[PPO] ===== Iteration {iteration} ({total_steps_done}/{total_timesteps} steps) =====")
-
+            
             # ============================================================
             # Collect rollouts
             # ============================================================
@@ -909,17 +891,25 @@ class PPO:
                 episode_rewards=episode_rewards,
                 episode_lengths=episode_lengths,
                 iteration=iteration,
-                on_step_callback=on_step_callback,
             )
             
             total_steps_done += steps_collected
             rollout_time = time.time() - rollout_start_time
-            print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
             if self.verbose:
+                print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
                 if episode_rewards:
                     recent_rewards = episode_rewards[-10:]
                     print(f"[PPO] Recent episodes: reward={sum(recent_rewards)/len(recent_rewards):.3f}, length={sum(episode_lengths[-10:])/len(episode_lengths[-10:]):.1f}")
-
+            # Display detailed rollout metrics
+            rollout_metrics = self.metrics_collector.compute_metrics()
+            extra_rollout = {
+                "total_timesteps": total_steps_done,
+            }
+            print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
+            if rollout_time > 0:
+                extra_rollout["fps"] = int((self.n_envs * self.n_steps) / rollout_time)
+            print_formatted_metrics(metrics=rollout_metrics, prefix="rollout", extra_metrics=extra_rollout)
+            
             # ============================================================
             # Train policy
             # ============================================================
@@ -929,7 +919,7 @@ class PPO:
             train_metrics = self.train()
             train_time = time.time() - train_start_time
             train_extra = {**train_metrics, "total_timesteps": total_steps_done, "iterations": iteration}
-            Display.print_formatted_metrics(metrics={}, prefix="train", extra_metrics=train_extra)
+            print_formatted_metrics(metrics={}, prefix="train", extra_metrics=train_extra)
             
             # Store last training metrics for external access
             self.last_train_metrics = train_metrics

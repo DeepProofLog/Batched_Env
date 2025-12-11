@@ -372,6 +372,10 @@ def create_tensor_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
         num_layers=8,
         dropout_prob=0.0,
         device=device,
+        parity=True,  # Use SB3-identical initialization
+        use_l2_norm=False,  # Match SB3's logit computation (no L2 norm)
+        sqrt_scale=True,  # Match SB3's attention-style scaling
+        temperature=None,  # No temperature scaling (parity with model_old)
     ).to(device)
     
     # Create PPO

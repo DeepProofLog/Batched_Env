@@ -1790,6 +1790,11 @@ class UnificationEngine:
         self._cached_arange_atoms = torch.arange(max_atoms_cap, device=device, dtype=torch.long)
         self._cached_arange_batch = torch.arange(max_batch_cap, device=device, dtype=torch.long)
         
+        # Initialize DebugHelper for verbose output
+        from utils.debug_helper import DebugHelper as DH
+        self.debug_helper = DH(**stringifier_params) if stringifier_params else None
+        self.deb = self.debug_helper
+        
     def _get_arange(self, n: int, cache_type: str = 'batch') -> Tensor:
         """Get cached arange tensor, creating if needed."""
         if cache_type == 'batch':
@@ -1810,11 +1815,6 @@ class UnificationEngine:
         else:
             self._cached_arange_atoms = new_cache
         return new_cache[:n]
-        
-        # Initialize DebugHelper for verbose output
-        from utils.debug_helper import DebugHelper as DH
-        self.debug_helper = DH(**stringifier_params) if stringifier_params else None
-        self.deb = self.debug_helper
 
     @classmethod
     def from_index_manager(

@@ -13,10 +13,13 @@ This module defines the neural network components for reinforcement learning:
 
 Tensor Shape Conventions:
     B = Batch size (number of environments)
-    S = Number of possible successor states (action space size)
-    A = Number of atoms per state
-    E = Embedding dimension
+    S = Number of possible successor states (action space size)  
+    E = Embedding dimension (atoms are aggregated by the embedder's state_embedder)
     H = Hidden dimension
+    
+    Note: The embedder internally aggregates atoms via sum/mean, so embeddings
+    have shape [B, S, E] not [B, S, A, E]. The 'A' dimension (atoms) is
+    aggregated before reaching the network.
 """
 
 import math
@@ -71,8 +74,8 @@ class CustomCombinedExtractor(nn.Module):
                 - 'action_mask': (batch, pad_states)
         
         Returns:
-            obs_embeddings: (batch, 1, pad_atoms, embed_dim)
-            action_embeddings: (batch, pad_states, pad_atoms, embed_dim)
+            obs_embeddings: (batch, 1, embed_dim) - aggregated over atoms by state_embedder
+            action_embeddings: (batch, pad_states, embed_dim) - aggregated over atoms by state_embedder
             action_mask: (batch, pad_states)
         """
         # Get tensors from TensorDict
@@ -86,9 +89,9 @@ class CustomCombinedExtractor(nn.Module):
         if action_sub_indices.dtype != torch.int32:
             action_sub_indices = action_sub_indices.to(torch.int32)  # [B, S, A, 3]
         
-        # Get embeddings from embedder
-        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices)  # [B, 1, A, E]
-        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices)  # [B, S, A, E]
+        # Get embeddings from embedder (state_embedder aggregates atoms internally)
+        obs_embeddings = self.embedder.get_embeddings_batch(obs_sub_indices)  # [B, 1, E]
+        action_embeddings = self.embedder.get_embeddings_batch(action_sub_indices)  # [B, S, E]
         
         return obs_embeddings, action_embeddings, action_mask
 
@@ -237,9 +240,9 @@ class SharedPolicyValueNetwork(nn.Module):
                  num_layers: int = 8, dropout_prob: float = 0.0,
                  compile_model: bool = False,
                  use_amp: bool = False,
-                 temperature: float = 1.0,
-                 use_l2_norm: bool = True,
-                 sqrt_scale: bool = False):
+                 temperature: float = None,
+                 use_l2_norm: bool = False,
+                 sqrt_scale: bool = True):
         """Initialize the policy-value network.
         
         Args:
@@ -309,8 +312,9 @@ class SharedPolicyValueNetwork(nn.Module):
         if self.sqrt_scale:
             logits = logits / (obs_embeddings.shape[-1] ** 0.5)
         
-        # Apply temperature scaling to control entropy
-        logits = logits / self.temperature
+        # Apply temperature scaling to control entropy (if temperature is set)
+        if self.temperature is not None:
+            logits = logits / self.temperature
         
         # Mask invalid actions
         logits = logits.masked_fill(~action_mask.bool(), float("-inf"))  # [B, S]
@@ -322,13 +326,15 @@ class SharedPolicyValueNetwork(nn.Module):
         """Compute state value estimate.
         
         Args:
-            obs_embeddings: Observation embeddings [B, 1, A, E].
+            obs_embeddings: Observation embeddings [B, 1, E] (already aggregated over atoms).
             
         Returns:
             Value estimates [B].
         """
-        shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, A, H]
-        return self.value_head(shared_obs)  # [B]
+        shared_obs = self._encode_with_shared_body(obs_embeddings)  # [B, 1, H]
+        # shared_obs is [B, 1, H], value_head outputs [B, 1] after squeeze(-1)
+        value = self.value_head(shared_obs)  # [B, 1]
+        return value.squeeze(-1)  # [B]
 
     def forward_joint(self, obs_embeddings: torch.Tensor, 
                       action_embeddings: torch.Tensor, 
@@ -348,8 +354,8 @@ class SharedPolicyValueNetwork(nn.Module):
         
         # Policy Head path
         encoded_obs = self.policy_head(shared_obs)  # [B, 1, E]
-        shared_actions = self._encode_with_shared_body(action_embeddings, mask=action_mask)
-        encoded_actions = self.policy_head(shared_actions)
+        shared_actions = self._encode_with_shared_body(action_embeddings, mask=action_mask)  # [B, S, H]
+        encoded_actions = self.policy_head(shared_actions)  # [B, S, E]
         
         # Optional L2 normalization for cosine similarity
         if self.use_l2_norm:
@@ -363,13 +369,16 @@ class SharedPolicyValueNetwork(nn.Module):
         if self.sqrt_scale:
             logits = logits / (obs_embeddings.shape[-1] ** 0.5)
         
-        logits = logits / self.temperature
-        logits = logits.masked_fill(~action_mask.bool(), float("-inf"))
+        # Apply temperature scaling (if temperature is set)
+        if self.temperature is not None:
+            logits = logits / self.temperature
+        logits = logits.masked_fill(~action_mask.bool(), float("-inf"))  # [B, S]
         
         # Value Head path (reusing shared_obs)
-        value = self.value_head(shared_obs)
+        # shared_obs is [B, 1, H], value_head outputs [B, 1] after squeeze(-1)
+        value = self.value_head(shared_obs)  # [B, 1]
         
-        return logits, value
+        return logits, value.squeeze(-1)  # [B]
 
 
 
@@ -389,9 +398,9 @@ class CustomNetwork(nn.Module):
                  dropout_prob: float = 0.0,
                  compile_model: bool = False, 
                  use_amp: bool = False,
-                 temperature: float = 1.0,
-                 use_l2_norm: bool = True,
-                 sqrt_scale: bool = False):
+                 temperature: float = None,
+                 use_l2_norm: bool = False,
+                 sqrt_scale: bool = True):
         """Initialize the custom network.
         
         Args:
@@ -457,7 +466,7 @@ class CustomNetwork(nn.Module):
             Value estimates [B].
         """
         obs_embeddings = features[0]
-        return self.shared_network.forward_value(obs_embeddings).squeeze(-1)
+        return self.shared_network.forward_value(obs_embeddings)
 
     @property
     def value_network(self):
@@ -530,9 +539,9 @@ class ActorCriticPolicy(nn.Module):
             dropout_prob=dropout_prob,
             compile_model=kwargs.get('compile_model', False),
             use_amp=kwargs.get('use_amp', False),
-            temperature=kwargs.get('temperature', 1.0),  # Temperature for entropy control
-            use_l2_norm=kwargs.get('use_l2_norm', True),  # L2 norm for cosine similarity
-            sqrt_scale=kwargs.get('sqrt_scale', False),  # sqrt(E) attention scaling
+            temperature=kwargs.get('temperature', None),  # Temperature for entropy control
+            use_l2_norm=kwargs.get('use_l2_norm', False),  # L2 norm for cosine similarity
+            sqrt_scale=kwargs.get('sqrt_scale', True),  # sqrt(E) attention scaling
         )
 
         # Dummy action/value heads created during _build in SB3
