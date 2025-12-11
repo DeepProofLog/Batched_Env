@@ -375,11 +375,7 @@ class TestUnificationEngineParity:
         torch.manual_seed(config.seed)
         np.random.seed(config.seed)
         
-        queries = prepare_queries(
-            dataset=config.dataset,
-            n_queries=config.n_queries,
-            seed=config.seed
-        )
+        queries = prepare_queries(config)
         
         sb3_results, tensor_results = run_both_engines(queries, config)
         
@@ -416,11 +412,7 @@ class TestUnificationEngineParity:
         torch.manual_seed(config.seed)
         np.random.seed(config.seed)
         
-        queries = prepare_queries(
-            dataset=config.dataset,
-            n_queries=config.n_queries,
-            seed=config.seed
-        )
+        queries = prepare_queries(config)
         
         sb3_results, tensor_results = run_both_engines(queries, config)
         

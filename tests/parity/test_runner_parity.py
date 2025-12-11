@@ -890,7 +890,7 @@ def compare_namespaces(sb3_ns: argparse.Namespace, tensor_ns: argparse.Namespace
 
 def run_runner_parity_test(
     config: RunnerParityConfig,
-    run_training: bool = False,
+    run_training: bool = True,
     verbose: bool = True,
 ) -> RunnerParityResults:
     """
@@ -1179,7 +1179,7 @@ def test_config_parity_basic(args) -> bool:
         verbose=args.verbose if hasattr(args, 'verbose') else True,
     )
     
-    results = run_runner_parity_test(config, run_training=False, verbose=True)
+    results = run_runner_parity_test(config, run_training=True, verbose=True)
     
     if results.namespace_values_match and results.overall_success:
         return True
@@ -1266,29 +1266,28 @@ if __name__ == "__main__":
     
     all_passed = basic_passed
     
-    # Optional training test
-    if args.run_training:
-        print(f"\n{'='*70}")
-        print(f"Running test_training_parity[{args.dataset}] (this may take a while)")
-        print(f"{'='*70}")
-        
-        training_config = RunnerParityConfig(
-            dataset_name=args.dataset,
-            timesteps_train=args.timesteps,
-            n_envs=args.n_envs if hasattr(args, 'n_envs') and args.n_envs else 4,
-            n_steps=args.n_steps if hasattr(args, 'n_steps') and args.n_steps else 32,
-            batch_size=getattr(args, 'batch_size', 128),
-            device=args.device,
-            verbose=getattr(args, 'verbose', True),
-        )
-        
-        training_results = run_runner_parity_test(training_config, run_training=True, verbose=getattr(args, 'verbose', True))
-        
-        if training_results.overall_success:
-            print(f"\n✓ PASSED: test_training_parity[{args.dataset}]")
-        else:
-            print(f"\n✗ FAILED: test_training_parity[{args.dataset}]")
-            all_passed = False
+    # training test
+    print(f"\n{'='*70}")
+    print(f"Running test_training_parity[{args.dataset}] (this may take a while)")
+    print(f"{'='*70}")
+    
+    training_config = RunnerParityConfig(
+        dataset_name=args.dataset,
+        timesteps_train=args.timesteps,
+        n_envs=args.n_envs if hasattr(args, 'n_envs') and args.n_envs else 4,
+        n_steps=args.n_steps if hasattr(args, 'n_steps') and args.n_steps else 32,
+        batch_size=getattr(args, 'batch_size', 128),
+        device=args.device,
+        verbose=getattr(args, 'verbose', True),
+    )
+    
+    training_results = run_runner_parity_test(training_config, run_training=True, verbose=getattr(args, 'verbose', True))
+    
+    if training_results.overall_success:
+        print(f"\n✓ PASSED: test_training_parity[{args.dataset}]")
+    else:
+        print(f"\n✗ FAILED: test_training_parity[{args.dataset}]")
+        all_passed = False
     
     # Summary
     print(f"\n{'='*70}")
