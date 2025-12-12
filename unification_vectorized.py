@@ -676,16 +676,16 @@ class UnificationEngineVectorized:
     def __init__(
         self,
         base_engine: UnificationEngine,
-        max_fact_pairs: int = 50,
-        max_rule_pairs: int = 100,
+        max_fact_pairs: int = None,  # If None, computed from data
+        max_rule_pairs: int = None,  # If None, computed from data
     ):
         """
         Initialize from a base UnificationEngine.
         
         Args:
             base_engine: Existing UnificationEngine with facts, rules, etc.
-            max_fact_pairs: Max fact candidates per query (pre-computed)
-            max_rule_pairs: Max rule candidates per query (pre-computed)
+            max_fact_pairs: Max fact candidates per query. If None, uses max from data.
+            max_rule_pairs: Max rule candidates per query. If None, uses max from data.
         """
         self.engine = base_engine
         self.device = base_engine.device
@@ -697,6 +697,29 @@ class UnificationEngineVectorized:
         # Fixed shape parameters
         self.K_max = base_engine.max_derived_per_state or 120
         self.M_max = (base_engine.max_rule_body_size or 4) + 10  # body + remaining
+        
+        # Compute max pairs from data if not provided
+        # This is CRITICAL for correctness - must cover all facts/rules per predicate
+        if max_fact_pairs is None:
+            if base_engine.predicate_range_map is not None:
+                fact_lens = (
+                    base_engine.predicate_range_map[:, 1] - 
+                    base_engine.predicate_range_map[:, 0]
+                )
+                max_fact_pairs = int(fact_lens.max().item()) if fact_lens.numel() > 0 else 50
+                # Ensure at least 50
+                max_fact_pairs = max(max_fact_pairs, 50)
+            else:
+                max_fact_pairs = 50
+                
+        if max_rule_pairs is None:
+            if hasattr(base_engine, 'rule_seg_lens') and base_engine.rule_seg_lens is not None:
+                max_rule_pairs = int(base_engine.rule_seg_lens.max().item()) if base_engine.rule_seg_lens.numel() > 0 else 100
+                # Ensure at least 100
+                max_rule_pairs = max(max_rule_pairs, 100)
+            else:
+                max_rule_pairs = 100
+        
         self.max_fact_pairs = max_fact_pairs
         self.max_rule_pairs = max_rule_pairs
         
@@ -766,10 +789,22 @@ class UnificationEngineVectorized:
     def from_base_engine(
         cls,
         base_engine: UnificationEngine,
-        max_fact_pairs: int = 50,
-        max_rule_pairs: int = 100,
+        max_fact_pairs: int = None,
+        max_rule_pairs: int = None,
     ) -> "UnificationEngineVectorized":
-        """Factory method to create from existing engine."""
+        """
+        Factory method to create from existing engine.
+        
+        Args:
+            base_engine: Existing UnificationEngine with facts, rules, etc.
+            max_fact_pairs: Max facts per predicate. If None, auto-computed from data.
+            max_rule_pairs: Max rules per predicate. If None, auto-computed from data.
+            
+        Note:
+            Using None (auto-compute) is STRONGLY RECOMMENDED to ensure all facts
+            and rules are considered during unification. Using small values can
+            cause some unification results to be missed, leading to lower accuracy.
+        """
         return cls(base_engine, max_fact_pairs, max_rule_pairs)
     
     @torch.no_grad()

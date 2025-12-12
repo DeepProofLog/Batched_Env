@@ -9,6 +9,7 @@ Key optimizations:
 2. Policy integrated into compiled graph  
 3. Full trajectory compilation (reduce-overhead + fullgraph)
 4. Streaming chunks for memory efficiency
+5. Auto-detection of optimal batch size based on GPU memory
 """
 
 from __future__ import annotations
@@ -31,6 +32,65 @@ def compute_metrics_from_ranks(ranks: Tensor) -> Dict[str, float]:
         "Hits@3": float(torch.mean((ranks_float <= 3.0).float()).item()),
         "Hits@10": float(torch.mean((ranks_float <= 10.0).float()).item()),
     }
+
+
+def compute_optimal_batch_size(
+    chunk_queries: int,
+    n_corruptions: int,
+    max_vram_gb: float = None,
+    min_batch_size: int = 64,
+    prefer_power_of_two: bool = False,
+) -> int:
+    """
+    Compute optimal batch size for evaluation.
+    
+    The batch size is determined by:
+    1. chunk_queries × (1 + n_corruptions) formula
+    2. Available GPU memory
+    3. Alignment preferences (power of 2, multiples of 32)
+    
+    Args:
+        chunk_queries: Number of queries per chunk
+        n_corruptions: Number of corruptions per query
+        max_vram_gb: Maximum VRAM to use (default: 80% of available)
+        min_batch_size: Minimum allowed batch size
+        prefer_power_of_two: If True, round to nearest power of 2
+        
+    Returns:
+        Optimal batch size
+    """
+    # Basic calculation
+    raw_batch_size = chunk_queries * (1 + n_corruptions)
+    
+    # Get available VRAM
+    if torch.cuda.is_available():
+        total_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        if max_vram_gb is None:
+            max_vram_gb = total_vram * 0.8  # Use 80% of available
+        
+        # Estimate memory per query (rough heuristic based on typical usage)
+        # Each query uses ~2MB with full trajectory state
+        mem_per_query_mb = 2.0
+        max_batch_from_vram = int(max_vram_gb * 1024 / mem_per_query_mb)
+        
+        # Clamp to VRAM limit
+        batch_size = min(raw_batch_size, max_batch_from_vram)
+    else:
+        batch_size = raw_batch_size
+    
+    # Apply minimum
+    batch_size = max(batch_size, min_batch_size)
+    
+    # Align to multiples of 32 for GPU efficiency
+    batch_size = ((batch_size + 31) // 32) * 32
+    
+    # Optional: round to power of 2
+    if prefer_power_of_two:
+        import math
+        log2 = math.log2(batch_size)
+        batch_size = 2 ** round(log2)
+    
+    return batch_size
 
 
 class CompiledEvaluator:
@@ -65,6 +125,46 @@ class CompiledEvaluator:
             batch_size, 3, dtype=torch.long, device=env.device
         )
     
+    @classmethod
+    def create_with_optimal_batch_size(
+        cls,
+        env: EvalOnlyEnvCompiled,
+        policy_logits_fn: Callable[[EvalObs], Tensor],
+        chunk_queries: int = 10,
+        n_corruptions: int = 50,
+        max_steps: int = 20,
+        deterministic: bool = True,
+        max_vram_gb: float = None,
+    ) -> 'CompiledEvaluator':
+        """
+        Create CompiledEvaluator with automatically computed optimal batch size.
+        
+        Args:
+            env: EvalOnlyEnvCompiled environment
+            policy_logits_fn: Policy function that returns logits
+            chunk_queries: Number of queries per evaluation chunk
+            n_corruptions: Number of corruptions per query
+            max_steps: Maximum trajectory length
+            deterministic: Use argmax for action selection
+            max_vram_gb: Maximum VRAM to use (default: auto-detect)
+            
+        Returns:
+            CompiledEvaluator with optimal batch size
+        """
+        batch_size = compute_optimal_batch_size(
+            chunk_queries=chunk_queries,
+            n_corruptions=n_corruptions,
+            max_vram_gb=max_vram_gb,
+        )
+        
+        return cls(
+            env=env,
+            policy_logits_fn=policy_logits_fn,
+            batch_size=batch_size,
+            max_steps=max_steps,
+            deterministic=deterministic,
+        )
+    
     def _get_compiled(self) -> callable:
         if self._compiled_fn is None:
             self._compiled_fn = torch.compile(
@@ -78,21 +178,69 @@ class CompiledEvaluator:
             )
         return self._compiled_fn
     
-    def warmup(self, sample_queries: Tensor) -> None:
-        """Warmup compilation using static buffer."""
+    def warmup(
+        self, 
+        sample_queries: Tensor, 
+        n_warmup_runs: int = 5,
+        diverse_warmup: bool = True,
+    ) -> None:
+        """
+        Warmup compilation using static buffer with diverse queries.
+        
+        This method performs extended warmup to:
+        1. Trigger JIT compilation and CUDA graph recording
+        2. Exercise diverse code paths with varied queries
+        3. Pre-allocate all intermediate tensors
+        
+        Args:
+            sample_queries: [N, 3] Sample queries for warmup
+            n_warmup_runs: Number of warmup iterations (default: 5)
+            diverse_warmup: If True, use diverse query patterns for warmup
+        """
         if self._warmed_up:
             return
         
         compiled = self._get_compiled()
         n = sample_queries.shape[0]
+        device = self.env.device
         
         # Fill static buffer with sample data
         repeats = (self.batch_size + n - 1) // n
         warmup_data = sample_queries.repeat(repeats, 1)[:self.batch_size]
         self._input_buffer.copy_(warmup_data)
         
-        # Warmup runs (3 is enough with static buffer)
-        for _ in range(3):
+        # First warmup run - triggers compilation
+        _ = compiled(self._input_buffer)
+        torch.cuda.synchronize()
+        
+        if diverse_warmup and n >= 2:
+            # Create diverse warmup patterns to exercise different code paths
+            # This helps stabilize memory allocations and JIT behavior
+            
+            # Pattern 1: Shuffle queries to vary unification patterns
+            shuffle_idx = torch.randperm(n, device=device)
+            shuffled = sample_queries[shuffle_idx]
+            warmup_shuffled = shuffled.repeat(repeats, 1)[:self.batch_size]
+            self._input_buffer.copy_(warmup_shuffled)
+            _ = compiled(self._input_buffer)
+            torch.cuda.synchronize()
+            
+            # Pattern 2: Repeat single queries (tests deduplication paths)
+            single_expanded = sample_queries[0:1].expand(self.batch_size, -1).contiguous()
+            self._input_buffer.copy_(single_expanded)
+            _ = compiled(self._input_buffer)
+            torch.cuda.synchronize()
+            
+            # Pattern 3: Alternating queries
+            alt_idx = torch.arange(self.batch_size, device=device) % n
+            alternating = sample_queries[alt_idx]
+            self._input_buffer.copy_(alternating)
+            _ = compiled(self._input_buffer)
+            torch.cuda.synchronize()
+        
+        # Additional warmup runs with original data
+        self._input_buffer.copy_(warmup_data)
+        for _ in range(max(0, n_warmup_runs - 4)):
             _ = compiled(self._input_buffer)
         
         torch.cuda.synchronize()
@@ -406,7 +554,7 @@ def create_policy_logits_fn(
     that can be compiled with the trajectory evaluation.
     
     Args:
-        actor: Policy network
+        actor: Policy network (ActorCriticPolicy)
         deterministic: Whether evaluation is deterministic
         
     Returns:
@@ -414,32 +562,44 @@ def create_policy_logits_fn(
     """
     @torch.no_grad()
     def policy_fn(obs: EvalObs) -> Tensor:
-        # Call actor with observation components
-        if hasattr(actor, 'forward_eval'):
-            # Dedicated eval forward
-            out = actor.forward_eval(
+        # Build observation dict that the actor expects
+        obs_dict = {
+            'sub_index': obs.sub_index,
+            'derived_sub_indices': obs.derived_sub_indices,
+            'action_mask': obs.action_mask,
+        }
+        
+        # Extract features and get raw logits from mlp_extractor
+        # This bypasses the action distribution sampling in forward()
+        if hasattr(actor, 'extract_features') and hasattr(actor, 'mlp_extractor'):
+            # ActorCriticPolicy path - get raw logits directly
+            features = actor.extract_features(obs_dict)
+            if actor.share_features_extractor:
+                logits, _ = actor.mlp_extractor(features)  # (logits, values)
+            else:
+                obs_emb, act_emb, act_mask = features[0]
+                logits = actor.mlp_extractor.forward_actor((obs_emb, act_emb, act_mask))
+        elif hasattr(actor, 'forward_eval'):
+            # Dedicated eval forward path
+            logits = actor.forward_eval(
                 obs.sub_index,
                 obs.derived_sub_indices,
                 obs.action_mask,
             )
         else:
-            # Standard forward expecting TensorDict-like input
-            # Create a simple dict for compatibility
-            out = actor({
-                'sub_index': obs.sub_index,
-                'derived_sub_indices': obs.derived_sub_indices,
-                'action_mask': obs.action_mask,
-            })
-        
-        # Extract logits
-        if isinstance(out, tuple):
-            logits = out[0]
-        elif hasattr(out, 'get'):
-            logits = out.get('logits', out.get('action', None))
-            if logits is None:
+            # Fallback - standard forward, extract logits from tuple
+            out = actor(obs_dict)
+            if isinstance(out, tuple):
+                # forward() returns (actions, values, log_probs) - actions have shape [B]
+                # We need logits which have shape [B, S]
+                # This path is incorrect for ActorCriticPolicy, but kept for other models
+                logits = out[0]
+            elif hasattr(out, 'get'):
+                logits = out.get('logits', out.get('action', None))
+                if logits is None:
+                    logits = out
+            else:
                 logits = out
-        else:
-            logits = out
         
         # Ensure 2D [B, S]
         if logits.ndim == 1:

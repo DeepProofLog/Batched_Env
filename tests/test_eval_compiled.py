@@ -683,8 +683,8 @@ def main():
     parser.add_argument('--test-env', action='store_true', help='Test compiled environment')
     parser.add_argument('--full-pipeline', action='store_true', help='Benchmark full pipeline')
     parser.add_argument('--validate-mrr', action='store_true', help='Validate MRR correctness')
-    parser.add_argument('--max-fact-pairs', type=int, default=50, help='Max fact pairs')
-    parser.add_argument('--max-rule-pairs', type=int, default=100, help='Max rule pairs')
+    parser.add_argument('--max-fact-pairs', type=int, default=None, help='Max fact pairs (None=auto)')
+    parser.add_argument('--max-rule-pairs', type=int, default=None, help='Max rule pairs (None=auto)')
     parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false')
     args = parser.parse_args()
     

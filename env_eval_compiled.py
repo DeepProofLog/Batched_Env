@@ -138,6 +138,16 @@ class EvalOnlyEnvCompiled:
             end_state[0, 2] = self.padding_idx
             self.end_state = end_state  # [A, 3]
         
+        # ====================================================================
+        # Pre-allocated static tensors for CUDA graph stability
+        # These tensors are created once and reused across calls to avoid
+        # memory allocation during compiled execution.
+        # ====================================================================
+        
+        # Index tensors - these are constant and can be safely reused
+        self._positions_S = torch.arange(padding_states, device=self.device).unsqueeze(0)  # [1, S]
+        self._batch_idx_B = None  # Lazy allocated when batch size is known
+        
         # State buffers (pre-allocated on first use)
         self._current_states = None      # [B, A, 3]
         self._original_queries = None    # [B, A, 3]
@@ -147,6 +157,12 @@ class EvalOnlyEnvCompiled:
         self._next_var_indices = None    # [B]
         self._done = None                # [B]
         self._success = None             # [B]
+        
+    def _get_batch_idx(self, n: int) -> torch.Tensor:
+        """Get or create batch index tensor [0, 1, ..., n-1]."""
+        if self._batch_idx_B is None or self._batch_idx_B.shape[0] != n:
+            self._batch_idx_B = torch.arange(n, device=self.device)
+        return self._batch_idx_B
         
         # Dataset handling
         self._queries_dataset = None     # [M, A, 3]
@@ -206,8 +222,8 @@ class EvalOnlyEnvCompiled:
         """
         n = len(actions)
         
-        # Get selected next states: [n, A, 3]
-        batch_idx = torch.arange(n, device=self.device)
+        # Get selected next states: [n, A, 3] - use pre-allocated batch index
+        batch_idx = self._get_batch_idx(n)
         next_states = self._derived_states[batch_idx, actions]
         
         # Update current states for non-done envs using where
@@ -331,8 +347,8 @@ class EvalOnlyEnvCompiled:
         # slot_idx = counts (0-indexed position to insert)
         slot_idx = counts.clamp(max=self.padding_states - 1)
         
-        # Use advanced indexing with where to avoid loop
-        batch_idx = torch.arange(n, device=self.device)
+        # Use pre-allocated batch index for this batch size
+        batch_idx = self._get_batch_idx(n)
         
         # Clone to avoid in-place modification that might break grads (though we're no_grad)
         states = states.clone()
@@ -362,11 +378,8 @@ class EvalOnlyEnvCompiled:
     
     def _make_obs_raw(self) -> EvalObs:
         """Create observation as NamedTuple (compilation-friendly)."""
-        n = self._current_states.shape[0]
-        
-        # Action mask: vectorized (no loop)
-        positions = torch.arange(self.padding_states, device=self.device).unsqueeze(0)
-        action_mask = positions < self._derived_counts.unsqueeze(1)
+        # Use pre-allocated positions tensor for action mask
+        action_mask = self._positions_S < self._derived_counts.unsqueeze(1)
         
         return EvalObs(
             sub_index=self._current_states.unsqueeze(1),
@@ -598,9 +611,8 @@ class EvalOnlyEnvCompiled:
             success=new_success,
         )
         
-        # Create observation
-        positions = torch.arange(self.padding_states, device=device).unsqueeze(0)
-        action_mask = positions < new_counts.unsqueeze(1)
+        # Create observation - use pre-allocated positions tensor
+        action_mask = self._positions_S < new_counts.unsqueeze(1)
         
         obs = EvalObs(
             sub_index=new_current.unsqueeze(1),
@@ -645,9 +657,8 @@ class EvalOnlyEnvCompiled:
         total_log_probs = torch.zeros(B, device=device)
         total_rewards = torch.zeros(B, device=device)
         
-        # Create initial observation
-        positions = torch.arange(self.padding_states, device=device).unsqueeze(0)
-        action_mask = positions < state.derived_counts.unsqueeze(1)
+        # Create initial observation - use pre-allocated positions tensor
+        action_mask = self._positions_S < state.derived_counts.unsqueeze(1)
         
         obs = EvalObs(
             sub_index=state.current_states.unsqueeze(1),
