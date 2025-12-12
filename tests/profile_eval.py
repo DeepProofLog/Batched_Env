@@ -389,7 +389,7 @@ def main():
                         help='Use torch.profiler for GPU profiling instead of cProfile')
     parser.add_argument('--dataset', type=str, default='family',
                         help='Dataset name')
-    parser.add_argument('--n-test-queries', type=int, default=100,
+    parser.add_argument('--n-test-queries', type=int, default=10,
                         help='Number of test queries (None = all)')
     parser.add_argument('--n-corruptions', type=int, default=100,
                         help='Number of corruptions per query')

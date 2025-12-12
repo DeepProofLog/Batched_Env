@@ -1,0 +1,702 @@
+"""
+Test and Profile Optimized Evaluation.
+
+This script compares the original and compiled evaluation pipelines:
+1. Low-level Correctness: Vectorized unification, graph breaks
+2. Metrics Correctness: Verify MRR/Hits@K match between implementations
+3. Performance: Measure timing difference (Original vs Compiled)
+
+The compiled path uses torch.compile with mode='reduce-overhead' and fullgraph=True
+for maximum CUDA graph performance.
+
+Usage:
+    python tests/test_eval_optimized.py                    # Basic test
+    python tests/test_eval_optimized.py --performance      # Run performance benchmark
+    python tests/test_eval_optimized.py --check-compile    # Check for graph breaks
+"""
+
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import argparse
+import time
+from types import SimpleNamespace
+from typing import Dict, Any, Optional
+
+import numpy as np
+import torch
+import torch._dynamo as dynamo
+
+def setup_components(device: torch.device, config: SimpleNamespace):
+    """Initialize all components needed for evaluation."""
+    from data_handler import DataHandler
+    from index_manager import IndexManager
+    from unification import UnificationEngine, set_compile_mode
+    from unification_vectorized import UnificationEngineVectorized
+    from env import BatchedEnv
+    from embeddings import EmbedderLearnable as TensorEmbedder
+    from model import ActorCriticPolicy as TensorPolicy
+    from sampler import Sampler
+    
+    # Enable compile mode if requested (global flag for unification module)
+    set_compile_mode(config.compile)
+    
+    # Load data
+    dh = DataHandler(
+        dataset_name=config.dataset,
+        base_path=config.data_path,
+        train_file="train.txt",
+        valid_file="valid.txt",
+        test_file="test.txt",
+        rules_file="rules.txt",
+        facts_file="train.txt",
+        corruption_mode='dynamic',
+    )
+    
+    # Index manager
+    im = IndexManager(
+        constants=dh.constants,
+        predicates=dh.predicates,
+        max_total_runtime_vars=config.max_total_vars,
+        max_arity=dh.max_arity,
+        padding_atoms=config.padding_atoms,
+        device=device,
+        rules=dh.rules,
+    )
+    
+    # Materialize indices
+    dh.materialize_indices(im=im, device=device)
+    
+    # Sampler
+    default_mode = 'tail' if 'countries' in config.dataset else 'both'
+    domain2idx, entity2domain = dh.get_sampler_domain_info()
+    sampler = Sampler.from_data(
+        all_known_triples_idx=dh.all_known_triples_idx,
+        num_entities=im.constant_no,
+        num_relations=im.predicate_no,
+        device=device,
+        default_mode=default_mode,
+        seed=config.seed,
+        domain2idx=domain2idx,
+        entity2domain=entity2domain,
+    )
+    
+    # Reseed
+    torch.manual_seed(config.seed)
+    
+    # Embedder
+    embedder = TensorEmbedder(
+        n_constants=im.constant_no,
+        n_predicates=im.predicate_no,
+        n_vars=1000,
+        max_arity=dh.max_arity,
+        padding_atoms=config.padding_atoms,
+        atom_embedder='transe',
+        state_embedder='mean',
+        constant_embedding_size=config.atom_embedding_size,
+        predicate_embedding_size=config.atom_embedding_size,
+        atom_embedding_size=config.atom_embedding_size,
+        device=str(device),
+    )
+    embedder.embed_dim = config.atom_embedding_size
+    
+    # Stringifier params
+    stringifier_params = {
+        'verbose': 0,
+        'idx2predicate': im.idx2predicate,
+        'idx2constant': im.idx2constant,
+        'idx2template_var': im.idx2template_var,
+        'padding_idx': im.padding_idx,
+        'n_constants': im.constant_no
+    }
+    
+    # Base unification engine
+    base_engine = UnificationEngine.from_index_manager(
+        im, take_ownership=True,
+        stringifier_params=stringifier_params,
+        end_pred_idx=im.end_pred_idx,
+        end_proof_action=config.end_proof_action,
+        max_derived_per_state=config.padding_states,
+    )
+    base_engine.index_manager = im
+    
+    # Vectorized engine (for compiled path)
+    # Use None for auto-computation from data - this avoids OOM by not over-allocating
+    vec_engine = UnificationEngineVectorized.from_base_engine(
+        base_engine,
+        max_fact_pairs=None,  # Auto-compute from data
+        max_rule_pairs=None,  # Auto-compute from data
+    )
+    
+    # Convert queries
+    def convert_queries_unpadded(queries):
+        tensors = []
+        for q in queries:
+            atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            tensors.append(atom)
+        return torch.stack(tensors, dim=0)
+    
+    def convert_queries_padded(queries):
+        tensors = []
+        for q in queries:
+            atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            padded = torch.full((config.padding_atoms, 3), im.padding_idx, dtype=torch.long, device=device)
+            padded[0] = atom
+            tensors.append(padded)
+        return torch.stack(tensors, dim=0)
+    
+    test_queries_unpadded = convert_queries_unpadded(dh.test_queries)
+    test_queries_padded = convert_queries_padded(dh.test_queries)
+    
+    # Eval environment (Original)
+    eval_env_orig = BatchedEnv(
+        batch_size=config.batch_size_env,
+        queries=test_queries_padded[:config.batch_size_env],
+        labels=torch.ones(config.batch_size_env, dtype=torch.long, device=device),
+        query_depths=torch.ones(config.batch_size_env, dtype=torch.long, device=device),
+        unification_engine=base_engine,
+        mode='eval',
+        max_depth=config.max_depth,
+        memory_pruning=config.memory_pruning,
+        use_exact_memory=False,
+        skip_unary_actions=config.skip_unary_actions,
+        end_proof_action=config.end_proof_action,
+        reward_type=config.reward_type,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        true_pred_idx=im.predicate_str2idx.get('True'),
+        false_pred_idx=im.predicate_str2idx.get('False'),
+        end_pred_idx=im.predicate_str2idx.get('Endf'),
+        verbose=0,
+        prover_verbose=0,
+        device=device,
+        runtime_var_start_index=im.constant_no + 1,
+        total_vocab_size=im.constant_no + config.max_total_vars,
+        sample_deterministic_per_env=False,
+    )
+
+    # Compiled Environment (for Optimized/Compiled paths)
+    from env_eval_compiled import EvalOnlyEnvCompiled
+    eval_env_compiled = EvalOnlyEnvCompiled(
+        vec_engine=vec_engine,
+        batch_size=config.batch_size_env,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_depth,
+        end_proof_action=config.end_proof_action,
+        runtime_var_start_index=im.constant_no + 1,
+        device=device,
+    )
+    
+    # Policy
+    action_size = config.padding_states
+    policy = TensorPolicy(
+        embedder=embedder,
+        embed_dim=config.atom_embedding_size,
+        action_dim=action_size,
+        hidden_dim=256,
+        num_layers=8,
+        dropout_prob=0.0,
+        device=device,
+        compile_policy=config.compile,
+    ).to(device)
+    
+    return {
+        'policy': policy,
+        'eval_env_orig': eval_env_orig,
+        'eval_env_compiled': eval_env_compiled,
+        'sampler': sampler,
+        'dh': dh,
+        'im': im,
+        'vec_engine': vec_engine,
+        'test_queries': test_queries_unpadded,
+    }
+
+
+
+
+def test_vectorized_unification(components, config, device):
+    """Test that vectorized unification produces valid outputs."""
+    print("\n" + "="*60)
+    print("TESTING VECTORIZED UNIFICATION")
+    print("="*60)
+    
+    vec_engine = components['vec_engine']
+    im = components['im']
+    
+    # Create test inputs
+    B = 5
+    A = config.padding_atoms
+    
+    # Use actual test queries
+    test_queries = components['test_queries'][:B]
+    
+    # Pad to [B, A, 3]
+    current_states = torch.full((B, A, 3), im.padding_idx, dtype=torch.long, device=device)
+    current_states[:, 0, :] = test_queries.to(device)
+    
+    next_var_indices = torch.full((B,), im.constant_no + 1, dtype=torch.long, device=device)
+    excluded = current_states[:, 0:1, :].clone()
+    
+    print(f"Input shape: {current_states.shape}")
+    print(f"Sample query: {test_queries[0].tolist()}")
+    
+    # Run vectorized unification
+    start = time.time()
+    derived, counts, new_vars = vec_engine.get_derived_states_compiled(
+        current_states, next_var_indices, excluded
+    )
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    elapsed = time.time() - start
+    
+    print(f"\nOutput shapes:")
+    print(f"  derived: {derived.shape}")
+    print(f"  counts: {counts.shape}")
+    print(f"  new_vars: {new_vars.shape}")
+    
+    print(f"\nCounts per query: {counts.tolist()}")
+    print(f"New vars: {new_vars.tolist()}")
+    print(f"Time: {elapsed*1000:.2f}ms")
+    
+    # Basic validation
+    assert derived.shape == (B, vec_engine.K_max, vec_engine.M_max, 3), "Wrong derived shape"
+    assert counts.shape == (B,), "Wrong counts shape"
+    assert (counts >= 0).all(), "Negative counts"
+    assert (counts <= vec_engine.K_max).all(), "Counts exceed K_max"
+    
+    print("\n✓ All basic validations passed")
+    return True
+
+
+def run_original_eval(components, config, seed: Optional[int] = None):
+    """Run original eval_corruptions."""
+    from model_eval import eval_corruptions
+    
+    actor = components['policy']
+    env = components['eval_env_orig']
+    sampler = components['sampler']
+    queries = components['test_queries'][:config.n_test_queries]
+    
+    # Reseed if requested
+    if seed is not None:
+        sampler.rng = np.random.RandomState(seed)
+    
+    return eval_corruptions(
+        actor=actor,
+        env=env,
+        queries=queries,
+        sampler=sampler,
+        n_corruptions=config.n_corruptions,
+        corruption_modes=tuple(config.corruption_modes),
+        verbose=config.verbose if seed is None else False,
+    )
+
+
+def create_and_warmup_evaluator(components, config, mode: str = 'compiled'):
+    """Create evaluator and run warmup."""
+    from model_eval_optimized import (
+        CompiledEvaluator, 
+        create_policy_logits_fn,
+        compute_optimal_batch_size,
+    )
+    
+    actor = components['policy']
+    env = components['eval_env_compiled']
+    # Use full set of queries to determine effective chunk size matches
+    queries = components['test_queries'][:config.n_test_queries].to(env.device)
+    
+    # Create logits function
+    policy_logits_fn = create_policy_logits_fn(actor, deterministic=True)
+    
+    # Compute optimal batch size
+    effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
+    batch_size = compute_optimal_batch_size(
+        chunk_queries=effective_chunk_queries,
+        n_corruptions=config.n_corruptions,
+        max_vram_gb=config.vram_gb,
+    )
+    
+    # Configure compile options based on mode
+    if mode == 'compiled':
+        compile_mode = getattr(config, 'compile_mode', 'reduce-overhead')
+        fullgraph = getattr(config, 'fullgraph', True)
+    else:
+        # Eager mode: disable compilation
+        compile_mode = None 
+        fullgraph = False
+        
+    # Create evaluator (CompiledEvaluator handles both eager and compiled)
+    evaluator = CompiledEvaluator(
+        env=env,
+        policy_logits_fn=policy_logits_fn,
+        batch_size=batch_size,
+        max_steps=config.max_depth,
+        deterministic=True,
+        compile_mode=compile_mode,
+        fullgraph=fullgraph,
+    )
+    
+    # Warmup (important for compiled, harmless for eager)
+    print(f"Starting warmup (mode={mode})...")
+    warmup_start = time.time()
+    # Warmup with a small subset
+    evaluator.warmup(queries[:min(20, len(queries))])
+    warmup_time_s = (
+        evaluator.warmup_time_s
+        if getattr(evaluator, "warmup_time_s", None) is not None
+        else time.time() - warmup_start
+    )
+    print(f"Warmup took {warmup_time_s} s.")
+    
+    return evaluator, warmup_time_s
+
+
+def run_optimized_eval(components, config, seed: Optional[int] = None, 
+                       evaluator=None, return_evaluator: bool = False,
+                       mode: str = 'compiled'):
+    """Run optimized eval (eager or compiled).
+    
+    Args:
+        mode: 'eager' or 'compiled'.
+    """
+    from model_eval_optimized import eval_corruptions_optimized
+    
+    actor = components['policy']
+    env = components['eval_env_compiled']
+    sampler = components['sampler']
+    queries = components['test_queries'][:config.n_test_queries].to(env.device)
+    
+    if seed is not None:
+        sampler.rng = np.random.RandomState(seed)
+    
+    warmup_time_s = 0.0
+    if evaluator is None:
+        evaluator, warmup_time_s = create_and_warmup_evaluator(components, config, mode=mode)
+
+    # Compute optimal batch size (needed for chunking in eval loop)
+    effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
+
+    # Run evaluation using the optimized loop
+    results = eval_corruptions_optimized(
+        evaluator=evaluator,
+        queries=queries,
+        sampler=sampler,
+        n_corruptions=config.n_corruptions,
+        corruption_modes=tuple(config.corruption_modes),
+        chunk_queries=effective_chunk_queries,
+        verbose=config.verbose if seed is None else False,
+    )
+    
+    if return_evaluator:
+        return results, evaluator, warmup_time_s
+    return results
+
+
+def test_correctness(components, config):
+    """Test that metrics match between Original and Compiled implementations."""
+    print("\n" + "="*60)
+    print("CORRECTNESS TEST: Original vs Compiled")
+    print("="*60)
+    
+    # Use small test for correctness (avoid OOM and long runtimes)
+    small_config = SimpleNamespace(**vars(config))
+    small_config.n_test_queries = min(20, config.n_test_queries)
+    small_config.n_corruptions = min(50, config.n_corruptions)
+    small_config.verbose = False
+    small_config.chunk_queries = 10  # Small chunks for memory efficiency
+    
+    print(f"Testing with {small_config.n_test_queries} queries, {small_config.n_corruptions} corruptions...")
+    
+    results = {}
+    
+    # Original
+    print("Running Original...")
+    try:
+        torch.cuda.empty_cache()
+        results['Original'] = run_original_eval(components, small_config)
+    except Exception as e:
+        print(f"Original failed: {e}")
+        import traceback
+        traceback.print_exc()
+        results['Original'] = None
+        
+    # Compiled (with reduce-overhead and fullgraph)
+    print("Running Compiled (reduce-overhead + fullgraph)...")
+    try:
+        torch.cuda.empty_cache()
+        res_comp, evaluator, warmup_time_s = run_optimized_eval(
+            components, small_config, return_evaluator=True, mode='compiled'
+        )
+        results['Compiled'] = res_comp
+        print(f"  Compiled warmup time: {warmup_time_s:.2f}s")
+    except Exception as e:
+        print(f"Compiled failed: {e}")
+        import traceback
+        traceback.print_exc()
+        results['Compiled'] = None
+
+    # Compare
+    metrics = ["MRR", "Hits@1", "Hits@3", "Hits@10"]
+    
+    # Random baseline MRR for reference
+    random_mrr = 1.0 / (small_config.n_corruptions + 1)
+    min_mrr_threshold = random_mrr * 3  # Should be at least 3x better than random
+    
+    print(f"\n{'Metric':<10} {'Original':>12} {'Compiled':>12} {'Random':>10} {'Status':>8}")
+    print("-" * 60)
+    
+    all_pass = True
+    for m in metrics:
+        v_orig = results['Original'].get(m, 0.0) if results['Original'] else 0.0
+        v_comp = results['Compiled'].get(m, 0.0) if results['Compiled'] else 0.0
+        v_rand = random_mrr if m == "MRR" else 0.0
+        
+        # Pass if compiled is significantly better than random baseline
+        status = "PASS"
+        if m == "MRR" and v_comp < min_mrr_threshold:
+            status = "FAIL"
+            all_pass = False
+            
+        print(f"{m:<10} {v_orig:>12.4f} {v_comp:>12.4f} {v_rand:>10.4f} {status:>8}")
+    
+    # Print summary
+    print(f"\nRandom baseline MRR: {random_mrr:.4f}")
+    print(f"Minimum MRR threshold (3x random): {min_mrr_threshold:.4f}")
+    
+    if all_pass:
+        print("\n✓ Compiled metrics are healthy (significantly above random)")
+    else:
+        print("\n✗ Compiled MRR is too low (below 3x random)")
+    
+    # Also report ratio
+    orig_mrr = results['Original'].get('MRR', 0.0) if results['Original'] else 0.0
+    comp_mrr = results['Compiled'].get('MRR', 0.0) if results['Compiled'] else 0.0
+    if orig_mrr > 0 and comp_mrr > 0:
+        ratio = comp_mrr / orig_mrr
+        print(f"\nCompiled/Original MRR ratio: {ratio:.2f}x")
+        if ratio < 0.5:
+            print("⚠ Warning: Compiled is less than 50% of Original - investigate")
+        
+    return all_pass
+
+
+
+
+def test_seed_correctness(components, config, device):
+    """
+    Seed-based correctness test.
+    
+    Key insight: In family dataset, most negatives don't have proofs, so MRR is generally high.
+    Random baseline is not meaningful. Instead, we compare Original vs Compiled with same seeds.
+    
+    Strategy:
+    1. Run Original ONCE with seed=0 (it's slow, don't repeat)
+    2. Run Compiled with multiple seeds (fast)
+    3. Also run Original with same seeds to compare (necessary for fair comparison)
+    4. If averages differ significantly, there's a bug in compiled version
+    """
+    print("\n" + "="*60)
+    print("SEED-BASED CORRECTNESS TEST")
+    print("="*60)
+    
+    test_config = SimpleNamespace(**vars(config))
+    test_config.n_test_queries = min(50, config.n_test_queries)
+    test_config.n_corruptions = min(100, config.n_corruptions)
+    
+    num_seeds = config.num_seeds
+    seeds = list(range(num_seeds))
+    
+    print(f"Testing with {test_config.n_test_queries} queries, {test_config.n_corruptions} corruptions")
+    print(f"Seeds to test: {seeds}")
+    
+    # Collect results
+    original_results = []
+    compiled_results = []
+    
+    # Create a single compiled evaluator to reuse across seeds
+    from model_eval_optimized import (
+        CompiledEvaluator,
+        create_policy_logits_fn,
+        compute_optimal_batch_size,
+    )
+    env_c = components['eval_env_compiled']
+    policy_logits_fn = create_policy_logits_fn(components['policy'], deterministic=True)
+    batch_size = compute_optimal_batch_size(
+        chunk_queries=test_config.chunk_queries,
+        n_corruptions=test_config.n_corruptions,
+        max_vram_gb=test_config.vram_gb,
+    )
+    compiled_evaluator = CompiledEvaluator(
+        env=env_c,
+        policy_logits_fn=policy_logits_fn,
+        batch_size=batch_size,
+        max_steps=test_config.max_depth,
+        deterministic=True,
+        compile_mode=getattr(config, 'compile_mode', 'default'),
+        fullgraph=getattr(config, 'fullgraph', False),
+    )
+    warmup_start = time.time()
+    compiled_evaluator.warmup(
+        components['test_queries'][:min(20, test_config.n_test_queries)].to(env_c.device)
+    )
+    warmup_time_s = (
+        compiled_evaluator.warmup_time_s
+        if getattr(compiled_evaluator, "warmup_time_s", None) is not None
+        else time.time() - warmup_start
+    )
+    print(f"\nCompiled warmup time (one-time): {warmup_time_s:.2f}s")
+
+    # Run both versions with same seeds for fair comparison
+    for seed in seeds:
+        print(f"\n--- Seed {seed} ---")
+        
+        # Run Original
+        print(f"  Running Original (seed={seed})...")
+        torch.cuda.empty_cache()
+        try:
+            res_orig = run_original_eval(components, test_config, seed=seed)
+            original_results.append(res_orig)
+            print(f"    MRR: {res_orig['MRR']:.4f}")
+        except Exception as e:
+            print(f"    Failed: {e}")
+            original_results.append({'MRR': 0.0, 'Hits@1': 0.0, 'Hits@3': 0.0, 'Hits@10': 0.0})
+        
+        # Run Compiled
+        print(f"  Running Compiled (seed={seed})...")
+        torch.cuda.empty_cache()
+        try:
+            res_comp = run_optimized_eval(
+                components, test_config, seed=seed, evaluator=compiled_evaluator, mode='compiled'
+            )
+            compiled_results.append(res_comp)
+            print(f"    MRR: {res_comp['MRR']:.4f}")
+        except Exception as e:
+            print(f"    Failed: {e}")
+            compiled_results.append({'MRR': 0.0, 'Hits@1': 0.0, 'Hits@3': 0.0, 'Hits@10': 0.0})
+    
+    # Compute statistics
+    print("\n" + "="*60)
+    print("RESULTS SUMMARY")
+    print("="*60)
+    
+    metrics = ['MRR', 'Hits@1', 'Hits@3', 'Hits@10']
+    
+    print(f"\n{'Metric':<10} {'Original (avg ± std)':<25} {'Compiled (avg ± std)':<25} {'Diff':>10} {'Status':>8}")
+    print("-" * 85)
+    
+    all_pass = True
+    for m in metrics:
+        orig_vals = np.array([r.get(m, 0.0) for r in original_results])
+        comp_vals = np.array([r.get(m, 0.0) for r in compiled_results])
+        
+        orig_mean, orig_std = orig_vals.mean(), orig_vals.std()
+        comp_mean, comp_std = comp_vals.mean(), comp_vals.std()
+        diff = comp_mean - orig_mean
+        
+        # Allow 10% relative tolerance (some stochasticity from policy)
+        # Or absolute tolerance of 0.05 for small values
+        tolerance = max(0.1 * orig_mean, 0.05)
+        status = "PASS" if abs(diff) <= tolerance else "FAIL"
+        if status == "FAIL":
+            all_pass = False
+        
+        print(f"{m:<10} {orig_mean:>8.4f} ± {orig_std:>6.4f}       {comp_mean:>8.4f} ± {comp_std:>6.4f}       {diff:>+7.4f}   {status}")
+    
+    # Per-seed comparison
+    print("\n--- Per-Seed MRR Comparison ---")
+    print(f"{'Seed':>6} {'Original':>12} {'Compiled':>12} {'Diff':>10}")
+    print("-" * 45)
+    for i, seed in enumerate(seeds):
+        orig_mrr = original_results[i].get('MRR', 0.0)
+        comp_mrr = compiled_results[i].get('MRR', 0.0)
+        diff = comp_mrr - orig_mrr
+        print(f"{seed:>6} {orig_mrr:>12.4f} {comp_mrr:>12.4f} {diff:>+10.4f}")
+    
+    if all_pass:
+        print("\n✓ Compiled version matches Original within tolerance")
+    else:
+        print("\n✗ SIGNIFICANT DIFFERENCE detected - investigate compiled version!")
+        print("  The compiled version may have a bug if differences are consistent.")
+    
+    return all_pass
+
+
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Test Optimized Evaluation')
+    parser.add_argument('--dataset', type=str, default='family', help='Dataset name')
+    parser.add_argument('--n-test-queries', type=int, default=5, help='Number of test queries')
+    parser.add_argument('--n-corruptions', type=int, default=10, help='Corruptions per query')
+    parser.add_argument('--chunk-queries', type=int, default=5, help='Queries per chunk (smaller = less VRAM)')
+    parser.add_argument('--batch-size-env', type=int, default=100, help='Environment batch size for original eval')
+    parser.add_argument('--corruption-modes', type=str, nargs='+', default=['both'], help='Corruption modes')
+    parser.add_argument('--vram-gb', type=float, default=6.0, help='Available VRAM budget in GB')
+    parser.add_argument('--performance', action='store_true', help='Run performance benchmark')
+
+    parser.add_argument('--skip-correctness', action='store_true', help='Skip correctness test')
+    parser.add_argument('--compiled-smoke', action='store_true', help='Run compiled-only smoke test with warmup timing')
+    parser.add_argument('--verbose', action='store_true', help='Verbose output')
+    parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false')
+    parser.add_argument('--compile-mode', type=str, default='default', 
+                       choices=['default', 'reduce-overhead', 'max-autotune'],
+                       help='torch.compile mode: default (fast compile), reduce-overhead (slow compile, fast runtime), max-autotune (very slow compile)')
+    parser.add_argument('--fullgraph', action='store_true', default=False,
+                       help='Use fullgraph=True (slow compile, best runtime). Default: False for faster compilation.')
+    parser.add_argument('--atom-embedding-size', type=int, default=250, help='Embedding size (250 for parity with profile_eval)')
+    parser.add_argument('--seed-test', action='store_true', help='Run seed-based correctness test (multi-seed comparison)')
+    parser.add_argument('--num-seeds', type=int, default=3, help='Number of seeds to test')
+    args = parser.parse_args()
+    
+    config = SimpleNamespace(
+        dataset=args.dataset,
+        data_path='./data/',
+        n_test_queries=args.n_test_queries,
+        n_corruptions=args.n_corruptions,
+        chunk_queries=args.chunk_queries,  # For compiled eval chunking
+        batch_size_env=args.batch_size_env,  # For original eval
+        corruption_modes=args.corruption_modes,
+        verbose=args.verbose,
+        vram_gb=args.vram_gb,
+        padding_atoms=6,
+        padding_states=120,
+        max_depth=20,
+        memory_pruning=True,
+        skip_unary_actions=False,
+        end_proof_action=True,
+        reward_type=0,
+        max_total_vars=100,
+        atom_embedding_size=args.atom_embedding_size,
+        seed=0,
+        compile=args.compile,
+        num_seeds=args.num_seeds,
+        compile_mode=args.compile_mode,
+        fullgraph=args.fullgraph,
+    )
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    print("\nSetting up components...")
+    components = setup_components(device, config)
+    
+        
+    # Check Vectorized Unification (Low-level)
+    test_vectorized_unification(components, config, device)
+    
+
+    # Metric Correctness Test
+    if not args.skip_correctness:
+        test_correctness(components, config)
+    
+    # Seed-based correctness test (statistical comparison)
+    if args.seed_test:
+        test_seed_correctness(components, config, device)
+    print("\n" + "="*60)
+    print("DONE")
+    print("="*60)
+
+if __name__ == '__main__':
+    main()

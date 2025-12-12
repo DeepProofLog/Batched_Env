@@ -111,14 +111,33 @@ class CompiledEvaluator:
         batch_size: int,
         max_steps: int = 20,
         deterministic: bool = True,
+        compile_mode: str = 'default',
+        fullgraph: bool = False,
     ):
+        """
+        Args:
+            env: EvalOnlyEnvCompiled environment
+            policy_logits_fn: Function that returns logits [B, S]
+            batch_size: Fixed batch size for compilation
+            max_steps: Maximum trajectory length
+            deterministic: Use argmax for action selection
+            compile_mode: torch.compile mode - 'default' (fast compile, good runtime)
+                         or 'reduce-overhead' (slow compile, better runtime)
+                         or 'max-autotune' (very slow compile, best runtime)
+            fullgraph: If True, use fullgraph=True (slow compile, best runtime).
+                      If False, allow graph breaks (fast compile, good runtime).
+                      Recommended: False for testing, True for production.
+        """
         self.env = env
         self.policy_logits_fn = policy_logits_fn
         self.batch_size = batch_size
         self.max_steps = max_steps
         self.deterministic = deterministic
+        self.compile_mode = compile_mode
+        self.fullgraph = fullgraph
         self._compiled_fn = None
         self._warmed_up = False
+        self.warmup_time_s: Optional[float] = None
         
         # Static input buffer - CUDA graphs record this address
         self._input_buffer = torch.zeros(
@@ -135,6 +154,8 @@ class CompiledEvaluator:
         max_steps: int = 20,
         deterministic: bool = True,
         max_vram_gb: float = None,
+        compile_mode: str = 'default',
+        fullgraph: bool = False,
     ) -> 'CompiledEvaluator':
         """
         Create CompiledEvaluator with automatically computed optimal batch size.
@@ -163,87 +184,102 @@ class CompiledEvaluator:
             batch_size=batch_size,
             max_steps=max_steps,
             deterministic=deterministic,
+            compile_mode=compile_mode,
+            fullgraph=fullgraph,
         )
     
     def _get_compiled(self) -> callable:
         if self._compiled_fn is None:
+            # Check if compilation is disabled
+            if self.compile_mode is None or self.compile_mode is False:
+                # Eager mode
+                self._compiled_fn = lambda q: self.env.evaluate_trajectory_compiled(
+                    q, self.policy_logits_fn,
+                    max_steps=self.max_steps,
+                    deterministic=self.deterministic
+                )
+                return self._compiled_fn
+
+            import os
+            import torch._inductor.config as inductor_config
+            
+            # Set TF32 precision for better performance
+            torch.set_float32_matmul_precision('high')
+            
+            # Speed up compilation (Option 1: Disable expensive optimizations)
+            os.environ['TORCHINDUCTOR_MAX_AUTOTUNE'] = '0'
+            os.environ['TORCHINDUCTOR_COORDINATE_DESCENT_TUNING'] = '0'
+            os.environ['TORCHINDUCTOR_FREEZING'] = '0'
+            
+            # Speed up compilation (Option 5: Parallel compilation)
+            inductor_config.compile_threads = 4
+            
+            print(f"Compiling with mode='{self.compile_mode}', fullgraph={self.fullgraph}, max_steps={self.max_steps}...")
+            
             self._compiled_fn = torch.compile(
                 lambda q: self.env.evaluate_trajectory_compiled(
                     q, self.policy_logits_fn,
                     max_steps=self.max_steps,
                     deterministic=self.deterministic
                 ),
-                mode='reduce-overhead',
-                fullgraph=True,
+                mode=self.compile_mode,
+                fullgraph=self.fullgraph,
+                dynamic=False,
             )
         return self._compiled_fn
     
     def warmup(
         self, 
         sample_queries: Tensor, 
-        n_warmup_runs: int = 5,
-        diverse_warmup: bool = True,
+        n_warmup_runs: int = 1,
     ) -> None:
         """
-        Warmup compilation using static buffer with diverse queries.
+        Warmup compilation using static buffer.
         
-        This method performs extended warmup to:
-        1. Trigger JIT compilation and CUDA graph recording
-        2. Exercise diverse code paths with varied queries
-        3. Pre-allocate all intermediate tensors
+        This method triggers JIT compilation and CUDA graph recording.
+        One warmup call is sufficient since all tensors have fixed shapes
+        and there is only one computation graph with fullgraph=True.
         
         Args:
             sample_queries: [N, 3] Sample queries for warmup
-            n_warmup_runs: Number of warmup iterations (default: 5)
-            diverse_warmup: If True, use diverse query patterns for warmup
+            n_warmup_runs: Number of warmup iterations (default: 1)
         """
         if self._warmed_up:
             return
+        if torch.cuda.is_available():
+            start_t = torch.cuda.Event(enable_timing=True)
+            end_t = torch.cuda.Event(enable_timing=True)
+            start_t.record()
+            cpu_start = None
+        else:
+            start_t = None
+            end_t = None
+            import time as _time
+            cpu_start = _time.perf_counter()
         
         compiled = self._get_compiled()
         n = sample_queries.shape[0]
-        device = self.env.device
         
         # Fill static buffer with sample data
         repeats = (self.batch_size + n - 1) // n
         warmup_data = sample_queries.repeat(repeats, 1)[:self.batch_size]
         self._input_buffer.copy_(warmup_data)
         
-        # First warmup run - triggers compilation
-        _ = compiled(self._input_buffer)
-        torch.cuda.synchronize()
+        # Warmup runs - triggers compilation / CUDA graph capture
+        for _ in range(n_warmup_runs):
+            _ = compiled(self._input_buffer)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
         
-        if diverse_warmup and n >= 2:
-            # Create diverse warmup patterns to exercise different code paths
-            # This helps stabilize memory allocations and JIT behavior
-            
-            # Pattern 1: Shuffle queries to vary unification patterns
-            shuffle_idx = torch.randperm(n, device=device)
-            shuffled = sample_queries[shuffle_idx]
-            warmup_shuffled = shuffled.repeat(repeats, 1)[:self.batch_size]
-            self._input_buffer.copy_(warmup_shuffled)
-            _ = compiled(self._input_buffer)
+        if torch.cuda.is_available():
             torch.cuda.synchronize()
-            
-            # Pattern 2: Repeat single queries (tests deduplication paths)
-            single_expanded = sample_queries[0:1].expand(self.batch_size, -1).contiguous()
-            self._input_buffer.copy_(single_expanded)
-            _ = compiled(self._input_buffer)
+        if end_t is not None and start_t is not None:
+            end_t.record()
             torch.cuda.synchronize()
-            
-            # Pattern 3: Alternating queries
-            alt_idx = torch.arange(self.batch_size, device=device) % n
-            alternating = sample_queries[alt_idx]
-            self._input_buffer.copy_(alternating)
-            _ = compiled(self._input_buffer)
-            torch.cuda.synchronize()
-        
-        # Additional warmup runs with original data
-        self._input_buffer.copy_(warmup_data)
-        for _ in range(max(0, n_warmup_runs - 4)):
-            _ = compiled(self._input_buffer)
-        
-        torch.cuda.synchronize()
+            self.warmup_time_s = float(start_t.elapsed_time(end_t) / 1000.0)
+        else:
+            import time as _time
+            self.warmup_time_s = float(_time.perf_counter() - cpu_start)
         self._warmed_up = True
     
     def __call__(self, queries: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -273,70 +309,43 @@ class CompiledEvaluator:
         return log_probs[:actual_size], success[:actual_size], lengths[:actual_size], rewards[:actual_size]
 
 
-@torch.inference_mode()
-def eval_corruptions_compiled(
-    env: EvalOnlyEnvCompiled,
-    policy_logits_fn: Callable[[EvalObs], Tensor],
+@torch.no_grad()
+def eval_corruptions_optimized(
+    evaluator: Callable[[Tensor], Tuple[Tensor, Tensor, Tensor, Tensor]],
     queries: Tensor,
     sampler: Any,
     *,
     n_corruptions: int = 50,
     corruption_modes: Sequence[str] = ("head", "tail"),
-    deterministic: bool = True,
-    max_steps: int = 20,
     chunk_queries: int = 50,
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """
-    Evaluate queries using compiled trajectory evaluation.
-    
-    This function evaluates MRR/Hits@K by:
-    1. Processing queries in chunks (to fit VRAM)
-    2. For each chunk: generate corruptions, evaluate all candidates
-    3. Compute rank of positive vs corruptions
-    4. Aggregate metrics across all queries
+    Evaluate queries using an optimized evaluator (compiled or eager).
     
     Args:
-        env: Compiled evaluation environment
-        policy_logits_fn: Function(obs) -> logits [B, S], should be compiled
+        evaluator: Calable that takes [B, 3] candidates and returns (log_probs, success, ...).
+                  Usually an instance of CompiledEvaluator.
         queries: [N, 3] Query triples
         sampler: Corruption sampler
         n_corruptions: Number of corruptions per query
         corruption_modes: ['head'], ['tail'], or ['head', 'tail']
-        deterministic: Use argmax for action selection
-        max_steps: Maximum trajectory length
         chunk_queries: Number of queries per chunk (tune for VRAM)
         verbose: Print progress
         
     Returns:
         Dict with MRR, Hits@K metrics
     """
-    device = env.device
+    if hasattr(evaluator, 'env'):
+        device = evaluator.env.device
+    elif hasattr(evaluator, 'device'):
+        device = evaluator.device
+    else:
+        # Fallback
+        device = queries.device
+        
     N = queries.shape[0]
     K = n_corruptions
-    
-    # Compile the trajectory evaluation
-    compiled_eval = torch.compile(
-        lambda q: env.evaluate_trajectory_compiled(
-            q, policy_logits_fn, max_steps=max_steps, deterministic=deterministic
-        ),
-        mode='reduce-overhead',
-        fullgraph=True,
-    )
-    
-    # Fixed batch size for compilation
-    fixed_batch = chunk_queries * (1 + K)
-    
-    # Warmup compilation with fixed batch size
-    if N > 0:
-        n_warmup = min(chunk_queries, N)
-        warmup_base = queries[:n_warmup]
-        # Repeat to fill fixed_batch
-        repeats = (fixed_batch + n_warmup - 1) // n_warmup
-        warmup_q = warmup_base.repeat(repeats, 1)[:fixed_batch]
-        for _ in range(3):
-            _ = compiled_eval(warmup_q)
-        torch.cuda.synchronize()
     
     # Accumulate ranks per mode
     per_mode_ranks: Dict[str, list] = {m: [] for m in corruption_modes}
@@ -361,11 +370,9 @@ def eval_corruptions_compiled(
             )
             
             # Handle variable corruption counts (some may be filtered)
-            # corruptions: [Q, K, 3] with zeros for invalid
             valid_mask = corruptions.sum(dim=-1) != 0  # [Q, K]
             
             # Create candidates: positive + corruptions
-            # candidates: [Q, 1+K, 3]
             candidates = torch.zeros(Q, 1 + K, 3, dtype=torch.long, device=device)
             candidates[:, 0, :] = chunk_queries_tensor
             candidates[:, 1:, :] = corruptions
@@ -374,65 +381,53 @@ def eval_corruptions_compiled(
             flat_candidates = candidates.view(-1, 3)
             actual_size = flat_candidates.shape[0]
             
-            # Pad to fixed batch size to avoid recompilation
-            if actual_size < fixed_batch:
-                padding = flat_candidates[0:1].expand(fixed_batch - actual_size, -1)
-                flat_candidates = torch.cat([flat_candidates, padding], dim=0)
+            # Evaluate using the provided evaluator
+            # Note: Evaluator is responsible for any padding if it requires fixed shapes
+            log_probs, success, lengths, rewards = evaluator(flat_candidates)
             
-            # Evaluate all candidates
-            log_probs, success, lengths, rewards = compiled_eval(flat_candidates)
-            
-            # Trim back to actual size
+            # Trim result back to actual size (in case evaluator padded output)
             log_probs = log_probs[:actual_size]
-            success = success[:actual_size]
             
             # Reshape results: [Q, 1+K]
             log_probs = log_probs.view(Q, 1 + K)
-            success = success.view(Q, 1 + K)
             
             # Create valid mask including positive (always valid)
             full_valid = torch.ones(Q, 1 + K, dtype=torch.bool, device=device)
             full_valid[:, 1:] = valid_mask
             
-            # Compute ranks for positive (index 0)
-            # Rank = 1 + number of corruptions with higher log_prob
+            # Compute ranks
             pos_log_prob = log_probs[:, 0:1]  # [Q, 1]
-            
-            # Score: use log_prob for ranking (higher is better)
             scores = log_probs.clone()
-            scores[~full_valid] = float('-inf')  # Invalid get lowest score
+            scores[~full_valid] = float('-inf')
             
-            # Count how many have strictly higher score than positive
-            # Also count ties and add 0.5 for each (expected rank)
             higher = (scores[:, 1:] > pos_log_prob).float() * full_valid[:, 1:].float()
             ties = (scores[:, 1:] == pos_log_prob).float() * full_valid[:, 1:].float()
             
-            # Rank = 1 + higher_count + 0.5 * tie_count
             ranks = 1 + higher.sum(dim=1) + 0.5 * ties.sum(dim=1)
-            
             per_mode_ranks[mode].append(ranks)
     
     # Aggregate results
-    results: Dict[str, Any] = {"MRR": 0.0, "Hits@1": 0.0, "Hits@3": 0.0, "Hits@10": 0.0}
-    per_mode_results: Dict[str, Dict[str, float]] = {}
+    results: Dict[str, Any] = {
+        "MRR": 0.0, "Hits@1": 0.0, "Hits@3": 0.0, "Hits@10": 0.0,
+        "per_mode": {}
+    }
     
     for mode in corruption_modes:
         if per_mode_ranks[mode]:
             all_ranks = torch.cat(per_mode_ranks[mode])
-            per_mode_results[mode] = compute_metrics_from_ranks(all_ranks)
+            results["per_mode"][mode] = compute_metrics_from_ranks(all_ranks)
         else:
-            per_mode_results[mode] = compute_metrics_from_ranks(torch.tensor([], device=device))
+            results["per_mode"][mode] = compute_metrics_from_ranks(torch.tensor([], device=device))
     
     # Average across modes
     for mode in corruption_modes:
-        for k, v in per_mode_results[mode].items():
+        for k, v in results["per_mode"][mode].items():
             results[k] += v
     
     n_modes = len(corruption_modes)
-    for k in results:
+    for k in ["MRR", "Hits@1", "Hits@3", "Hits@10"]:
         results[k] /= n_modes if n_modes > 0 else 1.0
-    
-    results["per_mode"] = per_mode_results
+        
     results["_mrr"] = results["MRR"]
     
     if verbose:
@@ -443,104 +438,6 @@ def eval_corruptions_compiled(
     
     return results
 
-
-@torch.inference_mode()
-def eval_corruptions_fast(
-    evaluator: CompiledEvaluator,
-    queries: Tensor,
-    sampler: Any,
-    *,
-    n_corruptions: int = 50,
-    corruption_modes: Sequence[str] = ("head", "tail"),
-    chunk_queries: int = 50,
-    verbose: bool = False,
-) -> Dict[str, Any]:
-    """
-    Fast corruption evaluation using pre-warmed CompiledEvaluator.
-    
-    Usage:
-        # One-time setup (26s)
-        evaluator = CompiledEvaluator(env, policy_fn, batch_size=1020, max_steps=20)
-        evaluator.warmup(queries[:10])
-        
-        # Fast evaluation (~2s for 100 queries)
-        results = eval_corruptions_fast(evaluator, queries, sampler)
-    """
-    device = evaluator.env.device
-    N = queries.shape[0]
-    K = n_corruptions
-    
-    per_mode_ranks: Dict[str, list] = {m: [] for m in corruption_modes}
-    
-    for start in range(0, N, chunk_queries):
-        end = min(start + chunk_queries, N)
-        Q = end - start
-        
-        if verbose:
-            print(f"Processing queries {start}-{end} / {N}")
-        
-        chunk_queries_tensor = queries[start:end]
-        
-        for mode in corruption_modes:
-            corruptions = sampler.corrupt(
-                chunk_queries_tensor, 
-                num_negatives=K, 
-                mode=mode, 
-                device=device
-            )
-            
-            valid_mask = corruptions.sum(dim=-1) != 0
-            
-            candidates = torch.zeros(Q, 1 + K, 3, dtype=torch.long, device=device)
-            candidates[:, 0, :] = chunk_queries_tensor
-            candidates[:, 1:, :] = corruptions
-            
-            flat_candidates = candidates.view(-1, 3)
-            
-            # Use pre-warmed evaluator
-            log_probs, success, lengths, rewards = evaluator(flat_candidates)
-            
-            log_probs = log_probs.view(Q, 1 + K)
-            success = success.view(Q, 1 + K)
-            
-            full_valid = torch.ones(Q, 1 + K, dtype=torch.bool, device=device)
-            full_valid[:, 1:] = valid_mask
-            
-            pos_log_prob = log_probs[:, 0:1]
-            scores = log_probs.clone()
-            scores[~full_valid] = float('-inf')
-            
-            higher = (scores[:, 1:] > pos_log_prob).float() * full_valid[:, 1:].float()
-            ties = (scores[:, 1:] == pos_log_prob).float() * full_valid[:, 1:].float()
-            ranks = 1 + higher.sum(dim=1) + 0.5 * ties.sum(dim=1)
-            
-            per_mode_ranks[mode].append(ranks)
-    
-    results: Dict[str, Any] = {"MRR": 0.0, "Hits@1": 0.0, "Hits@3": 0.0, "Hits@10": 0.0}
-    per_mode_results: Dict[str, Dict[str, float]] = {}
-    
-    for mode in corruption_modes:
-        if per_mode_ranks[mode]:
-            all_ranks = torch.cat(per_mode_ranks[mode])
-            per_mode_results[mode] = compute_metrics_from_ranks(all_ranks)
-        else:
-            per_mode_results[mode] = compute_metrics_from_ranks(torch.tensor([], device=device))
-    
-    for mode in corruption_modes:
-        for k, v in per_mode_results[mode].items():
-            results[k] += v
-    
-    n_modes = len(corruption_modes)
-    for k in results:
-        results[k] /= n_modes if n_modes > 0 else 1.0
-    
-    results["per_mode"] = per_mode_results
-    results["_mrr"] = results["MRR"]
-    
-    if verbose:
-        print(f"\nResults: MRR={results['MRR']:.4f}, Hits@10={results['Hits@10']:.4f}")
-    
-    return results
 
 
 def create_policy_logits_fn(
