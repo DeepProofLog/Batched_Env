@@ -90,8 +90,7 @@ class RolloutBuffer:
         
         if self.observations is not None:
             # Clear existing storage
-            for key in self.observations.keys():
-                self.observations[key].zero_()
+            self.observations.zero_()
             self.actions.zero_()
             self.rewards.zero_()
             self.values.zero_()
@@ -106,8 +105,9 @@ class RolloutBuffer:
         """Initialize storage tensors based on first observation and action."""
         # Store observation structure
         self.obs_keys = list(obs.keys())
-        self.observations = {}
         
+        # Create storage dict for observations
+        obs_storage = {}
         for key in self.obs_keys:
             obs_tensor = obs[key]
             self.obs_shapes[key] = obs_tensor.shape[1:]  # Exclude batch dimension
@@ -115,11 +115,18 @@ class RolloutBuffer:
             
             # Create storage: [buffer_size, n_envs, *obs_shape]
             storage_shape = (self.buffer_size, self.n_envs) + self.obs_shapes[key]
-            self.observations[key] = torch.zeros(
+            obs_storage[key] = torch.zeros(
                 storage_shape,
                 dtype=obs_tensor.dtype,
                 device=self.device
             )
+            
+        # Wrap in TensorDict
+        self.observations = TensorDict(
+            obs_storage,
+            batch_size=[self.buffer_size, self.n_envs],
+            device=self.device
+        )
         
         # Action storage
         action_dim = action.shape[-1] if action.dim() > 1 else 1
@@ -177,12 +184,10 @@ class RolloutBuffer:
         if action.dim() == 1:
             action = action.unsqueeze(-1)
         
-        # Store observations
-        for key in self.obs_keys:
-            obs_tensor = obs[key]
-            if obs_tensor.device != self.device:
-                obs_tensor = obs_tensor.to(self.device)
-            self.observations[key][self.pos] = obs_tensor
+        # Store observations (TensorDict optimized copy)
+        if obs.device != self.device:
+             obs = obs.to(self.device)
+        self.observations[self.pos] = obs
         
         # Store other data
         self.actions[self.pos] = action
@@ -272,10 +277,10 @@ class RolloutBuffer:
         
         # Prepare flattened data on first call
         if not self.generator_ready:
-            # Flatten observations
-            self.flat_observations = {}
-            for key in self.obs_keys:
-                self.flat_observations[key] = self.swap_and_flatten(self.observations[key])
+            # Flatten observations (Optimized TensorDict op)
+            # We must explicitly call contiguous() after permute because TensorDict might require it for reshaping
+            # or it might handle it. But to be safe and match behavior:
+            self.flat_observations = self.observations.permute(1, 0).contiguous().reshape(-1)
             
             # Flatten other tensors
             self.flat_actions = self.swap_and_flatten(self.actions)
@@ -296,11 +301,8 @@ class RolloutBuffer:
             end_idx = min(start_idx + batch_size, total_size)
             batch_indices = indices[start_idx:end_idx]
             
-            # Create observation TensorDict for this batch
-            batch_obs = TensorDict(
-                {key: self.flat_observations[key][batch_indices] for key in self.obs_keys},
-                batch_size=len(batch_indices)
-            )
+            # Efficient indexing into flattened TensorDict
+            batch_obs = self.flat_observations[batch_indices]
             
             yield (
                 batch_obs,

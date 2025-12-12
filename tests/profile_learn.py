@@ -243,6 +243,16 @@ def profile_learn_cprofile(config: SimpleNamespace):
     init_time = time() - init_start
     print(f"Initialization time: {init_time:.2f}s")
     
+    print(f"\nWarmup mechanism...")
+    # Warmup with a few steps to trigger compilation
+    # We need at least enough steps to trigger one ppo update
+    warmup_timesteps = 24  # Minimal amount for one update cycle
+    print(f"Running warmup for {warmup_timesteps} timesteps...")
+    warmup_start = time()
+    ppo.learn(total_timesteps=warmup_timesteps)
+    warmup_time = time() - warmup_start
+    print(f"Warmup complete in {warmup_time:.2f}s")
+    
     print(f"\nProfiling PPO.learn() for {config.total_timesteps} timesteps...")
     profiler = cProfile.Profile()
     profiler.enable()
@@ -314,6 +324,12 @@ def profile_learn_gpu(config: SimpleNamespace):
     print("\nSetting up components...")
     ppo, policy, train_env, eval_env, sampler, dh, im = setup_components(device, config)
     
+    print(f"\nWarmup mechanism...")
+    warmup_timesteps = config.batch_size
+    print(f"Running warmup for {warmup_timesteps} timesteps...")
+    ppo.learn(total_timesteps=warmup_timesteps)
+    print("Warmup complete.")
+    
     print(f"\nGPU Profiling PPO.learn() for {config.total_timesteps} timesteps...")
     
     from torch.profiler import profile, ProfilerActivity
@@ -366,7 +382,7 @@ def main():
                         help='Environment batch size')
     parser.add_argument('--n-steps', type=int, default=128,
                         help='Steps per rollout')
-    parser.add_argument('--n-epochs', type=int, default=10,
+    parser.add_argument('--n-epochs', type=int, default=5,
                         help='PPO epochs per update')
     parser.add_argument('--batch-size', type=int, default=1024,
                         help='PPO minibatch size')
@@ -375,6 +391,13 @@ def main():
     parser.add_argument('--amp', default=True,
                         help='Enable Automatic Mixed Precision (AMP)')
     args = parser.parse_args()
+    
+    # Adjust defaults for GPU profiling if not explicitly overridden (heuristic)
+    # We check if values are still the standard defaults
+    if args.use_gpu_profiler:
+        print("[INFO] Applying reduced settings for GPU profiling to avoid OOM/crashes...")
+        args.batch_size_env = 16
+        args.n_steps = 32
     
     # Configuration matching runner.py defaults
     # IMPORTANT: batch_size MUST divide evenly into n_steps * batch_size_env

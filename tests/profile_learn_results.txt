@@ -1,46 +1,46 @@
 Device: cuda
 Total timesteps: 90
-Training time: 110.17s
+Training time: 22.64s
 
 ================================================================================
 Top by Cumulative Time
 ================================================================================
-         19672655 function calls (18418256 primitive calls) in 105.466 seconds
+         807661 function calls (798962 primitive calls) in 21.384 seconds
 
    Ordered by: cumulative time
-   List reduced from 9217 to 30 due to restriction <30>
+   List reduced from 702 to 30 due to restriction <30>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-     5553   14.446    0.003   14.487    0.003 {method 'clone' of 'torch._C.TensorBase' objects}
-     1445    8.349    0.006    8.349    0.006 {built-in method torch.ones_like}
-      161    0.006    0.000    8.333    0.052 __init__.py:89(_make_grads)
-      160    0.003    0.000    7.712    0.048 model.py:641(evaluate_actions)
-      128    0.254    0.002    6.828    0.053 env.py:734(step_and_maybe_reset)
-      257    0.199    0.001    5.297    0.021 env.py:801(_compute_derived_states)
-        3    0.000    0.000    4.263    1.421 graph.py:2256(codegen)
-      160    0.000    0.000    4.103    0.026 fast_distributions.py:123(entropy)
-      160    3.820    0.024    4.102    0.026 fast_distributions.py:81(entropy)
-      128    0.002    0.000    4.056    0.032 common.py:2056(step)
-      128    0.733    0.006    4.035    0.032 env.py:593(_step)
-      257    0.258    0.001    3.879    0.015 unification.py:1827(get_derived_states)
-      129    0.002    0.000    2.649    0.021 common.py:2822(reset)
-        3    0.000    0.000    2.604    0.868 scheduler.py:5194(codegen)
-        3    0.000    0.000    2.603    0.868 scheduler.py:5318(_codegen_partitions)
-        3    0.000    0.000    2.496    0.832 scheduler.py:5202(_codegen_partition_wrapper)
-      129    0.039    0.000    2.400    0.019 env.py:344(_reset)
-        3    0.002    0.001    2.368    0.789 scheduler.py:5351(_codegen)
-       49    0.000    0.000    2.335    0.048 cuda_combined_scheduling.py:126(codegen_node)
-       49    0.001    0.000    2.335    0.048 simd.py:1384(codegen_node)
-       49    0.004    0.000    2.147    0.044 simd.py:1445(codegen_node_schedule)
-      161    0.002    0.000    1.945    0.012 model.py:423(forward)
-      161    0.018    0.000    1.943    0.012 model.py:333(forward_joint)
-       49    0.004    0.000    1.690    0.034 simd.py:1534(codegen_node_schedule_with_kernel)
-      515    0.003    0.000    1.683    0.003 graph.py:1180(call_function)
-  965/477    0.016    0.000    1.672    0.004 lowering.py:463(wrapped)
-     3381    0.030    0.000    1.639    0.000 container.py:245(forward)
-        3    0.000    0.000    1.633    0.544 graph.py:2245(_update_scheduler)
-        3    0.000    0.000    1.631    0.544 scheduler.py:2224(__init__)
-        3    0.000    0.000    1.626    0.542 scheduler.py:2228(_init)
+      128    0.279    0.002    8.312    0.065 env.py:734(step_and_maybe_reset)
+       80    0.000    0.000    8.173    0.102 __init__.py:243(backward)
+       80    0.001    0.000    8.173    0.102 graph.py:832(_engine_run_backward)
+       80    0.034    0.000    8.164    0.102 {method 'run_backward' of 'torch._C._EngineBase' objects}
+       80    0.617    0.008    8.130    0.102 function.py:300(apply)
+      944    0.010    0.000    8.007    0.008 eval_frame.py:1039(_fn)
+  368/288    0.006    0.000    7.940    0.028 utils.py:119(call_func_at_runtime_with_args)
+      288    0.005    0.000    7.897    0.027 output_code.py:590(__call__)
+      288    0.002    0.000    7.840    0.027 compile_fx.py:1767(run)
+      288    0.001    0.000    7.838    0.027 cudagraph_trees.py:378(deferred_cudagraphify)
+      288    0.002    0.000    7.837    0.027 utils.py:3013(run)
+  496/288    0.005    0.000    7.831    0.027 cudagraph_trees.py:2008(run)
+  496/288    0.002    0.000    7.827    0.027 cudagraph_trees.py:2073(_run)
+      288    0.003    0.000    7.814    0.027 cudagraph_trees.py:2241(execute_node)
+      288    0.003    0.000    7.774    0.027 cudagraph_trees.py:1105(run)
+      288    0.002    0.000    7.751    0.027 cudagraph_trees.py:1219(run_graph)
+       80    0.001    0.000    7.513    0.094 runtime_wrappers.py:2239(backward)
+       80    0.004    0.000    7.512    0.094 runtime_wrappers.py:2288(impl_fn)
+       80    0.000    0.000    7.497    0.094 runtime_wrappers.py:2330(_backward_impl)
+       80    0.001    0.000    7.482    0.094 cazi3y2lehqlt6gbisiquvlwxgzcbp7cajjysqr3dgmyug5zryjc.py:5951(call)
+      288    7.276    0.025    7.276    0.025 graphs.py:139(replay)
+      257    0.236    0.001    6.349    0.025 env.py:801(_compute_derived_states)
+      128    0.003    0.000    4.857    0.038 common.py:2056(step)
+      128    0.839    0.007    4.832    0.038 env.py:593(_step)
+ 4037/337    0.083    0.000    4.716    0.014 _contextlib.py:117(decorate_context)
+      257    0.290    0.001    4.690    0.018 unification.py:1865(get_derived_states)
+      129    0.003    0.000    3.072    0.024 common.py:2822(reset)
+      129    0.049    0.000    2.767    0.021 env.py:344(_reset)
+        1    2.067    2.067    2.068    2.068 ppo.py:39(explained_variance)
+       85    1.648    0.019    1.692    0.020 rollout.py:251(get)
 
 
 
@@ -48,41 +48,41 @@ Top by Cumulative Time
 ================================================================================
 Top by Total Time
 ================================================================================
-         19672655 function calls (18418256 primitive calls) in 105.466 seconds
+         807661 function calls (798962 primitive calls) in 21.384 seconds
 
    Ordered by: internal time
-   List reduced from 9217 to 30 due to restriction <30>
+   List reduced from 702 to 30 due to restriction <30>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-    158/0   37.573    0.238    0.000          {method 'run_backward' of 'torch._C._EngineBase' objects}
-     5553   14.446    0.003   14.487    0.003 {method 'clone' of 'torch._C.TensorBase' objects}
-    158/0   11.176    0.071    0.000          function.py:300(apply)
-     1445    8.349    0.006    8.349    0.006 {built-in method torch.ones_like}
-      160    3.820    0.024    4.102    0.026 fast_distributions.py:81(entropy)
-3033/2254    0.974    0.000    0.840    0.000 {method 'read' of '_io.BufferedReader' objects}
-        1    0.832    0.832    0.833    0.833 ppo.py:39(explained_variance)
-      322    0.736    0.002    0.745    0.002 embeddings.py:771(forward)
-      128    0.733    0.006    4.035    0.032 env.py:593(_step)
-  3905/24    0.700    0.000    0.163    0.007 {built-in method torch._C._nn.linear}
-    60/46    0.669    0.011    0.927    0.020 {method 'acquire' of '_thread.lock' objects}
-     28/8    0.585    0.021    0.570    0.071 operator_schemas.py:96(_torchscript_schema_to_signature_impl)
-  499/496    0.485    0.001    0.495    0.001 {method 'mean' of 'torch._C.TensorBase' objects}
-      656    0.471    0.001    0.484    0.001 {built-in method torch.embedding}
-      170    0.466    0.003    0.583    0.003 rollout.py:246(get)
-     2952    0.462    0.000    0.716    0.000 {built-in method torch.layer_norm}
-2753850/2720413    0.442    0.000    0.665    0.000 {built-in method builtins.isinstance}
-       80    0.435    0.005    0.435    0.005 {built-in method torch._C._cuda_synchronize}
-      257    0.364    0.001    0.851    0.003 unification.py:925(unify_with_rules)
-      257    0.334    0.001    0.645    0.003 unification.py:1266(standardize_derived_states)
-     3444    0.313    0.000    0.372    0.000 {built-in method torch.relu}
-      160    0.308    0.002    0.308    0.002 {method 'std' of 'torch._C.TensorBase' objects}
-      257    0.306    0.001    0.792    0.003 unification.py:796(unify_with_facts)
-    10356    0.291    0.000    0.291    0.000 {method 'update' of '_hashlib.HASH' objects}
-      257    0.281    0.001    0.903    0.004 env.py:1292(_postprocess)
-34406/12913    0.259    0.000    0.607    0.000 _pytree.py:1272(helper)
-      257    0.258    0.001    3.879    0.015 unification.py:1827(get_derived_states)
-      128    0.254    0.002    6.828    0.053 env.py:734(step_and_maybe_reset)
-      257    0.242    0.001    0.383    0.001 unification.py:1169(prune_and_collapse)
- 1138/271    0.230    0.000    0.109    0.000 functional_tensor.py:356(__torch_dispatch__)
+      288    7.276    0.025    7.276    0.025 graphs.py:139(replay)
+        1    2.067    2.067    2.068    2.068 ppo.py:39(explained_variance)
+       85    1.648    0.019    1.692    0.020 rollout.py:251(get)
+      128    0.839    0.007    4.832    0.038 env.py:593(_step)
+       80    0.617    0.008    8.130    0.102 function.py:300(apply)
+      257    0.502    0.002    0.757    0.003 unification.py:1169(prune_and_collapse)
+      288    0.469    0.002    0.469    0.002 {built-in method torch._foreach_copy_}
+      257    0.434    0.002    0.994    0.004 unification.py:925(unify_with_rules)
+      257    0.376    0.001    0.682    0.003 unification.py:1304(standardize_derived_states)
+      257    0.350    0.001    0.906    0.004 unification.py:796(unify_with_facts)
+      257    0.333    0.001    1.039    0.004 env.py:1292(_postprocess)
+      257    0.290    0.001    4.690    0.018 unification.py:1865(get_derived_states)
+     4893    0.282    0.000    0.282    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
+      128    0.279    0.002    8.312    0.065 env.py:734(step_and_maybe_reset)
+     7700    0.264    0.000    0.264    0.000 {built-in method torch.where}
+      257    0.236    0.001    6.349    0.025 env.py:801(_compute_derived_states)
+      385    0.227    0.001    0.323    0.001 unification.py:548(unify_one_to_one)
+      257    0.201    0.001    0.348    0.001 unification.py:1484(pack_by_owner)
+     5383    0.199    0.000    0.199    0.000 {method 'sum' of 'torch._C.TensorBase' objects}
+      373    0.184    0.000    0.277    0.001 unification.py:346(contains)
+     1401    0.178    0.000    0.178    0.000 {method 'nonzero' of 'torch._C.TensorBase' objects}
+     5528    0.168    0.000    0.168    0.000 {method 'index_select' of 'torch._C.TensorBase' objects}
+     7203    0.163    0.000    0.163    0.000 {method 'any' of 'torch._C.TensorBase' objects}
+      257    0.155    0.001    0.155    0.001 {built-in method torch.isin}
+      385    0.144    0.000    0.268    0.001 unification.py:629(pairs_via_predicate_ranges)
+  771/514    0.141    0.000    0.283    0.001 memory.py:58(_state_hash64)
+      514    0.127    0.000    0.127    0.000 {built-in method torch.bincount}
+      257    0.124    0.000    0.160    0.001 env.py:1005(_add_end_action)
+      257    0.110    0.000    0.259    0.001 unification.py:724(preprocess_states)
+      257    0.108    0.000    0.302    0.001 memory.py:141(add_current)
 
 

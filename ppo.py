@@ -36,7 +36,7 @@ except ImportError:
     DEBUG_TRAINING_AVAILABLE = False
 
 
-def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
+def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
     """
     Compute fraction of variance that y_pred explains about y_true.
     
@@ -52,17 +52,106 @@ def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> float:
         y_true: True values (returns from rollout buffer)
         
     Returns:
-        Explained variance as a float
+        Explained variance as a tensor (0-d)
     """
     y_pred = y_pred.flatten()
     y_true = y_true.flatten()
     
     var_y = y_true.var()
     if var_y == 0:
-        return float('nan')
-    return float(1.0 - (y_true - y_pred).var() / var_y)
+        return torch.tensor(float('nan'), device=y_true.device)
+    return 1.0 - (y_true - y_pred).var() / var_y
 
 
+
+
+class PPOLossModule(nn.Module):
+    """
+    Fused module that wraps the policy and loss computation.
+    
+    This allows torch.compile to see the Policy Forward + Loss Computation
+    as a single graph, enabling:
+    1. Kernel fusion across the boundary (e.g. policy output -> loss).
+    2. Elimination of overhead from launching multiple separate compiled functions.
+    3. Minimized device synchronization.
+    """
+    def __init__(self, policy: nn.Module):
+        super().__init__()
+        self.policy = policy
+        
+    def forward(
+        self,
+        obs: TensorDict,
+        actions: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor,
+        old_log_probs: torch.Tensor,
+        old_values: torch.Tensor,
+        clip_range: float,
+        clip_range_vf: Optional[float],
+        ent_coef: float,
+        vf_coef: float,
+    ) -> torch.Tensor:
+        # 1. Run Policy Forward (was evaluate_actions)
+        values, log_probs, entropy = self.policy(obs, actions=actions)
+        values = values.flatten()
+        
+        # 2. Compute Loss Components
+        # Ratio between old and new policy
+        log_ratio = log_probs - old_log_probs
+        ratio = torch.exp(log_ratio)
+        
+        # Clipped surrogate loss
+        policy_loss_1 = advantages * ratio
+        policy_loss_2 = advantages * torch.clamp(
+            ratio,
+            1.0 - clip_range,
+            1.0 + clip_range,
+        )
+        # Use minimum for element-wise min
+        policy_loss = -torch.minimum(policy_loss_1, policy_loss_2).mean()
+        
+        # Clip fraction
+        clip_fraction_t = torch.mean((torch.abs(ratio - 1) > clip_range).float())
+        
+        # Value loss
+        if clip_range_vf is None:
+            values_pred = values
+        else:
+            values_pred = old_values + torch.clamp(
+                values - old_values,
+                -clip_range_vf,
+                clip_range_vf,
+            )
+        
+        # MSE Loss
+        value_loss = F.mse_loss(returns, values_pred)
+        
+        # Entropy loss
+        if entropy is None:
+            # Fallback if policy doesn't return entropy (shouldn't happen with ActorCriticPolicy)
+            entropy_loss = -torch.mean(-log_probs)
+        else:
+            entropy_loss = -torch.mean(entropy)
+            
+        # Total loss
+        loss = policy_loss + ent_coef * entropy_loss + vf_coef * value_loss
+        
+        # Approx KL
+        ratio_minus_one = ratio - 1.0
+        approx_kl_div_t = torch.mean(ratio_minus_one - log_ratio)
+        
+        # Pack attributes into a single tensor
+        metrics_packed = torch.stack([
+            loss,
+            policy_loss,
+            value_loss,
+            entropy_loss,
+            approx_kl_div_t,
+            clip_fraction_t
+        ])
+        
+        return metrics_packed
 
 
 class PPO:
@@ -245,8 +334,7 @@ class PPO:
             self._compile_components()
         else:
             print("[PPO] torch.compile disabled")
-            # Set uncompiled versions
-            self._compute_loss_compiled = self._compute_loss_components
+            self._setup_loss_module()
 
     def _compute_loss_components(
         self,
@@ -309,20 +397,36 @@ class PPO:
         ratio_minus_one = ratio - 1.0
         approx_kl_div_t = torch.mean(ratio_minus_one - log_ratio)
         
-        return loss, policy_loss, value_loss, entropy_loss, approx_kl_div_t, clip_fraction_t
+        # Pack attributes into a single tensor for reduced graph overhead
+        metrics_packed = torch.stack([
+            loss,
+            policy_loss,
+            value_loss,
+            entropy_loss,
+            approx_kl_div_t,
+            clip_fraction_t
+        ])
+        
+        return metrics_packed
 
 
     # Define wrapper for compilation
+    # Define wrapper for compilation
     def _compile_components(self):
-        # Compile the ENTIRE policy as a unified module with fullgraph=True
-        # This creates a single CUDA graph for all policy operations, reducing replays
-        # from 443 (multiple nested graphs) to ~208 (one graph for forward + one for eval)
-        self.policy = torch.compile(self.policy, mode='reduce-overhead', fullgraph=True)
+        # Create the fused module
+        self.loss_module = PPOLossModule(self.policy)
         
-        # Compile loss computation for kernel fusion with fullgraph=True
-        # NOTE: backward() and optimizer ops are NOT traceable by Dynamo - they remain eager
-        # See compile_train.md for detailed investigation of this fundamental PyTorch limitation
-        self._compute_loss_compiled = torch.compile(self._compute_loss_components, mode='reduce-overhead', fullgraph=True)
+        # Compile the ENTIRE fused module
+        # This creates a single graph for (Policy Forward + Loss), enabling global optimization
+        self.loss_module = torch.compile(self.loss_module, mode='reduce-overhead', fullgraph=True)
+        
+        # Also compile policy separately for collect_rollouts (inference only)
+        # We need this because collect_rollouts calls policy() directly
+        self.policy = torch.compile(self.policy, mode='reduce-overhead', fullgraph=True)
+
+    def _setup_loss_module(self):
+        """Setup loss module without compilation (fallback)"""
+        self.loss_module = PPOLossModule(self.policy)
     
     def collect_rollouts(
         self,
@@ -653,7 +757,7 @@ class PPO:
                 
                 # --------------------
                 # --------------------
-                # Full Compiled Training Step
+                # Training Step
                 # --------------------
                 # Ensure optimizer state is initialized for all params (needed for functional access)
                 # We can just check if state is empty for the first param
@@ -673,21 +777,27 @@ class PPO:
                 # IMPORTANT: Must use same amp_dtype as rollout collection to avoid KL divergence
                 amp_dtype = torch.bfloat16 if self.use_amp and torch.cuda.is_bf16_supported() else torch.float16
                 with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=amp_dtype):
-                    values, log_probs, entropy = self.policy.evaluate_actions(obs, actions)
-                    values = values.flatten()
-                    
-                    # Compute Loss using compiled function (kernel fusion happens here)
-                    (
-                        loss,
-                        policy_loss,
-                        value_loss,
-                        entropy_loss,
-                        approx_kl_div_t,
-                        clip_fraction_t
-                    ) = self._compute_loss_components(
-                        advantages, log_probs, old_log_probs, returns, values, old_values,
-                        entropy, self.clip_range, self.clip_range_vf, self.ent_coef, self.vf_coef
+                    # Fused execution: Policy Forward + Loss Computation in one graph
+                    metrics_packed = self.loss_module(
+                        obs, 
+                        actions,
+                        advantages, 
+                        returns, 
+                        old_log_probs, 
+                        old_values,
+                        self.clip_range, 
+                        self.clip_range_vf, 
+                        self.ent_coef, 
+                        self.vf_coef
                     )
+                    
+                    # Unpack for usage (slicing is cheap)
+                    loss = metrics_packed[0]
+                    policy_loss = metrics_packed[1]
+                    value_loss = metrics_packed[2]
+                    entropy_loss = metrics_packed[3]
+                    approx_kl_div_t = metrics_packed[4]
+                    clip_fraction_t = metrics_packed[5]
 
                 # Log approx KL for tracking
                 # Clone to safe memory because graph output memory is recycled
@@ -718,6 +828,8 @@ class PPO:
                 # Check KL divergence for early stopping BEFORE optimizer step (matching SB3)
                 # This prevents applying the update when KL exceeds threshold
                 if self.target_kl is not None:
+                    # Note: accessing .item() causes a synchronous device-to-host transfer. 
+                    # If performance is critical, set target_kl=None to avoid this check.
                     approx_kl_div = approx_kl_div_t.item()
                     if approx_kl_div > 1.5 * self.target_kl:
                         continue_training = False
@@ -766,7 +878,7 @@ class PPO:
         with torch.no_grad():
             # Compute explained variance from rollout buffer
             # This is done OUTSIDE the compiled training loop for efficiency
-            ev = explained_variance(self.rollout_buffer.values, self.rollout_buffer.returns)
+            ev_tensor = explained_variance(self.rollout_buffer.values, self.rollout_buffer.returns)
             
             # Debug: log value and return statistics
             if self.verbose:
@@ -774,7 +886,7 @@ class PPO:
                 returns_flat = self.rollout_buffer.returns.flatten()
                 print(f"[PPO] Values: min={values_flat.min().item():.3f}, max={values_flat.max().item():.3f}, mean={values_flat.mean().item():.3f}, std={values_flat.std().item():.3f}")
                 print(f"[PPO] Returns: min={returns_flat.min().item():.3f}, max={returns_flat.max().item():.3f}, mean={returns_flat.mean().item():.3f}, std={returns_flat.std().item():.3f}")
-                print(f"[PPO] Explained variance: {ev:.4f}")
+                print(f"[PPO] Explained variance: {ev_tensor.item():.4f}")
             
             metrics = {
                 "policy_loss": torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0,
@@ -782,7 +894,7 @@ class PPO:
                 "entropy": -torch.stack(entropy_losses_t).mean().item() if entropy_losses_t else 0.0, # entropy_loss is already negative of entropy
                 "clip_fraction": torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0,
                 "approx_kl": torch.stack(approx_kl_divs_t).mean().item() if approx_kl_divs_t else 0.0,
-                "explained_var": ev,
+                "explained_var": ev_tensor.item(),
             }
             
             # Detailed training diagnostics when debug_ppo is enabled
@@ -915,6 +1027,7 @@ class PPO:
             total_steps_done += steps_collected
             rollout_time = time.time() - rollout_start_time
             print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
+            print(f"[PPO] FPS: {steps_collected/rollout_time:.2f}")
             if self.verbose:
                 if episode_rewards:
                     recent_rewards = episode_rewards[-10:]
@@ -935,8 +1048,6 @@ class PPO:
             self.last_train_metrics = train_metrics
             
             print(f"[PPO] Training completed in {train_time:.2f}s")
-            if self.verbose:
-                print(f"[PPO] Metrics: policy_loss={train_metrics['policy_loss']:.4f}, value_loss={train_metrics['value_loss']:.4f}, entropy={train_metrics['entropy']:.4f}")
             
             # ============================================================
             # Callback
@@ -947,13 +1058,7 @@ class PPO:
                     if self.verbose:
                         print("[PPO] Training stopped by callback")
                     break
-        
-        if self.verbose:
-            print(f"\n[PPO] Training completed!")
-            if episode_rewards:
-                print(f"[PPO] Total episodes: {len(episode_rewards)}")
-                print(f"[PPO] Mean reward: {sum(episode_rewards)/len(episode_rewards):.3f}")
-                print(f"[PPO] Mean length: {sum(episode_lengths)/len(episode_lengths):.1f}")
+
         if self.trace_recorder is not None:
             self.trace_recorder.flush()
         
