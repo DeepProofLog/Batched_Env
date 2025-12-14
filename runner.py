@@ -31,7 +31,7 @@ if __name__ == "__main__":
 
     DEFAULT_CONFIG = {
         # Dataset params
-        'dataset_name': 'family',
+        'dataset_name': 'countries_s3',
 
         'eval_neg_samples': 3,
         'test_neg_samples': 100,
@@ -43,7 +43,7 @@ if __name__ == "__main__":
         'load_depth_info': True,
 
         'n_train_queries': None,
-        'n_eval_queries': 100,
+        'n_eval_queries': 10,
         'n_test_queries': 100,
 
         # Model params
@@ -82,7 +82,7 @@ if __name__ == "__main__":
         'reward_type': 4,  
         'train_neg_ratio': 1,
         'end_proof_action': True,
-        'skip_unary_actions': True,
+        'skip_unary_actions': False,
         'max_depth': 20,
         'memory_pruning': True,
         'corruption_mode': 'dynamic',  
@@ -90,7 +90,7 @@ if __name__ == "__main__":
 
 
         # Entropy coefficient decay params
-        'ent_coef': 0.1,  
+        'ent_coef': 0.1,  # Overwritten if using decay
 
         'ent_coef_decay': True,  # Enable entropy coefficient decay
         'ent_coef_init_value': 0.01,  # Start with moderate exploration
@@ -100,7 +100,7 @@ if __name__ == "__main__":
         'ent_coef_transform': 'linear',  # Decay schedule: 'linear', 'exp', 'cos', 'log'
         
         # Learning rate decay params
-        'lr': 3e-5,
+        'lr': 3e-5, # Overwritten if using decay
 
         'lr_decay': True,  # Enable learning rate decay
         'lr_init_value': 3e-5,  # Reduced from 5e-5 for more stable updates

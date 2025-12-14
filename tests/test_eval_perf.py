@@ -27,7 +27,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import setup and runners from the main test file
-from tests.test_eval_mrr import setup_components, run_original_eval, run_optimized_eval, create_and_warmup_evaluator
+from tests.test_eval_mrr import setup_components, run_original_eval, run_optimized_eval, create_and_warmup_optimized_evaluator
 
 def check_graph_breaks(vec_engine, device, config):
     """Check for graph breaks in the compiled function."""
@@ -82,7 +82,7 @@ def run_performance_test(components, config, modes, warmup_only):
     print("="*60)
     
     # Define table header
-    print(f"\n{'Mode':<20} {'Warmup (s)':>12} {'Runtime (s)':>12} {'Runtime (ms/q)':>18} {'Total Time (s)':>15}")
+    print(f"\n{'Mode':<20} {'Compile (s)':>12} {'Runtime (s)':>12} {'Runtime (ms/q)':>18} {'Total Time (s)':>15}")
     print("-" * 85)
     
     for mode in modes:
@@ -91,17 +91,8 @@ def run_performance_test(components, config, modes, warmup_only):
         run_config.verbose = False
         
         if warmup_only:
-            # Minimal queries for warmup/smoke test
-            # Ensure at least one chunk worth of queries if checking compilation of that chunk size
-            # But typically we just want to trigger compilation.
-            # We set n_test_queries to be small but respect chunk_queries if needed?
-            # Actually CompiledEvaluator warmup uses sample_queries.
-            # run_optimized_eval runs eval on n_test_queries.
-            # If we want to skip heavy eval, we reduce n_test_queries.
-            run_config.n_test_queries = min(20, config.chunk_queries)
-        
-        # ensure chunk_queries is consistent (don't change it, as it affects batch size which affects compilation)
-        
+            run_config.n_test_queries = min(config.chunk_queries)
+            
         warmup_s = 0.0
         eval_ms_per_q = 0.0
         total_s = 0.0
@@ -118,31 +109,62 @@ def run_performance_test(components, config, modes, warmup_only):
                     run_original_eval(components, run_config)
                     
             elif mode == 'eager':
-                print(f"  Running {mode} eval...", flush=True)
-                run_optimized_eval(components, run_config, mode='eager')
-                
-            elif mode == 'compiled':
                 if warmup_only:
-                    # Just run warmup
-                    _, warmup_s = create_and_warmup_evaluator(components, run_config, mode='compiled')
+                    # Just run warmup for eager
+                    _, warmup_s = create_and_warmup_evaluator(components, run_config, mode='eager')
                     print(f"  Warmup finished in {warmup_s:.4f}s", flush=True)
                 else:
                     print(f"  Running {mode} warmup...", flush=True)
-                    # Run with return_evaluator to get warmup time
+                    # Run with return_evaluator to get warmup time (same pattern as compiled)
                     _, _, start_warmup_s = run_optimized_eval(
-                        components, run_config, return_evaluator=True, mode='compiled'
+                        components, run_config, return_evaluator=True, mode='eager'
                     )
                     warmup_s = start_warmup_s
                     print(f"  Warmup finished in {warmup_s:.4f}s", flush=True)
                     print(f"  Running {mode} eval...", flush=True)
 
-            total_s = time.time() - start_t
+            elif mode == 'compiled':
+                if warmup_only:
+                    # Just run warmup
+                    evaluator, warmup_s = create_and_warmup_optimized_evaluator(components, run_config)
+                    print(f"  Warmup finished in {warmup_s:.4f}s", flush=True)
+                else:
+                    print(f"  Running {mode} warmup...", flush=True)
+                    # First: warmup only
+                    evaluator, warmup_s = create_and_warmup_optimized_evaluator(components, run_config)
+                    print(f"  Warmup finished in {warmup_s:.4f}s", flush=True)
+                    
+                    # Second: timed evaluation run (separate from warmup)
+                    print(f"  Running {mode} eval...", flush=True)
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    eval_start = time.time()
+                    from model_eval_optimized import eval_corruptions_optimized
+                    effective_chunk_queries = min(int(run_config.chunk_queries), int(run_config.n_test_queries))
+                    queries = components['test_queries'][:run_config.n_test_queries].to(evaluator.env.device)
+                    _ = eval_corruptions_optimized(
+                        evaluator=evaluator,
+                        queries=queries,
+                        sampler=components['sampler'],
+                        n_corruptions=run_config.n_corruptions,
+                        corruption_modes=tuple(run_config.corruption_modes),
+                        chunk_queries=effective_chunk_queries,
+                        verbose=False,
+                    )
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    eval_s = time.time() - eval_start
+                    # Override total_s calculation below
+                    total_s = warmup_s + eval_s
+
+            # For compiled/fast mode, total_s is set above; for others, calculate from start_t
+            if mode not in ('compiled') or warmup_only:
+                total_s = time.time() - start_t
+                eval_s = max(0.0, total_s - warmup_s)
+            # else: eval_s and total_s already set for compiled mode
             
             # Calculate metrics
             n_run = run_config.n_test_queries
-            
-            # Eval time = Total - Warmup (This logic is already correct as eval_s excludes warmup_s)
-            eval_s = max(0.0, total_s - warmup_s)
             
             if n_run > 0:
                 eval_ms_per_q = (eval_s / n_run) * 1000.0
@@ -165,19 +187,23 @@ def run_performance_test(components, config, modes, warmup_only):
 def main():
     parser = argparse.ArgumentParser(description='Test Evaluation Performance')
     parser.add_argument('--dataset', type=str, default='family', help='Dataset name')
-    parser.add_argument('--n-test-queries', type=int, default=2, help='Number of test queries')
-    parser.add_argument('--n-corruptions', type=int, default=2)
+    parser.add_argument('--n-test-queries', type=int, default=50, help='Number of test queries')
+    parser.add_argument('--n-corruptions', type=int, default=50)
     parser.add_argument('--chunk-queries', type=int, default=100)
     parser.add_argument('--modes', nargs='+', default=['compiled'], 
                        choices=['original', 'eager', 'compiled'],
-                       help='Modes to benchmark')
+                       help='Modes to benchmark. compiled=single-step compile (faster warmup).')
     parser.add_argument('--warmup-only', action='store_true', help='Only measure warmup/compile time')
     parser.add_argument('--check-compile', action='store_true', help='Check for graph breaks')
     
     parser.add_argument('--vram-gb', type=float, default=6.0, help='Available VRAM budget in GB')
     parser.add_argument('--batch-size-env', type=int, default=100)
     parser.add_argument('--corruption-modes', type=str, nargs='+', default=['both'])
-    parser.add_argument('--compile-mode', type=str, default='reduce-overhead')
+    parser.add_argument('--compile-mode', type=str, default='reduce-overhead',
+                       help='torch.compile mode: default, reduce-overhead, max-autotune')
+    parser.add_argument('--fixed-batch-size', type=int, default=None,
+                       help='Fixed batch size for compilation. If None, uses adaptive sizing (smaller for fewer queries = faster compile).')
+    
 
     args = parser.parse_args()
     
@@ -186,7 +212,7 @@ def main():
         f.write("Performance Benchmark Results\n")
         f.write(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write("="*85 + "\n")
-        f.write(f"{'Mode':<20} {'Warmup (s)':>12} {'Runtime (s)':>12} {'Runtime (ms/q)':>18} {'Total Time (s)':>15}\n")
+        f.write(f"{'Mode':<20} {'Compile (s)':>12} {'Runtime (s)':>12} {'Runtime (ms/q)':>18} {'Total Time (s)':>15}\n")
         f.write("-" * 85 + "\n")
     
     config = SimpleNamespace(
@@ -214,6 +240,7 @@ def main():
                       # Ideally we set this to True generally so components like Unification are ready for compilation if needed.
         compile_mode=args.compile_mode,
         fullgraph=True, # Default to True, but run_optimized_eval controls usage
+        fixed_batch_size=args.fixed_batch_size,  # Fixed batch size to prevent recompilation
     )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

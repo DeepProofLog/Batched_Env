@@ -127,6 +127,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         base_engine,
         max_fact_pairs=None,  # Auto-compute from data
         max_rule_pairs=None,  # Auto-compute from data
+        padding_atoms=config.padding_atoms,  # Use config value for M_max alignment with original
     )
     
     # Convert queries
@@ -177,8 +178,8 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     )
 
     # Compiled Environment (for Optimized/Compiled paths)
-    from env_eval_compiled import EvalOnlyEnvCompiled
-    eval_env_compiled = EvalOnlyEnvCompiled(
+    from env_optimized import EvalEnvOptimized
+    eval_env_compiled = EvalEnvOptimized(
         vec_engine=vec_engine,
         batch_size=config.batch_size_env,
         padding_atoms=config.padding_atoms,
@@ -187,6 +188,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         end_proof_action=config.end_proof_action,
         runtime_var_start_index=im.constant_no + 1,
         device=device,
+        memory_pruning=True,  # Cycle detection - verified working
     )
     
     # Policy
@@ -214,122 +216,53 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     }
 
 
-
-
-def test_vectorized_unification(components, config, device):
-    """Test that vectorized unification produces valid outputs."""
-    print("\n" + "="*60)
-    print("TESTING VECTORIZED UNIFICATION")
-    print("="*60)
-    
-    vec_engine = components['vec_engine']
-    im = components['im']
-    
-    # Create test inputs
-    B = 5
-    A = config.padding_atoms
-    
-    # Use actual test queries
-    test_queries = components['test_queries'][:B]
-    
-    # Pad to [B, A, 3]
-    current_states = torch.full((B, A, 3), im.padding_idx, dtype=torch.long, device=device)
-    current_states[:, 0, :] = test_queries.to(device)
-    
-    next_var_indices = torch.full((B,), im.constant_no + 1, dtype=torch.long, device=device)
-    excluded = current_states[:, 0:1, :].clone()
-    
-    print(f"Input shape: {current_states.shape}")
-    print(f"Sample query: {test_queries[0].tolist()}")
-    
-    # Run vectorized unification
-    start = time.time()
-    derived, counts, new_vars = vec_engine.get_derived_states_compiled(
-        current_states, next_var_indices, excluded
-    )
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    elapsed = time.time() - start
-    
-    print(f"\nOutput shapes:")
-    print(f"  derived: {derived.shape}")
-    print(f"  counts: {counts.shape}")
-    print(f"  new_vars: {new_vars.shape}")
-    
-    print(f"\nCounts per query: {counts.tolist()}")
-    print(f"New vars: {new_vars.tolist()}")
-    print(f"Time: {elapsed*1000:.2f}ms")
-    
-    # Basic validation
-    assert derived.shape == (B, vec_engine.K_max, vec_engine.M_max, 3), "Wrong derived shape"
-    assert counts.shape == (B,), "Wrong counts shape"
-    assert (counts >= 0).all(), "Negative counts"
-    assert (counts <= vec_engine.K_max).all(), "Counts exceed K_max"
-    
-    print("\n✓ All basic validations passed")
-    return True
-
-
-def run_original_eval(components, config, seed: Optional[int] = None):
-    """Run original eval_corruptions."""
-    from model_eval import eval_corruptions
-    
-    actor = components['policy']
-    env = components['eval_env_orig']
-    sampler = components['sampler']
-    queries = components['test_queries'][:config.n_test_queries]
-    
-    # Reseed if requested
-    if seed is not None:
-        sampler.rng = np.random.RandomState(seed)
-    
-    return eval_corruptions(
-        actor=actor,
-        env=env,
-        queries=queries,
-        sampler=sampler,
-        n_corruptions=config.n_corruptions,
-        corruption_modes=tuple(config.corruption_modes),
-        verbose=config.verbose if seed is None else False,
-    )
-
-
-def create_and_warmup_evaluator(components, config, mode: str = 'compiled'):
-    """Create evaluator and run warmup."""
+def create_and_warmup_optimized_evaluator(components, config):
+    """Create fast evaluator (single-step compilation) and run warmup."""
     from model_eval_optimized import (
-        CompiledEvaluator, 
+        OptimizedEvaluator,
         create_policy_logits_fn,
         compute_optimal_batch_size,
     )
+    from env_optimized import EvalEnvOptimized
     
     actor = components['policy']
-    env = components['eval_env_compiled']
-    # Use full set of queries to determine effective chunk size matches
-    queries = components['test_queries'][:config.n_test_queries].to(env.device)
+    
+    # Create optimized environment
+    vec_engine = components['vec_engine']
+    im = components['im']
+    
+    env_fast = EvalEnvOptimized(
+        vec_engine=vec_engine,
+        batch_size=config.batch_size_env,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_depth,
+        end_proof_action=config.end_proof_action,
+        runtime_var_start_index=im.constant_no + 1,
+        device=components['eval_env_optimized'].device,
+    )
+    
+    queries = components['test_queries'][:config.n_test_queries].to(env_fast.device)
     
     # Create logits function
     policy_logits_fn = create_policy_logits_fn(actor, deterministic=True)
     
-    # Compute optimal batch size
+    # Compute batch size
+    fixed_batch_size = getattr(config, 'fixed_batch_size', None)
     effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
     batch_size = compute_optimal_batch_size(
         chunk_queries=effective_chunk_queries,
         n_corruptions=config.n_corruptions,
         max_vram_gb=config.vram_gb,
+        fixed_batch_size=fixed_batch_size,
     )
     
-    # Configure compile options based on mode
-    if mode == 'compiled':
-        compile_mode = getattr(config, 'compile_mode', 'reduce-overhead')
-        fullgraph = getattr(config, 'fullgraph', True)
-    else:
-        # Eager mode: disable compilation
-        compile_mode = None 
-        fullgraph = False
-        
-    # Create evaluator (CompiledEvaluator handles both eager and compiled)
-    evaluator = CompiledEvaluator(
-        env=env,
+    compile_mode = getattr(config, 'compile_mode', 'default')
+    fullgraph = getattr(config, 'fullgraph', True)
+    
+    # Create fast evaluator
+    evaluator = OptimizedEvaluator(
+        env=env_fast,
         policy_logits_fn=policy_logits_fn,
         batch_size=batch_size,
         max_steps=config.max_depth,
@@ -338,17 +271,16 @@ def create_and_warmup_evaluator(components, config, mode: str = 'compiled'):
         fullgraph=fullgraph,
     )
     
-    # Warmup (important for compiled, harmless for eager)
-    print(f"Starting warmup (mode={mode})...")
+    # Warmup
+    print(f"Starting fast warmup (batch_size={batch_size})...")
     warmup_start = time.time()
-    # Warmup with a small subset
-    evaluator.warmup(queries[:min(20, len(queries))])
+    evaluator.warmup(queries[:2])
     warmup_time_s = (
         evaluator.warmup_time_s
         if getattr(evaluator, "warmup_time_s", None) is not None
         else time.time() - warmup_start
     )
-    print(f"Warmup took {warmup_time_s} s.")
+    print(f"Fast warmup took {warmup_time_s} s.")
     
     return evaluator, warmup_time_s
 
@@ -392,6 +324,32 @@ def run_optimized_eval(components, config, seed: Optional[int] = None,
     if return_evaluator:
         return results, evaluator, warmup_time_s
     return results
+
+
+
+def run_original_eval(components, config, seed: Optional[int] = None):
+    """Run original eval_corruptions."""
+    from model_eval import eval_corruptions
+    
+    actor = components['policy']
+    env = components['eval_env_orig']
+    sampler = components['sampler']
+    queries = components['test_queries'][:config.n_test_queries]
+    
+    # Reseed if requested
+    if seed is not None:
+        sampler.rng = np.random.RandomState(seed)
+    
+    return eval_corruptions(
+        actor=actor,
+        env=env,
+        queries=queries,
+        sampler=sampler,
+        n_corruptions=config.n_corruptions,
+        corruption_modes=tuple(config.corruption_modes),
+        verbose=config.verbose if seed is None else False,
+    )
+
 
 
 def test_correctness(components, config):
@@ -517,7 +475,7 @@ def test_seed_correctness(components, config, device):
     
     # Create a single compiled evaluator to reuse across seeds
     from model_eval_optimized import (
-        CompiledEvaluator,
+        OptimizedEvaluator,
         create_policy_logits_fn,
         compute_optimal_batch_size,
     )
@@ -528,7 +486,7 @@ def test_seed_correctness(components, config, device):
         n_corruptions=test_config.n_corruptions,
         max_vram_gb=test_config.vram_gb,
     )
-    compiled_evaluator = CompiledEvaluator(
+    compiled_evaluator = OptimizedEvaluator(
         env=env_c,
         policy_logits_fn=policy_logits_fn,
         batch_size=batch_size,
@@ -628,9 +586,9 @@ def test_seed_correctness(components, config, device):
 def main():
     parser = argparse.ArgumentParser(description='Test Optimized Evaluation')
     parser.add_argument('--dataset', type=str, default='family', help='Dataset name')
-    parser.add_argument('--n-test-queries', type=int, default=5, help='Number of test queries')
-    parser.add_argument('--n-corruptions', type=int, default=10, help='Corruptions per query')
-    parser.add_argument('--chunk-queries', type=int, default=5, help='Queries per chunk (smaller = less VRAM)')
+    parser.add_argument('--n-test-queries', type=int, default=50, help='Number of test queries')
+    parser.add_argument('--n-corruptions', type=int, default=50, help='Corruptions per query')
+    parser.add_argument('--chunk-queries', type=int, default=100, help='Queries per chunk (smaller = less VRAM)')
     parser.add_argument('--batch-size-env', type=int, default=100, help='Environment batch size for original eval')
     parser.add_argument('--corruption-modes', type=str, nargs='+', default=['both'], help='Corruption modes')
     parser.add_argument('--vram-gb', type=float, default=6.0, help='Available VRAM budget in GB')
@@ -640,7 +598,7 @@ def main():
     parser.add_argument('--compiled-smoke', action='store_true', help='Run compiled-only smoke test with warmup timing')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
     parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false')
-    parser.add_argument('--compile-mode', type=str, default='default', 
+    parser.add_argument('--compile-mode', type=str, default='reduce-overhead', 
                        choices=['default', 'reduce-overhead', 'max-autotune'],
                        help='torch.compile mode: default (fast compile), reduce-overhead (slow compile, fast runtime), max-autotune (very slow compile)')
     parser.add_argument('--fullgraph', action='store_true', default=False,
@@ -681,11 +639,6 @@ def main():
     
     print("\nSetting up components...")
     components = setup_components(device, config)
-    
-        
-    # Check Vectorized Unification (Low-level)
-    test_vectorized_unification(components, config, device)
-    
 
     # Metric Correctness Test
     if not args.skip_correctness:

@@ -1,5 +1,5 @@
 Performance Benchmark Results
-Date: 2025-12-12 17:28:56
+Date: 2025-12-14 18:40:07
 =====================================================================================
-Mode                   Warmup (s)  Runtime (s)     Runtime (ms/q)  Total Time (s)
+Mode                  Compile (s)  Runtime (s)     Runtime (ms/q)  Total Time (s)
 -------------------------------------------------------------------------------------

@@ -94,6 +94,7 @@ def all_atoms_are_ground_facts(
     pack_base: int,
     constant_no: int,
     padding_idx: int,
+    excluded_queries: Optional[Tensor] = None,  # [B, 1, 3] or None - atoms to NOT count as facts
 ) -> Tensor:
     """
     Check if ALL valid atoms in each state are known ground facts.
@@ -104,6 +105,8 @@ def all_atoms_are_ground_facts(
         pack_base: packing base for hash computation
         constant_no: maximum constant index (vars are > constant_no)
         padding_idx: padding value
+        excluded_queries: [B, 1, 3] If provided, atoms matching these are NOT counted as facts.
+                         This prevents excluded queries from triggering proof detection.
         
     Returns:
         is_proof: [N] boolean - True if all valid atoms are known facts
@@ -134,6 +137,24 @@ def all_atoms_are_ground_facts(
     # Atom is confirmed fact if: can_be_fact AND is_fact
     confirmed_fact = can_be_fact & is_fact  # [N, M]
     
+    # Handle Exclusion: Atoms matching excluded_queries are NOT counted as facts
+    # This prevents proofs that lead back to the excluded query
+    if excluded_queries is not None:
+        # excluded_queries: [B, 1, 3] - need to broadcast to [N, M]
+        # Note: N may be B*K_f, so we need to determine the original B
+        B = excluded_queries.shape[0]
+        K_f = N // B  # Number of candidates per batch
+        
+        excl_first = excluded_queries[:, 0, :]  # [B, 3]
+        # Expand to [N, 1, 3] by repeating each B element K_f times
+        excl_exp = excl_first.unsqueeze(1).expand(-1, K_f, -1).reshape(N, 1, 3)  # [N, 1, 3]
+        
+        # Check if any atom matches the excluded query
+        is_excluded_atom = (states == excl_exp).all(dim=-1)  # [N, M]
+        
+        # Excluded atoms are NOT counted as confirmed facts
+        confirmed_fact = confirmed_fact & ~is_excluded_atom
+    
     # A state is a proof if:
     # - All valid atoms are confirmed facts, OR
     # - There are no valid atoms (empty state = already proved)
@@ -162,6 +183,8 @@ def standardize_vars_fixed(
     next_var_indices: Tensor, # [B] starting variable index per batch
     constant_no: int,
     padding_idx: int,
+    parity_mode: bool = False,  # Use exact first-appearance-order standardization
+    input_states: Tensor = None,  # [B, M_in, 3] Input states for variable seeding (parity mode)
 ) -> Tuple[Tensor, Tensor]:
     """
     Renumber runtime variables to canonical form per batch element.
@@ -176,6 +199,7 @@ def standardize_vars_fixed(
         next_var_indices: [B] starting variable index for renumbering
         constant_no: threshold (vars > constant_no are runtime vars)
         padding_idx: padding value
+        parity_mode: If True, use first-appearance-order (slower but exact)
         
     Returns:
         (standardized_states, new_next_var): renumbered states and updated next_var
@@ -187,6 +211,61 @@ def standardize_vars_fixed(
     if B == 0 or states.numel() == 0:
         return states, next_var_indices
     
+    if parity_mode:
+        # PARITY MODE: Match original engine's first-appearance-order standardization
+        # This is slow (loops) but produces identical results to UnificationEngine
+        # 
+        # CRITICAL: The original engine's standardize_derived_states considers the 
+        # INPUT state's variables FIRST (they appeared earlier in the proof), then
+        # renumbers derived state variables in first-appearance order.
+        standardized = states.clone()
+        new_next_var = next_var_indices.clone()
+        
+        for b in range(B):
+            count_b = counts[b].item()
+            if count_b == 0:
+                continue
+            
+            # Build var_map: old_var -> new_var in first-appearance order
+            # Pre-seed with existing variables from input_states if provided
+            var_map = {}
+            next_new_var = next_var_indices[b].item()
+            
+            # If input_states provided, pre-seed var_map with their variables
+            # This ensures derived states reuse existing variable names
+            if input_states is not None:
+                input_state = input_states[b]  # [M_in, 3]
+                for m_in in range(input_state.shape[0]):
+                    pred = input_state[m_in, 0].item()
+                    if pred == pad:
+                        continue
+                    for a in range(1, 3):
+                        arg = input_state[m_in, a].item()
+                        if arg > constant_no and arg != pad:
+                            if arg not in var_map:
+                                # Map to itself - preserve existing variable name
+                                var_map[arg] = arg
+            
+            for k in range(count_b):
+                for m in range(M):
+                    pred = states[b, k, m, 0].item()
+                    if pred == pad:
+                        continue
+                    for a in range(1, 3):  # args at indices 1 and 2
+                        arg = states[b, k, m, a].item()
+                        if arg > constant_no and arg != pad:
+                            if arg not in var_map:
+                                var_map[arg] = next_new_var
+                                next_new_var += 1
+                            standardized[b, k, m, a] = var_map[arg]
+            
+            new_next_var[b] = next_new_var
+        
+        return standardized, new_next_var
+    
+    # FAST MODE: Offset-based standardization for torch.compile compatibility
+    # This is fast but may produce different variable numbering than original
+    
     # Template variable threshold
     template_start = constant_no + 1
     
@@ -196,33 +275,12 @@ def standardize_vars_fixed(
     # Identify variables (> constant_no) and not padding
     is_var = (args > constant_no) & (args != pad)  # [B, K, M, 2]
     
-    # For each batch element, we need to find unique variables and renumber them
-    # This is tricky to vectorize - we'll do a simplified approach:
-    # Within each state, renumber variables in order of first appearance
-    
     # Flatten args for processing: [B, K*M*2]
     flat_args = args.reshape(B, -1)  # [B, K*M*2]
     flat_is_var = is_var.reshape(B, -1)  # [B, K*M*2]
     
-    # Create a mapping from old var -> new var (order of appearance)
-    # For compilation compatibility, we'll use a simpler approach:
-    # Sort unique variables and map based on sorted rank
-    
-    # Create keys that separate batches: var_val + batch_idx * LARGE
+    # Get minimum variable per batch (for offset calculation)
     LARGE = 1_000_000
-    batch_idx = torch.arange(B, device=device).unsqueeze(1)  # [B, 1]
-    keys = flat_args + batch_idx * LARGE  # [B, K*M*2]
-    
-    # Mask out non-variables
-    keys = torch.where(flat_is_var, keys, torch.full_like(keys, -1))
-    
-    # For each position in flat_args, find how many DISTINCT variables appear before it
-    # This gives us the new ID (relative to 0)
-    
-    # Simpler approach for fixed-shape compatibility:
-    # Find the minimum variable index in each batch and offset from there
-    
-    # Get minimum variable per batch (for renumbering)
     masked_vars = torch.where(flat_is_var, flat_args, torch.full_like(flat_args, LARGE))
     min_var_per_batch = masked_vars.min(dim=1).values  # [B]
     min_var_per_batch = torch.where(
@@ -487,11 +545,15 @@ def unify_with_rules_fixed(
     combined_subst = apply_substitutions(combined_flat, subs_flat_for_apply, pad)
     derived_states = combined_subst.view(B, max_pairs, M, 3)
     
-    # Success mask
+    # Success mask - original behavior allows any number of atoms and truncates later
     success_mask = ok & valid_mask
     
-    # Zero out invalid entries
-    derived_states[~success_mask] = pad
+    # Zero out invalid entries using torch.where for compile-friendliness
+    derived_states = torch.where(
+        success_mask.unsqueeze(-1).unsqueeze(-1),
+        derived_states,
+        torch.full_like(derived_states, pad)
+    )
     
     return derived_states, success_mask, subs, rule_lens_sel
 
@@ -504,11 +566,16 @@ def prune_ground_facts_fixed(
     constant_no: int,
     padding_idx: int,
     true_pred_idx: Optional[int] = None,  # True predicate index for proof detection
+    excluded_queries: Optional[Tensor] = None,  # [B, 1, 3] atoms to NOT prune
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """
     Remove known ground facts from candidates (fixed shape).
     Also treats True predicate atoms as "facts" (proof indicators).
     Fully vectorized - NO nonzero() calls.
+    
+    Args:
+        excluded_queries: [B, 1, 3] If provided, atoms matching these are NOT pruned.
+                         This matches original prune_and_collapse behavior for cycle prevention.
     
     Returns:
         pruned_states: [B, K, M, 3] with facts removed
@@ -534,6 +601,16 @@ def prune_ground_facts_fixed(
     
     # Only mark as fact if it was actually a ground atom
     is_fact = is_fact & ground_atoms
+    
+    # Handle Exclusion: Keep excluded atoms (don't prune them)
+    # This matches original prune_and_collapse behavior at lines 47-52 of unification.py
+    if excluded_queries is not None:
+        excl_first = excluded_queries[:, 0, :]  # [B, 3]
+        # Expand to match candidates shape: [B, K, M, 3] vs [B, 3]
+        excl_exp = excl_first.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, 3]
+        is_excluded_atom = (candidates == excl_exp).all(dim=-1) & ground_atoms  # [B, K, M]
+        # Keep excluded atoms by not marking them as facts
+        is_fact = is_fact & ~is_excluded_atom
     
     # Also treat True predicate atoms as "facts" (proof indicators)
     if true_pred_idx is not None:
@@ -567,6 +644,7 @@ def pack_results_fixed(
     K_max: int,
     M_max: int,
     padding_idx: int,
+    parity_mode: bool = False,  # Use slow but exact loop-based packing
 ) -> Tuple[Tensor, Tensor]:
     """
     Combine fact and rule results into single fixed-shape output.
@@ -584,78 +662,70 @@ def pack_results_fixed(
     G = fact_states.shape[2]
     M_r = rule_states.shape[2]
     
-    # Pad atoms dimension to M_max
+    # First, normalize both tensors to M_max atoms dimension
+    # This handles both padding (if smaller) and truncation (if larger)
     if G < M_max:
         fact_pad = torch.full((B, K_f, M_max - G, 3), pad, dtype=fact_states.dtype, device=device)
         fact_states = torch.cat([fact_states, fact_pad], dim=2)
+    elif G > M_max:
+        fact_states = fact_states[:, :, :M_max, :]
     
     if M_r < M_max:
         rule_pad = torch.full((B, K_r, M_max - M_r, 3), pad, dtype=rule_states.dtype, device=device)
         rule_states = torch.cat([rule_states, rule_pad], dim=2)
+    elif M_r > M_max:
+        rule_states = rule_states[:, :, :M_max, :]
     
-    # Concatenate facts and rules along K dimension
-    all_states = torch.cat([fact_states, rule_states], dim=1)  # [B, K_f+K_r, M_max, 3]
-    all_masks = torch.cat([fact_mask, rule_mask], dim=1)  # [B, K_f+K_r]
+    # Now both have shape [B, K_*, M_max, 3] - safe to concatenate
+    # Concatenate rules before facts to match original engine ordering
+    # Original uses combine_candidates(rule_states, ..., fact_states, ...)
+    all_states = torch.cat([rule_states, fact_states], dim=1)  # [B, K_r+K_f, M_max, 3]
+    all_masks = torch.cat([rule_mask, fact_mask], dim=1)  # [B, K_r+K_f]
     
     K_total = K_f + K_r
     
     # Count valid (capped at K_max)
     counts = all_masks.sum(dim=1).clamp(max=K_max)
     
-    # Compute target indices for compaction using cumsum
-    # For valid entries: cumsum gives 1-indexed position, so subtract 1
-    # For invalid entries: we set target to K_max (out of valid range)
-    cumsum = all_masks.long().cumsum(dim=1)  # [B, K_total]
+    if parity_mode:
+        # PARITY MODE: Use loop-based assignment for exact matching with original engine
+        # This is slower but guarantees identical ordering to the original engine
+        derived = torch.full((B, K_max, M_max, 3), pad, dtype=fact_states.dtype, device=device)
+        for b in range(B):
+            valid_idx_b = all_masks[b].nonzero(as_tuple=True)[0]
+            count_b = min(valid_idx_b.shape[0], K_max)
+            for i in range(count_b):
+                src_idx = valid_idx_b[i]
+                derived[b, i] = all_states[b, src_idx]
+        return derived, counts
     
-    # Target index = cumsum - 1 for valid, K_max-1 for invalid (clamped)
-    # Invalid entries should not overwrite valid ones -> use large offset
-    target_idx = torch.where(
-        all_masks,
-        cumsum - 1,  # Valid: 0, 1, 2, ... (0-indexed)
-        torch.full_like(cumsum, K_max)  # Invalid: out of range (will be ignored)
-    ).clamp(max=K_max - 1)  # Clamp for safety
+    # FAST MODE: Scatter-based compaction for torch.compile compatibility
+    # Strategy: Reverse the source order so invalid entries are scattered first,
+    # then valid entries overwrite them (scatter processes in source index order)
     
-    # Allocate output initialized with padding
+    # Reverse the concatenation order along dim=1
+    all_states_rev = all_states.flip(1)  # [B, K_total, M_max, 3] reversed
+    all_masks_rev = all_masks.flip(1)    # [B, K_total] reversed
+    
+    # Compute target indices for compaction using cumsum on REVERSED masks
+    cumsum_rev = all_masks_rev.long().cumsum(dim=1)  # [B, K_total]
+    
+    # Target index for valid = cumsum - 1 (0-indexed position)
+    # For invalid: use K_max-1 (safe position, will be overwritten by later valid entries)
+    target_idx_rev = torch.where(
+        all_masks_rev,
+        cumsum_rev - 1,  # Valid: sequential positions 0, 1, 2, ...
+        torch.full_like(cumsum_rev, K_max - 1)  # Invalid: last position
+    ).clamp(max=K_max - 1)
+    
+    # Allocate output
     derived = torch.full((B, K_max, M_max, 3), pad, dtype=fact_states.dtype, device=device)
     
-    # Expand target_idx for scatter: [B, K_total] -> [B, K_total, M_max, 3]
-    target_idx_exp = target_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, M_max, 3)
+    # Expand target_idx for scatter
+    target_idx_exp = target_idx_rev.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, M_max, 3)
     
-    # Create a masked source: only valid entries, zeros for invalid
-    # This way, invalid entries write zeros which is harmless if they clash
-    masked_states = torch.where(
-        all_masks.unsqueeze(-1).unsqueeze(-1),
-        all_states,
-        torch.full_like(all_states, pad)  # Invalid entries write pad (no harm if overwritten)
-    )
-    
-    # But we need to be careful: if invalid entries target an index before valid entries
-    # scatter, they could overwrite. Solution: ensure invalid target >= counts
-    # We already set invalid targets to K_max, but after clamping they become K_max-1
-    # 
-    # Better approach: use scatter_reduce with 'sum' semantics but that's complex
-    # Instead, just iterate the scatter order: do pad last so valid is preserved
-    # 
-    # Actually simpler: scatter ALL states, but valid entries should come after
-    # invalid in the concatenation order so they overwrite the invalid zeros
-    
-    # The issue: fact entries (all invalid) come first in all_states at indices 0-49
-    # Rule entries (valid) come at indices 50-57
-    # Scatter processes 0-49 first (all targeting 0 after clamp), writing pad
-    # Then 50-57 which write valid data to 0-7
-    # But the final result shows 0 has zeros... 
-    # 
-    # OH! The issue is target_idx for invalid is K_max=120, clamped to 119
-    # So invalid entries don't overwrite index 0!
-    # But then why is index 0 zero?
-    
-    # Let's use scatter_add instead to avoid overwrites, but it's tricky with pads
-    # Simpler: create separate scatter for valid only
-    
-    # Only scatter valid states to their target indices
-    # For entries where mask is False, scatter has no effect (target is K_max-1)
-    
-    derived.scatter_(1, target_idx_exp, masked_states)
+    # Scatter: invalid entries write pad to K_max-1 first, valid entries overwrite to 0,1,2...
+    derived.scatter_(1, target_idx_exp, all_states_rev)
     
     return derived, counts
 
@@ -678,6 +748,8 @@ class UnificationEngineVectorized:
         base_engine: UnificationEngine,
         max_fact_pairs: int = None,  # If None, computed from data
         max_rule_pairs: int = None,  # If None, computed from data
+        padding_atoms: int = None,   # If set, filter out candidates exceeding this atom count
+        parity_mode: bool = False,   # If True, use slower but exact-matching algorithms
     ):
         """
         Initialize from a base UnificationEngine.
@@ -686,7 +758,11 @@ class UnificationEngineVectorized:
             base_engine: Existing UnificationEngine with facts, rules, etc.
             max_fact_pairs: Max fact candidates per query. If None, uses max from data.
             max_rule_pairs: Max rule candidates per query. If None, uses max from data.
+            padding_atoms: Maximum atoms per state. Candidates exceeding this are filtered.
+            parity_mode: If True, use exact-matching algorithms for parity tests (slower).
         """
+        self.parity_mode = parity_mode
+        self.padding_atoms_limit = padding_atoms  # For filtering candidates
         self.engine = base_engine
         self.device = base_engine.device
         self.padding_idx = base_engine.padding_idx
@@ -696,7 +772,18 @@ class UnificationEngineVectorized:
         
         # Fixed shape parameters
         self.K_max = base_engine.max_derived_per_state or 120
-        self.M_max = (base_engine.max_rule_body_size or 4) + 10  # body + remaining
+        # M_max: Maximum atoms per state. Must be large enough to hold states that grow
+        # during proof search. Each rule application can add up to max_rule_body atoms.
+        # For a proof of depth D: max atoms = padding_atoms + max_rule_body * D
+        # Use a reasonable max_depth estimate (10) as default for compile compatibility
+        max_rule_body = base_engine.max_rule_body_size or 2
+        max_depth_estimate = 10  # Default estimate; can be increased via parameter
+        if padding_atoms is not None:
+            # Support states up to: padding_atoms + max_rule_body * max_depth_estimate
+            self.M_max = padding_atoms + max_rule_body * max_depth_estimate
+        else:
+            # Fallback to larger M if no padding_atoms specified
+            self.M_max = max_rule_body * max_depth_estimate + 10
         
         # Compute max pairs from data if not provided
         # This is CRITICAL for correctness - must cover all facts/rules per predicate
@@ -791,6 +878,8 @@ class UnificationEngineVectorized:
         base_engine: UnificationEngine,
         max_fact_pairs: int = None,
         max_rule_pairs: int = None,
+        padding_atoms: int = None,
+        parity_mode: bool = False,
     ) -> "UnificationEngineVectorized":
         """
         Factory method to create from existing engine.
@@ -799,13 +888,15 @@ class UnificationEngineVectorized:
             base_engine: Existing UnificationEngine with facts, rules, etc.
             max_fact_pairs: Max facts per predicate. If None, auto-computed from data.
             max_rule_pairs: Max rules per predicate. If None, auto-computed from data.
+            padding_atoms: Maximum atoms per state. Candidates exceeding this are filtered.
+            parity_mode: If True, use slower but exact-matching algorithms.
             
         Note:
             Using None (auto-compute) is STRONGLY RECOMMENDED to ensure all facts
             and rules are considered during unification. Using small values can
             cause some unification results to be missed, leading to lower accuracy.
         """
-        return cls(base_engine, max_fact_pairs, max_rule_pairs)
+        return cls(base_engine, max_fact_pairs, max_rule_pairs, padding_atoms, parity_mode)
     
     @torch.no_grad()
     def get_derived_states_compiled(
@@ -904,6 +995,29 @@ class UnificationEngineVectorized:
         fact_success = fact_success & active_mask.unsqueeze(1)
         
         # ---------------------------------------------------------------------
+        # 2a. Excluded Queries Filtering (Cycle Prevention)
+        # Filter out fact candidates that match the excluded query.
+        # This prevents trivial loops where the query resolves to itself as a fact.
+        # Matches base engine behavior at lines 892-898.
+        # ---------------------------------------------------------------------
+        if excluded_queries is not None:
+            # excluded_queries: [B, 1, 3] - first atom of each excluded query
+            excl_first = excluded_queries[:, 0, :]  # [B, 3]
+            
+            # Get the matched facts for each pair
+            # fact_item_idx: [B, K_f] indices into self.facts_idx
+            K_f = fact_states.shape[1]
+            safe_idx = fact_item_idx.clamp(0, self.facts_idx.shape[0] - 1)
+            matched_facts = self.facts_idx[safe_idx.view(-1)].view(B, K_f, 3)  # [B, K_f, 3]
+            
+            # Compare each matched fact to the excluded query
+            # is_excluded[b, k] = True if matched_facts[b, k] == excl_first[b]
+            is_excluded = (matched_facts == excl_first.unsqueeze(1)).all(dim=-1)  # [B, K_f]
+            
+            # Filter out excluded facts from success mask
+            fact_success = fact_success & ~is_excluded
+        
+        # ---------------------------------------------------------------------
         # 2b. Check for proofs from fact unification
         # After substitution, if ALL remaining atoms are now known ground facts,
         # the state represents a proof.
@@ -916,7 +1030,8 @@ class UnificationEngineVectorized:
         fact_states_flat = fact_states.view(B * K_f, G_f, 3)
         fact_is_proof_flat = all_atoms_are_ground_facts(
             fact_states_flat, self.fact_hashes, self.pack_base, 
-            self.constant_no, pad
+            self.constant_no, pad,
+            excluded_queries=excluded_queries
         )
         fact_is_proof = fact_is_proof_flat.view(B, K_f)  # [B, K_f]
         
@@ -935,6 +1050,11 @@ class UnificationEngineVectorized:
                 true_state.unsqueeze(0).unsqueeze(0).expand(B, K_f, -1, -1),
                 fact_states
             )
+        
+        # CRITICAL: Detect batch-level proofs from fact unification
+        # If ANY fact candidate is a proof for a batch, that batch has found a proof
+        # This must happen BEFORE combining with rules to prevent proof truncation at K_max
+        fact_proof_batch = fact_is_proof.sum(dim=1) > 0  # [B] - True if batch has any proof
         
         # ---------------------------------------------------------------------
         # 3. Rule Unification
@@ -971,7 +1091,8 @@ class UnificationEngineVectorized:
         combined, combined_counts = pack_results_fixed(
             fact_states, fact_success,
             rule_states, rule_success,
-            self.K_max, self.M_max, pad
+            self.K_max, self.M_max, pad,
+            parity_mode=self.parity_mode
         )
         
         # ---------------------------------------------------------------------
@@ -983,24 +1104,45 @@ class UnificationEngineVectorized:
         pruned, pruned_atom_counts, is_proof = prune_ground_facts_fixed(
             combined, combined_valid_exp,
             self.fact_hashes, self.pack_base, self.constant_no, pad,
-            true_pred_idx=self.true_pred_idx
+            true_pred_idx=self.true_pred_idx,
+            excluded_queries=excluded_queries
         )
         
-        # Handle proofs - replace .any() with sum() > 0 for compilation
-        proof_batch = is_proof.sum(dim=1) > 0  # [B]
+        # Handle proofs - combine fact-based proofs with prune-detected proofs
+        prune_proof_batch = is_proof.sum(dim=1) > 0  # [B]
+        proof_batch = fact_proof_batch | prune_proof_batch  # Either source counts
+        
+        # For proof batches, replace the ENTIRE first state with True() + padding
+        # This ensures no artifacts from rule states remain
         if self.true_atom is not None:
-            pruned[:, 0, 0, :] = torch.where(
-                proof_batch.unsqueeze(-1),
-                self.true_atom.unsqueeze(0).expand(B, -1),
-                pruned[:, 0, 0, :]
+            # Create a full True() state: True atom at position 0, rest is padding
+            M = pruned.shape[2]
+            true_full_state = torch.full((M, 3), pad, dtype=torch.long, device=device)
+            true_full_state[0, :] = self.true_atom  # [M, 3]
+            
+            # Replace entire first candidate state for proof batches
+            pruned[:, 0, :, :] = torch.where(
+                proof_batch.view(B, 1, 1),
+                true_full_state.unsqueeze(0).expand(B, -1, -1),
+                pruned[:, 0, :, :]
             )
         
-        # Update counts
+        # Use combined_counts as the starting point for new_counts
+        new_counts = combined_counts.clone()
+        
+        # Handle proofs - set count to 1 for proof batches
         new_counts = torch.where(
             proof_batch,
-            torch.ones_like(combined_counts),
-            combined_counts
+            torch.ones_like(new_counts),
+            new_counts
         )
+        
+        # Handle case where active (non-terminal) batch elements have no derivations
+        # They should be marked as FALSE (dead end in proof search)
+        # This matches original engine behavior at line 1977-1980
+        no_derivations = (new_counts == 0) & ~is_terminal
+        if self.false_atom is not None:
+            new_counts = torch.where(no_derivations, torch.ones_like(new_counts), new_counts)
         
         # Merge with terminal results
         final_derived = torch.where(
@@ -1008,6 +1150,15 @@ class UnificationEngineVectorized:
             derived,
             pruned
         )
+        
+        # Also inject FALSE for no-derivation cases
+        if self.false_atom is not None:
+            final_derived[:, 0, 0, :] = torch.where(
+                no_derivations.unsqueeze(-1),
+                self.false_atom.unsqueeze(0).expand(B, -1),
+                final_derived[:, 0, 0, :]
+            )
+        
         final_counts = torch.where(
             is_terminal,
             counts,
@@ -1021,7 +1172,8 @@ class UnificationEngineVectorized:
         # ---------------------------------------------------------------------
         std_derived, std_new_vars = standardize_vars_fixed(
             final_derived, final_counts, next_var_indices,
-            self.constant_no, pad
+            self.constant_no, pad, parity_mode=self.parity_mode,
+            input_states=current_states if self.parity_mode else None
         )
         
         return std_derived, final_counts, std_new_vars
