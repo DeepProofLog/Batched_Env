@@ -1,10 +1,10 @@
 Performance Benchmark Results
-Date: 2025-12-15 15:48:09
-Dataset: countries_s3
-Queries: 100, Corruptions: 50, Modes: ['both']
-Total candidates: 5100
+Date: 2025-12-15 17:34:48
+Dataset: family
+Queries: 100, Corruptions: 100, Modes: ['tail']
+Total candidates: 10100
 Compile mode: reduce-overhead
 ===============================================================================================
 Mode                  Compile (s)  Runtime (s)     ms/query   ms/candidate    Total (s)
 -----------------------------------------------------------------------------------------------
-compiled                  20.6786       1.9577        19.58          0.384      22.6362
+compiled                   6.1943      36.3271       363.27          3.597      42.5215

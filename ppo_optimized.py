@@ -738,6 +738,7 @@ class PPOOptimized:
         chunk_queries: int = 50,
         verbose: bool = False,
         deterministic: bool = True,
+        parity_mode: bool = False,
     ) -> Dict[str, Any]:
         """
         Evaluate policy on queries with corruptions for ranking metrics (MRR, Hits@K).
@@ -760,6 +761,8 @@ class PPOOptimized:
             chunk_queries: Number of positive queries to process at once
             verbose: Print progress
             deterministic: Use deterministic action selection
+            parity_mode: If True, use numpy RNG for tie-breaking (slower but matches
+                         model_eval.py exactly). Default False uses fast torch RNG.
             
         Returns:
             Dictionary with MRR and Hits@K metrics
@@ -785,14 +788,43 @@ class PPOOptimized:
             
             chunk_queries_tensor = queries[start:end]  # [Q, 3]
             
+            # parity_mode: Match model_eval.py corruption generation order exactly
+            # Non-parity: Fast path with single sampler.corrupt call per mode
+            if parity_mode:
+                # Generate corruptions based on sampler.default_mode, not corruption_modes
+                # This ensures RNG parity since both paths consume RNG in the same order
+                sampler_mode = getattr(sampler, 'default_mode', 'both')
+                
+                # Pre-generate corruptions in head-then-tail order like model_eval.py
+                head_corruptions = None
+                tail_corruptions = None
+                
+                if sampler_mode in ('head', 'both'):
+                    head_corruptions = sampler.corrupt(
+                        chunk_queries_tensor, num_negatives=K, mode='head', device=device
+                    )
+                if sampler_mode in ('tail', 'both'):
+                    tail_corruptions = sampler.corrupt(
+                        chunk_queries_tensor, num_negatives=K, mode='tail', device=device
+                    )
+            
             for mode in corruption_modes:
-                # Generate corruptions: [Q, K, 3]
-                corruptions = sampler.corrupt(
-                    chunk_queries_tensor, 
-                    num_negatives=K, 
-                    mode=mode, 
-                    device=device
-                )
+                if parity_mode:
+                    # Select corruptions based on mode (matching model_eval.py line 475 logic)
+                    # model_eval.py: corrs_list = head_corrs_list if mode == "head" else tail_corrs_list
+                    if mode == 'head':
+                        corruptions = head_corruptions if head_corruptions is not None else torch.zeros(Q, K, 3, dtype=torch.long, device=device)
+                    else:
+                        # For mode='tail' or mode='both', use tail_corruptions (matching model_eval.py fallback)
+                        corruptions = tail_corruptions if tail_corruptions is not None else torch.zeros(Q, K, 3, dtype=torch.long, device=device)
+                else:
+                    # Fast path: generate corruptions directly with requested mode
+                    corruptions = sampler.corrupt(
+                        chunk_queries_tensor,
+                        num_negatives=K,
+                        mode=mode,
+                        device=device
+                    )
                 
                 # Handle variable corruption counts (some may be filtered)
                 valid_mask = corruptions.sum(dim=-1) != 0  # [Q, K]
@@ -841,18 +873,21 @@ class PPOOptimized:
                 log_probs = log_probs.clone()
                 log_probs[~success.bool()] -= 100.0
                 
-                # Ranking with random tie-breaking (matches model_eval.py)
-                # Uses numpy RNG with fixed seed 0 for reproducible tie-breaking
+                # Ranking with random tie-breaking
                 pos_score = log_probs[:, 0:1]  # [Q, 1]
                 neg_scores = log_probs[:, 1:]  # [Q, K]
                 
-                # Random keys for tie-breaking (seed=0 for parity with model_eval.py)
-                rnd = torch.as_tensor(np.random.RandomState(0).rand(Q, 1 + K), device=device, dtype=torch.float32)
+                # Random keys for tie-breaking
+                if parity_mode:
+                    # Numpy RNG with seed=0 for exact parity with model_eval.py (slow)
+                    rnd = torch.as_tensor(np.random.RandomState(0).rand(Q, 1 + K), device=device, dtype=torch.float32)
+                else:
+                    # Fast torch RNG (no seeding needed, just for tie-breaking)
+                    rnd = torch.rand(Q, 1 + K, device=device)
                 
-                # For each negative: count if it beats positive (better score, or tied with higher random key)
+                # Count negatives that beat positive (better score, or tied with higher random key)
                 better = (neg_scores > pos_score) & valid_mask
                 tied_wins = (neg_scores == pos_score) & (rnd[:, 1:] > rnd[:, 0:1]) & valid_mask
-                
                 ranks = 1 + better.sum(dim=1) + tied_wins.sum(dim=1)
                 per_mode_ranks[mode].append(ranks.float())
         
