@@ -44,11 +44,7 @@ from embeddings import EmbedderLearnable as TensorEmbedder
 from model import ActorCriticPolicy as TensorPolicy
 from sampler import Sampler
 from model_eval import eval_corruptions
-from model_eval_optimized import (
-    evaluate_policy,
-    evaluate_with_corruptions,
-    compute_optimal_batch_size,
-)
+from ppo_optimized import PPOOptimized, compute_optimal_batch_size
 from env_optimized import EvalEnvOptimized
 
 
@@ -68,9 +64,12 @@ def create_default_config() -> SimpleNamespace:
         facts_file="train.txt",
         
         # Test parameters (matching test_eval_parity defaults)
+        # CRITICAL: chunk_queries MUST match batch_size_env for corruption parity!
+        # The sampler uses torch.randint, and different batch sizes consume
+        # different amounts of RNG, causing corruption divergence.
         n_queries=24,           # All test queries for countries_s3
         n_corruptions=50,       # Default 50 negatives like test_eval_parity CLI
-        chunk_queries=10,
+        chunk_queries=50,       # MUST match batch_size_env for RNG parity!
         batch_size_env=50,
         corruption_modes=['tail'],  # Default tail for countries_s3
         mode='test',            # Use test set
@@ -317,7 +316,11 @@ def run_original_eval(
     policy = components['policy']
     queries = components['test_queries_unpadded'][:config.n_queries]
     
-    # Reset sampler RNG
+    # Reset RNG for corruption parity
+    # The sampler uses torch.randint internally, so we must seed torch
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     sampler.rng = np.random.RandomState(seed)
     
     return eval_corruptions(
@@ -342,9 +345,6 @@ def run_optimized_eval(
     policy = components['policy']
     queries = components['test_queries_unpadded'][:config.n_queries].to(env.device)
     
-    # Reset sampler RNG
-    sampler.rng = np.random.RandomState(seed)
-    
     # Configure compilation
     if config.compile:
         compile_mode = config.compile_mode
@@ -353,8 +353,23 @@ def run_optimized_eval(
         compile_mode = 'default'
         fullgraph = False
     
-    # Compile environment with policy (new pattern)
+    # Create PPOOptimized instance for evaluation
+    ppo = PPOOptimized(
+        env=env,
+        policy=policy,
+        device=env.device,
+    )
+    
+    # Compute optimal batch size and compile
     warmup_start = time.time()
+    effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
+    batch_size = compute_optimal_batch_size(
+        chunk_queries=effective_chunk_queries,
+        n_corruptions=config.n_corruptions,
+    )
+    ppo.fixed_batch_size = batch_size
+    
+    # Compile environment with policy
     env.compile(
         policy=policy,
         deterministic=True,
@@ -363,17 +378,20 @@ def run_optimized_eval(
         include_value=False,  # Eval mode doesn't need values
     )
     
-    # Warmup with small batch to trigger JIT compilation
-    warmup_queries = queries[:2]
-    _ = evaluate_policy(env, warmup_queries, deterministic=True)
+    # Warmup with padded queries to trigger JIT compilation
+    warmup_queries, _ = ppo._pad_queries(queries[:2])
+    _ = ppo.evaluate_policy(warmup_queries, deterministic=True)
     warmup_time_s = time.time() - warmup_start
     
-    # Compute effective chunk size
-    effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
+    # Reset RNG for corruption parity AFTER warmup
+    # The sampler uses torch.randint internally, so we must seed torch
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    sampler.rng = np.random.RandomState(seed)
     
-    # Run evaluation using evaluate_with_corruptions from model_eval_optimized
-    results = evaluate_with_corruptions(
-        env=env,
+    # Run evaluation using ppo.evaluate_with_corruptions
+    results = ppo.evaluate_with_corruptions(
         queries=queries,
         sampler=sampler,
         n_corruptions=config.n_corruptions,
@@ -521,17 +539,18 @@ def device():
 class TestEvalCompiledParity:
     """Tests for evaluation parity between original and optimized paths.
     
-    Parametrized to match test_eval_parity methodology:
-    - countries_s3: 24 test queries, tail mode, 50 corruptions
-    - family: multiple queries, both mode, 50 corruptions
+    IMPORTANT: Perfect parity requires all queries to fit in ONE chunk.
+    This is because the sampler uses torch.randint, and different chunking
+    consumes RNG differently, causing corruption order divergence.
+    
+    When chunk_queries >= n_queries (single chunk), both paths generate
+    identical corruptions and rankings, achieving exact MRR match.
     """
     
     @pytest.mark.parametrize("dataset,corruption_mode,n_queries,n_corruptions", [
-        # Countries_s3: All 24 test queries, tail corruption, 50 negatives
+        # Single-chunk tests (n_queries <= chunk_queries=50 for exact parity)
         ("countries_s3", "tail", 24, 50),
-        # Family: Test queries with both head/tail corruption, 50 negatives
         ("family", "both", 20, 50),
-        # Smaller smoke test for quick CI
         ("family", "both", 5, 10),
     ])
     def test_mrr_parity_eager(self, dataset: str, corruption_mode: str, 
@@ -585,10 +604,10 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Test eval compiled parity (Original vs Optimized)')
-    parser.add_argument('--dataset', type=str, default='countries_s3', help='Dataset name (default: countries_s3)')
-    parser.add_argument('--n-queries', type=int, default=5, help='Number of test queries (default: 24)')
-    parser.add_argument('--n-corruptions', type=int, default=10, help='Corruptions per query (default: 50)')
-    parser.add_argument('--corruption-mode', type=str, default='tail',
+    parser.add_argument('--dataset', type=str, default='family', help='Dataset name (default: countries_s3)')
+    parser.add_argument('--n-queries', type=int, default=10, help='Number of test queries (default: 24)')
+    parser.add_argument('--n-corruptions', type=int, default=4, help='Corruptions per query (default: 50)')
+    parser.add_argument('--corruption-mode', type=str, default='both',
                         choices=['head', 'tail', 'both'], help="Corruption mode (default: tail)")
     parser.add_argument('--chunk-queries', type=int, default=100, help='Queries per chunk')
     parser.add_argument('--compile', action='store_true', help='Enable torch.compile')

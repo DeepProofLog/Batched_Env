@@ -382,15 +382,47 @@ class EvalEnvOptimized:
         original_queries: Tensor,
         history_hashes: Tensor = None,
         history_count: Tensor = None,
+        active_mask: Tensor = None,
     ) -> Tuple[Tensor, Tensor, Tensor]:
         """Compute derived states (pure function, no mutation).
         
         IMPORTANT: States exceeding padding_atoms are REJECTED, never truncated.
         Truncation would change the semantics of the state.
         This matches original _postprocess behavior at line 1344-1347.
+        
+        Args:
+            current_states: [n, A, 3] Current states
+            next_var_indices: [n] Next variable indices
+            original_queries: [n, A, 3] Original queries for exclusion
+            history_hashes: [n, H] State history hashes for cycle detection
+            history_count: [n] Valid entries in history
+            active_mask: [n] Optional mask - if provided, only compute for True entries.
+                         For False entries, returns zeros (caller should use old values).
         """
         n = current_states.shape[0]
         pad = self.padding_idx
+        
+        # =================================================================
+        # OPTIMIZATION (Issue 4): Skip unification for inactive queries
+        # =================================================================
+        # The unification engine (get_derived_states_compiled) is expensive.
+        # For done queries, we can replace their current_states with padding
+        # so the engine does minimal work (returns single FALSE state).
+        if active_mask is not None:
+            # Replace inactive queries with padding state
+            # This makes the unification engine process them trivially
+            padding_state = torch.full_like(current_states, pad)
+            current_states = torch.where(
+                active_mask.view(n, 1, 1),
+                current_states,
+                padding_state
+            )
+            # Also zero out next_var_indices for inactive (though not critical)
+            next_var_indices = torch.where(
+                active_mask,
+                next_var_indices,
+                torch.zeros_like(next_var_indices)
+            )
         
         excluded = original_queries[:, 0:1, :]  # [n, 1, 3]
         derived, counts, new_var = self.engine.get_derived_states_compiled(
@@ -610,27 +642,39 @@ class EvalEnvOptimized:
             
         Note: For CUDA graph compatibility (reduce-overhead mode), outputs are
         cloned OUTSIDE this function in step_with_policy().
+        
+        OPTIMIZATION (Issue 4): Uses masked computation for done queries.
+        All tensor operations use torch.where to skip computation for done envs,
+        preserving their existing state. This is compile-friendly (no branching).
         """
         n = actions.shape[0]
         device = self.device
         
-        # Get selected next states
+        # =================================================================
+        # OPTIMIZATION (Issue 4): Mask all computation for done queries
+        # =================================================================
+        # For done envs: skip all computation, preserve existing state
+        # Use torch.where throughout for compile compatibility (no branching)
+        was_done = state.done
+        active = ~was_done  # [n] - envs that need computation
+        
+        # Get selected next states (only meaningful for active envs)
         batch_idx = torch.arange(n, device=device)
         next_states = state.derived_states[batch_idx, actions]
         
-        # Update current states for non-done envs
+        # Update current states for active envs only
         new_current = torch.where(
-            state.done.view(n, 1, 1),
-            state.current_states,
-            next_states
+            active.view(n, 1, 1),
+            next_states,
+            state.current_states
         )
         new_depths = torch.where(
-            state.done,
-            state.depths,
-            state.depths + 1
+            active,
+            state.depths + 1,
+            state.depths
         )
         
-        # Check termination
+        # Check termination (results only matter for active envs)
         first_pred = next_states[:, 0, 0]
         
         is_true = (first_pred == self.true_pred_idx) if self.true_pred_idx else \
@@ -641,54 +685,53 @@ class EvalEnvOptimized:
                  torch.zeros(n, dtype=torch.bool, device=device)
         is_depth_limit = (new_depths >= self.max_depth)
         
-        # Update done/success
-        was_done = state.done
-        newly_done = is_true | is_false | is_end | is_depth_limit
+        # Mask termination checks with active - only active envs can newly terminate
+        newly_done = active & (is_true | is_false | is_end | is_depth_limit)
         new_done = was_done | newly_done
-        new_success = state.success | is_true
+        new_success = state.success | (active & is_true)
         
-        # Rewards
+        # Rewards (only for active envs that found TRUE)
         rewards = torch.zeros(n, device=device)
-        rewards = torch.where(is_true & ~was_done, torch.ones_like(rewards), rewards)
+        rewards = torch.where(active & is_true, torch.ones_like(rewards), rewards)
         
-        # Update history: append new current state HASH for non-done envs
-        # This must happen BEFORE computing derived states so pruning uses updated history
-        new_history_hashes = state.history_hashes
-        new_history_count = state.history_count.clone()
-        
-        # Only update history for envs that are NOT done
-        active = ~was_done  # envs that were active before this step
-        
-        # Write position is current count (clamped to max-1 for safety)
+        # Update history only for active envs
         write_pos = state.history_count.clamp(max=self.max_history_size - 1)
-        
-        # Compute hash of new current state
         new_state_hash = self._compute_state_hash64(new_current)  # [n]
         
-        # Scatter: write hash to history at write_pos for active envs
-        # Use scatter_ with explicit clone for CUDA graph compatibility (reduce-overhead mode)
-        batch_idx = torch.arange(n, device=device)
-        update_val = torch.where(active, new_state_hash, new_history_hashes[batch_idx, write_pos])
-        
-        # Clone before scatter to avoid CUDA graph tensor aliasing
-        new_history_hashes = new_history_hashes.clone()
+        # Scatter: write hash to history at write_pos for active envs only
+        update_val = torch.where(active, new_state_hash, state.history_hashes[batch_idx, write_pos])
+        new_history_hashes = state.history_hashes.clone()
         new_history_hashes.scatter_(1, write_pos.unsqueeze(1), update_val.unsqueeze(1))
         
-        # Increment count for active envs (clamped to max_history_size)
+        # Increment count for active envs only
         new_history_count = torch.where(
             active,
             (state.history_count + 1).clamp(max=self.max_history_size),
             state.history_count
         )
         
-        # Compute derived states for next step (with updated history for pruning)
+        # =================================================================
+        # Compute derived states - skip for envs that are now done
+        # =================================================================
+        # still_active = envs that will need derived states for next step
+        still_active = ~new_done
+        
+        # Compute derived with active_mask - done envs get padding input
         new_derived, new_counts, new_var = self._compute_derived_functional(
             new_current, state.next_var_indices, state.original_queries,
-            new_history_hashes, new_history_count
+            new_history_hashes, new_history_count,
+            active_mask=still_active,
         )
+        # Preserve old derived states for done envs
+        new_derived = torch.where(
+            still_active.view(n, 1, 1, 1),
+            new_derived,
+            state.derived_states
+        )
+        new_counts = torch.where(still_active, new_counts, state.derived_counts)
+        new_var = torch.where(still_active, new_var, state.next_var_indices)
         
-        # Create new state - no clones needed here since step_with_policy clones
-        # outputs OUTSIDE the compiled function for CUDA graph compatibility
+        # Create new state
         new_state = EvalState(
             current_states=new_current,
             derived_states=new_derived,

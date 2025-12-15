@@ -223,14 +223,10 @@ def setup_components(device: torch.device, config: SimpleNamespace):
 def create_and_warmup_optimized_evaluator(components, config):
     """Create fast evaluator (single-step compilation) and run warmup.
     
-    Uses the new pattern: env.compile(policy) + evaluate_policy(env, ...).
-    Returns (env, warmup_time_s) for compatibility with the test interface.
+    Uses the new pattern: PPOOptimized with env.compile(policy).
+    Returns (ppo, warmup_time_s) for compatibility with the test interface.
     """
-    from model_eval_optimized import (
-        evaluate_policy,
-        evaluate_with_corruptions,
-        compute_optimal_batch_size,
-    )
+    from ppo_optimized import PPOOptimized, compute_optimal_batch_size
     from env_optimized import EvalEnvOptimized
     
     actor = components['policy']
@@ -253,20 +249,27 @@ def create_and_warmup_optimized_evaluator(components, config):
     
     queries = components['test_queries'][:config.n_test_queries].to(env_fast.device)
     
-    # Compute batch size (for display purposes)
-    fixed_batch_size = getattr(config, 'fixed_batch_size', None)
+    # Compute batch size
     effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
     batch_size = compute_optimal_batch_size(
         chunk_queries=effective_chunk_queries,
         n_corruptions=config.n_corruptions,
         max_vram_gb=config.vram_gb,
-        fixed_batch_size=fixed_batch_size,
     )
     
     compile_mode = getattr(config, 'compile_mode', 'default')
     fullgraph = getattr(config, 'fullgraph', True)
     
-    # Compile environment with policy (new pattern)
+    # Create PPOOptimized with fixed_batch_size
+    ppo = PPOOptimized(
+        policy=actor,
+        env=env_fast,
+        device=env_fast.device,
+        fixed_batch_size=batch_size,
+        verbose=False,
+    )
+    
+    # Compile environment with policy
     print(f"Starting fast warmup (batch_size={batch_size})...")
     warmup_start = time.time()
     
@@ -279,21 +282,18 @@ def create_and_warmup_optimized_evaluator(components, config):
     )
     
     # Warmup with the exact batch_size to trigger JIT/CUDA graph compilation
-    # IMPORTANT: For reduce-overhead mode, CUDA graphs are size-specific!
-    # We MUST warmup with exactly batch_size (the fixed_batch_size), as this is
-    # what evaluate_policy will pad all batches to during evaluation.
-    # This ensures no recompilation occurs during actual evaluation.
     warmup_queries = queries[:1].expand(batch_size, -1)  # [batch_size, 3] - exact size
-    _ = evaluate_policy(env_fast, warmup_queries, deterministic=True, fixed_batch_size=batch_size)
+    _ = ppo.evaluate_policy(warmup_queries, deterministic=True)
     
     warmup_time_s = time.time() - warmup_start
     print(f"Fast warmup took {warmup_time_s} s.")
     
-    # Store batch_size for later use in evaluation
+    # Store for later use
     evaluator_like = SimpleNamespace(
+        ppo=ppo,
         env=env_fast,
         warmup_time_s=warmup_time_s,
-        fixed_batch_size=batch_size,  # Store for evaluation to reuse
+        fixed_batch_size=batch_size,
     )
     
     return evaluator_like, warmup_time_s
@@ -304,12 +304,12 @@ def run_optimized_eval(components, config, seed: Optional[int] = None,
                        mode: str = 'compiled'):
     """Run optimized eval (eager or compiled).
     
-    Uses the new pattern: env.compile(policy) + evaluate_policy(env, ...).
+    Uses the new pattern: PPOOptimized.evaluate_with_corruptions().
     
     Args:
         mode: 'eager' or 'compiled'.
     """
-    from model_eval_optimized import evaluate_policy, evaluate_with_corruptions
+    from ppo_optimized import PPOOptimized, compute_optimal_batch_size
     
     actor = components['policy']
     env = components['eval_env_compiled']
@@ -325,6 +325,22 @@ def run_optimized_eval(components, config, seed: Optional[int] = None,
         compile_mode = getattr(config, 'compile_mode', 'default')
         fullgraph = getattr(config, 'fullgraph', True) if mode == 'compiled' else False
         
+        # Compute batch size
+        effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
+        batch_size = compute_optimal_batch_size(
+            chunk_queries=effective_chunk_queries,
+            n_corruptions=config.n_corruptions,
+        )
+        
+        # Create PPOOptimized
+        ppo = PPOOptimized(
+            policy=actor,
+            env=env,
+            device=env.device,
+            fixed_batch_size=batch_size,
+            verbose=False,
+        )
+        
         warmup_start = time.time()
         env.compile(
             policy=actor,
@@ -333,18 +349,18 @@ def run_optimized_eval(components, config, seed: Optional[int] = None,
             fullgraph=fullgraph,
             include_value=False,
         )
-        # Warmup
-        _ = evaluate_policy(env, queries[:2], deterministic=True)
+        # Warmup with exact batch_size
+        warmup_queries = queries[:1].expand(batch_size, -1)  # [batch_size, 3]
+        _ = ppo.evaluate_policy(warmup_queries, deterministic=True)
         warmup_time_s = time.time() - warmup_start
         
-        evaluator = SimpleNamespace(env=env, warmup_time_s=warmup_time_s)
+        evaluator = SimpleNamespace(ppo=ppo, env=env, warmup_time_s=warmup_time_s)
 
     # Compute optimal batch size (needed for chunking in eval loop)
     effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
 
-    # Run evaluation using evaluate_with_corruptions from model_eval_optimized
-    results = evaluate_with_corruptions(
-        env=evaluator.env,
+    # Run evaluation using PPOOptimized.evaluate_with_corruptions
+    results = evaluator.ppo.evaluate_with_corruptions(
         queries=queries,
         sampler=sampler,
         n_corruptions=config.n_corruptions,
@@ -472,13 +488,23 @@ def run_performance_test(components, config, modes, warmup_only):
             elif mode == 'eager':
                 if warmup_only:
                     # Just run warmup for eager - use the new pattern
-                    from model_eval_optimized import evaluate_policy
+                    from ppo_optimized import PPOOptimized, compute_optimal_batch_size
                     env = components['eval_env_compiled']
                     actor = components['policy']
+                    
+                    batch_size = compute_optimal_batch_size(
+                        chunk_queries=config.chunk_queries,
+                        n_corruptions=config.n_corruptions,
+                    )
+                    ppo = PPOOptimized(
+                        policy=actor, env=env, device=env.device,
+                        fixed_batch_size=batch_size, verbose=False,
+                    )
+                    
                     warmup_start = time.time()
                     env.compile(policy=actor, deterministic=True, mode='default', fullgraph=False, include_value=False)
-                    queries = components['test_queries'][:2].to(env.device)
-                    _ = evaluate_policy(env, queries, deterministic=True)
+                    warmup_queries = components['test_queries'][:1].to(env.device).expand(batch_size, -1)
+                    _ = ppo.evaluate_policy(warmup_queries, deterministic=True)
                     warmup_s = time.time() - warmup_start
                     print(f"  Warmup finished in {warmup_s:.4f}s", flush=True)
                 else:
@@ -507,14 +533,10 @@ def run_performance_test(components, config, modes, warmup_only):
                     if torch.cuda.is_available():
                         torch.cuda.synchronize()
                     eval_start = time.time()
-                    from model_eval_optimized import evaluate_with_corruptions
                     effective_chunk_queries = min(int(run_config.chunk_queries), int(run_config.n_test_queries))
                     queries = components['test_queries'][:run_config.n_test_queries].to(evaluator.env.device)
-                    # Use the SAME fixed_batch_size that was used during warmup to avoid recompilation
-                    # This is stored in evaluator.fixed_batch_size by create_and_warmup_optimized_evaluator
-                    fixed_batch_size = evaluator.fixed_batch_size
-                    _ = evaluate_with_corruptions(
-                        env=evaluator.env,
+                    # Use PPOOptimized.evaluate_with_corruptions
+                    _ = evaluator.ppo.evaluate_with_corruptions(
                         queries=queries,
                         sampler=components['sampler'],
                         n_corruptions=run_config.n_corruptions,
@@ -522,7 +544,6 @@ def run_performance_test(components, config, modes, warmup_only):
                         chunk_queries=effective_chunk_queries,
                         verbose=False,
                         deterministic=True,
-                        fixed_batch_size=fixed_batch_size,
                     )
                     if torch.cuda.is_available():
                         torch.cuda.synchronize()

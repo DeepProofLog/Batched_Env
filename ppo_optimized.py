@@ -8,16 +8,121 @@ Key Differences from ppo.py:
     - Uses step_functional() instead of step_and_maybe_reset()
     - Works with EvalObs NamedTuples
     - Uses RolloutBufferOptimized
+    
+Evaluation Methods:
+    - evaluate_policy(): Run trajectories for a batch of queries
+    - evaluate_with_corruptions(): Full MRR/Hits@K evaluation with corruptions
+    
+The PPOOptimized class maintains a fixed_batch_size that is set during
+compile() and enforced during evaluation to avoid recompilation with
+CUDA graphs (reduce-overhead mode).
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Callable, Dict, List, Tuple, Any
+import numpy as np
+from torch import Tensor
+from typing import Optional, Callable, Dict, List, Tuple, Any, Sequence
 from tensordict import TensorDict
 
 from rollout_optimized import RolloutBufferOptimized
 from env_optimized import EvalEnvOptimized, EvalObs, EvalState
+
+
+# ============================================================================
+# Metrics Computation
+# ============================================================================
+
+def compute_metrics_from_ranks(ranks: Tensor) -> Dict[str, float]:
+    """Compute MRR and Hits@K from ranks tensor."""
+    if ranks.numel() == 0:
+        return {"MRR": 0.0, "Hits@1": 0.0, "Hits@3": 0.0, "Hits@10": 0.0}
+    ranks_float = ranks.float()
+    return {
+        "MRR": float(torch.mean(1.0 / ranks_float).item()),
+        "Hits@1": float(torch.mean((ranks_float <= 1.0).float()).item()),
+        "Hits@3": float(torch.mean((ranks_float <= 3.0).float()).item()),
+        "Hits@10": float(torch.mean((ranks_float <= 10.0).float()).item()),
+    }
+
+
+def compute_optimal_batch_size(
+    chunk_queries: int = None,
+    n_corruptions: int = None,
+    max_vram_gb: float = None,
+    min_batch_size: int = 64,
+    prefer_power_of_two: bool = False,
+) -> int:
+    """
+    Compute optimal batch size for evaluation.
+    
+    Uses adaptive batch size: smaller for small evaluations, larger for large ones.
+    This optimizes compilation time for small tests while supporting large-scale ranking.
+    
+    Memory model:
+    - Each query in a batch requires ~3-4MB for state tensors:
+      - derived_states: [K_max=120, M_max=26, 3] × 8 bytes ≈ 75KB per query
+      - Multiple intermediate tensors during unification: ~3MB per query
+    - For 8GB GPU with ~6GB usable: max ~2000 queries safely, ~1500 conservatively
+    
+    CRITICAL: Batch sizes > 512 have pathologically worse per-query performance
+    due to GPU memory bandwidth saturation with large derived_states tensors.
+    
+    Args:
+        chunk_queries: Number of queries per chunk (used for sizing)
+        n_corruptions: Number of corruptions per query (used for sizing)
+        max_vram_gb: Maximum VRAM to use (default: detected from GPU)
+        min_batch_size: Minimum allowed batch size
+        prefer_power_of_two: If True, round to nearest power of 2
+        
+    Returns:
+        Batch size (adaptive based on actual needs)
+    """
+    # Detect available VRAM if not specified
+    if max_vram_gb is None and torch.cuda.is_available():
+        total_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        # Use ~60% of total memory to leave room for PyTorch overhead
+        max_vram_gb = total_mem * 0.6
+    elif max_vram_gb is None:
+        max_vram_gb = 4.0  # Conservative default for CPU
+    
+    # Adaptive: use smaller batch for small evaluations
+    # This speeds up compilation for small tests
+    # NOTE: Batch sizes > 512 tend to have much worse per-query performance
+    # due to GPU memory bandwidth limits with large derived_states tensors
+    if chunk_queries is not None and n_corruptions is not None:
+        actual_need = chunk_queries * (1 + n_corruptions)
+        if actual_need <= 64:
+            batch_size = 64
+        elif actual_need <= 256:
+            batch_size = 256
+        else:
+            # Cap at 512 for best throughput (larger sizes have worse per-query time)
+            batch_size = 512
+    else:
+        # Default to moderate size if params not provided
+        batch_size = 256
+    
+    # Clamp to VRAM limit - use more accurate memory estimation
+    # Each query uses approximately 3MB during unification
+    mem_per_query_mb = 3.0
+    max_batch_from_vram = int(max_vram_gb * 1024 / mem_per_query_mb)
+    batch_size = min(batch_size, max_batch_from_vram)
+    
+    # Apply minimum
+    batch_size = max(batch_size, min_batch_size)
+    
+    # Align to multiples of 32 for GPU efficiency
+    batch_size = ((batch_size + 31) // 32) * 32
+    
+    # Optional: round to power of 2
+    if prefer_power_of_two:
+        import math
+        log2 = math.log2(batch_size)
+        batch_size = 2 ** round(log2)
+    
+    return batch_size
 
 
 def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
@@ -29,12 +134,21 @@ def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tens
     return 1.0 - torch.var(y_true - y_pred) / (var_y + 1e-8)
 
 
+# ============================================================================
+# PPO Implementation
+# ============================================================================
+
 class PPOOptimized:
     """
     Proximal Policy Optimization for EvalEnvOptimized.
     
     This implementation works with the functional/immutable state approach
     of EvalEnvOptimized rather than the TensorDict-based BatchedEnv.
+    
+    Key Features:
+        - Fixed batch size for CUDA graph compatibility (reduce-overhead mode)
+        - Integrated evaluation methods (evaluate_policy, evaluate_with_corruptions)
+        - Single-step compilation for fast warmup
     
     Args:
         policy: Actor-critic policy network
@@ -50,6 +164,7 @@ class PPOOptimized:
         ent_coef: Entropy coefficient
         vf_coef: Value function coefficient
         max_grad_norm: Gradient clipping norm
+        fixed_batch_size: Fixed batch size for evaluation (auto-computed if None)
     """
     
     def __init__(
@@ -73,6 +188,7 @@ class PPOOptimized:
         verbose: bool = True,
         seed: Optional[int] = None,
         parity: bool = False,
+        fixed_batch_size: Optional[int] = None,
     ):
         self.policy = policy
         self.env = env
@@ -93,6 +209,10 @@ class PPOOptimized:
         self.verbose = verbose
         self.seed = seed
         self.parity = parity
+        
+        # Fixed batch size for evaluation (enforced to avoid recompilation)
+        # If not specified, will be set during compile() based on env.batch_size
+        self._fixed_batch_size = fixed_batch_size
         
         # Get environment parameters
         self.n_envs = env.batch_size
@@ -122,6 +242,26 @@ class PPOOptimized:
             lr=self.learning_rate,
             eps=1e-5,
         )
+    
+    @property
+    def fixed_batch_size(self) -> int:
+        """Get the fixed batch size for evaluation.
+        
+        If not explicitly set, returns env.batch_size as the default.
+        This property ensures consistent batch sizes for CUDA graph compatibility.
+        """
+        if self._fixed_batch_size is not None:
+            return self._fixed_batch_size
+        return self.env.batch_size
+    
+    @fixed_batch_size.setter
+    def fixed_batch_size(self, value: int):
+        """Set the fixed batch size for evaluation.
+        
+        Once set, all evaluation calls must use this batch size to avoid
+        recompilation with CUDA graphs (reduce-overhead mode).
+        """
+        self._fixed_batch_size = value
     
     def _obs_to_tensordict(self, obs: EvalObs) -> TensorDict:
         """Convert EvalObs to TensorDict for policy forward pass."""
@@ -500,41 +640,250 @@ class PPOOptimized:
                       f"value_loss: {train_metrics['value_loss']:.4f}, "
                       f"entropy: {train_metrics['entropy']:.4f}")
 
-    def evaluate(
+    @torch.inference_mode()
+    def evaluate_policy(
         self,
-        queries: torch.Tensor,
-        sampler: Any,
-        n_corruptions: int = 50,
-        corruption_modes: Tuple[str, ...] = ("head", "tail"),
-        chunk_queries: int = 50,
+        queries: Tensor,
+        max_steps: int = None,
         deterministic: bool = True,
-        verbose: bool = True,
-    ) -> Dict[str, float]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """
-        Evaluate the current policy using the optimized evaluation loop.
+        Run policy evaluation over trajectories for a single batch.
+        
+        This is the core evaluation loop. It expects queries to already be
+        at the correct batch size (fixed_batch_size). Use evaluate_with_corruptions()
+        for the full evaluation pipeline with chunking and padding.
+        
+        Must call env.compile(policy) before using this method.
         
         Args:
-            queries: [N, 3] Query tensor to evaluate on
-            sampler: Corruption sampler
-            n_corruptions: Number of corruptions per query
-            corruption_modes: Modes to evaluate ('head', 'tail')
-            chunk_queries: Chunk size handling
-            deterministic: Use deterministic actions
-            verbose: Print progress
+            queries: [B, 3] Query triples (B should equal fixed_batch_size)
+            max_steps: Maximum trajectory length (default: env.max_depth)
+            deterministic: Use argmax for action selection
             
         Returns:
-            Dictionary of metrics
+            log_probs: [B] Accumulated log probs per query
+            success: [B] Whether proof succeeded
+            lengths: [B] Trajectory lengths
+            rewards: [B] Accumulated rewards
         """
-        from model_eval_optimized import evaluate_policy
+        if self.env._policy_logits_fn is None:
+            raise RuntimeError("Must call env.compile(policy) before evaluate_policy()")
         
-        results = evaluate_policy(
-            env=self.env,
-            queries=queries,
-            sampler=sampler,
-            n_corruptions=n_corruptions,
-            corruption_modes=corruption_modes,
-            chunk_queries=chunk_queries,
-            verbose=verbose,
-            deterministic=deterministic,
+        device = self.device
+        max_steps = max_steps or self.env.max_depth
+        
+        # Initialize state
+        state = self.env.init_state_from_queries(queries)
+        B = state.current_states.shape[0]
+        
+        # Pre-allocate accumulators
+        total_log_probs = torch.zeros(B, device=device)
+        total_rewards = torch.zeros(B, device=device)
+        
+        # Create initial observation
+        action_mask = self.env._positions_S < state.derived_counts.unsqueeze(1)
+        obs = EvalObs(
+            sub_index=state.current_states.unsqueeze(1),
+            derived_sub_indices=state.derived_states,
+            action_mask=action_mask,
         )
+        
+        # Empty query pool and pointers for eval mode (no resets)
+        empty_pool = torch.empty((0, 3), dtype=torch.long, device=device)
+        empty_ptrs = torch.zeros(B, dtype=torch.long, device=device)
+        eval_done_mask = torch.zeros(B, dtype=torch.bool, device=device)
+        
+        # Python loop over transitions
+        for step_idx in range(max_steps):
+            # Early exit if all done
+            if state.done.all():
+                break
+            
+            state, obs, actions, step_log_probs, _values, rewards, dones, _, _ = self.env.step_with_policy(
+                state, obs, empty_pool, empty_ptrs,
+                deterministic=deterministic,
+                eval_mode=True,
+                eval_done_mask=eval_done_mask,
+            )
+            
+            # Accumulate
+            total_log_probs = total_log_probs + step_log_probs
+            total_rewards = total_rewards + rewards
+        
+        return total_log_probs, state.success, state.depths, total_rewards
+    
+    def _pad_queries(self, queries: Tensor) -> Tuple[Tensor, int]:
+        """Pad queries to fixed_batch_size. Returns (padded_queries, original_size)."""
+        B = queries.shape[0]
+        fixed_batch_size = self.fixed_batch_size
+        
+        if B >= fixed_batch_size:
+            return queries[:fixed_batch_size], min(B, fixed_batch_size)
+        
+        padded = torch.zeros(fixed_batch_size, 3, dtype=queries.dtype, device=self.device)
+        padded[:B] = queries
+        # Fill padding with last query (valid but results ignored)
+        padded[B:] = queries[-1]
+        return padded, B
+    
+    @torch.inference_mode()
+    def evaluate_with_corruptions(
+        self,
+        queries: Tensor,
+        sampler: Any,
+        *,
+        n_corruptions: int = 50,
+        corruption_modes: Sequence[str] = ("head", "tail"),
+        chunk_queries: int = 50,
+        verbose: bool = False,
+        deterministic: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Evaluate policy on queries with corruptions for ranking metrics (MRR, Hits@K).
+        
+        For each query, generates corruptions and evaluates all candidates 
+        (positive + corruptions) to compute ranking metrics.
+        
+        This method handles ALL chunking and padding:
+        1. Chunks positive queries into batches of chunk_queries
+        2. For each chunk, generates corruptions per corruption mode
+        3. Flattens candidates and pads to fixed_batch_size
+        4. Calls evaluate_policy with padded batches
+        5. Computes ranks and aggregates metrics
+        
+        Args:
+            queries: [N, 3] Tensor of test triples
+            sampler: Sampler for generating corruptions
+            n_corruptions: Number of corruptions per query
+            corruption_modes: Tuple of modes ('head', 'tail')
+            chunk_queries: Number of positive queries to process at once
+            verbose: Print progress
+            deterministic: Use deterministic action selection
+            
+        Returns:
+            Dictionary with MRR and Hits@K metrics
+        """
+        if not self.env._compiled and self.env._policy_logits_fn is None:
+            raise RuntimeError("Must call env.compile(policy) before evaluate_with_corruptions()")
+        
+        device = self.device
+        N = queries.shape[0]
+        K = n_corruptions
+        fixed_batch_size = self.fixed_batch_size
+        
+        # Accumulate ranks per mode
+        per_mode_ranks: Dict[str, list] = {m: [] for m in corruption_modes}
+        
+        # Process positive queries in chunks
+        for start in range(0, N, chunk_queries):
+            end = min(start + chunk_queries, N)
+            Q = end - start
+            
+            if verbose:
+                print(f"Processing queries {start}-{end} / {N}")
+            
+            chunk_queries_tensor = queries[start:end]  # [Q, 3]
+            
+            for mode in corruption_modes:
+                # Generate corruptions: [Q, K, 3]
+                corruptions = sampler.corrupt(
+                    chunk_queries_tensor, 
+                    num_negatives=K, 
+                    mode=mode, 
+                    device=device
+                )
+                
+                # Handle variable corruption counts (some may be filtered)
+                valid_mask = corruptions.sum(dim=-1) != 0  # [Q, K]
+                
+                # Create candidates: positive + corruptions -> [Q, 1+K, 3]
+                candidates = torch.zeros(Q, 1 + K, 3, dtype=torch.long, device=device)
+                candidates[:, 0, :] = chunk_queries_tensor
+                candidates[:, 1:, :] = corruptions
+                
+                # Flatten for batch evaluation: [Q*(1+K), 3]
+                flat_candidates = candidates.view(-1, 3)
+                total_candidates = flat_candidates.shape[0]
+                
+                # Process candidates in chunks of fixed_batch_size with padding
+                all_log_probs = []
+                all_success = []
+                
+                for cand_start in range(0, total_candidates, fixed_batch_size):
+                    cand_end = min(cand_start + fixed_batch_size, total_candidates)
+                    batch_candidates = flat_candidates[cand_start:cand_end]
+                    actual_size = batch_candidates.shape[0]
+                    
+                    # Pad to fixed_batch_size
+                    padded_candidates, _ = self._pad_queries(batch_candidates)
+                    
+                    # Evaluate
+                    log_probs, success, depths, rewards = self.evaluate_policy(
+                        queries=padded_candidates,
+                        max_steps=self.env.max_depth,
+                        deterministic=deterministic,
+                    )
+                    
+                    # Trim to actual size
+                    all_log_probs.append(log_probs[:actual_size])
+                    all_success.append(success[:actual_size])
+                
+                # Concatenate results
+                log_probs = torch.cat(all_log_probs, dim=0)  # [Q*(1+K)]
+                success = torch.cat(all_success, dim=0)      # [Q*(1+K)]
+                
+                # Reshape results: [Q, 1+K]
+                log_probs = log_probs.view(Q, 1 + K)
+                success = success.view(Q, 1 + K)
+                
+                # Apply success penalty - failed proofs get -100 penalty
+                log_probs = log_probs.clone()
+                log_probs[~success.bool()] -= 100.0
+                
+                # Ranking with random tie-breaking (matches model_eval.py)
+                # Uses numpy RNG with fixed seed 0 for reproducible tie-breaking
+                pos_score = log_probs[:, 0:1]  # [Q, 1]
+                neg_scores = log_probs[:, 1:]  # [Q, K]
+                
+                # Random keys for tie-breaking (seed=0 for parity with model_eval.py)
+                rnd = torch.as_tensor(np.random.RandomState(0).rand(Q, 1 + K), device=device, dtype=torch.float32)
+                
+                # For each negative: count if it beats positive (better score, or tied with higher random key)
+                better = (neg_scores > pos_score) & valid_mask
+                tied_wins = (neg_scores == pos_score) & (rnd[:, 1:] > rnd[:, 0:1]) & valid_mask
+                
+                ranks = 1 + better.sum(dim=1) + tied_wins.sum(dim=1)
+                per_mode_ranks[mode].append(ranks.float())
+        
+        # Aggregate results
+        results: Dict[str, Any] = {
+            "MRR": 0.0, "Hits@1": 0.0, "Hits@3": 0.0, "Hits@10": 0.0,
+            "per_mode": {}
+        }
+        
+        for mode in corruption_modes:
+            if per_mode_ranks[mode]:
+                all_ranks = torch.cat(per_mode_ranks[mode])
+                results["per_mode"][mode] = compute_metrics_from_ranks(all_ranks)
+            else:
+                results["per_mode"][mode] = compute_metrics_from_ranks(torch.tensor([], device=device))
+        
+        # Average across modes
+        for mode in corruption_modes:
+            for k, v in results["per_mode"][mode].items():
+                results[k] += v
+        
+        n_modes = len(corruption_modes)
+        for k in ["MRR", "Hits@1", "Hits@3", "Hits@10"]:
+            results[k] /= n_modes if n_modes > 0 else 1.0
+            
+        results["_mrr"] = results["MRR"]
+        
+        if verbose:
+            print(f"\nResults:")
+            print(f"  MRR: {results['MRR']:.4f}")
+            print(f"  Hits@1: {results['Hits@1']:.4f}")
+            print(f"  Hits@10: {results['Hits@10']:.4f}")
+        
         return results
