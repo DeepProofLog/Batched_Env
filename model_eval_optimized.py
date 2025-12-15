@@ -61,10 +61,16 @@ def compute_optimal_batch_size(
     Uses adaptive batch size: smaller for small evaluations, larger for large ones.
     This optimizes compilation time for small tests while supporting large-scale ranking.
     
+    Memory model:
+    - Each query in a batch requires ~3-4MB for state tensors:
+      - derived_states: [K_max=120, M_max=26, 3] × 8 bytes ≈ 75KB per query
+      - Multiple intermediate tensors during unification: ~3MB per query
+    - For 8GB GPU with ~6GB usable: max ~2000 queries safely, ~1500 conservatively
+    
     Args:
         chunk_queries: Number of queries per chunk (used for sizing)
         n_corruptions: Number of corruptions per query (used for sizing)
-        max_vram_gb: Maximum VRAM to use (default: 80% of available)
+        max_vram_gb: Maximum VRAM to use (default: detected from GPU)
         min_batch_size: Minimum allowed batch size
         prefer_power_of_two: If True, round to nearest power of 2
         fixed_batch_size: If specified, use this fixed size (default: adaptive)
@@ -72,33 +78,40 @@ def compute_optimal_batch_size(
     Returns:
         Batch size (adaptive based on actual needs, or fixed if specified)
     """
+    # Detect available VRAM if not specified
+    if max_vram_gb is None and torch.cuda.is_available():
+        total_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        # Use ~60% of total memory to leave room for PyTorch overhead
+        max_vram_gb = total_mem * 0.6
+    elif max_vram_gb is None:
+        max_vram_gb = 4.0  # Conservative default for CPU
+    
     # If fixed_batch_size is explicitly specified, use it
     if fixed_batch_size is not None:
         batch_size = fixed_batch_size
     else:
         # Adaptive: use smaller batch for small evaluations
         # This speeds up compilation for small tests
+        # NOTE: Batch sizes > 512 tend to have much worse per-query performance
+        # due to GPU memory bandwidth limits with large derived_states tensors
         if chunk_queries is not None and n_corruptions is not None:
             actual_need = chunk_queries * (1 + n_corruptions)
             if actual_need <= 64:
                 batch_size = 64
             elif actual_need <= 256:
                 batch_size = 256
-            elif actual_need <= 512:
-                batch_size = 512
             else:
-                batch_size = 1024
+                # Cap at 512 for best throughput (larger sizes have worse per-query time)
+                batch_size = 512
         else:
             # Default to moderate size if params not provided
             batch_size = 256
     
-    # Clamp to VRAM limit if specified
-    if torch.cuda.is_available() and max_vram_gb is not None:
-        # Estimate memory per query (rough heuristic based on typical usage)
-        # Each query uses ~2MB with full trajectory state
-        mem_per_query_mb = 2.0
-        max_batch_from_vram = int(max_vram_gb * 1024 / mem_per_query_mb)
-        batch_size = min(batch_size, max_batch_from_vram)
+    # Clamp to VRAM limit - use more accurate memory estimation
+    # Each query uses approximately 3MB during unification
+    mem_per_query_mb = 3.0
+    max_batch_from_vram = int(max_vram_gb * 1024 / mem_per_query_mb)
+    batch_size = min(batch_size, max_batch_from_vram)
     
     # Apply minimum
     batch_size = max(batch_size, min_batch_size)
@@ -121,17 +134,16 @@ def evaluate_policy(
     queries: Tensor,
     max_steps: int = None,
     deterministic: bool = True,
+    fixed_batch_size: int = None,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """
     Run policy evaluation over trajectories using Python loop.
     
     This function evaluates queries by running trajectories through the environment
     using the compiled policy. It handles:
-    1. Initializing state from queries
-    2. Creating initial observation
-    3. Looping max_steps times in Python
-    4. Each iteration calls step_with_policy (compiled if available)
-    5. Accumulating log_probs, rewards, success, lengths
+    1. Padding queries to fixed_batch_size if specified (for CUDA graph compatibility)
+    2. Chunking large batches to avoid OOM
+    3. Running trajectories with compiled step_with_policy
     
     Must call env.compile(policy) before using this function.
     
@@ -140,6 +152,9 @@ def evaluate_policy(
         queries: [B, 3] Query triples
         max_steps: Maximum trajectory length (default: env.max_depth)
         deterministic: Use argmax for action selection
+        fixed_batch_size: If set, pad all batches to this size to avoid recompilation
+                         with torch.compile mode='reduce-overhead'. This is critical
+                         for performance as each unique batch size triggers recompilation.
         
     Returns:
         log_probs: [B] Accumulated log probs per query
@@ -152,6 +167,87 @@ def evaluate_policy(
     
     device = env.device
     max_steps = max_steps or env.max_depth
+    B = queries.shape[0]
+    
+    # Determine chunk size - use fixed_batch_size if provided
+    if fixed_batch_size is not None:
+        chunk_size = fixed_batch_size
+    else:
+        # Adaptive chunk size based on available GPU memory
+        if torch.cuda.is_available():
+            total_mem = torch.cuda.get_device_properties(device).total_memory / (1024**3)
+            chunk_size = max(64, min(512, int((total_mem - 2.0) * 1024 / 3)))
+        else:
+            chunk_size = 256
+    
+    # If batch fits in one chunk, process directly
+    if B <= chunk_size:
+        # Pad to fixed_batch_size if specified
+        if fixed_batch_size is not None and B < fixed_batch_size:
+            padded_queries = torch.zeros(fixed_batch_size, 3, dtype=queries.dtype, device=device)
+            padded_queries[:B] = queries
+            padded_queries[B:] = queries[-1]  # Fill with last query (valid but results ignored)
+            log_probs, success, depths, rewards = _evaluate_policy_batch(
+                env, padded_queries, max_steps, deterministic
+            )
+            return log_probs[:B], success[:B], depths[:B], rewards[:B]
+        else:
+            return _evaluate_policy_batch(env, queries, max_steps, deterministic)
+    
+    # Process in chunks to avoid OOM
+    all_log_probs = []
+    all_success = []
+    all_depths = []
+    all_rewards = []
+    
+    for start in range(0, B, chunk_size):
+        end = min(start + chunk_size, B)
+        chunk_queries = queries[start:end]
+        actual_chunk_size = chunk_queries.shape[0]
+        
+        # Pad chunk to fixed_batch_size if specified
+        if fixed_batch_size is not None and actual_chunk_size < fixed_batch_size:
+            padded_chunk = torch.zeros(fixed_batch_size, 3, dtype=queries.dtype, device=device)
+            padded_chunk[:actual_chunk_size] = chunk_queries
+            padded_chunk[actual_chunk_size:] = chunk_queries[-1]
+            log_probs, success, depths, rewards = _evaluate_policy_batch(
+                env, padded_chunk, max_steps, deterministic
+            )
+            # Trim results
+            all_log_probs.append(log_probs[:actual_chunk_size])
+            all_success.append(success[:actual_chunk_size])
+            all_depths.append(depths[:actual_chunk_size])
+            all_rewards.append(rewards[:actual_chunk_size])
+        else:
+            log_probs, success, depths, rewards = _evaluate_policy_batch(
+                env, chunk_queries, max_steps, deterministic
+            )
+            all_log_probs.append(log_probs)
+            all_success.append(success)
+            all_depths.append(depths)
+            all_rewards.append(rewards)
+    
+    return (
+        torch.cat(all_log_probs, dim=0),
+        torch.cat(all_success, dim=0),
+        torch.cat(all_depths, dim=0),
+        torch.cat(all_rewards, dim=0),
+    )
+
+
+def _evaluate_policy_batch(
+    env: EvalEnvOptimized,
+    queries: Tensor,
+    max_steps: int,
+    deterministic: bool,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    """
+    Evaluate a batch of queries (internal, no padding/chunking).
+    
+    This is the core evaluation loop. Queries should already be the correct
+    shape (padded if using fixed_batch_size for CUDA graphs).
+    """
+    device = env.device
     
     # Initialize state
     state = env.init_state_from_queries(queries)
@@ -176,8 +272,6 @@ def evaluate_policy(
     
     # Python loop over transitions
     for step_idx in range(max_steps):
-        # Execute single step (compiled or eager)
-        # step_with_policy returns: state, obs, actions, log_probs, values, rewards, dones, ptrs, mask
         state, obs, actions, step_log_probs, _values, rewards, dones, _, _ = env.step_with_policy(
             state, obs, empty_pool, empty_ptrs,
             deterministic=deterministic,
@@ -185,7 +279,7 @@ def evaluate_policy(
             eval_done_mask=eval_done_mask,
         )
         
-        # Accumulate (only for active envs)
+        # Accumulate
         total_log_probs = total_log_probs + step_log_probs
         total_rewards = total_rewards + rewards
         
@@ -207,14 +301,13 @@ def evaluate_with_corruptions(
     chunk_queries: int = 50,
     verbose: bool = False,
     deterministic: bool = True,
-    compile_mode: str = 'default',
-    fullgraph: bool = True,
+    fixed_batch_size: int = None,
 ) -> Dict[str, Any]:
     """
-    Evaluate policy on queries with corruptions for ranking metrics.
+    Evaluate policy on queries with corruptions for ranking metrics (MRR, Hits@K).
     
-    Uses the new pattern: env.compile(policy) should be called before this.
-    The env's evaluate_policy method handles trajectory evaluation.
+    For each query, generates corruptions and evaluates all candidates (positive + corruptions)
+    to compute ranking metrics.
     
     Args:
         env: The evaluation environment (must be compiled with env.compile(policy))
@@ -225,73 +318,15 @@ def evaluate_with_corruptions(
         chunk_queries: Number of queries to process at once
         verbose: Print progress
         deterministic: Use deterministic action selection
-        compile_mode: Compilation mode if env not yet compiled
-        fullgraph: Compilation option
+        fixed_batch_size: If set, pad batches to this size to avoid recompilation
         
     Returns:
         Dictionary with MRR and Hits@K metrics
     """
-    # Ensure env is compiled
     if not env._compiled and env._policy_logits_fn is None:
         raise RuntimeError("Must call env.compile(policy) before evaluate_with_corruptions()")
     
-    # Define evaluator closure for eval_corruptions_optimized
-    def evaluator_fn(batch_queries: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        """Evaluate a batch of queries using evaluate_policy."""
-        return evaluate_policy(
-            env=env,
-            queries=batch_queries,
-            max_steps=env.max_depth,
-            deterministic=deterministic,
-        )
-
-    return eval_corruptions_optimized(
-        evaluator=evaluator_fn,
-        queries=queries,
-        sampler=sampler,
-        n_corruptions=n_corruptions,
-        corruption_modes=corruption_modes,
-        chunk_queries=chunk_queries,
-        verbose=verbose,
-    )
-
-
-@torch.inference_mode()
-def eval_corruptions_optimized(
-    evaluator: Callable[[Tensor], Tuple[Tensor, Tensor, Tensor, Tensor]],
-    queries: Tensor,
-    sampler: Any,
-    *,
-    n_corruptions: int = 50,
-    corruption_modes: Sequence[str] = ("head", "tail"),
-    chunk_queries: int = 50,
-    verbose: bool = False,
-) -> Dict[str, Any]:
-    """
-    Evaluate queries using an optimized evaluator (compiled or eager).
-    
-    Args:
-        evaluator: Callable that takes [B, 3] candidates and returns (log_probs, success, ...).
-        queries: [N, 3] Query triples
-        sampler: Corruption sampler
-        n_corruptions: Number of corruptions per query
-        corruption_modes: ['head'], ['tail'], or ['head', 'tail']
-        chunk_queries: Number of queries per chunk (tune for VRAM)
-        verbose: Print progress
-        
-    Returns:
-        Dict with MRR, Hits@K metrics
-    """
-    # Determine device from evaluator if possible, otherwise fallback to queries
-    device = None
-    if hasattr(evaluator, 'env') and hasattr(evaluator.env, 'device'):
-        device = evaluator.env.device
-    elif hasattr(evaluator, 'device'): # If evaluator itself has a device attribute
-        device = evaluator.device
-    else:
-        # Fallback to queries device if no other device info is available
-        device = queries.device
-        
+    device = env.device
     N = queries.shape[0]
     K = n_corruptions
     
@@ -327,21 +362,21 @@ def eval_corruptions_optimized(
             
             # Flatten for batch evaluation: [Q*(1+K), 3]
             flat_candidates = candidates.view(-1, 3)
-            actual_size = flat_candidates.shape[0]
             
-            # Evaluate using the provided evaluator
-            log_probs, success, lengths, rewards = evaluator(flat_candidates)
-            
-            # Trim result back to actual size (in case evaluator padded output)
-            log_probs = log_probs[:actual_size]
-            success = success[:actual_size]
+            # Evaluate using evaluate_policy (handles chunking/padding internally)
+            log_probs, success, lengths, rewards = evaluate_policy(
+                env=env,
+                queries=flat_candidates,
+                max_steps=env.max_depth,
+                deterministic=deterministic,
+                fixed_batch_size=fixed_batch_size,
+            )
             
             # Reshape results: [Q, 1+K]
             log_probs = log_probs.view(Q, 1 + K)
             success = success.view(Q, 1 + K)
             
-            # Apply success penalty to match original eval_corruptions behavior
-            # Failed proofs get -100 penalty, making them rank lower
+            # Apply success penalty - failed proofs get -100 penalty
             log_probs = log_probs.clone()
             log_probs[~success.bool()] -= 100.0
             

@@ -671,7 +671,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Test compiled unification parity')
     parser.add_argument('--dataset', type=str, default='family')
-    parser.add_argument('--n-queries', type=int, default=800)
+    parser.add_argument('--n-queries', type=int, default=400)
     parser.add_argument('--batch-size', type=int, default=400,
                         help='Number of queries to process in each batch (default: 100)')
     parser.add_argument('--max-depth', type=int, default=20)

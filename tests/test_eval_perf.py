@@ -278,18 +278,22 @@ def create_and_warmup_optimized_evaluator(components, config):
         include_value=False,  # Eval mode doesn't need values
     )
     
-    # Warmup with small batch to trigger JIT compilation
-    warmup_queries = queries[:2]
-    _ = evaluate_policy(env_fast, warmup_queries, deterministic=True)
+    # Warmup with the exact batch_size to trigger JIT/CUDA graph compilation
+    # IMPORTANT: For reduce-overhead mode, CUDA graphs are size-specific!
+    # We MUST warmup with exactly batch_size (the fixed_batch_size), as this is
+    # what evaluate_policy will pad all batches to during evaluation.
+    # This ensures no recompilation occurs during actual evaluation.
+    warmup_queries = queries[:1].expand(batch_size, -1)  # [batch_size, 3] - exact size
+    _ = evaluate_policy(env_fast, warmup_queries, deterministic=True, fixed_batch_size=batch_size)
     
     warmup_time_s = time.time() - warmup_start
     print(f"Fast warmup took {warmup_time_s} s.")
     
-    # Return env wrapped in a SimpleNamespace to maintain interface compatibility
-    # (old code expected evaluator.env)
+    # Store batch_size for later use in evaluation
     evaluator_like = SimpleNamespace(
         env=env_fast,
         warmup_time_s=warmup_time_s,
+        fixed_batch_size=batch_size,  # Store for evaluation to reuse
     )
     
     return evaluator_like, warmup_time_s
@@ -432,9 +436,15 @@ def run_performance_test(components, config, modes, warmup_only):
     print(f"Config: {config.n_test_queries} queries, {config.n_corruptions} corruptions")
     print("="*60)
     
+    # Calculate total candidates for the header
+    # Each query has 1 (original) + n_corruptions candidates, times number of modes
+    n_modes = len(config.corruption_modes)
+    total_candidates = config.n_test_queries * (1 + config.n_corruptions) * n_modes
+    print(f"Total candidates: {total_candidates} ({config.n_test_queries} queries × {1 + config.n_corruptions} candidates × {n_modes} modes)")
+    
     # Define table header
-    print(f"\n{'Mode':<20} {'Compile (s)':>12} {'Runtime (s)':>12} {'Runtime (ms/q)':>18} {'Total Time (s)':>15}")
-    print("-" * 85)
+    print(f"\n{'Mode':<20} {'Compile (s)':>12} {'Runtime (s)':>12} {'ms/query':>12} {'ms/candidate':>14} {'Total (s)':>12}")
+    print("-" * 95)
     
     for mode in modes:
         # Prepare run config
@@ -500,6 +510,9 @@ def run_performance_test(components, config, modes, warmup_only):
                     from model_eval_optimized import evaluate_with_corruptions
                     effective_chunk_queries = min(int(run_config.chunk_queries), int(run_config.n_test_queries))
                     queries = components['test_queries'][:run_config.n_test_queries].to(evaluator.env.device)
+                    # Use the SAME fixed_batch_size that was used during warmup to avoid recompilation
+                    # This is stored in evaluator.fixed_batch_size by create_and_warmup_optimized_evaluator
+                    fixed_batch_size = evaluator.fixed_batch_size
                     _ = evaluate_with_corruptions(
                         env=evaluator.env,
                         queries=queries,
@@ -509,6 +522,7 @@ def run_performance_test(components, config, modes, warmup_only):
                         chunk_queries=effective_chunk_queries,
                         verbose=False,
                         deterministic=True,
+                        fixed_batch_size=fixed_batch_size,
                     )
                     if torch.cuda.is_available():
                         torch.cuda.synchronize()
@@ -524,14 +538,20 @@ def run_performance_test(components, config, modes, warmup_only):
             
             # Calculate metrics
             n_run = run_config.n_test_queries
+            n_modes_run = len(run_config.corruption_modes)
+            total_candidates_run = n_run * (1 + run_config.n_corruptions) * n_modes_run
             
             if n_run > 0:
                 eval_ms_per_q = (eval_s / n_run) * 1000.0
+                eval_ms_per_candidate = (eval_s / total_candidates_run) * 1000.0
+            else:
+                eval_ms_per_q = 0.0
+                eval_ms_per_candidate = 0.0
             
             print(f"  Eval finished in {eval_s:.4f}s", flush=True)
             
             # Display summary row
-            result_line = f"{mode:<20} {warmup_s:>12.4f} {eval_s:>12.4f} {eval_ms_per_q:>18.2f} {total_s:>15.4f}"
+            result_line = f"{mode:<20} {warmup_s:>12.4f} {eval_s:>12.4f} {eval_ms_per_q:>12.2f} {eval_ms_per_candidate:>14.3f} {total_s:>12.4f}"
             print(result_line)
             
             # Append result to file
@@ -539,15 +559,15 @@ def run_performance_test(components, config, modes, warmup_only):
                 f.write(result_line + "\n")
             
         except Exception as e:
-            print(f"{mode:<20} {'FAILED':>12} {'FAILED':>12} {'FAILED':>18} {str(e):>15}")
-            # import traceback
-            # traceback.print_exc()
+            print(f"{mode:<20} {'FAILED':>12} {'FAILED':>12} {'FAILED':>12} {'FAILED':>14} {str(e):>12}")
+            import traceback
+            traceback.print_exc()
 
 def main():
     parser = argparse.ArgumentParser(description='Test Evaluation Performance')
     parser.add_argument('--dataset', type=str, default='family', help='Dataset name')
-    parser.add_argument('--n-test-queries', type=int, default=10, help='Number of test queries')
-    parser.add_argument('--n-corruptions', type=int, default=10)
+    parser.add_argument('--n-test-queries', type=int, default=100, help='Number of test queries')
+    parser.add_argument('--n-corruptions', type=int, default=100)
     parser.add_argument('--corruption-modes', type=str, nargs='+', default=['both'])
 
     parser.add_argument('--chunk-queries', type=int, default=100)
@@ -556,7 +576,7 @@ def main():
     parser.add_argument('--warmup-only', action='store_true', help='Only measure warmup/compile time')
     parser.add_argument('--check-compile', action='store_true', help='Check for graph breaks')
     
-    parser.add_argument('--modes', nargs='+', default=['original'], 
+    parser.add_argument('--modes', nargs='+', default=['compiled'], 
                        choices=['original', 'eager', 'compiled'],
                        help='Modes to benchmark. compiled=single-step compile (faster warmup).')
     parser.add_argument('--compile-mode', type=str, default='reduce-overhead',
@@ -568,13 +588,21 @@ def main():
 
     args = parser.parse_args()
     
+    # Calculate total candidates for file header
+    n_modes = len(args.corruption_modes)
+    total_candidates = args.n_test_queries * (1 + args.n_corruptions) * n_modes
+    
     # Initialize result file
     with open("test_eval_perf.txt", "w") as f:
         f.write("Performance Benchmark Results\n")
         f.write(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write("="*85 + "\n")
-        f.write(f"{'Mode':<20} {'Compile (s)':>12} {'Runtime (s)':>12} {'Runtime (ms/q)':>18} {'Total Time (s)':>15}\n")
-        f.write("-" * 85 + "\n")
+        f.write(f"Dataset: {args.dataset}\n")
+        f.write(f"Queries: {args.n_test_queries}, Corruptions: {args.n_corruptions}, Modes: {args.corruption_modes}\n")
+        f.write(f"Total candidates: {total_candidates}\n")
+        f.write(f"Compile mode: {args.compile_mode}\n")
+        f.write("="*95 + "\n")
+        f.write(f"{'Mode':<20} {'Compile (s)':>12} {'Runtime (s)':>12} {'ms/query':>12} {'ms/candidate':>14} {'Total (s)':>12}\n")
+        f.write("-" * 95 + "\n")
     
     config = SimpleNamespace(
         dataset=args.dataset,

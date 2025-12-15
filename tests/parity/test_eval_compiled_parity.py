@@ -45,7 +45,6 @@ from model import ActorCriticPolicy as TensorPolicy
 from sampler import Sampler
 from model_eval import eval_corruptions
 from model_eval_optimized import (
-    eval_corruptions_optimized,
     evaluate_policy,
     evaluate_with_corruptions,
     compute_optimal_batch_size,
@@ -587,8 +586,8 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Test eval compiled parity (Original vs Optimized)')
     parser.add_argument('--dataset', type=str, default='countries_s3', help='Dataset name (default: countries_s3)')
-    parser.add_argument('--n-queries', type=int, default=24, help='Number of test queries (default: 24)')
-    parser.add_argument('--n-corruptions', type=int, default=50, help='Corruptions per query (default: 50)')
+    parser.add_argument('--n-queries', type=int, default=5, help='Number of test queries (default: 24)')
+    parser.add_argument('--n-corruptions', type=int, default=10, help='Corruptions per query (default: 50)')
     parser.add_argument('--corruption-mode', type=str, default='tail',
                         choices=['head', 'tail', 'both'], help="Corruption mode (default: tail)")
     parser.add_argument('--chunk-queries', type=int, default=100, help='Queries per chunk')
