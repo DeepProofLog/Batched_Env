@@ -282,13 +282,11 @@ class PPOOptimized:
         episode_lengths: list,
         iteration: int,
         return_traces: bool = False,
-        query_pool: Optional[torch.Tensor] = None,
-        per_env_ptrs: Optional[torch.Tensor] = None,
-    ) -> Tuple[EvalState, EvalObs, torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[List], Optional[torch.Tensor]]:
+    ) -> Tuple[EvalState, EvalObs, torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[List]]:
         """
         Collect experiences using the current policy and fill the rollout buffer.
         
-        Uses EvalEnvOptimized's functional step interface.
+        Uses EvalEnvOptimized's step_with_policy which handles query cycling internally.
         
         Args:
             current_state: Current EvalState from previous rollout
@@ -316,6 +314,7 @@ class PPOOptimized:
         
         traces = [] if return_traces else None
         n_collected = 0
+        last_dones = torch.zeros(self.n_envs, dtype=torch.bool, device=self.device)  # Track dones from last step
         
         state = current_state
         obs = current_obs
@@ -334,24 +333,19 @@ class PPOOptimized:
                 obs_td = self._obs_to_tensordict(obs)
                 
                 # Predict values (critic) separate from actor (step_with_policy)
-                # This keeps the training rollout collected via the same compiled path as eval
                 values = self.policy.predict_values(obs_td)
                 
-                # Step environment using unified compiled step
-                # This handles policy forward, action selection, env step, and auto-reset
+                # Step environment using compiled step_with_policy
+                # Uses env's internal query pool for reset cycling (set via set_queries)
                 step_result = self.env.step_with_policy(
-                    state, obs, query_pool, per_env_ptrs,
+                    state, obs,
                     deterministic=False,
                     eval_mode=False
                 )
                 
                 # step_with_policy returns: state, obs, actions, log_probs, values, rewards, dones, ptrs, mask
-                # We ignore the inline values since we computed them separately above
-                new_state, new_obs, actions, log_probs, _step_values, rewards, dones, new_ptrs, _ = step_result
-                
-                # Update pointers
-                if query_pool is not None:
-                    per_env_ptrs = new_ptrs
+                new_state, new_obs, actions, log_probs, _step_values, rewards, dones, _, _ = step_result
+
                 
                 # Store transition
                 self.rollout_buffer.add(
@@ -408,6 +402,9 @@ class PPOOptimized:
                 else:
                     episode_starts = torch.zeros(self.n_envs, dtype=torch.float32, device=self.device)
                 
+                # Track dones before state update (for GAE, we need the done flags before reset)
+                last_dones = dones
+                
                 state = new_state
                 obs = new_obs
 
@@ -417,9 +414,11 @@ class PPOOptimized:
             last_values = self.policy.predict_values(last_obs_td)
         
         # Compute advantages and returns
+        # IMPORTANT: Use last_dones (dones from last step BEFORE reset)
+        # not state.done (which is False after reset)
         self.rollout_buffer.compute_returns_and_advantage(
             last_values=last_values,
-            dones=state.done.float()
+            dones=last_dones.float()
         )
         
         result = (
@@ -436,11 +435,8 @@ class PPOOptimized:
         else:
             result = result + (None,)
         
-        # Return per_env_ptrs if query_pool was provided
-        if query_pool is not None:
-            result = result + (per_env_ptrs,)
-        
         return result
+
         
     def train(self, return_traces: bool = False) -> Dict[str, float]:
         """
@@ -481,7 +477,7 @@ class PPOOptimized:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
                 
                 # Forward pass
-                _, values, log_probs, entropy = self.policy.evaluate_actions(obs_td, actions)
+                values, log_probs, entropy = self.policy.evaluate_actions(obs_td, actions)
                 values = values.flatten()
                 
                 # Compute losses
@@ -586,7 +582,7 @@ class PPOOptimized:
         
         Args:
             total_timesteps: Total number of environment steps to train for
-            queries: [N, 3] Query tensor to initialize environments
+            queries: [N, 3] Query tensor - stored in env for round-robin cycling
             reset_num_timesteps: If True, reset the timestep counter
         """
         if reset_num_timesteps:
@@ -596,16 +592,11 @@ class PPOOptimized:
         
         iteration = 0
         
-        # Initialize environment state
-        state = self.env.init_state_from_queries(queries)
+        # Set queries in environment for round-robin cycling (like BatchedEnv)
+        self.env.set_queries(queries)
         
-        # Create initial observation
-        action_mask = torch.arange(self.padding_states, device=self.device).unsqueeze(0) < state.derived_counts.unsqueeze(1)
-        obs = EvalObs(
-            sub_index=state.current_states.unsqueeze(1),
-            derived_sub_indices=state.derived_states,
-            action_mask=action_mask,
-        )
+        # Reset environment to get initial state and observation
+        obs, state = self.env.reset()
         
         episode_starts = torch.ones(self.n_envs, dtype=torch.float32, device=self.device)
         current_episode_reward = torch.zeros(self.n_envs, dtype=torch.float32, device=self.device)
@@ -616,7 +607,7 @@ class PPOOptimized:
         while self.num_timesteps < total_timesteps:
             iteration += 1
             
-            # Collect rollouts
+            # Collect rollouts using env's internal query cycling
             result = self.collect_rollouts(
                 current_state=state,
                 current_obs=obs,
@@ -633,12 +624,14 @@ class PPOOptimized:
             
             # Train
             train_metrics = self.train()
+            self.last_train_metrics = train_metrics
             
             if self.verbose:
                 print(f"Iteration {iteration}, timesteps: {self.num_timesteps}/{total_timesteps}")
                 print(f"  policy_loss: {train_metrics['policy_loss']:.4f}, "
                       f"value_loss: {train_metrics['value_loss']:.4f}, "
                       f"entropy: {train_metrics['entropy']:.4f}")
+
 
     @torch.inference_mode()
     def evaluate_policy(

@@ -109,6 +109,8 @@ class EvalEnvOptimized:
         runtime_var_start_index: Optional[int] = None,
         device: Optional[torch.device] = None,
         memory_pruning: bool = True,  # Enable cycle detection
+        queries: Optional[Tensor] = None,  # Query pool for training
+        sample_deterministic_per_env: bool = False,  # Round-robin (parity) vs random
     ):
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.batch_size = batch_size
@@ -118,6 +120,8 @@ class EvalEnvOptimized:
         self.end_proof_action = end_proof_action
         self.memory_pruning = memory_pruning
         self.max_history_size = max_depth + 1  # +1 for initial query
+        self.sample_deterministic_per_env = sample_deterministic_per_env
+
         
         # Hash computation constants (matching memory.py)
         self._hash_mix_const = 0x9E3779B97F4A7C15  # Golden ratio mixing constant
@@ -178,9 +182,79 @@ class EvalEnvOptimized:
         self._policy_value_fn = None
         self._compiled_step_fn = None
         self._compile_deterministic = True
+        
+        # Query storage for training (like BatchedEnv)
+        # Initialize from constructor parameter if provided
+        if queries is not None:
+            self._query_pool = queries.to(self.device)
+            # Initialize per-env pointers: env i starts pointing at query i
+            # This matches BatchedEnv's _per_env_train_ptrs initialization
+            self._per_env_ptrs = torch.arange(batch_size, device=self.device)
+        else:
+            self._query_pool = None
+            self._per_env_ptrs = None
+        self._current_state: Optional[EvalState] = None
+        self._current_obs: Optional[EvalObs] = None
+
+    
+    def set_queries(self, queries: Tensor) -> None:
+        """
+        Set the query pool for training with round-robin cycling.
+        
+        This mirrors BatchedEnv's approach of storing queries internally.
+        Call reset() after this to initialize the environment.
+        
+        Args:
+            queries: [N, 3] Query tensor (pool of training queries)
+        """
+        self._query_pool = queries.to(self.device)
+        # Initialize per-env pointers: env i starts pointing at query i
+        # This matches BatchedEnv's _per_env_train_ptrs initialization
+        self._per_env_ptrs = torch.arange(self.batch_size, device=self.device)
+    
+    def reset(self) -> Tuple[EvalObs, EvalState]:
+        """
+        Reset environment using stored query pool with round-robin cycling.
+        
+        Each environment gets the query at its pointer position.
+        Pointers are NOT advanced here - they're advanced in step_with_policy
+        when an environment finishes (newly_done).
+        
+        Returns:
+            Tuple of (EvalObs, EvalState)
+        """
+        if self._query_pool is None:
+            raise RuntimeError("Must call set_queries() before reset()")
+        
+        pool_size = self._query_pool.shape[0]
+        
+        # Get queries for each env using current pointers (modulo pool size)
+        query_indices = self._per_env_ptrs % pool_size
+        init_queries = self._query_pool[query_indices]  # [batch_size, 3]
+        
+        # Advance pointers for next reset (the first reset after init picks next query)
+        self._per_env_ptrs = (self._per_env_ptrs + 1) % pool_size
+
+        
+        # Initialize state
+        state = self.init_state_from_queries(init_queries)
+        
+        # Create observation
+        action_mask = self._positions_S < state.derived_counts.unsqueeze(1)
+        obs = EvalObs(
+            sub_index=state.current_states.unsqueeze(1),
+            derived_sub_indices=state.derived_states,
+            action_mask=action_mask,
+        )
+        
+        self._current_state = state
+        self._current_obs = obs
+        
+        return obs, state
     
     # Functional API for Full Trajectory Compilation
     # =========================================================================
+
     
     def init_state_from_queries(self, queries: Tensor) -> EvalState:
         """
@@ -756,131 +830,10 @@ class EvalEnvOptimized:
         
         return EvalStepFunctionalOutput(state=new_state, obs=obs, rewards=rewards)
     
-    def step_and_maybe_reset_functional(
-        self,
-        state: EvalState,
-        actions: Tensor,
-        query_pool: Tensor,
-        per_env_ptrs: Tensor,
-    ) -> Tuple[EvalStepFunctionalOutput, Tensor]:
-        """
-        Execute one step and reset done environments with next query from pool.
-        
-        This matches tensor env's step_and_maybe_reset behavior by cycling
-        through queries in round-robin fashion per environment.
-        
-        Args:
-            state: Current EvalState
-            actions: [B] Action indices
-            query_pool: [N, 3] Pool of queries to cycle through
-            per_env_ptrs: [B] Current pointer per environment into query_pool
-            
-        Returns:
-            Tuple of (EvalStepFunctionalOutput, updated_per_env_ptrs)
-        """
-        # First execute the step
-        step_result = self.step_functional(state, actions)
-        new_state = step_result.state
-        new_obs = step_result.obs
-        rewards = step_result.rewards
-        
-        # Check for newly done environments (weren't done before, now done)
-        was_done = state.done
-        newly_done = new_state.done & ~was_done
-        
-        # If any environments are newly done, reset them
-        if newly_done.any():
-            n = actions.shape[0]
-            device = self.device
-            num_queries = query_pool.shape[0]
-            
-            # Get which query each done env should reset to
-            done_indices = torch.where(newly_done)[0]
-            
-            # Advance pointers for done envs and get next query
-            new_ptrs = per_env_ptrs.clone()
-            reset_query_indices = new_ptrs[done_indices] % num_queries
-            new_ptrs[done_indices] = (new_ptrs[done_indices] + 1) % num_queries
-            
-            # Get reset queries and reinitialize each done env
-            for i, idx in enumerate(done_indices):
-                idx_i = int(idx)
-                query_idx = int(reset_query_indices[i])
-                reset_query = query_pool[query_idx:query_idx+1]  # [1, 3]
-                
-                reset_state = self.init_state_from_queries(reset_query)
-                
-                # Update state components for this env
-                new_current_u = new_state.current_states.clone()
-                new_current_u[idx_i] = reset_state.current_states[0]
-                
-                new_derived_u = new_state.derived_states.clone()
-                new_derived_u[idx_i] = reset_state.derived_states[0]
-                
-                new_counts_u = new_state.derived_counts.clone()
-                new_counts_u[idx_i] = reset_state.derived_counts[0]
-                
-                new_depths_u = new_state.depths.clone()
-                new_depths_u[idx_i] = 0
-                
-                new_done_u = new_state.done.clone()
-                new_done_u[idx_i] = False
-                
-                new_success_u = new_state.success.clone()
-                new_success_u[idx_i] = False
-                
-                new_var_u = new_state.next_var_indices.clone()
-                new_var_u[idx_i] = reset_state.next_var_indices[0]
-                
-                new_hist_u = new_state.history_hashes.clone()
-                new_hist_u[idx_i] = reset_state.history_hashes[0]
-                
-                new_hcnt_u = new_state.history_count.clone()
-                new_hcnt_u[idx_i] = reset_state.history_count[0]
-                
-                # Update original queries for this env
-                new_orig_u = new_state.original_queries.clone()
-                new_orig_u[idx_i] = reset_state.original_queries[0]
-                
-                new_state = EvalState(
-                    current_states=new_current_u,
-                    derived_states=new_derived_u,
-                    derived_counts=new_counts_u,
-                    original_queries=new_orig_u,
-                    next_var_indices=new_var_u,
-                    depths=new_depths_u,
-                    done=new_done_u,
-                    success=new_success_u,
-                    history_hashes=new_hist_u,
-                    history_count=new_hcnt_u,
-                )
-                
-                # Update observation for this env
-                new_obs_sub = new_obs.sub_index.clone()
-                new_obs_sub[idx_i] = reset_state.current_states[0].unsqueeze(0)
-                
-                new_obs_derived = new_obs.derived_sub_indices.clone()
-                new_obs_derived[idx_i] = reset_state.derived_states[0]
-                
-                new_obs_mask = new_obs.action_mask.clone()
-                new_obs_mask[idx_i] = torch.arange(self.padding_states, device=device) < reset_state.derived_counts[0]
-                
-                new_obs = EvalObs(
-                    sub_index=new_obs_sub,
-                    derived_sub_indices=new_obs_derived,
-                    action_mask=new_obs_mask,
-                )
-            
-            per_env_ptrs = new_ptrs
-        
-        result = EvalStepFunctionalOutput(state=new_state, obs=new_obs, rewards=rewards)
-        return result, per_env_ptrs, newly_done
-    
-
-    
     # =========================================================================
     # Compilation API
     # =========================================================================
+
     
     def compile(
         self,
@@ -1099,8 +1052,8 @@ class EvalEnvOptimized:
         self,
         state: EvalState,
         obs: EvalObs,
-        query_pool: Tensor,
-        per_env_ptrs: Tensor,
+        query_pool: Tensor = None,
+        per_env_ptrs: Tensor = None,
         deterministic: bool = None,
         eval_mode: bool = False,
         eval_done_mask: Tensor = None,
@@ -1113,8 +1066,8 @@ class EvalEnvOptimized:
         Args:
             state: Current EvalState
             obs: Current observation  
-            query_pool: [N, 3] Pool of queries
-            per_env_ptrs: [B] Pointer per env
+            query_pool: [N, 3] Pool of queries (uses internal _query_pool if None)
+            per_env_ptrs: [B] Pointer per env (uses internal _per_env_ptrs if None)
             deterministic: True=argmax, False=sample (default: use compile setting)
             eval_mode: If True, stop slots that finish all queries
             eval_done_mask: [B] Optional mask for eval mode
@@ -1125,12 +1078,19 @@ class EvalEnvOptimized:
         if not self._compiled and self._policy_logits_fn is None:
             raise RuntimeError("Must call env.compile(policy) before step_with_policy()")
         
+        # Use internal query pool if not provided (training mode like BatchedEnv)
+        if query_pool is None:
+            query_pool = self._query_pool
+        if per_env_ptrs is None:
+            per_env_ptrs = self._per_env_ptrs
+        
         if deterministic is None:
             deterministic = self._compile_deterministic
         
         if eval_done_mask is None:
             eval_done_mask = torch.zeros(state.current_states.shape[0], 
                                           dtype=torch.bool, device=self.device)
+
         
         if self._compiled and self._compiled_step_fn is not None:
             # Mark step begin for CUDA graphs (reduce-overhead mode)
@@ -1172,7 +1132,12 @@ class EvalEnvOptimized:
             )
         else:
             # Eager mode
-            return self._step_with_policy_impl(
+            result = self._step_with_policy_impl(
                 state, obs, query_pool, per_env_ptrs,
                 deterministic, eval_mode, eval_done_mask
             )
+            # Update internal pointers after step (for round-robin cycling)
+            if self._per_env_ptrs is not None:
+                self._per_env_ptrs = result[7]  # new_ptrs is 8th element
+            return result
+

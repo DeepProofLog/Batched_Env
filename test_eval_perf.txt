@@ -1,10 +1,10 @@
 Performance Benchmark Results
-Date: 2025-12-15 17:34:48
+Date: 2025-12-15 18:05:52
 Dataset: family
-Queries: 100, Corruptions: 100, Modes: ['tail']
+Queries: 100, Corruptions: 100, Modes: ['both']
 Total candidates: 10100
 Compile mode: reduce-overhead
 ===============================================================================================
 Mode                  Compile (s)  Runtime (s)     ms/query   ms/candidate    Total (s)
 -----------------------------------------------------------------------------------------------
-compiled                   6.1943      36.3271       363.27          3.597      42.5215
+original                   0.0000      66.0158       660.16          6.536      66.0158

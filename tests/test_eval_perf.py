@@ -597,7 +597,7 @@ def main():
     parser.add_argument('--warmup-only', action='store_true', help='Only measure warmup/compile time')
     parser.add_argument('--check-compile', action='store_true', help='Check for graph breaks')
     
-    parser.add_argument('--modes', nargs='+', default=['compiled'], 
+    parser.add_argument('--modes', nargs='+', default=['original'], 
                        choices=['original', 'eager', 'compiled'],
                        help='Modes to benchmark. compiled=single-step compile (faster warmup).')
     parser.add_argument('--compile-mode', type=str, default='reduce-overhead',

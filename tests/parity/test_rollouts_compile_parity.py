@@ -397,6 +397,9 @@ def collect_optimized_rollout_traces(
         query_atoms.append(query_atom)
     query_pool = torch.stack(query_atoms, dim=0).to(device)  # [N, 3] full query pool
     
+    # Set query pool in environment for round-robin cycling (new API)
+    ppo.env.set_queries(query_pool)
+    
     # Initialize state with first n_envs queries
     init_queries = query_pool[:ppo.n_envs]
     state = ppo.env.init_state_from_queries(init_queries)
@@ -404,7 +407,8 @@ def collect_optimized_rollout_traces(
     # Initialize per-env pointers to match tensor env's round-robin
     # Tensor env initializes _per_env_train_ptrs to [0, 1, 2, ...] initially
     # After first reset, each env advances: env[i] -> query (i+1) % num_queries
-    per_env_ptrs = torch.arange(ppo.n_envs, device=device) + 1  # [1, 2, 3, ..., n_envs]
+    # Must be done after set_queries since it initializes pointers
+    ppo.env._per_env_ptrs = torch.arange(ppo.n_envs, device=device) + 1  # [1, 2, 3, ..., n_envs]
     
     # Create initial observation
     action_mask = torch.arange(ppo.padding_states, device=device).unsqueeze(0) < state.derived_counts.unsqueeze(1)
@@ -420,7 +424,7 @@ def collect_optimized_rollout_traces(
     episode_rewards = []
     episode_lengths = []
     
-    # Collect rollouts with traces
+    # Collect rollouts with traces (query cycling now handled internally)
     result = ppo.collect_rollouts(
         current_state=state,
         current_obs=obs,
@@ -431,14 +435,13 @@ def collect_optimized_rollout_traces(
         episode_lengths=episode_lengths,
         iteration=0,
         return_traces=True,
-        query_pool=query_pool,
-        per_env_ptrs=per_env_ptrs,
     )
     
-    # Result has traces as second-to-last element (before per_env_ptrs)
-    traces = result[-2]
+    # Result has traces as last element
+    traces = result[-1]
     
     return traces, ppo.rollout_buffer
+
 
 
 # ============================================================================
