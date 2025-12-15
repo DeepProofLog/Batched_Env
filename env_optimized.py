@@ -607,6 +607,9 @@ class EvalEnvOptimized:
             
         Returns:
             EvalStepFunctionalOutput with (new_state, obs, rewards)
+            
+        Note: For CUDA graph compatibility (reduce-overhead mode), outputs are
+        cloned OUTSIDE this function in step_with_policy().
         """
         n = actions.shape[0]
         device = self.device
@@ -638,11 +641,11 @@ class EvalEnvOptimized:
                  torch.zeros(n, dtype=torch.bool, device=device)
         is_depth_limit = (new_depths >= self.max_depth)
         
-        # Update done/success - clone to avoid CUDA graph aliasing
-        was_done = state.done.clone()
+        # Update done/success
+        was_done = state.done
         newly_done = is_true | is_false | is_end | is_depth_limit
         new_done = was_done | newly_done
-        new_success = state.success.clone() | is_true
+        new_success = state.success | is_true
         
         # Rewards
         rewards = torch.zeros(n, device=device)
@@ -650,7 +653,7 @@ class EvalEnvOptimized:
         
         # Update history: append new current state HASH for non-done envs
         # This must happen BEFORE computing derived states so pruning uses updated history
-        new_history_hashes = state.history_hashes.clone()
+        new_history_hashes = state.history_hashes
         new_history_count = state.history_count.clone()
         
         # Only update history for envs that are NOT done
@@ -684,7 +687,8 @@ class EvalEnvOptimized:
             new_history_hashes, new_history_count
         )
         
-        # Create new state
+        # Create new state - no clones needed here since step_with_policy clones
+        # outputs OUTSIDE the compiled function for CUDA graph compatibility
         new_state = EvalState(
             current_states=new_current,
             derived_states=new_derived,
@@ -698,14 +702,13 @@ class EvalEnvOptimized:
             history_count=new_history_count,
         )
         
-        # Create observation - use pre-allocated positions tensor
-        # Clone tensors for CUDA graph compatibility (reduce-overhead mode)
+        # Create observation
         action_mask = self._positions_S < new_counts.unsqueeze(1)
         
         obs = EvalObs(
-            sub_index=new_current.unsqueeze(1).clone(),
-            derived_sub_indices=new_derived.clone(),
-            action_mask=action_mask.clone(),
+            sub_index=new_current.unsqueeze(1),
+            derived_sub_indices=new_derived,
+            action_mask=action_mask,
         )
         
         return EvalStepFunctionalOutput(state=new_state, obs=obs, rewards=rewards)
@@ -1087,9 +1090,42 @@ class EvalEnvOptimized:
                                           dtype=torch.bool, device=self.device)
         
         if self._compiled and self._compiled_step_fn is not None:
-            return self._compiled_step_fn(
+            # Mark step begin for CUDA graphs (reduce-overhead mode)
+            # This signals that prior iteration tensors can be freed
+            torch.compiler.cudagraph_mark_step_begin()
+            result = self._compiled_step_fn(
                 state, obs, query_pool, per_env_ptrs,
                 deterministic, eval_mode, eval_done_mask
+            )
+            # Clone all output tensors OUTSIDE the compiled graph
+            # This breaks aliasing with CUDA graph internal buffers
+            new_state, new_obs, actions, log_probs, values, rewards, dones, new_ptrs, new_eval_done_mask = result
+            
+            # Clone state tensors
+            cloned_state = EvalState(
+                current_states=new_state.current_states.clone(),
+                derived_states=new_state.derived_states.clone(),
+                derived_counts=new_state.derived_counts.clone(),
+                original_queries=new_state.original_queries.clone(),
+                next_var_indices=new_state.next_var_indices.clone(),
+                depths=new_state.depths.clone(),
+                done=new_state.done.clone(),
+                success=new_state.success.clone(),
+                history_hashes=new_state.history_hashes.clone(),
+                history_count=new_state.history_count.clone(),
+            )
+            
+            # Clone obs tensors
+            cloned_obs = EvalObs(
+                sub_index=new_obs.sub_index.clone(),
+                derived_sub_indices=new_obs.derived_sub_indices.clone(),
+                action_mask=new_obs.action_mask.clone(),
+            )
+            
+            return (
+                cloned_state, cloned_obs,
+                actions.clone(), log_probs.clone(), values.clone(),
+                rewards.clone(), dones.clone(), new_ptrs.clone(), new_eval_done_mask.clone()
             )
         else:
             # Eager mode

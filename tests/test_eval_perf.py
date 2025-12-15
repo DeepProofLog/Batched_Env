@@ -559,7 +559,7 @@ def main():
     parser.add_argument('--modes', nargs='+', default=['original'], 
                        choices=['original', 'eager', 'compiled'],
                        help='Modes to benchmark. compiled=single-step compile (faster warmup).')
-    parser.add_argument('--compile-mode', type=str, default='default',
+    parser.add_argument('--compile-mode', type=str, default='reduce-overhead',
                        help='torch.compile mode: default, reduce-overhead, max-autotune')
     parser.add_argument('--vram-gb', type=float, default=6.0, help='Available VRAM budget in GB')
     parser.add_argument('--fixed-batch-size', type=int, default=None,
