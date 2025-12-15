@@ -1,2 +1,0 @@
-/home/castellanoontiv/.local/lib/python3.12/site-packages/numpy/_core/numeric.py:387: RuntimeWarning: invalid value encountered in cast
-  multiarray.copyto(a, fill_value, casting='unsafe')

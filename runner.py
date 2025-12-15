@@ -18,7 +18,7 @@ from itertools import product
 from typing import List, Optional
 
 from utils.utils import FileLogger
-from train import main
+from train_optimized import main
 from utils.utils_config import (
 
     parse_scalar,
