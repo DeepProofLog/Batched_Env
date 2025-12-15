@@ -22,12 +22,363 @@ import torch
 import torch._dynamo as dynamo
 import numpy as np
 from types import SimpleNamespace
+from typing import Optional
 
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import setup and runners from the main test file
-from tests.test_eval_mrr import setup_components, run_original_eval, run_optimized_eval, create_and_warmup_optimized_evaluator
+
+
+def setup_components(device: torch.device, config: SimpleNamespace):
+    """Initialize all components needed for evaluation."""
+    from data_handler import DataHandler
+    from index_manager import IndexManager
+    from unification import UnificationEngine, set_compile_mode
+    from unification_vectorized import UnificationEngineVectorized
+    from env import BatchedEnv
+    from embeddings import EmbedderLearnable as TensorEmbedder
+    from model import ActorCriticPolicy as TensorPolicy
+    from sampler import Sampler
+    
+    # Enable compile mode if requested (global flag for unification module)
+    set_compile_mode(config.compile)
+    
+    # Load data
+    dh = DataHandler(
+        dataset_name=config.dataset,
+        base_path=config.data_path,
+        train_file="train.txt",
+        valid_file="valid.txt",
+        test_file="test.txt",
+        rules_file="rules.txt",
+        facts_file="train.txt",
+        corruption_mode='dynamic',
+    )
+    
+    # Index manager
+    im = IndexManager(
+        constants=dh.constants,
+        predicates=dh.predicates,
+        max_total_runtime_vars=config.max_total_vars,
+        max_arity=dh.max_arity,
+        padding_atoms=config.padding_atoms,
+        device=device,
+        rules=dh.rules,
+    )
+    
+    # Materialize indices
+    dh.materialize_indices(im=im, device=device)
+    
+    # Sampler
+    default_mode = 'tail' if 'countries' in config.dataset else 'both'
+    domain2idx, entity2domain = dh.get_sampler_domain_info()
+    sampler = Sampler.from_data(
+        all_known_triples_idx=dh.all_known_triples_idx,
+        num_entities=im.constant_no,
+        num_relations=im.predicate_no,
+        device=device,
+        default_mode=default_mode,
+        seed=config.seed,
+        domain2idx=domain2idx,
+        entity2domain=entity2domain,
+    )
+    
+    # Reseed
+    torch.manual_seed(config.seed)
+    
+    # Embedder
+    embedder = TensorEmbedder(
+        n_constants=im.constant_no,
+        n_predicates=im.predicate_no,
+        n_vars=1000,
+        max_arity=dh.max_arity,
+        padding_atoms=config.padding_atoms,
+        atom_embedder='transe',
+        state_embedder='mean',
+        constant_embedding_size=config.atom_embedding_size,
+        predicate_embedding_size=config.atom_embedding_size,
+        atom_embedding_size=config.atom_embedding_size,
+        device=str(device),
+    )
+    embedder.embed_dim = config.atom_embedding_size
+    
+    # Stringifier params
+    stringifier_params = {
+        'verbose': 0,
+        'idx2predicate': im.idx2predicate,
+        'idx2constant': im.idx2constant,
+        'idx2template_var': im.idx2template_var,
+        'padding_idx': im.padding_idx,
+        'n_constants': im.constant_no
+    }
+    
+    # Base unification engine
+    base_engine = UnificationEngine.from_index_manager(
+        im, take_ownership=True,
+        stringifier_params=stringifier_params,
+        end_pred_idx=im.end_pred_idx,
+        end_proof_action=config.end_proof_action,
+        max_derived_per_state=config.padding_states,
+    )
+    base_engine.index_manager = im
+    
+    # Vectorized engine (for compiled path)
+    # Use None for auto-computation from data - this avoids OOM by not over-allocating
+    vec_engine = UnificationEngineVectorized.from_base_engine(
+        base_engine,
+        max_fact_pairs=None,  # Auto-compute from data
+        max_rule_pairs=None,  # Auto-compute from data
+        padding_atoms=config.padding_atoms,  # Use config value for M_max alignment with original
+    )
+    
+    # Convert queries
+    def convert_queries_unpadded(queries):
+        tensors = []
+        for q in queries:
+            atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            tensors.append(atom)
+        return torch.stack(tensors, dim=0)
+    
+    def convert_queries_padded(queries):
+        tensors = []
+        for q in queries:
+            atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            padded = torch.full((config.padding_atoms, 3), im.padding_idx, dtype=torch.long, device=device)
+            padded[0] = atom
+            tensors.append(padded)
+        return torch.stack(tensors, dim=0)
+    
+    test_queries_unpadded = convert_queries_unpadded(dh.test_queries)
+    test_queries_padded = convert_queries_padded(dh.test_queries)
+    
+    # Clamp batch_size_env to available test queries
+    actual_batch_size = min(config.batch_size_env, len(dh.test_queries))
+    
+    # Eval environment (Original)
+    eval_env_orig = BatchedEnv(
+        batch_size=actual_batch_size,
+        queries=test_queries_padded[:actual_batch_size],
+        labels=torch.ones(actual_batch_size, dtype=torch.long, device=device),
+        query_depths=torch.ones(actual_batch_size, dtype=torch.long, device=device),
+        unification_engine=base_engine,
+        mode='eval',
+        max_depth=config.max_depth,
+        memory_pruning=config.memory_pruning,
+        use_exact_memory=False,
+        skip_unary_actions=config.skip_unary_actions,
+        end_proof_action=config.end_proof_action,
+        reward_type=config.reward_type,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        true_pred_idx=im.predicate_str2idx.get('True'),
+        false_pred_idx=im.predicate_str2idx.get('False'),
+        end_pred_idx=im.predicate_str2idx.get('Endf'),
+        verbose=0,
+        prover_verbose=0,
+        device=device,
+        runtime_var_start_index=im.constant_no + 1,
+        total_vocab_size=im.constant_no + config.max_total_vars,
+        sample_deterministic_per_env=False,
+    )
+
+    # Compiled Environment (for Optimized/Compiled paths)
+    from env_optimized import EvalEnvOptimized
+    eval_env_compiled = EvalEnvOptimized(
+        vec_engine=vec_engine,
+        batch_size=actual_batch_size,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_depth,
+        end_proof_action=config.end_proof_action,
+        runtime_var_start_index=im.constant_no + 1,
+        device=device,
+        memory_pruning=True,  # Cycle detection - verified working
+    )
+    
+    # Policy
+    action_size = config.padding_states
+    policy = TensorPolicy(
+        embedder=embedder,
+        embed_dim=config.atom_embedding_size,
+        action_dim=action_size,
+        hidden_dim=256,
+        num_layers=8,
+        dropout_prob=0.0,
+        device=device,
+        compile_policy=config.compile,
+    ).to(device)
+    
+    return {
+        'policy': policy,
+        'eval_env_orig': eval_env_orig,
+        'eval_env_compiled': eval_env_compiled,
+        'sampler': sampler,
+        'dh': dh,
+        'im': im,
+        'vec_engine': vec_engine,
+        'test_queries': test_queries_unpadded,
+    }
+
+
+def create_and_warmup_optimized_evaluator(components, config):
+    """Create fast evaluator (single-step compilation) and run warmup.
+    
+    Uses the new pattern: env.compile(policy) + evaluate_policy(env, ...).
+    Returns (env, warmup_time_s) for compatibility with the test interface.
+    """
+    from model_eval_optimized import (
+        evaluate_policy,
+        evaluate_with_corruptions,
+        compute_optimal_batch_size,
+    )
+    from env_optimized import EvalEnvOptimized
+    
+    actor = components['policy']
+    
+    # Create optimized environment
+    vec_engine = components['vec_engine']
+    im = components['im']
+    
+    env_fast = EvalEnvOptimized(
+        vec_engine=vec_engine,
+        batch_size=config.batch_size_env,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_depth,
+        end_proof_action=config.end_proof_action,
+        runtime_var_start_index=im.constant_no + 1,
+        device=components['eval_env_compiled'].device,
+        memory_pruning=True,
+    )
+    
+    queries = components['test_queries'][:config.n_test_queries].to(env_fast.device)
+    
+    # Compute batch size (for display purposes)
+    fixed_batch_size = getattr(config, 'fixed_batch_size', None)
+    effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
+    batch_size = compute_optimal_batch_size(
+        chunk_queries=effective_chunk_queries,
+        n_corruptions=config.n_corruptions,
+        max_vram_gb=config.vram_gb,
+        fixed_batch_size=fixed_batch_size,
+    )
+    
+    compile_mode = getattr(config, 'compile_mode', 'default')
+    fullgraph = getattr(config, 'fullgraph', True)
+    
+    # Compile environment with policy (new pattern)
+    print(f"Starting fast warmup (batch_size={batch_size})...")
+    warmup_start = time.time()
+    
+    env_fast.compile(
+        policy=actor,
+        deterministic=True,
+        mode=compile_mode,
+        fullgraph=fullgraph,
+        include_value=False,  # Eval mode doesn't need values
+    )
+    
+    # Warmup with small batch to trigger JIT compilation
+    warmup_queries = queries[:2]
+    _ = evaluate_policy(env_fast, warmup_queries, deterministic=True)
+    
+    warmup_time_s = time.time() - warmup_start
+    print(f"Fast warmup took {warmup_time_s} s.")
+    
+    # Return env wrapped in a SimpleNamespace to maintain interface compatibility
+    # (old code expected evaluator.env)
+    evaluator_like = SimpleNamespace(
+        env=env_fast,
+        warmup_time_s=warmup_time_s,
+    )
+    
+    return evaluator_like, warmup_time_s
+
+
+def run_optimized_eval(components, config, seed: Optional[int] = None, 
+                       evaluator=None, return_evaluator: bool = False,
+                       mode: str = 'compiled'):
+    """Run optimized eval (eager or compiled).
+    
+    Uses the new pattern: env.compile(policy) + evaluate_policy(env, ...).
+    
+    Args:
+        mode: 'eager' or 'compiled'.
+    """
+    from model_eval_optimized import evaluate_policy, evaluate_with_corruptions
+    
+    actor = components['policy']
+    env = components['eval_env_compiled']
+    sampler = components['sampler']
+    queries = components['test_queries'][:config.n_test_queries].to(env.device)
+    
+    if seed is not None:
+        sampler.rng = np.random.RandomState(seed)
+    
+    warmup_time_s = 0.0
+    if evaluator is None:
+        # Create and warmup using the new pattern
+        compile_mode = getattr(config, 'compile_mode', 'default')
+        fullgraph = getattr(config, 'fullgraph', True) if mode == 'compiled' else False
+        
+        warmup_start = time.time()
+        env.compile(
+            policy=actor,
+            deterministic=True,
+            mode=compile_mode,
+            fullgraph=fullgraph,
+            include_value=False,
+        )
+        # Warmup
+        _ = evaluate_policy(env, queries[:2], deterministic=True)
+        warmup_time_s = time.time() - warmup_start
+        
+        evaluator = SimpleNamespace(env=env, warmup_time_s=warmup_time_s)
+
+    # Compute optimal batch size (needed for chunking in eval loop)
+    effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
+
+    # Run evaluation using evaluate_with_corruptions from model_eval_optimized
+    results = evaluate_with_corruptions(
+        env=evaluator.env,
+        queries=queries,
+        sampler=sampler,
+        n_corruptions=config.n_corruptions,
+        corruption_modes=tuple(config.corruption_modes),
+        chunk_queries=effective_chunk_queries,
+        verbose=config.verbose if seed is None else False,
+        deterministic=True,
+    )
+    
+    if return_evaluator:
+        return results, evaluator, warmup_time_s
+    return results
+
+
+
+def run_original_eval(components, config, seed: Optional[int] = None):
+    """Run original eval_corruptions."""
+    from model_eval import eval_corruptions
+    
+    actor = components['policy']
+    env = components['eval_env_orig']
+    sampler = components['sampler']
+    queries = components['test_queries'][:config.n_test_queries]
+    
+    # Reseed if requested
+    if seed is not None:
+        sampler.rng = np.random.RandomState(seed)
+    
+    return eval_corruptions(
+        actor=actor,
+        env=env,
+        queries=queries,
+        sampler=sampler,
+        n_corruptions=config.n_corruptions,
+        corruption_modes=tuple(config.corruption_modes),
+        verbose=config.verbose if seed is None else False,
+    )
+
 
 def check_graph_breaks(vec_engine, device, config):
     """Check for graph breaks in the compiled function."""
@@ -91,7 +442,7 @@ def run_performance_test(components, config, modes, warmup_only):
         run_config.verbose = False
         
         if warmup_only:
-            run_config.n_test_queries = min(config.chunk_queries)
+            run_config.n_test_queries = min(config.chunk_queries, config.n_test_queries)
             
         warmup_s = 0.0
         eval_ms_per_q = 0.0
@@ -110,8 +461,15 @@ def run_performance_test(components, config, modes, warmup_only):
                     
             elif mode == 'eager':
                 if warmup_only:
-                    # Just run warmup for eager
-                    _, warmup_s = create_and_warmup_evaluator(components, run_config, mode='eager')
+                    # Just run warmup for eager - use the new pattern
+                    from model_eval_optimized import evaluate_policy
+                    env = components['eval_env_compiled']
+                    actor = components['policy']
+                    warmup_start = time.time()
+                    env.compile(policy=actor, deterministic=True, mode='default', fullgraph=False, include_value=False)
+                    queries = components['test_queries'][:2].to(env.device)
+                    _ = evaluate_policy(env, queries, deterministic=True)
+                    warmup_s = time.time() - warmup_start
                     print(f"  Warmup finished in {warmup_s:.4f}s", flush=True)
                 else:
                     print(f"  Running {mode} warmup...", flush=True)
@@ -139,17 +497,18 @@ def run_performance_test(components, config, modes, warmup_only):
                     if torch.cuda.is_available():
                         torch.cuda.synchronize()
                     eval_start = time.time()
-                    from model_eval_optimized import eval_corruptions_optimized
+                    from model_eval_optimized import evaluate_with_corruptions
                     effective_chunk_queries = min(int(run_config.chunk_queries), int(run_config.n_test_queries))
                     queries = components['test_queries'][:run_config.n_test_queries].to(evaluator.env.device)
-                    _ = eval_corruptions_optimized(
-                        evaluator=evaluator,
+                    _ = evaluate_with_corruptions(
+                        env=evaluator.env,
                         queries=queries,
                         sampler=components['sampler'],
                         n_corruptions=run_config.n_corruptions,
                         corruption_modes=tuple(run_config.corruption_modes),
                         chunk_queries=effective_chunk_queries,
                         verbose=False,
+                        deterministic=True,
                     )
                     if torch.cuda.is_available():
                         torch.cuda.synchronize()
@@ -187,20 +546,22 @@ def run_performance_test(components, config, modes, warmup_only):
 def main():
     parser = argparse.ArgumentParser(description='Test Evaluation Performance')
     parser.add_argument('--dataset', type=str, default='family', help='Dataset name')
-    parser.add_argument('--n-test-queries', type=int, default=50, help='Number of test queries')
-    parser.add_argument('--n-corruptions', type=int, default=50)
+    parser.add_argument('--n-test-queries', type=int, default=10, help='Number of test queries')
+    parser.add_argument('--n-corruptions', type=int, default=10)
+    parser.add_argument('--corruption-modes', type=str, nargs='+', default=['both'])
+
     parser.add_argument('--chunk-queries', type=int, default=100)
-    parser.add_argument('--modes', nargs='+', default=['compiled'], 
-                       choices=['original', 'eager', 'compiled'],
-                       help='Modes to benchmark. compiled=single-step compile (faster warmup).')
+    parser.add_argument('--batch-size-env', type=int, default=100)
+    
     parser.add_argument('--warmup-only', action='store_true', help='Only measure warmup/compile time')
     parser.add_argument('--check-compile', action='store_true', help='Check for graph breaks')
     
-    parser.add_argument('--vram-gb', type=float, default=6.0, help='Available VRAM budget in GB')
-    parser.add_argument('--batch-size-env', type=int, default=100)
-    parser.add_argument('--corruption-modes', type=str, nargs='+', default=['both'])
-    parser.add_argument('--compile-mode', type=str, default='reduce-overhead',
+    parser.add_argument('--modes', nargs='+', default=['original'], 
+                       choices=['original', 'eager', 'compiled'],
+                       help='Modes to benchmark. compiled=single-step compile (faster warmup).')
+    parser.add_argument('--compile-mode', type=str, default='default',
                        help='torch.compile mode: default, reduce-overhead, max-autotune')
+    parser.add_argument('--vram-gb', type=float, default=6.0, help='Available VRAM budget in GB')
     parser.add_argument('--fixed-batch-size', type=int, default=None,
                        help='Fixed batch size for compilation. If None, uses adaptive sizing (smaller for fewer queries = faster compile).')
     

@@ -724,3 +724,127 @@ def create_actor_critic(
     )
     return policy
 
+
+def create_policy_logits_fn(
+    actor: 'ActorCriticPolicy',
+    deterministic: bool = True,
+) -> callable:
+    """
+    Create a policy function that extracts logits from the actor.
+    
+    This wraps the actor to provide a simple obs -> logits interface
+    that can be compiled with the trajectory evaluation.
+    
+    Args:
+        actor: Policy network (ActorCriticPolicy)
+        deterministic: Whether evaluation is deterministic (unused, kept for API)
+        
+    Returns:
+        Function that takes EvalObs and returns logits [B, S]
+    """
+    from env_optimized import EvalObs
+    
+    @torch.no_grad()
+    def policy_fn(obs: 'EvalObs') -> torch.Tensor:
+        # Build observation dict that the actor expects
+        obs_dict = {
+            'sub_index': obs.sub_index,
+            'derived_sub_indices': obs.derived_sub_indices,
+            'action_mask': obs.action_mask,
+        }
+        
+        # Extract features and get raw logits from mlp_extractor
+        # This bypasses the action distribution sampling in forward()
+        if hasattr(actor, 'extract_features') and hasattr(actor, 'mlp_extractor'):
+            # ActorCriticPolicy path - get raw logits directly
+            features = actor.extract_features(obs_dict)
+            if actor.share_features_extractor:
+                logits, _ = actor.mlp_extractor(features)  # (logits, values)
+            else:
+                obs_emb, act_emb, act_mask = features[0]
+                logits = actor.mlp_extractor.forward_actor((obs_emb, act_emb, act_mask))
+        elif hasattr(actor, 'forward_eval'):
+            # Dedicated eval forward path
+            logits = actor.forward_eval(
+                obs.sub_index,
+                obs.derived_sub_indices,
+                obs.action_mask,
+            )
+        else:
+            # Fallback - standard forward, extract logits from tuple
+            out = actor(obs_dict)
+            if isinstance(out, tuple):
+                logits = out[0]
+            elif hasattr(out, 'get'):
+                logits = out.get('logits', out.get('action', None))
+                if logits is None:
+                    logits = out
+            else:
+                logits = out
+        
+        # Ensure 2D [B, S]
+        if logits.ndim == 1:
+            logits = logits.unsqueeze(0)
+        
+        return logits
+    
+    return policy_fn
+
+
+def create_policy_value_fn(
+    actor: 'ActorCriticPolicy',
+) -> callable:
+    """
+    Create a value function that extracts state values from the actor.
+    
+    This wraps the actor to provide a simple obs -> values interface
+    that can be compiled with the step function for training.
+    
+    Args:
+        actor: Policy network (ActorCriticPolicy)
+        
+    Returns:
+        Function that takes EvalObs and returns values [B]
+    """
+    from env_optimized import EvalObs
+    
+    @torch.no_grad()
+    def value_fn(obs: 'EvalObs') -> torch.Tensor:
+        # Build observation dict that the actor expects
+        obs_dict = {
+            'sub_index': obs.sub_index,
+            'derived_sub_indices': obs.derived_sub_indices,
+            'action_mask': obs.action_mask,
+        }
+        
+        # Extract features and get value from mlp_extractor
+        if hasattr(actor, 'extract_features') and hasattr(actor, 'mlp_extractor'):
+            # ActorCriticPolicy path - get value using shared features
+            features = actor.extract_features(obs_dict)
+            if actor.share_features_extractor:
+                _, values = actor.mlp_extractor(features)  # (logits, values)
+                if values.ndim > 1:
+                    values = values.squeeze(-1)  # [B]
+            else:
+                # Non-shared path - need to compute value separately
+                obs_emb, _, _ = features[0]
+                values = actor.mlp_extractor.forward_value(obs_emb)
+                if values.ndim > 1:
+                    values = values.squeeze(-1)
+        elif hasattr(actor, 'forward_value'):
+            # Dedicated value forward path
+            obs_emb = actor.embedder(obs.sub_index)  # [B, 1, E]
+            values = actor.forward_value(obs_emb)
+        else:
+            # Fallback - zeros if no value network found
+            B = obs.sub_index.shape[0]
+            device = obs.sub_index.device
+            values = torch.zeros(B, device=device)
+        
+        # Ensure 1D [B]
+        if values.ndim == 0:
+            values = values.unsqueeze(0)
+        
+        return values
+    
+    return value_fn

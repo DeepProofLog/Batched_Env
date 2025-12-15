@@ -72,7 +72,7 @@ def create_default_config() -> SimpleNamespace:
         skip_unary_actions=False,  # Must be False for parity
         end_proof_action=True,
         memory_pruning=True,
-        use_exact_memory=False,
+        use_exact_memory=True,  # Must be True for parity - compiled env uses exact hash comparison
         reward_type=0,
         prover_verbose=0,
         max_total_runtime_vars=1000,
@@ -82,6 +82,7 @@ def create_default_config() -> SimpleNamespace:
         seed=42,
         verbose=False,
         debug=False,
+        batch_size=100,  # Process queries in batches for efficiency
     )
 
 
@@ -285,94 +286,102 @@ def safe_item(x):
     return x
 
 
-def run_query_trace_both(
-    query: Tuple[str, str, str],
-    base_engine: UnificationEngine,
+def run_batch_traces(
+    batch_queries: List[Tuple[str, Tuple[str, str, str]]],
+    tensor_env: BatchedEnv,
     compiled_env: EvalEnvOptimized,
     im: IndexManager,
     debug_helper: DebugHelper,
     config: SimpleNamespace,
-) -> Tuple[List[Dict], List[Dict]]:
+) -> Tuple[List[List[Dict]], List[List[Dict]]]:
     """
-    Run a single query through both environments and collect step traces.
+    Run a batch of queries through both environments and collect step traces.
     
+    Both environments are reused - just reset with new queries each batch.
+    
+    Args:
+        batch_queries: List of (split, (pred, head, tail)) tuples
+        tensor_env: Pre-created tensor environment (will be reset)
+        compiled_env: Pre-created compiled environment (will be reinitialized)
+        
     Returns:
-        (tensor_trace, compiled_trace) - each is a list of step dicts
+        (all_tensor_traces, all_compiled_traces) - each is a list of traces per query
     """
     device = torch.device(config.device)
     pad = im.padding_idx
+    batch_size = len(batch_queries)
     
-    # Build query tensor
-    p, h, t = query
-    query_atom = im.atom_to_tensor(p, h, t)
+    # Convert queries to tensor format
+    query_tensors = []
+    query_atoms = []
+    for split, (p, h, t) in batch_queries:
+        query_atom = im.atom_to_tensor(p, h, t)
+        query_atoms.append(query_atom)
+        query_padded = torch.full(
+            (config.padding_atoms, 3), pad,
+            dtype=torch.long, device=device
+        )
+        query_padded[0] = query_atom
+        query_tensors.append(query_padded)
     
-    # For tensor env: [1, A, 3]
-    query_padded = torch.full(
-        (1, config.padding_atoms, 3), pad,
-        dtype=torch.long, device=device
-    )
-    query_padded[0, 0] = query_atom
+    queries_tensor = torch.stack(query_tensors, dim=0)  # [B_actual, A, 3]
+    query_atoms_tensor = torch.stack(query_atoms, dim=0)  # [B_actual, 3]
     
-    # Create a fresh tensor env for this single query
-    tensor_env = BatchedEnv(
-        batch_size=1,
-        queries=query_padded,
-        labels=torch.ones(1, dtype=torch.long, device=device),
-        query_depths=torch.ones(1, dtype=torch.long, device=device),
-        unification_engine=base_engine,
-        mode='eval',
-        max_depth=config.max_depth,
-        memory_pruning=config.memory_pruning,
-        use_exact_memory=config.use_exact_memory,
-        skip_unary_actions=config.skip_unary_actions,  # Must be False
-        end_proof_action=config.end_proof_action,
-        reward_type=config.reward_type,
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        true_pred_idx=im.predicate_str2idx.get('True'),
-        false_pred_idx=im.predicate_str2idx.get('False'),
-        end_pred_idx=im.predicate_str2idx.get('Endf'),
-        verbose=0,
-        prover_verbose=config.prover_verbose,
-        device=device,
-        runtime_var_start_index=im.constant_no + 1,
-        total_vocab_size=im.constant_no + config.max_total_runtime_vars,
-        sample_deterministic_per_env=False,
-    )
+    # Pad if necessary to match environment batch size
+    env_batch_size = tensor_env.batch_size[0]
+    padding_needed = env_batch_size - batch_size
     
-    # Setup eval mode with proper slots
+    if padding_needed > 0:
+        # Pad queries tensor
+        padding_queries = queries_tensor[0:1].repeat(padding_needed, 1, 1)
+        queries_tensor = torch.cat([queries_tensor, padding_queries], dim=0)
+        
+        # Pad atoms tensor
+        padding_atoms_t = query_atoms_tensor[0:1].repeat(padding_needed, 1)
+        query_atoms_tensor = torch.cat([query_atoms_tensor, padding_atoms_t], dim=0)
+        
+        effective_batch_size = env_batch_size
+    else:
+        effective_batch_size = batch_size
+    
+    # Reset tensor env with new queries (reuse the environment)
     tensor_env.set_eval_dataset(
-        queries=query_padded,
-        labels=torch.ones(1, dtype=torch.long, device=device),
-        query_depths=torch.ones(1, dtype=torch.long, device=device),
-        per_slot_lengths=torch.ones(1, dtype=torch.long, device=device),
+        queries=queries_tensor,
+        labels=torch.ones(effective_batch_size, dtype=torch.long, device=device),
+        query_depths=torch.ones(effective_batch_size, dtype=torch.long, device=device),
+        per_slot_lengths=torch.ones(effective_batch_size, dtype=torch.long, device=device),
     )
-    
     tensor_obs = tensor_env.reset()
     if 'next' in tensor_obs.keys():
         tensor_obs = tensor_obs['next']
     
-    # For compiled env: use init_state_from_queries
-    compiled_state = compiled_env.init_state_from_queries(query_atom.unsqueeze(0))
+    # Reinitialize compiled env state with new queries (state is immutable)
+    compiled_state = compiled_env.init_state_from_queries(query_atoms_tensor)
     
-    tensor_trace = []
-    compiled_trace = []
+    # Initialize trace storage: one list per query
+    # Initialize trace storage: one list per query
+    all_tensor_traces = [[] for _ in range(effective_batch_size)]
+    all_compiled_traces = [[] for _ in range(effective_batch_size)]
     
-    tensor_done = False
-    compiled_done = False
+    # Track which queries are done
+    # Track which queries are done
+    tensor_done = torch.zeros(effective_batch_size, dtype=torch.bool, device=device)
+    compiled_done = torch.zeros(effective_batch_size, dtype=torch.bool, device=device)
     
     for step in range(config.max_depth):
-        # ===== Tensor env step =====
-        if not tensor_done:
-            tensor_state = tensor_env.current_queries[0]
-            tensor_derived = tensor_env.derived_states_batch[0]
-            tensor_mask = tensor_obs['action_mask'][0]
-            tensor_n_actions = int(tensor_mask.sum())
+        # ===== Process tensor env for all queries =====
+        tensor_mask = tensor_obs['action_mask']  # [B, S]
+        tensor_n_actions = tensor_mask.sum(dim=1).int()  # [B]
+        
+        for i in range(effective_batch_size):
+            if tensor_done[i]:
+                continue
             
-            state_str = debug_helper.state_to_str(tensor_state)
+            n_actions = int(tensor_n_actions[i])
+            state_str = debug_helper.state_to_str(tensor_env.current_queries[i])
             
-            if tensor_n_actions == 0:
-                tensor_trace.append({
+            if n_actions == 0:
+                all_tensor_traces[i].append({
                     'step': step,
                     'state': state_str,
                     'derived_states': [],
@@ -380,44 +389,33 @@ def run_query_trace_both(
                     'action': None,
                     'done': True,
                 })
-                tensor_done = True
+                tensor_done[i] = True
             else:
                 derived_strs = sorted([
-                    debug_helper.state_to_str(tensor_derived[a])
-                    for a in range(tensor_n_actions)
+                    debug_helper.state_to_str(tensor_env.derived_states_batch[i, a])
+                    for a in range(n_actions)
                 ])
-                action = 0  # Deterministic: choose first action
-                
-                tensor_trace.append({
+                all_tensor_traces[i].append({
                     'step': step,
                     'state': state_str,
                     'derived_states': derived_strs,
-                    'num_actions': tensor_n_actions,
-                    'action': action,
+                    'num_actions': n_actions,
+                    'action': 0,
                     'done': False,
                 })
-                
-                # Take step
-                action_td = TensorDict({'action': torch.tensor([action], device=device)}, batch_size=[1])
-                result_td = tensor_env.step(action_td)
-                if 'next' in result_td.keys():
-                    tensor_obs = result_td['next']
-                else:
-                    tensor_obs = result_td
-                
-                if tensor_obs['done'][0]:
-                    tensor_done = True
         
-        # ===== Compiled env step =====
-        if not compiled_done:
-            compiled_current = compiled_state.current_states[0]
-            compiled_derived = compiled_state.derived_states[0]
-            compiled_count = int(compiled_state.derived_counts[0])
+        # ===== Process compiled env for all queries =====
+        compiled_counts = compiled_state.derived_counts  # [B]
+        
+        for i in range(effective_batch_size):
+            if compiled_done[i]:
+                continue
             
-            state_str = debug_helper.state_to_str(compiled_current)
+            n_actions = int(compiled_counts[i])
+            state_str = debug_helper.state_to_str(compiled_state.current_states[i])
             
-            if compiled_count == 0:
-                compiled_trace.append({
+            if n_actions == 0:
+                all_compiled_traces[i].append({
                     'step': step,
                     'state': state_str,
                     'derived_states': [],
@@ -425,86 +423,76 @@ def run_query_trace_both(
                     'action': None,
                     'done': True,
                 })
-                compiled_done = True
+                compiled_done[i] = True
             else:
                 derived_strs = sorted([
-                    debug_helper.state_to_str(compiled_derived[k])
-                    for k in range(compiled_count)
+                    debug_helper.state_to_str(compiled_state.derived_states[i, k])
+                    for k in range(n_actions)
                 ])
-                action = 0  # Deterministic: choose first action
-                
-                compiled_trace.append({
+                all_compiled_traces[i].append({
                     'step': step,
                     'state': state_str,
                     'derived_states': derived_strs,
-                    'num_actions': compiled_count,
-                    'action': action,
+                    'num_actions': n_actions,
+                    'action': 0,
                     'done': False,
                 })
-                
-                # Take step
-                actions = torch.tensor([action], dtype=torch.long, device=device)
-                step_result = compiled_env.step_functional(compiled_state, actions)
-                compiled_state = step_result.state
-                
-                if compiled_state.done[0]:
-                    compiled_done = True
         
-        # Break if both are done
-        if tensor_done and compiled_done:
+        # Check if all done
+        if tensor_done.all() and compiled_done.all():
             break
+        
+        # Take step for tensor env (action=0 for all)
+        if not tensor_done.all():
+            actions_tensor = torch.zeros(effective_batch_size, dtype=torch.long, device=device)
+            action_td = TensorDict({'action': actions_tensor}, batch_size=[effective_batch_size])
+            result_td = tensor_env.step(action_td)
+            if 'next' in result_td.keys():
+                tensor_obs = result_td['next']
+            else:
+                tensor_obs = result_td
+            # Update done flags
+            tensor_done = tensor_done | tensor_obs['done'].squeeze(-1)
+        
+        # Take step for compiled env (action=0 for all)
+        if not compiled_done.all():
+            actions_compiled = torch.zeros(effective_batch_size, dtype=torch.long, device=device)
+            step_result = compiled_env.step_functional(compiled_state, actions_compiled)
+            compiled_state = step_result.state
+            # Update done flags
+            compiled_done = compiled_done | compiled_state.done
     
-    return tensor_trace, compiled_trace
+    return all_tensor_traces[:batch_size], all_compiled_traces[:batch_size]
 
 
 # ============================================================================
 # Trace Comparison
 # ============================================================================
 
-def canonicalize_state(state_str: str) -> str:
-    """
-    Normalize variable names in a state string for structural comparison.
-    
-    Variables like Var_2972, Var_2973 are renamed to V0, V1, V2...
-    in order of first appearance.
-    """
-    import re
-    if not state_str:
-        return state_str
-    
-    var_pattern = r'Var_\d+'
-    vars_found = re.findall(var_pattern, state_str)
-    
-    var_map = {}
-    counter = 0
-    for v in vars_found:
-        if v not in var_map:
-            var_map[v] = f"V{counter}"
-            counter += 1
-    
-    result = state_str
-    for old, new in var_map.items():
-        result = result.replace(old, new)
-    
-    return result
+# Note: canonicalize_state is NOT used because with parity_mode=True in engines,
+# variable names match exactly. This matches test_unification_compiled_parity behavior.
 
 
 def compare_trace_step(step_tensor: Dict, step_compiled: Dict, step_idx: int) -> Tuple[bool, str]:
-    """Compare a single step. Returns (match, error_message)."""
-    # Compare state canonical strings
-    tensor_state = canonicalize_state(step_tensor.get('state', ''))
-    compiled_state = canonicalize_state(step_compiled.get('state', ''))
+    """Compare a single step. Returns (match, error_message).
+    
+    With parity_mode=True in the engines, variable names should match exactly.
+    No canonicalization needed (matching test_unification_compiled_parity behavior).
+    """
+    # Compare state strings directly (no canonicalization needed with parity_mode)
+    tensor_state = step_tensor.get('state', '')
+    compiled_state = step_compiled.get('state', '')
     
     if tensor_state != compiled_state:
-        return False, f"Step {step_idx}: state mismatch:\n  Tensor:   {step_tensor.get('state')}\n  Compiled: {step_compiled.get('state')}"
+        return False, f"Step {step_idx}: state mismatch:\n  Tensor:   {tensor_state}\n  Compiled: {compiled_state}"
     
     # Compare number of actions
     if step_tensor.get('num_actions') != step_compiled.get('num_actions'):
         return False, f"Step {step_idx}: num_actions mismatch: {step_tensor.get('num_actions')} vs {step_compiled.get('num_actions')}"
     
-    # Compare derived states using canonical form
-    tensor_derived = set(canonicalize_state(s) for s in step_tensor.get('derived_states', []))
-    compiled_derived = set(canonicalize_state(s) for s in step_compiled.get('derived_states', []))
+    # Compare derived states directly (no canonicalization needed with parity_mode)
+    tensor_derived = set(step_tensor.get('derived_states', []))
+    compiled_derived = set(step_compiled.get('derived_states', []))
     
     if tensor_derived != compiled_derived:
         only_tensor = tensor_derived - compiled_derived
@@ -564,8 +552,19 @@ def run_parity_test(
     seed: int = 42,
     compile_mode: bool = False,
     verbose: bool = False,
+    batch_size: int = 100,
 ) -> Tuple[bool, Dict]:
-    """Run parity test comparing tensor and compiled environments."""
+    """Run parity test comparing tensor and compiled environments.
+    
+    Args:
+        dataset: Dataset name
+        n_queries: Number of queries to test
+        max_depth: Maximum depth per query
+        seed: Random seed
+        compile_mode: Whether to use torch.compile
+        verbose: Print detailed output
+        batch_size: Batch size for processing queries
+    """
     
     config = create_default_config()
     config.dataset = dataset
@@ -574,6 +573,7 @@ def run_parity_test(
     config.seed = seed
     config.verbose = verbose
     config.skip_unary_actions = False  # Critical for parity
+    config.batch_size = batch_size
     
     # Set seeds
     random.seed(seed)
@@ -595,33 +595,38 @@ def run_parity_test(
     
     # Prepare queries
     queries = prepare_queries(config)
-    print(f"Testing {len(queries)} queries...\n")
+    print(f"Testing {len(queries)} queries in batches of {config.batch_size}...\n")
     
-    # Create compiled environment (tensor env is created per-query in run_query_trace_both)
-    compiled_env = create_compiled_env(vec_engine, im, config, 1)
+    # Create environments ONCE (will be reused for all batches)
+    # Use first batch_size queries as dummy queries to initialize tensor_env
+    first_batch = queries[:config.batch_size]
+    # Pad if needed (last batch might be smaller)
+    while len(first_batch) < config.batch_size:
+        first_batch.append(first_batch[0])  # Duplicate first query as padding
     
-    # Optionally compile
-    if compile_mode:
-        print("Compiling environment step function...")
-        compiled_env.step_functional = torch.compile(
-            compiled_env.step_functional,
-            mode='default', dynamic=False,
-        )
-        print("Compilation complete.\n")
+    tensor_env = create_tensor_env(first_batch, base_engine, im, config)
+    compiled_env = create_compiled_env(vec_engine, im, config, config.batch_size)
     
-    # Run all queries
+    # Run queries in batches
     all_tensor_traces = []
     all_compiled_traces = []
     
-    for i, (split, query) in enumerate(queries):
-        tensor_trace, compiled_trace = run_query_trace_both(
-            query, base_engine, compiled_env, im, debug_helper, config
-        )
-        all_tensor_traces.append(tensor_trace)
-        all_compiled_traces.append(compiled_trace)
+    num_batches = (len(queries) + config.batch_size - 1) // config.batch_size
+    
+    for batch_idx in range(num_batches):
+        start_idx = batch_idx * config.batch_size
+        end_idx = min(start_idx + config.batch_size, len(queries))
+        batch_queries = queries[start_idx:end_idx]
         
-        if (i + 1) % 50 == 0:
-            print(f"  Processed {i + 1}/{len(queries)} queries...")
+        # Run batch through both environments (envs are reused, just reset)
+        batch_tensor_traces, batch_compiled_traces = run_batch_traces(
+            batch_queries, tensor_env, compiled_env, im, debug_helper, config
+        )
+        
+        all_tensor_traces.extend(batch_tensor_traces)
+        all_compiled_traces.extend(batch_compiled_traces)
+        
+        print(f"  Processed {end_idx}/{len(queries)} queries...")
     
     # Compare all traces
     matches, mismatches = compare_all_traces(all_tensor_traces, all_compiled_traces, queries)
@@ -667,20 +672,27 @@ def base_config():
 class TestEnvCompiledParity:
     """Test that compiled environment produces same results as tensor environment."""
     
-    @pytest.mark.parametrize("dataset,n_queries", [
-        ("countries_s3", 50),
-        ("countries_s3", 111),  # All queries
-        ("family", 50),
-        ("family", 200),
+    @pytest.mark.parametrize("dataset,n_queries,batch_size", [
+        ("countries_s3", 50, 100),
+        ("countries_s3", 111, 100),  # All queries
+        ("family", 50, 100),
+        ("family", 200, 100),
     ])
-    def test_env_traces_match(self, dataset: str, n_queries: int, base_config):
-        """Test that tensor and compiled environments produce identical traces."""
+    def test_env_traces_match(self, dataset: str, n_queries: int, batch_size: int, base_config):
+        """Test that tensor and compiled environments produce identical traces.
+        
+        Args:
+            dataset: Dataset name
+            n_queries: Number of queries to test
+            batch_size: Batch size for processing queries
+        """
         passed, results = run_parity_test(
             dataset=dataset,
             n_queries=n_queries,
             max_depth=20,
             seed=base_config.seed,
             compile_mode=False,
+            batch_size=batch_size,
         )
         
         if not passed:
@@ -696,7 +708,9 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Test environment compiled parity')
     parser.add_argument('--dataset', type=str, default='countries_s3')
-    parser.add_argument('--n-queries', type=int, default=50)
+    parser.add_argument('--n-queries', type=int, default=111)
+    parser.add_argument('--batch-size', type=int, default=100,
+                       help='Batch size for processing queries (default: 100)')
     parser.add_argument('--max-depth', type=int, default=20)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--compile', action='store_true')
@@ -711,6 +725,7 @@ if __name__ == "__main__":
         seed=args.seed,
         compile_mode=args.compile,
         verbose=args.verbose,
+        batch_size=args.batch_size,
     )
     
     sys.exit(0 if passed else 1)

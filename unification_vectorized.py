@@ -1000,14 +1000,14 @@ class UnificationEngineVectorized:
         # This prevents trivial loops where the query resolves to itself as a fact.
         # Matches base engine behavior at lines 892-898.
         # ---------------------------------------------------------------------
-        if excluded_queries is not None:
+        if excluded_queries is not None and self.facts_idx.numel() > 0:
             # excluded_queries: [B, 1, 3] - first atom of each excluded query
             excl_first = excluded_queries[:, 0, :]  # [B, 3]
             
             # Get the matched facts for each pair
             # fact_item_idx: [B, K_f] indices into self.facts_idx
             K_f = fact_states.shape[1]
-            safe_idx = fact_item_idx.clamp(0, self.facts_idx.shape[0] - 1)
+            safe_idx = fact_item_idx.clamp(0, max(self.facts_idx.shape[0] - 1, 0))
             matched_facts = self.facts_idx[safe_idx.view(-1)].view(B, K_f, 3)  # [B, K_f, 3]
             
             # Compare each matched fact to the excluded query

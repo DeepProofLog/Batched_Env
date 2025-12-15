@@ -143,6 +143,15 @@ class EvalEnvOptimized:
         else:
             self.runtime_var_start_index = 1000
         
+        # Pack base for hash computation - MUST match BloomFilter._pack_base
+        # BloomFilter uses total_vocab_size + 1 where total_vocab_size = constant_no + runtime_vars
+        # This ensures identical hash values between BloomFilter and _compute_state_hash64
+        if im is not None:
+            total_vocab_size = im.constant_no + 1000  # Same as env.py creates BloomFilter with
+            self._hash_pack_base = total_vocab_size + 1
+        else:
+            self._hash_pack_base = 2 ** 20  # Fallback to large value
+        
         # Pre-build end action tensor
         self.end_state = None
         if self.end_pred_idx is not None and self.end_pred_idx >= 0:
@@ -163,7 +172,13 @@ class EvalEnvOptimized:
         self._positions_S = torch.arange(padding_states, device=self.device).unsqueeze(0)  # [1, S]
         self._batch_idx_B = None  # Lazy allocated when batch size is known
         
-    # =========================================================================
+        # Compilation state
+        self._compiled = False
+        self._policy_logits_fn = None
+        self._policy_value_fn = None
+        self._compiled_step_fn = None
+        self._compile_deterministic = True
+    
     # Functional API for Full Trajectory Compilation
     # =========================================================================
     
@@ -270,8 +285,8 @@ class EvalEnvOptimized:
             valid = valid & (preds != self.end_pred_idx)
         
         # Pack atoms: pred * base^2 + arg0 * base + arg1
-        # Use base large enough to avoid collisions (similar to memory.py)
-        base = 2 ** 20  # Supports vocab up to 1M
+        # CRITICAL: Use same pack_base as BloomFilter for identical hash values
+        base = self._hash_pack_base
         packed = ((s[:, :, 0] * base + s[:, :, 1]) * base + s[:, :, 2]) & mask63  # [B, A]
         
         # Mix for better distribution (golden ratio constant)
@@ -384,21 +399,58 @@ class EvalEnvOptimized:
         
         K, M = derived.shape[1], derived.shape[2]
         
-        # Valid mask based on count only 
-        # Note: Atom budget rejection is NOT needed because M_max is now aligned with original
-        # engine's max_atoms_out = padding_atoms + max_rule_body_size. States are implicitly
-        # truncated at slicing step below, matching original behavior.
+        # Step 1: Compute validity masks matching original _postprocess logic
+        # a) Within count mask
         within_count = torch.arange(K, device=self.device).unsqueeze(0) < counts.unsqueeze(1)  # [n, K]
         
-        # Zero out beyond-count entries
+        # b) Atom budget check - CRITICAL: reject (not truncate) states exceeding padding_atoms
+        # This matches original env.py _postprocess lines 1339-1345
+        valid_atom = derived[:, :, :, 0] != pad  # [n, K, M]
+        atom_counts = valid_atom.sum(dim=2)  # [n, K] - count of non-padding atoms per derived state
+        within_atom_budget = atom_counts <= self.padding_atoms  # [n, K]
+        
+        # c) State not empty check - use sum instead of .any() for compile compatibility
+        state_nonempty = valid_atom.sum(dim=2) > 0  # [n, K]
+        
+        # Combined validity: within count, within budget, and not empty
+        base_valid = within_count & within_atom_budget & state_nonempty  # [n, K]
+        
+        # Zero out invalid entries (beyond count OR exceeding atom budget)
         derived = torch.where(
-            within_count.unsqueeze(-1).unsqueeze(-1),
+            base_valid.unsqueeze(-1).unsqueeze(-1),
             derived,
             torch.full_like(derived, pad)
         )
         
-        # Count is unchanged since we only removed beyond-count entries
-        new_counts = counts.clone()
+        # Recount valid entries after atom budget rejection
+        new_counts = base_valid.sum(dim=1)  # [n]
+        
+        # Step 1b: Compact valid states to front using scatter (compile-friendly)
+        # This replaces the boolean indexing approach
+        # Strategy: Use cumsum to compute target positions, then scatter
+        target_pos = torch.cumsum(base_valid.long(), dim=1) - 1  # [n, K]
+        target_pos = torch.where(
+            base_valid,
+            target_pos.clamp(min=0, max=K - 1),
+            torch.full_like(target_pos, K - 1)  # Invalid entries go to last position (will be overwritten)
+        )
+        
+        # Allocate output
+        compact = torch.full_like(derived, pad)
+        
+        # Expand target_pos for scatter: [n, K] -> [n, K, M, 3]
+        target_pos_exp = target_pos.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, M, 3)
+        
+        # Mask source: only scatter valid entries
+        src_data = torch.where(
+            base_valid.unsqueeze(-1).unsqueeze(-1),
+            derived,
+            torch.zeros_like(derived)
+        )
+        
+        # Scatter: compact[b, target_pos[b,k], m, d] = src_data[b, k, m, d]
+        compact.scatter_(1, target_pos_exp, src_data)
+        derived = compact
         
         # Step 2: Inject FALSE if no valid derivations remain
         # This matches original _postprocess: needs_false = new_counts == 0
@@ -465,6 +517,14 @@ class EvalEnvOptimized:
         
         # Step 6: Add end action
         if self.end_proof_action and self.end_state is not None:
+            # CRITICAL: Cap counts to padding_states - 1 BEFORE adding Endf
+            # This matches tensor env.py behavior (lines 893-896):
+            # max_for_endf = self.padding_states - 1
+            # derived_counts_subset = torch.clamp(derived_counts_subset, max=max_for_endf)
+            # This ensures there's always room for Endf by truncating excess derived states
+            max_for_endf = self.padding_states - 1
+            new_counts = torch.clamp(new_counts, max=max_for_endf)
+            
             derived, new_counts = self._add_end_action_functional(
                 current_states, derived, new_counts
             )
@@ -603,9 +663,13 @@ class EvalEnvOptimized:
         new_state_hash = self._compute_state_hash64(new_current)  # [n]
         
         # Scatter: write hash to history at write_pos for active envs
+        # Use scatter_ with explicit clone for CUDA graph compatibility (reduce-overhead mode)
         batch_idx = torch.arange(n, device=device)
         update_val = torch.where(active, new_state_hash, new_history_hashes[batch_idx, write_pos])
-        new_history_hashes[batch_idx, write_pos] = update_val
+        
+        # Clone before scatter to avoid CUDA graph tensor aliasing
+        new_history_hashes = new_history_hashes.clone()
+        new_history_hashes.scatter_(1, write_pos.unsqueeze(1), update_val.unsqueeze(1))
         
         # Increment count for active envs (clamped to max_history_size)
         new_history_count = torch.where(
@@ -635,43 +699,231 @@ class EvalEnvOptimized:
         )
         
         # Create observation - use pre-allocated positions tensor
+        # Clone tensors for CUDA graph compatibility (reduce-overhead mode)
         action_mask = self._positions_S < new_counts.unsqueeze(1)
         
         obs = EvalObs(
-            sub_index=new_current.unsqueeze(1),
-            derived_sub_indices=new_derived,
-            action_mask=action_mask,
+            sub_index=new_current.unsqueeze(1).clone(),
+            derived_sub_indices=new_derived.clone(),
+            action_mask=action_mask.clone(),
         )
         
         return EvalStepFunctionalOutput(state=new_state, obs=obs, rewards=rewards)
     
-    def step_with_policy_functional(
+    def step_and_maybe_reset_functional(
+        self,
+        state: EvalState,
+        actions: Tensor,
+        query_pool: Tensor,
+        per_env_ptrs: Tensor,
+    ) -> Tuple[EvalStepFunctionalOutput, Tensor]:
+        """
+        Execute one step and reset done environments with next query from pool.
+        
+        This matches tensor env's step_and_maybe_reset behavior by cycling
+        through queries in round-robin fashion per environment.
+        
+        Args:
+            state: Current EvalState
+            actions: [B] Action indices
+            query_pool: [N, 3] Pool of queries to cycle through
+            per_env_ptrs: [B] Current pointer per environment into query_pool
+            
+        Returns:
+            Tuple of (EvalStepFunctionalOutput, updated_per_env_ptrs)
+        """
+        # First execute the step
+        step_result = self.step_functional(state, actions)
+        new_state = step_result.state
+        new_obs = step_result.obs
+        rewards = step_result.rewards
+        
+        # Check for newly done environments (weren't done before, now done)
+        was_done = state.done
+        newly_done = new_state.done & ~was_done
+        
+        # If any environments are newly done, reset them
+        if newly_done.any():
+            n = actions.shape[0]
+            device = self.device
+            num_queries = query_pool.shape[0]
+            
+            # Get which query each done env should reset to
+            done_indices = torch.where(newly_done)[0]
+            
+            # Advance pointers for done envs and get next query
+            new_ptrs = per_env_ptrs.clone()
+            reset_query_indices = new_ptrs[done_indices] % num_queries
+            new_ptrs[done_indices] = (new_ptrs[done_indices] + 1) % num_queries
+            
+            # Get reset queries and reinitialize each done env
+            for i, idx in enumerate(done_indices):
+                idx_i = int(idx)
+                query_idx = int(reset_query_indices[i])
+                reset_query = query_pool[query_idx:query_idx+1]  # [1, 3]
+                
+                reset_state = self.init_state_from_queries(reset_query)
+                
+                # Update state components for this env
+                new_current_u = new_state.current_states.clone()
+                new_current_u[idx_i] = reset_state.current_states[0]
+                
+                new_derived_u = new_state.derived_states.clone()
+                new_derived_u[idx_i] = reset_state.derived_states[0]
+                
+                new_counts_u = new_state.derived_counts.clone()
+                new_counts_u[idx_i] = reset_state.derived_counts[0]
+                
+                new_depths_u = new_state.depths.clone()
+                new_depths_u[idx_i] = 0
+                
+                new_done_u = new_state.done.clone()
+                new_done_u[idx_i] = False
+                
+                new_success_u = new_state.success.clone()
+                new_success_u[idx_i] = False
+                
+                new_var_u = new_state.next_var_indices.clone()
+                new_var_u[idx_i] = reset_state.next_var_indices[0]
+                
+                new_hist_u = new_state.history_hashes.clone()
+                new_hist_u[idx_i] = reset_state.history_hashes[0]
+                
+                new_hcnt_u = new_state.history_count.clone()
+                new_hcnt_u[idx_i] = reset_state.history_count[0]
+                
+                # Update original queries for this env
+                new_orig_u = new_state.original_queries.clone()
+                new_orig_u[idx_i] = reset_state.original_queries[0]
+                
+                new_state = EvalState(
+                    current_states=new_current_u,
+                    derived_states=new_derived_u,
+                    derived_counts=new_counts_u,
+                    original_queries=new_orig_u,
+                    next_var_indices=new_var_u,
+                    depths=new_depths_u,
+                    done=new_done_u,
+                    success=new_success_u,
+                    history_hashes=new_hist_u,
+                    history_count=new_hcnt_u,
+                )
+                
+                # Update observation for this env
+                new_obs_sub = new_obs.sub_index.clone()
+                new_obs_sub[idx_i] = reset_state.current_states[0].unsqueeze(0)
+                
+                new_obs_derived = new_obs.derived_sub_indices.clone()
+                new_obs_derived[idx_i] = reset_state.derived_states[0]
+                
+                new_obs_mask = new_obs.action_mask.clone()
+                new_obs_mask[idx_i] = torch.arange(self.padding_states, device=device) < reset_state.derived_counts[0]
+                
+                new_obs = EvalObs(
+                    sub_index=new_obs_sub,
+                    derived_sub_indices=new_obs_derived,
+                    action_mask=new_obs_mask,
+                )
+            
+            per_env_ptrs = new_ptrs
+        
+        result = EvalStepFunctionalOutput(state=new_state, obs=new_obs, rewards=rewards)
+        return result, per_env_ptrs, newly_done
+    
+
+    
+    # =========================================================================
+    # Compilation API
+    # =========================================================================
+    
+    def compile(
+        self,
+        policy: 'nn.Module',
+        deterministic: bool = True,
+        mode: str = 'default',
+        fullgraph: bool = True,
+        include_value: bool = True,
+    ) -> None:
+        """
+        Compile the step function with the given policy.
+        
+        After calling this, step_with_policy() uses the compiled version.
+        
+        Note: For parity testing with parity_mode=True in the vectorized engine,
+        use compile=False (eager mode) since parity_mode uses dynamic shapes.
+        For production with parity_mode=False, fullgraph=True works.
+        
+        Args:
+            policy: ActorCriticPolicy or similar with mlp_extractor
+            deterministic: Default deterministic mode (can be overridden in step_with_policy)
+            mode: torch.compile mode ('default', 'reduce-overhead', etc.)
+            fullgraph: If True, require fullgraph compilation
+            include_value: If True, also compile value function for training mode
+        """
+        from model import create_policy_logits_fn, create_policy_value_fn
+        
+        # Store policy logits function
+        self._policy_logits_fn = create_policy_logits_fn(policy)
+        
+        # Store policy value function for training mode
+        if include_value:
+            self._policy_value_fn = create_policy_value_fn(policy)
+        else:
+            self._policy_value_fn = None
+        
+        self._compile_deterministic = deterministic
+        
+        # Compile settings
+        import os
+        import torch._inductor.config as inductor_config
+        
+        torch.set_float32_matmul_precision('high')
+        os.environ['TORCHINDUCTOR_MAX_AUTOTUNE'] = '0'
+        os.environ['TORCHINDUCTOR_COORDINATE_DESCENT_TUNING'] = '0'
+        os.environ['TORCHINDUCTOR_FREEZING'] = '0'
+        inductor_config.compile_threads = 4
+        
+        print(f"Compiling step_with_policy (mode='{mode}', fullgraph={fullgraph})...")
+        
+        # Compile the implementation function directly
+        self._compiled_step_fn = torch.compile(
+            self._step_with_policy_impl,
+            mode=mode,
+            fullgraph=fullgraph,
+            dynamic=False,
+        )
+        self._compiled = True
+    
+    def _step_with_policy_impl(
         self,
         state: EvalState,
         obs: EvalObs,
-        policy_fn: Callable[[EvalObs], Tensor],
-        deterministic: bool = True,
-    ) -> Tuple[EvalState, EvalObs, Tensor, Tensor]:
+        query_pool: Tensor,
+        per_env_ptrs: Tensor,
+        deterministic: bool,
+        eval_mode: bool,
+        eval_done_mask: Tensor,
+    ) -> Tuple[EvalState, EvalObs, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
-        Single transition: policy forward + action selection + environment step.
-        
-        This is the core function to be compiled - combines policy and step into
-        one graph for efficient CUDA execution.
+        Unified step with policy - works for both training and evaluation.
         
         Args:
             state: Current EvalState
             obs: Current observation
-            policy_fn: Function that returns logits [B, S]
-            deterministic: Use argmax for action selection
+            query_pool: [N, 3] Pool of queries to cycle through
+            per_env_ptrs: [B] Current pointer per environment into query_pool
+            deterministic: Use argmax (True) or sample (False)
+            eval_mode: If True, stop processing finished slots
+            eval_done_mask: [B] bool mask of slots that finished ALL their queries
             
         Returns:
-            new_state: Updated EvalState
-            new_obs: New observation
-            selected_log_probs: [B] Log probs of selected actions
-            rewards: [B] Rewards from this step
+            new_state, new_obs, actions, log_probs, values, rewards, dones, per_env_ptrs, eval_done_mask
         """
+        device = self.device
+        n = state.current_states.shape[0]
+        
         # Get policy output
-        logits = policy_fn(obs)  # [B, S]
+        logits = self._policy_logits_fn(obs)  # [B, S]
         
         # Mask invalid actions
         masked_logits = torch.where(
@@ -699,122 +951,149 @@ class EvalEnvOptimized:
             torch.zeros_like(selected_log_probs)
         )
         
-        # Step environment
-        result: EvalStepFunctionalOutput = self.step_functional(state, actions)
+        # Get values for rollout collection (needed for PPO)
+        # Values are computed only if we have a value function and not in eval_mode
+        if self._policy_value_fn is not None and not eval_mode:
+            values = self._policy_value_fn(obs)  # [B]
+            # Mask values for done environments
+            values = torch.where(active, values, torch.zeros_like(values))
+        else:
+            values = torch.zeros(n, device=device)
         
-        return result.state, result.obs, selected_log_probs, result.rewards
+        # Execute step and maybe reset
+        step_result = self.step_functional(state, actions)
+        new_state = step_result.state
+        new_obs = step_result.obs
+        rewards = step_result.rewards
+        
+        # Check for newly done environments
+        was_done = state.done
+        newly_done = new_state.done & ~was_done
+        
+        # Handle resets for done environments
+        num_queries = query_pool.shape[0]
+        new_ptrs = per_env_ptrs.clone()
+        
+        # For eval_mode: update eval_done_mask when an env finishes its last query
+        new_eval_done_mask = eval_done_mask.clone() if eval_done_mask is not None else \
+                             torch.zeros(n, dtype=torch.bool, device=device)
+        
+        # Vectorized Reset Logic
+        # We perform resets only in training mode (eval_mode=False) and when query_pool is provided.
+        # To maintain static graph (fullgraph=True), we avoid python loops and use masked operations.
+        new_ptrs = per_env_ptrs
+        if (not eval_mode) and (query_pool is not None) and (query_pool.numel() > 0):
+            # 1. Identify envs needing reset
+            reset_mask = newly_done  # [B] bool (already 1D)
+            
+            # 2. Get queries for reset using CURRENT pointer (before advancing)
+            # Tensor env pattern: use ptr, THEN advance
+            pool_size = query_pool.shape[0]
+            safe_indices = per_env_ptrs % pool_size
+            candidate_queries = query_pool[safe_indices]  # [B, 3]
+            
+            # 3. Compute next pointers for envs that reset
+            next_ptrs = (per_env_ptrs + 1) % pool_size
+            
+            # 4. Select appropriate next pointer (only update if done)
+            new_ptrs = torch.where(reset_mask, next_ptrs, per_env_ptrs)
+            
+            # Create padding query [3]
+            padding_atom = torch.full((3,), self.padding_idx, dtype=torch.long, device=device)
+            
+            # Mask: if NOT reset, use padding
+            reset_mask_3 = reset_mask.unsqueeze(-1).expand(-1, 3)  # [B, 3]
+            queries_for_reset_calc = torch.where(reset_mask_3, candidate_queries, padding_atom)
+            
+            # 5. Compute initial state for reset queries
+            # This runs unification on [B] queries. Active envs process "padding", which is fast (0 derived).
+            reset_state = self.init_state_from_queries(queries_for_reset_calc)
+            
+            # 6. Mix states: where(done, reset_state, new_state)
+            # Helper masks for different tensor shapes
+            reset_mask_A3 = reset_mask.view(-1, 1, 1).expand(-1, self.padding_atoms, 3)  # [B, A, 3]
+            reset_mask_SA3 = reset_mask.view(-1, 1, 1, 1).expand(-1, self.padding_states, self.padding_atoms, 3)  # [B, S, A, 3]
+            reset_mask_H = reset_mask.view(-1, 1).expand(-1, self.max_history_size)  # [B, H]
+            
+            new_current_states = torch.where(reset_mask_A3, reset_state.current_states, new_state.current_states)
+            new_derived_states = torch.where(reset_mask_SA3, reset_state.derived_states, new_state.derived_states)
+            new_derived_counts = torch.where(reset_mask, reset_state.derived_counts, new_state.derived_counts)
+            new_original_queries = torch.where(reset_mask_A3, reset_state.original_queries, new_state.original_queries)
+            new_next_var_indices = torch.where(reset_mask, reset_state.next_var_indices, new_state.next_var_indices)
+            new_depths = torch.where(reset_mask, reset_state.depths, new_state.depths)
+            new_done = torch.where(reset_mask, reset_state.done, new_state.done)
+            new_success = torch.where(reset_mask, reset_state.success, new_state.success)
+            new_history_hashes = torch.where(reset_mask_H, reset_state.history_hashes, new_state.history_hashes)
+            new_history_count = torch.where(reset_mask, reset_state.history_count, new_state.history_count)
+            
+            new_state = EvalState(
+                current_states=new_current_states,
+                derived_states=new_derived_states,
+                derived_counts=new_derived_counts,
+                original_queries=new_original_queries,
+                next_var_indices=new_next_var_indices,
+                depths=new_depths,
+                done=new_done,
+                success=new_success,
+                history_hashes=new_history_hashes,
+                history_count=new_history_count,
+            )
+            
+            # 7. Update Observation (must match new_state)
+            action_mask = self._positions_S < new_state.derived_counts.unsqueeze(1)
+            new_obs = EvalObs(
+                sub_index=new_state.current_states.unsqueeze(1),
+                derived_sub_indices=new_state.derived_states,
+                action_mask=action_mask,
+            )
+        
+        return new_state, new_obs, actions, selected_log_probs, values, rewards, newly_done, new_ptrs, new_eval_done_mask
     
-    def evaluate_trajectory(
+    def step_with_policy(
         self,
-        queries: Tensor,
-        policy_fn: Callable[[EvalObs], Tensor],
-        max_steps: int = 20,
-        deterministic: bool = True,
-        compiled_step_fn: Optional[Callable] = None,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        state: EvalState,
+        obs: EvalObs,
+        query_pool: Tensor,
+        per_env_ptrs: Tensor,
+        deterministic: bool = None,
+        eval_mode: bool = False,
+        eval_done_mask: Tensor = None,
+    ) -> Tuple[EvalState, EvalObs, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
-        Run evaluation with single-step compilation and Python loop.
+        Unified step function for both training and evaluation.
         
-        This method:
-        1. Initializes state from queries
-        2. Creates initial observation
-        3. Loops max_steps times in Python
-        4. Each iteration calls the compiled single-step function
-        5. Accumulates log_probs, rewards, success, lengths
+        Must call compile() first to set the policy.
         
         Args:
-            queries: [B, 3] Query triples
-            policy_fn: Callable(obs) -> logits [B, S]
-            max_steps: Maximum trajectory length
-            deterministic: Use argmax for action selection
-            compiled_step_fn: Pre-compiled step function (for efficiency)
+            state: Current EvalState
+            obs: Current observation  
+            query_pool: [N, 3] Pool of queries
+            per_env_ptrs: [B] Pointer per env
+            deterministic: True=argmax, False=sample (default: use compile setting)
+            eval_mode: If True, stop slots that finish all queries
+            eval_done_mask: [B] Optional mask for eval mode
             
         Returns:
-            log_probs: [B] Accumulated log probs per query
-            success: [B] Whether proof succeeded
-            lengths: [B] Trajectory lengths
-            rewards: [B] Accumulated rewards
+            new_state, new_obs, actions, log_probs, values, rewards, dones, per_env_ptrs, eval_done_mask
         """
-        device = self.device
+        if not self._compiled and self._policy_logits_fn is None:
+            raise RuntimeError("Must call env.compile(policy) before step_with_policy()")
         
-        # Initialize state
-        state = self.init_state_from_queries(queries)
-        B = state.current_states.shape[0]
+        if deterministic is None:
+            deterministic = self._compile_deterministic
         
-        # Pre-allocate accumulators
-        total_log_probs = torch.zeros(B, device=device)
-        total_rewards = torch.zeros(B, device=device)
+        if eval_done_mask is None:
+            eval_done_mask = torch.zeros(state.current_states.shape[0], 
+                                          dtype=torch.bool, device=self.device)
         
-        # Create initial observation
-        action_mask = self._positions_S < state.derived_counts.unsqueeze(1)
-        obs = EvalObs(
-            sub_index=state.current_states.unsqueeze(1),
-            derived_sub_indices=state.derived_states,
-            action_mask=action_mask,
-        )
-        
-        # Use provided compiled function or default
-        step_fn = compiled_step_fn or (
-            lambda s, o: self.step_with_policy_functional(s, o, policy_fn, deterministic)
-        )
-        
-        # Python loop over transitions
-        for step_idx in range(max_steps):
-            # Execute single compiled step
-            state, obs, step_log_probs, rewards = step_fn(state, obs)
-            
-            # Accumulate
-            total_log_probs = total_log_probs + step_log_probs
-            total_rewards = total_rewards + rewards
-        
-        return total_log_probs, state.success, state.depths, total_rewards
-
-
-def create_compiled_step_fn(
-    env: EvalEnvOptimized,
-    policy_fn: Callable[[EvalObs], Tensor],
-    deterministic: bool = True,
-    compile_mode: str = 'default',
-    fullgraph: bool = True,
-) -> Callable:
-    """
-    Create a compiled single-step function.
-    
-    This compiles only the step_with_policy_functional method, which is much
-    smaller than the full trajectory graph (~2k nodes vs ~40k nodes).
-    
-    Args:
-        env: EvalEnvOptimized environment
-        policy_fn: Policy function that returns logits
-        deterministic: Use argmax for action selection
-        compile_mode: torch.compile mode ('default', 'reduce-overhead', etc.)
-        fullgraph: If True, require fullgraph compilation
-        
-    Returns:
-        Compiled function that takes (state, obs) and returns (new_state, new_obs, log_probs, rewards)
-    """
-    import os
-    import torch._inductor.config as inductor_config
-    
-    # Set TF32 precision for better performance
-    torch.set_float32_matmul_precision('high')
-    
-    # Speed up compilation
-    os.environ['TORCHINDUCTOR_MAX_AUTOTUNE'] = '0'
-    os.environ['TORCHINDUCTOR_COORDINATE_DESCENT_TUNING'] = '0'
-    os.environ['TORCHINDUCTOR_FREEZING'] = '0'
-    inductor_config.compile_threads = 4
-    
-    def step_fn(state: EvalState, obs: EvalObs):
-        return env.step_with_policy_functional(state, obs, policy_fn, deterministic)
-    
-    print(f"Compiling single-step with mode='{compile_mode}', fullgraph={fullgraph}...")
-    
-    compiled_fn = torch.compile(
-        step_fn,
-        mode=compile_mode,
-        fullgraph=fullgraph,
-        dynamic=False,
-    )
-    
-    return compiled_fn
+        if self._compiled and self._compiled_step_fn is not None:
+            return self._compiled_step_fn(
+                state, obs, query_pool, per_env_ptrs,
+                deterministic, eval_mode, eval_done_mask
+            )
+        else:
+            # Eager mode
+            return self._step_with_policy_impl(
+                state, obs, query_pool, per_env_ptrs,
+                deterministic, eval_mode, eval_done_mask
+            )

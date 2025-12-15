@@ -46,8 +46,8 @@ from sampler import Sampler
 from model_eval import eval_corruptions
 from model_eval_optimized import (
     eval_corruptions_optimized,
-    OptimizedEvaluator,
-    create_policy_logits_fn,
+    evaluate_policy,
+    evaluate_with_corruptions,
     compute_optimal_batch_size,
 )
 from env_optimized import EvalEnvOptimized
@@ -194,11 +194,13 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
     base_engine.index_manager = im
     
     # Vectorized engine (for optimized path)
+    # Use parity_mode=True to match original engine behavior exactly
     vec_engine = UnificationEngineVectorized.from_base_engine(
         base_engine,
         max_fact_pairs=None,
         max_rule_pairs=None,
         padding_atoms=config.padding_atoms,
+        parity_mode=True,  # Critical for parity tests
     )
     
     # Convert test queries
@@ -344,50 +346,42 @@ def run_optimized_eval(
     # Reset sampler RNG
     sampler.rng = np.random.RandomState(seed)
     
-    # Create policy logits function
-    policy_logits_fn = create_policy_logits_fn(policy, deterministic=True)
-    
-    # Compute batch size
-    effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
-    batch_size = compute_optimal_batch_size(
-        chunk_queries=effective_chunk_queries,
-        n_corruptions=config.n_corruptions,
-        max_vram_gb=config.vram_gb,
-    )
-    
     # Configure compilation
     if config.compile:
         compile_mode = config.compile_mode
         fullgraph = config.fullgraph
     else:
-        compile_mode = None
+        compile_mode = 'default'
         fullgraph = False
     
-    # Create evaluator
-    evaluator = OptimizedEvaluator(
-        env=env,
-        policy_logits_fn=policy_logits_fn,
-        batch_size=batch_size,
-        max_steps=config.max_depth,
+    # Compile environment with policy (new pattern)
+    warmup_start = time.time()
+    env.compile(
+        policy=policy,
         deterministic=True,
-        compile_mode=compile_mode,
+        mode=compile_mode,
         fullgraph=fullgraph,
+        include_value=False,  # Eval mode doesn't need values
     )
     
-    # Warmup
-    warmup_start = time.time()
-    evaluator.warmup(queries[:2])
-    warmup_time_s = evaluator.warmup_time_s if evaluator.warmup_time_s is not None else (time.time() - warmup_start)
+    # Warmup with small batch to trigger JIT compilation
+    warmup_queries = queries[:2]
+    _ = evaluate_policy(env, warmup_queries, deterministic=True)
+    warmup_time_s = time.time() - warmup_start
     
-    # Run evaluation
-    results = eval_corruptions_optimized(
-        evaluator=evaluator,
+    # Compute effective chunk size
+    effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
+    
+    # Run evaluation using evaluate_with_corruptions from model_eval_optimized
+    results = evaluate_with_corruptions(
+        env=env,
         queries=queries,
         sampler=sampler,
         n_corruptions=config.n_corruptions,
         corruption_modes=tuple(config.corruption_modes),
         chunk_queries=effective_chunk_queries,
         verbose=config.verbose,
+        deterministic=True,
     )
     
     return results, warmup_time_s
@@ -597,7 +591,7 @@ if __name__ == "__main__":
     parser.add_argument('--n-corruptions', type=int, default=50, help='Corruptions per query (default: 50)')
     parser.add_argument('--corruption-mode', type=str, default='tail',
                         choices=['head', 'tail', 'both'], help="Corruption mode (default: tail)")
-    parser.add_argument('--chunk-queries', type=int, default=10, help='Queries per chunk')
+    parser.add_argument('--chunk-queries', type=int, default=100, help='Queries per chunk')
     parser.add_argument('--compile', action='store_true', help='Enable torch.compile')
     parser.add_argument('--compile-mode', type=str, default='default', 
                         choices=['default', 'reduce-overhead', 'max-autotune'])

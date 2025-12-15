@@ -115,267 +115,145 @@ def compute_optimal_batch_size(
     return batch_size
 
 
-
-class OptimizedEvaluator:
+@torch.inference_mode()
+def evaluate_policy(
+    env: EvalEnvOptimized,
+    queries: Tensor,
+    max_steps: int = None,
+    deterministic: bool = True,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """
-    Fast evaluator using single-step compilation.
+    Run policy evaluation over trajectories using Python loop.
     
-    Compiles only a single step (policy + env step) and loops over
-    transitions in Python. This provides fast compile time (~5-10s)
-    while maintaining good runtime performance.
+    This function evaluates queries by running trajectories through the environment
+    using the compiled policy. It handles:
+    1. Initializing state from queries
+    2. Creating initial observation
+    3. Looping max_steps times in Python
+    4. Each iteration calls step_with_policy (compiled if available)
+    5. Accumulating log_probs, rewards, success, lengths
+    
+    Must call env.compile(policy) before using this function.
+    
+    Args:
+        env: EvalEnvOptimized environment (must have compile() called)
+        queries: [B, 3] Query triples
+        max_steps: Maximum trajectory length (default: env.max_depth)
+        deterministic: Use argmax for action selection
+        
+    Returns:
+        log_probs: [B] Accumulated log probs per query
+        success: [B] Whether proof succeeded
+        lengths: [B] Trajectory lengths
+        rewards: [B] Accumulated rewards
     """
+    if env._policy_logits_fn is None:
+        raise RuntimeError("Must call env.compile(policy) before evaluate_policy()")
     
-    def __init__(
-        self,
-        env: EvalEnvOptimized,
-        policy_logits_fn: Callable[[EvalObs], Tensor],
-        batch_size: int,
-        max_steps: int = 20,
-        deterministic: bool = True,
-        compile_mode: str = 'default',
-        fullgraph: bool = True,
-    ):
-        """
-        Args:
-            env: EvalEnvOptimized environment
-            policy_logits_fn: Function that returns logits [B, S]
-            batch_size: Fixed batch size for compilation
-            max_steps: Maximum trajectory length
-            deterministic: Use argmax for action selection
-            compile_mode: torch.compile mode
-            fullgraph: If True, require fullgraph compilation
-        """
-        self.env = env
-        self.policy_logits_fn = policy_logits_fn
-        self.batch_size = batch_size
-        self.max_steps = max_steps
-        self.deterministic = deterministic
-        self.compile_mode = compile_mode
-        self.fullgraph = fullgraph
-        self._compiled_step_fn = None
-        self._warmed_up = False
-        self.warmup_time_s: Optional[float] = None
-        
-        # Static input buffer
-        self._input_buffer = torch.zeros(
-            batch_size, 3, dtype=torch.long, device=env.device
-        )
+    device = env.device
+    max_steps = max_steps or env.max_depth
     
-    @classmethod
-    def create_with_optimal_batch_size(
-        cls,
-        env: EvalEnvOptimized,
-        policy_logits_fn: Callable[[EvalObs], Tensor],
-        chunk_queries: int = 10,
-        n_corruptions: int = 50,
-        max_steps: int = 20,
-        deterministic: bool = True,
-        max_vram_gb: float = None,
-        compile_mode: str = 'default',
-        fullgraph: bool = True,
-    ) -> 'FastEvaluator':
-        """
-        Create FastEvaluator with automatically computed optimal batch size.
-        
-        Args:
-            env: EvalEnvOptimized environment
-            policy_logits_fn: Policy function that returns logits
-            chunk_queries: Number of queries per chunk
-            n_corruptions: Number of corruptions per query
-            max_steps: Maximum trajectory length
-            deterministic: Use argmax for action selection
-            max_vram_gb: Max VRAM to use (default: auto)
-            compile_mode: torch.compile mode
-            fullgraph: If True, require fullgraph compilation
-            
-        Returns:
-            FastEvaluator instance with optimal batch size
-        """
-        batch_size = compute_optimal_batch_size(
-            chunk_queries=chunk_queries,
-            n_corruptions=n_corruptions,
-            max_vram_gb=max_vram_gb,
-        )
-        return cls(
-            env=env,
-            policy_logits_fn=policy_logits_fn,
-            batch_size=batch_size,
-            max_steps=max_steps,
+    # Initialize state
+    state = env.init_state_from_queries(queries)
+    B = state.current_states.shape[0]
+    
+    # Pre-allocate accumulators
+    total_log_probs = torch.zeros(B, device=device)
+    total_rewards = torch.zeros(B, device=device)
+    
+    # Create initial observation
+    action_mask = env._positions_S < state.derived_counts.unsqueeze(1)
+    obs = EvalObs(
+        sub_index=state.current_states.unsqueeze(1),
+        derived_sub_indices=state.derived_states,
+        action_mask=action_mask,
+    )
+    
+    # Empty query pool and pointers for eval mode (no resets)
+    empty_pool = torch.empty((0, 3), dtype=torch.long, device=device)
+    empty_ptrs = torch.zeros(B, dtype=torch.long, device=device)
+    eval_done_mask = torch.zeros(B, dtype=torch.bool, device=device)
+    
+    # Python loop over transitions
+    for step_idx in range(max_steps):
+        # Execute single step (compiled or eager)
+        # step_with_policy returns: state, obs, actions, log_probs, values, rewards, dones, ptrs, mask
+        state, obs, actions, step_log_probs, _values, rewards, dones, _, _ = env.step_with_policy(
+            state, obs, empty_pool, empty_ptrs,
             deterministic=deterministic,
-            compile_mode=compile_mode,
-            fullgraph=fullgraph,
+            eval_mode=True,
+            eval_done_mask=eval_done_mask,
         )
+        
+        # Accumulate (only for active envs)
+        total_log_probs = total_log_probs + step_log_probs
+        total_rewards = total_rewards + rewards
+        
+        # Early exit if all done
+        if state.done.all():
+            break
     
-    def _get_compiled_step(self) -> Callable:
-        """Get or create the compiled single-step function."""
-        if self._compiled_step_fn is None:
-            if self.compile_mode is None or self.compile_mode is False:
-                # Eager mode - no compilation
-                def step_fn(state, obs):
-                    return self.env.step_with_policy_functional(
-                        state, obs, self.policy_logits_fn, self.deterministic
-                    )
-                self._compiled_step_fn = step_fn
-            else:
-                # Import here to avoid circular import
-                from env_optimized import create_compiled_step_fn
-                self._compiled_step_fn = create_compiled_step_fn(
-                    self.env,
-                    self.policy_logits_fn,
-                    deterministic=self.deterministic,
-                    compile_mode=self.compile_mode,
-                    fullgraph=self.fullgraph,
-                )
-        return self._compiled_step_fn
+    return total_log_probs, state.success, state.depths, total_rewards
+
+
+@torch.inference_mode()
+def evaluate_with_corruptions(
+    env: EvalEnvOptimized,
+    queries: Tensor,
+    sampler: Any,
+    *,
+    n_corruptions: int = 50,
+    corruption_modes: Sequence[str] = ("head", "tail"),
+    chunk_queries: int = 50,
+    verbose: bool = False,
+    deterministic: bool = True,
+    compile_mode: str = 'default',
+    fullgraph: bool = True,
+) -> Dict[str, Any]:
+    """
+    Evaluate policy on queries with corruptions for ranking metrics.
     
-    def warmup(self, sample_queries: Tensor) -> None:
-        """
-        Warmup compilation using sample queries.
-        
-        Triggers JIT compilation of the single-step function.
-        Much faster than full trajectory warmup.
-        """
-        if self._warmed_up:
-            return
-        
-        # Eager mode: no compilation needed
-        if self.compile_mode is None or self.compile_mode is False:
-            self.warmup_time_s = 0.0
-            self._warmed_up = True
-            return
-        
-        # Compiled mode: trigger JIT compilation
-        if torch.cuda.is_available():
-            start_t = torch.cuda.Event(enable_timing=True)
-            end_t = torch.cuda.Event(enable_timing=True)
-            start_t.record()
-            cpu_start = None
-        else:
-            start_t = None
-            end_t = None
-            import time as _time
-            cpu_start = _time.perf_counter()
-        
-        compiled_step = self._get_compiled_step()
-        n = sample_queries.shape[0]
-        
-        # Run warmup inside inference_mode to match eval context
-        with torch.inference_mode():
-            # Pad queries to batch_size
-            repeats = (self.batch_size + n - 1) // n
-            warmup_data = sample_queries.repeat(repeats, 1)[:self.batch_size]
-            self._input_buffer.copy_(warmup_data)
-            
-            # Initialize state and run a few steps to trigger compilation
-            state = self.env.init_state_from_queries(self._input_buffer)
-            action_mask = self.env._positions_S < state.derived_counts.unsqueeze(1)
-            obs = EvalObs(
-                sub_index=state.current_states.unsqueeze(1),
-                derived_sub_indices=state.derived_states,
-                action_mask=action_mask,
-            )
-            
-            # Run 2 steps to ensure compilation is complete
-            for _ in range(2):
-                state, obs, _, _ = compiled_step(state, obs)
-        
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        
-        if end_t is not None and start_t is not None:
-            end_t.record()
-            torch.cuda.synchronize()
-            self.warmup_time_s = float(start_t.elapsed_time(end_t) / 1000.0)
-        else:
-            import time as _time
-            self.warmup_time_s = float(_time.perf_counter() - cpu_start)
-        
-        self._warmed_up = True
+    Uses the new pattern: env.compile(policy) should be called before this.
+    The env's evaluate_policy method handles trajectory evaluation.
     
-    def __call__(self, queries: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        """
-        Evaluate queries using single-step compilation.
+    Args:
+        env: The evaluation environment (must be compiled with env.compile(policy))
+        queries: [N, 3] Tensor of test triples
+        sampler: Sampler for generating corruptions
+        n_corruptions: Number of corruptions per query
+        corruption_modes: Tuple of modes ('head', 'tail')
+        chunk_queries: Number of queries to process at once
+        verbose: Print progress
+        deterministic: Use deterministic action selection
+        compile_mode: Compilation mode if env not yet compiled
+        fullgraph: Compilation option
         
-        Automatically chunks inputs larger than batch_size.
-        """
-        if not self._warmed_up:
-            self.warmup(queries[:min(10, queries.shape[0])])
-        
-        compiled_step = self._get_compiled_step()
-        actual_size = queries.shape[0]
-        
-        # If input fits in batch_size, process directly
-        if actual_size <= self.batch_size:
-            # Pad to batch_size
-            if actual_size < self.batch_size:
-                self._input_buffer[:actual_size].copy_(queries)
-                self._input_buffer[actual_size:].copy_(
-                    queries[0:1].expand(self.batch_size - actual_size, -1)
-                )
-            else:
-                self._input_buffer.copy_(queries)
-            
-            # Run evaluation with the compiled step function
-            log_probs, success, lengths, rewards = self.env.evaluate_trajectory(
-                self._input_buffer,
-                self.policy_logits_fn,
-                max_steps=self.max_steps,
-                deterministic=self.deterministic,
-                compiled_step_fn=compiled_step,
-            )
-            
-            return (
-                log_probs[:actual_size],
-                success[:actual_size],
-                lengths[:actual_size],
-                rewards[:actual_size],
-            )
-        
-        # Large input: process in chunks
-        all_log_probs = []
-        all_success = []
-        all_lengths = []
-        all_rewards = []
-        
-        for start in range(0, actual_size, self.batch_size):
-            end = min(start + self.batch_size, actual_size)
-            chunk = queries[start:end]
-            chunk_size = chunk.shape[0]
-            
-            # Pad if needed
-            if chunk_size < self.batch_size:
-                self._input_buffer[:chunk_size].copy_(chunk)
-                self._input_buffer[chunk_size:].copy_(
-                    chunk[0:1].expand(self.batch_size - chunk_size, -1)
-                )
-            else:
-                self._input_buffer.copy_(chunk)
-            
-            # Run evaluation
-            log_probs, success, lengths, rewards = self.env.evaluate_trajectory(
-                self._input_buffer,
-                self.policy_logits_fn,
-                max_steps=self.max_steps,
-                deterministic=self.deterministic,
-                compiled_step_fn=compiled_step,
-            )
-            
-            # Clone outputs
-            all_log_probs.append(log_probs[:chunk_size].clone())
-            all_success.append(success[:chunk_size].clone())
-            all_lengths.append(lengths[:chunk_size].clone())
-            all_rewards.append(rewards[:chunk_size].clone())
-        
-        return (
-            torch.cat(all_log_probs, dim=0),
-            torch.cat(all_success, dim=0),
-            torch.cat(all_lengths, dim=0),
-            torch.cat(all_rewards, dim=0),
+    Returns:
+        Dictionary with MRR and Hits@K metrics
+    """
+    # Ensure env is compiled
+    if not env._compiled and env._policy_logits_fn is None:
+        raise RuntimeError("Must call env.compile(policy) before evaluate_with_corruptions()")
+    
+    # Define evaluator closure for eval_corruptions_optimized
+    def evaluator_fn(batch_queries: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Evaluate a batch of queries using evaluate_policy."""
+        return evaluate_policy(
+            env=env,
+            queries=batch_queries,
+            max_steps=env.max_depth,
+            deterministic=deterministic,
         )
 
-
-
-
+    return eval_corruptions_optimized(
+        evaluator=evaluator_fn,
+        queries=queries,
+        sampler=sampler,
+        n_corruptions=n_corruptions,
+        corruption_modes=corruption_modes,
+        chunk_queries=chunk_queries,
+        verbose=verbose,
+    )
 
 
 @torch.inference_mode()
@@ -393,8 +271,7 @@ def eval_corruptions_optimized(
     Evaluate queries using an optimized evaluator (compiled or eager).
     
     Args:
-        evaluator: Calable that takes [B, 3] candidates and returns (log_probs, success, ...).
-                  Usually an instance of CompiledEvaluator.
+        evaluator: Callable that takes [B, 3] candidates and returns (log_probs, success, ...).
         queries: [N, 3] Query triples
         sampler: Corruption sampler
         n_corruptions: Number of corruptions per query
@@ -405,12 +282,14 @@ def eval_corruptions_optimized(
     Returns:
         Dict with MRR, Hits@K metrics
     """
-    if hasattr(evaluator, 'env'):
+    # Determine device from evaluator if possible, otherwise fallback to queries
+    device = None
+    if hasattr(evaluator, 'env') and hasattr(evaluator.env, 'device'):
         device = evaluator.env.device
-    elif hasattr(evaluator, 'device'):
+    elif hasattr(evaluator, 'device'): # If evaluator itself has a device attribute
         device = evaluator.device
     else:
-        # Fallback
+        # Fallback to queries device if no other device info is available
         device = queries.device
         
     N = queries.shape[0]
@@ -451,7 +330,6 @@ def eval_corruptions_optimized(
             actual_size = flat_candidates.shape[0]
             
             # Evaluate using the provided evaluator
-            # Note: Evaluator is responsible for any padding if it requires fixed shapes
             log_probs, success, lengths, rewards = evaluator(flat_candidates)
             
             # Trim result back to actual size (in case evaluator padded output)
@@ -514,70 +392,3 @@ def eval_corruptions_optimized(
     
     return results
 
-
-
-def create_policy_logits_fn(
-    actor: nn.Module,
-    deterministic: bool = True,
-) -> Callable[[EvalObs], Tensor]:
-    """
-    Create a policy function that extracts logits from the actor.
-    
-    This wraps the actor to provide a simple obs -> logits interface
-    that can be compiled with the trajectory evaluation.
-    
-    Args:
-        actor: Policy network (ActorCriticPolicy)
-        deterministic: Whether evaluation is deterministic
-        
-    Returns:
-        Function that takes EvalObs and returns logits [B, S]
-    """
-    @torch.no_grad()
-    def policy_fn(obs: EvalObs) -> Tensor:
-        # Build observation dict that the actor expects
-        obs_dict = {
-            'sub_index': obs.sub_index,
-            'derived_sub_indices': obs.derived_sub_indices,
-            'action_mask': obs.action_mask,
-        }
-        
-        # Extract features and get raw logits from mlp_extractor
-        # This bypasses the action distribution sampling in forward()
-        if hasattr(actor, 'extract_features') and hasattr(actor, 'mlp_extractor'):
-            # ActorCriticPolicy path - get raw logits directly
-            features = actor.extract_features(obs_dict)
-            if actor.share_features_extractor:
-                logits, _ = actor.mlp_extractor(features)  # (logits, values)
-            else:
-                obs_emb, act_emb, act_mask = features[0]
-                logits = actor.mlp_extractor.forward_actor((obs_emb, act_emb, act_mask))
-        elif hasattr(actor, 'forward_eval'):
-            # Dedicated eval forward path
-            logits = actor.forward_eval(
-                obs.sub_index,
-                obs.derived_sub_indices,
-                obs.action_mask,
-            )
-        else:
-            # Fallback - standard forward, extract logits from tuple
-            out = actor(obs_dict)
-            if isinstance(out, tuple):
-                # forward() returns (actions, values, log_probs) - actions have shape [B]
-                # We need logits which have shape [B, S]
-                # This path is incorrect for ActorCriticPolicy, but kept for other models
-                logits = out[0]
-            elif hasattr(out, 'get'):
-                logits = out.get('logits', out.get('action', None))
-                if logits is None:
-                    logits = out
-            else:
-                logits = out
-        
-        # Ensure 2D [B, S]
-        if logits.ndim == 1:
-            logits = logits.unsqueeze(0)
-        
-        return logits
-    
-    return policy_fn
