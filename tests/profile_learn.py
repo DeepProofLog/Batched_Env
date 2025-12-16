@@ -376,13 +376,13 @@ def main():
                         help='Use torch.profiler for GPU profiling instead of cProfile')
     parser.add_argument('--dataset', type=str, default='family',
                         help='Dataset name')
-    parser.add_argument('--total-timesteps', type=int, default=90,
+    parser.add_argument('--total-timesteps', type=int, default=1, # just one rollout+train
                         help='Total training timesteps')
     parser.add_argument('--batch-size-env', type=int, default=128,
                         help='Environment batch size')
     parser.add_argument('--n-steps', type=int, default=128,
                         help='Steps per rollout')
-    parser.add_argument('--n-epochs', type=int, default=5,
+    parser.add_argument('--n-epochs', type=int, default=10,
                         help='PPO epochs per update')
     parser.add_argument('--batch-size', type=int, default=1024,
                         help='PPO minibatch size')

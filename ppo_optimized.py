@@ -25,6 +25,7 @@ import numpy as np
 from torch import Tensor
 from typing import Optional, Callable, Dict, List, Tuple, Any, Sequence
 from tensordict import TensorDict
+import time
 
 from rollout_optimized import RolloutBufferOptimized
 from env_optimized import EvalEnvOptimized, EvalObs, EvalState
@@ -135,6 +136,84 @@ def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tens
 
 
 # ============================================================================
+# Loss Module (for torch.compile)
+# ============================================================================
+
+class PPOLossModule(nn.Module):
+    """
+    Fused module that wraps policy forward + loss computation.
+    
+    This allows torch.compile to see the entire computation as a single graph,
+    enabling kernel fusion and eliminating overhead from separate compiled functions.
+    
+    Uses raw tensors (not TensorDict) for stable memory addresses with CUDA graphs.
+    """
+    def __init__(self, policy: nn.Module):
+        super().__init__()
+        self.policy = policy
+        
+    def forward(
+        self,
+        sub_index: torch.Tensor,          # [B, 1, A, 3]
+        derived_sub_indices: torch.Tensor, # [B, S, A, 3]
+        action_mask: torch.Tensor,         # [B, S]
+        actions: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor,
+        old_log_probs: torch.Tensor,
+        old_values: torch.Tensor,
+        clip_range: float,
+        clip_range_vf: float,  # Must be a float, use 0.0 for no clipping
+        ent_coef: float,
+        vf_coef: float,
+    ) -> torch.Tensor:
+        # Use raw tensor method to avoid TensorDict (CUDA graph compatible)
+        # 1. Policy Forward (evaluate_actions_raw)
+        values, log_probs, entropy = self.policy.evaluate_actions_raw(
+            sub_index, derived_sub_indices, action_mask, actions
+        )
+        values = values.flatten()
+        
+        # 2. PPO Loss Computation
+        log_ratio = log_probs - old_log_probs
+        ratio = torch.exp(log_ratio)
+        
+        # Clipped surrogate loss
+        policy_loss_1 = advantages * ratio
+        policy_loss_2 = advantages * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
+        policy_loss = -torch.minimum(policy_loss_1, policy_loss_2).mean()
+        
+        # Clip fraction
+        clip_fraction_t = torch.mean((torch.abs(ratio - 1) > clip_range).float())
+        
+        # Value loss - always use clipping path to avoid control flow
+        # If clip_range_vf == 0.0, the clamp has no effect (but consistent graph)
+        values_pred = old_values + torch.clamp(values - old_values, -clip_range_vf - 1e-8, clip_range_vf + 1e-8)
+        value_loss = F.mse_loss(returns, values_pred)
+        
+        # Entropy loss - always use entropy path (policy should always return entropy)
+        entropy_loss = -torch.mean(entropy)
+            
+        # Total loss
+        loss = policy_loss + ent_coef * entropy_loss + vf_coef * value_loss
+        
+        # Approx KL
+        approx_kl_div_t = torch.mean((ratio - 1.0) - log_ratio)
+        
+        # Pack metrics into single tensor for efficient return
+        metrics_packed = torch.stack([
+            loss,
+            policy_loss,
+            value_loss,
+            entropy_loss,
+            approx_kl_div_t,
+            clip_fraction_t
+        ])
+        
+        return metrics_packed
+
+
+# ============================================================================
 # PPO Implementation
 # ============================================================================
 
@@ -189,6 +268,9 @@ class PPOOptimized:
         seed: Optional[int] = None,
         parity: bool = False,
         fixed_batch_size: Optional[int] = None,
+        compile_policy: bool = True,  # Compile the policy for faster training
+        compile_mode: str = 'reduce-overhead',  # Compile mode for torch.compile
+        use_amp: bool = True,  # Use Automatic Mixed Precision
     ):
         self.policy = policy
         self.env = env
@@ -209,6 +291,17 @@ class PPOOptimized:
         self.verbose = verbose
         self.seed = seed
         self.parity = parity
+        self._compile_policy = compile_policy
+        self._compile_mode = compile_mode
+        
+        # AMP (Automatic Mixed Precision) - configure via use_amp parameter
+        self.use_amp = use_amp and (self.device.type == "cuda")
+        if self.use_amp:
+            # If BF16 is supported, we don't need GradScaler
+            self.amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            print(f"Using Automatic Mixed Precision (AMP) with dtype: {self.amp_dtype}")
+        else:
+            self.amp_dtype = torch.float32
         
         # Fixed batch size for evaluation (enforced to avoid recompilation)
         # If not specified, will be set during compile() based on env.batch_size
@@ -219,7 +312,7 @@ class PPOOptimized:
         self.padding_atoms = env.padding_atoms
         self.padding_states = env.padding_states
         
-        # Create rollout buffer
+        # Create rollout buffer with pre-allocated batch tensors
         self.rollout_buffer = RolloutBufferOptimized(
             buffer_size=n_steps,
             n_envs=self.n_envs,
@@ -229,7 +322,21 @@ class PPOOptimized:
             padding_atoms=self.padding_atoms,
             padding_states=self.padding_states,
             parity=parity,
+            batch_size=batch_size,  # Pre-allocate batch tensors for this size
         )
+        
+        # Pre-allocate raw tensors for training loop (CUDA graph stability)
+        # Using raw tensors instead of TensorDict avoids memory layout changes
+        A = self.padding_atoms
+        S = self.padding_states
+        self._train_sub_index = torch.zeros((batch_size, 1, A, 3), dtype=torch.long, device=self.device)
+        self._train_derived_sub_indices = torch.zeros((batch_size, S, A, 3), dtype=torch.long, device=self.device)
+        self._train_action_mask = torch.zeros((batch_size, S), dtype=torch.bool, device=self.device)
+        self._train_actions = torch.zeros(batch_size, dtype=torch.long, device=self.device)
+        self._train_advantages = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        self._train_returns = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        self._train_old_log_probs = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        self._train_old_values = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
         
         # Persistent state
         self._last_state: Optional[EvalState] = None
@@ -237,11 +344,96 @@ class PPOOptimized:
         self.num_timesteps = 0
         
         # Initialize optimizer
+        # NOTE: fused=True uses optimized CUDA kernel for 2-3x faster gradient updates
         self.optimizer = torch.optim.Adam(
             self.policy.parameters(),
             lr=self.learning_rate,
             eps=1e-5,
+            fused=True if self.device.type == 'cuda' else False,
         )
+        
+        # Compile policy for faster training (evaluate_actions, predict_values)
+        # This is separate from env.compile() which compiles step_with_policy
+        self._compile_policy_network()
+    
+    def _compile_policy_network(self):
+        """Compile the policy network for faster training.
+        
+        Creates a PPOLossModule that fuses policy forward + loss computation,
+        then compiles the entire module using torch.compile.
+        
+        IMPORTANT: We use 'default' mode for the loss module instead of 'reduce-overhead'
+        because TensorDict creation inside the forward pass causes CUDA graph instability.
+        The environment still uses 'reduce-overhead' since it has stable tensor patterns.
+        """
+
+        if self.verbose:
+            print("Compiling policy network and loss module for training...")
+        
+        # Store reference to uncompiled policy for loss_module
+        self._uncompiled_policy = self.policy
+        
+        # Create fused loss module using UNCOMPILED policy
+        # This will be compiled as a single unit
+        self.loss_module = PPOLossModule(self._uncompiled_policy)
+        
+        # Use reduce-overhead mode for maximum performance
+        # This works because we use evaluate_actions_raw which bypasses TensorDict
+        self.loss_module = torch.compile(
+            self.loss_module,
+            mode=self._compile_mode,  # reduce-overhead now works with raw tensors
+            fullgraph=True,
+        )
+        
+        # Pre-warm gradients to ensure stable memory addresses for CUDA graphs
+        # Without this, the first few backward passes allocate new gradient tensors
+        self._warmup_gradients()
+        
+        # For inference (collect_rollouts), compile the policy separately
+        # This creates a different CUDA graph than the training graph
+        self.policy = torch.compile(
+            self._uncompiled_policy,
+            mode=self._compile_mode,
+            fullgraph=True,
+        )
+    
+    def _warmup_gradients(self):
+        """Pre-allocate gradient tensors for stable CUDA graph addresses.
+        
+        Running a dummy forward+backward pass ensures gradient tensors are allocated
+        before CUDA graph recording. Using set_to_none=False in zero_grad() keeps
+        these addresses stable across iterations.
+        """
+        # Create dummy inputs matching the training batch shape
+        batch_size = self.batch_size
+        A = self.padding_atoms
+        S = self.padding_states
+        
+        dummy_sub_index = torch.zeros((batch_size, 1, A, 3), dtype=torch.long, device=self.device)
+        dummy_derived = torch.zeros((batch_size, S, A, 3), dtype=torch.long, device=self.device)
+        dummy_mask = torch.ones((batch_size, S), dtype=torch.bool, device=self.device)
+        dummy_actions = torch.zeros(batch_size, dtype=torch.long, device=self.device)
+        dummy_advantages = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        dummy_returns = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        dummy_old_log_probs = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        dummy_old_values = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        
+        # Run forward pass through UNCOMPILED loss module to allocate gradients
+        # This ensures gradient tensors exist before any CUDA graph recording
+        with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
+            # Use the uncompiled policy directly
+            values, log_probs, entropy = self._uncompiled_policy.evaluate_actions_raw(
+                dummy_sub_index, dummy_derived, dummy_mask, dummy_actions
+            )
+            # Compute simple loss
+            dummy_loss = values.mean() + log_probs.mean() + entropy.mean()
+        
+        # Backward to allocate gradient tensors
+        self.optimizer.zero_grad(set_to_none=False)
+        dummy_loss.backward()
+        
+        # Zero gradients but keep tensors allocated
+        self.optimizer.zero_grad(set_to_none=False)
     
     @property
     def fixed_batch_size(self) -> int:
@@ -438,114 +630,150 @@ class PPOOptimized:
         return result
 
         
-    def train(self, return_traces: bool = False) -> Dict[str, float]:
+    def train(self, return_traces: bool = False, timeout_seconds: float = None) -> Dict[str, float]:
         """
         Update policy using the currently collected rollout buffer.
+        
+        Args:
+            return_traces: If True, include detailed traces in return dict.
+            timeout_seconds: Maximum time in seconds for training. If None, no timeout.
+                             Useful for debugging CUDA graph hangs in reduce-overhead mode.
         
         Returns:
             Dict containing average training metrics
         """
         self.policy.train()
+        train_start_time = time.time()
         
-        # Accumulators
-        pg_losses = []
-        value_losses = []
-        entropy_losses = []
-        clip_fractions = []
-        approx_kl_divs = []
+        # Accumulators - store as tensors to avoid GPU sync per batch
+        # Only convert to Python floats at the very end
+        pg_losses_t = []
+        value_losses_t = []
+        entropy_losses_t = []
+        clip_fractions_t = []
+        approx_kl_divs_t = []
         
         train_traces = [] if return_traces else None
         
+        # Pre-allocate KL tracking tensor ONCE to avoid 10*torch.tensor() calls
+        # This saves ~3s by avoiding repeated CPU->GPU tensor creation
+        epoch_kl_max = torch.zeros(1, device=self.device)
+        
         continue_training = True
         for epoch in range(self.n_epochs):
-            epoch_kl_divs = []
+            epoch_kl_max.zero_()  # Reset without creating new tensor
             
+            batch_count = 0
             for batch_data in self.rollout_buffer.get(batch_size=self.batch_size):
-                (sub_index, derived_sub_indices, action_mask,
+                # Mark start of new training step for CUDA graph trees
+                # This tells PyTorch it's okay to reuse memory from previous iterations
+                torch.compiler.cudagraph_mark_step_begin()
+                
+                # Check timeout
+                if timeout_seconds is not None:
+                    elapsed = time.time() - train_start_time
+                    if elapsed > timeout_seconds:
+                        print(f"[TIMEOUT] Training exceeded {timeout_seconds}s after {epoch} epochs, {batch_count} batches")
+                        # Return partial metrics
+                        return {
+                            "policy_loss": 0.0,
+                            "value_loss": 0.0,
+                            "entropy": 0.0,
+                            "clip_fraction": 0.0,
+                            "approx_kl": 0.0,
+                            "explained_var": 0.0,
+                            "timeout": True,
+                            "epochs_completed": epoch,
+                            "batches_completed": batch_count,
+                        }
+                
+                batch_count += 1
+                
+                # Yields raw tensors: (sub_index, derived_sub_indices, action_mask, 
+                #                       actions, old_values, old_log_probs, advantages, returns)
+                (sub_index, derived_sub_indices, action_mask, 
                  actions, old_values, old_log_probs, advantages, returns) = batch_data
                 
-                # Build observation TensorDict
-                batch_size = sub_index.shape[0]
-                obs_td = TensorDict({
-                    'sub_index': sub_index,
-                    'derived_sub_indices': derived_sub_indices,
-                    'action_mask': action_mask,
-                }, batch_size=[batch_size], device=self.device)
+                # Copy data into pre-allocated tensors (preserves memory addresses for CUDA graphs)
+                self._train_sub_index.copy_(sub_index)
+                self._train_derived_sub_indices.copy_(derived_sub_indices)
+                self._train_action_mask.copy_(action_mask)
+                self._train_actions.copy_(actions)
+                self._train_old_values.copy_(old_values)
+                self._train_old_log_probs.copy_(old_log_probs)
+                self._train_returns.copy_(returns)
                 
-                # Normalize advantages
+                # Normalize advantages into pre-allocated tensor
                 if self.normalize_advantage and len(advantages) > 1:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-                
-                # Forward pass
-                values, log_probs, entropy = self.policy.evaluate_actions(obs_td, actions)
-                values = values.flatten()
-                
-                # Compute losses
-                log_ratio = log_probs - old_log_probs
-                ratio = torch.exp(log_ratio)
-                
-                # Clipped surrogate loss
-                policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
-                policy_loss = -torch.minimum(policy_loss_1, policy_loss_2).mean()
-                
-                # Clip fraction
-                clip_fraction = torch.mean((torch.abs(ratio - 1) > self.clip_range).float())
-                
-                # Value loss
-                if self.clip_range_vf is None:
-                    values_pred = values
+                    adv_mean = advantages.mean()
+                    adv_std = advantages.std() + 1e-8
+                    self._train_advantages.copy_((advantages - adv_mean) / adv_std)
                 else:
-                    values_pred = old_values + torch.clamp(
-                        values - old_values, -self.clip_range_vf, self.clip_range_vf
+                    self._train_advantages.copy_(advantages)
+                
+                # Fused execution: Policy Forward + Loss Computation in one graph
+                # Pass raw tensors directly - TensorDict is built inside the compiled module
+                # This avoids CUDA graph recompilation due to varying TensorDict memory layouts
+                with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
+                    metrics_packed = self.loss_module(
+                        self._train_sub_index,
+                        self._train_derived_sub_indices,
+                        self._train_action_mask,
+                        self._train_actions,
+                        self._train_advantages,
+                        self._train_returns,
+                        self._train_old_log_probs,
+                        self._train_old_values,
+                        self.clip_range,
+                        self.clip_range_vf if self.clip_range_vf is not None else 0.0,  # Must be float, not None
+                        self.ent_coef,
+                        self.vf_coef,
                     )
-                value_loss = F.mse_loss(returns, values_pred)
                 
-                # Entropy loss
-                if entropy is None:
-                    entropy_loss = -torch.mean(-log_probs)
-                else:
-                    entropy_loss = -torch.mean(entropy)
+                # Unpack metrics (slicing is cheap)
+                loss = metrics_packed[0]
+                policy_loss = metrics_packed[1]
+                value_loss = metrics_packed[2]
+                entropy_loss = metrics_packed[3]
+                approx_kl_div = metrics_packed[4].detach()
+                clip_fraction = metrics_packed[5]
                 
-                # Total loss
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                # Track max KL per epoch for early stopping (in-place to avoid tensor creation)
+                epoch_kl_max = torch.maximum(epoch_kl_max, approx_kl_div.unsqueeze(0))
                 
-                # Approx KL
-                approx_kl_div = torch.mean((ratio - 1.0) - log_ratio)
-                epoch_kl_divs.append(approx_kl_div.item())
+                # Store losses - MUST clone() for CUDA graph compatibility!
+                # detach() alone keeps the same memory address which gets overwritten
+                pg_losses_t.append(policy_loss.detach().clone())
+                value_losses_t.append(value_loss.detach().clone())
+                entropy_losses_t.append(entropy_loss.detach().clone())
+                clip_fractions_t.append(clip_fraction.detach().clone())
+                approx_kl_divs_t.append(approx_kl_div.clone())
                 
-                # Log losses
-                pg_losses.append(policy_loss.item())
-                value_losses.append(value_loss.item())
-                entropy_losses.append(entropy_loss.item())
-                clip_fractions.append(clip_fraction.item())
-                
-                # Collect traces
+                # Collect traces (defer .item() to end if needed)
                 if return_traces:
                     train_traces.append({
                         "epoch": epoch,
-                        "batch_size": batch_size,
-                        "policy_loss": policy_loss.item(),
-                        "value_loss": value_loss.item(),
-                        "entropy_loss": entropy_loss.item(),
-                        "clip_fraction": clip_fraction.item(),
+                        "batch_size": sub_index.shape[0],
+                        "policy_loss_idx": len(pg_losses_t) - 1,
+                        "value_loss_idx": len(value_losses_t) - 1,
                     })
                 
-                # KL divergence early stopping
-                if self.target_kl is not None and approx_kl_div.item() > 1.5 * self.target_kl:
-                    continue_training = False
-                    if self.verbose:
-                        print(f"Early stopping at epoch {epoch} due to KL divergence: {approx_kl_div.item():.4f}")
-                    break
-                
-                # Optimizer step
-                self.optimizer.zero_grad()
+                # Optimizer step - use set_to_none=False to keep gradient addresses stable
+                # This is critical for CUDA graph stability in reduce-overhead mode
+                self.optimizer.zero_grad(set_to_none=False)
                 loss.backward()
                 if self.max_grad_norm is not None:
                     torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.optimizer.step()
             
-            approx_kl_divs.extend(epoch_kl_divs)
+            # KL divergence early stopping - single sync per epoch
+            if self.target_kl is not None:
+                kl_val = epoch_kl_max.item()
+                if kl_val > 1.5 * self.target_kl:
+                    continue_training = False
+                    if self.verbose:
+                        print(f"Early stopping at epoch {epoch} due to KL divergence: {kl_val:.4f}")
+                    break
             
             if not continue_training:
                 break
@@ -553,20 +781,33 @@ class PPOOptimized:
             if self.verbose:
                 print(f"Epoch {epoch+1}/{self.n_epochs}")
         
-        # Compute metrics
+        # Compute metrics - single sync point for all accumulated tensors
         with torch.no_grad():
             ev = explained_variance(self.rollout_buffer.values, self.rollout_buffer.returns)
+            
+            # Stack and compute means on GPU, then single sync
+            pg_loss_mean = torch.stack(pg_losses_t).mean() if pg_losses_t else torch.tensor(0.0)
+            value_loss_mean = torch.stack(value_losses_t).mean() if value_losses_t else torch.tensor(0.0)
+            entropy_loss_mean = torch.stack(entropy_losses_t).mean() if entropy_losses_t else torch.tensor(0.0)
+            clip_frac_mean = torch.stack(clip_fractions_t).mean() if clip_fractions_t else torch.tensor(0.0)
+            kl_mean = torch.stack(approx_kl_divs_t).mean() if approx_kl_divs_t else torch.tensor(0.0)
         
         metrics = {
-            "policy_loss": sum(pg_losses) / len(pg_losses) if pg_losses else 0.0,
-            "value_loss": sum(value_losses) / len(value_losses) if value_losses else 0.0,
-            "entropy": -sum(entropy_losses) / len(entropy_losses) if entropy_losses else 0.0,
-            "clip_fraction": sum(clip_fractions) / len(clip_fractions) if clip_fractions else 0.0,
-            "approx_kl": sum(approx_kl_divs) / len(approx_kl_divs) if approx_kl_divs else 0.0,
+            "policy_loss": pg_loss_mean.item(),
+            "value_loss": value_loss_mean.item(),
+            "entropy": -entropy_loss_mean.item(),
+            "clip_fraction": clip_frac_mean.item(),
+            "approx_kl": kl_mean.item(),
             "explained_var": ev.item(),
         }
         
-        if return_traces:
+        # Convert trace indices to actual values if needed
+        if return_traces and train_traces:
+            pg_vals = torch.stack(pg_losses_t).cpu().numpy()
+            vl_vals = torch.stack(value_losses_t).cpu().numpy()
+            for trace in train_traces:
+                trace["policy_loss"] = float(pg_vals[trace.pop("policy_loss_idx")])
+                trace["value_loss"] = float(vl_vals[trace.pop("value_loss_idx")])
             metrics["traces"] = train_traces
         
         return metrics
@@ -608,6 +849,7 @@ class PPOOptimized:
             iteration += 1
             
             # Collect rollouts using env's internal query cycling
+            start_time = time.time()
             result = self.collect_rollouts(
                 current_state=state,
                 current_obs=obs,
@@ -618,13 +860,16 @@ class PPOOptimized:
                 episode_lengths=episode_lengths,
                 iteration=iteration,
             )
-            
             state, obs, episode_starts, current_episode_reward, current_episode_length, n_steps, _ = result
             self.num_timesteps += n_steps
+            end_time = time.time()-start_time
+            print(f"Rollout collected in {end_time:.2f}s. FPS: {self.num_timesteps / end_time:.2f}")            
             
             # Train
+            start_time = time.time()
             train_metrics = self.train()
             self.last_train_metrics = train_metrics
+            print(f"Training completed in {time.time() - start_time:.2f}s")
             
             if self.verbose:
                 print(f"Iteration {iteration}, timesteps: {self.num_timesteps}/{total_timesteps}")

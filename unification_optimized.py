@@ -775,14 +775,13 @@ class UnificationEngineVectorized:
         # M_max: Maximum atoms per state. Must be large enough to hold states that grow
         # during proof search. Each rule application can add up to max_rule_body atoms.
         # For a proof of depth D: max atoms = padding_atoms + max_rule_body * D
-        # Use a reasonable max_depth estimate (10) as default for compile compatibility
+        # TODO: Memory optimization - filter candidates with >padding_atoms early instead
+        # of allocating large M_max tensors. This requires changes to pack_results_fixed.
         max_rule_body = base_engine.max_rule_body_size or 2
-        max_depth_estimate = 10  # Default estimate; can be increased via parameter
+        max_depth_estimate = 10  # Default estimate for compile compatibility
         if padding_atoms is not None:
-            # Support states up to: padding_atoms + max_rule_body * max_depth_estimate
             self.M_max = padding_atoms + max_rule_body * max_depth_estimate
         else:
-            # Fallback to larger M if no padding_atoms specified
             self.M_max = max_rule_body * max_depth_estimate + 10
         
         # Compute max pairs from data if not provided

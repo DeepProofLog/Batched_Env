@@ -33,7 +33,7 @@ if str(ROOT) not in sys.path:
 from data_handler import DataHandler
 from index_manager import IndexManager
 from unification import UnificationEngine
-from unification_vectorized import UnificationEngineVectorized
+from unification_optimized import UnificationEngineVectorized
 from env_optimized import EvalEnvOptimized, EvalObs, EvalState
 from embeddings import EmbedderLearnable as TensorEmbedder
 from model import ActorCriticPolicy as TensorPolicy, create_policy_logits_fn

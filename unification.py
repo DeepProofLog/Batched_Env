@@ -231,6 +231,9 @@ def _variable_binding_kernel(q_args: Tensor, t_args: Tensor, var_start: int, pad
 # Small helpers
 # ============================================================================
 
+# Cache for pack base tensors - avoids repeated torch.as_tensor allocations
+_pack_base_cache: dict = {}
+
 @torch.no_grad()
 def _pack_triples_64(atoms: Tensor, base: int) -> Tensor:
     """
@@ -254,8 +257,11 @@ def _pack_triples_64(atoms: Tensor, base: int) -> Tensor:
     # Extract components: [N] each
     p, a, b = atoms[:, 0].long(), atoms[:, 1].long(), atoms[:, 2].long()
     
-    # Ensure base is a tensor for broadcasting
-    base_t = torch.as_tensor(base, dtype=torch.int64, device=atoms.device)
+    # Cache the base tensor per (base, device) to avoid repeated allocations
+    cache_key = (base, atoms.device)
+    if cache_key not in _pack_base_cache:
+        _pack_base_cache[cache_key] = torch.tensor(base, dtype=torch.int64, device=atoms.device)
+    base_t = _pack_base_cache[cache_key]
     
     # Pack: [N]
     return ((p * base_t) + a) * base_t + b

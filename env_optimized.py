@@ -35,7 +35,7 @@ import torch
 from torch import Tensor
 from typing import Any, Optional, Tuple, NamedTuple, Callable
 
-from unification_vectorized import UnificationEngineVectorized
+from unification_optimized import UnificationEngineVectorized
 
 
 # ============================================================================

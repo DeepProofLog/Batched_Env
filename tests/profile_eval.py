@@ -240,38 +240,69 @@ def profile_eval_cprofile(config: SimpleNamespace):
     policy, eval_env, sampler, dh, im, test_queries_tensor = setup_components(device, config)
     
     n_queries = config.n_test_queries or len(test_queries_tensor)
+    n_corruptions = config.n_corruptions
+    n_modes = len(config.corruption_modes)
+    total_candidates = n_queries * (1 + n_corruptions) * n_modes
+    
+    print(f"\nConfiguration:")
+    print(f"  Queries: {n_queries}")
+    print(f"  Corruptions: {n_corruptions}")
+    print(f"  Corruption modes: {config.corruption_modes}")
+    print(f"  Total candidates: {total_candidates}")
     
     # Warmup runs to amortize torch.compile overhead
     warmup_runs = config.warmup_runs
+    warmup_time = 0.0
     if warmup_runs > 0:
         print(f"\nRunning {warmup_runs} warmup iteration(s)...")
+        warmup_start = time()
         for i in range(warmup_runs):
             # Use smaller subset for warmup to save time
             warmup_config = SimpleNamespace(**vars(config))
             warmup_config.n_test_queries = min(2, n_queries)
             warmup_config.n_corruptions = min(10, config.n_corruptions)
+            warmup_config.verbose = False
             _ = run_eval_corruptions(policy, eval_env, sampler, test_queries_tensor, warmup_config)
             print(f"  Warmup {i+1}/{warmup_runs} complete")
         
         # Synchronize GPU before profiling
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        warmup_time = time() - warmup_start
+        print(f"Warmup time: {warmup_time:.2f}s")
     
-    print(f"\nProfiling eval_corruptions() on {n_queries} queries with {config.n_corruptions} corruptions each...")
+    print(f"\nProfiling eval_corruptions() on {n_queries} queries with {n_corruptions} corruptions each...")
     
     profiler = cProfile.Profile()
     profiler.enable()
     
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     start_time = time()
     results = run_eval_corruptions(policy, eval_env, sampler, test_queries_tensor, config)
-    elapsed = time() - start_time
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    runtime = time() - start_time
     
     profiler.disable()
     
-    print(f"\nEvaluation completed in {elapsed:.2f}s")
-    print(f"MRR: {results.get('MRR', 0.0):.4f}")
-    print(f"Hits@1: {results.get('Hits@1', 0.0):.4f}")
-    print(f"Hits@10: {results.get('Hits@10', 0.0):.4f}")
+    total_time = warmup_time + runtime
+    ms_per_query = (runtime / n_queries) * 1000 if n_queries > 0 else 0
+    ms_per_candidate = (runtime / total_candidates) * 1000 if total_candidates > 0 else 0
+    
+    # Print timing summary
+    print(f"\n{'='*80}")
+    print("TIMING SUMMARY")
+    print(f"{'='*80}")
+    print(f"Warmup time:      {warmup_time:.4f}s")
+    print(f"Runtime:          {runtime:.4f}s")
+    print(f"Total time:       {total_time:.4f}s")
+    print(f"ms/query:         {ms_per_query:.3f}")
+    print(f"ms/candidate:     {ms_per_candidate:.3f}")
+    print(f"")
+    print(f"MRR:              {results.get('MRR', 0.0):.4f}")
+    print(f"Hits@1:           {results.get('Hits@1', 0.0):.4f}")
+    print(f"Hits@10:          {results.get('Hits@10', 0.0):.4f}")
     
     # Print profiling results
     n_functions = 30
@@ -299,14 +330,28 @@ def profile_eval_cprofile(config: SimpleNamespace):
     # Save results to file
     output_path = 'tests/profile_eval_results.txt'
     with open(output_path, 'w') as f:
+        f.write(f"Profile Eval Results (Original/Tensor)\n")
         f.write(f"Device: {device}\n")
-        f.write(f"Number of queries: {n_queries}\n")
-        f.write(f"Corruptions per query: {config.n_corruptions}\n")
-        f.write(f"Bucket size (max_derived_per_state): {config.bucket_size}\n")
-        f.write(f"CUDA graphs enabled: {config.cuda_graphs}\n")
-        f.write(f"Evaluation time: {elapsed:.2f}s\n")
-        f.write(f"MRR: {results.get('MRR', 0.0):.4f}\n")
-        f.write(f"Hits@1: {results.get('Hits@1', 0.0):.4f}\n\n")
+        f.write(f"\nConfiguration:\n")
+        f.write(f"  Queries: {n_queries}\n")
+        f.write(f"  Corruptions: {n_corruptions}\n")
+        f.write(f"  Corruption modes: {config.corruption_modes}\n")
+        f.write(f"  Total candidates: {total_candidates}\n")
+        f.write(f"  Bucket size (max_derived_per_state): {config.bucket_size}\n")
+        f.write(f"  CUDA graphs enabled: {config.cuda_graphs}\n")
+        f.write(f"\n{'='*80}\n")
+        f.write(f"TIMING SUMMARY\n")
+        f.write(f"{'='*80}\n")
+        f.write(f"Warmup time:      {warmup_time:.4f}s\n")
+        f.write(f"Runtime:          {runtime:.4f}s\n")
+        f.write(f"Total time:       {total_time:.4f}s\n")
+        f.write(f"ms/query:         {ms_per_query:.3f}\n")
+        f.write(f"ms/candidate:     {ms_per_candidate:.3f}\n")
+        f.write(f"\n")
+        f.write(f"MRR:              {results.get('MRR', 0.0):.4f}\n")
+        f.write(f"Hits@1:           {results.get('Hits@1', 0.0):.4f}\n")
+        f.write(f"Hits@10:          {results.get('Hits@10', 0.0):.4f}\n")
+        f.write(f"\n")
         
         ps = pstats.Stats(profiler, stream=f)
         ps.strip_dirs()
@@ -338,17 +383,55 @@ def profile_eval_gpu(config: SimpleNamespace):
     policy, eval_env, sampler, dh, im, test_queries_tensor = setup_components(device, config)
     
     n_queries = config.n_test_queries or len(test_queries_tensor)
-    print(f"\nGPU Profiling eval_corruptions() on {n_queries} queries with {config.n_corruptions} corruptions each...")
+    n_corruptions = config.n_corruptions
+    n_modes = len(config.corruption_modes)
+    total_candidates = n_queries * (1 + n_corruptions) * n_modes
+    
+    print(f"\nConfiguration:")
+    print(f"  Queries: {n_queries}")
+    print(f"  Corruptions: {n_corruptions}")
+    print(f"  Total candidates: {total_candidates}")
+    
+    # Warmup
+    warmup_time = 0.0
+    if config.warmup_runs > 0:
+        print(f"\nRunning {config.warmup_runs} warmup iteration(s)...")
+        warmup_start = time()
+        for i in range(config.warmup_runs):
+            warmup_config = SimpleNamespace(**vars(config))
+            warmup_config.n_test_queries = min(2, n_queries)
+            warmup_config.n_corruptions = min(10, config.n_corruptions)
+            warmup_config.verbose = False
+            _ = run_eval_corruptions(policy, eval_env, sampler, test_queries_tensor, warmup_config)
+        torch.cuda.synchronize()
+        warmup_time = time() - warmup_start
+        print(f"Warmup time: {warmup_time:.2f}s")
+    
+    print(f"\nGPU Profiling eval_corruptions()...")
     
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        torch.cuda.synchronize()
         start_time = time()
         results = run_eval_corruptions(policy, eval_env, sampler, test_queries_tensor, config)
-        elapsed = time() - start_time
+        torch.cuda.synchronize()
+        runtime = time() - start_time
     
-    print(f"\nEvaluation completed in {elapsed:.2f}s")
-    print(f"MRR: {results.get('MRR', 0.0):.4f}")
-    print(f"Hits@1: {results.get('Hits@1', 0.0):.4f}")
-    print(f"Hits@10: {results.get('Hits@10', 0.0):.4f}")
+    total_time = warmup_time + runtime
+    ms_per_query = (runtime / n_queries) * 1000 if n_queries > 0 else 0
+    ms_per_candidate = (runtime / total_candidates) * 1000 if total_candidates > 0 else 0
+    
+    print(f"\n{'='*80}")
+    print("TIMING SUMMARY")
+    print(f"{'='*80}")
+    print(f"Warmup time:      {warmup_time:.4f}s")
+    print(f"Runtime:          {runtime:.4f}s")
+    print(f"Total time:       {total_time:.4f}s")
+    print(f"ms/query:         {ms_per_query:.3f}")
+    print(f"ms/candidate:     {ms_per_candidate:.3f}")
+    print(f"")
+    print(f"MRR:              {results.get('MRR', 0.0):.4f}")
+    print(f"Hits@1:           {results.get('Hits@1', 0.0):.4f}")
+    print(f"Hits@10:          {results.get('Hits@10', 0.0):.4f}")
     
     print("\n" + "="*80)
     print("GPU PROFILING RESULTS - Top CUDA Time")
@@ -363,12 +446,25 @@ def profile_eval_gpu(config: SimpleNamespace):
     # Save results to file
     output_path = 'tests/profile_eval_gpu_results.txt'
     with open(output_path, 'w') as f:
+        f.write(f"Profile Eval GPU Results (Original/Tensor)\n")
         f.write(f"Device: {device}\n")
-        f.write(f"Number of queries: {n_queries}\n")
-        f.write(f"Corruptions per query: {config.n_corruptions}\n")
-        f.write(f"Evaluation time: {elapsed:.2f}s\n")
-        f.write(f"MRR: {results.get('MRR', 0.0):.4f}\n")
-        f.write(f"Hits@1: {results.get('Hits@1', 0.0):.4f}\n\n")
+        f.write(f"\nConfiguration:\n")
+        f.write(f"  Queries: {n_queries}\n")
+        f.write(f"  Corruptions: {n_corruptions}\n")
+        f.write(f"  Total candidates: {total_candidates}\n")
+        f.write(f"\n{'='*80}\n")
+        f.write(f"TIMING SUMMARY\n")
+        f.write(f"{'='*80}\n")
+        f.write(f"Warmup time:      {warmup_time:.4f}s\n")
+        f.write(f"Runtime:          {runtime:.4f}s\n")
+        f.write(f"Total time:       {total_time:.4f}s\n")
+        f.write(f"ms/query:         {ms_per_query:.3f}\n")
+        f.write(f"ms/candidate:     {ms_per_candidate:.3f}\n")
+        f.write(f"\n")
+        f.write(f"MRR:              {results.get('MRR', 0.0):.4f}\n")
+        f.write(f"Hits@1:           {results.get('Hits@1', 0.0):.4f}\n")
+        f.write(f"Hits@10:          {results.get('Hits@10', 0.0):.4f}\n")
+        f.write(f"\n")
         
         f.write("="*80 + "\n")
         f.write("Top CUDA Time\n")

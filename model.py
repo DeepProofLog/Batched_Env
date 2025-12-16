@@ -678,6 +678,54 @@ class ActorCriticPolicy(nn.Module):
         entropy = distribution.entropy()
         
         return values, action_log_probs, entropy
+
+    def evaluate_actions_raw(
+        self,
+        sub_index: torch.Tensor,
+        derived_sub_indices: torch.Tensor,
+        action_mask: torch.Tensor,
+        actions: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Evaluate actions using raw tensors (no TensorDict).
+        
+        This method is optimized for torch.compile with reduce-overhead mode,
+        where TensorDict creation causes CUDA graph instability.
+        
+        Args:
+            sub_index: Observation indices [B, 1, A, 3]
+            derived_sub_indices: Action indices [B, S, A, 3]
+            action_mask: Valid action mask [B, S]
+            actions: Actions to evaluate [B]
+        
+        Returns:
+            Tuple of (values, log_probs, entropy)
+        """
+        # Ensure correct dtype
+        if sub_index.dtype != torch.int32:
+            sub_index = sub_index.to(torch.int32)
+        if derived_sub_indices.dtype != torch.int32:
+            derived_sub_indices = derived_sub_indices.to(torch.int32)
+        
+        # Get embeddings directly from embedder (bypassing TensorDict)
+        obs_embeddings = self.features_extractor.embedder.get_embeddings_batch(sub_index)
+        action_embeddings = self.features_extractor.embedder.get_embeddings_batch(derived_sub_indices)
+        
+        # Compute logits and values
+        features = (obs_embeddings, action_embeddings, action_mask)
+        if self.share_features_extractor:
+            logits, values = self.mlp_extractor(features)
+        else:
+            logits = self.mlp_extractor.forward_actor(features)
+            obs_embeddings_vf = self.vf_features_extractor.embedder.get_embeddings_batch(sub_index)
+            values = self.mlp_extractor.forward_critic((obs_embeddings_vf, None, None))
+
+        # Create distribution and evaluate
+        distribution = self.action_dist.proba_distribution(action_logits=logits)
+        action_log_probs = distribution.log_prob(actions)
+        entropy = distribution.entropy()
+        
+        return values, action_log_probs, entropy
     
     def predict_values(self, obs: TensorDict) -> torch.Tensor:
         """

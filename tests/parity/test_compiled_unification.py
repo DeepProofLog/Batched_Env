@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
 from data_handler import DataHandler
 from index_manager import IndexManager
 from unification import UnificationEngine
-from unification_vectorized import UnificationEngineVectorized
+from unification_optimized import UnificationEngineVectorized
 from utils.debug_helper import DebugHelper
 import re
 
@@ -672,7 +672,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Test compiled unification parity')
     parser.add_argument('--dataset', type=str, default='family')
     parser.add_argument('--n-queries', type=int, default=400)
-    parser.add_argument('--batch-size', type=int, default=400,
+    parser.add_argument('--batch-size', type=int, default=200,
                         help='Number of queries to process in each batch (default: 100)')
     parser.add_argument('--max-depth', type=int, default=20)
     parser.add_argument('--seed', type=int, default=42)

@@ -38,7 +38,7 @@ if str(ROOT) not in sys.path:
 from data_handler import DataHandler
 from index_manager import IndexManager
 from unification import UnificationEngine, set_compile_mode
-from unification_vectorized import UnificationEngineVectorized
+from unification_optimized import UnificationEngineVectorized
 from env import BatchedEnv
 from embeddings import EmbedderLearnable as TensorEmbedder
 from model import ActorCriticPolicy as TensorPolicy

@@ -39,7 +39,7 @@ if str(TEST_ENVS_ROOT) not in sys.path:
 from data_handler import DataHandler
 from index_manager import IndexManager
 from unification import UnificationEngine
-from unification_vectorized import UnificationEngineVectorized
+from unification_optimized import UnificationEngineVectorized
 from env import BatchedEnv
 from env_optimized import EvalEnvOptimized
 from utils.debug_helper import DebugHelper
