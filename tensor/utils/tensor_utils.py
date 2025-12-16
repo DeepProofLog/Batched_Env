@@ -956,6 +956,16 @@ def profile_code(profiler_type, function_to_profile, *args, **kwargs):
         # print("No valid profiler specified, running function without profiling.")
         return function_to_profile(*args, **kwargs)
 
+def _set_seeds(seed: int) -> None:
+    """
+    Legacy function - prefer using utils.seeding.seed_all() instead.
+    
+    This function is kept for backward compatibility but simply delegates
+    to the new seeding module.
+    """
+    from utils.seeding import seed_all
+    seed_all(seed, deterministic_cudnn=False)
+
 
 def _freeze_dropout_layernorm(m: nn.Module):
     if isinstance(m, (nn.Dropout, nn.LayerNorm)):
@@ -985,71 +995,3 @@ def _maybe_enable_wandb(use_WB: bool, args: Any, WB_path: str, model_name: str):
         sync_tensorboard=True,
         config=vars(args),
     )
-
-
-
-def seed_all(
-    seed: int,
-    deterministic: bool = True,
-    deterministic_cudnn: bool = True,
-    warn: bool = False
-) -> None:
-    """
-    Set seeds for ALL random number generators globally.
-    
-    This is the CENTRAL seeding function - call this ONCE at the start
-    of your script/training run (typically from runner.py).
-    
-    Args:
-        seed: The seed value to use
-        deterministic: If True, enables strict deterministic operations.
-            - Sets torch.use_deterministic_algorithms(True)
-            - May impact performance but ensures exact reproducibility
-            - Set to False for production (faster, but non-reproducible)
-        deterministic_cudnn: If True AND deterministic=True, sets CUDNN
-            to deterministic mode. Ignored if deterministic=False.
-        warn: If True, print a warning about deterministic mode
-    
-    Example:
-        # For reproducible parity testing:
-        seed_all(42, deterministic=True)
-        
-        # For production (faster):
-        seed_all(42, deterministic=False)
-    """
-    import os
-    
-    # Core seeding - always done
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-    
-    # Deterministic mode - optional for performance
-    if deterministic:
-        # Set CUBLAS_WORKSPACE_CONFIG for deterministic CUDA matmul operations
-        if torch.cuda.is_available():
-            os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
-        
-        # Enable deterministic algorithms for exact reproducibility
-        torch.use_deterministic_algorithms(True, warn_only=False)
-        print('ensuring determinism in the torch algorithm')
-        
-        if deterministic_cudnn and torch.cuda.is_available():
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-            if warn:
-                print(
-                    "Warning: This setting is not reproducible when creating "
-                    "2 models from scratch, but it is when loading pretrained models."
-                )
-    else:
-        # Non-deterministic mode - faster for production
-        torch.use_deterministic_algorithms(False)
-        if torch.cuda.is_available():
-            torch.backends.cudnn.benchmark = True  # Enable cuDNN autotuner
-
-

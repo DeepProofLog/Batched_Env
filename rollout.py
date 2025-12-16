@@ -1,42 +1,58 @@
 """
-Rollout Buffer for On-Policy Reinforcement Learning.
+Rollout Buffer for On-Policy Reinforcement Learning with Optimized Environment.
 
-This module provides a GPU-accelerated rollout buffer for collecting
-and processing environment transitions during PPO training.
+This module provides a GPU-accelerated rollout buffer designed to work with
+EvalEnvOptimized (which uses EvalObs NamedTuples instead of TensorDict).
 
 Key Features:
     - GPU-native storage using torch tensors
     - GAE (Generalized Advantage Estimation) computation
     - Efficient minibatch generation for training
-    - Compatible with vectorized environments
-
-Tensor Shape Conventions:
-    T = buffer_size (number of steps per rollout)
-    N = n_envs (number of parallel environments)
-    * = variable observation dimensions
+    - Compatible with EvalObs observation format
 """
 
 import torch
 import numpy as np
-from typing import Optional, Generator, Tuple
-from tensordict import TensorDict
+from typing import Optional, Generator, Tuple, NamedTuple, List
 
 
-class RolloutBuffer:
+def _batch_index_select(
+    tensors: List[torch.Tensor],
+    indices: torch.Tensor,
+    outputs: List[torch.Tensor],
+) -> None:
     """
-    Rollout buffer for on-policy algorithms like PPO.
+    Batch index_select operations for multiple tensors.
     
-    This buffer stores transitions collected during rollout and computes
-    advantages using Generalized Advantage Estimation (GAE).
+    This function performs index_select on multiple tensors simultaneously,
+    using in-place operations to maintain stable memory addresses for CUDA graphs.
+    
+    Args:
+        tensors: List of source tensors to index into
+        indices: Index tensor [batch_size]
+        outputs: List of pre-allocated output tensors (same order as tensors)
+    """
+    for src, dst in zip(tensors, outputs):
+        torch.index_select(src, 0, indices, out=dst)
+
+
+class RolloutBufferOptimized:
+    """
+    Rollout buffer for on-policy algorithms working with EvalEnvOptimized.
+    
+    Unlike RolloutBuffer which uses TensorDict, this stores observations
+    as separate tensor fields matching the EvalObs structure.
     
     Storage shapes:
-        observations: Dict[str, (buffer_size, n_envs, *obs_shape)]
-        actions:      (buffer_size, n_envs, action_dim)
-        rewards:      (buffer_size, n_envs)
-        values:       (buffer_size, n_envs)
-        log_probs:    (buffer_size, n_envs)
-        advantages:   (buffer_size, n_envs)
-        returns:      (buffer_size, n_envs)
+        sub_index:            (buffer_size, n_envs, 1, A, 3)
+        derived_sub_indices:  (buffer_size, n_envs, S, A, 3)
+        action_mask:          (buffer_size, n_envs, S)
+        actions:              (buffer_size, n_envs)
+        rewards:              (buffer_size, n_envs)
+        values:               (buffer_size, n_envs)
+        log_probs:            (buffer_size, n_envs)
+        advantages:           (buffer_size, n_envs)
+        returns:              (buffer_size, n_envs)
     
     Args:
         buffer_size: Number of steps to collect per rollout
@@ -44,6 +60,8 @@ class RolloutBuffer:
         device: PyTorch device (cpu or cuda)
         gamma: Discount factor
         gae_lambda: GAE lambda parameter
+        padding_atoms: A dimension (number of atoms per state)
+        padding_states: S dimension (max derived states)
     """
     
     def __init__(
@@ -53,100 +71,141 @@ class RolloutBuffer:
         device: torch.device,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
+        padding_atoms: int = 6,
+        padding_states: int = 100,
         parity: bool = False,
+        batch_size: int = 64,  # Pre-allocate batch tensors for this size
     ):
         self.buffer_size = buffer_size
         self.n_envs = n_envs
         self.device = device
         self.gamma = gamma
         self.gae_lambda = gae_lambda
+        self.padding_atoms = padding_atoms
+        self.padding_states = padding_states
         self.parity = parity
+        self._default_batch_size = batch_size
         
         # Current position in buffer
         self.pos = 0
         self.full = False
+        # generator_ready is persistent - never reset once True
         self.generator_ready = False
         
-        # Storage tensors (will be initialized on first add)
-        self.observations = None
-        self.actions = None
-        self.rewards = None
-        self.values = None
-        self.log_probs = None
-        self.episode_starts = None
-        self.advantages = None
-        self.returns = None
+        # Initialize storage tensors
+        self._initialize_storage()
         
-        # Store observation structure info
-        self.obs_keys = None
-        self.obs_shapes = {}
-        self.obs_dtypes = {}
+        # Pre-allocate flattened tensors for CUDA graph stability
+        # These must have stable memory addresses across resets
+        self._initialize_flat_storage()
+        
+        # Pre-allocate batch tensors for CUDA graph stability
+        # These are used in get() and must have stable memory addresses
+        self._initialize_batch_storage(batch_size)
+        
+    def _initialize_storage(self) -> None:
+        """Initialize storage tensors for observations and other data."""
+        T, N, A, S = self.buffer_size, self.n_envs, self.padding_atoms, self.padding_states
+        
+        # Observation storage matching EvalObs structure
+        self.sub_index = torch.zeros((T, N, 1, A, 3), dtype=torch.long, device=self.device)
+        self.derived_sub_indices = torch.zeros((T, N, S, A, 3), dtype=torch.long, device=self.device)
+        self.action_mask = torch.zeros((T, N, S), dtype=torch.bool, device=self.device)
+        
+        # Action and scalar storage
+        self.actions = torch.zeros((T, N), dtype=torch.long, device=self.device)
+        self.rewards = torch.zeros((T, N), dtype=torch.float32, device=self.device)
+        self.values = torch.zeros((T, N), dtype=torch.float32, device=self.device)
+        self.log_probs = torch.zeros((T, N), dtype=torch.float32, device=self.device)
+        self.episode_starts = torch.zeros((T, N), dtype=torch.float32, device=self.device)
+        self.advantages = torch.zeros((T, N), dtype=torch.float32, device=self.device)
+        self.returns = torch.zeros((T, N), dtype=torch.float32, device=self.device)
+    
+    def _initialize_flat_storage(self) -> None:
+        """Pre-allocate flattened tensors for CUDA graph compatibility.
+        
+        These tensors maintain stable memory addresses across resets,
+        which is required for CUDA graphs in reduce-overhead mode.
+        """
+        total_size = self.buffer_size * self.n_envs
+        A = self.padding_atoms
+        S = self.padding_states
+        
+        # Flattened observation storage
+        self.flat_sub_index = torch.zeros((total_size, 1, A, 3), dtype=torch.long, device=self.device)
+        self.flat_derived_sub_indices = torch.zeros((total_size, S, A, 3), dtype=torch.long, device=self.device)
+        self.flat_action_mask = torch.zeros((total_size, S), dtype=torch.bool, device=self.device)
+        
+        # Flattened scalar storage
+        self.flat_actions = torch.zeros(total_size, dtype=torch.long, device=self.device)
+        self.flat_values = torch.zeros(total_size, dtype=torch.float32, device=self.device)
+        self.flat_log_probs = torch.zeros(total_size, dtype=torch.float32, device=self.device)
+        self.flat_advantages = torch.zeros(total_size, dtype=torch.float32, device=self.device)
+        self.flat_returns = torch.zeros(total_size, dtype=torch.float32, device=self.device)
+        
+        # Mark as always ready since tensors are pre-allocated
+        self.generator_ready = True
+    
+    def _initialize_batch_storage(self, batch_size: int) -> None:
+        """Pre-allocate batch tensors for CUDA graph compatibility.
+        
+        These tensors are used in get() and must have stable memory addresses
+        for CUDA graphs in reduce-overhead mode. Allocated once in __init__,
+        never reallocated.
+        
+        Args:
+            batch_size: The batch size to pre-allocate for.
+        """
+        A = self.padding_atoms
+        S = self.padding_states
+        total_size = self.buffer_size * self.n_envs
+        
+        # Batch output tensors - these hold the actual batch data
+        self._batch_sub_index = torch.zeros((batch_size, 1, A, 3), dtype=torch.long, device=self.device)
+        self._batch_derived = torch.zeros((batch_size, S, A, 3), dtype=torch.long, device=self.device)
+        self._batch_mask = torch.zeros((batch_size, S), dtype=torch.bool, device=self.device)
+        self._batch_actions = torch.zeros(batch_size, dtype=torch.long, device=self.device)
+        self._batch_values = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        self._batch_log_probs = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        self._batch_advantages = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        self._batch_returns = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        self._batch_tensors_size = batch_size
+        
+        # Pre-allocate index tensor for stable memory addresses
+        # This avoids creating new index tensors each batch
+        self._batch_indices = torch.zeros(batch_size, dtype=torch.long, device=self.device)
+        
+        # Pre-allocate full permutation tensor
+        self._permutation = torch.zeros(total_size, dtype=torch.long, device=self.device)
         
     def reset(self) -> None:
-        """Reset the buffer."""
+        """Reset the buffer.
+        
+        NOTE: Does NOT reset generator_ready or flattened tensors to maintain
+        stable memory addresses for CUDA graph compatibility.
+        """
         self.pos = 0
         self.full = False
-        self.generator_ready = False
+        # DO NOT reset generator_ready - flattened tensors are pre-allocated
+        # and must keep stable memory addresses for CUDA graphs
         
-        if self.observations is not None:
-            # Clear existing storage
-            self.observations.zero_()
-            self.actions.zero_()
-            self.rewards.zero_()
-            self.values.zero_()
-            self.log_probs.zero_()
-            self.episode_starts.zero_()
-            if self.advantages is not None:
-                self.advantages.zero_()
-            if self.returns is not None:
-                self.returns.zero_()
-    
-    def _initialize_storage(self, obs: TensorDict, action: torch.Tensor) -> None:
-        """Initialize storage tensors based on first observation and action."""
-        # Store observation structure
-        self.obs_keys = list(obs.keys())
-        
-        # Create storage dict for observations
-        obs_storage = {}
-        for key in self.obs_keys:
-            obs_tensor = obs[key]
-            self.obs_shapes[key] = obs_tensor.shape[1:]  # Exclude batch dimension
-            self.obs_dtypes[key] = obs_tensor.dtype
-            
-            # Create storage: [buffer_size, n_envs, *obs_shape]
-            storage_shape = (self.buffer_size, self.n_envs) + self.obs_shapes[key]
-            obs_storage[key] = torch.zeros(
-                storage_shape,
-                dtype=obs_tensor.dtype,
-                device=self.device
-            )
-            
-        # Wrap in TensorDict
-        self.observations = TensorDict(
-            obs_storage,
-            batch_size=[self.buffer_size, self.n_envs],
-            device=self.device
-        )
-        
-        # Action storage
-        action_dim = action.shape[-1] if action.dim() > 1 else 1
-        self.actions = torch.zeros(
-            (self.buffer_size, self.n_envs, action_dim),
-            dtype=action.dtype,
-            device=self.device
-        )
-        
-        # Scalar storages
-        self.rewards = torch.zeros((self.buffer_size, self.n_envs), device=self.device)
-        self.values = torch.zeros((self.buffer_size, self.n_envs), device=self.device)
-        self.log_probs = torch.zeros((self.buffer_size, self.n_envs), device=self.device)
-        self.episode_starts = torch.zeros((self.buffer_size, self.n_envs), device=self.device)
-        self.advantages = torch.zeros((self.buffer_size, self.n_envs), device=self.device)
-        self.returns = torch.zeros((self.buffer_size, self.n_envs), device=self.device)
+        # Zero out storage (in-place - preserves memory addresses)
+        self.sub_index.zero_()
+        self.derived_sub_indices.zero_()
+        self.action_mask.zero_()
+        self.actions.zero_()
+        self.rewards.zero_()
+        self.values.zero_()
+        self.log_probs.zero_()
+        self.episode_starts.zero_()
+        self.advantages.zero_()
+        self.returns.zero_()
     
     def add(
         self,
-        obs: TensorDict,
+        sub_index: torch.Tensor,
+        derived_sub_indices: torch.Tensor,
+        action_mask: torch.Tensor,
         action: torch.Tensor,
         reward: torch.Tensor,
         episode_start: torch.Tensor,
@@ -157,44 +216,26 @@ class RolloutBuffer:
         Add a transition to the buffer.
         
         Args:
-            obs: Observations (TensorDict with batch_size=n_envs)
-            action: Actions taken (n_envs, action_dim) or (n_envs,)
-            reward: Rewards received (n_envs,)
-            episode_start: Episode start flags (n_envs,)
-            value: Value estimates (n_envs,)
-            log_prob: Log probabilities of actions (n_envs,)
+            sub_index: Current state observation [N, 1, A, 3]
+            derived_sub_indices: Derived states [N, S, A, 3]
+            action_mask: Valid action mask [N, S]
+            action: Actions taken [N]
+            reward: Rewards received [N]
+            episode_start: Episode start flags [N]
+            value: Value estimates [N]
+            log_prob: Log probabilities of actions [N]
         """
-        # Initialize storage on first call
-        if self.observations is None:
-            self._initialize_storage(obs, action)
+        # Store observations
+        self.sub_index[self.pos] = sub_index.to(self.device)
+        self.derived_sub_indices[self.pos] = derived_sub_indices.to(self.device)
+        self.action_mask[self.pos] = action_mask.to(self.device)
         
-        # Ensure tensors are on the correct device
-        if action.device != self.device:
-            action = action.to(self.device)
-        if reward.device != self.device:
-            reward = reward.to(self.device)
-        if episode_start.device != self.device:
-            episode_start = episode_start.to(self.device)
-        if value.device != self.device:
-            value = value.to(self.device)
-        if log_prob.device != self.device:
-            log_prob = log_prob.to(self.device)
-        
-        # Handle action shape
-        if action.dim() == 1:
-            action = action.unsqueeze(-1)
-        
-        # Store observations (TensorDict optimized copy)
-        if obs.device != self.device:
-             obs = obs.to(self.device)
-        self.observations[self.pos] = obs
-        
-        # Store other data
-        self.actions[self.pos] = action
-        self.rewards[self.pos] = reward
-        self.episode_starts[self.pos] = episode_start
-        self.values[self.pos] = value.flatten()
-        self.log_probs[self.pos] = log_prob.flatten()
+        # Store scalars
+        self.actions[self.pos] = action.to(self.device)
+        self.rewards[self.pos] = reward.to(self.device)
+        self.episode_starts[self.pos] = episode_start.to(self.device)
+        self.values[self.pos] = value.flatten().to(self.device)
+        self.log_probs[self.pos] = log_prob.flatten().to(self.device)
         
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -209,8 +250,8 @@ class RolloutBuffer:
         Compute returns and advantages using GAE.
         
         Args:
-            last_values: Value estimates for the last step (n_envs,)
-            dones: Done flags for the last step (n_envs,)
+            last_values: Value estimates for the last step [N]
+            dones: Done flags for the last step [N]
         """
         last_values = last_values.flatten().to(self.device)
         dones = dones.float().to(self.device)
@@ -237,81 +278,129 @@ class RolloutBuffer:
         """
         Swap and flatten axes 0 (buffer_size) and 1 (n_envs).
         
-        Shape: (n_steps, n_envs, ...) -> (n_steps * n_envs, ...)
+        Shape: (T, N, ...) -> (T * N, ...)
         """
         shape = tensor.shape
-        if len(shape) < 3:
-            shape = (*shape, 1)
-            tensor = tensor.reshape(shape)
-        
-        # Swap axes 0 and 1, then flatten
-        # Make contiguous to match numpy's memory layout and ensure deterministic operations
+        # Swap axes 0 and 1, then flatten first two dims
         return tensor.transpose(0, 1).contiguous().reshape(shape[0] * shape[1], *shape[2:])
+    
+    @staticmethod
+    def _swap_and_flatten_into(src: torch.Tensor, dst: torch.Tensor) -> None:
+        """
+        Swap and flatten axes 0 and 1 of src, copying INTO dst.
+        
+        This preserves the memory address of dst, which is critical for
+        CUDA graph compatibility in reduce-overhead mode.
+        
+        Args:
+            src: Source tensor with shape (T, N, ...)
+            dst: Pre-allocated destination tensor with shape (T*N, ...)
+        """
+        shape = src.shape
+        # Create a view with swapped and flattened dims, then copy into dst
+        flattened = src.transpose(0, 1).contiguous().reshape(shape[0] * shape[1], *shape[2:])
+        dst.copy_(flattened)
     
     def get(
         self,
         batch_size: Optional[int] = None
-    ) -> Generator[Tuple[TensorDict, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
+    ) -> Generator[Tuple[torch.Tensor, ...], None, None]:
         """
         Generate batches for training.
         
         Args:
-            batch_size: Size of minibatches. If None, returns entire buffer.
+            batch_size: Size of minibatches. If None, uses default batch size.
         
         Yields:
-            Tuples of (observations, actions, values, log_probs, advantages, returns)
+            Tuples of (sub_index, derived_sub_indices, action_mask, 
+                       actions, values, log_probs, advantages, returns)
+        
+        IMPORTANT: For CUDA graph compatibility (reduce-overhead mode), the batch_size
+        should match the one used in __init__. If a different batch_size is passed,
+        the method will still work but may trigger recompilation.
         """
         if not self.full:
             raise RuntimeError("Buffer is not full. Cannot sample.")
         
-        # Create random permutation of indices
         total_size = self.buffer_size * self.n_envs
         
-        if self.parity:
-            # Use numpy for exact parity with SB3
-            indices = np.random.permutation(total_size)
-            indices = torch.from_numpy(indices).to(self.device)
-        else:
-            # Use torch.randperm for efficiency (avoids CPU->GPU transfer)
-            indices = torch.randperm(total_size, device=self.device)
-        
-        # Prepare flattened data on first call
-        if not self.generator_ready:
-            # Flatten observations (Optimized TensorDict op)
-            # We must explicitly call contiguous() after permute because TensorDict might require it for reshaping
-            # or it might handle it. But to be safe and match behavior:
-            self.flat_observations = self.observations.permute(1, 0).contiguous().reshape(-1)
-            
-            # Flatten other tensors
-            self.flat_actions = self.swap_and_flatten(self.actions)
-            self.flat_values = self.swap_and_flatten(self.values)
-            self.flat_log_probs = self.swap_and_flatten(self.log_probs)
-            self.flat_advantages = self.swap_and_flatten(self.advantages)
-            self.flat_returns = self.swap_and_flatten(self.returns)
-            
-            self.generator_ready = True
-        
-        # Default to full batch if batch_size not specified
+        # Default to pre-allocated batch size
         if batch_size is None:
-            batch_size = total_size
+            batch_size = self._default_batch_size
         
-        # Generate minibatches
+        # Check if we need to reallocate batch tensors (warning: breaks CUDA graphs)
+        if batch_size != self._batch_tensors_size:
+            import warnings
+            warnings.warn(
+                f"Batch size changed from {self._batch_tensors_size} to {batch_size}. "
+                f"This may cause CUDA graph recompilation in reduce-overhead mode.",
+                RuntimeWarning
+            )
+            self._initialize_batch_storage(batch_size)
+        
+        # Generate permutation INTO pre-allocated tensor (stable memory address)
+        if self.parity:
+            perm_np = np.random.permutation(total_size)
+            self._permutation.copy_(torch.from_numpy(perm_np))
+        else:
+            torch.randperm(total_size, out=self._permutation)
+        
+        # Copy data INTO pre-allocated flattened tensors (preserves memory addresses)
+        self._swap_and_flatten_into(self.sub_index, self.flat_sub_index)
+        self._swap_and_flatten_into(self.derived_sub_indices, self.flat_derived_sub_indices)
+        self._swap_and_flatten_into(self.action_mask, self.flat_action_mask)
+        self._swap_and_flatten_into(self.actions, self.flat_actions)
+        self._swap_and_flatten_into(self.values, self.flat_values)
+        self._swap_and_flatten_into(self.log_probs, self.flat_log_probs)
+        self._swap_and_flatten_into(self.advantages, self.flat_advantages)
+        self._swap_and_flatten_into(self.returns, self.flat_returns)
+        
+        # Generate minibatches using stable index tensor
         start_idx = 0
         while start_idx < total_size:
             end_idx = min(start_idx + batch_size, total_size)
-            batch_indices = indices[start_idx:end_idx]
+            actual_batch_size = end_idx - start_idx
             
-            # Efficient indexing into flattened TensorDict
-            batch_obs = self.flat_observations[batch_indices]
-            
-            yield (
-                batch_obs,
-                self._format_actions(self.flat_actions[batch_indices]),
-                self.flat_values[batch_indices].squeeze(-1),
-                self.flat_log_probs[batch_indices].squeeze(-1),
-                self.flat_advantages[batch_indices].squeeze(-1),
-                self.flat_returns[batch_indices].squeeze(-1),
-            )
+            if actual_batch_size < batch_size:
+                # Last smaller batch - this won't use CUDA graphs anyway
+                # Create temporary slice (okay since it's the final batch)
+                batch_idx = self._permutation[start_idx:end_idx]
+                yield (
+                    self.flat_sub_index[batch_idx],
+                    self.flat_derived_sub_indices[batch_idx],
+                    self.flat_action_mask[batch_idx],
+                    self.flat_actions[batch_idx],
+                    self.flat_values[batch_idx],
+                    self.flat_log_probs[batch_idx],
+                    self.flat_advantages[batch_idx],
+                    self.flat_returns[batch_idx],
+                )
+            else:
+                # Copy indices into pre-allocated index tensor (stable address)
+                self._batch_indices.copy_(self._permutation[start_idx:end_idx])
+                
+                # Use batched index_select for better kernel scheduling
+                # All index_selects use the same indices, so the GPU can overlap them
+                _batch_index_select(
+                    [self.flat_sub_index, self.flat_derived_sub_indices, self.flat_action_mask,
+                     self.flat_actions, self.flat_values, self.flat_log_probs,
+                     self.flat_advantages, self.flat_returns],
+                    self._batch_indices,
+                    [self._batch_sub_index, self._batch_derived, self._batch_mask,
+                     self._batch_actions, self._batch_values, self._batch_log_probs,
+                     self._batch_advantages, self._batch_returns]
+                )
+                
+                yield (
+                    self._batch_sub_index,
+                    self._batch_derived,
+                    self._batch_mask,
+                    self._batch_actions,
+                    self._batch_values,
+                    self._batch_log_probs,
+                    self._batch_advantages,
+                    self._batch_returns,
+                )
             
             start_idx = end_idx
 
@@ -320,10 +409,3 @@ class RolloutBuffer:
         if self.full:
             return self.buffer_size * self.n_envs
         return self.pos * self.n_envs
-
-    @staticmethod
-    def _format_actions(actions: torch.Tensor) -> torch.Tensor:
-        """Squeeze the last dimension if it is singular."""
-        if actions.dim() > 1 and actions.shape[-1] == 1:
-            return actions.squeeze(-1)
-        return actions

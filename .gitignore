@@ -14,3 +14,4 @@ kge_pykeen/models/
 data/kge_scores_wn18rr.txt
 logs_countries.txt
 top_k_scores/files/
+cudagraphs/

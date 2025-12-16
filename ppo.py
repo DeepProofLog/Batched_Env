@@ -1,79 +1,152 @@
 """
-PPO (Proximal Policy Optimization) Algorithm.
+PPO (Proximal Policy Optimization) for Optimized Environment.
 
-This module implements the PPO reinforcement learning algorithm with:
-    - GAE (Generalized Advantage Estimation) for advantage computation
-    - Clipped surrogate objective for stable policy updates
-    - Value function loss with optional clipping
-    - Entropy bonus for exploration
+This module implements PPO for use with EvalEnvOptimized which uses
+EvalObs/EvalState instead of TensorDict.
 
-Key Components:
-    - collect_rollouts(): Collects environment transitions into a buffer
-    - train(): Performs PPO policy updates with multiple epochs
-    - learn(): Main training loop orchestrating rollout and update cycles
+Key Differences from ppo.py:
+    - Uses step_functional() instead of step_and_maybe_reset()
+    - Works with EvalObs NamedTuples
+    - Uses RolloutBufferOptimized
+    
+Evaluation Methods:
+    - evaluate_policy(): Run trajectories for a batch of queries
+    - evaluate_with_corruptions(): Full MRR/Hits@K evaluation with corruptions
+    
+The PPOOptimized class maintains a fixed_batch_size that is set during
+compile() and enforced during evaluation to avoid recompilation with
+CUDA graphs (reduce-overhead mode).
 """
 
-import time
-from typing import Dict, Optional, Callable
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch._dynamo
-# Enable compiled autograd to handle autograd.grad / backward() in compiled regions
-if hasattr(torch._dynamo.config, 'compiled_autograd'):
-    torch._dynamo.config.compiled_autograd = True
-    
+import numpy as np
+from torch import Tensor
+from typing import Optional, Callable, Dict, List, Tuple, Any, Sequence
 from tensordict import TensorDict
+import time
 
-from rollout import RolloutBuffer
-from utils.trace_utils import TraceRecorder
-from callbacks import Display
-try:
-    from debug_training import analyze_logits, analyze_values_returns, analyze_advantages, print_training_health_report
-    DEBUG_TRAINING_AVAILABLE = True
-except ImportError:
-    DEBUG_TRAINING_AVAILABLE = False
+from rollout import RolloutBufferOptimized
+from env import EvalEnvOptimized, EvalObs, EvalState
+
+
+# ============================================================================
+# Metrics Computation
+# ============================================================================
+
+def compute_metrics_from_ranks(ranks: Tensor) -> Dict[str, float]:
+    """Compute MRR and Hits@K from ranks tensor."""
+    if ranks.numel() == 0:
+        return {"MRR": 0.0, "Hits@1": 0.0, "Hits@3": 0.0, "Hits@10": 0.0}
+    ranks_float = ranks.float()
+    return {
+        "MRR": float(torch.mean(1.0 / ranks_float).item()),
+        "Hits@1": float(torch.mean((ranks_float <= 1.0).float()).item()),
+        "Hits@3": float(torch.mean((ranks_float <= 3.0).float()).item()),
+        "Hits@10": float(torch.mean((ranks_float <= 10.0).float()).item()),
+    }
+
+
+def compute_optimal_batch_size(
+    chunk_queries: int = None,
+    n_corruptions: int = None,
+    max_vram_gb: float = None,
+    min_batch_size: int = 64,
+    prefer_power_of_two: bool = False,
+) -> int:
+    """
+    Compute optimal batch size for evaluation.
+    
+    Uses adaptive batch size: smaller for small evaluations, larger for large ones.
+    This optimizes compilation time for small tests while supporting large-scale ranking.
+    
+    Memory model:
+    - Each query in a batch requires ~3-4MB for state tensors:
+      - derived_states: [K_max=120, M_max=26, 3] × 8 bytes ≈ 75KB per query
+      - Multiple intermediate tensors during unification: ~3MB per query
+    - For 8GB GPU with ~6GB usable: max ~2000 queries safely, ~1500 conservatively
+    
+    CRITICAL: Batch sizes > 512 have pathologically worse per-query performance
+    due to GPU memory bandwidth saturation with large derived_states tensors.
+    
+    Args:
+        chunk_queries: Number of queries per chunk (used for sizing)
+        n_corruptions: Number of corruptions per query (used for sizing)
+        max_vram_gb: Maximum VRAM to use (default: detected from GPU)
+        min_batch_size: Minimum allowed batch size
+        prefer_power_of_two: If True, round to nearest power of 2
+        
+    Returns:
+        Batch size (adaptive based on actual needs)
+    """
+    # Detect available VRAM if not specified
+    if max_vram_gb is None and torch.cuda.is_available():
+        total_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        # Use ~60% of total memory to leave room for PyTorch overhead
+        max_vram_gb = total_mem * 0.6
+    elif max_vram_gb is None:
+        max_vram_gb = 4.0  # Conservative default for CPU
+    
+    # Adaptive: use smaller batch for small evaluations
+    # This speeds up compilation for small tests
+    # NOTE: Batch sizes > 512 tend to have much worse per-query performance
+    # due to GPU memory bandwidth limits with large derived_states tensors
+    if chunk_queries is not None and n_corruptions is not None:
+        actual_need = chunk_queries * (1 + n_corruptions)
+        if actual_need <= 64:
+            batch_size = 64
+        elif actual_need <= 256:
+            batch_size = 256
+        else:
+            # Cap at 512 for best throughput (larger sizes have worse per-query time)
+            batch_size = 512
+    else:
+        # Default to moderate size if params not provided
+        batch_size = 256
+    
+    # Clamp to VRAM limit - use more accurate memory estimation
+    # Each query uses approximately 3MB during unification
+    mem_per_query_mb = 3.0
+    max_batch_from_vram = int(max_vram_gb * 1024 / mem_per_query_mb)
+    batch_size = min(batch_size, max_batch_from_vram)
+    
+    # Apply minimum
+    batch_size = max(batch_size, min_batch_size)
+    
+    # Align to multiples of 32 for GPU efficiency
+    batch_size = ((batch_size + 31) // 32) * 32
+    
+    # Optional: round to power of 2
+    if prefer_power_of_two:
+        import math
+        log2 = math.log2(batch_size)
+        batch_size = 2 ** round(log2)
+    
+    return batch_size
 
 
 def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
     """
     Compute fraction of variance that y_pred explains about y_true.
-    
     Returns 1 - Var[y_true - y_pred] / Var[y_true]
-    
-    Interpretation:
-        ev=0  =>  might as well have predicted zero
-        ev=1  =>  perfect prediction
-        ev<0  =>  worse than just predicting zero
-    
-    Args:
-        y_pred: Predicted values (values from rollout buffer)
-        y_true: True values (returns from rollout buffer)
-        
-    Returns:
-        Explained variance as a tensor (0-d)
     """
-    y_pred = y_pred.flatten()
-    y_true = y_true.flatten()
-    
-    var_y = y_true.var()
-    if var_y == 0:
-        return torch.tensor(float('nan'), device=y_true.device)
-    return 1.0 - (y_true - y_pred).var() / var_y
+    var_y = torch.var(y_true)
+    return 1.0 - torch.var(y_true - y_pred) / (var_y + 1e-8)
 
 
-
+# ============================================================================
+# Loss Module (for torch.compile)
+# ============================================================================
 
 class PPOLossModule(nn.Module):
     """
-    Fused module that wraps the policy and loss computation.
+    Fused module that wraps policy forward + loss computation.
     
-    This allows torch.compile to see the Policy Forward + Loss Computation
-    as a single graph, enabling:
-    1. Kernel fusion across the boundary (e.g. policy output -> loss).
-    2. Elimination of overhead from launching multiple separate compiled functions.
-    3. Minimized device synchronization.
+    This allows torch.compile to see the entire computation as a single graph,
+    enabling kernel fusion and eliminating overhead from separate compiled functions.
+    
+    Uses raw tensors (not TensorDict) for stable memory addresses with CUDA graphs.
     """
     def __init__(self, policy: nn.Module):
         super().__init__()
@@ -81,67 +154,63 @@ class PPOLossModule(nn.Module):
         
     def forward(
         self,
-        obs: TensorDict,
+        sub_index: torch.Tensor,          # [B, 1, A, 3]
+        derived_sub_indices: torch.Tensor, # [B, S, A, 3]
+        action_mask: torch.Tensor,         # [B, S]
         actions: torch.Tensor,
         advantages: torch.Tensor,
         returns: torch.Tensor,
         old_log_probs: torch.Tensor,
         old_values: torch.Tensor,
         clip_range: float,
-        clip_range_vf: Optional[float],
+        clip_range_vf: float,  # Must be a float, use 0.0 for no clipping
         ent_coef: float,
         vf_coef: float,
     ) -> torch.Tensor:
-        # 1. Run Policy Forward (was evaluate_actions)
-        values, log_probs, entropy = self.policy(obs, actions=actions)
+        # Use raw tensor method to avoid TensorDict (CUDA graph compatible)
+        # 1. Policy Forward (evaluate_actions_raw)
+        values, log_probs, entropy = self.policy.evaluate_actions_raw(
+            sub_index, derived_sub_indices, action_mask, actions
+        )
         values = values.flatten()
         
-        # 2. Compute Loss Components
-        # Ratio between old and new policy
+        # 2. PPO Loss Computation
         log_ratio = log_probs - old_log_probs
         ratio = torch.exp(log_ratio)
         
         # Clipped surrogate loss
         policy_loss_1 = advantages * ratio
-        policy_loss_2 = advantages * torch.clamp(
-            ratio,
-            1.0 - clip_range,
-            1.0 + clip_range,
-        )
-        # Use minimum for element-wise min
+        policy_loss_2 = advantages * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
         policy_loss = -torch.minimum(policy_loss_1, policy_loss_2).mean()
         
         # Clip fraction
         clip_fraction_t = torch.mean((torch.abs(ratio - 1) > clip_range).float())
         
-        # Value loss
-        if clip_range_vf is None:
-            values_pred = values
-        else:
-            values_pred = old_values + torch.clamp(
-                values - old_values,
-                -clip_range_vf,
-                clip_range_vf,
-            )
-        
-        # MSE Loss
+        # Value loss - handle clip_range_vf correctly:
+        # When clip_range_vf > 0: apply clipping (clamp value difference)
+        # When clip_range_vf == 0: no clipping (use values directly)
+        # Use torch.where for CUDA graph compatibility (avoids control flow)
+        value_diff = values - old_values
+        clipped_diff = torch.clamp(value_diff, -clip_range_vf, clip_range_vf)
+        # If clip_range_vf == 0, use raw values; otherwise use clipped values
+        # Equivalent to: values if clip_range_vf == 0 else old_values + clipped_diff
+        values_pred = torch.where(
+            torch.tensor(clip_range_vf > 0, device=values.device),
+            old_values + clipped_diff,
+            values
+        )
         value_loss = F.mse_loss(returns, values_pred)
         
-        # Entropy loss
-        if entropy is None:
-            # Fallback if policy doesn't return entropy (shouldn't happen with ActorCriticPolicy)
-            entropy_loss = -torch.mean(-log_probs)
-        else:
-            entropy_loss = -torch.mean(entropy)
+        # Entropy loss - always use entropy path (policy should always return entropy)
+        entropy_loss = -torch.mean(entropy)
             
         # Total loss
         loss = policy_loss + ent_coef * entropy_loss + vf_coef * value_loss
         
         # Approx KL
-        ratio_minus_one = ratio - 1.0
-        approx_kl_div_t = torch.mean(ratio_minus_one - log_ratio)
+        approx_kl_div_t = torch.mean((ratio - 1.0) - log_ratio)
         
-        # Pack attributes into a single tensor
+        # Pack metrics into single tensor for efficient return
         metrics_packed = torch.stack([
             loss,
             policy_loss,
@@ -154,46 +223,46 @@ class PPOLossModule(nn.Module):
         return metrics_packed
 
 
-class PPO:
+# ============================================================================
+# PPO Implementation
+# ============================================================================
+
+class PPOOptimized:
     """
-    Proximal Policy Optimization (PPO) algorithm.
+    Proximal Policy Optimization for EvalEnvOptimized.
     
-    PPO is an on-policy gradient method that alternates between sampling data
-    through interaction with the environment and optimizing a "surrogate" objective
-    function using stochastic gradient ascent.
+    This implementation works with the functional/immutable state approach
+    of EvalEnvOptimized rather than the TensorDict-based BatchedEnv.
     
     Key Features:
-    - **Clipped Surrogate Objective**: Constrains the policy update step size to
-      prevent destructive large updates.
-    - **Generalized Advantage Estimation (GAE)**: Used for calculating advantages,
-      balancing bias and variance.
-    - **Value Function Clipping**: Optional clipping of the value function updates
-      to match the policy trust region.
-    - **Entropy Regularization**: Encourages exploration by adding an entropy bonus
-      to the loss.
+        - Fixed batch size for CUDA graph compatibility (reduce-overhead mode)
+        - Integrated evaluation methods (evaluate_policy, evaluate_with_corruptions)
+        - Single-step compilation for fast warmup
+        - eval_only mode for memory-efficient evaluation (skips 8-16GB buffer allocation)
     
-    Attributes:
-        policy (nn.Module): Actor-Critic network.
-        env (EnvBase): Batched TorchRL environment.
-        n_steps (int): Steps per environment per rollout.
-        learning_rate (float): Adam optimizer learning rate.
-        n_epochs (int): Number of optimization epochs per rollout.
-        batch_size (int): Minibatch size for gradient updates.
-        gamma (float): Discount factor for future rewards.
-        gae_lambda (float): GAE smoothing parameter.
-        clip_range (float): Hyperparameter epsilon for clipping policy updates.
-        clip_range_vf (Optional[float]): Hyperparameter for clipping value updates.
-        normalize_advantage (bool): Whether to normalize advantages per minibatch.
-        ent_coef (float): Entropy coefficient.
-        vf_coef (float): Value function coefficient.
-        max_grad_norm (float): Gradient clipping norm.
-        target_kl (Optional[float]): KL divergence limit for early stopping.
+    Args:
+        policy: Actor-critic policy network
+        env: EvalEnvOptimized instance
+        n_steps: Steps per environment per rollout
+        learning_rate: Adam optimizer learning rate
+        n_epochs: Number of optimization epochs per rollout
+        batch_size: Minibatch size for gradient updates
+        gamma: Discount factor
+        gae_lambda: GAE smoothing parameter
+        clip_range: PPO clipping parameter
+        normalize_advantage: Whether to normalize advantages
+        ent_coef: Entropy coefficient
+        vf_coef: Value function coefficient
+        max_grad_norm: Gradient clipping norm
+        fixed_batch_size: Fixed batch size for evaluation (auto-computed if None)
+        eval_only: If True, skip rollout buffer allocation for evaluation-only use.
+            This saves ~8-16GB VRAM but disables training methods.
     """
     
     def __init__(
         self,
         policy: nn.Module,
-        env,  # Environment to get n_envs from
+        env: EvalEnvOptimized,
         n_steps: int = 2048,
         learning_rate: float = 3e-4,
         n_epochs: int = 10,
@@ -209,47 +278,20 @@ class PPO:
         target_kl: Optional[float] = None,
         device: torch.device = None,
         verbose: bool = True,
-        trace_dir: Optional[str] = None,
-        trace_prefix: str = "batched",
-        trace_recorder: Optional[TraceRecorder] = None,
         seed: Optional[int] = None,
-        use_amp: bool = False,  # Enable AMP for mixed precision training
-        parity: bool = False,   # Enable parity mode (e.g. numpy RNG for rollouts)
-        total_timesteps: Optional[int] = None,  # Total training timesteps for schedule computation
-        use_compile: bool = True,  # Enable torch.compile for policy optimization
-        debug_ppo: bool = False,  # Enable detailed training diagnostics
+        parity: bool = False,
+        fixed_batch_size: Optional[int] = None,
+        compile_policy: bool = True,  # Compile the policy for faster training
+        compile_mode: str = 'reduce-overhead',  # Compile mode for torch.compile
+        use_amp: bool = True,  # Use Automatic Mixed Precision
+        eval_only: bool = False,  # If True, skip rollout buffer allocation (for evaluation only)
+        query_labels: Optional[Tensor] = None,  # For callback metrics
+        query_depths: Optional[Tensor] = None,  # For callback metrics
     ):
-        """
-        Initialize the PPO algorithm.
-        
-        Args:
-            policy (nn.Module): Actor-critic policy network.
-            env: Environment instance (used to infer n_envs and device).
-            n_steps (int): Number of steps to run for each environment per update.
-            learning_rate (float): Learning rate.
-            n_epochs (int): Number of epochs when optimizing the surrogate loss.
-            batch_size (int): Minibatch size.
-            gamma (float): Discount factor.
-            gae_lambda (float): Factor for trade-off of bias vs variance for GAE.
-            clip_range (float): Clipping parameter epsilon.
-            clip_range_vf (Optional[float]): Clipping parameter for value function.
-            normalize_advantage (bool): Whether to normalize or not the advantage.
-            ent_coef (float): Entropy coefficient for the loss calculation.
-            vf_coef (float): Value function coefficient for the loss calculation.
-            max_grad_norm (float): The maximum value for the gradient clipping.
-            target_kl (Optional[float]): Limit the KL divergence between updates.
-            device (torch.device): Device to run on.
-            verbose (bool): Verbosity flag.
-            trace_dir (Optional[str]): Directory to save traces.
-            trace_prefix (str): Prefix for trace files.
-            trace_recorder (Optional[TraceRecorder]): Existing recorder instance.
-            seed (Optional[int]): Random seed for RNG synchronization between rollouts.
-            parity (bool): If True, use older/slower methods (e.g. numpy RNG) to match SB3 exactly.
-            total_timesteps (Optional[int]): Total training timesteps for schedule computation.
-        """
         self.policy = policy
         self.env = env
         self.n_steps = n_steps
+        self.eval_only = eval_only
         self.learning_rate = learning_rate
         self.n_epochs = n_epochs
         self.batch_size = batch_size
@@ -259,178 +301,221 @@ class PPO:
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
         self.ent_coef = ent_coef
-        self.ent_coef_initial = ent_coef  # Store initial value
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
         self.device = device if device is not None else torch.device('cpu')
         self.verbose = verbose
-        self.seed = seed  # For RNG synchronization in parity testing
-        self.trace_recorder = trace_recorder or (TraceRecorder(trace_dir, prefix=trace_prefix) if trace_dir else None)
-        self._trace_episode_ids = None
-        self._trace_lengths = None
-        self.env_device = getattr(env, "_device", None) or getattr(env, "device", None) or torch.device("cpu")
-        if not isinstance(self.env_device, torch.device):
-            self.env_device = torch.device(self.env_device)
-        # Optimization: skip .to() calls when devices match
-        # Normalize devices to ensure "cuda" == "cuda:0" if index is 0
-        if self.device.type == 'cuda' and self.device.index is None:
-            self.device = torch.device(f"cuda:{torch.cuda.current_device()}")
-        if self.env_device.type == 'cuda' and self.env_device.index is None:
-            self.env_device = torch.device(f"cuda:{torch.cuda.current_device()}")
-            
-        self._same_device = (self.device == self.env_device) or \
-                            (self.device.type == self.env_device.type and self.device.index == self.env_device.index)
-        
-        
-        # Schedule configuration
-        self.total_timesteps = total_timesteps or 100000  # Default if not specified
+        self.seed = seed
+        self.parity = parity
+        self._compile_policy = compile_policy
+        self._compile_mode = compile_mode
+        # Move query info to CPU to avoid GPU synchronization during callbacks
+        self.query_labels = query_labels.detach().cpu() if query_labels is not None else None
+        self.query_depths = query_depths.detach().cpu() if query_depths is not None else None
+        self.current_query_indices = None  # Track current query per env for callbacks (will be numpy array)
         
         # AMP (Automatic Mixed Precision) - configure via use_amp parameter
         self.use_amp = use_amp and (self.device.type == "cuda")
         if self.use_amp:
             # If BF16 is supported, we don't need GradScaler
-            if torch.cuda.is_bf16_supported():
-                self.scaler = None
-            else:
-                self.scaler = torch.amp.GradScaler('cuda')
+            self.amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            print(f"Using Automatic Mixed Precision (AMP) with dtype: {self.amp_dtype}")
         else:
-            self.scaler = None        
+            self.amp_dtype = torch.float32
         
+        # Fixed batch size for evaluation (enforced to avoid recompilation)
+        # If not specified, will be set during compile() based on env.batch_size
+        self._fixed_batch_size = fixed_batch_size
         
-        # Get number of environments
-        self.n_envs = int(env.batch_size[0]) if isinstance(env.batch_size, torch.Size) else int(env.batch_size)
+        # Get environment parameters
+        self.n_envs = env.batch_size
+        self.padding_atoms = env.padding_atoms
+        self.padding_states = env.padding_states
         
-        # Create rollout buffer
-        self.rollout_buffer = RolloutBuffer(
-            buffer_size=n_steps,
-            n_envs=self.n_envs,
-            device=self.device,
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-            parity=parity,
-        )
-        
-        # Persistent state for consecutive learn() calls
-        self._last_obs = None
-        self._last_episode_starts = None
-        self._current_episode_reward = None
-        self._current_episode_length = None
-        self.num_timesteps = 0
-        
-        # Initialize optimizer
-        # NOTE: eps=1e-5 matches SB3's default (not PyTorch's 1e-8) - critical for parity!
-        self.optimizer = torch.optim.Adam(
-            self.policy.parameters(),
-            lr=self.learning_rate,
-            eps=1e-5,
-            fused=True  # Use fused kernel for performance
-        )
-        
-        # Compile components (if enabled)
-        self.use_compile = use_compile
-        self.debug_ppo = debug_ppo  # Enable detailed diagnostics
-        if use_compile:
-            self._compile_components()
-        else:
-            print("[PPO] torch.compile disabled")
-            self._setup_loss_module()
-
-    def _compute_loss_components(
-        self,
-        advantages: torch.Tensor,
-        log_probs: torch.Tensor,
-        old_log_probs: torch.Tensor,
-        returns: torch.Tensor,
-        values: torch.Tensor,
-        old_values: torch.Tensor,
-        entropy: Optional[torch.Tensor],
-        clip_range: float,
-        clip_range_vf: Optional[float],
-        ent_coef: float,
-        vf_coef: float,
-    ) -> tuple:
-        """
-        Compute PPO loss components in a compiled function to avoid eager op overhead.
-        """
-        # Ratio between old and new policy
-        log_ratio = log_probs - old_log_probs
-        ratio = torch.exp(log_ratio)
-        
-        # Clipped surrogate loss
-        policy_loss_1 = advantages * ratio
-        policy_loss_2 = advantages * torch.clamp(
-            ratio,
-            1.0 - clip_range,
-            1.0 + clip_range,
-        )
-        # Use minimum for element-wise min (clearer intent and potentially better for compiler)
-        policy_loss = -torch.minimum(policy_loss_1, policy_loss_2).mean()
-        
-        # Clip fraction
-        clip_fraction_t = torch.mean((torch.abs(ratio - 1) > clip_range).float())
-        
-        # Value loss
-        if clip_range_vf is None:
-            values_pred = values
-        else:
-            values_pred = old_values + torch.clamp(
-                values - old_values,
-                -clip_range_vf,
-                clip_range_vf,
+        # Validate batch_size vs buffer_size
+        buffer_size = n_steps * self.n_envs
+        if batch_size > buffer_size:
+            raise ValueError(
+                f"batch_size ({batch_size}) > buffer_size ({buffer_size} = n_steps*n_envs = {n_steps}*{self.n_envs}). "
+                f"batch_size must be <= buffer_size. "
+                f"Either reduce batch_size or increase n_steps*n_envs."
             )
         
-        # MSE Loss
-        value_loss = F.mse_loss(returns, values_pred)
+        # Require batch_size to divide buffer_size evenly for consistent batch sizes
+        if not eval_only and buffer_size % self.batch_size != 0:
+            raise ValueError(
+                f"batch_size ({self.batch_size}) must divide buffer_size ({buffer_size} = n_steps*n_envs = {n_steps}*{self.n_envs}) evenly. "
+                f"buffer_size % batch_size = {buffer_size % self.batch_size}. "
+                f"Consider adjusting batch_size to one of: {[b for b in [1, 2, 4, 8, 10, 16, 20, 32, 40, 64, 80, 128, 256, 512] if buffer_size % b == 0]}"
+            )
         
-        # Entropy loss
-        if entropy is None:
-            entropy_loss = -torch.mean(-log_probs)
-        else:
-            entropy_loss = -torch.mean(entropy)
+        # Skip rollout buffer and training tensor allocations in eval_only mode
+        # This saves ~8-16GB VRAM for evaluation-only use cases
+        if not eval_only:
+            # Create rollout buffer with pre-allocated batch tensors
+            self.rollout_buffer = RolloutBufferOptimized(
+                buffer_size=n_steps,
+                n_envs=self.n_envs,
+                device=self.device,
+                gamma=gamma,
+                gae_lambda=gae_lambda,
+                padding_atoms=self.padding_atoms,
+                padding_states=self.padding_states,
+                parity=parity,
+                batch_size=self.batch_size,  # Pre-allocate batch tensors (uses adjusted size)
+            )
             
-        # Total loss
-        loss = policy_loss + ent_coef * entropy_loss + vf_coef * value_loss
+            # Pre-allocate raw tensors for training loop (CUDA graph stability)
+            # Using raw tensors instead of TensorDict avoids memory layout changes
+            A = self.padding_atoms
+            S = self.padding_states
+            self._train_sub_index = torch.zeros((self.batch_size, 1, A, 3), dtype=torch.long, device=self.device)
+            self._train_derived_sub_indices = torch.zeros((self.batch_size, S, A, 3), dtype=torch.long, device=self.device)
+            self._train_action_mask = torch.zeros((self.batch_size, S), dtype=torch.bool, device=self.device)
+            self._train_actions = torch.zeros(self.batch_size, dtype=torch.long, device=self.device)
+            self._train_advantages = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
+            self._train_returns = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
+            self._train_old_log_probs = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
+            self._train_old_values = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
+        else:
+            # Eval-only mode: no rollout buffer or training tensors needed
+            self.rollout_buffer = None
         
-        # Approx KL
-        # (exp(log_ratio) - 1) - log_ratio
-        ratio_minus_one = ratio - 1.0
-        approx_kl_div_t = torch.mean(ratio_minus_one - log_ratio)
+        # Persistent state
+        self._last_state: Optional[EvalState] = None
+        self._last_obs: Optional[EvalObs] = None
+        self.num_timesteps = 0
         
-        # Pack attributes into a single tensor for reduced graph overhead
-        metrics_packed = torch.stack([
-            loss,
-            policy_loss,
-            value_loss,
-            entropy_loss,
-            approx_kl_div_t,
-            clip_fraction_t
-        ])
+        # Skip optimizer and policy compilation in eval-only mode
+        if not eval_only:
+            # Initialize optimizer
+            # NOTE: fused=True uses optimized CUDA kernel for 2-3x faster gradient updates
+            self.optimizer = torch.optim.Adam(
+                self.policy.parameters(),
+                lr=self.learning_rate,
+                eps=1e-5,
+                fused=True if self.device.type == 'cuda' else False,
+            )
+            
+            # Compile policy for faster training (evaluate_actions, predict_values)
+            # This is separate from env.compile() which compiles step_with_policy
+            self._compile_policy_network()
+        else:
+            self.optimizer = None
+            self.loss_module = None
+    
+    def _compile_policy_network(self):
+        """Compile the policy network for faster training.
         
-        return metrics_packed
+        Creates a PPOLossModule that fuses policy forward + loss computation,
+        then compiles the entire module using torch.compile.
+        
+        IMPORTANT: We use 'default' mode for the loss module instead of 'reduce-overhead'
+        because TensorDict creation inside the forward pass causes CUDA graph instability.
+        The environment still uses 'reduce-overhead' since it has stable tensor patterns.
+        """
 
-
-    # Define wrapper for compilation
-    # Define wrapper for compilation
-    def _compile_components(self):
-        # Create the fused module
-        self.loss_module = PPOLossModule(self.policy)
+        if self.verbose:
+            print("Compiling policy network and loss module for training...")
         
-        # Compile the ENTIRE fused module
-        # This creates a single graph for (Policy Forward + Loss), enabling global optimization
-        self.loss_module = torch.compile(self.loss_module, mode='reduce-overhead', fullgraph=True)
+        # Store reference to uncompiled policy for loss_module
+        self._uncompiled_policy = self.policy
         
-        # Also compile policy separately for collect_rollouts (inference only)
-        # We need this because collect_rollouts calls policy() directly
-        self.policy = torch.compile(self.policy, mode='reduce-overhead', fullgraph=True)
-
-    def _setup_loss_module(self):
-        """Setup loss module without compilation (fallback)"""
-        self.loss_module = PPOLossModule(self.policy)
+        # Create fused loss module using UNCOMPILED policy
+        # This will be compiled as a single unit
+        self.loss_module = PPOLossModule(self._uncompiled_policy)
+        
+        # Use reduce-overhead mode for maximum performance
+        # This works because we use evaluate_actions_raw which bypasses TensorDict
+        self.loss_module = torch.compile(
+            self.loss_module,
+            mode=self._compile_mode,  # reduce-overhead now works with raw tensors
+            fullgraph=True,
+        )
+        
+        # Pre-warm gradients to ensure stable memory addresses for CUDA graphs
+        # Without this, the first few backward passes allocate new gradient tensors
+        self._warmup_gradients()
+        
+        # For inference (collect_rollouts), compile the policy separately
+        # This creates a different CUDA graph than the training graph
+        self.policy = torch.compile(
+            self._uncompiled_policy,
+            mode=self._compile_mode,
+            fullgraph=True,
+        )
+    
+    def _warmup_gradients(self):
+        """Pre-allocate gradient tensors for stable CUDA graph addresses.
+        
+        Running a dummy forward+backward pass ensures gradient tensors are allocated
+        before CUDA graph recording. Using set_to_none=False in zero_grad() keeps
+        these addresses stable across iterations.
+        """
+        # Create dummy inputs matching the training batch shape
+        batch_size = self.batch_size
+        A = self.padding_atoms
+        S = self.padding_states
+        
+        dummy_sub_index = torch.zeros((batch_size, 1, A, 3), dtype=torch.long, device=self.device)
+        dummy_derived = torch.zeros((batch_size, S, A, 3), dtype=torch.long, device=self.device)
+        dummy_mask = torch.ones((batch_size, S), dtype=torch.bool, device=self.device)
+        dummy_actions = torch.zeros(batch_size, dtype=torch.long, device=self.device)
+        dummy_advantages = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        dummy_returns = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        dummy_old_log_probs = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        dummy_old_values = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        
+        # Run forward pass through UNCOMPILED loss module to allocate gradients
+        # This ensures gradient tensors exist before any CUDA graph recording
+        with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
+            # Use the uncompiled policy directly
+            values, log_probs, entropy = self._uncompiled_policy.evaluate_actions_raw(
+                dummy_sub_index, dummy_derived, dummy_mask, dummy_actions
+            )
+            # Compute simple loss
+            dummy_loss = values.mean() + log_probs.mean() + entropy.mean()
+        
+        # Backward to allocate gradient tensors
+        self.optimizer.zero_grad(set_to_none=False)
+        dummy_loss.backward()
+        
+        # Zero gradients but keep tensors allocated
+        self.optimizer.zero_grad(set_to_none=False)
+    
+    @property
+    def fixed_batch_size(self) -> int:
+        """Get the fixed batch size for evaluation.
+        
+        If not explicitly set, returns env.batch_size as the default.
+        This property ensures consistent batch sizes for CUDA graph compatibility.
+        """
+        if self._fixed_batch_size is not None:
+            return self._fixed_batch_size
+        return self.env.batch_size
+    
+    @fixed_batch_size.setter
+    def fixed_batch_size(self, value: int):
+        """Set the fixed batch size for evaluation.
+        
+        Once set, all evaluation calls must use this batch size to avoid
+        recompilation with CUDA graphs (reduce-overhead mode).
+        """
+        self._fixed_batch_size = value
+    
+    def _obs_to_tensordict(self, obs: EvalObs) -> TensorDict:
+        """Convert EvalObs to TensorDict for policy forward pass."""
+        return TensorDict({
+            'sub_index': obs.sub_index,
+            'derived_sub_indices': obs.derived_sub_indices,
+            'action_mask': obs.action_mask,
+        }, batch_size=[obs.sub_index.shape[0]], device=self.device)
     
     def collect_rollouts(
         self,
-        current_obs,
+        current_state: EvalState,
+        current_obs: EvalObs,
         episode_starts: torch.Tensor,
         current_episode_reward: torch.Tensor,
         current_episode_length: torch.Tensor,
@@ -439,119 +524,110 @@ class PPO:
         iteration: int,
         return_traces: bool = False,
         on_step_callback: Optional[Callable] = None,
-    ) -> tuple:
+    ) -> Tuple[EvalState, EvalObs, torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[List]]:
         """
         Collect experiences using the current policy and fill the rollout buffer.
         
-        This method steps the environment `n_steps` times. It stores observations,
-        actions, rewards, done flags, probabilities, and values in the buffer.
-        It handles environment resets and tracking episode statistics.
+        Uses EvalEnvOptimized's step_with_policy which handles query cycling internally.
         
         Args:
-            current_obs (Any): Last observation from previous rollout (or reset).
-            episode_starts (Tensor): [N_envs] Binary mask for episode starts.
-            current_episode_reward (Tensor): [N_envs] Accumulator for rewards.
-            current_episode_length (Tensor): [N_envs] Accumulator for lengths.
-            episode_rewards (List): Global list to Append completed episode rewards.
-            episode_lengths (List): Global list to Append completed episode lengths.
-            iteration (int): Current global iteration number.
-            return_traces (bool): If True, collect and return step-by-step traces.
+            current_state: Current EvalState from previous rollout
+            current_obs: Current EvalObs observation
+            episode_starts: [N] Binary mask for episode starts
+            current_episode_reward: [N] Accumulator for rewards
+            current_episode_length: [N] Accumulator for lengths
+            episode_rewards: List to append completed episode rewards
+            episode_lengths: List to append completed episode lengths
+            iteration: Current global iteration number
+            return_traces: If True, collect step-by-step traces
             
         Returns:
-            Tuple[Any, Tensor, Tensor, Tensor, int, Optional[List]]: 
-                - next_obs: Latest observation.
-                - episode_starts: Updated start masks.
-                - current_episode_reward: Updated reward accumulators.
-                - current_episode_length: Updated length accumulators.
-                - total_steps: Total steps collected (n_steps * n_envs).
-                - traces: Optional list of trace dictionaries (if return_traces=True).
+            Tuple containing:
+                - next_state: Latest EvalState
+                - next_obs: Latest observation
+                - episode_starts: Updated start masks
+                - current_episode_reward: Updated reward accumulators
+                - current_episode_length: Updated length accumulators
+                - total_steps: Total steps collected
+                - traces: Optional list of trace dictionaries
         """
-        from tensordict import TensorDict
-        
         self.policy.eval()
         self.rollout_buffer.reset()
-        # self.metrics_collector.reset()
         
         traces = [] if return_traces else None
         n_collected = 0
-        dones = torch.zeros(self.n_envs, dtype=torch.bool, device=self.device)
+        last_dones = torch.zeros(self.n_envs, dtype=torch.bool, device=self.device)  # Track dones from last step
         
+        state = current_state
+        obs = current_obs
+
         with torch.no_grad():
-            # Keys that rollout buffer stores and model uses
-            _obs_keys = ("sub_index", "derived_sub_indices", "action_mask")
-            
             while n_collected < self.n_steps:
-                log_interval = max(1, self.n_steps // 5)
-                if n_collected % log_interval == 0:
+                if self.verbose and n_collected % max(1, self.n_steps // 5) == 0:
                     print(f"Collecting rollouts: {n_collected}/{self.n_steps} steps")
-                # Shallow clone - only clone tensors needed by buffer/model
-                # This is faster than full TensorDict.clone()
-                obs_snapshot = TensorDict(
-                    {k: current_obs[k].clone() for k in _obs_keys if k in current_obs.keys()},
-                    batch_size=current_obs.batch_size,
-                    device=current_obs.device
+                
+                # Snapshot observations before step
+                obs_snapshot_sub = obs.sub_index.clone()
+                obs_snapshot_derived = obs.derived_sub_indices.clone()
+                obs_snapshot_mask = obs.action_mask.clone()
+                
+                # Convert EvalObs to TensorDict for policy value prediction
+                obs_td = self._obs_to_tensordict(obs)
+                
+                # Predict values (critic) separate from actor (step_with_policy)
+                values = self.policy.predict_values(obs_td)
+                
+                # Capture NEXT query indices (which will be used if reset happens)
+                # env._per_env_ptrs points to the NEXT query to be picked by reset
+                next_query_indices = None
+                
+                # Initialize current_query_indices if needed
+                if self.current_query_indices is None and self.env._per_env_ptrs is not None:
+                     # Best effort initialization: assume current queries are derived from current pointers
+                     pool_size = self.env._query_pool.shape[0] if self.env._query_pool is not None else 0
+                     if pool_size > 0:
+                         # Initialize on CPU
+                         self.current_query_indices = (self.env._per_env_ptrs % pool_size).cpu().numpy().copy()
+                         
+                if self.current_query_indices is not None and self.env._per_env_ptrs is not None:
+                    pool_size = self.env._query_pool.shape[0] if self.env._query_pool is not None else 0
+                    if pool_size > 0:
+                        next_query_indices = self.env._per_env_ptrs % pool_size
+
+                # Step environment using compiled step_with_policy
+                # Uses env's internal query pool for reset cycling (set via set_queries)
+                step_result = self.env.step_with_policy(
+                    state, obs,
+                    deterministic=False,
+                    eval_mode=False
                 )
-                # Skip .to() if devices already match
-                obs_device = obs_snapshot if self._same_device else obs_snapshot.to(self.device)
+                
+                # step_with_policy returns: state, obs, actions, log_probs, values, rewards, dones, ptrs, mask
+                new_state, new_obs, actions, log_probs, _step_values, rewards, dones, _, _ = step_result
 
-                # Get action from policy - always sample (not deterministic)
-                # With same model weights and RNG state, sampling produces identical results
-                # Use bfloat16 for AMP if available to avoid GradScaler
-                amp_dtype = torch.bfloat16 if self.use_amp and torch.cuda.is_bf16_supported() else torch.float16
-                with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=amp_dtype):
-                    actions, values, log_probs = self.policy(obs_device, deterministic=False)
-                
-                dist = getattr(self.policy.action_dist, "distribution", None)
-                if dist is not None and hasattr(dist, "logits"):
-                    dist_logits = dist.logits.detach().clone()
-            
-                # Step environment - skip .to() if devices match
-                actions_env = actions if self._same_device else actions.to(self.env_device)
-                action_td = TensorDict({"action": actions_env}, batch_size=current_obs.batch_size, device=self.env_device)
-                step_result, next_obs = self.env.step_and_maybe_reset(action_td)
-                
-                # Extract done/reward
-                if "next" in step_result.keys():
-                    step_info = step_result["next"]
-                else:
-                    step_info = step_result
-                
-                rewards_env = step_info.get("reward", torch.zeros(self.n_envs, device=self.env_device))
-                dones_env = step_info.get("done", torch.zeros(self.n_envs, dtype=torch.bool, device=self.env_device))
-                
-                # Squeeze to ensure correct shape
-                if rewards_env.dim() > 1:
-                    rewards_env = rewards_env.squeeze(-1)
-                if dones_env.dim() > 1:
-                    dones_env = dones_env.squeeze(-1)
-
-                # Skip .to() if devices match
-                rewards = rewards_env if self._same_device else rewards_env.to(self.device)
-                dones = dones_env if self._same_device else dones_env.to(self.device)
                 
                 # Store transition
                 self.rollout_buffer.add(
-                    obs=obs_device,
+                    sub_index=obs_snapshot_sub,
+                    derived_sub_indices=obs_snapshot_derived,
+                    action_mask=obs_snapshot_mask,
                     action=actions,
                     reward=rewards,
                     episode_start=episode_starts,
-                    value=values,
-                    log_prob=log_probs
+                    value=values.flatten(),  # predict_values returns [B, 1]
+                    log_prob=log_probs,
                 )
                 
                 # Collect traces if requested
                 if return_traces:
                     for idx in range(self.n_envs):
-                        sub_index = obs_snapshot.get("sub_index")[idx]
-                        derived_sub_indices = obs_snapshot.get("derived_sub_indices")[idx]
-                        action_mask = obs_snapshot.get("action_mask")[idx]
                         trace_entry = {
                             "step": n_collected,
                             "env": idx,
                             "state_obs": {
-                                "sub_index": sub_index.cpu().numpy().copy() if hasattr(sub_index, 'cpu') else sub_index,
-                                "derived_sub_indices": derived_sub_indices.cpu().numpy().copy() if hasattr(derived_sub_indices, 'cpu') else derived_sub_indices,
-                                "action_mask": action_mask.cpu().numpy().copy() if hasattr(action_mask, 'cpu') else action_mask,
+                                "sub_index": obs_snapshot_sub[idx].cpu().numpy().copy(),
+                                "derived_sub_indices": obs_snapshot_derived[idx].cpu().numpy().copy(),
+                                "action_mask": obs_snapshot_mask[idx].cpu().numpy().copy(),
                             },
                             "action": int(actions[idx]),
                             "reward": float(rewards[idx]),
@@ -561,381 +637,277 @@ class PPO:
                         }
                         traces.append(trace_entry)
                 
-                if self.trace_recorder is not None:
-                    if self._trace_episode_ids is None:
-                        self._trace_episode_ids = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
-                    if self._trace_lengths is None:
-                        self._trace_lengths = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
-                    self._trace_lengths = self._trace_lengths + 1
-                    for idx in range(self.n_envs):
-                        obs_dict = obs_snapshot
-                        sub_index = obs_dict.get("sub_index")[idx]
-                        derived_sub_indices = obs_dict.get("derived_sub_indices")[idx]
-                        action_mask = obs_dict.get("action_mask")[idx]
-                        self.trace_recorder.log_step(
-                            phase="train",
-                            iteration=iteration - 1,
-                            step=n_collected,
-                            env=int(idx),
-                            action=int(actions[idx]),
-                            reward=float(rewards[idx]),
-                            done=bool(dones[idx]),
-                            length=int(self._trace_lengths[idx]),
-                            episode=int(self._trace_episode_ids[idx]),
-                            value=float(values[idx]),
-                            log_prob=float(log_probs[idx]),
-                            sub_index=sub_index,
-                            derived_sub_indices=derived_sub_indices,
-                            action_mask=action_mask,
-                            logits=dist_logits[idx] if dist_logits is not None else None,
-                        )
-                
                 # Update statistics
                 current_episode_reward += rewards
                 current_episode_length += 1
                 n_collected += 1
                 
-                # Check for episode ends
+                # Handle episode ends
                 if dones.any():
                     done_indices = torch.where(dones)[0]
-                    # Batch extract values to avoid per-element .item() calls
-                    ep_rewards_batch = current_episode_reward[done_indices].tolist()
-                    ep_lengths_batch = current_episode_length[done_indices].tolist()
                     
-                    # Pre-extract optional values if available
-                    # We use .tolist() once per batch to avoid N .item() calls
-                    extra_keys = []
-                    extra_batches = {}
+                    # Pre-fetch new query indices for ALL done envs to CPU in one go (batch sync)
+                    # drastically reducing overhead compared to handling them one-by-one
+                    batch_next_indices = None
+                    if self.current_query_indices is not None and next_query_indices is not None:
+                        batch_next_indices = next_query_indices[done_indices].cpu().numpy()
                     
-                    # Helper to safely batch-extract
-                    def extract_batch(key, tensor_val):
-                        if tensor_val is not None and tensor_val.shape[0] >= self.n_envs:
-                            # Extract and flatten to 1D in a compile-friendly way
-                            # Using view(-1) instead of while loop for static reshape
-                            extracted = tensor_val[done_indices].view(-1)
-                            return extracted.tolist() 
-                        elif tensor_val is not None:
-                            # It might be a scalar or weird shape - fallback to list of None (safe)
-                            return None
-                        return None
+                    # Batch fetch rewards and lengths to avoid per-item blocking synchronization
+                    # This is critical for maintaining high FPS with callbacks
+                    batch_rewards = current_episode_reward[done_indices].cpu().float().numpy()
+                    batch_lengths = current_episode_length[done_indices].cpu().numpy().astype(int)
 
-                    if step_info.get("label") is not None:
-                        extra_keys.append("label")
-                        extra_batches["label"] = extract_batch("label", step_info.get("label"))
-                    if step_info.get("query_depth") is not None:
-                        extra_keys.append("query_depth")
-                        extra_batches["query_depth"] = extract_batch("query_depth", step_info.get("query_depth"))
-                    if step_info.get("is_success") is not None:
-                        extra_keys.append("is_success")
-                        extra_batches["is_success"] = extract_batch("is_success", step_info.get("is_success"))
-
+                    batch_infos = [] # Accumulate infos for batched callback
+                    
                     for i, idx in enumerate(done_indices):
-                        ep_reward = ep_rewards_batch[i]
-                        ep_length = int(ep_lengths_batch[i])
+                        ep_reward = float(batch_rewards[i])
+                        ep_length = int(batch_lengths[i])
                         episode_rewards.append(ep_reward)
                         episode_lengths.append(ep_length)
-
-                        # Collect episode info for rollout metrics
-                        info_dict = {
-                            "episode": {"r": ep_reward, "l": ep_length},
-                        }
                         
-                        # Apply extras
-                        for key in extra_keys:
-                            batch = extra_batches[key]
-                            if batch is not None:
-                                val = batch[i]
-                                # Convert ints/bools safely
-                                if key == "is_success":
-                                    info_dict[key] = bool(val)
-                                else:
-                                    info_dict[key] = int(val)
-                                    
-                        infos_list = [info_dict]
-                        # self.metrics_collector.accumulate(infos_list)
-                        if on_step_callback:
-                            on_step_callback(infos_list)
+                        # Prepare step callback info
+                        if on_step_callback is not None:
+                            # Get additional info from state if available
+                            is_success = bool(state.success[idx]) if hasattr(state, 'success') else False
+                            
+                            info_dict = {
+                                "episode": {"r": ep_reward, "l": ep_length},
+                                "is_success": is_success,
+                            }
+                            
+                            # Add label and depth info if tracked (using valid indices)
+                            if self.current_query_indices is not None and len(self.current_query_indices) > idx:
+                                # FAST CPU ACCESS
+                                q_idx = int(self.current_query_indices[idx])
+                                info_dict["episode_idx"] = q_idx # Use query idx as rough unique ID
+                                
+                                if self.query_labels is not None and q_idx < len(self.query_labels):
+                                    # FAST CPU ACCESS
+                                    info_dict["label"] = int(self.query_labels[q_idx])
+                                
+                                if self.query_depths is not None and q_idx < len(self.query_depths):
+                                    # FAST CPU ACCESS
+                                    info_dict["query_depth"] = int(self.query_depths[q_idx])
+                            
+                            batch_infos.append(info_dict)
+                            
+                        # Update current query index for the NEXT episode in this environment
+                        if batch_next_indices is not None:
+                            self.current_query_indices[idx] = batch_next_indices[i]
                         
                         # Reset episode stats
                         current_episode_reward[idx] = 0.0
                         current_episode_length[idx] = 0
-                        if self._trace_episode_ids is not None:
-                            self._trace_episode_ids[idx] += 1
-                        if self._trace_lengths is not None:
-                            self._trace_lengths[idx] = 0
+                    
+                    # Call step callback with batch of infos
+                    if on_step_callback is not None and batch_infos:
+                        on_step_callback(batch_infos)
                     
                     # Mark episode starts for next step
                     episode_starts = dones.float()
                 else:
                     episode_starts = torch.zeros(self.n_envs, dtype=torch.float32, device=self.device)
                 
-                current_obs = next_obs
+                # Track dones before state update (for GAE, we need the done flags before reset)
+                last_dones = dones
+                
+                state = new_state
+                obs = new_obs
+
             
             # Compute last values for bootstrapping
-            last_obs = current_obs if self._same_device else current_obs.to(self.device)
-            last_values = self.policy.predict_values(last_obs)
+            last_obs_td = self._obs_to_tensordict(obs)
+            last_values = self.policy.predict_values(last_obs_td)
         
         # Compute advantages and returns
-        if dones.dim() > 1:
-            dones = dones.squeeze(-1)
-        self.rollout_buffer.compute_returns_and_advantage(last_values=last_values, dones=dones)
+        # IMPORTANT: Use last_dones (dones from last step BEFORE reset)
+        # not state.done (which is False after reset)
+        self.rollout_buffer.compute_returns_and_advantage(
+            last_values=last_values,
+            dones=last_dones.float()
+        )
         
-        if return_traces:
-            return (
-                current_obs,
-                episode_starts,
-                current_episode_reward,
-                current_episode_length,
-                n_collected * self.n_envs,
-                traces,
-            )
-        return (
-            current_obs,
+        result = (
+            state,
+            obs,
             episode_starts,
             current_episode_reward,
             current_episode_length,
             n_collected * self.n_envs,
         )
+        
+        if return_traces:
+            result = result + (traces,)
+        else:
+            result = result + (None,)
+        
+        return result
 
+        
     def train(self, return_traces: bool = False) -> Dict[str, float]:
         """
         Update policy using the currently collected rollout buffer.
         
-        Performs `n_epochs` of PPO updates:
-        1. Iterates over minibatches of data.
-        2. Computes the PPO clipped loss, value loss, and entropy loss.
-        3. Takes an optimizer step.
-        4. Monitors KL divergence for early stopping.
-        
         Args:
-            return_traces (bool): If True, return detailed per-batch training traces.
+            return_traces: If True, include detailed traces in return dict.
+            timeout_seconds: Maximum time in seconds for training. If None, no timeout.
+                             Useful for debugging CUDA graph hangs in reduce-overhead mode.
         
         Returns:
-            Dict[str, float]: Dictionary containing average training metrics:
-                - "policy_loss": Average clipped policy loss.
-                - "value_loss": Average value function loss.
-                - "entropy": Average entropy loss.
-                - "clip_fraction": Average fraction of clipped updates.
-                - "approx_kl": Average approximate KL divergence.
-                - "traces": Optional list of per-batch details (if return_traces=True).
+            Dict containing average training metrics
         """
-        # Set policy to training mode
         self.policy.train()
+        train_start_time = time.time()
         
-        # Accumulators for logging (Tensors)
-        # NOTE: pg_losses, value_losses, entropy_losses, clip_fractions accumulate across ALL epochs
-        # But approx_kl_divs should only contain values from the LAST epoch (matching SB3)
+        # Accumulators - store as tensors to avoid GPU sync per batch
+        # Only convert to Python floats at the very end
         pg_losses_t = []
         value_losses_t = []
         entropy_losses_t = []
         clip_fractions_t = []
+        approx_kl_divs_t = []
         
-        # Training traces for detailed comparison
         train_traces = [] if return_traces else None
         
-        if self.verbose:
-            print(f"[PPO] Training for {self.n_epochs} epochs...")
-        
-        # --------------------
-        # Epoch loop
-        # --------------------
         continue_training = True
         for epoch in range(self.n_epochs):
-            # Reset KL divergence list for each epoch (matching SB3 behavior)
-            # SB3 declares approx_kl_divs inside the epoch loop, so only last epoch is reported
-            approx_kl_divs_t = []
-            # Minibatch loop
             for batch_data in self.rollout_buffer.get(batch_size=self.batch_size):
-                obs, actions, old_values, old_log_probs, advantages, returns = batch_data
+                # Mark start of new training step for CUDA graph trees
+                # This tells PyTorch it's okay to reuse memory from previous iterations
+                torch.compiler.cudagraph_mark_step_begin()
                 
-                # Flatten actions if needed
-                actions = actions.squeeze(-1) if actions.dim() > 1 else actions
-                # Normalize advantages per minibatch
+                # Yields raw tensors: (sub_index, derived_sub_indices, action_mask, 
+                #                       actions, old_values, old_log_probs, advantages, returns)
+                (sub_index, derived_sub_indices, action_mask, 
+                 actions, old_values, old_log_probs, advantages, returns) = batch_data
+                
+                # Copy data into pre-allocated tensors (preserves memory addresses for CUDA graphs)
+                # Since we enforce batch_size divides buffer_size evenly, all batches have consistent size
+                self._train_sub_index.copy_(sub_index)
+                self._train_derived_sub_indices.copy_(derived_sub_indices)
+                self._train_action_mask.copy_(action_mask)
+                self._train_actions.copy_(actions)
+                self._train_old_values.copy_(old_values)
+                self._train_old_log_probs.copy_(old_log_probs)
+                self._train_returns.copy_(returns)
+                
+                # Normalize advantages into pre-allocated tensor
                 if self.normalize_advantage and len(advantages) > 1:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                    adv_mean = advantages.mean()
+                    adv_std = advantages.std() + 1e-8
+                    self._train_advantages.copy_((advantages - adv_mean) / adv_std)
+                else:
+                    self._train_advantages.copy_(advantages)
                 
-                
-                # --------------------
-                # --------------------
-                # Training Step
-                # --------------------
-                # Ensure optimizer state is initialized for all params (needed for functional access)
-                # We can just check if state is empty for the first param
-                is_initialized = len(self.optimizer.state) > 0
-                if not is_initialized:
-                   # Fast manual init:
-                   for group in self.optimizer.param_groups:
-                        for p in group['params']:
-                            if p not in self.optimizer.state:
-                                self.optimizer.state[p] = {
-                                    'step': torch.zeros(1, device=p.device), # Scalar tensor
-                                    'exp_avg': torch.zeros_like(p),
-                                    'exp_avg_sq': torch.zeros_like(p)
-                                }
-
-                # Compute forward pass and losses (compiled)
-                # IMPORTANT: Must use same amp_dtype as rollout collection to avoid KL divergence
-                amp_dtype = torch.bfloat16 if self.use_amp and torch.cuda.is_bf16_supported() else torch.float16
-                with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=amp_dtype):
-                    # Fused execution: Policy Forward + Loss Computation in one graph
+                # Fused execution: Policy Forward + Loss Computation in one graph
+                # Pass raw tensors directly - TensorDict is built inside the compiled module
+                # This avoids CUDA graph recompilation due to varying TensorDict memory layouts
+                with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
                     metrics_packed = self.loss_module(
-                        obs, 
-                        actions,
-                        advantages, 
-                        returns, 
-                        old_log_probs, 
-                        old_values,
-                        self.clip_range, 
-                        self.clip_range_vf, 
-                        self.ent_coef, 
-                        self.vf_coef
+                        self._train_sub_index,
+                        self._train_derived_sub_indices,
+                        self._train_action_mask,
+                        self._train_actions,
+                        self._train_advantages,
+                        self._train_returns,
+                        self._train_old_log_probs,
+                        self._train_old_values,
+                        self.clip_range,
+                        self.clip_range_vf if self.clip_range_vf is not None else 0.0,  # Must be float, not None
+                        self.ent_coef,
+                        self.vf_coef,
                     )
-                    
-                    # Unpack for usage (slicing is cheap)
-                    loss = metrics_packed[0]
-                    policy_loss = metrics_packed[1]
-                    value_loss = metrics_packed[2]
-                    entropy_loss = metrics_packed[3]
-                    approx_kl_div_t = metrics_packed[4]
-                    clip_fraction_t = metrics_packed[5]
-
-                # Log approx KL for tracking
-                # Clone to safe memory because graph output memory is recycled
-                with torch.no_grad():
-                     approx_kl_divs_t.append(approx_kl_div_t.detach().clone())
                 
-                # Log losses (Keep as tensors)
-                # Must clone because these are graph outputs that will be overwritten
+                # Unpack metrics (slicing is cheap)
+                loss = metrics_packed[0]
+                policy_loss = metrics_packed[1]
+                value_loss = metrics_packed[2]
+                entropy_loss = metrics_packed[3]
+                approx_kl_div = metrics_packed[4].detach()
+                clip_fraction = metrics_packed[5]
+                
+                # Store losses - MUST clone() for CUDA graph compatibility!
+                # detach() alone keeps the same memory address which gets overwritten
                 pg_losses_t.append(policy_loss.detach().clone())
                 value_losses_t.append(value_loss.detach().clone())
                 entropy_losses_t.append(entropy_loss.detach().clone())
-                clip_fractions_t.append(clip_fraction_t.detach().clone())
+                clip_fractions_t.append(clip_fraction.detach().clone())
+                approx_kl_divs_t.append(approx_kl_div.clone())
                 
-                # Collect training traces if requested
+                # Collect traces (defer .item() to end if needed)
                 if return_traces:
-                    # Note: We need to re-compute simple stats if we want them exact for trace
-                    # But for speed we just log the loss headers
                     train_traces.append({
                         "epoch": epoch,
-                        "batch_size": len(actions),
-                        "policy_loss": policy_loss.item(),
-                        "value_loss": value_loss.item(),
-                        "entropy_loss": entropy_loss.item(),
-                        "clip_fraction": clip_fraction_t.item(),
-                         # ratios etc are internal now, can't log without extracting
+                        "batch_size": sub_index.shape[0],
+                        "policy_loss_idx": len(pg_losses_t) - 1,
+                        "value_loss_idx": len(value_losses_t) - 1,
                     })
                 
-                # Check KL divergence for early stopping BEFORE optimizer step (matching SB3)
+                # KL divergence early stopping - check BEFORE optimizer step (matches SB3/ppo.py)
                 # This prevents applying the update when KL exceeds threshold
                 if self.target_kl is not None:
-                    # Note: accessing .item() causes a synchronous device-to-host transfer. 
-                    # If performance is critical, set target_kl=None to avoid this check.
-                    approx_kl_div = approx_kl_div_t.item()
-                    if approx_kl_div > 1.5 * self.target_kl:
+                    kl_val = approx_kl_div.item()
+                    if kl_val > 1.5 * self.target_kl:
                         continue_training = False
-                        if self.verbose >= 1:
-                            print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                        if self.verbose:
+                            print(f"Early stopping at step {epoch} due to reaching max kl: {kl_val:.2f}")
                         break
                 
-                # Apply optimizer step only if KL check passed
-                # NOTE: backward() is NOT traceable by Dynamo - it must remain eager
-                # Only forward pass and loss computation use fullgraph=True
-                self.optimizer.zero_grad()
+                # Optimizer step - use set_to_none=False to keep gradient addresses stable
+                # This is critical for CUDA graph stability in reduce-overhead mode
+                self.optimizer.zero_grad(set_to_none=False)
                 loss.backward()
-                
-                # Gradient clipping (eager)
                 if self.max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                
-                # Fused Adam step (runs optimized CUDA kernel)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.policy.parameters(),
+                        self.max_grad_norm,
+                        foreach=True,  # Use fused CUDA ops for 2-3x speedup
+                    )
                 self.optimizer.step()
-            
             
             if not continue_training:
                 break
             
-            # Print epoch stats (Sync ONCE per epoch)
-            print(f"Epoch {epoch+1}/{self.n_epochs}. ")
-            if self.verbose: # and epoch == self.n_epochs - 1:
-                # Compute means on GPU then sync
-                   mean_pg = torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0
-                   mean_val = torch.stack(value_losses_t).mean().item() if value_losses_t else 0.0
-                   mean_ent = torch.stack(entropy_losses_t).mean().item() if entropy_losses_t else 0.0
-                   mean_kl = torch.stack(approx_kl_divs_t).mean().item() if approx_kl_divs_t else 0.0
-                   mean_clip = torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0
-                   
-                   print(f"Losses: total {loss.item():.5f}, "
-                        f"value {mean_val:.5f}, "
-                        f"policy {mean_pg:.5f}, "
-                        f"entropy {mean_ent:.5f}, "
-                        f"approx_kl {mean_kl:.5f} "
-                        f"clip_fraction {mean_clip:.5f}. ")
-        
-        # NOTE: Policy is left in training mode to avoid unnecessary mode switching
-        # The policy will be set to eval mode at the start of collect_rollouts()
-        
-        # Return average metrics (Sync ONCE at end)
-        with torch.no_grad():
-            # Compute explained variance from rollout buffer
-            # This is done OUTSIDE the compiled training loop for efficiency
-            ev_tensor = explained_variance(self.rollout_buffer.values, self.rollout_buffer.returns)
-            
-            # Debug: log value and return statistics
             if self.verbose:
-                values_flat = self.rollout_buffer.values.flatten()
-                returns_flat = self.rollout_buffer.returns.flatten()
-                print(f"[PPO] Values: min={values_flat.min().item():.3f}, max={values_flat.max().item():.3f}, mean={values_flat.mean().item():.3f}, std={values_flat.std().item():.3f}")
-                print(f"[PPO] Returns: min={returns_flat.min().item():.3f}, max={returns_flat.max().item():.3f}, mean={returns_flat.mean().item():.3f}, std={returns_flat.std().item():.3f}")
-                print(f"[PPO] Explained variance: {ev_tensor.item():.4f}")
-            
-            metrics = {
-                "policy_loss": torch.stack(pg_losses_t).mean().item() if pg_losses_t else 0.0,
-                "value_loss": torch.stack(value_losses_t).mean().item() if value_losses_t else 0.0,
-                "entropy": -torch.stack(entropy_losses_t).mean().item() if entropy_losses_t else 0.0, # entropy_loss is already negative of entropy
-                "clip_fraction": torch.stack(clip_fractions_t).mean().item() if clip_fractions_t else 0.0,
-                "approx_kl": torch.stack(approx_kl_divs_t).mean().item() if approx_kl_divs_t else 0.0,
-                "explained_var": ev_tensor.item(),
-            }
-            
-            # Detailed training diagnostics when debug_ppo is enabled
-            if getattr(self, 'debug_ppo', False) and DEBUG_TRAINING_AVAILABLE:
-                # Analyze values and returns
-                values_flat = self.rollout_buffer.values.flatten()
-                returns_flat = self.rollout_buffer.returns.flatten()
-                advantages_flat = self.rollout_buffer.advantages.flatten()
-                
-                value_stats = analyze_values_returns(values_flat, returns_flat)
-                advantage_stats = analyze_advantages(advantages_flat)
-                
-                print_training_health_report(
-                    logit_stats={  # Empty for now - would need to capture from forward pass
-                        "logits_valid_min": 0.0,
-                        "logits_valid_max": 0.0,
-                        "logits_valid_mean": 0.0,
-                        "logits_valid_std": 0.0,
-                        "probs_valid_min": 0.0,
-                        "probs_valid_max": 0.0,
-                        "entropy_mean": metrics.get("entropy", 0.0),
-                        "entropy_min": metrics.get("entropy", 0.0),
-                        "entropy_max": metrics.get("entropy", 0.0),
-                        "relative_entropy_mean": 0.5,
-                        "num_valid_actions_mean": 5.0,
-                    },
-                    value_stats=value_stats,
-                    advantage_stats=advantage_stats,
-                    loss_stats=metrics,
-                )
+                print(f"Epoch {epoch+1}/{self.n_epochs}")
         
-        if return_traces:
+        # Compute metrics - single sync point for all accumulated tensors
+        with torch.no_grad():
+            ev = explained_variance(self.rollout_buffer.values, self.rollout_buffer.returns)
+            
+            # Stack and compute means on GPU, then single sync
+            pg_loss_mean = torch.stack(pg_losses_t).mean() if pg_losses_t else torch.tensor(0.0)
+            value_loss_mean = torch.stack(value_losses_t).mean() if value_losses_t else torch.tensor(0.0)
+            entropy_loss_mean = torch.stack(entropy_losses_t).mean() if entropy_losses_t else torch.tensor(0.0)
+            clip_frac_mean = torch.stack(clip_fractions_t).mean() if clip_fractions_t else torch.tensor(0.0)
+            kl_mean = torch.stack(approx_kl_divs_t).mean() if approx_kl_divs_t else torch.tensor(0.0)
+        
+        metrics = {
+            "policy_loss": pg_loss_mean.item(),
+            "value_loss": value_loss_mean.item(),
+            "entropy": -entropy_loss_mean.item(),
+            "clip_fraction": clip_frac_mean.item(),
+            "approx_kl": kl_mean.item(),
+            "explained_var": ev.item(),
+        }
+        
+        # Convert trace indices to actual values if needed
+        if return_traces and train_traces:
+            pg_vals = torch.stack(pg_losses_t).cpu().numpy()
+            vl_vals = torch.stack(value_losses_t).cpu().numpy()
+            for trace in train_traces:
+                trace["policy_loss"] = float(pg_vals[trace.pop("policy_loss_idx")])
+                trace["value_loss"] = float(vl_vals[trace.pop("value_loss_idx")])
             metrics["traces"] = train_traces
         
         return metrics
-
+    
     def learn(
         self,
         total_timesteps: int,
-        callback=None,
+        queries: torch.Tensor,
         reset_num_timesteps: bool = True,
+        callback=None,
         on_iteration_start_callback=None,
         on_step_callback=None,
     ) -> None:
@@ -943,78 +915,52 @@ class PPO:
         Execute the PPO main loop: alternate between collecting rollouts and training.
         
         Args:
-            total_timesteps (int): The total number of environment steps to train for.
-            callback (Optional[Callable]): Callback called at every step.
-            reset_num_timesteps (bool): If True, reset the timestep counter.
-                                        Set False to continue training.
-            on_iteration_start_callback (Optional[Callable]): Callback called at the start of each iteration.
+            total_timesteps: Total number of environment steps to train for
+            queries: [N, 3] Query tensor - stored in env for round-robin cycling
+            reset_num_timesteps: If True, reset the timestep counter
+            callback: Optional callback called at end of each iteration (like SB3)
+            on_iteration_start_callback: Optional callback called at start of each iteration
+            on_step_callback: Optional callback called when episodes complete
         """
-        from tensordict import TensorDict
-        
-        # Handle reset_num_timesteps
         if reset_num_timesteps:
             self.num_timesteps = 0
         else:
-            # Make sure training timesteps are ahead of the internal counter
             total_timesteps += self.num_timesteps
         
-        total_steps_done = self.num_timesteps
         iteration = 0
         
-        # Only reset environment if needed (first call or explicit reset)
-        if reset_num_timesteps or self._last_obs is None:
-            current_obs = self.env.reset()
-            
-            current_episode_reward = torch.zeros(self.n_envs, device=self.device)
-            current_episode_length = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
-            episode_starts = torch.ones(self.n_envs, dtype=torch.float32, device=self.device)
-        else:
-            # Resume from last state
-            current_obs = self._last_obs
-            current_episode_reward = self._current_episode_reward
-            current_episode_length = self._current_episode_length
-            episode_starts = self._last_episode_starts
+        # Set queries in environment for round-robin cycling (like BatchedEnv)
+        self.env.set_queries(queries)
         
-        # Episode tracking
+        # Initialize current_query_indices based on initial env assignment (0..batch_size)
+        if self.query_labels is not None or self.query_depths is not None:
+            self.current_query_indices = torch.arange(self.n_envs, dtype=torch.long, device=self.device)
+            # Handle case where n_envs > queries
+            if queries.shape[0] > 0:
+                self.current_query_indices = self.current_query_indices % queries.shape[0]
+        
+        # Reset environment to get initial state and observation
+        obs, state = self.env.reset()
+        
+        episode_starts = torch.ones(self.n_envs, dtype=torch.float32, device=self.device)
+        current_episode_reward = torch.zeros(self.n_envs, dtype=torch.float32, device=self.device)
+        current_episode_length = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
         episode_rewards = []
         episode_lengths = []
-        if self.trace_recorder is not None:
-            self._trace_episode_ids = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
-            self._trace_lengths = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
         
-        if self.verbose:
-            print(f"\n[PPO] Starting training for {total_timesteps} timesteps")
-            print(f"[PPO] Rollout size: {self.n_steps} steps x {self.n_envs} envs = {self.n_steps * self.n_envs} samples per rollout")
-        
-        while total_steps_done < total_timesteps:
+        while self.num_timesteps < total_timesteps:
             iteration += 1
-                        
             
-            # ============================================================
-            # Callbacks (Start of Iteration)
-            # ============================================================
+            # Callback: Start of iteration
             if on_iteration_start_callback is not None:
-                on_iteration_start_callback(iteration, total_steps_done)
+                on_iteration_start_callback(iteration, self.num_timesteps)
             
-            # ============================================================
-            # Logging
-            # ============================================================
-            if self.verbose:
-                print(f"\n[PPO] ===== Iteration {iteration} ({total_steps_done}/{total_timesteps} steps) =====")
-
-            # ============================================================
-            # Collect rollouts
-            # ============================================================
-            rollout_start_time = time.time()
-            
-            (
-                current_obs,
-                episode_starts,
-                current_episode_reward,
-                current_episode_length,
-                steps_collected,
-            ) = self.collect_rollouts(
-                current_obs=current_obs,
+            # Collect rollouts using env's internal query cycling
+            print("\nCollecting rollouts")
+            start_time = time.time()
+            result = self.collect_rollouts(
+                current_state=state,
+                current_obs=obs,
                 episode_starts=episode_starts,
                 current_episode_reward=current_episode_reward,
                 current_episode_length=current_episode_length,
@@ -1023,48 +969,413 @@ class PPO:
                 iteration=iteration,
                 on_step_callback=on_step_callback,
             )
+            state, obs, episode_starts, current_episode_reward, current_episode_length, n_steps, _ = result
+            self.num_timesteps += n_steps
+            end_time = time.time()-start_time
+            print(f"Rollout collected in {end_time:.2f}s. FPS: {n_steps / end_time:.2f}\n")            
             
-            total_steps_done += steps_collected
-            rollout_time = time.time() - rollout_start_time
-            print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
-            print(f"[PPO] FPS: {steps_collected/rollout_time:.2f}")
-            if self.verbose:
-                if episode_rewards:
-                    recent_rewards = episode_rewards[-10:]
-                    print(f"[PPO] Recent episodes: reward={sum(recent_rewards)/len(recent_rewards):.3f}, length={sum(episode_lengths[-10:])/len(episode_lengths[-10:]):.1f}")
-
-            # ============================================================
-            # Train policy
-            # ============================================================
-            if self.verbose:
-                print("\n[PPO] ===== Training policy =====")
-            train_start_time = time.time()
+            # Train
+            print("\nTraining")
+            start_time = time.time()
             train_metrics = self.train()
-            train_time = time.time() - train_start_time
-            train_extra = {**train_metrics, "total_timesteps": total_steps_done, "iterations": iteration}
-            Display.print_formatted_metrics(metrics={}, prefix="train", extra_metrics=train_extra)
-            
-            # Store last training metrics for external access
             self.last_train_metrics = train_metrics
+            print(f"Training completed in {time.time() - start_time:.2f}s")
             
-            print(f"[PPO] Training completed in {train_time:.2f}s")
+            if self.verbose:
+                print(f"Iteration {iteration}, timesteps: {self.num_timesteps}/{total_timesteps}.  "
+                    f"total loss: {train_metrics['policy_loss'] + train_metrics['value_loss']:.4f}, "
+                    f"policy_loss: {train_metrics['policy_loss']:.4f}, "
+                    f"value_loss: {train_metrics['value_loss']:.4f}, "
+                    f"entropy_loss: {train_metrics['entropy']:.4f}, "
+                    f"approx_kl: {train_metrics['approx_kl']:.4f}, "
+                    f"clip_fraction: {train_metrics['clip_fraction']:.4f}, "
+                    f"explained_var: {train_metrics['explained_var']:.4f}\n")
             
-            # ============================================================
-            # Callback
-            # ============================================================
+            # Callback: End of iteration (matching SB3/PPO interface)
             if callback is not None:
-                callback_result = callback(locals(), globals())
+                locals_dict = {
+                    'iteration': iteration,
+                    'total_steps_done': self.num_timesteps,
+                    'episode_rewards': episode_rewards,
+                    'episode_lengths': episode_lengths,
+                    'train_metrics': train_metrics,
+                }
+                callback_result = callback(locals_dict, globals())
                 if callback_result is False:
                     if self.verbose:
-                        print("[PPO] Training stopped by callback")
+                        print("[PPOOptimized] Training stopped by callback")
                     break
 
-        if self.trace_recorder is not None:
-            self.trace_recorder.flush()
+
+    @torch.inference_mode()
+    def evaluate_policy(
+        self,
+        queries: Tensor,
+        max_steps: int = None,
+        deterministic: bool = True,
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """
+        Run policy evaluation over trajectories for a single batch.
         
-        # Save state for consecutive learn() calls
-        self._last_obs = current_obs
-        self._last_episode_starts = episode_starts
-        self._current_episode_reward = current_episode_reward
-        self._current_episode_length = current_episode_length
-        self.num_timesteps = total_steps_done
+        This is the core evaluation loop. It expects queries to already be
+        at the correct batch size (fixed_batch_size). Use evaluate_with_corruptions()
+        for the full evaluation pipeline with chunking and padding.
+        
+        Must call env.compile(policy) before using this method.
+        
+        Args:
+            queries: [B, 3] Query triples (B should equal fixed_batch_size)
+            max_steps: Maximum trajectory length (default: env.max_depth)
+            deterministic: Use argmax for action selection
+            
+        Returns:
+            log_probs: [B] Accumulated log probs per query
+            success: [B] Whether proof succeeded
+            lengths: [B] Trajectory lengths
+            rewards: [B] Accumulated rewards
+        """
+        if self.env._policy_logits_fn is None:
+            raise RuntimeError("Must call env.compile(policy) before evaluate_policy()")
+        
+        device = self.device
+        max_steps = max_steps or self.env.max_depth
+        
+        # Initialize state
+        state = self.env.init_state_from_queries(queries)
+        B = state.current_states.shape[0]
+        
+        # Pre-allocate accumulators
+        total_log_probs = torch.zeros(B, device=device)
+        total_rewards = torch.zeros(B, device=device)
+        
+        # Create initial observation
+        action_mask = self.env._positions_S < state.derived_counts.unsqueeze(1)
+        obs = EvalObs(
+            sub_index=state.current_states.unsqueeze(1),
+            derived_sub_indices=state.derived_states,
+            action_mask=action_mask,
+        )
+        
+        # Empty query pool and pointers for eval mode (no resets)
+        empty_pool = torch.empty((0, 3), dtype=torch.long, device=device)
+        empty_ptrs = torch.zeros(B, dtype=torch.long, device=device)
+        eval_done_mask = torch.zeros(B, dtype=torch.bool, device=device)
+        
+        # Python loop over transitions
+        for step_idx in range(max_steps):
+            # Early exit if all done
+            if state.done.all():
+                break
+            
+            state, obs, actions, step_log_probs, _values, rewards, dones, _, _ = self.env.step_with_policy(
+                state, obs, empty_pool, empty_ptrs,
+                deterministic=deterministic,
+                eval_mode=True,
+                eval_done_mask=eval_done_mask,
+            )
+            
+            # Accumulate
+            total_log_probs = total_log_probs + step_log_probs
+            total_rewards = total_rewards + rewards
+        
+        return total_log_probs, state.success, state.depths, total_rewards
+    
+    def _pad_queries(self, queries: Tensor) -> Tuple[Tensor, int]:
+        """Pad queries to fixed_batch_size. Returns (padded_queries, original_size)."""
+        B = queries.shape[0]
+        fixed_batch_size = self.fixed_batch_size
+        
+        if B >= fixed_batch_size:
+            return queries[:fixed_batch_size], min(B, fixed_batch_size)
+        
+        padded = torch.zeros(fixed_batch_size, 3, dtype=queries.dtype, device=self.device)
+        padded[:B] = queries
+        # Fill padding with last query (valid but results ignored)
+        padded[B:] = queries[-1]
+        return padded, B
+    
+    @torch.inference_mode()
+    def evaluate_with_corruptions(
+        self,
+        queries: Tensor,
+        sampler: Any,
+        *,
+        n_corruptions: int = 50,
+        corruption_modes: Sequence[str] = ("head", "tail"),
+        chunk_queries: int = 50,
+        verbose: bool = False,
+        deterministic: bool = True,
+        parity_mode: bool = False,
+        query_depths: Optional[Tensor] = None,
+    ) -> Dict[str, Any]:
+        """
+        Evaluate policy on queries with corruptions for ranking metrics (MRR, Hits@K).
+        
+        For each query, generates corruptions and evaluates all candidates 
+        (positive + corruptions) to compute ranking metrics.
+        
+        This method handles ALL chunking and padding:
+        1. Chunks positive queries into batches of chunk_queries
+        2. For each chunk, generates corruptions per corruption mode
+        3. Flattens candidates and pads to fixed_batch_size
+        4. Calls evaluate_policy with padded batches
+        5. Computes ranks and aggregates metrics
+        
+        Args:
+            queries: [N, 3] Tensor of test triples
+            sampler: Sampler for generating corruptions
+            n_corruptions: Number of corruptions per query
+            corruption_modes: Tuple of modes ('head', 'tail')
+            chunk_queries: Number of positive queries to process at once
+            verbose: Print progress
+            deterministic: Use deterministic action selection
+            parity_mode: If True, use numpy RNG for tie-breaking
+            query_depths: Optional [N] Tensor of query depths for detailed metrics
+            
+        Returns:
+            Dictionary with MRR and Hits@K metrics
+        """
+        from callbacks import Display # Delayed import to avoid circular dependency
+        
+        if not self.env._compiled and self.env._policy_logits_fn is None:
+            raise RuntimeError("Must call env.compile(policy) before evaluate_with_corruptions()")
+        
+        device = self.device
+        N = queries.shape[0]
+        K = n_corruptions
+        fixed_batch_size = self.fixed_batch_size
+        
+        # Accumulate ranks per mode
+        per_mode_ranks: Dict[str, list] = {m: [] for m in corruption_modes}
+        
+        # Accumulators for aggregate stats
+        acc_lengths = []
+        acc_rewards = []
+        acc_success = []
+        acc_is_pos = []
+        acc_depths = []
+        
+        # Process positive queries in chunks
+        for start in range(0, N, chunk_queries):
+            end = min(start + chunk_queries, N)
+            Q = end - start
+            
+            if verbose:
+                print(f"Processing queries {start}-{end} / {N}")
+            
+            chunk_queries_tensor = queries[start:end]  # [Q, 3]
+            
+            # parity_mode: Match model_eval.py corruption generation order exactly
+            # Non-parity: Fast path with single sampler.corrupt call per mode
+            if parity_mode:
+                # Generate corruptions based on sampler.default_mode, not corruption_modes
+                # This ensures RNG parity since both paths consume RNG in the same order
+                sampler_mode = getattr(sampler, 'default_mode', 'both')
+                
+                # Pre-generate corruptions in head-then-tail order like model_eval.py
+                head_corruptions = None
+                tail_corruptions = None
+                
+                if sampler_mode in ('head', 'both'):
+                    head_corruptions = sampler.corrupt(
+                        chunk_queries_tensor, num_negatives=K, mode='head', device=device
+                    )
+                if sampler_mode in ('tail', 'both'):
+                    tail_corruptions = sampler.corrupt(
+                        chunk_queries_tensor, num_negatives=K, mode='tail', device=device
+                    )
+            
+            for mode in corruption_modes:
+                if parity_mode:
+                    if mode == 'head':
+                        corruptions = head_corruptions if head_corruptions is not None else torch.zeros(Q, K, 3, dtype=torch.long, device=device)
+                    else:
+                        corruptions = tail_corruptions if tail_corruptions is not None else torch.zeros(Q, K, 3, dtype=torch.long, device=device)
+                else:
+                    # Fast path: generate corruptions directly with requested mode
+                    corruptions = sampler.corrupt(
+                        chunk_queries_tensor,
+                        num_negatives=K,
+                        mode=mode,
+                        device=device
+                    )
+                
+                # Handle variable corruption counts
+                valid_mask = corruptions.sum(dim=-1) != 0  # [Q, K]
+                
+                # Create candidates: positive + corruptions -> [Q, 1+K, 3]
+                candidates = torch.zeros(Q, 1 + K, 3, dtype=torch.long, device=device)
+                candidates[:, 0, :] = chunk_queries_tensor
+                candidates[:, 1:, :] = corruptions
+                
+                # Flatten for batch evaluation: [Q*(1+K), 3]
+                flat_candidates = candidates.view(-1, 3)
+                total_candidates = flat_candidates.shape[0]
+                
+                # Process candidates in chunks of fixed_batch_size with padding
+                all_log_probs = []
+                all_success = []
+                all_lengths = []
+                all_rewards = []
+                
+                for cand_start in range(0, total_candidates, fixed_batch_size):
+                    cand_end = min(cand_start + fixed_batch_size, total_candidates)
+                    batch_candidates = flat_candidates[cand_start:cand_end]
+                    actual_size = batch_candidates.shape[0]
+                    
+                    # Pad to fixed_batch_size
+                    padded_candidates, _ = self._pad_queries(batch_candidates)
+                    
+                    # Evaluate
+                    log_probs, success, depths, rewards = self.evaluate_policy(
+                        queries=padded_candidates,
+                        max_steps=self.env.max_depth,
+                        deterministic=deterministic,
+                    )
+                    
+                    # Trim to actual size
+                    all_log_probs.append(log_probs[:actual_size])
+                    all_success.append(success[:actual_size])
+                    all_lengths.append(depths[:actual_size]) # depths output is actually episode length
+                    all_rewards.append(rewards[:actual_size])
+                
+                # Concatenate results
+                log_probs = torch.cat(all_log_probs, dim=0)  # [Q*(1+K)]
+                success = torch.cat(all_success, dim=0)      # [Q*(1+K)]
+                lengths = torch.cat(all_lengths, dim=0)      # [Q*(1+K)]
+                rewards = torch.cat(all_rewards, dim=0)      # [Q*(1+K)]
+                
+                # Accumulate detailed stats (filtering invalid negatives)
+                # Reshape masks to map back to candidates
+                valid_mask_full = torch.zeros(Q, 1 + K, dtype=torch.bool, device=device)
+                valid_mask_full[:, 0] = True # Positives always valid
+                valid_mask_full[:, 1:] = valid_mask # Negatives
+                
+                flat_valid = valid_mask_full.view(-1)
+                
+                # Stats for valid entries only
+                acc_lengths.append(lengths[flat_valid])
+                acc_rewards.append(rewards[flat_valid])
+                acc_success.append(success[flat_valid].float())
+                
+                # Positive mask: index % (1+K) == 0
+                is_pos = torch.zeros(Q * (1 + K), dtype=torch.bool, device=device)
+                is_pos[torch.arange(0, Q * (1 + K), 1 + K, device=device)] = True
+                acc_is_pos.append(is_pos[flat_valid])
+                
+                # Depths
+                if query_depths is not None:
+                    # Expand depths: [Q] -> [Q, 1+K] -> flattened -> valid
+                    chunk_depths = query_depths[start:end].to(device)
+                    expanded_depths = chunk_depths.unsqueeze(1).expand(Q, 1 + K).reshape(-1)
+                    # For metrics, we use -1 for non-positives or if not specified
+                    # Actually model_eval.py allows bucketting negatives by "unknown_neg".
+                    # But typically we want specific depths for POSITIVE queries.
+                    # model_eval.py fills negatives with -1 depth.
+                    mask_pos_full = is_pos # [Q*(1+K)]
+                    expanded_depths = torch.where(mask_pos_full, expanded_depths, torch.full_like(expanded_depths, -1))
+                    acc_depths.append(expanded_depths[flat_valid])
+
+
+                # Reshape results: [Q, 1+K]
+                log_probs = log_probs.view(Q, 1 + K)
+                success = success.view(Q, 1 + K)
+                
+                # Apply success penalty - failed proofs get -100 penalty
+                log_probs = log_probs.clone()
+                log_probs[~success.bool()] -= 100.0
+                
+                # Ranking with random tie-breaking
+                pos_score = log_probs[:, 0:1]  # [Q, 1]
+                neg_scores = log_probs[:, 1:]  # [Q, K]
+                
+                # Random keys for tie-breaking
+                if parity_mode:
+                    # Numpy RNG with seed=0 for exact parity with model_eval.py (slow)
+                    rnd = torch.as_tensor(np.random.RandomState(0).rand(Q, 1 + K), device=device, dtype=torch.float32)
+                else:
+                    # Fast torch RNG (no seeding needed, just for tie-breaking)
+                    rnd = torch.rand(Q, 1 + K, device=device)
+                
+                # Count negatives that beat positive (better score, or tied with higher random key)
+                better = (neg_scores > pos_score) & valid_mask
+                tied_wins = (neg_scores == pos_score) & (rnd[:, 1:] > rnd[:, 0:1]) & valid_mask
+                ranks = 1 + better.sum(dim=1) + tied_wins.sum(dim=1)
+                per_mode_ranks[mode].append(ranks.float())
+        
+        # Aggregate results
+        results: Dict[str, Any] = {
+            "MRR": 0.0, "Hits@1": 0.0, "Hits@3": 0.0, "Hits@10": 0.0,
+            "per_mode": {}
+        }
+        
+        for mode in corruption_modes:
+            if per_mode_ranks[mode]:
+                all_ranks = torch.cat(per_mode_ranks[mode])
+                results["per_mode"][mode] = compute_metrics_from_ranks(all_ranks)
+            else:
+                results["per_mode"][mode] = compute_metrics_from_ranks(torch.tensor([], device=device))
+        
+        # Average across modes
+        for mode in corruption_modes:
+            for k, v in results["per_mode"][mode].items():
+                results[k] += v
+        
+        n_modes = len(corruption_modes)
+        for k in ["MRR", "Hits@1", "Hits@3", "Hits@10"]:
+            results[k] /= n_modes if n_modes > 0 else 1.0
+            
+        results["_mrr"] = results["MRR"]
+        
+        # --- Stats Formatting (matching model_eval.py) ---
+        if acc_lengths:
+            all_lens = torch.cat(acc_lengths).float()
+            all_rews = torch.cat(acc_rewards).float()
+            all_succ = torch.cat(acc_success).float()
+            all_pos = torch.cat(acc_is_pos)
+            all_depths_t = torch.cat(acc_depths) if acc_depths else None
+            
+            def fmt(t):
+                count = t.numel()
+                if count == 0: return Display._format_stat_string(None, None, 0)
+                if count == 1: return Display._format_stat_string(t.mean().item(), 0.0, 1)
+                return Display._format_stat_string(t.mean().item(), t.std().item(), count)
+            
+            results["len"] = fmt(all_lens)
+            results["ep_len_mean"] = getattr(all_lens.mean(), 'item', lambda: 0.0)()
+            
+            pos_idxs = torch.nonzero(all_pos).view(-1)
+            neg_idxs = torch.nonzero(~all_pos).view(-1)
+            
+            if pos_idxs.numel() > 0:
+                results["reward"] = fmt(all_rews[pos_idxs])
+                results["ep_rew_mean"] = getattr(all_rews.mean(), 'item', lambda: 0.0)()
+                results["success_rate"] = getattr(all_succ[pos_idxs].mean(), 'item', lambda: 0.0)()
+            
+            for lbl_key, idxs in [("pos", pos_idxs), ("neg", neg_idxs)]:
+                if idxs.numel() > 0:
+                    results[f"len_{lbl_key}"] = fmt(all_lens[idxs])
+                    results[f"reward_{lbl_key}"] = fmt(all_rews[idxs])
+                    results[f"proven_{lbl_key}"] = fmt(all_succ[idxs])
+            
+            # By Depth
+            if all_depths_t is not None:
+                unique_d = torch.unique(all_depths_t)
+                for d in unique_d:
+                    d_val = int(d.item())
+                    mask_d = (all_depths_t == d)
+                    for is_p, lbl in [(True, "pos"), (False, "neg")]:
+                        mask_dp = mask_d & (all_pos if is_p else ~all_pos)
+                        if mask_dp.any():
+                            depth_key = Display._format_depth_key(d_val if is_p else -1)
+                            results[f"len_d_{depth_key}_{lbl}"] = fmt(all_lens[mask_dp])
+                            results[f"reward_d_{depth_key}_{lbl}"] = fmt(all_rews[mask_dp])
+                            results[f"proven_d_{depth_key}_{lbl}"] = fmt(all_succ[mask_dp])
+
+        if verbose:
+            print(f"\nResults:")
+            print(f"  MRR: {results['MRR']:.4f}")
+            print(f"  Hits@1: {results['Hits@1']:.4f}")
+            print(f"  Hits@10: {results['Hits@10']:.4f}")
+        
+        return results

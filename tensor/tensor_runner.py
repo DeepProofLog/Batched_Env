@@ -7,9 +7,21 @@ migrated from the original Stable-Baselines3 version to use TorchRL.
 
 import os
 import numpy as np
+import numpy as np
 import torch
+from pathlib import Path
+import sys
 
-torch.set_float32_matmul_precision('high')
+# Add root to path so we can use absolute imports (tensor.tensor_*)
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+try:
+    torch.set_float32_matmul_precision('high')
+except AttributeError:
+    pass
 
 import argparse
 import copy
@@ -18,8 +30,9 @@ from itertools import product
 from typing import List, Optional
 
 from utils.utils import FileLogger
-from train import main
+from tensor.tensor_train import main
 from utils.utils_config import (
+
     parse_scalar,
     coerce_config_value,
     update_config_value,
