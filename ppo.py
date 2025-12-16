@@ -940,6 +940,8 @@ class PPOOptimized:
                 self.current_query_indices = self.current_query_indices % queries.shape[0]
         
         # Reset environment to get initial state and observation
+        # with torch.inference_mode():
+        #     obs, state = self.env.reset()
         obs, state = self.env.reset()
         
         episode_starts = torch.ones(self.n_envs, dtype=torch.float32, device=self.device)
@@ -1007,7 +1009,7 @@ class PPOOptimized:
                     break
 
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def evaluate_policy(
         self,
         queries: Tensor,
@@ -1094,7 +1096,7 @@ class PPOOptimized:
         padded[B:] = queries[-1]
         return padded, B
     
-    @torch.inference_mode()
+    @torch.no_grad()
     def evaluate_with_corruptions(
         self,
         queries: Tensor,
@@ -1145,7 +1147,7 @@ class PPOOptimized:
         K = n_corruptions
         fixed_batch_size = self.fixed_batch_size
         
-        # Accumulate ranks per mode
+            # Accumulate ranks per mode
         per_mode_ranks: Dict[str, list] = {m: [] for m in corruption_modes}
         
         # Accumulators for aggregate stats
@@ -1155,6 +1157,12 @@ class PPOOptimized:
         acc_is_pos = []
         acc_depths = []
         
+        # Initialize RNG for parity mode once (outside loop)
+        rng = None
+        if parity_mode:
+            # Numpy RNG with seed=0 for parity with model_eval.py
+            rng = np.random.RandomState(0)
+
         # Process positive queries in chunks
         for start in range(0, N, chunk_queries):
             end = min(start + chunk_queries, N)
@@ -1291,8 +1299,8 @@ class PPOOptimized:
                 
                 # Random keys for tie-breaking
                 if parity_mode:
-                    # Numpy RNG with seed=0 for exact parity with model_eval.py (slow)
-                    rnd = torch.as_tensor(np.random.RandomState(0).rand(Q, 1 + K), device=device, dtype=torch.float32)
+                    # Use pre-initialized RNG for consistent consumption order
+                    rnd = torch.as_tensor(rng.rand(Q, 1 + K), device=device, dtype=torch.float32)
                 else:
                     # Fast torch RNG (no seeding needed, just for tie-breaking)
                     rnd = torch.rand(Q, 1 + K, device=device)

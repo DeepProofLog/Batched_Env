@@ -72,6 +72,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 import torch
 from torch import Tensor
+import utils.utils as utils_funcs
 
 # Global flag for parity mode - when True, uses deterministic behavior for tests
 # When False, uses optimized behavior without synchronization points
@@ -1797,9 +1798,76 @@ class UnificationEngine:
         self._cached_arange_batch = torch.arange(max_batch_cap, device=device, dtype=torch.long)
         
         # Initialize DebugHelper for verbose output
-        from utils.debug_helper import DebugHelper as DH
-        self.debug_helper = DH(**stringifier_params) if stringifier_params else None
-        self.deb = self.debug_helper
+        # -------- Debug helper --------
+        self.stringifier_params = stringifier_params
+        
+    def _log(self, level: int, message: str) -> None:
+        """Log a message if verbosity level is sufficient."""
+        print(f"[ENGINE] {message}")
+
+    def _state_to_str(self, state: Tensor) -> str:
+        """Convert a tensor state to string representation."""
+        if self.stringifier_params is None:
+            return str(state)
+        # Handle batch dimension if present
+        if state.dim() == 3 and state.shape[0] == 1:
+            state = state[0]
+            
+        return utils_funcs.state_to_str(
+            state, 
+            idx2predicate=self.stringifier_params.get('idx2predicate'),
+            idx2constant=self.stringifier_params.get('idx2constant'),
+            n_constants=self.stringifier_params.get('n_constants'),
+            padding_idx=self.padding_idx
+        )
+
+    def _atom_to_str(self, atom: Tensor) -> str:
+        """Convert an atom index tensor to a string representation."""
+        if self.stringifier_params is None:
+            return str(atom)
+        return utils_funcs.atom_to_str(
+             atom, 
+             idx2predicate=self.stringifier_params.get('idx2predicate'),
+             idx2constant=self.stringifier_params.get('idx2constant'),
+             n_constants=self.stringifier_params.get('n_constants'),
+             padding_idx=self.padding_idx
+        )
+
+    def print_states(self, title: str, states_tensor: torch.Tensor, 
+                     counts: Optional[torch.Tensor] = None, 
+                     verbose: int = 1) -> None:
+        """Print states in human-readable format."""
+        
+        pad = self.padding_idx
+        
+        print(f"\n{'='*60}")
+        print(f"{title}")
+        print(f"{'='*60}")
+        
+        if states_tensor.dim() == 3:  # [B, M, 3]
+            for i in range(states_tensor.shape[0]):
+                state = states_tensor[i]
+                valid = state[:, 0] != pad
+                if valid.any():
+                    atoms = state[valid]
+                    atoms_str = [self._atom_to_str(atom) for atom in atoms]
+                    print(f"  State {i}: [{', '.join(atoms_str)}]")
+                else:
+                    print(f"  State {i}: <empty>")
+        elif states_tensor.dim() == 4:  # [B, K, M, 3]
+            for i in range(states_tensor.shape[0]):
+                count = counts[i].item() if counts is not None else states_tensor.shape[1]
+                if count > 0:
+                    print(f"  Batch {i} ({count} states):")
+                    for j in range(min(count, states_tensor.shape[1])):
+                        state = states_tensor[i, j]
+                        valid = state[:, 0] != pad
+                        if valid.any():
+                            atoms = state[valid]
+                            atoms_str = [self._atom_to_str(atom) for atom in atoms]
+                            print(f"    [{j}]: [{', '.join(atoms_str)}]")
+                        else:
+                            print(f"    [{j}]: <empty>")
         
     def _get_arange(self, n: int, cache_type: str = 'batch') -> Tensor:
         """Get cached arange tensor, creating if needed."""
@@ -1905,7 +1973,7 @@ class UnificationEngine:
         B, max_atoms = current_states.shape[:2]
         pad = self.padding_idx
         
-        if verbose > 0 and self.debug_helper:
+        if verbose > 0:
             print(f"\n[ENGINE DEBUG] get_derived_states called with next_var_indices={next_var_indices.tolist()}, constant_no={self.constant_no}")
 
         # Preallocate final output (padded). We'll fill progressively.
@@ -1918,8 +1986,8 @@ class UnificationEngine:
         # 1. Preprocessing: Active vs Terminal
         # ---------------------------------------------------------------------
         pre = preprocess_states(current_states, self.true_pred_idx, self.false_pred_idx, pad)
-        if verbose > 0 and self.debug_helper:
-            self.debug_helper.print_states("[ENGINE] 1. CURRENT STATES", current_states)
+        if verbose > 0:
+            self.print_states("[ENGINE] 1. CURRENT STATES", current_states)
 
         # Handle terminal TRUE
         if self.true_atom is not None and pre.terminal_true.numel() > 0:
@@ -1951,8 +2019,8 @@ class UnificationEngine:
             self.constant_no, pad, next_var_active
         )  # rule_states: [N_r, M_r, 3]
         
-        if verbose > 0 and self.debug_helper:
-            self.debug_helper.print_states("[ENGINE] 2. RULE UNIFICATIONS", rule_states, rule_counts)
+        if verbose > 0:
+            self.print_states("[ENGINE] 2. RULE UNIFICATIONS", rule_states, rule_counts)
 
         # ---------------------------------------------------------------------
         # 3. Fact Unification
@@ -1966,8 +2034,8 @@ class UnificationEngine:
             excluded_queries=facts_excl
         )  # fact_states: [N_f, M_f, 3]
         
-        if verbose > 0 and self.debug_helper:
-            self.debug_helper.print_states("[ENGINE] 3. FACT UNIFICATIONS", fact_states, fact_counts)
+        if verbose > 0:
+            self.print_states("[ENGINE] 3. FACT UNIFICATIONS", fact_states, fact_counts)
 
         # ---------------------------------------------------------------------
         # 4. Combine Candidates
@@ -2063,10 +2131,10 @@ class UnificationEngine:
         # ---------------------------------------------------------------------
         # 6. Standardize Variables
         # ---------------------------------------------------------------------
-        if verbose > 0 and self.debug_helper:
+        if verbose > 0:
             print(f"[ENGINE] Before standardize: next_var indices = {updated_next.tolist() if updated_next.numel() <= 10 else updated_next[:10].tolist()}")
             print(f"  constant_no = {self.constant_no}, runtime_var_end = {self.runtime_var_end_index}")
-            self.debug_helper.print_states("[ENGINE] 5. BEFORE STANDARDIZE", surv_states, surv_counts)
+            self.print_states("[ENGINE] 5. BEFORE STANDARDIZE", surv_states, surv_counts)
         
         std_states, next_end_B = standardize_derived_states(
             surv_states, surv_counts, surv_owners, updated_next, self.constant_no,
@@ -2075,8 +2143,8 @@ class UnificationEngine:
         
         updated_next = torch.maximum(updated_next, next_end_B)  # [B]
         
-        if verbose > 0 and self.debug_helper:
-            self.debug_helper.print_states("[ENGINE] 6. AFTER STANDARDIZE", std_states, surv_counts)
+        if verbose > 0:
+            self.print_states("[ENGINE] 6. AFTER STANDARDIZE", std_states, surv_counts)
 
         # ---------------------------------------------------------------------
         # 7. Pack and Cap
@@ -2097,7 +2165,7 @@ class UnificationEngine:
             packed, packed_counts = deduplicate_states_packed(packed, packed_counts, pad, self.hash_cache)
 
         # 7b) Apply canonical ordering AFTER deduplication but BEFORE capping
-        should_sort = self.sort_states and packed.numel() > 0 and self.debug_helper is not None
+        should_sort = self.sort_states and packed.numel() > 0
         if should_sort:
             # Unpack to flat list for sorting (debug util only)
             flat_states = []
@@ -2113,10 +2181,14 @@ class UnificationEngine:
                 flat_counts = torch.ones(len(flat_states), dtype=torch.long, device=device)
                 dummy_next_vars = updated_next[flat_owners]
                 
-                flat_states, flat_counts, flat_owners, dummy_next_vars = self.debug_helper._sort_candidates_by_str_order(
-                    flat_states, flat_counts, flat_owners, dummy_next_vars,
-                    self.constant_no, pad
-                )
+                if self.stringifier_params is not None:
+                    flat_states, flat_counts, flat_owners, dummy_next_vars = utils_funcs.sort_candidates_by_str_order(
+                        flat_states, flat_counts, flat_owners, dummy_next_vars,
+                        idx2predicate=self.stringifier_params.get('idx2predicate'),
+                        idx2constant=self.stringifier_params.get('idx2constant'),
+                        n_constants=self.stringifier_params.get('n_constants'),
+                        padding_idx=self.padding_idx
+                    )
                 # Repack sorted states
                 packed, packed_counts = pack_by_owner(flat_states, flat_counts, flat_owners, B, M_comb, pad)
 

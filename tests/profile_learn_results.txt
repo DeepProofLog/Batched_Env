@@ -1,0 +1,16 @@
+Profile Optimized Learn Results
+Date: 2025-12-16 21:59:37
+Device: cuda
+Dataset: countries_s3
+
+Configuration:
+  Total timesteps (profiled): 1
+  Batch size env: 128
+  N steps per rollout: 128
+  N epochs: 5
+  Minibatch size: 1024
+  Compile mode: reduce-overhead
+  Fullgraph: True
+
+
+Setting up components...

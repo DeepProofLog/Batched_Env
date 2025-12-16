@@ -792,7 +792,6 @@ def create_policy_logits_fn(
     """
     from env import EvalObs
     
-    @torch.no_grad()
     def policy_fn(obs: 'EvalObs') -> torch.Tensor:
         # Build observation dict that the actor expects
         obs_dict = {
@@ -856,7 +855,6 @@ def create_policy_value_fn(
     """
     from env import EvalObs
     
-    @torch.no_grad()
     def value_fn(obs: 'EvalObs') -> torch.Tensor:
         # Build observation dict that the actor expects
         obs_dict = {

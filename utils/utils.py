@@ -1,6 +1,6 @@
 import re
 import copy
-from typing import Dict, Union, List, Any, Tuple, Iterable, Optional
+from typing import Dict, Union, List, Any, Tuple, Iterable, Optional, Sequence
 import datetime
 import os
 import random
@@ -75,6 +75,210 @@ class Term:
     #     if self.predicate != other.predicate:
     #         return self.predicate < other.predicate
     #     return self.args < other.args
+
+
+
+def atom_to_str(atom: torch.Tensor, idx2predicate: Sequence[str], idx2constant: Sequence[str], n_constants: int, padding_idx: int = 0) -> str:
+    """Convert a single atom tensor to string."""
+    pred = int(atom[0].item())
+    args = [int(x.item()) for x in atom[1:]]
+    
+    if pred == padding_idx:
+        return "PAD"
+        
+    if idx2predicate and 0 <= pred < len(idx2predicate):
+        pred_str = idx2predicate[pred]
+    else:
+        pred_str = f"?p{pred}"
+        
+    arg_strs = []
+    for arg in args:
+        if arg == padding_idx:
+            arg_strs.append("PAD")
+        elif arg > n_constants:
+            # Variable
+            arg_strs.append(f"Var_{arg}")
+        elif idx2constant and 0 <= arg < len(idx2constant):
+            # Constant
+            arg_strs.append(idx2constant[arg])
+        else:
+            arg_strs.append(f"?c{arg}")
+            
+    if not arg_strs and pred_str in ["True", "False", "Endf"]:
+        return f"{pred_str}"
+        
+    return f"{pred_str}({','.join(arg_strs)})"
+
+def state_to_str(state: torch.Tensor, idx2predicate: Sequence[str], idx2constant: Sequence[str], n_constants: int, padding_idx: int = 0, **kwargs) -> str:
+    """Convert state tensor to string. Handles both [M, 3] and [3] shapes."""
+    if state.dim() == 1:
+        return atom_to_str(state, idx2predicate, idx2constant, n_constants, padding_idx)
+        
+    valid = state[:, 0] != padding_idx
+    if not valid.any():
+        return ""
+        
+    atoms = state[valid]
+    atom_strs = [atom_to_str(atom, idx2predicate, idx2constant, n_constants, padding_idx) for atom in atoms]
+    return "|".join(atom_strs)
+
+
+def canonical_state_to_str(state: torch.Tensor, idx2predicate: Sequence[str], idx2constant: Sequence[str], n_constants: int, padding_idx: int = 0) -> str:
+    """
+    Canonicalize a tensor state and convert to string for comparisons.
+    
+    Unified canonicalization logic (matches string engine):
+    1. Sort atoms alphabetically by (predicate, arg_types)
+       - All variables are treated as equivalent for sorting (type 'VAR')
+       - Constants are distinguished by their values (type 'CONST')
+    2. After sorting, rename variables to Var_1, Var_2, ... in order of first appearance
+    
+    This ensures that structurally identical states produce the same canonical string,
+    regardless of the original variable numbering.
+    """
+    # Handle batch dimension if present
+    if state.dim() == 3:
+        if state.shape[0] != 1:
+            raise ValueError("Expected single batch dimension for canonicalization")
+        state_2d = state[0]
+    else:
+        state_2d = state
+
+    # Filter out padding atoms
+    valid_mask = state_2d[:, 0] != padding_idx
+    if not valid_mask.any():
+        return ''
+    
+    valid_atoms = state_2d[valid_mask]
+    
+    # Step 1: Create sortable keys that don't depend on actual variable indices
+    # Key structure: (predicate_str, tuple of (arg_type, arg_value))
+    atoms_with_data: List[Tuple[tuple, int, int, int, bool, bool]] = []
+    
+    for atom in valid_atoms:
+        pred, arg1, arg2 = int(atom[0].item()), int(atom[1].item()), int(atom[2].item())
+        
+        # Track whether args are variables
+        arg1_is_var = arg1 != padding_idx and arg1 > n_constants
+        arg2_is_var = arg2 != padding_idx and arg2 > n_constants
+        
+        # Get predicate string
+        if idx2predicate and 0 <= pred < len(idx2predicate):
+            pred_str = idx2predicate[pred]
+        else:
+            pred_str = f"?p{pred}"
+        
+        # Create normalized sort key
+        # All variables are treated as equal for sorting (only constants have distinguishing values)
+        key_parts = [pred_str]
+        
+        # For arg1
+        if arg1 == padding_idx:
+            key_parts.append(('PAD',))
+        elif arg1_is_var:
+            # Variables: use ('VAR',) without the actual index
+            key_parts.append(('VAR',))
+        else:
+            # Constants: include the constant value to distinguish them
+            if idx2constant and 0 <= arg1 < len(idx2constant):
+                key_parts.append(('CONST', idx2constant[arg1]))
+            else:
+                key_parts.append(('CONST', f"?c{arg1}"))
+        
+        # For arg2
+        if arg2 == padding_idx:
+            key_parts.append(('PAD',))
+        elif arg2_is_var:
+            # Variables: use ('VAR',) without the actual index
+            key_parts.append(('VAR',))
+        else:
+            # Constants: include the constant value
+            if idx2constant and 0 <= arg2 < len(idx2constant):
+                key_parts.append(('CONST', idx2constant[arg2]))
+            else:
+                key_parts.append(('CONST', f"?c{arg2}"))
+        
+        sort_key = tuple(key_parts)
+        atoms_with_data.append((sort_key, pred, arg1, arg2, arg1_is_var, arg2_is_var))
+    
+    # Sort by the normalized key
+    atoms_with_data.sort(key=lambda x: x[0])
+    
+    # Step 2: Rename variables in sorted order
+    var_mapping: Dict[int, int] = {}
+    next_var_num = 1
+    canonical_atoms: List[str] = []
+    
+    for _, pred, arg1, arg2, arg1_is_var, arg2_is_var in atoms_with_data:
+        # Rename variables
+        if arg1_is_var:
+            if arg1 not in var_mapping:
+                var_mapping[arg1] = next_var_num
+                next_var_num += 1
+            arg1 = var_mapping[arg1]
+        
+        if arg2_is_var:
+            if arg2 not in var_mapping:
+                var_mapping[arg2] = next_var_num
+                next_var_num += 1
+            arg2 = var_mapping[arg2]
+        
+        # Format final string with renamed variables
+        def format_arg_final(val: int, is_var: bool) -> str:
+            if val == padding_idx:
+                return "PAD"
+            if is_var:
+                return f"Var_{val}"
+            else:
+                if idx2constant and 0 <= val < len(idx2constant):
+                    return idx2constant[val]
+                else:
+                    return f"?c{val}"
+        
+        if idx2predicate and 0 <= pred < len(idx2predicate):
+            pred_str = idx2predicate[pred]
+        else:
+            pred_str = f"?p{pred}"
+        
+        if pred_str in ['True', 'False', 'Endf'] and arg1 == padding_idx and arg2 == padding_idx:
+            canonical_atoms.append(f"{pred_str}()")
+        else:
+            canonical_atoms.append(f"{pred_str}({format_arg_final(arg1, arg1_is_var)},{format_arg_final(arg2, arg2_is_var)})")
+    
+    return '|'.join(canonical_atoms)
+
+
+def sort_candidates_by_str_order(states: torch.Tensor,
+                                 counts: torch.Tensor,
+                                 owners: torch.Tensor,
+                                 next_vars: torch.Tensor,
+                                 idx2predicate: Sequence[str],
+                                 idx2constant: Sequence[str],
+                                 n_constants: int,
+                                 padding_idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Sort candidates by canonical STRING representation."""
+    if states.numel() == 0:
+        return states, counts, owners, next_vars
+
+    # Generate canonical string for each state
+    canonical_strings = [
+        canonical_state_to_str(states[i], idx2predicate, idx2constant, n_constants, padding_idx) 
+        for i in range(states.shape[0])
+    ]
+    
+    # Sort by (owner, canonical_string)
+    order = sorted(range(len(canonical_strings)), key=lambda idx: (int(owners[idx].item()), canonical_strings[idx]))
+    
+    # Check if already sorted
+    if order == list(range(len(canonical_strings))):
+        return states, counts, owners, next_vars
+
+    order_tensor = torch.tensor(order, dtype=torch.long, device=states.device)
+    states = states.index_select(0, order_tensor)
+    counts = counts.index_select(0, order_tensor)
+    owners = owners.index_select(0, order_tensor)
+    next_vars = next_vars.index_select(0, order_tensor)
+    return states, counts, owners, next_vars
 
 @dataclasses.dataclass
 class Rule:

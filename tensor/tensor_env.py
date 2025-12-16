@@ -34,7 +34,8 @@ from torchrl.envs import EnvBase
 
 from tensor.tensor_unification import UnificationEngine
 from utils.memory import BloomFilter, ExactMemory, GPUExactMemory
-from utils.debug_helper import DebugHelper
+from utils.memory import BloomFilter, ExactMemory, GPUExactMemory
+import utils.utils as utils_funcs
 
 
 def _safe_device(device: Optional[torch.device]) -> torch.device:
@@ -103,12 +104,6 @@ class BatchedEnv(EnvBase):
         self.batch_size_int = int(batch_size)
         device = _safe_device(device)
         super().__init__(device=device, batch_size=torch.Size([batch_size]))
-        
-        # Import here to avoid circular dependency
-        if debug_config is None:
-            from utils.debug_config import DebugConfig
-            debug_config = DebugConfig()
-        self.debug_config = debug_config
 
         # Core params
         self._device = device
@@ -241,22 +236,116 @@ class BatchedEnv(EnvBase):
                 end_pred_idx=self.end_pred_idx,
             )
 
-        # -------- Debug helper --------
-        debug_helper_params = {}
-        if self.stringifier_params is not None:
-            debug_helper_params = self.stringifier_params.copy()
-
-        self.debug_helper = DebugHelper(
-            verbose=self.verbose,
-            debug_prefix=self._debug_prefix,
-            batch_size=self.batch_size_int,
-            device=self._device,
-            padding_idx=self.padding_idx,
-            **debug_helper_params,
-        )
-
         # Build specs
         self._make_specs()
+
+    # ---------------------------------------------------------------------
+    # Debug Helper Methods (Inlined from utils.debug_helper)
+    # ---------------------------------------------------------------------
+
+    def _log(self, level: int, message: str) -> None:
+        """Log a message if verbosity level is sufficient."""
+        if self.verbose >= level:
+            print(f"{self._debug_prefix} {message}")
+
+    def _state_to_str(self, state: Tensor) -> str:
+        """Convert a tensor state to string representation."""
+        if self.stringifier_params is None:
+            return str(state)
+        # Handle batch dimension if present
+        if state.dim() == 3 and state.shape[0] == 1:
+            state = state[0]
+            
+        return utils_funcs.state_to_str(
+            state, 
+            idx2predicate=self.stringifier_params.get('idx2predicate'),
+            idx2constant=self.stringifier_params.get('idx2constant'),
+            n_constants=self.stringifier_params.get('n_constants'),
+            padding_idx=self.padding_idx
+        )
+    
+    def state_to_str(self, state: Tensor) -> str:
+        """Alias for _state_to_str for compatibility."""
+        return self._state_to_str(state)
+
+    def _format_atoms(self, state: torch.Tensor) -> List[str]:
+        """Format a state tensor into a list of atom strings."""
+        mask = state[:, 0] != self.padding_idx
+        atoms = state[mask]
+        if atoms.numel() == 0:
+            return []
+        
+        if self.stringifier_params is not None:
+             return [utils_funcs.atom_to_str(
+                 atom, 
+                 idx2predicate=self.stringifier_params.get('idx2predicate'),
+                 idx2constant=self.stringifier_params.get('idx2constant'),
+                 n_constants=self.stringifier_params.get('n_constants'),
+                 padding_idx=self.padding_idx
+             ) for atom in atoms]
+        return atoms.tolist()
+
+    def _dump_states(
+        self,
+        label: str,
+        current_queries: torch.Tensor,
+        derived_states_batch: torch.Tensor,
+        derived_states_counts: torch.Tensor,
+        current_depths: Optional[torch.Tensor] = None,
+        proof_depths: Optional[torch.Tensor] = None,
+        current_labels: Optional[torch.Tensor] = None,
+        rows: Optional[torch.Tensor] = None,
+        level: int = 2,
+        action_mask: Optional[torch.Tensor] = None,
+        done: Optional[torch.Tensor] = None,
+        rewards: Optional[torch.Tensor] = None
+    ) -> None:
+        """Dump current and derived states for specified rows (or all)."""
+        if self.verbose < level:
+            return
+        
+        print("\n")
+        if rows is None:
+            rows = torch.arange(current_queries.shape[0], device=current_queries.device)
+        rows_list = rows.tolist()
+        self._log(level, f"{label}: inspecting rows {rows_list}")
+        for idx in rows_list:
+            state = current_queries[idx]
+            derived_count = int(derived_states_counts[idx].item())
+            state_atoms = self._format_atoms(state)
+            depth_info = ""
+            if current_depths is not None:
+                depth_info += f"depth={int(current_depths[idx])} "
+            if proof_depths is not None:
+                depth_info += f"proof_depth={int(proof_depths[idx])} "
+            if current_labels is not None:
+                depth_info += f"label={int(current_labels[idx])} "
+            self._log(level, f"  Idx {idx} {depth_info}query={state_atoms}")
+
+            if action_mask is not None:
+                mask_for_idx = action_mask[idx].tolist()
+                valid_indices = [i for i, m in enumerate(mask_for_idx) if m]
+                preview = valid_indices[: min(len(valid_indices), 10)]
+                self._log(
+                    level,
+                    f"    Action mask: valid actions: {len(valid_indices)}"
+                    f"{' -> ' + str(preview) if preview else ''}",
+                )
+
+            if done is not None:
+                done_for_idx = done[idx].item()
+                self._log(level, f"    Done: {done_for_idx}")
+            if rewards is not None:
+                reward_for_idx = rewards[idx].item()
+                self._log(level, f"    Reward: {reward_for_idx}")
+
+            derived_atoms = []
+            max_show = min(derived_count, 10) # limit output
+            for d in range(max_show):
+                derived_atoms.append(self._format_atoms(derived_states_batch[idx, d]))
+            if derived_count > max_show:
+                derived_atoms.append(f"... (+{derived_count - max_show} more)")
+            self._log(level, f"    Derived: {derived_atoms}\n")
 
     # ---------------------------------------------------------------------
     # Specs
@@ -369,11 +458,11 @@ class BatchedEnv(EnvBase):
 
         if self.verbose >= 3:
             if tensordict is not None:
-                self.debug_helper._log(3, f"[Reset]  td info:")
+                self._log(3, f"[Reset]  td info:")
                 for key in tensordict.keys():
-                    self.debug_helper._log(3, f"[Reset]  Key: {key}, Shape: {tensordict[key].shape}, Dtype: {tensordict[key].dtype}, Values: {tensordict[key]}")
+                    self._log(3, f"[Reset]  Key: {key}, Shape: {tensordict[key].shape}, Dtype: {tensordict[key].dtype}, Values: {tensordict[key]}")
             else:
-                self.debug_helper._log(3, "[Reset]  No tensordict provided.")
+                self._log(3, "[Reset]  No tensordict provided.")
 
         # Reset mask
         if tensordict is not None:
@@ -392,7 +481,7 @@ class BatchedEnv(EnvBase):
         if self.verbose >= 1:
             # if there are envs not being reset, log them
             if not reset_mask.shape[0] == B:
-                self.debug_helper._log(2, f"[Reset] Not resetting envs: {[(i.item()) for i in torch.arange(B, device=device) if i not in env_idx]}")
+                self._log(2, f"[Reset] Not resetting envs: {[(i.item()) for i in torch.arange(B, device=device) if i not in env_idx]}")
 
         assert env_idx.shape[0] > 0, "No environments to reset."
         N = env_idx.shape[0]
@@ -492,7 +581,7 @@ class BatchedEnv(EnvBase):
         if self.verbose >= 1:
             obs_dict = self._create_observation_dict()
             mss = "[partial reset] After: " if partial_reset else "[reset] After: "
-            self.debug_helper._dump_states(
+            self._dump_states(
                 mss, self.current_queries, self.derived_states_batch, self.derived_states_counts,
                 current_depths=self.current_depths, proof_depths=self.proof_depths, current_labels=self.current_labels,
                 rows=env_idx, level=1, action_mask=obs_dict.get('action_mask')
@@ -665,11 +754,11 @@ class BatchedEnv(EnvBase):
         self._compute_derived_states(active_mask=active_mask_for_derived, clear_inactive=should_clear_inactive)
 
         if self.verbose >= 2:
-            self.debug_helper._log(2, f"[_step] Before _get_done_reward, current_queries[0,0]: {self.current_queries[0, 0]}")
+            self._log(2, f"[_step] Before _get_done_reward, current_queries[0,0]: {self.current_queries[0, 0]}")
         rewards, terminated, truncated, is_success = self._get_done_reward()  # [B,1], [B,1], [B,1], [B,1]
         dones = terminated | truncated  # [B,1] bool
         if self.verbose >= 2:
-            self.debug_helper._log(2, f"[_step] After _get_done_reward: terminated={terminated}, truncated={truncated}, dones={dones}")
+            self._log(2, f"[_step] After _get_done_reward: terminated={terminated}, truncated={truncated}, dones={dones}")
 
         # Active mask for observation packing (envs that are NOT done after termination check)
         active_mask = ~dones.squeeze(-1)
@@ -678,7 +767,7 @@ class BatchedEnv(EnvBase):
         # so skip_unary has already been applied
         
         if self.verbose >= 3:
-            self.debug_helper._log(3, f"[step] After compute_derived: derived_counts={self.derived_states_counts[:min(8, self.batch_size_int)]}")
+            self._log(3, f"[step] After compute_derived: derived_counts={self.derived_states_counts[:min(8, self.batch_size_int)]}")
 
         # Pack observation
         obs = self._create_observation_dict()
@@ -687,10 +776,11 @@ class BatchedEnv(EnvBase):
         # DEBUG: Print derived counts to diagnose constrained action space
         if self.verbose >= 2:
             sample_counts = self.derived_states_counts[:min(4, B)]
-            self.debug_helper._log(2, f"[step] derived_states_counts (first 4): {sample_counts.tolist()}")
+            self._log(2, f"[step] derived_states_counts (first 4): {sample_counts.tolist()}")
+        
         
         # Enhanced debug output for action space analysis
-        if self.debug_config.is_enabled('env') and self.debug_config.debug_env_action_spaces:
+        if self.verbose >= 3:
             self._debug_action_space(obs, dones, is_success)
         
         # Clone label, query_depth, and length ONLY when episodes end to prevent mutation by subsequent reset().
@@ -719,7 +809,7 @@ class BatchedEnv(EnvBase):
             batch_size=self.batch_size, device=self._device
         )
         if self.verbose >= 1:
-            self.debug_helper._dump_states(
+            self._dump_states(
                 "[step] After:", self.current_queries, self.derived_states_batch, self.derived_states_counts,
                 current_depths=self.current_depths, proof_depths=self.proof_depths, current_labels=self.current_labels,
                 action_mask=obs.get('action_mask'), done=dones, rewards=rewards, level=1
@@ -727,7 +817,7 @@ class BatchedEnv(EnvBase):
         
         # DEBUG: Check done flag before returning
         if self.verbose >= 2:
-            self.debug_helper._log(2, f"[_step] Returning td['done']: {td['done']}, terminated: {td['terminated']}")
+            self._log(2, f"[_step] Returning td['done']: {td['done']}, terminated: {td['terminated']}")
 
         return td
 
@@ -763,7 +853,7 @@ class BatchedEnv(EnvBase):
             # Reset done environments
             if done_mask.any():
                 if self.verbose >= 1:
-                    self.debug_helper._log(1, f"[step_and_maybe_reset] Resetting {done_mask.sum().item()} done environments")
+                    self._log(1, f"[step_and_maybe_reset] Resetting {done_mask.sum().item()} done environments")
                 
                 # Create reset tensordict with _reset mask for partial reset
                 reset_td = TensorDict(
@@ -775,7 +865,7 @@ class BatchedEnv(EnvBase):
                 reset_obs = self.reset(reset_td)
                 
                 if self.verbose >= 1:
-                    self.debug_helper._log(1, f"[step_and_maybe_reset] Reset complete, new query[0]: {self.current_queries[0, 0] if done_mask[0] else 'not reset'}")
+                    self._log(1, f"[step_and_maybe_reset] Reset complete, new query[0]: {self.current_queries[0, 0] if done_mask[0] else 'not reset'}")
                 
                 # Merge reset observations into next_obs for done environments
                 # IMPORTANT: Keep step_result unchanged (with done=True) so episode tracking works
@@ -834,16 +924,16 @@ class BatchedEnv(EnvBase):
 
         if idx.numel() > 0:
             if verbose:
-                self.debug_helper._log(3, f"[compute_derived] env_count={idx.numel()}")
-                self.debug_helper._log(3, f"[compute_derived] sample query: {self.current_queries[idx[0]]}")
-                self.debug_helper._log(3, f"[compute_derived] next_var_indices: {self.next_var_indices[idx[:min(3, idx.numel())]]}")
+                self._log(3, f"[compute_derived] env_count={idx.numel()}")
+                self._log(3, f"[compute_derived] sample query: {self.current_queries[idx[0]]}")
+                self._log(3, f"[compute_derived] next_var_indices: {self.next_var_indices[idx[:min(3, idx.numel())]]}")
             
             # Step 1: Mark which rows are end-of-state (terminal: TRUE/FALSE/END)
             terminal_mask = self.unification_engine.is_terminal_state(self.current_queries[idx])
             non_terminal_idx = idx[~terminal_mask]
             
             if verbose:
-                self.debug_helper._log(3, f"[compute_derived] terminal_mask sum: {terminal_mask.sum().item()}/{idx.numel()}")
+                self._log(3, f"[compute_derived] terminal_mask sum: {terminal_mask.sum().item()}/{idx.numel()}")
             
             # Step 2: Expand valid (non-terminal) rows only
             if non_terminal_idx.numel() > 0:
@@ -855,12 +945,12 @@ class BatchedEnv(EnvBase):
                 )
                 
                 if verbose:
-                    self.debug_helper._log(3, f"[compute_derived] after UE shape={all_derived.shape}, counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
+                    self._log(3, f"[compute_derived] after UE shape={all_derived.shape}, counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
                     # Log env 0 specifically
                     env_0_in_idx = (non_terminal_idx == 0).nonzero(as_tuple=False)
                     if env_0_in_idx.numel() > 0:
                         env_0_pos = env_0_in_idx[0].item()
-                        self.debug_helper._log(3, f"[compute_derived] Env 0 has {derived_counts_subset[env_0_pos].item()} derived states")
+                        self._log(3, f"[compute_derived] Env 0 has {derived_counts_subset[env_0_pos].item()} derived states")
                 
                 self.next_var_indices.index_copy_(0, non_terminal_idx, updated_var_indices)
 
@@ -869,24 +959,24 @@ class BatchedEnv(EnvBase):
                 # on the RAW states before any memory pruning is applied.
                 if self.skip_unary_actions:
                     if verbose:
-                        self.debug_helper._log(3, f"[compute_derived] BEFORE skip_unary raw_counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
+                        self._log(3, f"[compute_derived] BEFORE skip_unary raw_counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
                     all_derived, derived_counts_subset = self._skip_unary(
                         non_terminal_idx, all_derived, derived_counts_subset
                     )
                     if verbose:
-                        self.debug_helper._log(3, f"[compute_derived] after skip_unary counts={derived_counts_subset}")
+                        self._log(3, f"[compute_derived] after skip_unary counts={derived_counts_subset}")
                 
                 # Step 4: Postprocess A - validity + proof-safe cut
                 # This includes: memory prune non-terminals, padding limits, mark terminals, add non-terminals to memory
                 # NOTE: This runs AFTER skip_unary, matching SB3 which applies memory pruning after the skip_unary loop
                 if verbose:
-                    self.debug_helper._log(3, f"[compute_derived] BEFORE postprocess_A counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
+                    self._log(3, f"[compute_derived] BEFORE postprocess_A counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
                 all_derived, derived_counts_subset = self._postprocess(
                     non_terminal_idx, all_derived, derived_counts_subset
                 )
                 
                 if verbose:
-                    self.debug_helper._log(3, f"[compute_derived] AFTER postprocess_A counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
+                    self._log(3, f"[compute_derived] AFTER postprocess_A counts={derived_counts_subset[:min(3, derived_counts_subset.numel())]}")
 
                 # Step 5.5: Add END action if configured and room available (for non-terminal rows)
                 if self.end_proof_action:
@@ -897,7 +987,7 @@ class BatchedEnv(EnvBase):
                     
                     all_derived, derived_counts_subset = self._add_end_action(all_derived, derived_counts_subset)
                     if verbose:
-                        self.debug_helper._log(3, f"[compute_derived] after add_end_action counts={derived_counts_subset}")
+                        self._log(3, f"[compute_derived] after add_end_action counts={derived_counts_subset}")
 
                 # Step 6: Final handling - fit to buffer dimensions
                 all_derived, derived_counts_subset = self._fit_to_buffer(all_derived, derived_counts_subset, non_terminal_idx.numel())
@@ -1130,13 +1220,13 @@ class BatchedEnv(EnvBase):
                 row = unary_idx[i]
                 env_idx = idx_subset[row].item()
                 current_state = self.current_queries[env_idx]
-                current_str = self.debug_helper._format_atoms(current_state)
+                current_str = self._format_atoms(current_state)
                 derived_state = derived_states[row, 0]
-                derived_str = self.debug_helper._format_atoms(derived_state)
-                self.debug_helper._log(2, f"[skip_unary] Unary in idx {env_idx}: current={current_str}, derived={derived_str}")
+                derived_str = self._format_atoms(derived_state)
+                self._log(2, f"[skip_unary] Unary in idx {env_idx}: current={current_str}, derived={derived_str}")
 
         if verbose:
-            self.debug_helper._log(3, f"[skip_unary] Starting with {unary_idx.numel()} unary rows")
+            self._log(3, f"[skip_unary] Starting with {unary_idx.numel()} unary rows")
 
         # Bounded iterations - matches SB3's counter > 20 check
         while unary_idx.numel() > 0 and iters < self.max_skip_unary_iters:
@@ -1146,7 +1236,7 @@ class BatchedEnv(EnvBase):
                 env_rows = env_rows.long()
 
             if verbose:
-                self.debug_helper._log(3, f"[skip_unary] Iteration {iters}: processing {uidx.numel()} rows")
+                self._log(3, f"[skip_unary] Iteration {iters}: processing {uidx.numel()} rows")
 
             # Step a: Promote the single child to current_state
             promoted = derived_states[uidx, 0]  # [U, M, D]
@@ -1171,7 +1261,7 @@ class BatchedEnv(EnvBase):
             promoted_non_terminal = promoted[~terminal_mask]
             
             if verbose:
-                self.debug_helper._log(3, f"[skip_unary] After promotion: {terminal_mask.sum().item()} became terminal")
+                self._log(3, f"[skip_unary] After promotion: {terminal_mask.sum().item()} became terminal")
 
             # For terminal rows, set their derived to just themselves
             terminal_sum = terminal_mask.sum()
@@ -1203,7 +1293,7 @@ class BatchedEnv(EnvBase):
                 )
 
                 if verbose:
-                    self.debug_helper._log(3, f"[skip_unary] After postprocess: counts={sub_counts[:min(3, sub_counts.shape[0])]}")
+                    self._log(3, f"[skip_unary] After postprocess: counts={sub_counts[:min(3, sub_counts.shape[0])]}")
 
                 # Fit to current K, M dimensions
                 U = uidx_non_terminal.numel()
@@ -1241,7 +1331,7 @@ class BatchedEnv(EnvBase):
             iters += 1
 
             if verbose:
-                self.debug_helper._log(3, f"[skip_unary] End of iteration {iters}: {unary_idx.numel()} rows remain unary")
+                self._log(3, f"[skip_unary] End of iteration {iters}: {unary_idx.numel()} rows remain unary")
 
         # If we hit the iteration cap but still have unary rows,
         # match SB3 semantics: mark those rows as False()
@@ -1350,15 +1440,15 @@ class BatchedEnv(EnvBase):
             rejected_violations = state_nonempty & (~within_count | ~within_atom_budget)
             if rejected_violations.any():
                 num_rejected = rejected_violations.sum().item()
-                self.debug_helper._log(2, f"[postprocess] Rejected {num_rejected} states violating budget constraints (atom or state count)")
+                self._log(2, f"[postprocess] Rejected {num_rejected} states violating budget constraints (atom or state count)")
                 rejected_indices = rejected_violations.nonzero(as_tuple=False)
                 for i in range(min(3, rejected_indices.shape[0])):
                     row, col = rejected_indices[i]
                     env_idx = env_indices[row].item()
                     state = states[row, col]
-                    state_str = self.debug_helper._format_atoms(state)
+                    state_str = self._format_atoms(state)
                     atom_count = atom_counts[row, col].item()
-                    self.debug_helper._log(2, f"  Rejected in env {env_idx}: {state_str} (atoms: {atom_count})")
+                    self._log(2, f"  Rejected in env {env_idx}: {state_str} (atoms: {atom_count})")
 
         # Step 3: Memory pruning (non-terminals only)
         keep_mask = base_valid  # Will be updated via tensor ops, no in-place mutation
@@ -1384,13 +1474,13 @@ class BatchedEnv(EnvBase):
                     for i in range(pruned_indices.shape[0]):
                         row, col = pruned_indices[i]
                         env_idx = env_indices[row].item()
-                        current_state_str = self.debug_helper._format_atoms(self.current_queries[env_idx])
-                        all_derived = [self.debug_helper._format_atoms(states[row, j]) for j in range(states.shape[1]) if base_valid[row, j]]
+                        current_state_str = self._format_atoms(self.current_queries[env_idx])
+                        all_derived = [self._format_atoms(states[row, j]) for j in range(states.shape[1]) if base_valid[row, j]]
                         state = states[row, col]
-                        state_str = self.debug_helper._format_atoms(state)
+                        state_str = self._format_atoms(state)
                         remaining_states = states[row][keep_mask[row]]
-                        remaining_states = [self.debug_helper._format_atoms(s) for s in remaining_states]
-                        self.debug_helper._log(2, f" [postprocess_A]  Pruned in Idx {env_idx}: {state_str}. Remaining: {remaining_states}")
+                        remaining_states = [self._format_atoms(s) for s in remaining_states]
+                        self._log(2, f" [postprocess_A]  Pruned in Idx {env_idx}: {state_str}. Remaining: {remaining_states}")
 
         # Ensure terminals are always kept if they're valid
         keep_mask = keep_mask | (is_terminal_state & base_valid)
@@ -1464,9 +1554,9 @@ class BatchedEnv(EnvBase):
         preds = states[:, :, 0]                                            # [B, A]
         if self.verbose >= 3:
             sample = min(2, B)
-            self.debug_helper._log(3, f"[reward] preds sample: {preds[:sample, :2]}")
-            self.debug_helper._log(3, f"[reward] labels sample: {self.current_labels[:sample]}")
-            self.debug_helper._log(3, f"[reward] true_idx={self.true_pred_idx} false_idx={self.false_pred_idx}")
+            self._log(3, f"[reward] preds sample: {preds[:sample, :2]}")
+            self._log(3, f"[reward] labels sample: {self.current_labels[:sample]}")
+            self._log(3, f"[reward] true_idx={self.true_pred_idx} false_idx={self.false_pred_idx}")
 
         all_true = torch.zeros(B, dtype=torch.bool, device=device)
         any_false = torch.zeros(B, dtype=torch.bool, device=device)
@@ -1476,12 +1566,12 @@ class BatchedEnv(EnvBase):
             true_mask = (preds == self.true_pred_idx) | ~non_pad
             all_true = true_mask.all(dim=1) & non_pad.any(dim=1)
             if self.verbose >= 3:
-                self.debug_helper._log(3, f"[reward] all_true raw: {all_true[:sample]}")
+                self._log(3, f"[reward] all_true raw: {all_true[:sample]}")
 
         if self.false_pred_idx is not None:
             any_false = (preds == self.false_pred_idx).any(dim=1)
             if self.verbose >= 3:
-                self.debug_helper._log(3, f"[reward] any_false raw: {any_false[:sample]}")
+                self._log(3, f"[reward] any_false raw: {any_false[:sample]}")
 
         if self.end_proof_action:
             single_pred = non_pad.sum(dim=1) == 1
@@ -1494,13 +1584,13 @@ class BatchedEnv(EnvBase):
         depth_exceeded = self.current_depths >= self.max_depth
         natural_term = all_true | any_false
         if self.verbose >= 3:
-            self.debug_helper._log(3, f"[reward] natural_term: {natural_term[:sample]}")
+            self._log(3, f"[reward] natural_term: {natural_term[:sample]}")
         terminated[:, 0] = natural_term
         truncated[:, 0] = depth_exceeded & ~natural_term
         done = natural_term | depth_exceeded
         if self.verbose >= 3:
-            self.debug_helper._log(3, f"[reward] terminated: {terminated[:sample, 0]}")
-            self.debug_helper._log(3, f"[reward] truncated: {truncated[:sample, 0]}")
+            self._log(3, f"[reward] terminated: {terminated[:sample, 0]}")
+            self._log(3, f"[reward] truncated: {truncated[:sample, 0]}")
 
         success = all_true
         labels = self.current_labels
@@ -1569,7 +1659,7 @@ class BatchedEnv(EnvBase):
         action_mask = action_indices < counts # [B, S]
         
         # Debug action mask creation
-        if self.debug_config.is_enabled('env', level=2):
+        if self.verbose >= 2:
             self._debug_observation_creation(action_mask, counts)        
         # If everything is masked we need to surface the underlying issue immediately.
         # HOWEVER: If all environments are done, this is normal and we should just return dummy obs
@@ -1894,9 +1984,9 @@ class BatchedEnv(EnvBase):
     def _debug_action_space(self, obs, dones, is_success):
         """Debug output to understand why action space shrinks."""
         B = self.batch_size_int
-        n_show = min(self.debug_config.debug_sample_envs or 5, B)
+        n_show = min(5, B)
         
-        print(f"\n{self.debug_config.debug_prefix} [ENV ACTION SPACE]")
+        print(f"\n{self._debug_prefix} [ENV ACTION SPACE]")
         
         action_mask = obs['action_mask']
         valid_actions = action_mask.sum(dim=-1)
@@ -1928,9 +2018,9 @@ class BatchedEnv(EnvBase):
             
             # Get string representation if possible
             state_str = ""
-            if hasattr(self, 'debug_helper') and self.debug_helper is not None:
+            if self.stringifier_params is not None:
                 try:
-                    state_str = self.debug_helper.state_to_str(self.current_queries[i])
+                    state_str = self.state_to_str(self.current_queries[i])
                     if len(state_str) > 80:
                         state_str = state_str[:77] + "..."
                 except:
@@ -1951,9 +2041,9 @@ class BatchedEnv(EnvBase):
     def _debug_observation_creation(self, action_mask, counts):
         """Debug observation creation to trace action masking."""
         B = self.batch_size_int
-        n_show = min(self.debug_config.debug_sample_envs or 5, B)
+        n_show = min(5, B)
         
-        print(f"\n{self.debug_config.debug_prefix} [ENV OBSERVATION CREATION]")
+        print(f"\n{self._debug_prefix} [ENV OBSERVATION CREATION]")
         
         for i in range(n_show):
             n_derived = self.derived_states_counts[i].item()
@@ -1966,11 +2056,11 @@ class BatchedEnv(EnvBase):
                 print(f"    → Some derived states were masked (memory pruning?)")
             
             # Show a few derived states if available
-            if n_derived > 0 and hasattr(self, 'debug_helper') and self.debug_helper is not None:
+            if n_derived > 0 and self.stringifier_params is not None:
                 try:
                     n_to_show = min(3, n_derived)
                     for j in range(n_to_show):
-                        derived_str = self.debug_helper.state_to_str(self.derived_states_batch[i, j])
+                        derived_str = self.state_to_str(self.derived_states_batch[i, j])
                         if len(derived_str) > 60:
                             derived_str = derived_str[:57] + "..."
                         print(f"      Action {j}: {derived_str}")

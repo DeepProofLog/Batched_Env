@@ -42,7 +42,8 @@ from tensor.tensor_unification import UnificationEngine
 from unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
 from env import EvalEnvOptimized
-from utils.debug_helper import DebugHelper
+from env import EvalEnvOptimized
+import utils.utils as utils_funcs
 
 
 # ============================================================================
@@ -189,16 +190,7 @@ def setup_environments(config: SimpleNamespace) -> Tuple:
         parity_mode=True,  # Enable exact matching
     )
     
-    debug_helper = DebugHelper(
-        verbose=0,
-        idx2predicate=im.idx2predicate,
-        idx2constant=im.idx2constant,
-        idx2template_var=im.idx2template_var,
-        padding_idx=im.padding_idx,
-        n_constants=im.constant_no
-    )
-    
-    return base_engine, vec_engine, im, debug_helper, dh
+    return base_engine, vec_engine, im, stringifier_params, dh
 
 
 def create_tensor_env(
@@ -248,6 +240,7 @@ def create_tensor_env(
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_runtime_vars,
         sample_deterministic_per_env=False,
+        stringifier_params=getattr(base_engine, 'stringifier_params', None),
     )
 
 
@@ -291,7 +284,7 @@ def run_batch_traces(
     tensor_env: BatchedEnv,
     compiled_env: EvalEnvOptimized,
     im: IndexManager,
-    debug_helper: DebugHelper,
+    stringifier_params: Dict,
     config: SimpleNamespace,
 ) -> Tuple[List[List[Dict]], List[List[Dict]]]:
     """
@@ -378,7 +371,7 @@ def run_batch_traces(
                 continue
             
             n_actions = int(tensor_n_actions[i])
-            state_str = debug_helper.state_to_str(tensor_env.current_queries[i])
+            state_str = tensor_env.state_to_str(tensor_env.current_queries[i])
             
             if n_actions == 0:
                 all_tensor_traces[i].append({
@@ -392,7 +385,7 @@ def run_batch_traces(
                 tensor_done[i] = True
             else:
                 derived_strs = sorted([
-                    debug_helper.state_to_str(tensor_env.derived_states_batch[i, a])
+                    tensor_env.state_to_str(tensor_env.derived_states_batch[i, a])
                     for a in range(n_actions)
                 ])
                 all_tensor_traces[i].append({
@@ -412,7 +405,7 @@ def run_batch_traces(
                 continue
             
             n_actions = int(compiled_counts[i])
-            state_str = debug_helper.state_to_str(compiled_state.current_states[i])
+            state_str = utils_funcs.state_to_str(compiled_state.current_states[i], **stringifier_params)
             
             if n_actions == 0:
                 all_compiled_traces[i].append({
@@ -426,7 +419,7 @@ def run_batch_traces(
                 compiled_done[i] = True
             else:
                 derived_strs = sorted([
-                    debug_helper.state_to_str(compiled_state.derived_states[i, k])
+                    utils_funcs.state_to_str(compiled_state.derived_states[i, k], **stringifier_params)
                     for k in range(n_actions)
                 ])
                 all_compiled_traces[i].append({
@@ -591,7 +584,7 @@ def run_parity_test(
     print(f"{'='*80}\n")
     
     # Setup both environments
-    base_engine, vec_engine, im, debug_helper, dh = setup_environments(config)
+    base_engine, vec_engine, im, stringifier_params, dh = setup_environments(config)
     
     # Prepare queries
     queries = prepare_queries(config)
@@ -620,7 +613,7 @@ def run_parity_test(
         
         # Run batch through both environments (envs are reused, just reset)
         batch_tensor_traces, batch_compiled_traces = run_batch_traces(
-            batch_queries, tensor_env, compiled_env, im, debug_helper, config
+            batch_queries, tensor_env, compiled_env, im, stringifier_params, config
         )
         
         all_tensor_traces.extend(batch_tensor_traces)

@@ -35,7 +35,8 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
 from unification import UnificationEngineVectorized
-from utils.debug_helper import DebugHelper
+from unification import UnificationEngineVectorized
+import utils.utils as utils_funcs
 import re
 
 
@@ -109,7 +110,7 @@ def clone_config(config: SimpleNamespace) -> SimpleNamespace:
 # Engine Setup
 # ============================================================================
 
-def setup_engines(config: SimpleNamespace) -> Tuple[UnificationEngine, UnificationEngineVectorized, IndexManager, DebugHelper]:
+def setup_engines(config: SimpleNamespace) -> Tuple[UnificationEngine, UnificationEngineVectorized, IndexManager, Dict]:
     """Setup both original and vectorized engines from the same data."""
     device = torch.device(config.device)
     
@@ -154,13 +155,7 @@ def setup_engines(config: SimpleNamespace) -> Tuple[UnificationEngine, Unificati
         padding_atoms=config.padding_atoms, parity_mode=True,  # Enable exact matching
     )
     
-    debug_helper = DebugHelper(
-        verbose=0, idx2predicate=im.idx2predicate, idx2constant=im.idx2constant,
-        idx2template_var=im.idx2template_var, padding_idx=im.padding_idx,
-        n_constants=im.constant_no
-    )
-    
-    return original_engine, vectorized_engine, im, debug_helper
+    return original_engine, vectorized_engine, im, stringifier_params
 
 
 def get_next_var_start(engine: UnificationEngine) -> int:
@@ -217,7 +212,7 @@ def run_batched_parity_step(
     original_engine: UnificationEngine,
     vectorized_engine: UnificationEngineVectorized,
     im: IndexManager,
-    debug_helper: DebugHelper,
+    stringifier_params: Dict,
     config: SimpleNamespace,
 ) -> Tuple[List[Dict], List[Dict]]:
     """
@@ -267,13 +262,13 @@ def run_batched_parity_step(
     vec_results = []
     
     for i in range(B):
-        state_str = debug_helper.state_to_str(states[i])
+        state_str = utils_funcs.state_to_str(states[i], **stringifier_params)
         
         # Original engine results
         orig_count = orig_counts[i].item()
         orig_derived_strs = set()
         for k in range(orig_count):
-            orig_derived_strs.add(debug_helper.state_to_str(orig_derived[i, k]))
+            orig_derived_strs.add(utils_funcs.state_to_str(orig_derived[i, k], **stringifier_params))
         
         orig_results.append({
             'query_idx': i,
@@ -286,7 +281,7 @@ def run_batched_parity_step(
         vec_count = vec_counts[i].item()
         vec_derived_strs = set()
         for k in range(vec_count):
-            vec_derived_strs.add(debug_helper.state_to_str(vec_derived[i, k]))
+            vec_derived_strs.add(utils_funcs.state_to_str(vec_derived[i, k], **stringifier_params))
         
         vec_results.append({
             'query_idx': i,
@@ -303,7 +298,7 @@ def run_multi_step_batched_parity(
     original_engine: UnificationEngine,
     vectorized_engine: UnificationEngineVectorized,
     im: IndexManager,
-    debug_helper: DebugHelper,
+    stringifier_params: Dict,
     config: SimpleNamespace,
 ) -> Tuple[List[List[Dict]], List[List[Dict]]]:
     """
@@ -358,7 +353,7 @@ def run_multi_step_batched_parity(
         # Record terminal states
         for i in range(B):
             if active[i] and is_terminal[i]:
-                state_str = debug_helper.state_to_str(states[i])
+                state_str = utils_funcs.state_to_str(states[i], **stringifier_params)
                 result = 'TRUE' if is_true[i] else ('FALSE' if is_false[i] else 'EMPTY')
                 all_orig_traces[i].append({'step': step, 'state': state_str, 'done': True, 'result': result})
                 all_vec_traces[i].append({'step': step, 'state': state_str, 'done': True, 'result': result})
@@ -398,13 +393,13 @@ def run_multi_step_batched_parity(
             if not active[i]:
                 continue
             
-            state_str = debug_helper.state_to_str(states[i])
+            state_str = utils_funcs.state_to_str(states[i], **stringifier_params)
             
             # Original engine results
             orig_count = orig_counts[i].item()
             orig_derived_strs = set()
             for k in range(orig_count):
-                orig_derived_strs.add(debug_helper.state_to_str(orig_derived[i, k]))
+                orig_derived_strs.add(utils_funcs.state_to_str(orig_derived[i, k], **stringifier_params))
             
             all_orig_traces[i].append({
                 'step': step,
@@ -418,7 +413,7 @@ def run_multi_step_batched_parity(
             vec_count = vec_counts[i].item()
             vec_derived_strs = set()
             for k in range(vec_count):
-                vec_derived_strs.add(debug_helper.state_to_str(vec_derived[i, k]))
+                vec_derived_strs.add(utils_funcs.state_to_str(vec_derived[i, k], **stringifier_params))
             
             all_vec_traces[i].append({
                 'step': step,
@@ -561,7 +556,7 @@ def run_parity_test(
     print(f"{'='*80}\n")
     
     # Setup engines
-    original, vectorized, im, debug_helper = setup_engines(config)
+    original, vectorized, im, stringifier_params = setup_engines(config)
     
     # Optionally compile
     if compile_mode:
@@ -592,7 +587,7 @@ def run_parity_test(
         
         # Run batched parity test (multi-step)
         orig_traces, vec_traces = run_multi_step_batched_parity(
-            batch_query_tuples, original, vectorized, im, debug_helper, config
+            batch_query_tuples, original, vectorized, im, stringifier_params, config
         )
         
         all_orig_traces.extend(orig_traces)

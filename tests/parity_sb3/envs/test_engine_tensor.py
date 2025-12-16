@@ -5,7 +5,7 @@ Simple and modular testing for the tensor-based unification engine in eval mode.
 """
 import os
 import sys
-root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
 sys.path.insert(0, root_path)
 
 import random
@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from data_handler import DataHandler
 from index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
-from utils.debug_helper import DebugHelper
+import utils.utils as utils_funcs
 
 
 def setup_tensor_engine(
@@ -31,7 +31,7 @@ def setup_tensor_engine(
         batched: If True, setup for batched operations
     
     Returns:
-        (dh, im, engine, debug_helper, next_var_start)
+        (dh, im, engine, stringifier_params, next_var_start)
     """
     cfg = config
     base_path = getattr(cfg, 'base_path', "./data/")
@@ -80,24 +80,15 @@ def setup_tensor_engine(
         sort_states=False  # Natural ordering now matches SB3 engine
     )
 
-    debug_helper = DebugHelper(
-        verbose=0,
-        idx2predicate=im_non.idx2predicate,
-        idx2constant=im_non.idx2constant,
-        idx2template_var=im_non.idx2template_var,
-        padding_idx=engine.padding_idx,
-        n_constants=im_non.constant_no
-    )
-
     # Compute max template variable index for initializing next_var during proof search
     max_template_var = engine.constant_no
     if engine.rules_idx.numel() > 0:
         rule_max = engine.rules_idx.max().item()
         if rule_max > max_template_var:
-            max_template_var = rule_max
+            max_template_var = int(rule_max)
     next_var_start_for_proofs = max_template_var + 1
 
-    return dh_non, im_non, engine, debug_helper, next_var_start_for_proofs
+    return dh_non, im_non, engine, stringifier_params, next_var_start_for_proofs
 
 
 def test_tensor_engine_single_query(
@@ -130,7 +121,7 @@ def test_tensor_engine_single_query(
             - trace: List[Dict] with state, derived_states, action at each step
     """
     p, h, t = query_tuple
-    dh_non, im_non, engine, debug_helper, next_var_start = engine_data
+    dh_non, im_non, engine, stringifier_params, next_var_start = engine_data
     
     if verbose:
         print(f"\nQuery: {p}({h}, {t}) [split={split}, deterministic={deterministic}]")
@@ -183,7 +174,7 @@ def test_tensor_engine_single_query(
     def tensor_state_to_str(state):
         """Convert tensor state to string (preserves order, normalizes variables)."""
         s = state.squeeze(0) if state.dim() > 2 else state
-        return debug_helper.state_to_str(s)
+        return utils_funcs.state_to_str(s, **stringifier_params)
     
     # Run proof
     current_state = query_padded
@@ -298,7 +289,7 @@ def _run_tensor_engine_batch(
     Returns:
         List of result dicts for each query in the batch
     """
-    dh_non, im_non, engine, debug_helper, next_var_start = engine_data
+    dh_non, im_non, engine, stringifier_params, next_var_start = engine_data
     
     deterministic = config.deterministic if hasattr(config, 'deterministic') else True
     max_depth = config.max_depth
@@ -339,7 +330,7 @@ def _run_tensor_engine_batch(
     def state_to_str(state):
         """Convert a single state tensor to string (preserves order, normalizes variables)."""
         s = state.squeeze(0) if state.dim() > 2 else state
-        return debug_helper.state_to_str(s)
+        return utils_funcs.state_to_str(s, **stringifier_params)
     
     def is_true(state):
         """Check if a single state is True."""

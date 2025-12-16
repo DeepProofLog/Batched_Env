@@ -553,7 +553,17 @@ def eval_corruptions(
 
             # --- Vectorized Ranking ---
             Tmax = logps_out.shape[1]
-            batch_random_keys = torch.as_tensor(rng.rand(Q, Tmax), device=device, dtype=torch.float32)
+            
+            if n_corruptions is not None:
+                # Consume fixed shape for parity with vectorized implementations
+                # Generate (Q, 1+K) to maintain stream synchronization
+                full_rnd = rng.rand(Q, 1 + int(n_corruptions))
+                # Slice to Tmax (valid candidates)
+                # Note: Tmax <= 1 + n_corruptions should always hold
+                used_rnd = full_rnd[:, :Tmax]
+                batch_random_keys = torch.as_tensor(used_rnd, device=device, dtype=torch.float32)
+            else:
+                batch_random_keys = torch.as_tensor(rng.rand(Q, Tmax), device=device, dtype=torch.float32)
 
             logps_Q = logps_p[:Q]
             msk_Q = msk[:Q]

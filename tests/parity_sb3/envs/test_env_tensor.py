@@ -6,7 +6,7 @@ Uses true batching with reset/step calls - NOT calling single query functions.
 """
 import os
 import sys
-root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
 sys.path.insert(0, root_path)
 
 import random
@@ -20,7 +20,7 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
 from tensor.tensor_env import BatchedEnv
-from utils.debug_helper import DebugHelper
+from tensor.tensor_env import BatchedEnv
 
 
 
@@ -39,7 +39,7 @@ def setup_tensor_env(config: SimpleNamespace = None,
     Setup the batched tensor environment with dataset.
     
     Returns:
-        (batched_env, debug_helper, constant_no, im_batched, dh_batched)
+        (batched_env, stringifier_params, constant_no, im_batched, dh_batched)
     """
     cfg = config
     # Extract dataset and base_path from config if not provided directly
@@ -102,14 +102,7 @@ def setup_tensor_env(config: SimpleNamespace = None,
     )
     engine.index_manager = im_batched
     
-    debug_helper = DebugHelper(
-        verbose=0,
-        idx2predicate=im_batched.idx2predicate,
-        idx2constant=im_batched.idx2constant,
-        idx2template_var=im_batched.idx2template_var,
-        padding_idx=engine.padding_idx,
-        n_constants=im_batched.constant_no
-    )
+    engine.index_manager = im_batched
     
     # Use actual train queries instead of dummy queries
     # Get first batch_size train queries
@@ -149,9 +142,10 @@ def setup_tensor_env(config: SimpleNamespace = None,
         device=device,
         runtime_var_start_index=im_batched.constant_no + 1,
         total_vocab_size=im_batched.constant_no + max_total_runtime_vars,
+        stringifier_params=stringifier_params,
     )
     
-    return batched_env, debug_helper, im_batched.constant_no, im_batched, dh_batched
+    return batched_env, stringifier_params, im_batched.constant_no, im_batched, dh_batched
 
 
 def run_tensor_env_single_query(
@@ -186,7 +180,7 @@ def run_tensor_env_single_query(
             - trace: List[Dict] with state, derived_states, action at each step
     """
     p, h, t = query_tuple
-    batched_env, debug_helper, constant_no, im_batched, dh_batched = env_data
+    batched_env, stringifier_params, constant_no, im_batched, dh_batched = env_data
     
     if verbose:
         print(f"\nQuery: {p}({h}, {t}) [split={split}, deterministic={deterministic}]")
@@ -230,7 +224,7 @@ def run_tensor_env_single_query(
             is_success_state = batched_env.unification_engine.is_true_state(batched_state)
             trace.append({
                 'step': steps,
-                'state': debug_helper.state_to_str(batched_state),
+                'state': batched_env.state_to_str(batched_state),
                 'derived_states': [],
                 'num_actions': 0,
                 'action': None,
@@ -255,11 +249,11 @@ def run_tensor_env_single_query(
             action = rng.choice(valid_actions)
         
         # Build derived states list for trace (already in canonical order)
-        derived_states_canonical = [debug_helper.state_to_str(batched_derived_states[i]) for i in range(num_batched_actions)]
+        derived_states_canonical = [batched_env.state_to_str(batched_derived_states[i]) for i in range(num_batched_actions)]
         
         trace.append({
             'step': steps,
-            'state': debug_helper.state_to_str(batched_state),
+            'state': batched_env.state_to_str(batched_state),
             'derived_states': derived_states_canonical,
             'num_actions': num_batched_actions,
             'action': action,
@@ -351,7 +345,7 @@ def run_tensor_env(
     config.batch_size = batch_size
     
     # Setup batched env with proper batch size
-    batched_env, debug_helper, constant_no, im_batched_new, _ = setup_tensor_env(
+    batched_env, stringifier_params, constant_no, im_batched_new, _ = setup_tensor_env(
         config=config
     )
     device = getattr(batched_env, '_device', torch.device('cpu'))
@@ -424,7 +418,7 @@ def run_tensor_env(
                 batched_env.derived_states_counts[slot_idx] = 0
                 slot_traces[slot_idx].append({
                     'step': slot_steps[slot_idx],
-                    'state': debug_helper.state_to_str(cur_state),
+                    'state': batched_env.state_to_str(cur_state),
                     'derived_states': [],
                     'num_actions': 0,
                     'action': None,
@@ -447,13 +441,13 @@ def run_tensor_env(
             cur_state = current_queries[slot_idx]
             derived_states = derived_states_batch[slot_idx]
             derived_states_canonical = [
-                debug_helper.state_to_str(derived_states[a]) 
+                batched_env.state_to_str(derived_states[a]) 
                 for a in range(n_actions)
             ]
             
             slot_traces[slot_idx].append({
                 'step': slot_steps[slot_idx],
-                'state': debug_helper.state_to_str(cur_state),
+                'state': batched_env.state_to_str(cur_state),
                 'derived_states': derived_states_canonical,
                 'num_actions': n_actions,
                 'action': chosen,
