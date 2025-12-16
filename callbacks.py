@@ -641,10 +641,7 @@ class EvaluationCallback:
 # ============================================================================
 # RankingCallback (MRR/Hits)
 # ============================================================================
-try:
-    from model_eval import eval_corruptions as tensor_eval_corruptions
-except ImportError:
-    tensor_eval_corruptions = None
+# moved import to RankingCallback.on_iteration_end to avoid circular dependency
 
 class RankingCallback:
     """
@@ -664,6 +661,7 @@ class RankingCallback:
         corruption_scheme: Tuple[str] = ('head', 'tail'),
         verbose: bool = True,
         save_path: Optional[Path] = None, # Optional: if user wants to save best from here (legacy)
+        ppo_agent: Any = None, # Optional: PPOOptimized instance for optimized evaluation
     ):
         self.eval_env = eval_env
         self.policy = policy
@@ -674,6 +672,7 @@ class RankingCallback:
         self.n_corruptions = n_corruptions
         self.corruption_scheme = corruption_scheme
         self.verbose = verbose
+        self.ppo_agent = ppo_agent
         
         self.mrr_tracker = MRRTracker(patience=20)
         
@@ -693,16 +692,17 @@ class RankingCallback:
         self.policy.eval()
         
         start_time = time.time()
-        results = tensor_eval_corruptions(
-            actor=self.policy,
-            env=self.eval_env,
+        
+        # Optimized evaluation path
+        results = self.ppo_agent.evaluate_with_corruptions(
             queries=self.eval_data,
-            query_depths=self.eval_data_depths,
             sampler=self.sampler,
             n_corruptions=self.n_corruptions,
             corruption_modes=self.corruption_scheme,
-            verbose=0,
+            verbose=False,
+            query_depths=self.eval_data_depths, 
         )
+
         print(f"Evaluation took {time.time() - start_time:.2f} seconds")
         self.policy.train()
         

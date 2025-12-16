@@ -285,6 +285,8 @@ class PPOOptimized:
         compile_mode: str = 'reduce-overhead',  # Compile mode for torch.compile
         use_amp: bool = True,  # Use Automatic Mixed Precision
         eval_only: bool = False,  # If True, skip rollout buffer allocation (for evaluation only)
+        query_labels: Optional[Tensor] = None,  # For callback metrics
+        query_depths: Optional[Tensor] = None,  # For callback metrics
     ):
         self.policy = policy
         self.env = env
@@ -308,6 +310,10 @@ class PPOOptimized:
         self.parity = parity
         self._compile_policy = compile_policy
         self._compile_mode = compile_mode
+        # Move query info to CPU to avoid GPU synchronization during callbacks
+        self.query_labels = query_labels.detach().cpu() if query_labels is not None else None
+        self.query_depths = query_depths.detach().cpu() if query_depths is not None else None
+        self.current_query_indices = None  # Track current query per env for callbacks (will be numpy array)
         
         # AMP (Automatic Mixed Precision) - configure via use_amp parameter
         self.use_amp = use_amp and (self.device.type == "cuda")
@@ -517,6 +523,7 @@ class PPOOptimized:
         episode_lengths: list,
         iteration: int,
         return_traces: bool = False,
+        on_step_callback: Optional[Callable] = None,
     ) -> Tuple[EvalState, EvalObs, torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[List]]:
         """
         Collect experiences using the current policy and fill the rollout buffer.
@@ -553,7 +560,7 @@ class PPOOptimized:
         
         state = current_state
         obs = current_obs
-        
+
         with torch.no_grad():
             while n_collected < self.n_steps:
                 if self.verbose and n_collected % max(1, self.n_steps // 5) == 0:
@@ -570,6 +577,23 @@ class PPOOptimized:
                 # Predict values (critic) separate from actor (step_with_policy)
                 values = self.policy.predict_values(obs_td)
                 
+                # Capture NEXT query indices (which will be used if reset happens)
+                # env._per_env_ptrs points to the NEXT query to be picked by reset
+                next_query_indices = None
+                
+                # Initialize current_query_indices if needed
+                if self.current_query_indices is None and self.env._per_env_ptrs is not None:
+                     # Best effort initialization: assume current queries are derived from current pointers
+                     pool_size = self.env._query_pool.shape[0] if self.env._query_pool is not None else 0
+                     if pool_size > 0:
+                         # Initialize on CPU
+                         self.current_query_indices = (self.env._per_env_ptrs % pool_size).cpu().numpy().copy()
+                         
+                if self.current_query_indices is not None and self.env._per_env_ptrs is not None:
+                    pool_size = self.env._query_pool.shape[0] if self.env._query_pool is not None else 0
+                    if pool_size > 0:
+                        next_query_indices = self.env._per_env_ptrs % pool_size
+
                 # Step environment using compiled step_with_policy
                 # Uses env's internal query pool for reset cycling (set via set_queries)
                 step_result = self.env.step_with_policy(
@@ -622,15 +646,62 @@ class PPOOptimized:
                 if dones.any():
                     done_indices = torch.where(dones)[0]
                     
-                    for idx in done_indices:
-                        ep_reward = float(current_episode_reward[idx])
-                        ep_length = int(current_episode_length[idx])
+                    # Pre-fetch new query indices for ALL done envs to CPU in one go (batch sync)
+                    # drastically reducing overhead compared to handling them one-by-one
+                    batch_next_indices = None
+                    if self.current_query_indices is not None and next_query_indices is not None:
+                        batch_next_indices = next_query_indices[done_indices].cpu().numpy()
+                    
+                    # Batch fetch rewards and lengths to avoid per-item blocking synchronization
+                    # This is critical for maintaining high FPS with callbacks
+                    batch_rewards = current_episode_reward[done_indices].cpu().float().numpy()
+                    batch_lengths = current_episode_length[done_indices].cpu().numpy().astype(int)
+
+                    batch_infos = [] # Accumulate infos for batched callback
+                    
+                    for i, idx in enumerate(done_indices):
+                        ep_reward = float(batch_rewards[i])
+                        ep_length = int(batch_lengths[i])
                         episode_rewards.append(ep_reward)
                         episode_lengths.append(ep_length)
+                        
+                        # Prepare step callback info
+                        if on_step_callback is not None:
+                            # Get additional info from state if available
+                            is_success = bool(state.success[idx]) if hasattr(state, 'success') else False
+                            
+                            info_dict = {
+                                "episode": {"r": ep_reward, "l": ep_length},
+                                "is_success": is_success,
+                            }
+                            
+                            # Add label and depth info if tracked (using valid indices)
+                            if self.current_query_indices is not None and len(self.current_query_indices) > idx:
+                                # FAST CPU ACCESS
+                                q_idx = int(self.current_query_indices[idx])
+                                info_dict["episode_idx"] = q_idx # Use query idx as rough unique ID
+                                
+                                if self.query_labels is not None and q_idx < len(self.query_labels):
+                                    # FAST CPU ACCESS
+                                    info_dict["label"] = int(self.query_labels[q_idx])
+                                
+                                if self.query_depths is not None and q_idx < len(self.query_depths):
+                                    # FAST CPU ACCESS
+                                    info_dict["query_depth"] = int(self.query_depths[q_idx])
+                            
+                            batch_infos.append(info_dict)
+                            
+                        # Update current query index for the NEXT episode in this environment
+                        if batch_next_indices is not None:
+                            self.current_query_indices[idx] = batch_next_indices[i]
                         
                         # Reset episode stats
                         current_episode_reward[idx] = 0.0
                         current_episode_length[idx] = 0
+                    
+                    # Call step callback with batch of infos
+                    if on_step_callback is not None and batch_infos:
+                        on_step_callback(batch_infos)
                     
                     # Mark episode starts for next step
                     episode_starts = dones.float()
@@ -673,7 +744,7 @@ class PPOOptimized:
         return result
 
         
-    def train(self, return_traces: bool = False, timeout_seconds: float = None) -> Dict[str, float]:
+    def train(self, return_traces: bool = False) -> Dict[str, float]:
         """
         Update policy using the currently collected rollout buffer.
         
@@ -700,31 +771,10 @@ class PPOOptimized:
         
         continue_training = True
         for epoch in range(self.n_epochs):
-            batch_count = 0
             for batch_data in self.rollout_buffer.get(batch_size=self.batch_size):
                 # Mark start of new training step for CUDA graph trees
                 # This tells PyTorch it's okay to reuse memory from previous iterations
                 torch.compiler.cudagraph_mark_step_begin()
-                
-                # Check timeout
-                if timeout_seconds is not None:
-                    elapsed = time.time() - train_start_time
-                    if elapsed > timeout_seconds:
-                        print(f"[TIMEOUT] Training exceeded {timeout_seconds}s after {epoch} epochs, {batch_count} batches")
-                        # Return partial metrics
-                        return {
-                            "policy_loss": 0.0,
-                            "value_loss": 0.0,
-                            "entropy": 0.0,
-                            "clip_fraction": 0.0,
-                            "approx_kl": 0.0,
-                            "explained_var": 0.0,
-                            "timeout": True,
-                            "epochs_completed": epoch,
-                            "batches_completed": batch_count,
-                        }
-                
-                batch_count += 1
                 
                 # Yields raw tensors: (sub_index, derived_sub_indices, action_mask, 
                 #                       actions, old_values, old_log_probs, advantages, returns)
@@ -857,6 +907,9 @@ class PPOOptimized:
         total_timesteps: int,
         queries: torch.Tensor,
         reset_num_timesteps: bool = True,
+        callback=None,
+        on_iteration_start_callback=None,
+        on_step_callback=None,
     ) -> None:
         """
         Execute the PPO main loop: alternate between collecting rollouts and training.
@@ -865,6 +918,9 @@ class PPOOptimized:
             total_timesteps: Total number of environment steps to train for
             queries: [N, 3] Query tensor - stored in env for round-robin cycling
             reset_num_timesteps: If True, reset the timestep counter
+            callback: Optional callback called at end of each iteration (like SB3)
+            on_iteration_start_callback: Optional callback called at start of each iteration
+            on_step_callback: Optional callback called when episodes complete
         """
         if reset_num_timesteps:
             self.num_timesteps = 0
@@ -875,6 +931,13 @@ class PPOOptimized:
         
         # Set queries in environment for round-robin cycling (like BatchedEnv)
         self.env.set_queries(queries)
+        
+        # Initialize current_query_indices based on initial env assignment (0..batch_size)
+        if self.query_labels is not None or self.query_depths is not None:
+            self.current_query_indices = torch.arange(self.n_envs, dtype=torch.long, device=self.device)
+            # Handle case where n_envs > queries
+            if queries.shape[0] > 0:
+                self.current_query_indices = self.current_query_indices % queries.shape[0]
         
         # Reset environment to get initial state and observation
         obs, state = self.env.reset()
@@ -888,7 +951,12 @@ class PPOOptimized:
         while self.num_timesteps < total_timesteps:
             iteration += 1
             
+            # Callback: Start of iteration
+            if on_iteration_start_callback is not None:
+                on_iteration_start_callback(iteration, self.num_timesteps)
+            
             # Collect rollouts using env's internal query cycling
+            print("\nCollecting rollouts")
             start_time = time.time()
             result = self.collect_rollouts(
                 current_state=state,
@@ -899,23 +967,44 @@ class PPOOptimized:
                 episode_rewards=episode_rewards,
                 episode_lengths=episode_lengths,
                 iteration=iteration,
+                on_step_callback=on_step_callback,
             )
             state, obs, episode_starts, current_episode_reward, current_episode_length, n_steps, _ = result
             self.num_timesteps += n_steps
             end_time = time.time()-start_time
-            print(f"Rollout collected in {end_time:.2f}s. FPS: {self.num_timesteps / end_time:.2f}")            
+            print(f"Rollout collected in {end_time:.2f}s. FPS: {n_steps / end_time:.2f}\n")            
             
             # Train
+            print("\nTraining")
             start_time = time.time()
             train_metrics = self.train()
             self.last_train_metrics = train_metrics
             print(f"Training completed in {time.time() - start_time:.2f}s")
             
             if self.verbose:
-                print(f"Iteration {iteration}, timesteps: {self.num_timesteps}/{total_timesteps}")
-                print(f"  policy_loss: {train_metrics['policy_loss']:.4f}, "
-                      f"value_loss: {train_metrics['value_loss']:.4f}, "
-                      f"entropy: {train_metrics['entropy']:.4f}")
+                print(f"Iteration {iteration}, timesteps: {self.num_timesteps}/{total_timesteps}.  "
+                    f"total loss: {train_metrics['policy_loss'] + train_metrics['value_loss']:.4f}, "
+                    f"policy_loss: {train_metrics['policy_loss']:.4f}, "
+                    f"value_loss: {train_metrics['value_loss']:.4f}, "
+                    f"entropy_loss: {train_metrics['entropy']:.4f}, "
+                    f"approx_kl: {train_metrics['approx_kl']:.4f}, "
+                    f"clip_fraction: {train_metrics['clip_fraction']:.4f}, "
+                    f"explained_var: {train_metrics['explained_var']:.4f}\n")
+            
+            # Callback: End of iteration (matching SB3/PPO interface)
+            if callback is not None:
+                locals_dict = {
+                    'iteration': iteration,
+                    'total_steps_done': self.num_timesteps,
+                    'episode_rewards': episode_rewards,
+                    'episode_lengths': episode_lengths,
+                    'train_metrics': train_metrics,
+                }
+                callback_result = callback(locals_dict, globals())
+                if callback_result is False:
+                    if self.verbose:
+                        print("[PPOOptimized] Training stopped by callback")
+                    break
 
 
     @torch.inference_mode()
@@ -1017,6 +1106,7 @@ class PPOOptimized:
         verbose: bool = False,
         deterministic: bool = True,
         parity_mode: bool = False,
+        query_depths: Optional[Tensor] = None,
     ) -> Dict[str, Any]:
         """
         Evaluate policy on queries with corruptions for ranking metrics (MRR, Hits@K).
@@ -1039,12 +1129,14 @@ class PPOOptimized:
             chunk_queries: Number of positive queries to process at once
             verbose: Print progress
             deterministic: Use deterministic action selection
-            parity_mode: If True, use numpy RNG for tie-breaking (slower but matches
-                         model_eval.py exactly). Default False uses fast torch RNG.
+            parity_mode: If True, use numpy RNG for tie-breaking
+            query_depths: Optional [N] Tensor of query depths for detailed metrics
             
         Returns:
             Dictionary with MRR and Hits@K metrics
         """
+        from callbacks import Display # Delayed import to avoid circular dependency
+        
         if not self.env._compiled and self.env._policy_logits_fn is None:
             raise RuntimeError("Must call env.compile(policy) before evaluate_with_corruptions()")
         
@@ -1055,6 +1147,13 @@ class PPOOptimized:
         
         # Accumulate ranks per mode
         per_mode_ranks: Dict[str, list] = {m: [] for m in corruption_modes}
+        
+        # Accumulators for aggregate stats
+        acc_lengths = []
+        acc_rewards = []
+        acc_success = []
+        acc_is_pos = []
+        acc_depths = []
         
         # Process positive queries in chunks
         for start in range(0, N, chunk_queries):
@@ -1088,12 +1187,9 @@ class PPOOptimized:
             
             for mode in corruption_modes:
                 if parity_mode:
-                    # Select corruptions based on mode (matching model_eval.py line 475 logic)
-                    # model_eval.py: corrs_list = head_corrs_list if mode == "head" else tail_corrs_list
                     if mode == 'head':
                         corruptions = head_corruptions if head_corruptions is not None else torch.zeros(Q, K, 3, dtype=torch.long, device=device)
                     else:
-                        # For mode='tail' or mode='both', use tail_corruptions (matching model_eval.py fallback)
                         corruptions = tail_corruptions if tail_corruptions is not None else torch.zeros(Q, K, 3, dtype=torch.long, device=device)
                 else:
                     # Fast path: generate corruptions directly with requested mode
@@ -1104,7 +1200,7 @@ class PPOOptimized:
                         device=device
                     )
                 
-                # Handle variable corruption counts (some may be filtered)
+                # Handle variable corruption counts
                 valid_mask = corruptions.sum(dim=-1) != 0  # [Q, K]
                 
                 # Create candidates: positive + corruptions -> [Q, 1+K, 3]
@@ -1119,6 +1215,8 @@ class PPOOptimized:
                 # Process candidates in chunks of fixed_batch_size with padding
                 all_log_probs = []
                 all_success = []
+                all_lengths = []
+                all_rewards = []
                 
                 for cand_start in range(0, total_candidates, fixed_batch_size):
                     cand_end = min(cand_start + fixed_batch_size, total_candidates)
@@ -1138,11 +1236,47 @@ class PPOOptimized:
                     # Trim to actual size
                     all_log_probs.append(log_probs[:actual_size])
                     all_success.append(success[:actual_size])
+                    all_lengths.append(depths[:actual_size]) # depths output is actually episode length
+                    all_rewards.append(rewards[:actual_size])
                 
                 # Concatenate results
                 log_probs = torch.cat(all_log_probs, dim=0)  # [Q*(1+K)]
                 success = torch.cat(all_success, dim=0)      # [Q*(1+K)]
+                lengths = torch.cat(all_lengths, dim=0)      # [Q*(1+K)]
+                rewards = torch.cat(all_rewards, dim=0)      # [Q*(1+K)]
                 
+                # Accumulate detailed stats (filtering invalid negatives)
+                # Reshape masks to map back to candidates
+                valid_mask_full = torch.zeros(Q, 1 + K, dtype=torch.bool, device=device)
+                valid_mask_full[:, 0] = True # Positives always valid
+                valid_mask_full[:, 1:] = valid_mask # Negatives
+                
+                flat_valid = valid_mask_full.view(-1)
+                
+                # Stats for valid entries only
+                acc_lengths.append(lengths[flat_valid])
+                acc_rewards.append(rewards[flat_valid])
+                acc_success.append(success[flat_valid].float())
+                
+                # Positive mask: index % (1+K) == 0
+                is_pos = torch.zeros(Q * (1 + K), dtype=torch.bool, device=device)
+                is_pos[torch.arange(0, Q * (1 + K), 1 + K, device=device)] = True
+                acc_is_pos.append(is_pos[flat_valid])
+                
+                # Depths
+                if query_depths is not None:
+                    # Expand depths: [Q] -> [Q, 1+K] -> flattened -> valid
+                    chunk_depths = query_depths[start:end].to(device)
+                    expanded_depths = chunk_depths.unsqueeze(1).expand(Q, 1 + K).reshape(-1)
+                    # For metrics, we use -1 for non-positives or if not specified
+                    # Actually model_eval.py allows bucketting negatives by "unknown_neg".
+                    # But typically we want specific depths for POSITIVE queries.
+                    # model_eval.py fills negatives with -1 depth.
+                    mask_pos_full = is_pos # [Q*(1+K)]
+                    expanded_depths = torch.where(mask_pos_full, expanded_depths, torch.full_like(expanded_depths, -1))
+                    acc_depths.append(expanded_depths[flat_valid])
+
+
                 # Reshape results: [Q, 1+K]
                 log_probs = log_probs.view(Q, 1 + K)
                 success = success.view(Q, 1 + K)
@@ -1193,6 +1327,51 @@ class PPOOptimized:
             
         results["_mrr"] = results["MRR"]
         
+        # --- Stats Formatting (matching model_eval.py) ---
+        if acc_lengths:
+            all_lens = torch.cat(acc_lengths).float()
+            all_rews = torch.cat(acc_rewards).float()
+            all_succ = torch.cat(acc_success).float()
+            all_pos = torch.cat(acc_is_pos)
+            all_depths_t = torch.cat(acc_depths) if acc_depths else None
+            
+            def fmt(t):
+                count = t.numel()
+                if count == 0: return Display._format_stat_string(None, None, 0)
+                if count == 1: return Display._format_stat_string(t.mean().item(), 0.0, 1)
+                return Display._format_stat_string(t.mean().item(), t.std().item(), count)
+            
+            results["len"] = fmt(all_lens)
+            results["ep_len_mean"] = getattr(all_lens.mean(), 'item', lambda: 0.0)()
+            
+            pos_idxs = torch.nonzero(all_pos).view(-1)
+            neg_idxs = torch.nonzero(~all_pos).view(-1)
+            
+            if pos_idxs.numel() > 0:
+                results["reward"] = fmt(all_rews[pos_idxs])
+                results["ep_rew_mean"] = getattr(all_rews.mean(), 'item', lambda: 0.0)()
+                results["success_rate"] = getattr(all_succ[pos_idxs].mean(), 'item', lambda: 0.0)()
+            
+            for lbl_key, idxs in [("pos", pos_idxs), ("neg", neg_idxs)]:
+                if idxs.numel() > 0:
+                    results[f"len_{lbl_key}"] = fmt(all_lens[idxs])
+                    results[f"reward_{lbl_key}"] = fmt(all_rews[idxs])
+                    results[f"proven_{lbl_key}"] = fmt(all_succ[idxs])
+            
+            # By Depth
+            if all_depths_t is not None:
+                unique_d = torch.unique(all_depths_t)
+                for d in unique_d:
+                    d_val = int(d.item())
+                    mask_d = (all_depths_t == d)
+                    for is_p, lbl in [(True, "pos"), (False, "neg")]:
+                        mask_dp = mask_d & (all_pos if is_p else ~all_pos)
+                        if mask_dp.any():
+                            depth_key = Display._format_depth_key(d_val if is_p else -1)
+                            results[f"len_d_{depth_key}_{lbl}"] = fmt(all_lens[mask_dp])
+                            results[f"reward_d_{depth_key}_{lbl}"] = fmt(all_rews[mask_dp])
+                            results[f"proven_d_{depth_key}_{lbl}"] = fmt(all_succ[mask_dp])
+
         if verbose:
             print(f"\nResults:")
             print(f"  MRR: {results['MRR']:.4f}")

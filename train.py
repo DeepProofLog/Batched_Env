@@ -637,6 +637,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     callback_manager, best_model_path_train, best_model_path_eval = build_callbacks(
         args, eval_env, policy, sampler, dh, index_manager, ppo, date
     )
+    callback_manager=None
     callbacks_list = callback_manager.callbacks if callback_manager else []
 
 

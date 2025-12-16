@@ -576,6 +576,22 @@ def run_rollout_compile_parity_test(
     cfg.n_envs = batch_size
     cfg.n_steps = max_steps
     
+    # Ensure PPO batch_size divides buffer_size
+    buffer_size = cfg.n_envs * cfg.n_steps
+    if buffer_size % cfg.batch_size != 0:
+        # Find largest divisor <= original batch_size
+        start_size = cfg.batch_size
+        found = False
+        for b in range(start_size, 0, -1):
+            if buffer_size % b == 0:
+                cfg.batch_size = b
+                found = True
+                break
+        if not found:
+             cfg.batch_size = 1 # Fallback
+        if verbose:
+            print(f"Adjusted PPO batch_size to {cfg.batch_size} to divide buffer_size {buffer_size}")
+    
     print("=" * 70)
     print(f"Rollout Collection Compile Parity Test")
     print(f"Dataset: {cfg.dataset}, n_queries: {n_queries}, batch_size: {batch_size}, max_steps: {max_steps}")

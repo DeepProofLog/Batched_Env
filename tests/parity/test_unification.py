@@ -539,7 +539,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Test unification engine parity')
     parser.add_argument('--dataset', type=str, default='family',
                         help='Dataset name (default: countries_s3)')
-    parser.add_argument('--n-queries', type=int, default=200,
+    parser.add_argument('--n-queries', type=int, default=800,
                         help='Number of queries to test (default: 200)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed (default: 42)')

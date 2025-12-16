@@ -38,6 +38,23 @@ except (ImportError, ModuleNotFoundError):
     ProfilerActivity = None
 
 
+class Tee(object):
+    def __init__(self, *files):
+        self.files = files
+
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+    def isatty(self):
+        return any(getattr(f, 'isatty', lambda: False)() for f in self.files)
+
+
 def setup_components(device: torch.device, config: SimpleNamespace):
     """
     Initialize all components needed for optimized training.
@@ -268,140 +285,114 @@ def run_training(components, config) -> Tuple[dict, int]:
 
 def profile_cprofile(config: SimpleNamespace):
     """Profile with cProfile for CPU bottlenecks."""
-    initial_wallclock = time()  # Measure from very start
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
-    
-    print("\nSetting up components...")
-    init_start = time()
-    components = setup_components(device, config)
-    init_time = time() - init_start
-    print(f"Initialization time: {init_time:.2f}s")
-    
-    # Warmup
-    print("\nRunning warmup (compilation + first rollout)...")
-    warmup_time = compile_and_warmup(components, config)
-    print(f"Warmup time: {warmup_time:.2f}s")
-    
-    # Profile training
-    print(f"\nProfiling training for {config.total_timesteps} timesteps...")
-    profiler = cProfile.Profile()
-    profiler.enable()
-    
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    start_time = time()
-    
-    metrics, total_steps = run_training(components, config)
-    
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    runtime = time() - start_time
-    
-    profiler.disable()
-    
-    total_time = warmup_time + runtime
-    steps_per_sec = config.total_timesteps / runtime if runtime > 0 else 0
-    
-    # Print results
-    print(f"\n{'='*80}")
-    print("TIMING SUMMARY")
-    print(f"{'='*80}")
-    print(f"Warmup time:       {warmup_time:.4f}s")
-    print(f"Runtime:           {runtime:.4f}s")
-    print(f"Total time:        {total_time:.4f}s")
-    print(f"Steps/second:      {steps_per_sec:.1f}")
-    print(f"Total timesteps:   {total_steps}")
-    
-    if metrics:
-        print(f"\nLast training metrics:")
-        for k, v in metrics.items():
-            if isinstance(v, float):
-                print(f"  {k}: {v:.4f}")
-    
-    # Profile stats
-    n_functions = 40
-    
-    print(f"\n{'='*80}")
-    print("PROFILING RESULTS - Top by Cumulative Time")
-    print(f"{'='*80}")
-    s = io.StringIO()
-    ps = pstats.Stats(profiler, stream=s)
-    ps.strip_dirs()
-    ps.sort_stats('cumulative')
-    ps.print_stats(n_functions)
-    print(s.getvalue())
-    
-    print(f"\n{'='*80}")
-    print("PROFILING RESULTS - Top by Total Time")
-    print(f"{'='*80}")
-    s = io.StringIO()
-    ps = pstats.Stats(profiler, stream=s)
-    ps.strip_dirs()
-    ps.sort_stats('tottime')
-    ps.print_stats(n_functions)
-    print(s.getvalue())
-    
-    # Save to file
     output_path = 'tests/profile_optimized_learn_results.txt'
-    with open(output_path, 'w') as f:
-        f.write(f"Profile Optimized Learn Results\n")
-        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Device: {device}\n")
-        f.write(f"Dataset: {config.dataset}\n")
-        f.write(f"\n")
-        f.write(f"Configuration:\n")
-        f.write(f"  Total timesteps (profiled): {config.total_timesteps}\n")
-        f.write(f"  Batch size env: {config.batch_size_env}\n")
-        f.write(f"  N steps per rollout: {config.n_steps}\n")
-        f.write(f"  N epochs: {config.n_epochs}\n")
-        f.write(f"  Minibatch size: {config.batch_size}\n")
-        f.write(f"  Compile mode: {config.compile_mode}\n")
-        f.write(f"  Fullgraph: {config.fullgraph}\n")
-        f.write(f"\n")
-        f.write(f"{'='*80}\n")
-        f.write(f"TIMING SUMMARY\n")
-        f.write(f"{'='*80}\n")
-        f.write(f"Init time:         {init_time:.4f}s\n")
-        f.write(f"Warmup time:       {warmup_time:.4f}s\n")
-        f.write(f"Runtime:           {runtime:.4f}s\n")
-        f.write(f"Total time:        {total_time:.4f}s\n")
-        f.write(f"Steps/second:      {steps_per_sec:.1f}\n")
-        f.write(f"Total timesteps:   {total_steps}\n")
-        f.write(f"\n")
+    
+    # Setup tee to write to both stdout/stderr and file
+    log_file = open(output_path, 'w')
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = Tee(sys.stdout, log_file)
+    sys.stderr = sys.stdout  # Redirect stderr to stdout (which is tee'd)
+    
+    try:
+        initial_wallclock = time()  # Measure from very start
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        print(f"Profile Optimized Learn Results")
+        print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Device: {device}")
+        print(f"Dataset: {config.dataset}")
+        print(f"\nConfiguration:")
+        print(f"  Total timesteps (profiled): {config.total_timesteps}")
+        print(f"  Batch size env: {config.batch_size_env}")
+        print(f"  N steps per rollout: {config.n_steps}")
+        print(f"  N epochs: {config.n_epochs}")
+        print(f"  Minibatch size: {config.batch_size}")
+        print(f"  Compile mode: {config.compile_mode}")
+        print(f"  Fullgraph: {config.fullgraph}")
+        print(f"")
+        
+        print("\nSetting up components...")
+        init_start = time()
+        components = setup_components(device, config)
+        init_time = time() - init_start
+        print(f"Initialization time: {init_time:.2f}s")
+        
+        # Warmup
+        print("\nRunning warmup (compilation + first rollout)...")
+        warmup_time = compile_and_warmup(components, config)
+        print(f"Warmup time: {warmup_time:.2f}s")
+        
+        # Profile training
+        print(f"\nProfiling training for {config.total_timesteps} timesteps...")
+        profiler = cProfile.Profile()
+        profiler.enable()
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        start_time = time()
+        
+        metrics, total_steps = run_training(components, config)
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        runtime = time() - start_time
+        
+        profiler.disable()
+        
+        total_time = warmup_time + runtime
+        # Calculate actual steps processed during the profiled period
+        # Warmup runs 1 iteration of (n_envs * n_steps) samples
+        warmup_steps = config.batch_size_env * config.n_steps
+        profile_steps = total_steps - warmup_steps
+        steps_per_sec = profile_steps / runtime if runtime > 0 else 0
+        
+        # Print results
+        print(f"\n{'='*80}")
+        print("TIMING SUMMARY")
+        print(f"{'='*80}")
+        print(f"Init time:         {init_time:.4f}s")
+        print(f"Warmup time:       {warmup_time:.4f}s")
+        print(f"Runtime:           {runtime:.4f}s")
+        print(f"Total time:        {total_time:.4f}s")
+        print(f"Steps/second:      {steps_per_sec:.1f}")
+        print(f"Total timesteps:   {total_steps} (Warmup: {warmup_steps}, Profiled: {profile_steps})")
         
         if metrics:
-            f.write(f"Last training metrics:\n")
+            print(f"\nLast training metrics:")
             for k, v in metrics.items():
                 if isinstance(v, float):
-                    f.write(f"  {k}: {v:.4f}\n")
-            f.write(f"\n")
+                    print(f"  {k}: {v:.4f}")
         
-        f.write(f"{'='*80}\n")
-        f.write(f"Top by Cumulative Time\n")
-        f.write(f"{'='*80}\n")
-        ps = pstats.Stats(profiler, stream=f)
+        # Profile stats
+        n_functions = 40
+        
+        print(f"\n{'='*80}")
+        print("PROFILING RESULTS - Top by Cumulative Time")
+        print(f"{'='*80}")
+        s = io.StringIO()
+        ps = pstats.Stats(profiler, stream=s)
         ps.strip_dirs()
         ps.sort_stats('cumulative')
         ps.print_stats(n_functions)
+        print(s.getvalue())
         
-        f.write(f"\n\n{'='*80}\n")
-        f.write(f"Top by Total Time\n")
-        f.write(f"{'='*80}\n")
+        print(f"\n{'='*80}")
+        print("PROFILING RESULTS - Top by Total Time")
+        print(f"{'='*80}")
+        s = io.StringIO()
+        ps = pstats.Stats(profiler, stream=s)
+        ps.strip_dirs()
         ps.sort_stats('tottime')
         ps.print_stats(n_functions)
-    
-    # Final wallclock measurement
-    final_wallclock = time()
-    total_wallclock = final_wallclock - initial_wallclock
-    print(f"\n{'='*80}")
-    print("WALLCLOCK SUMMARY")
-    print(f"{'='*80}")
-    print(f"Initial wallclock: {initial_wallclock:.4f}")
-    print(f"Final wallclock:   {final_wallclock:.4f}")
-    print(f"Total wallclock:   {total_wallclock:.4f}s")
-    
-    print(f"\nResults saved to {output_path}")
+        print(s.getvalue())
+        
+        print(f"\nResults saved to {output_path}")
+
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        log_file.close()
 
 
 def profile_gpu(config: SimpleNamespace):
@@ -414,72 +405,70 @@ def profile_gpu(config: SimpleNamespace):
     if profile is None:
         print("torch.profiler not available")
         return
-    
-    print(f"Device: {device}")
-    
-    print("\nSetting up components...")
-    init_start = time()
-    components = setup_components(device, config)
-    init_time = time() - init_start
-    print(f"Initialization time: {init_time:.2f}s")
-    
-    # Warmup
-    print("\nRunning warmup...")
-    warmup_time = compile_and_warmup(components, config)
-    print(f"Warmup time: {warmup_time:.2f}s")
-    
-    # Profile with torch.profiler
-    print(f"\nGPU Profiling training...")
-    
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-        torch.cuda.synchronize()
-        start_time = time()
-        metrics, total_steps = run_training(components, config)
-        torch.cuda.synchronize()
-        runtime = time() - start_time
-    
-    steps_per_sec = config.total_timesteps / runtime if runtime > 0 else 0
-    
-    print(f"\n{'='*80}")
-    print("TIMING SUMMARY")
-    print(f"{'='*80}")
-    print(f"Warmup time:       {warmup_time:.4f}s")
-    print(f"Runtime:           {runtime:.4f}s")
-    print(f"Steps/second:      {steps_per_sec:.1f}")
-    
-    print(f"\n{'='*80}")
-    print("GPU PROFILING - Top CUDA Time")
-    print(f"{'='*80}")
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=40))
-    
-    print(f"\n{'='*80}")
-    print("GPU PROFILING - Top CPU Time")
-    print(f"{'='*80}")
-    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=40))
-    
-    # Save to file
+        
     output_path = 'tests/profile_optimized_learn_gpu_results.txt'
-    with open(output_path, 'w') as f:
-        f.write(f"Profile Optimized Learn GPU Results\n")
-        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Device: {device}\n")
-        f.write(f"\n")
-        f.write(f"Warmup time:       {warmup_time:.4f}s\n")
-        f.write(f"Runtime:           {runtime:.4f}s\n")
-        f.write(f"Steps/second:      {steps_per_sec:.1f}\n")
-        f.write(f"\n")
-        
-        f.write(f"{'='*80}\n")
-        f.write(f"Top CUDA Time\n")
-        f.write(f"{'='*80}\n")
-        f.write(prof.key_averages().table(sort_by="cuda_time_total", row_limit=40))
-        
-        f.write(f"\n\n{'='*80}\n")
-        f.write(f"Top CPU Time\n")
-        f.write(f"{'='*80}\n")
-        f.write(prof.key_averages().table(sort_by="cpu_time_total", row_limit=40))
     
-    print(f"\nResults saved to {output_path}")
+    # Setup tee to write to both stdout/stderr and file
+    log_file = open(output_path, 'w')
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = Tee(sys.stdout, log_file)
+    sys.stderr = sys.stdout
+    
+    try:
+        print(f"Profile Optimized Learn GPU Results")
+        print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Device: {device}")
+        
+        print("\nSetting up components...")
+        init_start = time()
+        components = setup_components(device, config)
+        init_time = time() - init_start
+        print(f"Initialization time: {init_time:.2f}s")
+        
+        # Warmup
+        print("\nRunning warmup...")
+        warmup_time = compile_and_warmup(components, config)
+        print(f"Warmup time: {warmup_time:.2f}s")
+        
+        # Profile with torch.profiler
+        print(f"\nGPU Profiling training...")
+        
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            torch.cuda.synchronize()
+            start_time = time()
+            metrics, total_steps = run_training(components, config)
+            torch.cuda.synchronize()
+            runtime = time() - start_time
+        
+        # Calculate actual steps processed during the profiled period
+        warmup_steps = config.batch_size_env * config.n_steps
+        profile_steps = total_steps - warmup_steps
+        steps_per_sec = profile_steps / runtime if runtime > 0 else 0
+        
+        print(f"\n{'='*80}")
+        print("TIMING SUMMARY")
+        print(f"{'='*80}")
+        print(f"Warmup time:       {warmup_time:.4f}s")
+        print(f"Runtime:           {runtime:.4f}s")
+        print(f"Steps/second:      {steps_per_sec:.1f}")
+        
+        print(f"\n{'='*80}")
+        print("GPU PROFILING - Top CUDA Time")
+        print(f"{'='*80}")
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=40))
+        
+        print(f"\n{'='*80}")
+        print("GPU PROFILING - Top CPU Time")
+        print(f"{'='*80}")
+        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=40))
+        
+        print(f"\nResults saved to {output_path}")
+
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        log_file.close()
 
 
 def profile_memory(config: SimpleNamespace):
@@ -487,62 +476,63 @@ def profile_memory(config: SimpleNamespace):
     import tracemalloc
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
     
-    print("\nSetting up components...")
-    components = setup_components(device, config)
-    
-    # Warmup
-    print("\nRunning warmup...")
-    warmup_time = compile_and_warmup(components, config)
-    print(f"Warmup time: {warmup_time:.2f}s")
-    
-    # Profile memory
-    print("\nProfiling memory...")
-    tracemalloc.start()
-    
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-    
-    start_time = time()
-    metrics, total_steps = run_training(components, config)
-    runtime = time() - start_time
-    
-    current, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    
-    print(f"\n{'='*80}")
-    print("MEMORY SUMMARY")
-    print(f"{'='*80}")
-    print(f"CPU Memory:")
-    print(f"  Current: {current / 1024 / 1024:.2f} MB")
-    print(f"  Peak:    {peak / 1024 / 1024:.2f} MB")
-    print(f"Runtime:   {runtime:.4f}s")
-    
-    if torch.cuda.is_available():
-        print(f"\nGPU Memory:")
-        print(f"  Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        print(f"  Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-        print(f"  Max Alloc: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
-    
-    # Save to file
     output_path = 'tests/profile_optimized_learn_memory_results.txt'
-    with open(output_path, 'w') as f:
-        f.write(f"Profile Optimized Learn Memory Results\n")
-        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"\n")
-        f.write(f"CPU Memory:\n")
-        f.write(f"  Current: {current / 1024 / 1024:.2f} MB\n")
-        f.write(f"  Peak:    {peak / 1024 / 1024:.2f} MB\n")
-        f.write(f"Runtime:   {runtime:.4f}s\n")
+    
+    # Setup tee to write to both stdout/stderr and file
+    log_file = open(output_path, 'w')
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = Tee(sys.stdout, log_file)
+    sys.stderr = sys.stdout
+    
+    try:
+        print(f"Profile Optimized Learn Memory Results")
+        print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Device: {device}")
+        
+        print("\nSetting up components...")
+        components = setup_components(device, config)
+        
+        # Warmup
+        print("\nRunning warmup...")
+        warmup_time = compile_and_warmup(components, config)
+        print(f"Warmup time: {warmup_time:.2f}s")
+        
+        # Profile memory
+        print("\nProfiling memory...")
+        tracemalloc.start()
         
         if torch.cuda.is_available():
-            f.write(f"\nGPU Memory:\n")
-            f.write(f"  Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB\n")
-            f.write(f"  Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB\n")
-            f.write(f"  Max Alloc: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB\n")
-    
-    print(f"\nResults saved to {output_path}")
+            torch.cuda.reset_peak_memory_stats()
+        
+        start_time = time()
+        metrics, total_steps = run_training(components, config)
+        runtime = time() - start_time
+        
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        
+        print(f"\n{'='*80}")
+        print("MEMORY SUMMARY")
+        print(f"{'='*80}")
+        print(f"CPU Memory:")
+        print(f"  Current: {current / 1024 / 1024:.2f} MB")
+        print(f"  Peak:    {peak / 1024 / 1024:.2f} MB")
+        print(f"Runtime:   {runtime:.4f}s")
+        
+        if torch.cuda.is_available():
+            print(f"\nGPU Memory:")
+            print(f"  Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+            print(f"  Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+            print(f"  Max Alloc: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
+            
+        print(f"\nResults saved to {output_path}")
+
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        log_file.close()
 
 
 def main():
@@ -555,16 +545,16 @@ def main():
                         help='Use tracemalloc for memory profiling')
     
     # Dataset/training config
-    parser.add_argument('--dataset', type=str, default='family')
+    parser.add_argument('--dataset', type=str, default='countries_s3')
     parser.add_argument('--total-timesteps', type=int, default=1, # just one rollout+train
                         help='Total timesteps to profile (excluding warmup)')
     parser.add_argument('--batch-size-env', type=int, default=128,
                         help='Environment batch size (number of parallel envs)')
     parser.add_argument('--n-steps', type=int, default=128,
                         help='Steps per rollout (buffer_size = batch_size_env * n_steps)')
-    parser.add_argument('--n-epochs', type=int, default=10,
+    parser.add_argument('--n-epochs', type=int, default=5,
                         help='PPO epochs per update (fewer = faster)')
-    parser.add_argument('--batch-size', type=int, default=512,
+    parser.add_argument('--batch-size', type=int, default=1024,
                         help='PPO minibatch size (larger = fewer gradient updates)')
     
     # Compile settings
@@ -598,7 +588,10 @@ def main():
         clip_range=0.2,
         ent_coef=0.2,
         padding_atoms=6,
-        padding_states=150,
+        padding_states={
+            "countries_s3": 20, "countries_s2": 20, "countries_s1": 20,
+            "family": 130, "wn18rr": 262, "fb15k237": 358,
+        }.get(args.dataset, 150),
         max_depth=20,
         end_proof_action=True,
         max_total_vars=100,
@@ -609,6 +602,8 @@ def main():
         fullgraph=args.fullgraph,
         use_amp=args.amp,
     )
+    
+    print(f"Using padding_states={config.padding_states} for dataset={config.dataset}")
     
     if args.use_gpu_profiler:
         profile_gpu(config)

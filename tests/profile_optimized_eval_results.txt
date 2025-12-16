@@ -1,5 +1,5 @@
 Profile Optimized Eval Results
-Date: 2025-12-16 09:20:11
+Date: 2025-12-16 15:51:14
 Device: cuda
 Dataset: family
 
@@ -7,124 +7,144 @@ Configuration:
   Queries: 100
   Corruptions: 100
   Corruption modes: ['both']
-  Total candidates: 10100
   Compile mode: reduce-overhead
   Fullgraph: True
+
+Setting up components...
+Queries loaded - Train: 19845/19845, Valid: 2799, Test: 5626
+  Total candidates: 10100
+
+Running warmup (compilation)...
+Using Automatic Mixed Precision (AMP) with dtype: torch.bfloat16
+Compiling step_with_policy (mode='reduce-overhead', fullgraph=True)...
+Warmup time: 5.62s
+
+Profiling evaluation...
 
 ================================================================================
 TIMING SUMMARY
 ================================================================================
-Warmup time:      5.6733s
-Runtime:          18.9778s
-Total time:       24.6511s
-ms/query:         189.778
-ms/candidate:     1.879
+Warmup time:      5.6172s
+Runtime:          18.5550s
+Total time:       24.1721s
+ms/query:         185.550
+ms/candidate:     1.837
 
-MRR:              0.5004
-Hits@1:           0.4300
-Hits@10:          0.6600
+MRR:              0.4806
+Hits@1:           0.4100
+Hits@10:          0.6100
 
 ================================================================================
-Top by Cumulative Time
+PROFILING RESULTS - Top by Cumulative Time
 ================================================================================
-         261810 function calls (256066 primitive calls) in 3.330 seconds
+         263272 function calls (257517 primitive calls) in 3.285 seconds
 
    Ordered by: cumulative time
-   List reduced from 538 to 40 due to restriction <40>
+   List reduced from 754 to 40 due to restriction <40>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-       20    0.002    0.000    2.403    0.120 env_optimized.py:259(init_state_from_queries)
-       20    2.198    0.110    2.391    0.120 env_optimized.py:450(_compute_derived_functional)
-      400    0.002    0.000    0.451    0.001 runtime_wrappers.py:310(runtime_wrapper)
-      400    0.005    0.000    0.449    0.001 utils.py:119(call_func_at_runtime_with_args)
-      400    0.002    0.000    0.440    0.001 runtime_wrappers.py:512(wrapper)
-      400    0.006    0.000    0.437    0.001 output_code.py:590(__call__)
-      400    0.002    0.000    0.362    0.001 compile_fx.py:1767(run)
-      400    0.001    0.000    0.359    0.001 cudagraph_trees.py:378(deferred_cudagraphify)
-      400    0.003    0.000    0.358    0.001 utils.py:3013(run)
-  797/400    0.009    0.000    0.350    0.001 cudagraph_trees.py:2008(run)
-  797/400    0.002    0.000    0.338    0.001 cudagraph_trees.py:2073(_run)
-      380    0.004    0.000    0.302    0.001 cbw7ea5ndfn4prdr5b7cc47k2rxlbp6l4diowpn42k4anlxvazqk.py:7128(call)
-   1199/5    0.017    0.000    0.229    0.046 eval_frame.py:1039(_fn)
-    399/1    0.002    0.000    0.216    0.216 aot_autograd.py:1126(forward)
-      398    0.003    0.000    0.187    0.000 cudagraph_trees.py:2241(execute_node)
-      398    0.004    0.000    0.170    0.000 cudagraph_trees.py:1105(run)
-      398    0.002    0.000    0.151    0.000 cudagraph_trees.py:1219(run_graph)
-       20    0.013    0.001    0.150    0.008 unification_optimized.py:900(get_derived_states_compiled)
-      400    0.010    0.000    0.129    0.000 cudagraph_trees.py:1057(_copy_inputs_and_remove_from_src)
-        2    0.000    0.000    0.128    0.064 cudagraph_trees.py:2205(record_function)
-  402/400    0.114    0.000    0.114    0.000 {built-in method torch._foreach_copy_}
-     8142    0.101    0.000    0.101    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
-       20    0.000    0.000    0.092    0.005 c67euowy3cwilk646wlalkpsgsfp7twg4tdbtwp4qkjskpq3c4px.py:7126(call)
-       12    0.000    0.000    0.084    0.007 __init__.py:1073(synchronize)
-       12    0.083    0.007    0.083    0.007 {built-in method torch._C._cuda_synchronize}
-      400    0.022    0.000    0.066    0.000 graphs.py:139(replay)
-        2    0.000    0.000    0.045    0.022 cudagraph_trees.py:815(__init__)
-        2    0.000    0.000    0.044    0.022 cudagraph_trees.py:1230(_record)
-        2    0.000    0.000    0.043    0.021 graphs.py:264(__exit__)
-       20    0.006    0.000    0.036    0.002 unification_optimized.py:359(unify_with_facts_fixed)
-       20    0.001    0.000    0.032    0.002 unification_optimized.py:639(pack_results_fixed)
-      402    0.005    0.000    0.031    0.000 profiler.py:789(__exit__)
-        2    0.000    0.000    0.028    0.014 graphs.py:240(__enter__)
-       40    0.016    0.000    0.028    0.001 unification.py:554(unify_one_to_one)
-        2    0.000    0.000    0.027    0.014 graphs.py:98(capture_begin)
-        2    0.000    0.000    0.027    0.013 memory.py:212(empty_cache)
-        2    0.027    0.013    0.027    0.013 {built-in method torch._C._cuda_emptyCache}
-      402    0.001    0.000    0.026    0.000 _ops.py:1068(__call__)
-       20    0.006    0.000    0.025    0.001 unification_optimized.py:441(unify_with_rules_fixed)
-     1061    0.023    0.000    0.023    0.000 {built-in method torch.where}
+       20    0.002    0.000    2.413    0.121 env_optimized.py:259(init_state_from_queries)
+       20    2.221    0.111    2.403    0.120 env_optimized.py:450(_compute_derived_functional)
+      400    0.002    0.000    0.393    0.001 runtime_wrappers.py:310(runtime_wrapper)
+      400    0.005    0.000    0.391    0.001 utils.py:119(call_func_at_runtime_with_args)
+      400    0.002    0.000    0.383    0.001 runtime_wrappers.py:512(wrapper)
+      400    0.005    0.000    0.381    0.001 output_code.py:590(__call__)
+      400    0.002    0.000    0.318    0.001 compile_fx.py:1767(run)
+      400    0.001    0.000    0.316    0.001 cudagraph_trees.py:378(deferred_cudagraphify)
+      400    0.002    0.000    0.315    0.001 utils.py:3013(run)
+  797/400    0.007    0.000    0.309    0.001 cudagraph_trees.py:2008(run)
+  797/400    0.002    0.000    0.299    0.001 cudagraph_trees.py:2073(_run)
+      380    0.003    0.000    0.248    0.001 cbw7ea5ndfn4prdr5b7cc47k2rxlbp6l4diowpn42k4anlxvazqk.py:7128(call)
+   1199/5    0.014    0.000    0.243    0.049 eval_frame.py:1039(_fn)
+    399/1    0.001    0.000    0.227    0.227 aot_autograd.py:1126(forward)
+      398    0.003    0.000    0.143    0.000 cudagraph_trees.py:2241(execute_node)
+       20    0.011    0.001    0.141    0.007 unification_optimized.py:1001(get_derived_states_compiled)
+        2    0.000    0.000    0.135    0.068 cudagraph_trees.py:2205(record_function)
+      398    0.003    0.000    0.129    0.000 cudagraph_trees.py:1105(run)
+      398    0.002    0.000    0.111    0.000 cudagraph_trees.py:1219(run_graph)
+     8142    0.111    0.000    0.111    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
+      400    0.010    0.000    0.096    0.000 cudagraph_trees.py:1057(_copy_inputs_and_remove_from_src)
+       20    0.000    0.000    0.093    0.005 c67euowy3cwilk646wlalkpsgsfp7twg4tdbtwp4qkjskpq3c4px.py:7126(call)
+       12    0.000    0.000    0.093    0.008 __init__.py:1073(synchronize)
+       12    0.092    0.008    0.092    0.008 {built-in method torch._C._cuda_synchronize}
+  402/400    0.081    0.000    0.081    0.000 {built-in method torch._foreach_copy_}
+      400    0.015    0.000    0.058    0.000 graphs.py:139(replay)
+        2    0.000    0.000    0.043    0.021 cudagraph_trees.py:815(__init__)
+        2    0.000    0.000    0.042    0.021 cudagraph_trees.py:1230(_record)
+        2    0.000    0.000    0.040    0.020 graphs.py:264(__exit__)
+       20    0.006    0.000    0.034    0.002 unification_optimized.py:423(unify_with_facts_fixed)
+       20    0.001    0.000    0.029    0.001 unification_optimized.py:753(pack_results_fixed)
+      402    0.005    0.000    0.028    0.000 profiler.py:789(__exit__)
+       40    0.015    0.000    0.027    0.001 unification.py:554(unify_one_to_one)
+        2    0.000    0.000    0.026    0.013 graphs.py:240(__enter__)
+        2    0.000    0.000    0.025    0.013 graphs.py:98(capture_begin)
+        2    0.000    0.000    0.025    0.012 memory.py:212(empty_cache)
+        2    0.025    0.012    0.025    0.012 {built-in method torch._C._cuda_emptyCache}
+       20    0.005    0.000    0.024    0.001 unification_optimized.py:505(unify_with_rules_fixed)
+      402    0.001    0.000    0.023    0.000 _ops.py:1068(__call__)
+     1061    0.021    0.000    0.021    0.000 {built-in method torch.where}
 
 
 
 
 ================================================================================
-Top by Total Time
+PROFILING RESULTS - Top by Total Time
 ================================================================================
-         261810 function calls (256066 primitive calls) in 3.330 seconds
+         263272 function calls (257517 primitive calls) in 3.285 seconds
 
    Ordered by: internal time
-   List reduced from 538 to 40 due to restriction <40>
+   List reduced from 754 to 40 due to restriction <40>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-       20    2.198    0.110    2.391    0.120 env_optimized.py:450(_compute_derived_functional)
-     25/0    0.202    0.008    0.000          env_optimized.py:1049(step_with_policy)
-  402/400    0.114    0.000    0.114    0.000 {built-in method torch._foreach_copy_}
-     8142    0.101    0.000    0.101    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
-       12    0.083    0.007    0.083    0.007 {built-in method torch._C._cuda_synchronize}
-    379/0    0.055    0.000    0.000          env_optimized.py:894(_step_with_policy_impl)
-        2    0.027    0.013    0.027    0.013 {built-in method torch._C._cuda_emptyCache}
-     1061    0.023    0.000    0.023    0.000 {built-in method torch.where}
-      400    0.022    0.000    0.066    0.000 graphs.py:139(replay)
-      183    0.018    0.000    0.018    0.000 {built-in method torch.cat}
-   1199/5    0.017    0.000    0.229    0.046 eval_frame.py:1039(_fn)
-      402    0.016    0.000    0.016    0.000 {built-in method torch._ops.profiler._record_function_enter_new}
-       40    0.016    0.000    0.028    0.001 unification.py:554(unify_one_to_one)
-      560    0.014    0.000    0.014    0.000 {method 'all' of 'torch._C.TensorBase' objects}
-        1    0.013    0.013    0.013    0.013 {built-in method torch.rand}
-       20    0.013    0.001    0.150    0.008 unification_optimized.py:900(get_derived_states_compiled)
-    60/40    0.011    0.000    0.015    0.000 env_optimized.py:321(_compute_state_hash64)
-      400    0.010    0.000    0.129    0.000 cudagraph_trees.py:1057(_copy_inputs_and_remove_from_src)
-      200    0.010    0.000    0.010    0.000 {built-in method torch.full}
+       20    2.221    0.111    2.403    0.120 env_optimized.py:450(_compute_derived_functional)
+     25/0    0.227    0.009    0.000          env_optimized.py:1049(step_with_policy)
+     8142    0.111    0.000    0.111    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
+       12    0.092    0.008    0.092    0.008 {built-in method torch._C._cuda_synchronize}
+  402/400    0.081    0.000    0.081    0.000 {built-in method torch._foreach_copy_}
+    379/0    0.041    0.000    0.000          env_optimized.py:894(_step_with_policy_impl)
+        2    0.025    0.012    0.025    0.012 {built-in method torch._C._cuda_emptyCache}
+     1061    0.021    0.000    0.021    0.000 {built-in method torch.where}
+      189    0.017    0.000    0.017    0.000 {built-in method torch.cat}
+      400    0.015    0.000    0.058    0.000 graphs.py:139(replay)
+       40    0.015    0.000    0.027    0.001 unification.py:554(unify_one_to_one)
+   1199/5    0.014    0.000    0.243    0.049 eval_frame.py:1039(_fn)
+      560    0.012    0.000    0.012    0.000 {method 'all' of 'torch._C.TensorBase' objects}
+       20    0.011    0.001    0.141    0.007 unification_optimized.py:1001(get_derived_states_compiled)
+      402    0.011    0.000    0.011    0.000 {built-in method torch._ops.profiler._record_function_enter_new}
       303    0.010    0.000    0.010    0.000 {method 'sum' of 'torch._C.TensorBase' objects}
-  797/400    0.009    0.000    0.350    0.001 cudagraph_trees.py:2008(run)
+    60/40    0.010    0.000    0.013    0.000 env_optimized.py:321(_compute_state_hash64)
+      400    0.010    0.000    0.096    0.000 cudagraph_trees.py:1057(_copy_inputs_and_remove_from_src)
+      200    0.009    0.000    0.009    0.000 {built-in method torch.full}
         4    0.008    0.002    0.008    0.002 {built-in method torch.mean}
-     3855    0.008    0.000    0.012    0.000 _config_module.py:370(__getattr__)
-       40    0.008    0.000    0.008    0.000 {method 'flip' of 'torch._C.TensorBase' objects}
       341    0.008    0.000    0.008    0.000 {built-in method torch.full_like}
-    398/0    0.007    0.000    0.000          eval_frame.py:791(compile_wrapper)
+       40    0.008    0.000    0.008    0.000 {method 'flip' of 'torch._C.TensorBase' objects}
+  797/400    0.007    0.000    0.309    0.001 cudagraph_trees.py:2008(run)
         1    0.007    0.007    0.007    0.007 {method 'reciprocal' of 'torch._C.TensorBase' objects}
       398    0.007    0.000    0.009    0.000 cudagraph_trees.py:1126(reconstruct_outputs)
-      402    0.007    0.000    0.007    0.000 {built-in method torch._ops.profiler.}
-    43788    0.007    0.000    0.007    0.000 {built-in method builtins.isinstance}
-        1    0.006    0.006    0.013    0.013 sampler.py:123(corrupt)
-      476    0.006    0.000    0.006    0.000 {built-in method torch._C._dynamo.guards._reinterpret_tensor}
-      400    0.006    0.000    0.437    0.001 output_code.py:590(__call__)
-       20    0.006    0.000    0.025    0.001 unification_optimized.py:441(unify_with_rules_fixed)
-       20    0.006    0.000    0.036    0.002 unification_optimized.py:359(unify_with_facts_fixed)
-       20    0.006    0.000    0.010    0.000 env_optimized.py:638(_add_end_action_functional)
-      402    0.005    0.000    0.031    0.000 profiler.py:789(__exit__)
-      400    0.005    0.000    0.449    0.001 utils.py:119(call_func_at_runtime_with_args)
-       20    0.005    0.000    0.020    0.001 env_optimized.py:372(_prune_visited_states)
-      400    0.004    0.000    0.009    0.000 utils.py:3041(copy_misaligned_inputs)
+     3855    0.007    0.000    0.010    0.000 _config_module.py:370(__getattr__)
+    44027    0.006    0.000    0.006    0.000 {built-in method builtins.isinstance}
+        1    0.006    0.006    0.014    0.014 sampler.py:123(corrupt)
+    398/0    0.006    0.000    0.000          eval_frame.py:791(compile_wrapper)
+       20    0.006    0.000    0.034    0.002 unification_optimized.py:423(unify_with_facts_fixed)
+      402    0.006    0.000    0.006    0.000 {built-in method torch._ops.profiler.}
+        1    0.006    0.006    0.006    0.006 {built-in method torch.rand}
+      400    0.005    0.000    0.381    0.001 output_code.py:590(__call__)
+      476    0.005    0.000    0.005    0.000 {built-in method torch._C._dynamo.guards._reinterpret_tensor}
+       20    0.005    0.000    0.024    0.001 unification_optimized.py:505(unify_with_rules_fixed)
+       20    0.005    0.000    0.009    0.000 env_optimized.py:638(_add_end_action_functional)
+      400    0.005    0.000    0.391    0.001 utils.py:119(call_func_at_runtime_with_args)
+      402    0.005    0.000    0.028    0.000 profiler.py:789(__exit__)
+      202    0.004    0.000    0.004    0.000 {built-in method torch.arange}
+      400    0.004    0.000    0.008    0.000 utils.py:3041(copy_misaligned_inputs)
 
 
+
+
+================================================================================
+WALLCLOCK SUMMARY
+================================================================================
+Initial wallclock: 1765896671.8870
+Final wallclock:   1765896700.7716
+Total wallclock:   28.8846s
+
+Results saved to tests/profile_optimized_eval_results.txt

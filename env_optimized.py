@@ -1122,6 +1122,10 @@ class EvalEnvOptimized:
                 derived_sub_indices=new_obs.derived_sub_indices.clone(),
                 action_mask=new_obs.action_mask.clone(),
             )
+
+            # Update internal pointers after step (for round-robin cycling)
+            if self._per_env_ptrs is not None:
+                self._per_env_ptrs = new_ptrs.clone()
             
             return (
                 cloned_state, cloned_obs,

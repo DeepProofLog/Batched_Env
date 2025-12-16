@@ -177,14 +177,131 @@ def all_atoms_are_ground_facts(
     return is_proof
 
 
+@torch._dynamo.disable
+def standardize_vars_fixed_parity(
+    states: Tensor,          # [B, K, M, 3] derived states
+    counts: Tensor,          # [B] valid count per batch
+    next_var_indices: Tensor, # [B] starting variable index per batch
+    constant_no: int,
+    padding_idx: int,
+    input_states: Optional[Tensor], # [B, M_in, 3] Input states for variable seeding
+    max_vocab_size: int = 4096,
+) -> Tuple[Tensor, Tensor]:
+    """
+    Vectorized implementation of parity mode variable standardization.
+    Standardizes each candidate state INDEPENDENTLY but fully vectorized across batch and candidates.
+    
+    This replaces the loop-based logic to avoid graph breaks in torch.compile.
+    
+    Logic:
+    1. Reshape to treat (Batch * Candidates) as a single large batch dimension (BK).
+    2. Seed assignments using input_states (mapped to self).
+    3. Iterate sequentially over atoms in derived states to assign new variables
+       in appearance order (only if not already assigned).
+    4. Compute new next_var based on max used variable per batch.
+    """
+    B, K, M, _ = states.shape
+    device = states.device
+    pad = padding_idx
+    
+    # 1. Reshape to [BK] batch dimension
+    BK = B * K
+    
+    # Flatten states to [BK, M, 3]
+    states_flat = states.reshape(BK, M, 3)
+    
+    # Prepare assignment table: [BK, MaxVocab] (Init -1)
+    assign_table = torch.full((BK, max_vocab_size), -1, dtype=torch.long, device=device)
+    
+    # 2. Seed `input_states` assignments (map to self)
+    if input_states is not None:
+        # input_states: [B, Min, 3] -> expand to [B, K, Min, 3] -> reshape [BK, Min, 3]
+        Min = input_states.shape[1]
+        input_exp = input_states.unsqueeze(1).expand(-1, K, -1, -1).reshape(BK, Min, 3)
+        
+        # Extract args: [BK, Min*2]
+        input_args = input_exp[:, :, 1:3].reshape(BK, -1)
+        
+        # Identify variables
+        is_var_in = (input_args > constant_no) & (input_args != pad)
+        
+        # Scatter self-assignment (write to table index=value)
+        # Handle masking by writing to index 0 for non-vars (0 is constant/pad, we ignore its entry)
+        safe_idx = torch.where(is_var_in, input_args, torch.zeros_like(input_args))
+        assign_table.scatter_(1, safe_idx, safe_idx)
+        
+    # 3. Initialize next variable counters [BK]
+    next_gen = next_var_indices.unsqueeze(1).expand(-1, K).reshape(BK)
+    
+    # 4. Sequential Scan over Derived State Args
+    # Flatten args: [BK, M*2]
+    # CAUTION: We must clone because we update state_args conceptually, 
+    # but practically we just read from original states and write to output
+    state_args = states_flat[:, :, 1:3].reshape(BK, -1)
+    L = state_args.shape[1]
+    
+    # To store results
+    out_args = state_args.clone()
+    
+    # Iterate over the sequence length L (e.g., 40-60 iterations)
+    for t in range(L):
+        # Current column of args: [BK]
+        vals = state_args[:, t]
+        
+        # Check if valid variable
+        is_var = (vals > constant_no) & (vals != pad)
+        
+        # Determine current assignment from table
+        curr_assign = assign_table.gather(1, vals.unsqueeze(1)).squeeze(1)
+        
+        # Unassigned if -1 AND is a variable
+        is_unassigned = (curr_assign == -1) & is_var
+        
+        # Determine new value to assign
+        new_assign = torch.where(is_unassigned, next_gen, curr_assign)
+        
+        # Update next_gen counters
+        next_gen = torch.where(is_unassigned, next_gen + 1, next_gen)
+        
+        # Update assignment table (scatter new assignment)
+        safe_indices = torch.where(is_var, vals, torch.zeros_like(vals))
+        assign_table.scatter_(1, safe_indices.unsqueeze(1), new_assign.unsqueeze(1))
+        
+        # Store standardized value in output
+        out_args[:, t] = torch.where(is_var, new_assign, vals)
+
+    # 5. Reconstruct standardized states
+    out_args_reshaped = out_args.reshape(BK, M, 2)
+    states_flat = states_flat.clone() # Clone to avoid modifying original if needed
+    states_flat[:, :, 1:3] = out_args_reshaped
+    
+    # Reshape back to [B, K, M, 3]
+    standardized = states_flat.reshape(B, K, M, 3)
+    
+    # 6. Compute new_next_var [B] based on max used variable per batch
+    # Mask out invalid candidates using counts
+    next_gen_b = next_gen.reshape(B, K)
+    
+    # mask: [B, K]
+    k_indices = torch.arange(K, device=device).unsqueeze(0).expand(B, -1)
+    is_valid_cand = k_indices < counts.unsqueeze(1)
+    
+    # Filter next_gen: use baseline for invalid ones
+    base_next = next_var_indices.unsqueeze(1).expand(-1, K)
+    valid_next_gen = torch.where(is_valid_cand, next_gen_b, base_next)
+    
+    # Take max over K
+    new_next_var, _ = valid_next_gen.max(dim=1)
+    
+    return standardized, new_next_var
+
+
 def standardize_vars_fixed(
     states: Tensor,          # [B, K, M, 3]
     counts: Tensor,          # [B] valid count per batch
     next_var_indices: Tensor, # [B] starting variable index per batch
     constant_no: int,
     padding_idx: int,
-    parity_mode: bool = False,  # Use exact first-appearance-order standardization
-    input_states: Tensor = None,  # [B, M_in, 3] Input states for variable seeding (parity mode)
 ) -> Tuple[Tensor, Tensor]:
     """
     Renumber runtime variables to canonical form per batch element.
@@ -199,7 +316,6 @@ def standardize_vars_fixed(
         next_var_indices: [B] starting variable index for renumbering
         constant_no: threshold (vars > constant_no are runtime vars)
         padding_idx: padding value
-        parity_mode: If True, use first-appearance-order (slower but exact)
         
     Returns:
         (standardized_states, new_next_var): renumbered states and updated next_var
@@ -210,58 +326,6 @@ def standardize_vars_fixed(
     
     if B == 0 or states.numel() == 0:
         return states, next_var_indices
-    
-    if parity_mode:
-        # PARITY MODE: Match original engine's first-appearance-order standardization
-        # This is slow (loops) but produces identical results to UnificationEngine
-        # 
-        # CRITICAL: The original engine's standardize_derived_states considers the 
-        # INPUT state's variables FIRST (they appeared earlier in the proof), then
-        # renumbers derived state variables in first-appearance order.
-        standardized = states.clone()
-        new_next_var = next_var_indices.clone()
-        
-        for b in range(B):
-            count_b = counts[b].item()
-            if count_b == 0:
-                continue
-            
-            # Build var_map: old_var -> new_var in first-appearance order
-            # Pre-seed with existing variables from input_states if provided
-            var_map = {}
-            next_new_var = next_var_indices[b].item()
-            
-            # If input_states provided, pre-seed var_map with their variables
-            # This ensures derived states reuse existing variable names
-            if input_states is not None:
-                input_state = input_states[b]  # [M_in, 3]
-                for m_in in range(input_state.shape[0]):
-                    pred = input_state[m_in, 0].item()
-                    if pred == pad:
-                        continue
-                    for a in range(1, 3):
-                        arg = input_state[m_in, a].item()
-                        if arg > constant_no and arg != pad:
-                            if arg not in var_map:
-                                # Map to itself - preserve existing variable name
-                                var_map[arg] = arg
-            
-            for k in range(count_b):
-                for m in range(M):
-                    pred = states[b, k, m, 0].item()
-                    if pred == pad:
-                        continue
-                    for a in range(1, 3):  # args at indices 1 and 2
-                        arg = states[b, k, m, a].item()
-                        if arg > constant_no and arg != pad:
-                            if arg not in var_map:
-                                var_map[arg] = next_new_var
-                                next_new_var += 1
-                            standardized[b, k, m, a] = var_map[arg]
-            
-            new_next_var[b] = next_new_var
-        
-        return standardized, new_next_var
     
     # FAST MODE: Offset-based standardization for torch.compile compatibility
     # This is fast but may produce different variable numbering than original
@@ -636,6 +700,56 @@ def prune_ground_facts_fixed(
     return pruned_states, pruned_counts, is_proof
 
 
+def pack_results_fixed_parity(
+    fact_states: Tensor,        # [B, K_f, G, 3]
+    fact_mask: Tensor,          # [B, K_f]
+    rule_states: Tensor,        # [B, K_r, M, 3]
+    rule_mask: Tensor,          # [B, K_r]
+    K_max: int,
+    M_max: int,
+    padding_idx: int,
+) -> Tuple[Tensor, Tensor]:
+    """
+    Combine fact and rule results using stable sort for parity.
+    Slower but deterministic and exact matching original order.
+    """
+    B = fact_states.shape[0]
+    device = fact_states.device
+    pad = padding_idx
+    K_f = fact_states.shape[1]
+    K_r = rule_states.shape[1]
+    G = fact_states.shape[2]
+    M_r = rule_states.shape[2]
+    
+    # Normalize dimensions
+    if G < M_max:
+        fact_pad = torch.full((B, K_f, M_max - G, 3), pad, dtype=fact_states.dtype, device=device)
+        fact_states = torch.cat([fact_states, fact_pad], dim=2)
+    elif G > M_max:
+        fact_states = fact_states[:, :, :M_max, :]
+    
+    if M_r < M_max:
+        rule_pad = torch.full((B, K_r, M_max - M_r, 3), pad, dtype=rule_states.dtype, device=device)
+        rule_states = torch.cat([rule_states, rule_pad], dim=2)
+    elif M_r > M_max:
+        rule_states = rule_states[:, :, :M_max, :]
+    
+    # Concatenate rules before facts
+    all_states = torch.cat([rule_states, fact_states], dim=1)  # [B, K_r+K_f, M_max, 3]
+    all_masks = torch.cat([rule_mask, fact_mask], dim=1)  # [B, K_r+K_f]
+    
+    counts = all_masks.sum(dim=1).clamp(max=K_max)
+    
+    # PARITY MODE: Use stable argsort
+    sorted_idx = torch.argsort(all_masks.int(), dim=1, descending=True, stable=True)
+    top_idx = sorted_idx[:, :K_max]
+    
+    top_idx_exp = top_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, M_max, 3)
+    derived = torch.gather(all_states, 1, top_idx_exp)
+    
+    return derived, counts
+
+
 def pack_results_fixed(
     fact_states: Tensor,        # [B, K_f, G, 3]
     fact_mask: Tensor,          # [B, K_f]
@@ -644,7 +758,6 @@ def pack_results_fixed(
     K_max: int,
     M_max: int,
     padding_idx: int,
-    parity_mode: bool = False,  # Use slow but exact loop-based packing
 ) -> Tuple[Tensor, Tensor]:
     """
     Combine fact and rule results into single fixed-shape output.
@@ -686,18 +799,6 @@ def pack_results_fixed(
     
     # Count valid (capped at K_max)
     counts = all_masks.sum(dim=1).clamp(max=K_max)
-    
-    if parity_mode:
-        # PARITY MODE: Use loop-based assignment for exact matching with original engine
-        # This is slower but guarantees identical ordering to the original engine
-        derived = torch.full((B, K_max, M_max, 3), pad, dtype=fact_states.dtype, device=device)
-        for b in range(B):
-            valid_idx_b = all_masks[b].nonzero(as_tuple=True)[0]
-            count_b = min(valid_idx_b.shape[0], K_max)
-            for i in range(count_b):
-                src_idx = valid_idx_b[i]
-                derived[b, i] = all_states[b, src_idx]
-        return derived, counts
     
     # FAST MODE: Scatter-based compaction for torch.compile compatibility
     # Strategy: Reverse the source order so invalid entries are scattered first,
@@ -1087,12 +1188,21 @@ class UnificationEngineVectorized:
         # ---------------------------------------------------------------------
         # 4. Combine Results
         # ---------------------------------------------------------------------
-        combined, combined_counts = pack_results_fixed(
-            fact_states, fact_success,
-            rule_states, rule_success,
-            self.K_max, self.M_max, pad,
-            parity_mode=self.parity_mode
-        )
+        # ---------------------------------------------------------------------
+        # 4. Combine Results
+        # ---------------------------------------------------------------------
+        if self.parity_mode:
+            combined, combined_counts = pack_results_fixed_parity(
+                fact_states, fact_success,
+                rule_states, rule_success,
+                self.K_max, self.M_max, pad,
+            )
+        else:
+            combined, combined_counts = pack_results_fixed(
+                fact_states, fact_success,
+                rule_states, rule_success,
+                self.K_max, self.M_max, pad,
+            )
         
         # ---------------------------------------------------------------------
         # 5. Prune Ground Facts
@@ -1169,11 +1279,17 @@ class UnificationEngineVectorized:
         # Renumber runtime variables to start from next_var_indices
         # This matches the original engine's standardize_derived_states step
         # ---------------------------------------------------------------------
-        std_derived, std_new_vars = standardize_vars_fixed(
-            final_derived, final_counts, next_var_indices,
-            self.constant_no, pad, parity_mode=self.parity_mode,
-            input_states=current_states if self.parity_mode else None
-        )
+        if self.parity_mode:
+            std_derived, std_new_vars = standardize_vars_fixed_parity(
+                final_derived, final_counts, next_var_indices,
+                self.constant_no, pad,
+                input_states=current_states
+            )
+        else:
+            std_derived, std_new_vars = standardize_vars_fixed(
+                final_derived, final_counts, next_var_indices,
+                self.constant_no, pad
+            )
         
         return std_derived, final_counts, std_new_vars
 

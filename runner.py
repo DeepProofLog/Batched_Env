@@ -65,7 +65,7 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 1,
+        'timesteps_train': 700000,
         'restore_best_val_model': True,
         'load_best_metric': 'eval', # 'eval' (best MRR) or 'train' (best reward)
         'load_model': False,
@@ -75,7 +75,7 @@ if __name__ == "__main__":
         'batch_size_env': 128,  
         'batch_size_env_eval': 128,
         'n_steps': 128,  
-        'batch_size': 4096,  
+        'batch_size': 512,  
         'eval_freq': 1,  
 
         # Env params

@@ -1,0 +1,402 @@
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0] failed while attempting to run meta for aten.where.self
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0] Traceback (most recent call last):
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 2755, in _dispatch_impl
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     r = func(*args, **kwargs)
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]         ^^^^^^^^^^^^^^^^^^^^^
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_ops.py", line 841, in __call__
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     return self._op(*args, **kwargs)
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_prims_common/wrappers.py", line 309, in _fn
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     result = fn(*args, **kwargs)
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]              ^^^^^^^^^^^^^^^^^^^
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_compile.py", line 53, in inner
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     return disable_fn(*args, **kwargs)
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 1044, in _fn
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     return fn(*args, **kwargs)
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]            ^^^^^^^^^^^^^^^^^^^
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_prims_common/wrappers.py", line 149, in _fn
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     result = fn(**bound.arguments)
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]              ^^^^^^^^^^^^^^^^^^^^^
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_refs/__init__.py", line 2023, in where
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     pred, a, b = _maybe_broadcast(pred, a, b)
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_refs/__init__.py", line 448, in _maybe_broadcast
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     common_shape = _broadcast_shapes(
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]                    ^^^^^^^^^^^^^^^^^^
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_refs/__init__.py", line 436, in _broadcast_shapes
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     torch._check(
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/__init__.py", line 1695, in _check
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     _check_with(RuntimeError, cond, message)
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]   File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/__init__.py", line 1677, in _check_with
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0]     raise error_type(message_evaluated)
+E1216 15:27:41.815000 673395 site-packages/torch/_subclasses/fake_tensor.py:2759] [2/0] RuntimeError: Attempting to broadcast a dimension of length 100 at -1! Mismatching argument at index 1 had torch.Size([4, 100]); but expected shape should be broadcastable to [1, 4]
+
+================================================================================
+SCRIPT COMPILED PARITY TEST (In-Process)
+================================================================================
+Dataset: countries_s3
+N envs: 4, N steps: 20
+Timesteps: 120, Epochs: 3
+Seed: 42
+Device: cpu
+skip_unary_actions: False (required for parity)
+================================================================================
+
+----------------------------------------
+>>> Running Tensor Training...
+----------------------------------------
+======================================================================
+TENSOR TRAINING
+Dataset: countries_s3
+N envs: 4, N steps: 20
+Total timesteps: 120
+Seed: 42
+======================================================================
+
+[1/3] Creating tensor components...
+Queries loaded - Train: 111/111, Valid: 24, Test: 24
+[PARITY] IndexManager: constants=271, predicates=7
+[PARITY] Embedder checksum: 23.592915
+[PARITY] Policy checksum after creation: 2244.288505
+[PARITY] RNG state before sampler: 316361
+
+[2/3] Running training...
+
+[PPO] Starting training for 120 timesteps
+[PPO] Rollout size: 20 steps x 4 envs = 80 samples per rollout
+
+[PPO] ===== Iteration 1 (0/120 steps) =====
+Collecting rollouts: 0/20 steps
+Collecting rollouts: 4/20 steps
+Collecting rollouts: 8/20 steps
+Collecting rollouts: 12/20 steps
+Collecting rollouts: 16/20 steps
+[PPO] Rollout collected in 3.07s
+[PPO] FPS: 26.07
+[PPO] Recent episodes: reward=0.200, length=2.4
+
+[PPO] ===== Training policy =====
+[PPO] Training for 3 epochs...
+Epoch 1/3. 
+Losses: total 2.49603, value 5.42544, policy 0.00072, entropy -0.00335, approx_kl 0.00000 clip_fraction 0.00000. 
+Early stopping at step 1 due to reaching max kl: 0.38
+[PPO] Values: min=-3.678, max=5.185, mean=1.046, std=1.916
+[PPO] Returns: min=-0.182, max=1.061, mean=0.143, std=0.320
+[PPO] Explained variance: -34.0515
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.384                    |
+|    clip_fraction        | 0.010                    |
+|    entropy              | 0.003                    |
+|    explained_var        | -34.051                  |
+|    iterations           | 1                        |
+|    policy_loss          | -0.002                   |
+|    total_timesteps      | 80                       |
+|    value_loss           | 5.158                    |
+----------------------------------------------------
+
+[PPO] Training completed in 0.95s
+
+[PPO] ===== Iteration 2 (80/120 steps) =====
+Collecting rollouts: 0/20 steps
+Collecting rollouts: 4/20 steps
+Collecting rollouts: 8/20 steps
+Collecting rollouts: 12/20 steps
+Collecting rollouts: 16/20 steps
+[PPO] Rollout collected in 0.22s
+[PPO] FPS: 370.92
+[PPO] Recent episodes: reward=0.000, length=2.6
+
+[PPO] ===== Training policy =====
+[PPO] Training for 3 epochs...
+Epoch 1/3. 
+Losses: total 1.44184, value 4.91826, policy -0.00558, entropy -0.01081, approx_kl 0.00016 clip_fraction 0.00000. 
+Epoch 2/3. 
+Losses: total 1.62707, value 4.17915, policy -0.00807, entropy -0.00541, approx_kl 0.00032 clip_fraction 0.00000. 
+Epoch 3/3. 
+Losses: total 1.31579, value 3.87517, policy -0.00926, entropy -0.00361, approx_kl 0.00032 clip_fraction 0.00000. 
+[PPO] Values: min=-2.770, max=7.368, mean=1.930, std=2.530
+[PPO] Returns: min=-0.196, max=1.251, mean=0.114, std=0.300
+[PPO] Explained variance: -69.1670
+----------------------------------------------------
+| train/                  |                          |
+|    approx_kl            | 0.000                    |
+|    clip_fraction        | 0.000                    |
+|    entropy              | 0.004                    |
+|    explained_var        | -69.167                  |
+|    iterations           | 2                        |
+|    policy_loss          | -0.009                   |
+|    total_timesteps      | 160                      |
+|    value_loss           | 3.875                    |
+----------------------------------------------------
+
+[PPO] Training completed in 1.34s
+[PARITY] Policy checksum after training: 2245.271039
+
+[3/3] Running evaluation...
+[PARITY] RNG before eval: 320422
+
+[TENSOR EVAL DEBUG]
+  corruption_scheme: ['tail']
+  n_corruptions: 10
+  num test queries: 16
+  sampler default_mode: both
+  first query: locatedInCR(bulgaria, europe)
+
+[PARITY] Evaluation Results:
+[PARITY] Tensor MRR: 0.7260
+[PARITY] Tensor Hits@1: 0.5625
+[PARITY] Tensor Hits@3: 0.8750
+[PARITY] Tensor Hits@10: 1.0000
+
+----------------------------------------
+>>> Running Compiled Training...
+----------------------------------------
+======================================================================
+COMPILED/OPTIMIZED TRAINING
+Dataset: countries_s3
+N envs: 4, N steps: 20
+Total timesteps: 120
+Seed: 42
+skip_unary_actions: False
+======================================================================
+
+[1/3] Creating compiled/optimized components...
+Queries loaded - Train: 111/111, Valid: 24, Test: 24
+[PARITY] IndexManager: constants=271, predicates=7
+[PARITY] Embedder checksum: 23.592915
+[PARITY] Policy checksum after creation: 2244.288505
+[PARITY] RNG state before sampler: 316361
+
+[2/3] Running training...
+Compiling policy network and loss module for training...
+[WARNING] Parity mode enabled: disabling fullgraph requirements (loops required for exact matching)
+[PERFORMANCE] Compiling environment (mode=reduce-overhead, fullgraph=False)...
+Compiling step_with_policy (mode='reduce-overhead', fullgraph=False)...
+[MetricsCallback] Training started
+
+Collecting rollouts
+Collecting rollouts: 0/20 steps
+Traceback (most recent call last):
+  File "/home/castellanoontiv/Batched_env/tests/parity/test_compiled_script.py", line 298, in <module>
+    success = test_script_compiled_parity(config)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/Batched_env/tests/parity/test_compiled_script.py", line 231, in test_script_compiled_parity
+    compiled_results = compiled_run_experiment(compiled_config)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/Batched_env/train_optimized.py", line 631, in run_experiment
+    ppo.learn(
+  File "/home/castellanoontiv/Batched_env/ppo_optimized.py", line 961, in learn
+    result = self.collect_rollouts(
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/Batched_env/ppo_optimized.py", line 599, in collect_rollouts
+    step_result = self.env.step_with_policy(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/Batched_env/env_optimized.py", line 1097, in step_with_policy
+    result = self._compiled_step_fn(
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 832, in compile_wrapper
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 1875, in __call__
+    result = self._torchdynamo_orig_backend(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 1625, in __call__
+    result = self._inner_convert(
+             ^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 688, in __call__
+    result = _compile(
+             ^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 1434, in _compile
+    guarded_code, tracer_output = compile_inner(code, one_graph, hooks)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_utils_internal.py", line 92, in wrapper_function
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 1117, in compile_inner
+    return _compile_inner(code, one_graph, hooks)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 1151, in _compile_inner
+    dynamo_output = compile_frame(
+                    ^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 1032, in compile_frame
+    bytecode, tracer_output = transform_code_object(code, transform)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/bytecode_transformation.py", line 1592, in transform_code_object
+    tracer_output = transformations(instructions, code_options)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 1004, in transform
+    tracer_output = trace_frame(
+                    ^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 312, in _fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 815, in trace_frame
+    run_tracer()
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 797, in run_tracer
+    tracer.run()
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1500, in run
+    while self.step():
+          ^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1348, in step
+    self.dispatch_table[inst.opcode](self, inst)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 904, in wrapper
+    return inner_fn(self, inst)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 3428, in CALL
+    self._call(inst)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 3422, in _call
+    self.call_function(fn, args, kwargs)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1266, in call_function
+    self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/functions.py", line 1154, in call_function
+    return super().call_function(tx, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/functions.py", line 598, in call_function
+    return super().call_function(tx, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/functions.py", line 342, in call_function
+    return tx.inline_user_function_return(self, [*self.self_args(), *args], kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1288, in inline_user_function_return
+    return InliningInstructionTranslator.inline_call(self, fn, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 4129, in inline_call
+    return tracer.inline_call_()
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 4332, in inline_call_
+    self.run()
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1500, in run
+    while self.step():
+          ^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1348, in step
+    self.dispatch_table[inst.opcode](self, inst)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 904, in wrapper
+    return inner_fn(self, inst)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 3428, in CALL
+    self._call(inst)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 3422, in _call
+    self.call_function(fn, args, kwargs)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1266, in call_function
+    self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/functions.py", line 1154, in call_function
+    return super().call_function(tx, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/functions.py", line 598, in call_function
+    return super().call_function(tx, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/functions.py", line 342, in call_function
+    return tx.inline_user_function_return(self, [*self.self_args(), *args], kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1288, in inline_user_function_return
+    return InliningInstructionTranslator.inline_call(self, fn, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 4129, in inline_call
+    return tracer.inline_call_()
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 4332, in inline_call_
+    self.run()
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1500, in run
+    while self.step():
+          ^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1348, in step
+    self.dispatch_table[inst.opcode](self, inst)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 904, in wrapper
+    return inner_fn(self, inst)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 3428, in CALL
+    self._call(inst)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 3422, in _call
+    self.call_function(fn, args, kwargs)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1266, in call_function
+    self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/lazy.py", line 212, in realize_and_forward
+    return getattr(self.realize(), name)(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/torch.py", line 1516, in call_function
+    tensor_variable = wrap_fx_proxy(
+                      ^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/builder.py", line 2645, in wrap_fx_proxy
+    return wrap_fx_proxy_cls(target_cls=TensorVariable, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/builder.py", line 2711, in wrap_fx_proxy_cls
+    return _wrap_fx_proxy(
+           ^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/variables/builder.py", line 2809, in _wrap_fx_proxy
+    example_value = get_fake_value(proxy.node, tx, allow_non_graph_fake=True)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 3478, in get_fake_value
+    raise TorchRuntimeError(str(e)).with_traceback(e.__traceback__) from None
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 3376, in get_fake_value
+    ret_val = wrap_fake_exception(
+              ^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 2864, in wrap_fake_exception
+    return fn()
+           ^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 3377, in <lambda>
+    lambda: run_node(tx.output, node, args, kwargs, nnmodule)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 3587, in run_node
+    raise RuntimeError(make_error_message(e)).with_traceback(
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 3546, in run_node
+    return node.target(*args, **kwargs)  # type: ignore[operator]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/utils/_stats.py", line 28, in wrapper
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 1376, in __torch_dispatch__
+    return self.dispatch(func, types, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 2096, in dispatch
+    return self._cached_dispatch_impl(func, types, args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 1511, in _cached_dispatch_impl
+    output = self._dispatch_impl(func, types, args, kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 2755, in _dispatch_impl
+    r = func(*args, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_ops.py", line 841, in __call__
+    return self._op(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_prims_common/wrappers.py", line 309, in _fn
+    result = fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_compile.py", line 53, in inner
+    return disable_fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 1044, in _fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_prims_common/wrappers.py", line 149, in _fn
+    result = fn(**bound.arguments)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_refs/__init__.py", line 2023, in where
+    pred, a, b = _maybe_broadcast(pred, a, b)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_refs/__init__.py", line 448, in _maybe_broadcast
+    common_shape = _broadcast_shapes(
+                   ^^^^^^^^^^^^^^^^^^
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/_refs/__init__.py", line 436, in _broadcast_shapes
+    torch._check(
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/__init__.py", line 1695, in _check
+    _check_with(RuntimeError, cond, message)
+  File "/home/castellanoontiv/miniconda3/envs/rl/lib/python3.12/site-packages/torch/__init__.py", line 1677, in _check_with
+    raise error_type(message_evaluated)
+torch._dynamo.exc.TorchRuntimeError: Dynamo failed to run FX node with fake tensors: call_function <built-in method where of type object at 0x7fcc4ebe9c20>(*(FakeTensor(..., size=(4,), dtype=torch.bool), FakeTensor(..., size=(4, 100), dtype=torch.int64), FakeTensor(..., size=(4, 100), dtype=torch.int64)), **{}): got RuntimeError('Attempting to broadcast a dimension of length 100 at -1! Mismatching argument at index 1 had torch.Size([4, 100]); but expected shape should be broadcastable to [1, 4]')
+
+from user code:
+   File "/home/castellanoontiv/Batched_env/env_optimized.py", line 961, in _step_with_policy_impl
+    step_result = self.step_functional(state, actions)
+  File "/home/castellanoontiv/Batched_env/env_optimized.py", line 792, in step_functional
+    new_derived, new_counts, new_var = self._compute_derived_functional(
+  File "/home/castellanoontiv/Batched_env/env_optimized.py", line 493, in _compute_derived_functional
+    next_var_indices = torch.where(
+
+Set TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS="+dynamo"
+
