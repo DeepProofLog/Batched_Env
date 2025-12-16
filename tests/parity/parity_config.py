@@ -68,7 +68,7 @@ class ParityConfig:
     n_envs: int = 4
     n_steps: int = 20
     n_epochs: int = 3
-    batch_size: int = 512
+    batch_size: int = 20  # Must divide buffer_size (n_steps * n_envs = 80) evenly
     learning_rate: float = 3e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -155,7 +155,7 @@ def create_parser(description: str = "Parity Test") -> argparse.ArgumentParser:
     # PPO
     parser.add_argument("--n-epochs", type=int, default=3,
                         help="Number of PPO epochs per update")
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--clip-range", type=float, default=0.2)

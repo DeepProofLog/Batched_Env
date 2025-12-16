@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 import numpy as np
+import pytest
 from types import SimpleNamespace
 
 # Import seeding utilities
@@ -273,6 +274,7 @@ def create_tensor_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
         device=device,
         verbose=False,
         use_compile=False,  # Disable compile for parity testing
+        parity=True,  # Enable parity mode for consistent shuffling
     )
     
     return ppo, env, im, engine, queries_tensor
@@ -697,6 +699,8 @@ def run_learn_compiled_parity_test(
     """Run the full learn compiled parity test comparing tensor and optimized PPO."""
     results = LearnCompiledParityResults()
     base_cfg = config or get_default_config()
+    
+    # Note: PPOOptimized will auto-adjust batch_size if > buffer_size
     cfg = base_cfg.update(
         dataset=dataset,
         n_envs=n_envs,
@@ -877,6 +881,7 @@ def run_learn_compiled_parity_test(
 # Test Functions (callable from __main__)
 # ============================================================
 
+@pytest.mark.parametrize("n_envs,n_steps", [(1, 10), (4, 10)])
 def test_learn_compiled_parity(n_envs: int, n_steps: int) -> bool:
     """Test learn parity between tensor and optimized implementations."""
     results = run_learn_compiled_parity_test(
@@ -893,6 +898,7 @@ def test_learn_compiled_parity(n_envs: int, n_steps: int) -> bool:
     return True
 
 
+@pytest.mark.parametrize("n_epochs", [1, 2])
 def test_learn_compiled_parity_multiple_epochs(n_epochs: int) -> bool:
     """Test learn parity with multiple training epochs."""
     results = run_learn_compiled_parity_test(

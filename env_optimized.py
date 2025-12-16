@@ -258,9 +258,7 @@ class EvalEnvOptimized:
     
     def init_state_from_queries(self, queries: Tensor) -> EvalState:
         """
-        Create initial state from queries (pure function, no mutation).
-        
-        Args:
+        Create initial state from queries (pure function, no mutation).        Args:
             queries: [B, 3] or [B, A, 3] Query tensor
             
         Returns:
@@ -839,7 +837,7 @@ class EvalEnvOptimized:
         self,
         policy: 'nn.Module',
         deterministic: bool = True,
-        mode: str = 'default',
+        mode: str = 'reduce-overhead',
         fullgraph: bool = True,
         include_value: bool = True,
     ) -> None:

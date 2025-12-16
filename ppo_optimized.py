@@ -186,9 +186,19 @@ class PPOLossModule(nn.Module):
         # Clip fraction
         clip_fraction_t = torch.mean((torch.abs(ratio - 1) > clip_range).float())
         
-        # Value loss - always use clipping path to avoid control flow
-        # If clip_range_vf == 0.0, the clamp has no effect (but consistent graph)
-        values_pred = old_values + torch.clamp(values - old_values, -clip_range_vf - 1e-8, clip_range_vf + 1e-8)
+        # Value loss - handle clip_range_vf correctly:
+        # When clip_range_vf > 0: apply clipping (clamp value difference)
+        # When clip_range_vf == 0: no clipping (use values directly)
+        # Use torch.where for CUDA graph compatibility (avoids control flow)
+        value_diff = values - old_values
+        clipped_diff = torch.clamp(value_diff, -clip_range_vf, clip_range_vf)
+        # If clip_range_vf == 0, use raw values; otherwise use clipped values
+        # Equivalent to: values if clip_range_vf == 0 else old_values + clipped_diff
+        values_pred = torch.where(
+            torch.tensor(clip_range_vf > 0, device=values.device),
+            old_values + clipped_diff,
+            values
+        )
         value_loss = F.mse_loss(returns, values_pred)
         
         # Entropy loss - always use entropy path (policy should always return entropy)
@@ -228,6 +238,7 @@ class PPOOptimized:
         - Fixed batch size for CUDA graph compatibility (reduce-overhead mode)
         - Integrated evaluation methods (evaluate_policy, evaluate_with_corruptions)
         - Single-step compilation for fast warmup
+        - eval_only mode for memory-efficient evaluation (skips 8-16GB buffer allocation)
     
     Args:
         policy: Actor-critic policy network
@@ -244,6 +255,8 @@ class PPOOptimized:
         vf_coef: Value function coefficient
         max_grad_norm: Gradient clipping norm
         fixed_batch_size: Fixed batch size for evaluation (auto-computed if None)
+        eval_only: If True, skip rollout buffer allocation for evaluation-only use.
+            This saves ~8-16GB VRAM but disables training methods.
     """
     
     def __init__(
@@ -271,10 +284,12 @@ class PPOOptimized:
         compile_policy: bool = True,  # Compile the policy for faster training
         compile_mode: str = 'reduce-overhead',  # Compile mode for torch.compile
         use_amp: bool = True,  # Use Automatic Mixed Precision
+        eval_only: bool = False,  # If True, skip rollout buffer allocation (for evaluation only)
     ):
         self.policy = policy
         self.env = env
         self.n_steps = n_steps
+        self.eval_only = eval_only
         self.learning_rate = learning_rate
         self.n_epochs = n_epochs
         self.batch_size = batch_size
@@ -312,49 +327,77 @@ class PPOOptimized:
         self.padding_atoms = env.padding_atoms
         self.padding_states = env.padding_states
         
-        # Create rollout buffer with pre-allocated batch tensors
-        self.rollout_buffer = RolloutBufferOptimized(
-            buffer_size=n_steps,
-            n_envs=self.n_envs,
-            device=self.device,
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-            padding_atoms=self.padding_atoms,
-            padding_states=self.padding_states,
-            parity=parity,
-            batch_size=batch_size,  # Pre-allocate batch tensors for this size
-        )
+        # Validate batch_size vs buffer_size
+        buffer_size = n_steps * self.n_envs
+        if batch_size > buffer_size:
+            raise ValueError(
+                f"batch_size ({batch_size}) > buffer_size ({buffer_size} = n_steps*n_envs = {n_steps}*{self.n_envs}). "
+                f"batch_size must be <= buffer_size. "
+                f"Either reduce batch_size or increase n_steps*n_envs."
+            )
         
-        # Pre-allocate raw tensors for training loop (CUDA graph stability)
-        # Using raw tensors instead of TensorDict avoids memory layout changes
-        A = self.padding_atoms
-        S = self.padding_states
-        self._train_sub_index = torch.zeros((batch_size, 1, A, 3), dtype=torch.long, device=self.device)
-        self._train_derived_sub_indices = torch.zeros((batch_size, S, A, 3), dtype=torch.long, device=self.device)
-        self._train_action_mask = torch.zeros((batch_size, S), dtype=torch.bool, device=self.device)
-        self._train_actions = torch.zeros(batch_size, dtype=torch.long, device=self.device)
-        self._train_advantages = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
-        self._train_returns = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
-        self._train_old_log_probs = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
-        self._train_old_values = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        # Require batch_size to divide buffer_size evenly for consistent batch sizes
+        if not eval_only and buffer_size % self.batch_size != 0:
+            raise ValueError(
+                f"batch_size ({self.batch_size}) must divide buffer_size ({buffer_size} = n_steps*n_envs = {n_steps}*{self.n_envs}) evenly. "
+                f"buffer_size % batch_size = {buffer_size % self.batch_size}. "
+                f"Consider adjusting batch_size to one of: {[b for b in [1, 2, 4, 8, 10, 16, 20, 32, 40, 64, 80, 128, 256, 512] if buffer_size % b == 0]}"
+            )
+        
+        # Skip rollout buffer and training tensor allocations in eval_only mode
+        # This saves ~8-16GB VRAM for evaluation-only use cases
+        if not eval_only:
+            # Create rollout buffer with pre-allocated batch tensors
+            self.rollout_buffer = RolloutBufferOptimized(
+                buffer_size=n_steps,
+                n_envs=self.n_envs,
+                device=self.device,
+                gamma=gamma,
+                gae_lambda=gae_lambda,
+                padding_atoms=self.padding_atoms,
+                padding_states=self.padding_states,
+                parity=parity,
+                batch_size=self.batch_size,  # Pre-allocate batch tensors (uses adjusted size)
+            )
+            
+            # Pre-allocate raw tensors for training loop (CUDA graph stability)
+            # Using raw tensors instead of TensorDict avoids memory layout changes
+            A = self.padding_atoms
+            S = self.padding_states
+            self._train_sub_index = torch.zeros((self.batch_size, 1, A, 3), dtype=torch.long, device=self.device)
+            self._train_derived_sub_indices = torch.zeros((self.batch_size, S, A, 3), dtype=torch.long, device=self.device)
+            self._train_action_mask = torch.zeros((self.batch_size, S), dtype=torch.bool, device=self.device)
+            self._train_actions = torch.zeros(self.batch_size, dtype=torch.long, device=self.device)
+            self._train_advantages = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
+            self._train_returns = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
+            self._train_old_log_probs = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
+            self._train_old_values = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
+        else:
+            # Eval-only mode: no rollout buffer or training tensors needed
+            self.rollout_buffer = None
         
         # Persistent state
         self._last_state: Optional[EvalState] = None
         self._last_obs: Optional[EvalObs] = None
         self.num_timesteps = 0
         
-        # Initialize optimizer
-        # NOTE: fused=True uses optimized CUDA kernel for 2-3x faster gradient updates
-        self.optimizer = torch.optim.Adam(
-            self.policy.parameters(),
-            lr=self.learning_rate,
-            eps=1e-5,
-            fused=True if self.device.type == 'cuda' else False,
-        )
-        
-        # Compile policy for faster training (evaluate_actions, predict_values)
-        # This is separate from env.compile() which compiles step_with_policy
-        self._compile_policy_network()
+        # Skip optimizer and policy compilation in eval-only mode
+        if not eval_only:
+            # Initialize optimizer
+            # NOTE: fused=True uses optimized CUDA kernel for 2-3x faster gradient updates
+            self.optimizer = torch.optim.Adam(
+                self.policy.parameters(),
+                lr=self.learning_rate,
+                eps=1e-5,
+                fused=True if self.device.type == 'cuda' else False,
+            )
+            
+            # Compile policy for faster training (evaluate_actions, predict_values)
+            # This is separate from env.compile() which compiles step_with_policy
+            self._compile_policy_network()
+        else:
+            self.optimizer = None
+            self.loss_module = None
     
     def _compile_policy_network(self):
         """Compile the policy network for faster training.
@@ -655,14 +698,8 @@ class PPOOptimized:
         
         train_traces = [] if return_traces else None
         
-        # Pre-allocate KL tracking tensor ONCE to avoid 10*torch.tensor() calls
-        # This saves ~3s by avoiding repeated CPU->GPU tensor creation
-        epoch_kl_max = torch.zeros(1, device=self.device)
-        
         continue_training = True
         for epoch in range(self.n_epochs):
-            epoch_kl_max.zero_()  # Reset without creating new tensor
-            
             batch_count = 0
             for batch_data in self.rollout_buffer.get(batch_size=self.batch_size):
                 # Mark start of new training step for CUDA graph trees
@@ -695,6 +732,7 @@ class PPOOptimized:
                  actions, old_values, old_log_probs, advantages, returns) = batch_data
                 
                 # Copy data into pre-allocated tensors (preserves memory addresses for CUDA graphs)
+                # Since we enforce batch_size divides buffer_size evenly, all batches have consistent size
                 self._train_sub_index.copy_(sub_index)
                 self._train_derived_sub_indices.copy_(derived_sub_indices)
                 self._train_action_mask.copy_(action_mask)
@@ -738,9 +776,6 @@ class PPOOptimized:
                 approx_kl_div = metrics_packed[4].detach()
                 clip_fraction = metrics_packed[5]
                 
-                # Track max KL per epoch for early stopping (in-place to avoid tensor creation)
-                epoch_kl_max = torch.maximum(epoch_kl_max, approx_kl_div.unsqueeze(0))
-                
                 # Store losses - MUST clone() for CUDA graph compatibility!
                 # detach() alone keeps the same memory address which gets overwritten
                 pg_losses_t.append(policy_loss.detach().clone())
@@ -758,22 +793,27 @@ class PPOOptimized:
                         "value_loss_idx": len(value_losses_t) - 1,
                     })
                 
+                # KL divergence early stopping - check BEFORE optimizer step (matches SB3/ppo.py)
+                # This prevents applying the update when KL exceeds threshold
+                if self.target_kl is not None:
+                    kl_val = approx_kl_div.item()
+                    if kl_val > 1.5 * self.target_kl:
+                        continue_training = False
+                        if self.verbose:
+                            print(f"Early stopping at step {epoch} due to reaching max kl: {kl_val:.2f}")
+                        break
+                
                 # Optimizer step - use set_to_none=False to keep gradient addresses stable
                 # This is critical for CUDA graph stability in reduce-overhead mode
                 self.optimizer.zero_grad(set_to_none=False)
                 loss.backward()
                 if self.max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.policy.parameters(),
+                        self.max_grad_norm,
+                        foreach=True,  # Use fused CUDA ops for 2-3x speedup
+                    )
                 self.optimizer.step()
-            
-            # KL divergence early stopping - single sync per epoch
-            if self.target_kl is not None:
-                kl_val = epoch_kl_max.item()
-                if kl_val > 1.5 * self.target_kl:
-                    continue_training = False
-                    if self.verbose:
-                        print(f"Early stopping at epoch {epoch} due to KL divergence: {kl_val:.4f}")
-                    break
             
             if not continue_training:
                 break

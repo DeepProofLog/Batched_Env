@@ -210,13 +210,14 @@ def create_ppo_and_warmup(components, config) -> Tuple[any, float]:
         max_vram_gb=config.vram_gb,
     )
     
-    # Create PPOOptimized
+    # Create PPOOptimized in eval-only mode (skips massive rollout buffer allocation)
     ppo = PPOOptimized(
         policy=policy,
         env=env,
         device=env.device,
         fixed_batch_size=batch_size,
         verbose=False,
+        eval_only=True,  # Skip rollout buffer allocation - saves ~8-16GB VRAM
     )
     
     # Warmup and compile
@@ -264,6 +265,7 @@ def run_evaluation(ppo, components, config):
 
 def profile_cprofile(config: SimpleNamespace):
     """Profile with cProfile for CPU bottlenecks."""
+    initial_wallclock = time()  # Measure from very start
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     
@@ -387,6 +389,16 @@ def profile_cprofile(config: SimpleNamespace):
         f.write(f"{'='*80}\n")
         ps.sort_stats('tottime')
         ps.print_stats(n_functions)
+    
+    # Final wallclock measurement
+    final_wallclock = time()
+    total_wallclock = final_wallclock - initial_wallclock
+    print(f"\n{'='*80}")
+    print("WALLCLOCK SUMMARY")
+    print(f"{'='*80}")
+    print(f"Initial wallclock: {initial_wallclock:.4f}")
+    print(f"Final wallclock:   {final_wallclock:.4f}")
+    print(f"Total wallclock:   {total_wallclock:.4f}s")
     
     print(f"\nResults saved to {output_path}")
 

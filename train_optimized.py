@@ -71,7 +71,7 @@ class TrainCompiledConfig:
     n_envs: int = 3
     n_steps: int = 20
     n_epochs: int = 4
-    batch_size: int = 64
+    batch_size: int = 20  # Must divide buffer_size (n_steps * n_envs) evenly
     learning_rate: float = 3e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -260,6 +260,21 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
         parity_mode=True,
     )
     
+    # Convert queries to tensor format [N, 3] for PPOOptimized
+    train_queries = dh.train_queries
+    test_queries = dh.test_queries
+    
+    def convert_queries_to_atoms(queries):
+        """Convert query objects to [N, 3] atom tensors."""
+        query_atoms = []
+        for q in queries:
+            query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            query_atoms.append(query_atom)
+        return torch.stack(query_atoms, dim=0).to(device)
+    
+    train_queries_tensor = convert_queries_to_atoms(train_queries)
+    test_queries_tensor = convert_queries_to_atoms(test_queries)
+    
     # Create optimized environment
     train_env = EvalEnvOptimized(
         vec_engine=vec_engine,
@@ -317,21 +332,6 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
         device=device,
         parity=True,  # Use SB3-identical initialization for parity testing
     ).to(device)
-    
-    # Convert queries to tensor format [N, 3] for PPOOptimized
-    train_queries = dh.train_queries
-    test_queries = dh.test_queries
-    
-    def convert_queries_to_atoms(queries):
-        """Convert query objects to [N, 3] atom tensors."""
-        query_atoms = []
-        for q in queries:
-            query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-            query_atoms.append(query_atom)
-        return torch.stack(query_atoms, dim=0).to(device)
-    
-    train_queries_tensor = convert_queries_to_atoms(train_queries)
-    test_queries_tensor = convert_queries_to_atoms(test_queries)
     
     return {
         'dh': dh,
@@ -434,8 +434,6 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
     
     # Pass all training queries as pool for round-robin cycling (matches BatchedEnv behavior)
     train_queries = comp['train_queries_tensor']
-    
-    # Learn
     ppo.learn(total_timesteps=config.total_timesteps, queries=train_queries)
 
     

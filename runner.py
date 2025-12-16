@@ -33,8 +33,8 @@ if __name__ == "__main__":
         # Dataset params
         'dataset_name': 'countries_s3',
 
-        'eval_neg_samples': 3,
-        'test_neg_samples': 100,
+        'eval_neg_samples': 4,
+        'test_neg_samples': None,
 
         'train_depth': {1,2,3,4,5,6},
         'valid_depth': None,
@@ -43,8 +43,8 @@ if __name__ == "__main__":
         'load_depth_info': True,
 
         'n_train_queries': None,
-        'n_eval_queries': 10,
-        'n_test_queries': 100,
+        'n_eval_queries': None,
+        'n_test_queries': None,
 
         # Model params
         'use_l2_norm': True,

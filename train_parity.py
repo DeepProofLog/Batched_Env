@@ -57,7 +57,7 @@ class TrainParityConfig:
     n_envs: int = 3
     n_steps: int = 20
     n_epochs: int = 4
-    batch_size: int = 64
+    batch_size: int = 20  # Must divide buffer_size (n_steps * n_envs) evenly
     learning_rate: float = 3e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
