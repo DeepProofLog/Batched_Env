@@ -2,7 +2,7 @@
 Training script for Neural-Guided Logical Reasoning (Optimized/Compiled Version).
 
 This module manages the training loop using optimized/compiled components:
-- Env_vec (EvalEnvOptimized) instead of BatchedEnv  
+- Env_vec (EnvVec) instead of BatchedEnv  
 - PPOOptimized instead of TensorPPO
 - UnificationEngineVectorized for compiled unification
 
@@ -39,7 +39,7 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 
 from unification import UnificationEngineVectorized
-from env import Env_vec as EvalEnvOptimized, EnvObs, EnvState
+from env import EnvVec, EnvObs, EnvState
 from nn.embeddings import EmbedderLearnable as TensorEmbedder
 from model import ActorCriticPolicy as TensorPolicy
 from ppo import PPO as PPOOptimized
@@ -251,7 +251,7 @@ def create_environments(
     **kwargs
 ):
     """
-    Create training and evaluation environments using Env_vec (EvalEnvOptimized).
+    Create training and evaluation environments using Env_vec (EnvVec).
     
     Args:
         args (Any): Configuration namespace.
@@ -262,7 +262,7 @@ def create_environments(
         **kwargs: Extensible keyword arguments.
         
     Returns:
-        Tuple[EvalEnvOptimized, EvalEnvOptimized, EvalEnvOptimized]: 
+        Tuple[EnvVec, EnvVec, EnvVec]: 
             (train_env, eval_env, callback_env). 
     """
     device = torch.device(args.device)
@@ -305,7 +305,7 @@ def create_environments(
     batch_size = args.batch_size_env
 
     # Train environment using Env_vec
-    train_env = EvalEnvOptimized(
+    train_env = EnvVec(
         vec_engine=vec_engine,
         batch_size=batch_size,
         padding_atoms=args.padding_atoms,
@@ -320,7 +320,7 @@ def create_environments(
     )
     
     # Eval environment using Env_vec (for test queries)
-    eval_env = EvalEnvOptimized(
+    eval_env = EnvVec(
         vec_engine=vec_engine,
         batch_size=batch_size,
         padding_atoms=args.padding_atoms,
@@ -335,7 +335,7 @@ def create_environments(
     )
     
     # Callback environment using Env_vec (for valid queries)
-    callback_env = EvalEnvOptimized(
+    callback_env = EnvVec(
         vec_engine=vec_engine,
         batch_size=batch_size,
         padding_atoms=args.padding_atoms,
@@ -679,7 +679,9 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
     test_queries_tensor = convert_queries_to_tensor(test_queries)
     
     # Create environments using Env_vec
-    train_env = EvalEnvOptimized(
+    # Create single environment using Env_vec (EnvVec)
+    # It will manage both train and test (valid) queries internally
+    env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.n_envs,
         padding_atoms=config.padding_atoms,
@@ -689,28 +691,21 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
         runtime_var_start_index=im.constant_no + 1,
         device=device,
         memory_pruning=config.memory_pruning,
-        queries=train_queries_tensor,
+        
+        # Query pools
+        train_queries=train_queries_tensor,
+        valid_queries=test_queries_tensor,
+        
+        # Sampling config
         sample_deterministic_per_env=config.sample_deterministic_per_env,
         sampler=sampler,
-        order=True,  # Use round-robin query cycling for parity
+        order=True if config.parity else False,  # Round-robin for parity train
         negative_ratio=config.negative_ratio,
-    )
-    
-    eval_env = EvalEnvOptimized(
-        vec_engine=vec_engine,
-        batch_size=config.n_envs,
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        max_depth=config.max_steps,
-        end_proof_action=config.end_proof_action,
-        runtime_var_start_index=im.constant_no + 1,
-        device=device,
-        memory_pruning=config.memory_pruning,
-        queries=test_queries_tensor,
-        sample_deterministic_per_env=config.sample_deterministic_per_env,
-        sampler=sampler,
-        order=config.parity,
-        negative_ratio=0.0,
+        
+        # Compile config
+        compile=not config.parity, # Pass compile flag to init
+        compile_mode='reduce-overhead',
+        compile_fullgraph=True,
     )
     
     # Create embedder with fixed seed
@@ -751,8 +746,7 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
         'sampler': sampler,
         'embedder': embedder,
         'vec_engine': vec_engine,
-        'train_env': train_env,
-        'eval_env': eval_env,
+        'env': env,
         'policy': policy,
         'device': device,
         'train_queries_tensor': train_queries_tensor,
@@ -803,17 +797,15 @@ def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> 
     # [PARITY] Output RNG state before sampler
     print(f"[PARITY] RNG state before sampler: {torch.get_rng_state().sum().item():.0f}")
     
-    # Compile the step function for the environment (policy compiled separately in PPO)
-    train_env = comp['train_env']
-    if not config.parity:
-        train_env.compile(fullgraph=True, mode='reduce-overhead')
+     # Get shared environment
+    env = comp['env']
     
     # Create PPOOptimized
     print("\n[2/3] Running training...")
     seed_all(config.seed, deterministic=config.parity)
     ppo = PPOOptimized(
         policy=policy,
-        env=train_env,
+        env=env,
         n_steps=config.n_steps,
         learning_rate=config.learning_rate,
         n_epochs=config.n_epochs,
@@ -831,7 +823,6 @@ def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> 
     )
     learn_result = ppo.learn(
         total_timesteps=config.total_timesteps,
-        queries=comp['train_queries_tensor'],
         return_traces=return_traces,
     )
     
@@ -846,11 +837,6 @@ def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> 
     print(f"[PARITY] RNG before eval: {torch.get_rng_state().sum().item():.0f}")
     
     policy.eval()
-    
-    # Compile eval env step function
-    eval_env = comp['eval_env']
-    if not config.parity:
-        eval_env.compile(fullgraph=True, mode='reduce-overhead')
     
     test_queries = comp['dh'].test_queries[:config.n_envs * 4]
     
@@ -867,10 +853,10 @@ def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> 
     print(f"  sampler default_mode: {config.sampler_default_mode}")
     print(f"  first query: {test_queries[0]}")
     
-    # Use PPOOptimized with eval_env for evaluation
+    # Use PPOOptimized with same env for evaluation
     eval_ppo = PPOOptimized(
         policy=policy,
-        env=eval_env,
+        env=env,
         n_steps=config.n_steps,
         learning_rate=config.learning_rate,
         n_epochs=config.n_epochs,

@@ -28,6 +28,7 @@ import torch.nn as nn
 import numpy as np
 import pytest
 from types import SimpleNamespace
+from tensordict import TensorDict
 
 # Setup paths
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,7 +46,7 @@ from index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
 from unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
-from env import EvalEnvOptimized, EnvObs, EnvState
+from env import EnvVec, EnvObs, EnvState
 from nn.sampler import Sampler
 from tensor.tensor_embeddings import EmbedderLearnable as TensorEmbedder
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
@@ -301,7 +302,7 @@ def create_tensor_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
 
 def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List, 
                          tensor_policy_state: dict):
-    """Create optimized PPO with EvalEnvOptimized, using same initial weights."""
+    """Create optimized PPO with EnvVec, using same initial weights."""
     device = torch.device(config.device)
     padding_atoms = env_data.get('padding_atoms', config.padding_atoms)
     padding_states = env_data.get('padding_states', config.padding_states)
@@ -312,7 +313,16 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
     sampler = env_data['sampler']
     
     # Create optimized environment
-    env = EvalEnvOptimized(
+    # Convert queries to tensor format [N, 3] for env initialization
+    # IMPORTANT: Only use the first n_envs queries to match tensor env's query cycling
+    query_atoms = []
+    for q in queries[:config.n_envs]:
+        query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+        query_atoms.append(query_atom)
+    query_pool = torch.stack(query_atoms, dim=0).to(device)
+
+    # Create optimized environment
+    env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.n_envs,
         padding_atoms=padding_atoms,
@@ -323,6 +333,7 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
         device=device,
         memory_pruning=config.memory_pruning,
         sampler=sampler,
+        train_queries=query_pool, # Initialize with train queries
         negative_ratio=config.negative_ratio,
         order=True,
         sample_deterministic_per_env=True,
@@ -395,11 +406,12 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
     
     # Convert queries to tensor format [N, 3]
     # IMPORTANT: Only use the first n_envs queries to match tensor env's query cycling
-    query_atoms = []
-    for q in queries[:config.n_envs]:
-        query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-        query_atoms.append(query_atom)
-    query_pool = torch.stack(query_atoms, dim=0).to(device)
+    # (query_pool already created above and passed to env)
+    # query_atoms = []
+    # for q in queries[:config.n_envs]:
+    #     query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+    #     query_atoms.append(query_atom)
+    # query_pool = torch.stack(query_atoms, dim=0).to(device)
     
     return ppo, env, im, query_pool
 
@@ -473,7 +485,10 @@ def collect_optimized_rollout_with_traces(
     ppo.env._compiled = False
     
     # Set query pool in environment for round-robin cycling (new API)
-    ppo.env.set_queries(query_pool)
+    ppo.env._compiled = False
+    
+    # Set environment to train mode (replaces set_queries)
+    ppo.env.train()
     
     # Initialize state with first n_envs queries
     init_queries = query_pool[:n_envs]
@@ -481,10 +496,13 @@ def collect_optimized_rollout_with_traces(
     # [PARITY FIX] Manually sample negatives to match BatchedEnv.reset() behavior and RNG consumption
     init_labels = torch.ones(n_envs, dtype=torch.long, device=device)
     reset_mask = torch.ones(n_envs, dtype=torch.bool, device=device)
-    init_queries, init_labels = ppo.env.sample_negatives(init_queries, init_labels, reset_mask)
+    counters = torch.zeros(n_envs, dtype=torch.long, device=device)
+    init_queries, init_labels, updated_counters = ppo.env.sample_negatives(init_queries, init_labels, reset_mask, counters)
     
     # Initialize state
-    state = ppo.env.reset_from_queries(init_queries, init_labels)
+    state = ppo.env._reset_from_queries(init_queries, init_labels)
+    # [PARITY FIX] Manually restore counters after reset (as reset_from_queries defaults to 0)
+    state['neg_counters'] = updated_counters
     
     # Initialize per-env pointers to match tensor env's round-robin
     # Must be done after set_queries since it initializes pointers
@@ -492,12 +510,12 @@ def collect_optimized_rollout_with_traces(
     ppo.env._per_env_ptrs = torch.arange(n_envs, device=device) + 1
     
     # Create initial observation
-    action_mask = torch.arange(ppo.padding_states, device=device).unsqueeze(0) < state.derived_counts.unsqueeze(1)
-    obs = EnvObs(
-        sub_index=state.current_states.unsqueeze(1),
-        derived_sub_indices=state.derived_states,
-        action_mask=action_mask,
-    )
+    action_mask = torch.arange(ppo.padding_states, device=device).unsqueeze(0) < state['derived_counts'].unsqueeze(1)
+    obs = TensorDict({
+        "sub_index": state['current_states'].unsqueeze(1),
+        "derived_sub_indices": state['derived_states'],
+        "action_mask": action_mask,
+    }, batch_size=[n_envs], device=device)
     
     episode_starts = torch.ones(n_envs, dtype=torch.float32, device=device)
     current_episode_reward = torch.zeros(n_envs, dtype=torch.float32, device=device)

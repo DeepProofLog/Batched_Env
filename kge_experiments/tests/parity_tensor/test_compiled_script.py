@@ -371,7 +371,7 @@ def test_script_compiled_parity(config: ParityConfig = None):
         return False
     elif mrr_diff > TOLERANCE:
         print(f"\n⚠️  WARNING: MRR differs by {mrr_diff:.4f} (tensor={tensor_mrr:.4f}, compiled={compiled_mrr:.4f})")
-        print("  This is expected due to different environment implementations (BatchedEnv vs EvalEnvOptimized).")
+        print("  This is expected due to different environment implementations (BatchedEnv vs EnvVec).")
         print("  For strict parity, use test_compiled_learn.py which shares environments.")
     
     print("\n✅ SUCCESS: Script compiled parity within expected tolerances!")

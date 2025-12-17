@@ -2,7 +2,7 @@
 Rollout Buffer for On-Policy Reinforcement Learning with Optimized Environment.
 
 This module provides a GPU-accelerated rollout buffer designed to work with
-EvalEnvOptimized (which uses EnvObs NamedTuples instead of TensorDict).
+EnvVec (which uses EnvObs NamedTuples instead of TensorDict).
 
 Key Features:
     - GPU-native storage using torch tensors
@@ -38,7 +38,7 @@ def _batch_index_select(
 
 class RolloutBuffer:
     """
-    Rollout buffer for on-policy algorithms working with EvalEnvOptimized.
+    Rollout buffer for on-policy algorithms working with EnvVec.
     
     Unlike RolloutBuffer which uses TensorDict, this stores observations
     as separate tensor fields matching the EnvObs structure.

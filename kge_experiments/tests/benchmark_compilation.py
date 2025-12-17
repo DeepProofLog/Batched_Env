@@ -36,7 +36,7 @@ def setup_components(device: torch.device, config: SimpleNamespace) -> dict:
     from unification import UnificationEngineVectorized
     from nn.embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
-    from env import Env_vec as EvalEnvOptimized
+    from env import EnvVec as EnvVec
     
     # Enable compile mode
     import unification
@@ -129,7 +129,7 @@ def setup_components(device: torch.device, config: SimpleNamespace) -> dict:
 
 def run_fused_benchmark(components: dict, config: SimpleNamespace) -> dict:
     """Benchmark the FUSED approach (step+policy compiled together)."""
-    from env import Env_vec as EvalEnvOptimized
+    from env import EnvVec
     
     device = config.device
     policy = components['policy']
@@ -138,7 +138,7 @@ def run_fused_benchmark(components: dict, config: SimpleNamespace) -> dict:
     im = components['im']
     
     # Create fresh environment
-    env = EvalEnvOptimized(
+    env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.batch_size,
         padding_atoms=config.padding_atoms,
@@ -207,7 +207,7 @@ def run_fused_benchmark(components: dict, config: SimpleNamespace) -> dict:
 
 def run_separate_benchmark(components: dict, config: SimpleNamespace) -> dict:
     """Benchmark the SEPARATE approach (policy and step compiled independently)."""
-    from env import Env_vec as EvalEnvOptimized, EnvObs
+    from env import EnvVec, EnvObs
     from model import create_policy_logits_fn
     
     device = config.device
@@ -217,7 +217,7 @@ def run_separate_benchmark(components: dict, config: SimpleNamespace) -> dict:
     im = components['im']
     
     # Create fresh environment WITHOUT policy compilation
-    env = EvalEnvOptimized(
+    env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.batch_size,
         padding_atoms=config.padding_atoms,

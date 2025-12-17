@@ -794,11 +794,14 @@ def create_policy_logits_fn(
     
     def policy_fn(obs: 'EnvObs') -> torch.Tensor:
         # Build observation dict that the actor expects
-        obs_dict = {
-            'sub_index': obs.sub_index,
-            'derived_sub_indices': obs.derived_sub_indices,
-            'action_mask': obs.action_mask,
-        }
+        obs_dict = obs
+        if not isinstance(obs_dict, (dict, TensorDict)):
+            # Fallback for NamedTuple if passed (unlikely with this refactor)
+            obs_dict = {
+                'sub_index': obs.sub_index,
+                'derived_sub_indices': obs.derived_sub_indices,
+                'action_mask': obs.action_mask,
+            }
         
         # Extract features and get raw logits from mlp_extractor
         # This bypasses the action distribution sampling in forward()
@@ -813,9 +816,9 @@ def create_policy_logits_fn(
         elif hasattr(actor, 'forward_eval'):
             # Dedicated eval forward path
             logits = actor.forward_eval(
-                obs.sub_index,
-                obs.derived_sub_indices,
-                obs.action_mask,
+                obs['sub_index'],
+                obs['derived_sub_indices'],
+                obs['action_mask'],
             )
         else:
             # Fallback - standard forward, extract logits from tuple
@@ -857,11 +860,13 @@ def create_policy_value_fn(
     
     def value_fn(obs: 'EnvObs') -> torch.Tensor:
         # Build observation dict that the actor expects
-        obs_dict = {
-            'sub_index': obs.sub_index,
-            'derived_sub_indices': obs.derived_sub_indices,
-            'action_mask': obs.action_mask,
-        }
+        obs_dict = obs
+        if not isinstance(obs_dict, (dict, TensorDict)):
+             obs_dict = {
+                'sub_index': obs.sub_index,
+                'derived_sub_indices': obs.derived_sub_indices,
+                'action_mask': obs.action_mask,
+            }
         
         # Extract features and get value from mlp_extractor
         if hasattr(actor, 'extract_features') and hasattr(actor, 'mlp_extractor'):
@@ -879,12 +884,12 @@ def create_policy_value_fn(
                     values = values.squeeze(-1)
         elif hasattr(actor, 'forward_value'):
             # Dedicated value forward path
-            obs_emb = actor.embedder(obs.sub_index)  # [B, 1, E]
+            obs_emb = actor.embedder(obs['sub_index'])  # [B, 1, E]
             values = actor.forward_value(obs_emb)
         else:
             # Fallback - zeros if no value network found
-            B = obs.sub_index.shape[0]
-            device = obs.sub_index.device
+            B = obs['sub_index'].shape[0]
+            device = obs['sub_index'].device
             values = torch.zeros(B, device=device)
         
         # Ensure 1D [B]

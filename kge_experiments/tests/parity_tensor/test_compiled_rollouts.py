@@ -2,7 +2,7 @@
 Rollout Collection Compile Parity Tests.
 
 Tests verifying that rollouts collected using PPO (with BatchedEnv) produce
-the SAME step-by-step traces as PPOOptimized (with EvalEnvOptimized) when
+the SAME step-by-step traces as PPOOptimized (with EnvVec) when
 using deterministic action selection and identical policies.
 
 This tests the rollout collection pipeline with both environment types.
@@ -34,7 +34,7 @@ from index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
 from unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
-from env import EvalEnvOptimized, EnvObs, EnvState
+from env import EnvVec, EnvObs, EnvState
 from tensor.tensor_embeddings import EmbedderLearnable
 from tensor.tensor_model import ActorCriticPolicy
 from tensor.tensor_ppo import PPO as TensorPPO
@@ -240,14 +240,22 @@ def create_tensor_env(env_data: Dict, config: SimpleNamespace) -> BatchedEnv:
     )
 
 
-def create_optimized_env(env_data: Dict, config: SimpleNamespace) -> EvalEnvOptimized:
-    """Create an optimized EvalEnvOptimized for training."""
+def create_optimized_env(env_data: Dict, config: SimpleNamespace) -> EnvVec:
+    """Create an optimized EnvVec for training."""
     device = torch.device(config.device)
     im = env_data['im']
     vec_engine = env_data['vec_engine']
     sampler = env_data['sampler']
     
-    return EvalEnvOptimized(
+    # Convert queries to tensor
+    query_atoms = []
+    # Queries in env_data['queries'] are objects
+    for q in env_data['queries'][:config.n_envs]: # Use subset matching n_envs
+        query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+        query_atoms.append(query_atom)
+    train_queries = torch.stack(query_atoms, dim=0).to(device)
+
+    return EnvVec(
         vec_engine=vec_engine,
         batch_size=config.n_envs,
         padding_atoms=config.padding_atoms,
@@ -261,6 +269,7 @@ def create_optimized_env(env_data: Dict, config: SimpleNamespace) -> EvalEnvOpti
         order=True,
         sampler=sampler,
         sample_deterministic_per_env=True,
+        train_queries=train_queries,
     )
 
 
@@ -325,7 +334,7 @@ def create_tensor_ppo(env: BatchedEnv, policy: ActorCriticPolicy, config: Simple
     )
 
 
-def create_optimized_ppo(env: EvalEnvOptimized, policy: ActorCriticPolicy, config: SimpleNamespace) -> PPOOptimized:
+def create_optimized_ppo(env: EnvVec, policy: ActorCriticPolicy, config: SimpleNamespace) -> PPOOptimized:
     """Create optimized PPO."""
     return PPOOptimized(
         policy=policy,
@@ -406,28 +415,25 @@ def collect_optimized_rollout_traces(
     """
     device = ppo.device
     
-    # Convert queries to tensor format (this is the query pool)\n    
+    # Convert queries to tensor format (this is the query pool)
     # PPO now handles policy compilation internally via _compiled_policy_fn
     # For parity tests, we use eager mode (no compilation) since parity_mode=True uses dynamic shapes
     # The collect_rollouts method will handle policy forward and env step separately
     
-    query_atoms = []
-    for q in queries:
-        query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-        query_atoms.append(query_atom)
-    query_pool = torch.stack(query_atoms, dim=0).to(device)  # [N, 3] full query pool
+    # query_pool is already set in env via create_optimized_env -> train_queries
     
-    # Set query pool in environment for round-robin cycling (new API)
-    ppo.env.set_queries(query_pool)
+    # Set environment to train mode (replaces set_queries)
+    ppo.env.train()
     
     # Initialize state with first n_envs queries
-    init_queries = query_pool[:ppo.n_envs]
+    # ppo.env.train_queries is [N, 3] tensor
+    init_queries = ppo.env.train_queries[:ppo.n_envs]
     state = ppo.env.reset_from_queries(init_queries)
     
     # Initialize per-env pointers to match tensor env's round-robin
     # Tensor env initializes _per_env_train_ptrs to [0, 1, 2, ...] initially
     # After first reset, each env advances: env[i] -> query (i+1) % num_queries
-    # Must be done after set_queries since it initializes pointers
+    # Must be done after set_queries/train() since it initializes pointers
     ppo.env._per_env_ptrs = torch.arange(ppo.n_envs, device=device) + 1  # [1, 2, 3, ..., n_envs]
 
     # [PARITY FIX] Manually sample negatives to match BatchedEnv.reset() behavior and RNG consumption

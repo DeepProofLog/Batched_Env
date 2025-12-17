@@ -71,7 +71,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from nn.embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
     from nn.sampler import Sampler
-    from env import Env_vec as EvalEnvOptimized, EnvObs
+    from env import EnvVec, EnvObs
     from ppo import PPO
     
     # Enable compile mode
@@ -172,7 +172,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     test_queries = convert_queries_unpadded(dh.test_queries)
     
     # Training environment
-    train_env = EvalEnvOptimized(
+    train_env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.batch_size_env,
         padding_atoms=config.padding_atoms,
@@ -183,6 +183,8 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         device=device,
         memory_pruning=True,
         sampler=sampler,
+        train_queries=train_queries,
+        valid_queries=test_queries,
     )
     
     # Policy
@@ -254,7 +256,7 @@ def compile_and_warmup(components, config) -> float:
     # CRITICAL: Do NOT recreate the rollout buffer - that would create new tensors
     # with different memory addresses, breaking CUDA graph caching
     print("Warmup: Running learn() iteration to compile all graphs...")
-    ppo.learn(total_timesteps=config.n_steps, queries=train_queries)
+    ppo.learn(total_timesteps=config.n_steps)
     
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -270,7 +272,6 @@ def run_training(components, config) -> Tuple[dict, int]:
     
     ppo.learn(
         total_timesteps=config.total_timesteps,
-        queries=train_queries,
         reset_num_timesteps=False,  # Continue from warmup
     )
     

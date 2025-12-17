@@ -1,5 +1,5 @@
 Profile Optimized Learn Results
-Date: 2025-12-17 18:25:09
+Date: 2025-12-17 22:13:34
 Device: cuda
 Dataset: countries_s3
 
@@ -17,7 +17,7 @@ Setting up components...
 Queries loaded - Train: 111/111, Valid: 24, Test: 24
 Using Automatic Mixed Precision (AMP) with dtype: torch.bfloat16
 Compiling policy network and loss module for training...
-Initialization time: 2.57s
+Initialization time: 3.07s
 
 Running warmup (compilation + first rollout)...
 Compiling env.step (mode='reduce-overhead', fullgraph=True)...
@@ -25,18 +25,12 @@ Warmup: Running learn() iteration to compile all graphs...
 
 Collecting rollouts
 Collecting rollouts: 0/128 steps
-skipping cudagraphs due to mutated inputs (1 instances). Found from : 
-   File "/home/castellanoontiv/Batched_env/kge_experiments/env.py", line 814, in _step_and_reset_core
-    queries_for_reset, labels_for_reset = self.sample_negatives(
-  File "/home/castellanoontiv/Batched_env/kge_experiments/env.py", line 403, in sample_negatives
-    self._train_neg_counters.copy_(torch.where(reset_mask, next_counters, local_counters))
-
 Collecting rollouts: 25/128 steps
 Collecting rollouts: 50/128 steps
 Collecting rollouts: 75/128 steps
 Collecting rollouts: 100/128 steps
 Collecting rollouts: 125/128 steps
-Rollout collected in 5.42s. FPS: 3021.30
+Rollout collected in 16.56s. FPS: 989.27
 
 
 Training
@@ -45,10 +39,10 @@ Epoch 2/5
 Epoch 3/5
 Epoch 4/5
 Epoch 5/5
-Training completed in 2.64s
-Iteration 1, timesteps: 16384/128.  total loss: 0.4243, policy_loss: 0.0056, value_loss: 0.4187, entropy_loss: 0.0254, approx_kl: 0.2195, clip_fraction: 0.0560, explained_var: -8.2634
+Training completed in 2.73s
+Iteration 1, timesteps: 16384/128.  total loss: 0.4239, policy_loss: 0.0053, value_loss: 0.4186, entropy_loss: 0.0248, approx_kl: 0.2247, clip_fraction: 0.0557, explained_var: -8.2634
 
-Warmup time: 8.16s
+Warmup time: 19.40s
 
 Profiling training for 1 timesteps...
 
@@ -59,7 +53,7 @@ Collecting rollouts: 50/128 steps
 Collecting rollouts: 75/128 steps
 Collecting rollouts: 100/128 steps
 Collecting rollouts: 125/128 steps
-Rollout collected in 1.53s. FPS: 10710.61
+Rollout collected in 1.15s. FPS: 14264.98
 
 
 Training
@@ -69,76 +63,76 @@ Epoch 3/5
 Epoch 4/5
 Epoch 5/5
 Training completed in 1.76s
-Iteration 1, timesteps: 32768/16385.  total loss: 0.0633, policy_loss: 0.0074, value_loss: 0.0559, entropy_loss: 0.0223, approx_kl: 0.1749, clip_fraction: 0.0490, explained_var: -0.4808
+Iteration 1, timesteps: 32768/16385.  total loss: 0.0621, policy_loss: 0.0038, value_loss: 0.0583, entropy_loss: 0.0256, approx_kl: 0.2402, clip_fraction: 0.0589, explained_var: -0.3178
 
 
 ================================================================================
 TIMING SUMMARY
 ================================================================================
-Init time:         2.5736s
-Warmup time:       8.1648s
-Runtime:           3.3134s
-Total time:        11.4782s
-Steps/second:      4944.7
+Init time:         3.0728s
+Warmup time:       19.3968s
+Runtime:           2.9277s
+Total time:        22.3245s
+Steps/second:      5596.2
 Total timesteps:   32768 (Warmup: 16384, Profiled: 16384)
 
 Last training metrics:
-  policy_loss: 0.0074
-  value_loss: 0.0559
-  entropy: 0.0223
-  clip_fraction: 0.0490
-  approx_kl: 0.1749
-  explained_var: -0.4808
+  policy_loss: 0.0038
+  value_loss: 0.0583
+  entropy: 0.0256
+  clip_fraction: 0.0589
+  approx_kl: 0.2402
+  explained_var: -0.3178
 
 ================================================================================
 PROFILING RESULTS - Top by Cumulative Time
 ================================================================================
-         753171 function calls (677808 primitive calls) in 2.628 seconds
+         695881 function calls (620260 primitive calls) in 2.893 seconds
 
    Ordered by: cumulative time
-   List reduced from 532 to 40 due to restriction <40>
+   List reduced from 573 to 40 due to restriction <40>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-       80    0.000    0.000    0.781    0.010 __init__.py:243(backward)
-       80    0.001    0.000    0.781    0.010 graph.py:832(_engine_run_backward)
-       80    0.711    0.009    0.776    0.010 {method 'run_backward' of 'torch._C._EngineBase' objects}
-     1328    0.006    0.000    0.466    0.000 eval_frame.py:1039(_fn)
-16543/338    0.017    0.000    0.455    0.001 module.py:1771(_wrapped_call_impl)
-16543/338    0.023    0.000    0.454    0.001 module.py:1779(_call_impl)
-  496/416    0.004    0.000    0.416    0.001 utils.py:119(call_func_at_runtime_with_args)
-      416    0.004    0.000    0.390    0.001 output_code.py:590(__call__)
-      129    0.001    0.000    0.387    0.003 model.py:730(predict_values)
-      336    0.001    0.000    0.379    0.001 aot_autograd.py:1126(forward)
-      336    0.002    0.000    0.378    0.001 runtime_wrappers.py:310(runtime_wrapper)
-      416    0.001    0.000    0.354    0.001 compile_fx.py:1767(run)
-      336    0.001    0.000    0.353    0.001 runtime_wrappers.py:512(wrapper)
-      416    0.001    0.000    0.352    0.001 cudagraph_trees.py:378(deferred_cudagraphify)
-      416    0.001    0.000    0.351    0.001 utils.py:3013(run)
-  624/416    0.004    0.000    0.344    0.001 cudagraph_trees.py:2008(run)
-  624/416    0.002    0.000    0.341    0.001 cudagraph_trees.py:2073(_run)
-      128    0.001    0.000    0.327    0.003 env.py:890(step_and_reset)
-      761    0.317    0.000    0.317    0.000 {method 'copy_' of 'torch._C.TensorBase' objects}
-      129    0.001    0.000    0.316    0.002 model.py:432(forward)
-      129    0.009    0.000    0.315    0.002 model.py:339(forward_joint)
-      128    0.001    0.000    0.286    0.002 env.py:761(_step_and_reset_core)
-      128    0.000    0.000    0.270    0.002 cfrtenmk6tq3c43noe6nglm2oceum5dw65dtil5lcvm4v6v54oaq.py:12238(call)
-      128    0.028    0.000    0.263    0.002 cfrtenmk6tq3c43noe6nglm2oceum5dw65dtil5lcvm4v6v54oaq.py:11718(partition_0)
-       85    0.002    0.000    0.259    0.003 rollout.py:304(get)
-      258    0.001    0.000    0.251    0.001 model.py:270(_encode_with_shared_body)
-      258    0.030    0.000    0.249    0.001 model.py:138(forward)
-     2709    0.013    0.000    0.249    0.000 container.py:245(forward)
-       80    0.001    0.000    0.190    0.002 rollout.py:19(_batch_index_select)
-      640    0.190    0.000    0.190    0.000 {built-in method torch.index_select}
-     9216    0.032    0.000    0.178    0.000 triton_heuristics.py:1242(run)
-        6    0.177    0.029    0.177    0.029 {method 'item' of 'torch._C.TensorBase' objects}
-    211/6    0.026    0.000    0.115    0.019 eval_frame.py:791(compile_wrapper)
-     3096    0.003    0.000    0.094    0.000 linear.py:130(forward)
+       80    0.000    0.000    0.765    0.010 __init__.py:243(backward)
+       80    0.001    0.000    0.764    0.010 graph.py:832(_engine_run_backward)
+       80    0.694    0.009    0.760    0.010 {method 'run_backward' of 'torch._C._EngineBase' objects}
+16543/338    0.016    0.000    0.455    0.001 module.py:1771(_wrapped_call_impl)
+16543/338    0.022    0.000    0.454    0.001 module.py:1779(_call_impl)
+      128    0.408    0.003    0.408    0.003 {built-in method torch.nonzero}
+      129    0.000    0.000    0.379    0.003 model.py:730(predict_values)
+      760    0.318    0.000    0.318    0.000 {method 'copy_' of 'torch._C.TensorBase' objects}
+      129    0.001    0.000    0.317    0.002 model.py:432(forward)
+      129    0.008    0.000    0.316    0.002 model.py:339(forward_joint)
+     1328    0.006    0.000    0.261    0.000 eval_frame.py:1039(_fn)
+       85    0.002    0.000    0.256    0.003 rollout.py:304(get)
+      258    0.001    0.000    0.253    0.001 model.py:270(_encode_with_shared_body)
+      258    0.032    0.000    0.251    0.001 model.py:138(forward)
+     2709    0.014    0.000    0.249    0.000 container.py:245(forward)
+  496/416    0.004    0.000    0.210    0.001 utils.py:119(call_func_at_runtime_with_args)
+       80    0.001    0.000    0.189    0.002 rollout.py:19(_batch_index_select)
+      640    0.189    0.000    0.189    0.000 {built-in method torch.index_select}
+      416    0.003    0.000    0.180    0.000 output_code.py:590(__call__)
+        6    0.179    0.030    0.179    0.030 {method 'item' of 'torch._C.TensorBase' objects}
+      336    0.001    0.000    0.171    0.001 aot_autograd.py:1126(forward)
+      336    0.001    0.000    0.169    0.001 runtime_wrappers.py:310(runtime_wrapper)
+      416    0.002    0.000    0.143    0.000 compile_fx.py:1767(run)
+      336    0.001    0.000    0.142    0.000 runtime_wrappers.py:512(wrapper)
+      416    0.000    0.000    0.141    0.000 cudagraph_trees.py:378(deferred_cudagraphify)
+      416    0.001    0.000    0.141    0.000 utils.py:3013(run)
+  752/416    0.005    0.000    0.136    0.000 cudagraph_trees.py:2008(run)
+  752/416    0.001    0.000    0.131    0.000 cudagraph_trees.py:2073(_run)
+      416    0.003    0.000    0.117    0.000 cudagraph_trees.py:2241(execute_node)
+     3096    0.003    0.000    0.093    0.000 linear.py:130(forward)
      3096    0.089    0.000    0.089    0.000 {built-in method torch._C._nn.linear}
-      129    0.000    0.000    0.069    0.001 model.py:584(extract_features)
-      288    0.002    0.000    0.068    0.000 cudagraph_trees.py:2241(execute_node)
-      129    0.002    0.000    0.068    0.001 model.py:66(forward)
-       80    0.008    0.000    0.066    0.001 ppo.py:74(forward)
-       80    0.016    0.000    0.065    0.001 function.py:300(apply)
+      128    0.011    0.000    0.088    0.001 env.py:842(_step_and_reset_core)
+      416    0.002    0.000    0.087    0.000 cudagraph_trees.py:1105(run)
+       80    0.009    0.000    0.074    0.001 ppo.py:74(forward)
+      416    0.001    0.000    0.070    0.000 cudagraph_trees.py:1219(run_graph)
+      128    0.000    0.000    0.068    0.001 runtime_wrappers.py:716(inner_fn)
+   240/80    0.003    0.000    0.067    0.001 clip_grad.py:41(_no_grad_wrapper)
+       80    0.016    0.000    0.067    0.001 function.py:300(apply)
+       80    0.002    0.000    0.065    0.001 clip_grad.py:185(clip_grad_norm_)
+      128    0.001    0.000    0.061    0.000 cxivc4vfgpjs6yln6ux2zqyo2mhgkkogbuwgd2mvkdgawklbb3ik.py:12170(call)
 
 
 
@@ -146,52 +140,52 @@ PROFILING RESULTS - Top by Cumulative Time
 ================================================================================
 PROFILING RESULTS - Top by Total Time
 ================================================================================
-         753171 function calls (677808 primitive calls) in 2.628 seconds
+         695881 function calls (620260 primitive calls) in 2.893 seconds
 
    Ordered by: internal time
-   List reduced from 532 to 40 due to restriction <40>
+   List reduced from 573 to 40 due to restriction <40>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-       80    0.711    0.009    0.776    0.010 {method 'run_backward' of 'torch._C._EngineBase' objects}
-      761    0.317    0.000    0.317    0.000 {method 'copy_' of 'torch._C.TensorBase' objects}
-      640    0.190    0.000    0.190    0.000 {built-in method torch.index_select}
-        6    0.177    0.029    0.177    0.029 {method 'item' of 'torch._C.TensorBase' objects}
+       80    0.694    0.009    0.760    0.010 {method 'run_backward' of 'torch._C._EngineBase' objects}
+      128    0.408    0.003    0.408    0.003 {built-in method torch.nonzero}
+      760    0.318    0.000    0.318    0.000 {method 'copy_' of 'torch._C.TensorBase' objects}
+      640    0.189    0.000    0.189    0.000 {built-in method torch.index_select}
+        6    0.179    0.030    0.179    0.030 {method 'item' of 'torch._C.TensorBase' objects}
      3096    0.089    0.000    0.089    0.000 {built-in method torch._C._nn.linear}
-        5    0.061    0.012    0.061    0.012 {built-in method torch.randperm}
-     5632    0.045    0.000    0.045    0.000 {_launch_kernel}
-     2322    0.042    0.000    0.042    0.000 {built-in method torch.layer_norm}
-     3100    0.039    0.000    0.039    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
-     2709    0.037    0.000    0.037    0.000 {built-in method torch.relu}
-     9216    0.032    0.000    0.178    0.000 triton_heuristics.py:1242(run)
-      258    0.030    0.000    0.249    0.001 model.py:138(forward)
-      128    0.028    0.000    0.263    0.002 cfrtenmk6tq3c43noe6nglm2oceum5dw65dtil5lcvm4v6v54oaq.py:11718(partition_0)
-    211/6    0.026    0.000    0.115    0.019 eval_frame.py:791(compile_wrapper)
-      128    0.024    0.000    0.024    0.000 {built-in method torch.multinomial}
-16543/338    0.023    0.000    0.454    0.001 module.py:1779(_call_impl)
-     9984    0.022    0.000    0.022    0.000 {built-in method torch._C._dynamo.guards._empty_strided_cuda}
-      516    0.022    0.000    0.022    0.000 {built-in method torch.embedding}
-      444    0.021    0.000    0.021    0.000 {built-in method torch.where}
-      384    0.019    0.000    0.019    0.000 {method 'cpu' of 'torch._C.TensorBase' objects}
-      343    0.019    0.000    0.019    0.000 {method 'mean' of 'torch._C.TensorBase' objects}
-16543/338    0.017    0.000    0.455    0.001 module.py:1771(_wrapped_call_impl)
-      288    0.016    0.000    0.016    0.000 {built-in method torch._foreach_copy_}
-       80    0.016    0.000    0.065    0.001 function.py:300(apply)
-     5632    0.014    0.000    0.060    0.000 static_cuda_launcher.py:215(run)
-     2709    0.013    0.000    0.249    0.000 container.py:245(forward)
-      128    0.012    0.000    0.014    0.000 rollout.py:204(add)
-      258    0.012    0.000    0.015    0.000 embeddings.py:771(forward)
-        1    0.011    0.011    0.012    0.012 rollout.py:244(compute_returns_and_advantage)
-44480/5840    0.010    0.000    0.012    0.000 module.py:2823(named_modules)
+        5    0.060    0.012    0.060    0.012 {built-in method torch.randperm}
+      416    0.046    0.000    0.046    0.000 {built-in method torch._foreach_copy_}
+     2322    0.043    0.000    0.043    0.000 {built-in method torch.layer_norm}
+     2709    0.038    0.000    0.038    0.000 {built-in method torch.relu}
+      258    0.032    0.000    0.251    0.001 model.py:138(forward)
+     1564    0.025    0.000    0.025    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
+      508    0.024    0.000    0.024    0.000 {method 'cpu' of 'torch._C.TensorBase' objects}
+      128    0.023    0.000    0.023    0.000 {built-in method torch.multinomial}
+16543/338    0.022    0.000    0.454    0.001 module.py:1779(_call_impl)
+      256    0.020    0.000    0.020    0.000 {built-in method torch._foreach_add}
+      516    0.018    0.000    0.018    0.000 {built-in method torch.embedding}
+      343    0.018    0.000    0.018    0.000 {method 'mean' of 'torch._C.TensorBase' objects}
+       80    0.016    0.000    0.067    0.001 function.py:300(apply)
+16543/338    0.016    0.000    0.455    0.001 module.py:1771(_wrapped_call_impl)
+      416    0.016    0.000    0.016    0.000 graphs.py:139(replay)
+     2709    0.014    0.000    0.249    0.000 container.py:245(forward)
+      128    0.013    0.000    0.014    0.000 rollout.py:204(add)
+        1    0.012    0.012    0.014    0.014 rollout.py:244(compute_returns_and_advantage)
+      128    0.011    0.000    0.088    0.001 env.py:842(_step_and_reset_core)
+      127    0.011    0.000    0.040    0.000 ppo.py:448(_handle_done_episodes)
+       80    0.011    0.000    0.011    0.000 {built-in method torch._foreach_norm}
+      258    0.011    0.000    0.014    0.000 embeddings.py:771(forward)
       576    0.010    0.000    0.010    0.000 {built-in method torch._ops.profiler._record_function_enter_new}
-      128    0.010    0.000    0.058    0.000 model.py:795(policy_fn)
-       80    0.010    0.000    0.010    0.000 {built-in method torch._foreach_norm}
-      288    0.010    0.000    0.010    0.000 graphs.py:139(replay)
-     5055    0.009    0.000    0.009    0.000 {method 'to' of 'torch._C.TensorBase' objects}
-      129    0.009    0.000    0.315    0.002 model.py:339(forward_joint)
-    16751    0.009    0.000    0.009    0.000 {built-in method torch._C._get_tracing_state}
-       80    0.008    0.000    0.066    0.001 ppo.py:74(forward)
-     2322    0.008    0.000    0.015    0.000 functional.py:1394(dropout)
-     3584    0.008    0.000    0.009    0.000 compiler.py:487(launch_metadata)
+44480/5840    0.010    0.000    0.012    0.000 module.py:2823(named_modules)
+      128    0.009    0.000    0.053    0.000 model.py:795(policy_fn)
+       80    0.009    0.000    0.074    0.001 ppo.py:74(forward)
+    16623    0.008    0.000    0.008    0.000 {built-in method torch._C._get_tracing_state}
+      416    0.008    0.000    0.011    0.000 cudagraph_trees.py:1126(reconstruct_outputs)
+      129    0.008    0.000    0.316    0.002 model.py:339(forward_joint)
+     2322    0.008    0.000    0.014    0.000 functional.py:1394(dropout)
+     5055    0.008    0.000    0.008    0.000 {method 'to' of 'torch._C.TensorBase' objects}
+       80    0.007    0.000    0.011    0.000 adam.py:138(_init_group)
+     8400    0.007    0.000    0.012    0.000 cudagraph_trees.py:534(expired)
+65399/65107    0.007    0.000    0.008    0.000 {built-in method builtins.isinstance}
 
 
 

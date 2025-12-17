@@ -1,7 +1,7 @@
 """
 PPO (Proximal Policy Optimization) for Optimized Environment.
 
-This module implements PPO for use with EvalEnvOptimized which uses
+This module implements PPO for use with Env_vec which uses
 EnvObs/EnvState instead of TensorDict.
 
 Key Differences from ppo.py:
@@ -28,7 +28,7 @@ from tensordict import TensorDict
 import time
 
 from rollout import RolloutBuffer
-from env import EvalEnvOptimized, EnvObs, EnvState
+from env import EnvVec, EnvObs, EnvState
 
 
 def compute_metrics_from_ranks(ranks: Tensor) -> Dict[str, float]:
@@ -148,10 +148,10 @@ class PPOLossModule(nn.Module):
 
 class PPO:
     """
-    Proximal Policy Optimization for EvalEnvOptimized.
+    Proximal Policy Optimization for Env_vec.
     
     This implementation works with the functional/immutable state approach
-    of EvalEnvOptimized rather than the TensorDict-based BatchedEnv.
+    of Env_vec rather than the TensorDict-based BatchedEnv.
     
     Key Features:
         - Fixed batch size for CUDA graph compatibility (reduce-overhead mode)
@@ -161,7 +161,7 @@ class PPO:
     
     Args:
         policy: Actor-critic policy network
-        env: EvalEnvOptimized instance
+        env: Env_vec instance
         n_steps: Steps per environment per rollout
         learning_rate: Adam optimizer learning rate
         n_epochs: Number of optimization epochs per rollout
@@ -181,7 +181,7 @@ class PPO:
     def __init__(
         self,
         policy: nn.Module,
-        env: EvalEnvOptimized,
+        env: EnvVec,
         n_steps: int = 2048,
         learning_rate: float = 3e-4,
         n_epochs: int = 10,
@@ -443,11 +443,61 @@ class PPO:
     
     def _obs_to_tensordict(self, obs: EnvObs) -> TensorDict:
         """Convert EnvObs to TensorDict for policy forward pass."""
-        return TensorDict({
-            'sub_index': obs.sub_index,
-            'derived_sub_indices': obs.derived_sub_indices,
-            'action_mask': obs.action_mask,
-        }, batch_size=[obs.sub_index.shape[0]], device=self.device)
+        return obs
+    
+    def _handle_done_episodes(
+        self,
+        done_indices: Tensor,
+        current_episode_reward: Tensor,
+        current_episode_length: Tensor,
+        state: EnvState,
+        next_query_indices: Optional[Tensor],
+        episode_rewards: List[float],
+        episode_lengths: List[int],
+        on_step_callback: Optional[Callable],
+    ) -> None:
+        """Handle logging and callbacks for completed episodes (vectorized)."""
+        num_dones = done_indices.numel()
+        done_idx_cpu = done_indices.cpu().numpy()
+        
+        # Batch fetch stats (GPU -> CPU) and update logs
+        batch_rs = current_episode_reward[done_indices].float().cpu().numpy()
+        batch_ls = current_episode_length[done_indices].cpu().numpy().astype(int)
+        episode_rewards.extend(batch_rs.tolist())
+        episode_lengths.extend(batch_ls.tolist())
+        
+        # Handle callbacks
+        if on_step_callback is not None:
+            batch_succ = state['success'][done_indices].cpu().numpy().astype(bool) if "success" in state.keys() else np.zeros(num_dones, dtype=bool)
+            
+            # Fetch meta info if available
+            batch_q_idxs = self.current_query_indices[done_idx_cpu] if self.current_query_indices is not None else None
+            batch_lbls = self.query_labels[torch.as_tensor(batch_q_idxs, dtype=torch.long)].numpy() if batch_q_idxs is not None and self.query_labels is not None else None
+            batch_depths = self.query_depths[torch.as_tensor(batch_q_idxs, dtype=torch.long)].numpy() if batch_q_idxs is not None and self.query_depths is not None else None
+            
+            # Construct infos using efficient zipping
+            iterators = [
+                batch_rs, batch_ls, batch_succ,
+                batch_q_idxs if batch_q_idxs is not None else [None] * num_dones,
+                batch_lbls if batch_lbls is not None else [None] * num_dones,
+                batch_depths if batch_depths is not None else [None] * num_dones
+            ]
+            
+            batch_infos = [
+                {
+                    "episode": {"r": float(r), "l": int(l)},
+                    "is_success": bool(s),
+                    **({ "episode_idx": int(q) } if q is not None else {}),
+                    **({ "label": int(lbl) } if lbl is not None else {}),
+                    **({ "query_depth": int(d) } if d is not None else {})
+                }
+                for r, l, s, q, lbl, d in zip(*iterators)
+            ]
+            on_step_callback(batch_infos)
+            
+        # Update pointers
+        if self.current_query_indices is not None and next_query_indices is not None:
+             self.current_query_indices[done_idx_cpu] = next_query_indices[done_indices].cpu().numpy()
     
     def collect_rollouts(
         self,
@@ -465,7 +515,7 @@ class PPO:
         """
         Collect experiences using the current policy and fill the rollout buffer.
         
-        Uses EvalEnvOptimized's step_with_policy which handles query cycling internally.
+        Uses Env_vec's step_with_policy which handles query cycling internally.
         
         Args:
             current_state: Current EnvState from previous rollout
@@ -504,9 +554,9 @@ class PPO:
                     print(f"Collecting rollouts: {n_collected}/{self.n_steps} steps")
                 
                 # Snapshot observations before step
-                obs_snapshot_sub = obs.sub_index.clone()
-                obs_snapshot_derived = obs.derived_sub_indices.clone()
-                obs_snapshot_mask = obs.action_mask.clone()
+                obs_snapshot_sub = obs['sub_index'].clone()
+                obs_snapshot_derived = obs['derived_sub_indices'].clone()
+                obs_snapshot_mask = obs['action_mask'].clone()
                 
                 # Convert EnvObs to TensorDict for policy value prediction
                 obs_td = self._obs_to_tensordict(obs)
@@ -537,7 +587,7 @@ class PPO:
                 
                 # Mask invalid actions
                 masked_logits = torch.where(
-                    obs.action_mask,
+                    obs['action_mask'],
                     logits,
                     torch.full_like(logits, float('-inf'))
                 )
@@ -551,11 +601,14 @@ class PPO:
                 log_probs = log_probs_all.gather(1, actions.unsqueeze(1)).squeeze(1)
                 
                 # Mask log probs for done environments
-                active = ~state.done
+                active = ~state['done']
                 log_probs = torch.where(active, log_probs, torch.zeros_like(log_probs))
                 
                 # === SEPARATE COMPILATION: Env step + reset (fused for performance) ===
-                new_state, new_obs, rewards, dones = self.env.step_and_reset(state, actions)
+                new_obs, new_state = self.env.step_and_reset(state, actions)
+                rewards = new_state['step_rewards']
+                dones = new_state['step_dones']
+                
                 self.rollout_buffer.add(
                     sub_index=obs_snapshot_sub,
                     derived_sub_indices=obs_snapshot_derived,
@@ -596,72 +649,32 @@ class PPO:
                 current_episode_length += 1
                 n_collected += 1
                 
-                # Handle episode ends
-                if dones.any():
-                    done_indices = torch.where(dones)[0]
-                    
-                    # Pre-fetch new query indices for ALL done envs to CPU in one go (batch sync)
-                    # drastically reducing overhead compared to handling them one-by-one
-                    batch_next_indices = None
-                    if self.current_query_indices is not None and next_query_indices is not None:
-                        batch_next_indices = next_query_indices[done_indices].cpu().numpy()
-                    
-                    # Batch fetch rewards and lengths to avoid per-item blocking synchronization
-                    # This is critical for maintaining high FPS with callbacks
-                    batch_rewards = current_episode_reward[done_indices].cpu().float().numpy()
-                    batch_lengths = current_episode_length[done_indices].cpu().numpy().astype(int)
-
-                    batch_infos = [] # Accumulate infos for batched callback
-                    
-                    for i, idx in enumerate(done_indices):
-                        ep_reward = float(batch_rewards[i])
-                        ep_length = int(batch_lengths[i])
-                        episode_rewards.append(ep_reward)
-                        episode_lengths.append(ep_length)
-                        
-                        # Prepare step callback info
-                        if on_step_callback is not None:
-                            # Get additional info from state if available
-                            is_success = bool(state.success[idx]) if hasattr(state, 'success') else False
-                            
-                            info_dict = {
-                                "episode": {"r": ep_reward, "l": ep_length},
-                                "is_success": is_success,
-                            }
-                            
-                            # Add label and depth info if tracked (using valid indices)
-                            if self.current_query_indices is not None and len(self.current_query_indices) > idx:
-                                # FAST CPU ACCESS
-                                q_idx = int(self.current_query_indices[idx])
-                                info_dict["episode_idx"] = q_idx # Use query idx as rough unique ID
-                                
-                                if self.query_labels is not None and q_idx < len(self.query_labels):
-                                    # FAST CPU ACCESS
-                                    info_dict["label"] = int(self.query_labels[q_idx])
-                                
-                                if self.query_depths is not None and q_idx < len(self.query_depths):
-                                    # FAST CPU ACCESS
-                                    info_dict["query_depth"] = int(self.query_depths[q_idx])
-                            
-                            batch_infos.append(info_dict)
-                            
-                        # Update current query index for the NEXT episode in this environment
-                        if batch_next_indices is not None:
-                            self.current_query_indices[idx] = batch_next_indices[i]
-                        
-                        # Reset episode stats
-                        current_episode_reward[idx] = 0.0
-                        current_episode_length[idx] = 0
-                    
-                    # Call step callback with batch of infos
-                    if on_step_callback is not None and batch_infos:
-                        on_step_callback(batch_infos)
-                    
-                    # Mark episode starts for next step
-                    episode_starts = dones.float()
-                else:
-                    episode_starts = torch.zeros(self.n_envs, dtype=torch.float32, device=self.device)
+                # Handle episode ends (Vectorized on GPU)
+                # We avoid explicit python loops for resetting
                 
+                # 1. Capture finished episode stats (before reset)
+                # We need to know which ones finished to log them, but for state update we use masking
+                
+                # 2. Reset accumulators for done environments (Vectorized)
+                # Use masked_fill_ or where to keep it on GPU without sync
+                # Capture values for logging first
+                done_indices = torch.nonzero(dones).squeeze(-1)
+                num_dones = done_indices.numel()
+                
+                if num_dones > 0:
+                    self._handle_done_episodes(
+                        done_indices, current_episode_reward, current_episode_length,
+                        state, next_query_indices, episode_rewards, episode_lengths,
+                        on_step_callback
+                    )
+                    
+                # Vectorized reset of accumulators
+                current_episode_reward.masked_fill_(dones, 0.0)
+                current_episode_length.masked_fill_(dones, 0)
+                
+                # Mark episode starts for next step
+                episode_starts = dones.float()
+
                 # Track dones before state update (for GAE, we need the done flags before reset)
                 last_dones = dones
                 
@@ -859,7 +872,7 @@ class PPO:
     def learn(
         self,
         total_timesteps: int,
-        queries: torch.Tensor,
+        queries: Optional[torch.Tensor] = None, # Deprecated, env handles queries
         reset_num_timesteps: bool = True,
         callback=None,
         on_iteration_start_callback=None,
@@ -871,7 +884,7 @@ class PPO:
         
         Args:
             total_timesteps: Total number of environment steps to train for
-            queries: [N, 3] Query tensor - stored in env for round-robin cycling
+            queries: [Deprecated] Query tensor - env handles this now
             reset_num_timesteps: If True, reset the timestep counter
             callback: Optional callback called at end of each iteration (like SB3)
             on_iteration_start_callback: Optional callback called at start of each iteration
@@ -888,15 +901,15 @@ class PPO:
         
         iteration = 0
         
-        # Set queries in environment
-        self.env.set_queries(queries)
+        # Set environment to train mode
+        self.env.train()
         
         # Initialize current_query_indices based on initial env assignment (0..batch_size)
         if self.query_labels is not None or self.query_depths is not None:
             self.current_query_indices = torch.arange(self.n_envs, dtype=torch.long, device=self.device)
             # Handle case where n_envs > queries
-            if queries.shape[0] > 0:
-                self.current_query_indices = self.current_query_indices % queries.shape[0]
+            if self.env.train_queries is not None and self.env.train_queries.shape[0] > 0:
+                self.current_query_indices = self.current_query_indices % self.env.train_queries.shape[0]
         
         # Reset environment to get initial state and observation
         # with torch.inference_mode():
@@ -1033,26 +1046,32 @@ class PPO:
         device = self.device
         max_steps = max_steps or self.env.max_depth
         
+        # Switch to eval mode
+        # This sets negative_ratio=0, order=True, and active queries
+        self.env.set_eval_dataset(queries)
+        
         # Initialize state
-        state = self.env.reset_from_queries(queries)
-        B = state.current_states.shape[0]
+        # set_eval_dataset sets the pool, reset() uses it
+        obs, state = self.env.reset()
+        
+        B = state['current_states'].shape[0]
         
         # Pre-allocate accumulators
         total_log_probs = torch.zeros(B, device=device)
         total_rewards = torch.zeros(B, device=device)
         
         # Create initial observation
-        action_mask = self.env._positions_S < state.derived_counts.unsqueeze(1)
-        obs = EnvObs(
-            sub_index=state.current_states.unsqueeze(1),
-            derived_sub_indices=state.derived_states,
-            action_mask=action_mask,
-        )
+        action_mask = self.env._positions_S < state['derived_counts'].unsqueeze(1)
+        obs = TensorDict({
+            "sub_index": state['current_states'].unsqueeze(1),
+            "derived_sub_indices": state['derived_states'],
+            "action_mask": action_mask,
+        }, batch_size=[B], device=device)
         
         # Python loop over transitions  
         for step_idx in range(max_steps):
             # Early exit if all done
-            if state.done.all():
+            if state['done'].all():
                 break
             
             # === Policy forward (compiled separately) ===
@@ -1062,7 +1081,7 @@ class PPO:
             
             # Mask invalid actions and select
             masked_logits = torch.where(
-                obs.action_mask,
+                obs['action_mask'],
                 logits,
                 torch.full_like(logits, float('-inf'))
             )
@@ -1071,19 +1090,19 @@ class PPO:
             
             # Get log probs for the selected actions
             step_log_probs = torch.log_softmax(masked_logits, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1)
-            step_log_probs = torch.where(~state.done, step_log_probs, torch.zeros_like(step_log_probs))
+            step_log_probs = torch.where(~state['done'], step_log_probs, torch.zeros_like(step_log_probs))
             
             # === Env step (compiled separately) ===
-            step_result = self.env.step(state, actions)
-            state = step_result.state
-            obs = step_result.obs
-            rewards = step_result.rewards
+            new_obs, new_state = self.env.step(state, actions)
+            state = new_state
+            obs = new_obs
+            rewards = new_state['step_rewards']
             
             # Accumulate
             total_log_probs = total_log_probs + step_log_probs
             total_rewards = total_rewards + rewards
         
-        return total_log_probs, state.success, state.depths, total_rewards
+        return total_log_probs, state['success'], state['depths'], total_rewards
     
     def _pad_queries(self, queries: Tensor) -> Tuple[Tensor, int]:
         """Pad queries to fixed_batch_size. Returns (padded_queries, original_size)."""

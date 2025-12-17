@@ -41,8 +41,7 @@ from index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
 from unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
-from env import EvalEnvOptimized
-from env import EvalEnvOptimized
+from env import EnvVec
 import tensor.tensor_utils.tensor_utils as utils_funcs
 
 
@@ -251,11 +250,11 @@ def create_compiled_env(
     im: IndexManager,
     config: SimpleNamespace,
     batch_size: int,
-) -> EvalEnvOptimized:
+) -> EnvVec:
     """Create a compiled EvalOnlyEnvOptimized environment."""
     device = torch.device(config.device)
     
-    return EvalEnvOptimized(
+    return EnvVec(
         vec_engine=vec_engine,
         batch_size=batch_size,
         padding_atoms=config.padding_atoms,
@@ -284,7 +283,7 @@ def safe_item(x):
 def run_batch_traces(
     batch_queries: List[Tuple[str, Tuple[str, str, str]]],
     tensor_env: BatchedEnv,
-    compiled_env: EvalEnvOptimized,
+    compiled_env: EnvVec,
     im: IndexManager,
     stringifier_params: Dict,
     config: SimpleNamespace,
@@ -400,14 +399,14 @@ def run_batch_traces(
                 })
         
         # ===== Process compiled env for all queries =====
-        compiled_counts = compiled_state.derived_counts  # [B]
+        compiled_counts = compiled_state['derived_counts']  # [B]
         
         for i in range(effective_batch_size):
             if compiled_done[i]:
                 continue
             
             n_actions = int(compiled_counts[i])
-            state_str = utils_funcs.state_to_str(compiled_state.current_states[i], **stringifier_params)
+            state_str = utils_funcs.state_to_str(compiled_state['current_states'][i], **stringifier_params)
             
             if n_actions == 0:
                 all_compiled_traces[i].append({
@@ -421,7 +420,7 @@ def run_batch_traces(
                 compiled_done[i] = True
             else:
                 derived_strs = sorted([
-                    utils_funcs.state_to_str(compiled_state.derived_states[i, k], **stringifier_params)
+                    utils_funcs.state_to_str(compiled_state['derived_states'][i, k], **stringifier_params)
                     for k in range(n_actions)
                 ])
                 all_compiled_traces[i].append({
@@ -452,10 +451,9 @@ def run_batch_traces(
         # Take step for compiled env (action=0 for all)
         if not compiled_done.all():
             actions_compiled = torch.zeros(effective_batch_size, dtype=torch.long, device=device)
-            step_result = compiled_env.step(compiled_state, actions_compiled)
-            compiled_state = step_result.state
+            _, compiled_state = compiled_env.step(compiled_state, actions_compiled)
             # Update done flags
-            compiled_done = compiled_done | compiled_state.done
+            compiled_done = compiled_done | compiled_state['done']
     
     return all_tensor_traces[:batch_size], all_compiled_traces[:batch_size]
 

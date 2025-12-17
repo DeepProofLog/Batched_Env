@@ -150,7 +150,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from nn.embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
     from nn.sampler import Sampler
-    from env import Env_vec as EvalEnvOptimized
+    from env import EnvVec
     
     # Enable compile mode
     import unification
@@ -248,9 +248,10 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         return torch.stack(tensors, dim=0)
     
     test_queries = convert_queries_unpadded(dh.test_queries)
+    train_queries = convert_queries_unpadded(dh.train_queries)
     
     # Compiled environment
-    eval_env = EvalEnvOptimized(
+    eval_env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.batch_size_env,
         padding_atoms=config.padding_atoms,
@@ -260,6 +261,8 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         runtime_var_start_index=im.constant_no + 1,
         device=device,
         memory_pruning=True,
+        train_queries=train_queries,
+        valid_queries=test_queries,
     )
     
     # Policy

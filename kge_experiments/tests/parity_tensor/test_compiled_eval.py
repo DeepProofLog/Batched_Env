@@ -45,7 +45,7 @@ from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
 from tensor.tensor_sampler import Sampler
 from tensor.tensor_model_eval import eval_corruptions
 from ppo import PPO as PPOOptimized
-from env import EvalEnvOptimized
+from env import EnvVec
 from tests.profile_eval import compute_optimal_batch_size
 
 # ============================================================================
@@ -292,12 +292,12 @@ def create_original_env(components: Dict, config: SimpleNamespace, device: torch
     )
 
 
-def create_optimized_env(components: Dict, config: SimpleNamespace, device: torch.device) -> EvalEnvOptimized:
+def create_optimized_env(components: Dict, config: SimpleNamespace, device: torch.device) -> EnvVec:
     """Create optimized EvalOnlyEnvOptimized for evaluation."""
     im = components['im']
     vec_engine = components['vec_engine']
     
-    return EvalEnvOptimized(
+    return EnvVec(
         vec_engine=vec_engine,
         batch_size=config.batch_size_env,
         padding_atoms=config.padding_atoms,
@@ -345,7 +345,7 @@ def run_original_eval(
 
 def run_optimized_eval(
     components: Dict,
-    env: EvalEnvOptimized,
+    env: EnvVec,
     config: SimpleNamespace,
     seed: int = 42,
 ) -> Tuple[Dict[str, Any], float]:
