@@ -14,7 +14,7 @@ Key Components:
 """
 
 import time
-from typing import Dict, Optional, Callable
+from typing import Dict, Optional, Callable, Any
 import numpy as np
 import torch
 import torch.nn as nn
@@ -541,13 +541,19 @@ class PPO:
                 
                 # Collect traces if requested
                 if return_traces:
+                    # Get pointer info from environment if available
+                    env_ptrs = getattr(self.env, '_per_env_train_ptrs', None)
+                    
                     for idx in range(self.n_envs):
                         sub_index = obs_snapshot.get("sub_index")[idx]
                         derived_sub_indices = obs_snapshot.get("derived_sub_indices")[idx]
                         action_mask = obs_snapshot.get("action_mask")[idx]
+                        
                         trace_entry = {
                             "step": n_collected,
                             "env": idx,
+                            "pointer": int(env_ptrs[idx]) if env_ptrs is not None else None,
+                            "query_idx": int(getattr(self, 'current_query_indices', [None] * self.n_envs)[idx]) if getattr(self, 'current_query_indices', None) is not None else None,
                             "state_obs": {
                                 "sub_index": sub_index.cpu().numpy().copy() if hasattr(sub_index, 'cpu') else sub_index,
                                 "derived_sub_indices": derived_sub_indices.cpu().numpy().copy() if hasattr(derived_sub_indices, 'cpu') else derived_sub_indices,
@@ -938,7 +944,8 @@ class PPO:
         reset_num_timesteps: bool = True,
         on_iteration_start_callback=None,
         on_step_callback=None,
-    ) -> None:
+        return_traces: bool = False,
+    ) -> Dict[str, Any]:
         """
         Execute the PPO main loop: alternate between collecting rollouts and training.
         
@@ -948,6 +955,10 @@ class PPO:
             reset_num_timesteps (bool): If True, reset the timestep counter.
                                         Set False to continue training.
             on_iteration_start_callback (Optional[Callable]): Callback called at the start of each iteration.
+            return_traces (bool): If True, return detailed traces for debugging.
+            
+        Returns:
+            Dict containing training info and optionally traces
         """
         from tensordict import TensorDict
         
@@ -968,16 +979,22 @@ class PPO:
             current_episode_reward = torch.zeros(self.n_envs, device=self.device)
             current_episode_length = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
             episode_starts = torch.ones(self.n_envs, dtype=torch.float32, device=self.device)
+            episode_rewards = []
+            episode_lengths = []
         else:
             # Resume from last state
             current_obs = self._last_obs
             current_episode_reward = self._current_episode_reward
             current_episode_length = self._current_episode_length
             episode_starts = self._last_episode_starts
+            episode_rewards = self._last_episode_rewards
+            episode_lengths = self._last_episode_lengths
+        
+        # Trace collection
+        all_rollout_traces = [] if return_traces else None
+        all_train_traces = [] if return_traces else None
         
         # Episode tracking
-        episode_rewards = []
-        episode_lengths = []
         if self.trace_recorder is not None:
             self._trace_episode_ids = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
             self._trace_lengths = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
@@ -1007,13 +1024,8 @@ class PPO:
             # ============================================================
             rollout_start_time = time.time()
             
-            (
-                current_obs,
-                episode_starts,
-                current_episode_reward,
-                current_episode_length,
-                steps_collected,
-            ) = self.collect_rollouts(
+            # Collect rollouts
+            rollout_result = self.collect_rollouts(
                 current_obs=current_obs,
                 episode_starts=episode_starts,
                 current_episode_reward=current_episode_reward,
@@ -1022,7 +1034,15 @@ class PPO:
                 episode_lengths=episode_lengths,
                 iteration=iteration,
                 on_step_callback=on_step_callback,
+                return_traces=return_traces,
             )
+            current_obs, episode_starts, current_episode_reward, current_episode_length, steps_collected, rollout_info = rollout_result
+            
+            if return_traces and rollout_info is not None:
+                all_rollout_traces.append({
+                    'iteration': iteration,
+                    'traces': rollout_info,
+                })
             
             total_steps_done += steps_collected
             rollout_time = time.time() - rollout_start_time
@@ -1036,10 +1056,17 @@ class PPO:
             # ============================================================
             # Train policy
             # ============================================================
-            if self.verbose:
-                print("\n[PPO] ===== Training policy =====")
+            # Train
+            print("\n[PPO] ===== Training policy =====")
             train_start_time = time.time()
-            train_metrics = self.train()
+            train_metrics = self.train(return_traces=return_traces)
+            
+            if return_traces and 'traces' in train_metrics:
+                all_train_traces.append({
+                    'iteration': iteration,
+                    'traces': train_metrics['traces'],
+                })
+            
             train_time = time.time() - train_start_time
             train_extra = {**train_metrics, "total_timesteps": total_steps_done, "iterations": iteration}
             Display.print_formatted_metrics(metrics={}, prefix="train", extra_metrics=train_extra)
@@ -1067,4 +1094,20 @@ class PPO:
         self._last_episode_starts = episode_starts
         self._current_episode_reward = current_episode_reward
         self._current_episode_length = current_episode_length
+        self._last_episode_rewards = episode_rewards
+        self._last_episode_lengths = episode_lengths
         self.num_timesteps = total_steps_done
+        
+        # Return results
+        result_dict = {
+            'num_timesteps': self.num_timesteps,
+            'episode_rewards': episode_rewards,
+            'episode_lengths': episode_lengths,
+            'last_train_metrics': self.last_train_metrics,
+        }
+        
+        if return_traces:
+            result_dict['rollout_traces'] = all_rollout_traces
+            result_dict['train_traces'] = all_train_traces
+        
+        return result_dict

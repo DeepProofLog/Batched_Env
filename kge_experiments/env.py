@@ -62,6 +62,7 @@ class EnvState(NamedTuple):
     depths: Tensor              # [B] Current depth per env
     done: Tensor                # [B] Whether env is done
     success: Tensor             # [B] Whether proof succeeded
+    current_labels: Tensor      # [B] Labels (0=negative, 1=positive) for the current query
     # Static history buffer for memory pruning (cycle detection) - stores STATE HASHES
     history_hashes: Tensor      # [B, H] 64-bit hashes of visited states (order-independent)
     history_count: Tensor       # [B] Number of valid history entries
@@ -110,6 +111,14 @@ class Env_vec:
         compile: bool = False,
         compile_mode: str = 'reduce-overhead',
         compile_fullgraph: bool = True,
+        # New training params
+        sampler: Optional[Any] = None,
+        negative_ratio: float = 1.0,
+        order: bool = False,  # False=Random (default), True=Round-Robin
+        metrics: Optional[Any] = None,
+        corruption_scheme: Tuple[str, ...] = ('head', 'tail'),
+        reward_type: int = 0,
+        train_neg_ratio: float = 1.0, # kept for backward compat if needed, but we use negative_ratio
     ):
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.batch_size = batch_size
@@ -121,6 +130,22 @@ class Env_vec:
         self.max_history_size = max_depth + 1
         self.sample_deterministic_per_env = sample_deterministic_per_env
         self._compiled = compile
+        
+        # Training / Sampling config
+        self.sampler = sampler
+        self.order = order
+        self.negative_ratio = float(negative_ratio)
+        self.corruption_scheme = corruption_scheme
+        self.reward_type = reward_type
+        self.metrics = metrics
+        
+        # Negative sampling state
+        if self.negative_ratio > 0:
+            self.rejection_weight = 1 / self.negative_ratio
+            self._train_neg_counters = torch.zeros(batch_size, dtype=torch.long, device=self.device)
+        else:
+            self.rejection_weight = 1.0
+            self._train_neg_counters = None
 
         
         # Hash computation constants
@@ -235,16 +260,254 @@ class Env_vec:
             queries: [N, 3] Query tensor (pool of training queries)
         """
         self._query_pool = queries.to(self.device)
-        # Initialize per-env pointers: env i starts pointing at query i
-        # This matches BatchedEnv's _per_env_train_ptrs initialization
+        # Initialize per-env pointers starting at 0 to match BatchedEnv behavior
         self._per_env_ptrs = torch.arange(self.batch_size, device=self.device)
+
+    def set_eval_dataset(self, queries: Tensor) -> None:
+        """
+        Setup environment for deterministic evaluation on a specific dataset.
+        
+        This enables:
+        - Ordered round-robin query selection (order=True)
+        - No negative sampling (negative_ratio=0)
+        - Exact evaluation of the provided queries
+        
+        Args:
+            queries: [N, 3] Query tensor to evaluate
+        """
+        self.set_queries(queries)
+        self.order = True
+        self.negative_ratio = 0.0
+        # Reset pointers to start
+        self._per_env_ptrs = torch.arange(self.batch_size, device=self.device)
+
     
-    def reset_from_queries(self, queries: Tensor, active_mask: Tensor = None) -> EnvState:
+    def sample_negatives(
+        self,
+        batch_q: Tensor,
+        batch_labels: Tensor,
+        reset_mask: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Vectorized negative sampling using masking (CUDA graph friendly).
+        
+        Args:
+            batch_q (Tensor):        [B, 3] or [B, A, 3] Query tensors.
+            batch_labels (Tensor):   [B] Label tensors.
+            reset_mask (Tensor):     [B] Boolean mask of environments resetting.
+            
+        Returns:
+            Tuple[Tensor, Tensor]: (batch_q, batch_labels)
+        """
+        if self.negative_ratio <= 0:
+            return batch_q, batch_labels
+
+        # Validate cycle
+        ratio = int(round(float(self.negative_ratio)))
+        if ratio <= 0:
+            return batch_q, batch_labels
+            
+        cycle = ratio + 1
+        
+        # All tensors [B]
+        local_counters = self._train_neg_counters 
+        
+        # Determine sampling: needs sample if counter % cycle != 0
+        needs_sample = (local_counters % cycle) != 0
+        
+
+
+        # Clone for modification
+        batch_q = batch_q.clone()
+        batch_labels = batch_labels.clone()
+        
+        # Only modify if reset_mask is True AND needs_sample is True
+        active_sample_mask = reset_mask & needs_sample
+        
+        if self.sample_deterministic_per_env:
+            # Deterministic/Parity Path (CPU explicit, loop)
+            # This path is NOT compatible with fullgraph=True due to .item() and loop
+            num_active = active_sample_mask.sum().item()
+            
+            if num_active > 0:
+                # Get atoms to corrupt
+                if batch_q.dim() == 3:
+                     all_atoms = batch_q[:, 0, :]
+                else:
+                     all_atoms = batch_q
+                
+                # Extract only active atoms to match BatchedEnv RNG consumption
+                active_atoms = all_atoms[active_sample_mask] # [M, 3]
+                
+                # Sequential corruption for parity with SB3/BatchedEnv
+                corrupted_list = []
+                for i in range(num_active):
+                     atom_i = active_atoms[i:i+1] # [1, 3]
+                     c = self.sampler.corrupt(atom_i, num_negatives=1, device=self.device)
+                     if c.dim() == 3: c = c[:, 0, :]
+                     corrupted_list.append(c)
+                corrupted_atoms = torch.cat(corrupted_list, dim=0) # [M, 3]
+                
+                # Apply back using mask indices
+                if batch_q.dim() == 3:
+                    batch_q[active_sample_mask, 0, :] = corrupted_atoms
+                else:
+                    batch_q[active_sample_mask] = corrupted_atoms
+                    
+                batch_labels = torch.where(active_sample_mask, torch.zeros_like(batch_labels), batch_labels)
+        else:
+            # Vectorized Path (Graph friendly)
+            # Avoid .item() and dynamic shapes to support fullgraph=True
+            
+            # Prepare input: Use full batch, but sanitise to avoid padding/invalid atoms crashing sampler
+            if batch_q.dim() == 3:
+                 all_atoms = batch_q[:, 0, :]
+            else:
+                 all_atoms = batch_q
+            
+            # Sanitise: Replace masked-out atoms with the first atom (safe) or zeros
+            # We use where() to ensure sampler receives valid inputs everywhere
+            # Note: We must ensure all_atoms[0] is valid? 
+            # Or just use torch.zeros_like(all_atoms) if 0 is a valid entity index.
+            # Usually 0 is valid.
+            safe_atoms = torch.where(
+                active_sample_mask.unsqueeze(-1), 
+                all_atoms, 
+                torch.zeros_like(all_atoms)
+            )
+            
+            # Vectorized corruption on full batch (static shape)
+            corrupted_all = self.sampler.corrupt(
+                safe_atoms, 
+                num_negatives=1,
+                device=self.device
+            )
+            if corrupted_all.dim() == 3:
+                 corrupted_all = corrupted_all[:, 0, :] # [B, 3]
+            
+            # Apply back only where active_sample_mask is True
+            mask_exp = active_sample_mask.unsqueeze(-1).expand_as(corrupted_all) # [B, 3]
+            
+            if batch_q.dim() == 3:
+                batch_q[:, 0, :] = torch.where(mask_exp, corrupted_all, batch_q[:, 0, :])
+            else:
+                batch_q = torch.where(mask_exp, corrupted_all, batch_q)
+                
+            batch_labels = torch.where(active_sample_mask, torch.zeros_like(batch_labels), batch_labels)
+
+        # Update counters for RESET envs only
+        # next_val = (counter + 1) % cycle
+        next_counters = (local_counters + 1) % cycle
+        
+        # Use in-place copy to maintain static memory address for CUDA Graphs (reduce-overhead)
+        # and prevent "accessing overwritten tensor" errors.
+        self._train_neg_counters.copy_(torch.where(reset_mask, next_counters, local_counters))
+        
+        return batch_q, batch_labels
+
+    def _get_done_reward(
+        self,
+        current_states: Tensor,
+        current_labels: Tensor,
+        current_depths: Tensor,
+        n: int
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """
+        Compute rewards and termination flags.
+        Adapted from BatchedEnv._get_done_reward pure functional style.
+        """
+        device = self.device
+        pad = self.padding_idx
+        
+        rewards = torch.zeros(n, dtype=torch.float32, device=device)
+        terminated = torch.zeros(n, dtype=torch.bool, device=device)
+        truncated = torch.zeros(n, dtype=torch.bool, device=device)
+        is_success = torch.zeros(n, dtype=torch.bool, device=device)
+
+        # current_states: [n, A, 3]
+        non_pad = current_states[:, :, 0] != pad
+        preds = current_states[:, :, 0]
+
+        all_true = torch.zeros(n, dtype=torch.bool, device=device)
+        any_false = torch.zeros(n, dtype=torch.bool, device=device)
+        is_end = torch.zeros(n, dtype=torch.bool, device=device)
+
+        if self.true_pred_idx is not None:
+            true_mask = (preds == self.true_pred_idx) | ~non_pad
+            all_true = true_mask.all(dim=1) & non_pad.any(dim=1)
+
+        if self.false_pred_idx is not None:
+            any_false = (preds == self.false_pred_idx).any(dim=1)
+
+        if self.end_proof_action:
+            single_pred = non_pad.sum(dim=1) == 1
+            first_pos = non_pad.long().argmax(dim=1)
+            first_pred = preds[torch.arange(n, device=device), first_pos]
+            is_end = single_pred & (first_pred == self.end_pred_idx)
+            any_false = any_false | is_end
+            all_true = all_true & ~is_end
+
+        depth_exceeded = current_depths >= self.max_depth
+        natural_term = all_true | any_false
+        
+        terminated = natural_term
+        truncated = depth_exceeded & ~natural_term
+        done = natural_term | depth_exceeded
+
+        success = all_true
+        labels = current_labels
+
+        if self.reward_type == 0:
+            reward_mask = done & success & (labels == 1)
+            rewards = torch.where(reward_mask, torch.tensor(1.0, device=device), rewards)
+        elif self.reward_type == 1:
+            tp = done & success & (labels == 1)
+            fp = done & success & (labels == 0)
+            rewards = torch.where(tp, torch.tensor(1.0, device=device), rewards)
+            rewards = torch.where(fp, torch.tensor(-1.0, device=device), rewards)
+        elif self.reward_type == 2:
+            tp = done & success & (labels == 1)
+            tn = done & ~success & (labels == 0)
+            rewards = torch.where(tp, torch.tensor(1.0, device=device), rewards)
+            rewards = torch.where(tn, torch.tensor(1.0, device=device), rewards)
+        elif self.reward_type == 3:
+            pos = labels == 1
+            neg = labels == 0
+            tp = done & success & pos
+            fn = done & ~success & pos
+            fp = done & success & neg
+            tn = done & ~success & neg
+            rewards = torch.where(tp, torch.tensor(1.0, device=device), rewards)
+            rewards = torch.where(fn, torch.tensor(-0.5, device=device), rewards)
+            rewards = torch.where(fp, torch.tensor(-1.5, device=device), rewards)
+            rewards = torch.where(tn, torch.tensor(1.0, device=device), rewards)
+        elif self.reward_type == 4:
+            pos = labels == 1
+            neg = labels == 0
+            tp = done & success & pos
+            fn = done & ~success & pos
+            fp = done & success & neg
+            tn = done & ~success & neg
+            rewards = torch.where(tp, torch.tensor(1.0, device=device), rewards)
+            rewards = torch.where(fn, torch.tensor(-1.0, device=device), rewards)
+            rewards = torch.where(fp, torch.tensor(-1.0, device=device), rewards)
+            rewards = torch.where(tn, torch.tensor(self.rejection_weight, device=device), rewards)
+        
+        is_success = success
+        return rewards, terminated, truncated, is_success
+    
+    def reset_from_queries(
+        self, 
+        queries: Tensor, 
+        labels: Optional[Tensor] = None,
+        active_mask: Tensor = None
+    ) -> EnvState:
         """
         Create initial state from queries (pure function, no mutation).
         
         Args:
             queries: [B, 3] or [B, A, 3] Query tensor
+            labels:  [B] Optional labels. If None, assumes 1.
             active_mask: [B] Optional bool mask - if provided, only compute derived
                          states for True entries. This dramatically speeds up reset
                          when only a few envs need it.
@@ -264,10 +527,16 @@ class Env_vec:
         else:
             queries = queries.to(device)
             B = queries.shape[0]
+            
+        if labels is None:
+            labels = torch.ones(B, dtype=torch.long, device=device)
+        else:
+            labels = labels.to(device)
         
         # Initialize state tensors
         current_states = queries.clone()
         original_queries = queries.clone()
+        current_labels = labels.clone()
         depths = torch.zeros(B, dtype=torch.long, device=device)
         done = torch.zeros(B, dtype=torch.bool, device=device)
         success = torch.zeros(B, dtype=torch.bool, device=device)
@@ -303,36 +572,53 @@ class Env_vec:
             depths=depths,
             done=done,
             success=success,
+            current_labels=current_labels,
             history_hashes=history_hashes,
             history_count=history_count,
         )
     
+    def set_queries(self, queries: Tensor):
+        if queries is not None:
+            self._query_pool = queries.to(self.device)
+            self._per_env_ptrs = torch.arange(self.batch_size, device=self.device)
+        else:
+            self._query_pool = None
+            self._per_env_ptrs = None
+
     def reset(self) -> Tuple[EnvObs, EnvState]:
         """
-        Reset environment using stored query pool with round-robin cycling.
-        
-        Each environment gets the query at its pointer position.
-        Pointers are NOT advanced here - they're advanced in step_with_policy
-        when an environment finishes (newly_done).
-        
-        Returns:
-            Tuple of (EnvObs, EnvState)
+        Reset environment.
+        Respects self.order (Round-Robin vs Random) and self.negative_ratio.
         """
         if self._query_pool is None:
             raise RuntimeError("Must call set_queries() before reset()")
         
         pool_size = self._query_pool.shape[0]
+        device = self.device
+        B = self.batch_size
         
-        # Get queries for each env using current pointers (modulo pool size)
-        query_indices = self._per_env_ptrs % pool_size
-        init_queries = self._query_pool[query_indices]  # [batch_size, 3]
+        if self.order:
+            # Ordered: use pointers (already offset by +1 in initialization)
+            query_indices = self._per_env_ptrs % pool_size
+        else:
+            # Random: sample indices
+            query_indices = torch.randint(0, pool_size, (B,), device=device)
+            
+        init_queries = self._query_pool[query_indices]  # [B, 3]
         
-        # Advance pointers for next reset (the first reset after init picks next query)
-        self._per_env_ptrs = (self._per_env_ptrs + 1) % pool_size
-
+        # Default labels
+        init_labels = torch.ones(B, dtype=torch.long, device=device)
+        
+        # Negative sampling (on full batch)
+        reset_mask = torch.ones(B, dtype=torch.bool, device=device)
+        init_queries, init_labels = self.sample_negatives(init_queries, init_labels, reset_mask)
+        
+        # Increment pointers immediately after use for parity with BatchedEnv
+        if self.order:
+            self._per_env_ptrs = (self._per_env_ptrs + 1) % pool_size
         
         # Initialize state
-        state = self.reset_from_queries(init_queries)
+        state = self.reset_from_queries(init_queries, init_labels)
         
         # Create observation
         action_mask = self._positions_S < state.derived_counts.unsqueeze(1)
@@ -392,24 +678,22 @@ class Env_vec:
         )
         
         # Check termination (results only matter for active envs)
-        first_pred = next_states[:, 0, 0]
-        
-        is_true = (first_pred == self.true_pred_idx) if self.true_pred_idx else \
-                  torch.zeros(n, dtype=torch.bool, device=device)
-        is_false = (first_pred == self.false_pred_idx) if self.false_pred_idx else \
-                   torch.zeros(n, dtype=torch.bool, device=device)
-        is_end = (first_pred == self.end_pred_idx) if self.end_pred_idx else \
-                 torch.zeros(n, dtype=torch.bool, device=device)
-        is_depth_limit = (new_depths >= self.max_depth)
+        # Use _get_done_reward for consistent logic
+        rewards, terminated, truncated, is_success = self._get_done_reward(
+            new_current, state.current_labels, new_depths, n
+        )
         
         # Mask termination checks with active - only active envs can newly terminate
-        newly_done = active & (is_true | is_false | is_end | is_depth_limit)
+        # _get_done_reward returns raw checks on state, we must mask them
+        newly_done = active & (terminated | truncated)
         new_done = was_done | newly_done
-        new_success = state.success | (active & is_true)
+        # Accumulate success (once success always success in episode context until reset)
+        new_success = state.success | (active & is_success)
         
-        # Rewards (only for active envs that found TRUE)
-        rewards = torch.zeros(n, device=device)
-        rewards = torch.where(active & is_true, torch.ones_like(rewards), rewards)
+        # Zero out rewards for already done envs or inactive
+        rewards = torch.where(active, rewards, torch.zeros_like(rewards))
+        
+        # Update history only for active envs
         
         # Update history only for active envs
         write_pos = state.history_count.clamp(max=self.max_history_size - 1)
@@ -458,6 +742,7 @@ class Env_vec:
             depths=new_depths,
             done=new_done,
             success=new_success,
+            current_labels=state.current_labels,
             history_hashes=new_history_hashes,
             history_count=new_history_count,
         )
@@ -503,13 +788,24 @@ class Env_vec:
         n = state.current_states.shape[0]
         reset_mask = newly_done
         
-        # Get queries for reset using CURRENT pointer (before advancing)
+        # Select Queries logic
         pool_size = query_pool.shape[0]
-        safe_indices = per_env_ptrs % pool_size
+        
+        if self.order:
+            # Ordered
+            safe_indices = per_env_ptrs % pool_size
+            next_ptrs = (per_env_ptrs + 1) % pool_size
+        else:
+            # Random
+            # Generate random indices for ALL envs (simplest static shape)
+            # Or mix?
+            safe_indices = torch.randint(0, pool_size, (n,), device=device)
+            # next_ptrs irrelevant but keep stable
+            next_ptrs = per_env_ptrs 
+            
         candidate_queries = query_pool[safe_indices]  # [B, 3]
         
-        # Compute next pointers for envs that reset
-        next_ptrs = (per_env_ptrs + 1) % pool_size
+        # Apply reset mask to pointers
         new_ptrs = torch.where(reset_mask, next_ptrs, per_env_ptrs)
         
         # Create padding query [3]
@@ -519,8 +815,22 @@ class Env_vec:
         reset_mask_3 = reset_mask.unsqueeze(-1).expand(-1, 3)
         queries_for_reset = torch.where(reset_mask_3, candidate_queries, padding_atom)
         
-        # Compute initial state for reset queries (with active_mask to skip unification for non-reset envs)
-        reset_state = self.reset_from_queries(queries_for_reset, active_mask=reset_mask)
+        # Negative Sampling
+        # reset_mask indicates which envs are resetting
+        # We need labels for candidate_queries (default 1)
+        candidate_labels = torch.ones(n, dtype=torch.long, device=device)
+        
+        # Call sample_negatives (updates queries and labels for reset envs)
+        # Note: sample_negatives updates _train_neg_counters in-place (or mutation)
+        # It handles masking internally using reset_mask
+        queries_for_reset, labels_for_reset = self.sample_negatives(
+            queries_for_reset, candidate_labels, reset_mask
+        )
+        
+        # Compute initial state for reset queries
+        reset_state = self.reset_from_queries(
+            queries_for_reset, labels_for_reset, active_mask=reset_mask
+        )
         
         # Mix states: where(done, reset_state, new_state)
         reset_mask_A3 = reset_mask.view(-1, 1, 1).expand(-1, self.padding_atoms, 3)
@@ -536,6 +846,7 @@ class Env_vec:
             depths=torch.where(reset_mask, reset_state.depths, new_state.depths),
             done=torch.where(reset_mask, reset_state.done, new_state.done),
             success=torch.where(reset_mask, reset_state.success, new_state.success),
+            current_labels=torch.where(reset_mask, reset_state.current_labels, new_state.current_labels),
             history_hashes=torch.where(reset_mask_H, reset_state.history_hashes, new_state.history_hashes),
             history_count=torch.where(reset_mask, reset_state.history_count, new_state.history_count),
         )
@@ -1012,6 +1323,7 @@ class Env_vec:
             depths=state.depths.clone(),
             done=state.done.clone(),
             success=state.success.clone(),
+            current_labels=state.current_labels.clone(),
             history_hashes=state.history_hashes.clone(),
             history_count=state.history_count.clone(),
         )

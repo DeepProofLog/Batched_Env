@@ -17,6 +17,7 @@ import os
 import sys
 from pathlib import Path
 from dataclasses import asdict
+from typing import Dict
 
 # Paths
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,6 +81,7 @@ def parity_config_to_tensor_config(parity_config: ParityConfig) -> TensorConfig:
         gae_lambda=parity_config.gae_lambda,
         vf_coef=parity_config.vf_coef,
         max_grad_norm=parity_config.max_grad_norm,
+        train_neg_ratio=parity_config.negative_ratio,
     )
 
 
@@ -120,6 +122,7 @@ def parity_config_to_compiled_config(parity_config: ParityConfig) -> CompiledCon
         gae_lambda=parity_config.gae_lambda,
         vf_coef=parity_config.vf_coef,
         max_grad_norm=parity_config.max_grad_norm,
+        negative_ratio=parity_config.negative_ratio,
     )
 
 
@@ -160,6 +163,9 @@ def compare_results(tensor_results: dict, compiled_results: dict) -> bool:
     for key in tensor_results.keys():
         tensor_val = tensor_results.get(key, 0.0)
         compiled_val = compiled_results.get(key, 0.0)
+        if isinstance(tensor_val, list):
+            continue
+            
         diff = abs(tensor_val - compiled_val)
         tol = tolerances.get(key, TOLERANCE)  # Default to strict tolerance
         
@@ -190,6 +196,88 @@ def compare_results(tensor_results: dict, compiled_results: dict) -> bool:
     return all_passed
 
 
+def compare_traces(tensor_results: Dict, compiled_results: Dict):
+    """Compare rollout and training traces to find divergence point."""
+    tensor_rollout = tensor_results.get('rollout_traces', [])
+    compiled_rollout = compiled_results.get('rollout_traces', [])
+    
+    tensor_train = tensor_results.get('train_traces', [])
+    compiled_train = compiled_results.get('train_traces', [])
+    
+    print("\nROLLOUT TRACE COMPARISON:")
+    print("-" * 80)
+    
+    # Compare rollout traces
+    min_iterations = min(len(tensor_rollout), len(compiled_rollout))
+    
+    for iter_idx in range(min_iterations):
+        tensor_iter = tensor_rollout[iter_idx]
+        compiled_iter = compiled_rollout[iter_idx]
+        
+        tensor_traces = tensor_iter.get('traces', [])
+        compiled_traces = compiled_iter.get('traces', [])
+        
+        print(f"\nIteration {tensor_iter['iteration']}:")
+        print(f"  Tensor traces: {len(tensor_traces)}, Compiled traces: {len(compiled_traces)}")
+        
+        # Compare first few steps in detail
+        min_steps = min(len(tensor_traces), len(compiled_traces), 5)
+        
+        for step_idx in range(min_steps):
+            t_trace = tensor_traces[step_idx]
+            c_trace = compiled_traces[step_idx]
+            
+            # Compare key fields
+            fields_to_compare = ['pointer', 'action', 'reward', 'done', 'value', 'log_prob', 'proof_depths', 'query']
+            differences = []
+            
+            for field in fields_to_compare:
+                if field in t_trace and field in c_trace:
+                    t_val = t_trace[field]
+                    c_val = c_trace[field]
+                    if t_val is None or c_val is None:
+                        if t_val != c_val:
+                            differences.append(f"{field}: T={t_val} vs C={c_val}")
+                    elif abs(float(t_val) - float(c_val)) > 1e-5:
+                        differences.append(f"{field}: T={t_val:.6f} vs C={c_val:.6f}")
+            
+            if differences:
+                print(f"    Step {step_idx} DIVERGENCE: {', '.join(differences)}")
+                # Print first divergence in detail and stop
+                print(f"\n    FIRST DIVERGENCE FOUND at Iteration {iter_idx+1}, Step {step_idx}")
+                print(f"    Tensor trace: {t_trace}")
+                print(f"    Compiled trace: {c_trace}")
+                return
+    
+    print("\nTRAINING TRACE COMPARISON:")
+    print("-" * 80)
+    
+    # Compare training traces
+    min_train_iters = min(len(tensor_train), len(compiled_train))
+    
+    for iter_idx in range(min_train_iters):
+        tensor_iter = tensor_train[iter_idx]
+        compiled_iter = compiled_train[iter_idx]
+        
+        tensor_traces = tensor_iter.get('traces', [])
+        compiled_traces = compiled_iter.get('traces', [])
+        
+        print(f"\nIteration {tensor_iter['iteration']}:")
+        print(f"  Tensor batches: {len(tensor_traces)}, Compiled batches: {len(compiled_traces)}")
+        
+        # Compare first batch in detail
+        if tensor_traces and compiled_traces:
+            t_batch = tensor_traces[0]
+            c_batch = compiled_traces[0]
+            
+            fields = ['policy_loss', 'value_loss', 'entropy_loss', 'clip_fraction']
+            for field in fields:
+                if field in t_batch and field in c_batch:
+                    diff = abs(t_batch[field] - c_batch[field])
+                    if diff > 1e-5:
+                        print(f"    {field}: T={t_batch[field]:.6f} vs C={c_batch[field]:.6f} (diff={diff:.6f})")
+
+
 def test_script_compiled_parity(config: ParityConfig = None):
     """
     Run both training pipelines in-process and compare metrics.
@@ -198,7 +286,7 @@ def test_script_compiled_parity(config: ParityConfig = None):
         config: ParityConfig with test parameters. If None, uses defaults.
     """
     if config is None:
-        config = ParityConfig(skip_unary_actions=False)
+        config = ParityConfig(skip_unary_actions=False, negative_ratio=1.0)
     
     # Ensure skip_unary_actions is False for parity
     config = config.update(skip_unary_actions=False)
@@ -222,13 +310,20 @@ def test_script_compiled_parity(config: ParityConfig = None):
     print("\n" + "-" * 40)
     print(">>> Running Tensor Training...")
     print("-" * 40)
-    tensor_results = tensor_run_experiment(tensor_config)
+    tensor_results = tensor_run_experiment(tensor_config, return_traces=True)
     
     # Run Compiled training
     print("\n" + "-" * 40)
     print(">>> Running Compiled Training...")
     print("-" * 40)
-    compiled_results = compiled_run_experiment(compiled_config)
+    compiled_results = compiled_run_experiment(compiled_config, return_traces=True)
+    
+    # Compare traces if available
+    if 'rollout_traces' in tensor_results and 'rollout_traces' in compiled_results:
+        print("\n" + "=" * 80)
+        print("TRACE COMPARISON")
+        print("=" * 80)
+        compare_traces(tensor_results, compiled_results)
     
     # Compare results
     all_passed = compare_results(tensor_results, compiled_results)

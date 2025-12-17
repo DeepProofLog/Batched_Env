@@ -73,6 +73,7 @@ class TrainCompiledConfig:
     rules_file: str = "rules.txt"
     facts_file: str = "train.txt"
     train_depth: Any = None
+    negative_ratio: float = 1.0
     
     # Environment / padding
     padding_atoms: int = 6
@@ -690,6 +691,9 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
         memory_pruning=config.memory_pruning,
         queries=train_queries_tensor,
         sample_deterministic_per_env=config.sample_deterministic_per_env,
+        sampler=sampler,
+        order=True,  # Use round-robin query cycling for parity
+        negative_ratio=config.negative_ratio,
     )
     
     eval_env = EvalEnvOptimized(
@@ -704,6 +708,9 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
         memory_pruning=config.memory_pruning,
         queries=test_queries_tensor,
         sample_deterministic_per_env=config.sample_deterministic_per_env,
+        sampler=sampler,
+        order=config.parity,
+        negative_ratio=0.0,
     )
     
     # Create embedder with fixed seed
@@ -756,8 +763,16 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
 # run_experiment - Required by test_compiled_script.py
 # ==============================================================================
 
-def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
-    """Run full training experiment and return evaluation metrics."""
+def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> Dict[str, Any]:
+    """Run full training experiment and return evaluation metrics.
+    
+    Args:
+        config: Training configuration
+        return_traces: If True, return detailed traces for debugging
+        
+    Returns:
+        Dict containing evaluation metrics and optionally traces
+    """
     print("=" * 70)
     print("COMPILED TRAINING (using Env_vec / PPOOptimized)")
     print(f"Dataset: {config.dataset}")
@@ -790,8 +805,8 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
     
     # Compile the step function for the environment (policy compiled separately in PPO)
     train_env = comp['train_env']
-    compile_fullgraph = not config.parity
-    train_env.compile(fullgraph=compile_fullgraph, mode='default' if config.parity else 'reduce-overhead')
+    if not config.parity:
+        train_env.compile(fullgraph=True, mode='reduce-overhead')
     
     # Create PPOOptimized
     print("\n[2/3] Running training...")
@@ -810,10 +825,15 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
         device=comp['device'],
         verbose=True,
         parity=config.parity,
+        compile_policy=not config.parity,  # Disable compilation in parity mode for numerical accuracy
         # query_labels=comp['dh'].get_materialized_split('train').labels,
         # query_depths=comp['dh'].get_materialized_split('train').depths,
     )
-    ppo.learn(total_timesteps=config.total_timesteps, queries=comp['train_queries_tensor'])
+    learn_result = ppo.learn(
+        total_timesteps=config.total_timesteps,
+        queries=comp['train_queries_tensor'],
+        return_traces=return_traces,
+    )
     
     # [PARITY] Output Policy trained checksum
     policy_checksum_trained = sum(p.sum().item() for p in policy.parameters())
@@ -829,7 +849,8 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
     
     # Compile eval env step function
     eval_env = comp['eval_env']
-    eval_env.compile(fullgraph=compile_fullgraph, mode='default' if config.parity else 'reduce-overhead')
+    if not config.parity:
+        eval_env.compile(fullgraph=True, mode='reduce-overhead')
     
     test_queries = comp['dh'].test_queries[:config.n_envs * 4]
     
@@ -906,6 +927,11 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
         "clip_fraction": train_stats.get('clip_fraction', 0.0),
     }
     
+    # Add traces if requested
+    if return_traces:
+        results['rollout_traces'] = learn_result.get('rollout_traces', [])
+        results['train_traces'] = learn_result.get('train_traces', [])
+    
     return results
 
 
@@ -971,7 +997,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     ).to(device)
     
     # Compile policy for the environment
-    env.compile()
+    if not parity:
+        env.compile()
     
     # Create PPOOptimized
     ppo = PPOOptimized(
@@ -1050,7 +1077,8 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
 
     # Step 5: Evaluate
     # Compile eval_env for evaluation
-    eval_env.compile()
+    if not parity:
+        eval_env.compile()
     metrics_train, metrics_valid, metrics_test = _evaluate(
         args, ppo, sampler, dh, index_manager, device
     )

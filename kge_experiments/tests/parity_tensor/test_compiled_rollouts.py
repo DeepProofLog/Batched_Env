@@ -71,6 +71,7 @@ def create_default_config() -> SimpleNamespace:
         end_proof_action=True,
         reward_type=0,
         device="cpu",
+        negative_ratio=1,
         
         # PPO/rollout
         n_epochs=5,
@@ -163,12 +164,27 @@ def create_aligned_environments(config: SimpleNamespace):
     # Prepare queries (use first n_envs train queries)
     queries = dh.train_queries[:config.n_envs]
     
+    # Create sampler (needed for Env_vec negative sampling)
+    domain2idx, entity2domain = dh.get_sampler_domain_info()
+    from nn.sampler import Sampler
+    sampler = Sampler.from_data(
+        all_known_triples_idx=dh.all_known_triples_idx,
+        num_entities=im.constant_no,
+        num_relations=im.predicate_no,
+        device=device,
+        default_mode="both",
+        seed=42, 
+        domain2idx=domain2idx,
+        entity2domain=entity2domain,
+    )
+
     return {
         'dh': dh,
         'im': im,
         'base_engine': base_engine,
         'vec_engine': vec_engine,
         'queries': queries,
+        'sampler': sampler,
     }
 
 
@@ -191,6 +207,8 @@ def create_tensor_env(env_data: Dict, config: SimpleNamespace) -> BatchedEnv:
         query_tensors.append(query_padded)
     
     queries_tensor = torch.stack(query_tensors, dim=0)
+    
+    sampler = env_data.get('sampler')
     
     return BatchedEnv(
         batch_size=config.n_envs,
@@ -216,6 +234,9 @@ def create_tensor_env(env_data: Dict, config: SimpleNamespace) -> BatchedEnv:
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
         sample_deterministic_per_env=True,
+        train_neg_ratio=config.negative_ratio,
+        corruption_mode=(config.negative_ratio > 0),
+        sampler=sampler,
     )
 
 
@@ -224,6 +245,7 @@ def create_optimized_env(env_data: Dict, config: SimpleNamespace) -> EvalEnvOpti
     device = torch.device(config.device)
     im = env_data['im']
     vec_engine = env_data['vec_engine']
+    sampler = env_data['sampler']
     
     return EvalEnvOptimized(
         vec_engine=vec_engine,
@@ -235,6 +257,10 @@ def create_optimized_env(env_data: Dict, config: SimpleNamespace) -> EvalEnvOpti
         runtime_var_start_index=im.constant_no + 1,
         device=device,
         memory_pruning=config.memory_pruning,
+        negative_ratio=config.negative_ratio,
+        order=True,
+        sampler=sampler,
+        sample_deterministic_per_env=True,
     )
 
 
@@ -403,6 +429,25 @@ def collect_optimized_rollout_traces(
     # After first reset, each env advances: env[i] -> query (i+1) % num_queries
     # Must be done after set_queries since it initializes pointers
     ppo.env._per_env_ptrs = torch.arange(ppo.n_envs, device=device) + 1  # [1, 2, 3, ..., n_envs]
+
+    # [PARITY FIX] Manually sample negatives to match BatchedEnv.reset() behavior and RNG consumption
+    # BatchedEnv.reset() calls sample_negatives which consumes RNG and updates counters
+    # Even if no negatives are sampled (counter=0), we must replicate internal state changes
+    if ppo.env._train_neg_counters is not None:
+        init_labels = torch.ones(ppo.n_envs, dtype=torch.long, device=device)
+        reset_mask = torch.ones(ppo.n_envs, dtype=torch.bool, device=device)
+        # Verify cycle logic: ratio=1 -> cycle=2. Counter=0. 0%2==0 -> No sample.
+        # But counters increment: (0+1)%2 = 1.
+        
+        # We must call sample_negatives to potentially consume RNG (if needed) and update counters
+        # However, sample_negatives in env.py updates counters internally
+        state_queries, state_labels = ppo.env.sample_negatives(init_queries, init_labels, reset_mask)
+        init_queries = state_queries
+        
+        # NOTE: sample_negatives updates counters in-place
+    else:
+        # No negative sampling enabled
+        pass
     
     # Create initial observation
     action_mask = torch.arange(ppo.padding_states, device=device).unsqueeze(0) < state.derived_counts.unsqueeze(1)

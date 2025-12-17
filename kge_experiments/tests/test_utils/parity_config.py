@@ -64,6 +64,7 @@ class ParityConfig:
     end_proof_action: bool = True
     reward_type: int = 0
     sample_deterministic_per_env: bool = True  # For parity testing
+    negative_ratio: float = 1.0  # Ratio of negative samples per positive sample
     
     # PPO / training
     n_envs: int = 4
@@ -166,6 +167,10 @@ def create_parser(description: str = "Parity Test") -> argparse.ArgumentParser:
     # Embedding
     parser.add_argument("--embed-dim", type=int, default=64)
     
+    # Negative sampling
+    parser.add_argument("--negative-ratio", type=float, default=1.0,
+                        help="Ratio of negative samples per positive (0 to disable)")
+    
     # Evaluation
     parser.add_argument("--n-eval-episodes", type=int, default=10)
     parser.add_argument("--n-corruptions", type=int, default=10)
@@ -230,6 +235,7 @@ def config_from_args(args: argparse.Namespace, base: ParityConfig = None) -> Par
         'skip_training': 'skip_training',
         'skip_eval': 'skip_eval',
         'parity_mode': 'parity',
+        'negative_ratio': 'negative_ratio',
     }
     
     # Update base_dict with args

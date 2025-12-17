@@ -182,6 +182,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         runtime_var_start_index=im.constant_no + 1,
         device=device,
         memory_pruning=True,
+        sampler=sampler,
     )
     
     # Policy

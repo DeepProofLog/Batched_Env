@@ -46,6 +46,7 @@ from tensor.tensor_unification import UnificationEngine
 from unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
 from env import EvalEnvOptimized, EnvObs, EnvState
+from nn.sampler import Sampler
 from tensor.tensor_embeddings import EmbedderLearnable as TensorEmbedder
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
 from tensor.tensor_ppo import PPO as TensorPPO
@@ -60,7 +61,7 @@ from rollout import RolloutBuffer as RolloutBufferOptimized
 
 def get_default_config() -> ParityConfig:
     """Get default config from shared parity_config, with skip_unary_actions=False."""
-    return ParityConfig(skip_unary_actions=False)
+    return ParityConfig(skip_unary_actions=False, negative_ratio=1.0)
 
 
 @dataclass
@@ -164,6 +165,19 @@ def create_aligned_environments(config: SimpleNamespace):
         end_proof_action=config.end_proof_action,
     )
     
+    # Create sampler (needed for Env_vec negative sampling)
+    domain2idx, entity2domain = dh.get_sampler_domain_info()
+    sampler = Sampler.from_data(
+        all_known_triples_idx=dh.all_known_triples_idx,
+        num_entities=im.constant_no,
+        num_relations=im.predicate_no,
+        device=device,
+        default_mode="both",
+        seed=42, # config.seed usually available? create_aligned_environments takes config.
+        domain2idx=domain2idx,
+        entity2domain=entity2domain,
+    )
+    
     queries = dh.train_queries
     
     return {
@@ -171,6 +185,7 @@ def create_aligned_environments(config: SimpleNamespace):
         'im': im,
         'base_engine': base_engine,
         'vec_engine': vec_engine,
+        'sampler': sampler,
         'queries': queries,
         'padding_atoms': padding_atoms,
         'padding_states': padding_states,
@@ -221,6 +236,9 @@ def create_tensor_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
         sample_deterministic_per_env=True,
+        train_neg_ratio=config.negative_ratio,
+        corruption_mode=(config.negative_ratio > 0),
+        sampler=env_data.get('sampler'),
     )
     
     # Create embedder with fixed seed
@@ -291,6 +309,7 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
     dh = env_data['dh']
     im = env_data['im']
     vec_engine = env_data['vec_engine']
+    sampler = env_data['sampler']
     
     # Create optimized environment
     env = EvalEnvOptimized(
@@ -303,6 +322,10 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
         runtime_var_start_index=im.constant_no + 1,
         device=device,
         memory_pruning=config.memory_pruning,
+        sampler=sampler,
+        negative_ratio=config.negative_ratio,
+        order=True,
+        sample_deterministic_per_env=True,
     )
     
     # Create embedder with SAME fixed seed
@@ -454,10 +477,18 @@ def collect_optimized_rollout_with_traces(
     
     # Initialize state with first n_envs queries
     init_queries = query_pool[:n_envs]
-    state = ppo.env.reset_from_queries(init_queries)
+    
+    # [PARITY FIX] Manually sample negatives to match BatchedEnv.reset() behavior and RNG consumption
+    init_labels = torch.ones(n_envs, dtype=torch.long, device=device)
+    reset_mask = torch.ones(n_envs, dtype=torch.bool, device=device)
+    init_queries, init_labels = ppo.env.sample_negatives(init_queries, init_labels, reset_mask)
+    
+    # Initialize state
+    state = ppo.env.reset_from_queries(init_queries, init_labels)
     
     # Initialize per-env pointers to match tensor env's round-robin
     # Must be done after set_queries since it initializes pointers
+    # [PARITY FIX] Offset by 1 to match BatchedEnv state AFTER reset (since we skip reset here)
     ppo.env._per_env_ptrs = torch.arange(n_envs, device=device) + 1
     
     # Create initial observation

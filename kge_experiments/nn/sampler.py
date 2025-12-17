@@ -100,10 +100,24 @@ class Sampler:
         B, K = triples.shape[:2]
         flat = triples.reshape(-1, 3)
         hashes = _mix_hash(flat, self.b_e, self.b_r)
-        pos = torch.searchsorted(self.hashes_sorted, hashes)
-        in_range = (pos >= 0) & (pos < self.hashes_sorted.numel())
-        eq = torch.zeros_like(in_range)
-        eq[in_range] = self.hashes_sorted[pos[in_range]] == hashes[in_range]
+        
+        # Ensure hashes_sorted is 1D contiguous for searchsorted
+        # It should be from init, but safety check or just use it.
+        target = self.hashes_sorted
+        
+        pos = torch.searchsorted(target, hashes)
+        in_range = (pos >= 0) & (pos < target.numel())
+        
+        # Safe lookup: Clamp pos to valid range to avoid OOB
+        # Note: If target is empty, we returned early.
+        safe_pos = pos.clamp(min=0, max=target.numel() - 1)
+        
+        # Check value match at safe_pos
+        current_val = target[safe_pos]
+        match = (current_val == hashes)
+        
+        # True consistency requires in_range AND match
+        eq = in_range & match
         return (~eq).reshape(B, K)
 
     def _filter_keep_mask(self, triples: LongTensor) -> torch.BoolTensor:
@@ -111,10 +125,15 @@ class Sampler:
         if self.hashes_sorted is None or self.hashes_sorted.numel() == 0:
             return torch.ones((triples.shape[0],), dtype=torch.bool, device=triples.device)
         hashes = _mix_hash(triples, self.b_e, self.b_r)
-        pos = torch.searchsorted(self.hashes_sorted, hashes)
-        in_range = (pos >= 0) & (pos < self.hashes_sorted.numel())
-        eq = torch.zeros_like(in_range, dtype=torch.bool)
-        eq[in_range] = self.hashes_sorted[pos[in_range]] == hashes[in_range]
+        target = self.hashes_sorted
+        
+        pos = torch.searchsorted(target, hashes)
+        in_range = (pos >= 0) & (pos < target.numel())
+        
+        safe_pos = pos.clamp(min=0, max=target.numel() - 1)
+        match = (target[safe_pos] == hashes)
+        
+        eq = in_range & match
         return ~eq
 
     def _get_corruption_indices(self, mode: str) -> List[int]:
@@ -236,20 +255,39 @@ class Sampler:
                         valid = orig_flat > 0
                         result_flat = orig_flat.clone()
                         
-                        if valid.any():
-                            ov = orig_flat[valid]
-                            d_flat = self.ent2dom[ov].long()
-                            L = self.domain_len[d_flat]
-                            p = self.pos_in_dom[ov].long()
-                            can = L > 1
-                            
-                            if can.any():
-                                Lm1 = (L[can] - 1).float()
-                                rnd = torch.floor(torch.rand(can.sum(), device=device) * Lm1).long()
-                                adj = rnd + (rnd >= p[can])
-                                temp = ov.clone()
-                                temp[can] = self.domain_padded[d_flat[can], adj].long()
-                                result_flat[valid] = temp
+                        # Vectorized logic without data-dependent control flow (valid.any())
+                        # to support fullgraph=True and CUDA Graphs.
+                        
+                        # Use 0 (or safe entity) for invalid entries to prevent OOB access during gather
+                        # orig_flat > 0 checks for valid entities (0 is usually padding or invalid in this context)
+                        # We use index 1 as a safe dummy if 0 is risky, but ent2dom handles 0 if mapped.
+                        # Assuming ent2dom handles all entity IDs including 0.
+                        safe_ov = torch.where(valid, orig_flat, torch.ones_like(orig_flat)) # Use 1 as safe index
+                        
+                        d_flat = self.ent2dom[safe_ov].long()
+                        L = self.domain_len[d_flat]
+                        p = self.pos_in_dom[safe_ov].long()
+                        can = L > 1
+                        
+                        # Safe Lm1 (avoid negative or zero if L=0/1)
+                        Lm1 = (L - 1).float().clamp(min=0)
+                        
+                        # Generate random for ALL, mask later
+                        rnd = torch.floor(torch.rand(orig_flat.shape, device=device) * Lm1).long()
+                        adj = rnd + (rnd >= p)
+                        
+                        # Gather from domain_padded
+                        # We must ensure d_flat and adj are within bounds.
+                        # d_flat is safe via safe_ov. adj is < L <= max_pool_len.
+                        
+                        sampled_ents = self.domain_padded[d_flat, adj].long()
+                        
+                        # Apply logic only where valid AND can (L>1)
+                        # result = sampled where (valid & can), else orig (or kept same)
+                        # result_flat = orig_flat.clone() is already set
+                        
+                        mask = valid & can
+                        result_flat = torch.where(mask, sampled_ents, result_flat)
                         
                         result = result_flat.reshape(orig.shape)
                     

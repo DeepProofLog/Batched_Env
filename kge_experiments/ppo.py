@@ -569,10 +569,15 @@ class PPO:
                 
                 # Collect traces if requested
                 if return_traces:
+                    # Get pointer info from environment if available
+                    env_ptrs = getattr(self.env, '_per_env_ptrs', None)
+                    
                     for idx in range(self.n_envs):
                         trace_entry = {
                             "step": n_collected,
                             "env": idx,
+                            "pointer": int(env_ptrs[idx]) if env_ptrs is not None else None,
+                            "query_idx": int(self.current_query_indices[idx]) if self.current_query_indices is not None else None,
                             "state_obs": {
                                 "sub_index": obs_snapshot_sub[idx].cpu().numpy().copy(),
                                 "derived_sub_indices": obs_snapshot_derived[idx].cpu().numpy().copy(),
@@ -792,7 +797,7 @@ class PPO:
                         "value_loss_idx": len(value_losses_t) - 1,
                     })
                 
-                # KL divergence early stopping - check BEFORE optimizer step (matches SB3/ppo.py)
+                # KL divergence early stopping - check BEFORE optimizer step
                 # This prevents applying the update when KL exceeds threshold
                 if self.target_kl is not None:
                     kl_val = approx_kl_div.item()
@@ -859,7 +864,8 @@ class PPO:
         callback=None,
         on_iteration_start_callback=None,
         on_step_callback=None,
-    ) -> None:
+        return_traces: bool = False,
+    ) -> Dict[str, Any]:
         """
         Execute the PPO main loop: alternate between collecting rollouts and training.
         
@@ -870,6 +876,10 @@ class PPO:
             callback: Optional callback called at end of each iteration (like SB3)
             on_iteration_start_callback: Optional callback called at start of each iteration
             on_step_callback: Optional callback called when episodes complete
+            return_traces: If True, return detailed traces for debugging
+            
+        Returns:
+            Dict containing training info and optionally traces
         """
         if reset_num_timesteps:
             self.num_timesteps = 0
@@ -878,7 +888,7 @@ class PPO:
         
         iteration = 0
         
-        # Set queries in environment for round-robin cycling (like BatchedEnv)
+        # Set queries in environment
         self.env.set_queries(queries)
         
         # Initialize current_query_indices based on initial env assignment (0..batch_size)
@@ -898,6 +908,10 @@ class PPO:
         current_episode_length = torch.zeros(self.n_envs, dtype=torch.long, device=self.device)
         episode_rewards = []
         episode_lengths = []
+        
+        # Trace collection
+        all_rollout_traces = [] if return_traces else None
+        all_train_traces = [] if return_traces else None
         
         while self.num_timesteps < total_timesteps:
             iteration += 1
@@ -919,8 +933,16 @@ class PPO:
                 episode_lengths=episode_lengths,
                 iteration=iteration,
                 on_step_callback=on_step_callback,
+                return_traces=return_traces,
             )
-            state, obs, episode_starts, current_episode_reward, current_episode_length, n_steps, _ = result
+            state, obs, episode_starts, current_episode_reward, current_episode_length, n_steps, rollout_info = result
+            
+            if return_traces and rollout_info is not None:
+                all_rollout_traces.append({
+                    'iteration': iteration,
+                    'traces': rollout_info if isinstance(rollout_info, list) else rollout_info.get('traces', []),
+                })
+            
             self.num_timesteps += n_steps
             end_time = time.time()-start_time
             print(f"Rollout collected in {end_time:.2f}s. FPS: {n_steps / end_time:.2f}\n")            
@@ -928,7 +950,14 @@ class PPO:
             # Train
             print("\nTraining")
             start_time = time.time()
-            train_metrics = self.train()
+            train_metrics = self.train(return_traces=return_traces)
+            
+            if return_traces and 'traces' in train_metrics:
+                all_train_traces.append({
+                    'iteration': iteration,
+                    'traces': train_metrics['traces'],
+                })
+            
             self.last_train_metrics = train_metrics
             print(f"Training completed in {time.time() - start_time:.2f}s")
             
@@ -956,7 +985,20 @@ class PPO:
                     if self.verbose:
                         print("[PPOOptimized] Training stopped by callback")
                     break
-
+        
+        # Return results
+        result_dict = {
+            'num_timesteps': self.num_timesteps,
+            'episode_rewards': episode_rewards,
+            'episode_lengths': episode_lengths,
+            'last_train_metrics': self.last_train_metrics,
+        }
+        
+        if return_traces:
+            result_dict['rollout_traces'] = all_rollout_traces
+            result_dict['train_traces'] = all_train_traces
+        
+        return result_dict
 
     @torch.no_grad()
     def evaluate_policy(

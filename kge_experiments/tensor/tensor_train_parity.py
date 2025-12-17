@@ -40,6 +40,7 @@ class TrainParityConfig:
     rules_file: str = "rules.txt"
     facts_file: str = "train.txt"
     train_depth: Any = None
+    train_neg_ratio: float = 1.0
     
     # Environment / padding
     padding_atoms: int = 6
@@ -296,6 +297,9 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
         sample_deterministic_per_env=config.sample_deterministic_per_env,
+        train_neg_ratio=config.train_neg_ratio,
+        corruption_mode=(config.train_neg_ratio > 0),
+        sampler=sampler,
     )
     
     eval_env = BatchedEnv(
@@ -368,8 +372,16 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         'device': device,
     }
 
-def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
-    """Run full training experiment and return evaluation metrics."""
+def run_experiment(config: TrainParityConfig, return_traces: bool = False) -> Dict[str, Any]:
+    """Run full training experiment and return evaluation metrics.
+    
+    Args:
+        config: Training configuration
+        return_traces: If True, return detailed traces for debugging
+        
+    Returns:
+        Dict containing evaluation metrics and optionally traces
+    """
     print("=" * 70)
     print("TENSOR TRAINING")
     print(f"Dataset: {config.dataset}")
@@ -449,7 +461,7 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
         verbose=True,
         parity=config.parity,
     )
-    tensor_ppo.learn(total_timesteps=config.total_timesteps, callback=callback)
+    learn_result = tensor_ppo.learn(total_timesteps=config.total_timesteps, callback=callback, return_traces=return_traces)
     
     # Restore best model if we tracked it
     if callback_state is not None and callback_state['best_weights'] is not None and config.restore_best:
@@ -533,6 +545,11 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
         "approx_kl": train_stats.get('approx_kl', 0.0),
         "clip_fraction": train_stats.get('clip_fraction', 0.0),
     }
+    
+    # Add traces if requested
+    if return_traces:
+        results['rollout_traces'] = learn_result.get('rollout_traces', [])
+        results['train_traces'] = learn_result.get('train_traces', [])
     
     return results
 
