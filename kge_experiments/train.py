@@ -1,34 +1,27 @@
 """
 Training script for Neural-Guided Logical Reasoning (Optimized/Compiled Version).
 
-This module manages the training loop using optimized/compiled components:
-- Env_vec (EnvVec) instead of BatchedEnv  
-- PPOOptimized instead of TensorPPO
+This module provides the run_experiment function for training using optimized components:
+- Env_vec (EnvVec) for vectorized environments  
+- PPOOptimized for PPO training
 - UnificationEngineVectorized for compiled unification
 
-Key Components:
-1. **Data Handler**: Loads and processes the knowledge graph data.
-2. **Index Manager**: Manages mapping between symbols and integer indices.
-3. **Environment**: Creates vectorized environments using Env_vec.
-4. **Policy**: Instantiates the Actor-Critic network with Embedder.
-5. **PPO**: Runs the Proximal Policy Optimization algorithm (optimized).
-6. **Evaluation**: Uses PPOOptimized.evaluate_with_corruptions for ranking.
+Usage:
+    from train import run_experiment
+    from config import TrainConfig
+    
+    config = TrainConfig(dataset="countries_s3", total_timesteps=1000)
+    results = run_experiment(config)
 """
 
-import gc
 import os
 import sys
-import time
-import argparse
 from pathlib import Path
 from typing import List, Dict, Tuple, Any, Optional
-from dataclasses import dataclass, field
+
 import torch
 import torch.nn as nn
 import numpy as np
-import cProfile
-import pstats
-import io
 
 # Add root to path
 ROOT = Path(__file__).resolve().parent
@@ -37,13 +30,13 @@ if str(ROOT) not in sys.path:
 
 from data_handler import DataHandler
 from index_manager import IndexManager
-
 from unification import UnificationEngineVectorized
-from env import EnvVec, EnvObs, EnvState
+from env import EnvVec
 from nn.embeddings import EmbedderLearnable as TensorEmbedder
 from policy import ActorCriticPolicy as TensorPolicy
 from ppo import PPO as PPOOptimized
 from nn.sampler import Sampler
+from config import TrainConfig
 
 from callbacks import (
     TorchRLCallbackManager, 
@@ -54,547 +47,116 @@ from callbacks import (
     AnnealingTarget
 )
 
-from utils import save_profile_results, seed_all
+from utils import seed_all
 
 
 # ==============================================================================
-# TrainCompiledConfig - Configuration for test_compiled_script.py
+# build_callbacks
 # ==============================================================================
-
-@dataclass
-class TrainCompiledConfig:
-    """Configuration for compiled training (used by test_compiled_script.py)."""
-    # Dataset / data files
-    dataset: str = "countries_s3"
-    data_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-    train_file: str = "train.txt"
-    valid_file: str = "valid.txt"
-    test_file: str = "test.txt"
-    rules_file: str = "rules.txt"
-    facts_file: str = "train.txt"
-    train_depth: Any = None
-    negative_ratio: float = 1.0
-    
-    # Environment / padding
-    padding_atoms: int = 6
-    padding_states: int = 64
-    max_steps: int = 20
-    use_exact_memory: bool = True
-    memory_pruning: bool = True
-    skip_unary_actions: bool = True
-    end_proof_action: bool = True
-    reward_type: int = 0
-    max_total_vars: int = 1000
-    sample_deterministic_per_env: bool = True
-    
-    # PPO / training
-    n_envs: int = 3
-    n_steps: int = 20
-    n_epochs: int = 4
-    batch_size: int = 20
-    learning_rate: float = 3e-4
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_range: float = 0.2
-    ent_coef: float = 0.2
-    vf_coef: float = 0.5
-    max_grad_norm: float = 0.5
-    target_kl: Optional[float] = None
-    total_timesteps: int = 120
-    n_corruptions: int = 10
-    corruption_scheme: List[str] = None
-    sampler_default_mode: str = "both"
-    
-    def __post_init__(self):
-        if self.corruption_scheme is None:
-            if 'countries' in self.dataset or 'ablation' in self.dataset:
-                self.corruption_scheme = ['tail']
-            else:
-                self.corruption_scheme = ['head', 'tail']
-    
-    # Embedding / model
-    atom_embedding_size: int = 64
-    
-    # Model saving / evaluation
-    eval_freq: int = 0
-    save_model: bool = False
-    model_path: str = "./models/"  # Default relative to run location, but can be updated if needed
-    restore_best: bool = True
-    
-    # Misc
-    seed: int = 42
-    device: str = "cpu"
-    verbose: bool = True
-    parity: bool = False
-
-
-
-# ==============================================================================
-# _build_data_and_index 
-# ==============================================================================
-
-def _build_data_and_index(args: Any, device: torch.device) -> Tuple[DataHandler, IndexManager, Any, Any]:
-    """
-    Prepare knowledge graph data components and indices.
-    
-    Initializes the following components:
-    1. **DataHandler**: Loads raw triples, rules, and splits.
-    2. **IndexManager**: Builds integer mappings for entities, predicates, and variables.
-    3. **Sampler**: Constructs the negative sampler and corruptor (with domain info).
-    4. **Embedder**: Initializes learnable embeddings for the policy.
-    
-    Args:
-        args (Any): Configuration namespace containing paths and hyperparameters.
-        device (torch.device): Target device for tensors.
-        
-    Returns:
-        Tuple[DataHandler, IndexManager, Sampler, Embedder]: Initialized components.
-    """
-
-    # Dataset (matching sb3)
-    dh = DataHandler(
-        dataset_name=args.dataset_name,
-        base_path=args.data_path,
-        train_file=args.train_file,
-        valid_file=args.valid_file,
-        test_file=args.test_file,
-        rules_file=args.rules_file,
-        facts_file=args.facts_file,
-        train_depth=args.train_depth,
-        valid_depth=args.valid_depth,
-        test_depth=args.test_depth,
-        corruption_mode=args.corruption_mode,
-    )
-    
-    # Respect caps from args (matching sb3)
-    args.n_train_queries = (
-        len(dh.train_queries)
-        if args.n_train_queries is None
-        else min(args.n_train_queries, len(dh.train_queries))
-    )
-    args.n_eval_queries = (
-        len(dh.valid_queries)
-        if args.n_eval_queries is None
-        else min(args.n_eval_queries, len(dh.valid_queries))
-    )
-    assert args.n_eval_queries > 1, "Number of evaluation queries must be greater than 1 for callbacks."
-    args.n_test_queries = (
-        len(dh.test_queries)
-        if args.n_test_queries is None
-        else min(args.n_test_queries, len(dh.test_queries))
-    )
-    
-    # Index manager
-    im = IndexManager(
-        constants=dh.constants,
-        predicates=dh.predicates,
-        max_total_runtime_vars=args.max_total_vars,
-        max_arity=dh.max_arity,
-        padding_atoms=args.padding_atoms,
-        device=device,
-        rules=dh.rules,
-    )
-
-    # Materialize indices (tensor-specific)
-    dh.materialize_indices(im=im, device=device)
-
-    # Sampler
-    domain2idx, entity2domain = dh.get_sampler_domain_info()
-    sampler = Sampler.from_data(
-        all_known_triples_idx=dh.all_known_triples_idx,
-        num_entities=im.constant_no,
-        num_relations=im.predicate_no,
-        device=device,
-        default_mode="both",
-        seed=args.seed_run_i,
-        domain2idx=domain2idx,
-        entity2domain=entity2domain,
-    )
-    
-    # Embedder
-    embedder = TensorEmbedder(
-        n_constants=im.constant_no,
-        n_predicates=im.predicate_no,
-        n_vars=im.variable_no,
-        max_arity=dh.max_arity,
-        padding_atoms=args.padding_atoms,
-        atom_embedder=getattr(args, 'atom_embedder', 'transe'),
-        state_embedder=getattr(args, 'state_embedder', 'sum'),
-        constant_embedding_size=args.atom_embedding_size,
-        predicate_embedding_size=args.atom_embedding_size,
-        atom_embedding_size=args.atom_embedding_size,
-        device=str(device),
-    )
-    
-    # Derived dims for concat options (matching sb3)
-    args.atom_embedding_size = (
-        args.atom_embedding_size
-        if getattr(args, 'atom_embedder', 'transe') != "concat"
-        else (1 + dh.max_arity) * args.atom_embedding_size
-    )
-    args.state_embedding_size = (
-        args.atom_embedding_size
-        if getattr(args, 'state_embedder', 'sum') != "concat"
-        else args.atom_embedding_size * args.padding_atoms
-    )
-    embedder.embed_dim = args.state_embedding_size
-    
-    return dh, im, sampler, embedder
-
-
-def create_environments(
-    args: Any, 
-    dh: DataHandler, 
-    im: IndexManager, 
-    sampler: Sampler, 
-    parity: bool = False,
-    **kwargs
-):
-    """
-    Create training and evaluation environments using Env_vec (EnvVec).
-    
-    Args:
-        args (Any): Configuration namespace.
-        dh (DataHandler): Data handler with query splits.
-        im (IndexManager): Index manager for symbol mapping.
-        sampler (Sampler): Negative sampler.
-        parity (bool): If True, use parity mode for exact matching with tensor version.
-        **kwargs: Extensible keyword arguments.
-        
-    Returns:
-        Tuple[EnvVec, EnvVec, EnvVec]: 
-            (train_env, eval_env, callback_env). 
-    """
-    device = torch.device(args.device)
-    
-    # Create stringifier params
-    stringifier_params = {
-        'verbose': 0,
-        'idx2predicate': im.idx2predicate,
-        'idx2constant': im.idx2constant,
-        'idx2template_var': im.idx2template_var,
-        'padding_idx': im.padding_idx,
-        'n_constants': im.constant_no
-    }
-    
-    # Create vectorized engine directly (no base_engine dependency)
-    vec_engine = UnificationEngineVectorized.from_index_manager(
-        im,
-        padding_atoms=args.padding_atoms,
-        parity_mode=parity,
-        max_derived_per_state=args.padding_states,
-        end_proof_action=args.end_proof_action,
-    )
-    
-    # Clean up index manager tensors to save memory (same as take_ownership=True)
-    im.facts_idx = None
-    im.rules_idx = None
-    im.rule_lens = None
-    im.rules_heads_idx = None
-    
-    # Use pre-materialized tensors from DataHandler
-    train_split = dh.get_materialized_split('train')
-    valid_split = dh.get_materialized_split('valid')
-    test_split = dh.get_materialized_split('test')
-
-    # Convert queries to [N, 3] format (squeeze the padding dimension)
-    train_queries_tensor = train_split.queries.squeeze(1)  # [N, A, 3] -> [N, 3]
-    valid_queries_tensor = valid_split.queries.squeeze(1)
-    test_queries_tensor = test_split.queries.squeeze(1)
-    
-    batch_size = args.batch_size_env
-
-    # Train environment using Env_vec
-    train_env = EnvVec(
-        vec_engine=vec_engine,
-        batch_size=batch_size,
-        padding_atoms=args.padding_atoms,
-        padding_states=args.padding_states,
-        max_depth=args.max_depth,
-        end_proof_action=args.end_proof_action,
-        runtime_var_start_index=im.constant_no + 1,
-        device=device,
-        memory_pruning=args.memory_pruning,
-        queries=train_queries_tensor,
-        sample_deterministic_per_env=args.sample_deterministic_per_env,
-    )
-    
-    # Eval environment using Env_vec (for test queries)
-    eval_env = EnvVec(
-        vec_engine=vec_engine,
-        batch_size=batch_size,
-        padding_atoms=args.padding_atoms,
-        padding_states=args.padding_states,
-        max_depth=args.max_depth,
-        end_proof_action=args.end_proof_action,
-        runtime_var_start_index=im.constant_no + 1,
-        device=device,
-        memory_pruning=args.memory_pruning,
-        queries=test_queries_tensor,
-        sample_deterministic_per_env=args.sample_deterministic_per_env,
-    )
-    
-    # Callback environment using Env_vec (for valid queries)
-    callback_env = EnvVec(
-        vec_engine=vec_engine,
-        batch_size=batch_size,
-        padding_atoms=args.padding_atoms,
-        padding_states=args.padding_states,
-        max_depth=args.max_depth,
-        end_proof_action=args.end_proof_action,
-        runtime_var_start_index=im.constant_no + 1,
-        device=device,
-        memory_pruning=args.memory_pruning,
-        queries=valid_queries_tensor,
-        sample_deterministic_per_env=args.sample_deterministic_per_env,
-    )
-    
-    return train_env, eval_env, callback_env
-
-
-def _evaluate(
-    args: Any, 
-    ppo: PPOOptimized,
-    sampler, 
-    dh: DataHandler, 
-    im: IndexManager, 
-    device: torch.device
-) -> Tuple[dict, dict, dict]:
-    """
-    Evaluate the policy on the test set corrupted queries using PPOOptimized.
-    
-    Uses PPOOptimized.evaluate_with_corruptions for MRR and Hits@K evaluation.
-    
-    Args:
-        args (Any): Configuration.
-        ppo (PPOOptimized): PPO instance with compiled policy.
-        sampler (Sampler): Negative sampler.
-        dh (DataHandler): Data handler.
-        im (IndexManager): Index manager.
-        device (torch.device): Compute device.
-        
-    Returns:
-        Tuple[Dict, Dict, Dict]: (train_metrics, valid_metrics, test_metrics).
-    """
-    print("\nTest set evaluation...")
-    
-    ppo.policy.eval()
-    
-    # Get test queries
-    n_test = args.n_test_queries
-    test_queries = dh.get_materialized_split('test').queries
-    test_queries = test_queries[:n_test].squeeze(1)  # [N, 3]
-    
-    print(f"Evaluating {len(test_queries)} queries...")
-    
-    # Use PPOOptimized.evaluate_with_corruptions instead of tensor_eval_corruptions
-    eval_results = ppo.evaluate_with_corruptions(
-        queries=test_queries,
-        sampler=sampler,
-        n_corruptions=args.test_neg_samples,
-        corruption_modes=tuple(args.corruption_scheme),
-        verbose=0,
-    )
-    
-    def _parse_metric(val):
-        """Parse metric value (may be string like '0.792 +/- 0.41')."""
-        if isinstance(val, (int, float)):
-            return float(val)
-        if isinstance(val, str):
-            if '+/-' in val:
-                try:
-                    return float(val.split('+/-')[0].strip())
-                except (ValueError, IndexError):
-                    pass
-            try:
-                return float(val)
-            except ValueError:
-                pass
-        return 0.0
-    
-    # Build metrics dict matching expected format
-    per_mode = eval_results.get('per_mode', {})
-    metrics_test = {
-        'mrr_mean': _parse_metric(eval_results.get('MRR', 0.0)),
-        'hits1_mean': _parse_metric(eval_results.get('Hits@1', 0.0)),
-        'hits3_mean': _parse_metric(eval_results.get('Hits@3', 0.0)),
-        'hits10_mean': _parse_metric(eval_results.get('Hits@10', 0.0)),
-        'rewards_pos_mean': _parse_metric(eval_results.get('reward_pos_mean', 0.0)),
-        'rewards_neg_mean': _parse_metric(eval_results.get('reward_neg_mean', 0.0)),
-        'reward_label_pos': _parse_metric(eval_results.get('reward_label_pos', 0.0)),
-        'reward_label_neg': _parse_metric(eval_results.get('reward_label_neg', 0.0)),
-        'success_rate': _parse_metric(eval_results.get('success_rate', 0.0)),
-        'reward_overall': eval_results.get('reward_overall', ''),
-        'proven_pos': eval_results.get('proven_pos', ''),
-        'proven_neg': eval_results.get('proven_neg', ''),
-        # Per-mode metrics
-        'mrr_tail_mean': _parse_metric(per_mode.get('tail', {}).get('MRR', 0.0)),
-        'mrr_head_mean': _parse_metric(per_mode.get('head', {}).get('MRR', 0.0)),
-        'hits1_tail_mean': _parse_metric(per_mode.get('tail', {}).get('Hits@1', 0.0)),
-        'hits1_head_mean': _parse_metric(per_mode.get('head', {}).get('Hits@1', 0.0)),
-        'hits3_tail_mean': _parse_metric(per_mode.get('tail', {}).get('Hits@3', 0.0)),
-        'hits3_head_mean': _parse_metric(per_mode.get('head', {}).get('Hits@3', 0.0)),
-        'hits10_tail_mean': _parse_metric(per_mode.get('tail', {}).get('Hits@10', 0.0)),
-        'hits10_head_mean': _parse_metric(per_mode.get('head', {}).get('Hits@10', 0.0)),
-    }
-    
-    # Add depth-based metrics if available
-    for key in eval_results.keys():
-        if key.startswith('len_d_') or key.startswith('proven_d_') or key.startswith('reward_d_'):
-            metrics_test[key] = eval_results[key]
-    
-    print(f"results for: {getattr(args, 'run_signature', 'compiled')}") 
-    print("\nTest set metrics:")
-    for k in sorted(metrics_test.keys()):
-        v = metrics_test[k]
-        if isinstance(v, (int, float)):
-            print(f"{k}: {v:.3f}")
-        else:
-            print(f"{k}: {v}")
-    
-    # Placeholder for train/valid
-    metrics_train = {k: 0 for k in metrics_test.keys()}
-    metrics_valid = {k: 0 for k in metrics_test.keys()}
-    
-    return metrics_train, metrics_valid, metrics_test
-
 
 def build_callbacks(
-    args, 
-    eval_env, 
-    policy, 
-    sampler, 
-    dh, 
-    index_manager, 
+    config,  # Config object or namespace with relevant attributes
     ppo,
-    date: str
+    policy,
+    sampler,
+    dh,
+    eval_env=None,
+    date: str = None,
 ):
     """
-    Constructs and returns the callback manager and paths to best models.
+    Build callbacks for training. Works with both TrainConfig and args namespace.
+    
+    Callbacks included:
+    - MetricsCallback: Always included for logging
+    - RankingCallback: If eval_freq > 0 and eval_env provided
+    - CheckpointCallback: If save_model is True
+    - ScalarAnnealingCallback: If lr_decay or ent_coef_decay enabled
     """
-    # Build schedule configs for lr and entropy if enabled
-    annealing_targets = []
+    callbacks = [MetricsCallback(log_interval=1, verbose=getattr(config, 'verbose', True), collect_detailed=True)]
+    best_model_path_train, best_model_path_eval = None, None
     
-    if getattr(args, 'lr_decay', False):
-        lr_init = getattr(args, 'lr_init_value', args.lr)
-        lr_final = getattr(args, 'lr_final_value', 1e-6)
-        
-        def _set_lr(value: float) -> None:
-            for param_group in ppo.optimizer.param_groups:
-                param_group['lr'] = float(value)
-            ppo.learning_rate = float(value)
-
-        annealing_targets.append(AnnealingTarget(
-            name='lr',
-            setter=_set_lr,
-            initial=float(lr_init),
-            final=float(lr_final),
-            start_point=float(getattr(args, 'lr_start', 0.0)),
-            end_point=float(getattr(args, 'lr_end', 1.0)),
-            transform=getattr(args, 'lr_transform', 'linear'),
-            value_type='float',
-        ))
-        print(f"LR Decay: {lr_init} -> {lr_final}")
+    save_model = getattr(config, 'save_model', False)
+    eval_freq = getattr(config, 'eval_freq', 0)
     
-    if getattr(args, 'ent_coef_decay', False):
-        ent_init = getattr(args, 'ent_coef_init_value', args.ent_coef)
-        ent_final = getattr(args, 'ent_coef_final_value', 0.01)
-        
-        def _set_ent_coef(value: float) -> None:
-            ppo.ent_coef = float(value)
-
-        annealing_targets.append(AnnealingTarget(
-            name='ent_coef',
-            setter=_set_ent_coef,
-            initial=float(ent_init),
-            final=float(ent_final),
-            start_point=float(getattr(args, 'ent_coef_start', 0.0)),
-            end_point=float(getattr(args, 'ent_coef_end', 1.0)),
-            transform=getattr(args, 'ent_coef_transform', 'linear'),
-            value_type='float',
-        ))
-        print(f"Entropy Decay: {ent_init} -> {ent_final}")
-
-    callbacks_list = []
-    
-    # 1. Training metrics callback
-    callbacks_list.append(MetricsCallback(
-        log_interval=1,
-        verbose=True,
-        collect_detailed=True
-    ))
-
-    # 2. Evaluation callback (for finding Best Model)
-    best_model_path_train = None
-    best_model_path_eval = None
-    
-    if getattr(args, 'save_model', False):
-        save_path = Path(args.models_path) / args.run_signature
-        
+    if save_model or eval_freq > 0:
+        # Get save path
+        models_path = getattr(config, 'models_path', getattr(config, 'model_path', './models/'))
+        run_sig = getattr(config, 'run_signature', getattr(config, 'dataset', 'run'))
+        save_path = Path(models_path) / run_sig
         best_model_path_train = save_path / "best_model_train.pt"
         best_model_path_eval = save_path / "best_model_eval.pt"
         
-        # Prepare Eval Data for RankingCallback
-        valid_split = dh.get_materialized_split('valid')
-        valid_queries_tensor = valid_split.queries.squeeze(1)
-        valid_depths_tensor = valid_split.depths
-        
-        n_eval = getattr(args, 'n_eval_queries', None)
-        if n_eval:
-            valid_queries_tensor = valid_queries_tensor[:n_eval]
-            valid_depths_tensor = valid_depths_tensor[:n_eval]
-           
-        best_metric_key = getattr(args, 'eval_best_metric', 'mrr_mean')
-        if best_metric_key == 'mrr': best_metric_key = 'mrr_mean'
-        if best_metric_key == 'auc_pr': best_metric_key = 'auc_pr'
-
-        # Ranking Callback
-        ranking_cb = RankingCallback(
-            eval_env=eval_env,
-            policy=policy,
-            sampler=sampler,
-            eval_data=valid_queries_tensor,
-            eval_data_depths=valid_depths_tensor,
-            eval_freq=int(args.eval_freq),
-            n_corruptions=args.eval_neg_samples,
-            corruption_scheme=tuple(args.corruption_scheme),
-            ppo_agent=ppo
-        )
-        callbacks_list.append(ranking_cb)
-        
-        # Checkpoint Callback
-        ckpt_cb = CheckpointCallback(
-            save_path=save_path,
-            policy=policy,
-            best_model_name_train="best_model_train.pt",
-            best_model_name_eval="best_model_eval.pt",
-            train_metric="ep_rew_mean",
-            eval_metric=best_metric_key,
-            verbose=True,
-            date=date
-        )
-        callbacks_list.append(ckpt_cb)
-
-        # Annealing
-        if annealing_targets:
-            callbacks_list.append(ScalarAnnealingCallback(
-                total_timesteps=args.timesteps_train,
-                targets=annealing_targets,
-                verbose=1
+        # RankingCallback for evaluation
+        if eval_freq > 0 and eval_env is not None:
+            valid_split = dh.get_materialized_split('valid')
+            valid_queries = valid_split.queries.squeeze(1)
+            valid_depths = valid_split.depths
+            n_eval = getattr(config, 'n_eval_queries', None)
+            if n_eval:
+                valid_queries, valid_depths = valid_queries[:n_eval], valid_depths[:n_eval]
+            
+            n_corruptions = getattr(config, 'eval_neg_samples', getattr(config, 'n_corruptions', 50))
+            scheme = getattr(config, 'corruption_scheme', ('head', 'tail'))
+            
+            callbacks.append(RankingCallback(
+                eval_env=eval_env, policy=policy, sampler=sampler,
+                eval_data=valid_queries, eval_data_depths=valid_depths,
+                eval_freq=int(eval_freq), n_corruptions=n_corruptions,
+                corruption_scheme=tuple(scheme), ppo_agent=ppo
             ))
-
-    callback_manager = None
-    if callbacks_list:
-        callback_manager = TorchRLCallbackManager(callbacks=callbacks_list)
         
+        # CheckpointCallback for saving
+        if save_model:
+            best_metric = getattr(config, 'eval_best_metric', 'mrr_mean')
+            if best_metric == 'mrr': best_metric = 'mrr_mean'
+            callbacks.append(CheckpointCallback(
+                save_path=save_path, policy=policy,
+                train_metric="ep_rew_mean", eval_metric=best_metric,
+                verbose=True, date=date
+            ))
+    
+    # ScalarAnnealingCallback for lr/entropy decay
+    annealing_targets = []
+    total_timesteps = getattr(config, 'timesteps_train', getattr(config, 'total_timesteps', 0))
+    
+    if getattr(config, 'lr_decay', False):
+        lr_init = getattr(config, 'lr_init_value', getattr(config, 'lr', getattr(config, 'learning_rate', 3e-4)))
+        lr_final = getattr(config, 'lr_final_value', 1e-6)
+        def _set_lr(v): 
+            for pg in ppo.optimizer.param_groups: pg['lr'] = float(v)
+            ppo.learning_rate = float(v)
+        annealing_targets.append(AnnealingTarget(
+            name='lr', setter=_set_lr, initial=float(lr_init), final=float(lr_final),
+            start_point=float(getattr(config, 'lr_start', 0.0)),
+            end_point=float(getattr(config, 'lr_end', 1.0)),
+            transform=getattr(config, 'lr_transform', 'linear'), value_type='float',
+        ))
+    
+    if getattr(config, 'ent_coef_decay', False):
+        ent_init = getattr(config, 'ent_coef_init_value', getattr(config, 'ent_coef', 0.01))
+        ent_final = getattr(config, 'ent_coef_final_value', 0.01)
+        def _set_ent(v): ppo.ent_coef = float(v)
+        annealing_targets.append(AnnealingTarget(
+            name='ent_coef', setter=_set_ent, initial=float(ent_init), final=float(ent_final),
+            start_point=float(getattr(config, 'ent_coef_start', 0.0)),
+            end_point=float(getattr(config, 'ent_coef_end', 1.0)),
+            transform=getattr(config, 'ent_coef_transform', 'linear'), value_type='float',
+        ))
+    
+    if annealing_targets:
+        callbacks.append(ScalarAnnealingCallback(
+            total_timesteps=total_timesteps, targets=annealing_targets, verbose=1
+        ))
+    
+    callback_manager = TorchRLCallbackManager(callbacks=callbacks) if callbacks else None
     return callback_manager, best_model_path_train, best_model_path_eval
 
 
 # ==============================================================================
-# create_compiled_components - For run_experiment
+# create_compiled_components
 # ==============================================================================
 
-def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
+def create_compiled_components(config: TrainConfig) -> Dict[str, Any]:
     """Create compiled training components (data handler, index manager, env, model)."""
     device = torch.device(config.device)
     
@@ -627,7 +189,6 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
     
     # Sampler
     domain2idx, entity2domain = dh.get_sampler_domain_info()
-   
     sampler = Sampler.from_data(
         all_known_triples_idx=dh.all_known_triples_idx,
         num_entities=im.constant_no,
@@ -639,17 +200,7 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
         entity2domain=entity2domain,
     )
     
-    # Create stringifier params
-    stringifier_params = {
-        'verbose': 0,
-        'idx2predicate': im.idx2predicate,
-        'idx2constant': im.idx2constant,
-        'idx2template_var': im.idx2template_var,
-        'padding_idx': im.padding_idx,
-        'n_constants': im.constant_no
-    }
-    
-    # Create vectorized engine directly
+    # Create vectorized engine
     vec_engine = UnificationEngineVectorized.from_index_manager(
         im,
         padding_atoms=config.padding_atoms,
@@ -665,22 +216,15 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
     im.rules_heads_idx = None
     
     # Convert queries to tensor format
-    train_queries = dh.train_queries
-    test_queries = dh.test_queries
-    
     def convert_queries_to_tensor(queries):
-        query_tensors = []
-        for q in queries:
-            query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-            query_tensors.append(query_atom)
-        return torch.stack(query_tensors, dim=0)
+        return torch.stack([
+            im.atom_to_tensor(q.predicate, q.args[0], q.args[1]) for q in queries
+        ], dim=0)
     
-    train_queries_tensor = convert_queries_to_tensor(train_queries)
-    test_queries_tensor = convert_queries_to_tensor(test_queries)
+    train_queries_tensor = convert_queries_to_tensor(dh.train_queries)
+    test_queries_tensor = convert_queries_to_tensor(dh.test_queries)
     
-    # Create environments using Env_vec
-    # Create single environment using Env_vec (EnvVec)
-    # It will manage both train and test (valid) queries internally
+    # Create environment
     env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.n_envs,
@@ -691,30 +235,23 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
         runtime_var_start_index=im.constant_no + 1,
         device=device,
         memory_pruning=config.memory_pruning,
-        
-        # Query pools
         train_queries=train_queries_tensor,
         valid_queries=test_queries_tensor,
-        
-        # Sampling config
         sample_deterministic_per_env=config.sample_deterministic_per_env,
         sampler=sampler,
-        order=True if config.parity else False,  # Round-robin for parity train
+        order=True if config.parity else False,
         negative_ratio=config.negative_ratio,
-        
-        # Compile config
-        compile=not config.parity, # Pass compile flag to init
+        compile=not config.parity,
         compile_mode='reduce-overhead',
         compile_fullgraph=True,
     )
     
-    # Create embedder with fixed seed
-    n_vars_for_embedder = 1000
+    # Create embedder
     torch.manual_seed(config.seed)
     embedder = TensorEmbedder(
         n_constants=im.constant_no,
         n_predicates=im.predicate_no,
-        n_vars=n_vars_for_embedder,
+        n_vars=1000,
         max_arity=dh.max_arity,
         padding_atoms=config.padding_atoms,
         atom_embedder='transe',
@@ -726,18 +263,17 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
     )
     embedder.embed_dim = config.atom_embedding_size
     
-    # Create policy with fixed seed
-    action_size = config.padding_states
+    # Create policy
     torch.manual_seed(config.seed)
     policy = TensorPolicy(
         embedder=embedder,
         embed_dim=config.atom_embedding_size,
-        action_dim=action_size,
+        action_dim=config.padding_states,
         hidden_dim=256,
         num_layers=8,
         dropout_prob=0.0,
         device=device,
-        parity=True,  # Use SB3-identical initialization for parity testing
+        parity=True,
     ).to(device)
     
     return {
@@ -754,58 +290,48 @@ def create_compiled_components(config: TrainCompiledConfig) -> Dict[str, Any]:
 
 
 # ==============================================================================
-# run_experiment - Required by test_compiled_script.py
+# run_experiment
 # ==============================================================================
 
-def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> Dict[str, Any]:
+def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str, Any]:
     """Run full training experiment and return evaluation metrics.
     
     Args:
-        config: Training configuration
-        return_traces: If True, return detailed traces for debugging
+        config: Training configuration (TrainConfig dataclass).
+        return_traces: If True, return detailed traces for debugging.
         
     Returns:
-        Dict containing evaluation metrics and optionally traces
+        Dict containing evaluation metrics and optionally traces.
     """
     print("=" * 70)
     print("COMPILED TRAINING (using Env_vec / PPOOptimized)")
-    print(f"Dataset: {config.dataset}")
-    print(f"N envs: {config.n_envs}, N steps: {config.n_steps}")
-    print(f"Total timesteps: {config.total_timesteps}")
-    print(f"Seed: {config.seed}")
+    print(f"Dataset: {config.dataset}, Envs: {config.n_envs}, Steps: {config.n_steps}")
+    print(f"Timesteps: {config.total_timesteps}, Seed: {config.seed}")
     print("=" * 70)
     
-    # Create compiled components
+    # Create components
     print("\n[1/3] Creating compiled components...")
     seed_all(config.seed, deterministic=config.parity)
     comp = create_compiled_components(config)
     
-    # [PARITY] Output IndexManager info
     im = comp['im']
-    print(f"[PARITY] IndexManager: constants={im.constant_no}, predicates={im.predicate_no}")
-    
-    # [PARITY] Output Embedder checksum
     embedder = comp['embedder']
-    embedder_checksum = sum(p.sum().item() for p in embedder.parameters())
-    print(f"[PARITY] Embedder checksum: {embedder_checksum:.6f}")
-    
-    # [PARITY] Output Policy init checksum
     policy = comp['policy']
-    policy_checksum_init = sum(p.sum().item() for p in policy.parameters())
-    print(f"[PARITY] Policy checksum after creation: {policy_checksum_init:.6f}")
-    
-    # [PARITY] Output RNG state before sampler
-    print(f"[PARITY] RNG state before sampler: {torch.get_rng_state().sum().item():.0f}")
-    
-     # Get shared environment
     env = comp['env']
+    device = comp['device']
     
-    # Create PPOOptimized
+    # Checksums for parity verification
+    embedder_checksum = sum(p.sum().item() for p in embedder.parameters())
+    policy_checksum_init = sum(p.sum().item() for p in policy.parameters())
+    print(f"[PARITY] IndexManager: constants={im.constant_no}, predicates={im.predicate_no}")
+    print(f"[PARITY] Embedder checksum: {embedder_checksum:.6f}")
+    print(f"[PARITY] Policy checksum: {policy_checksum_init:.6f}")
+    
+    # Create PPO
     print("\n[2/3] Running training...")
     seed_all(config.seed, deterministic=config.parity)
     ppo = PPOOptimized(
-        policy=policy,
-        env=env,
+        policy=policy, env=env,
         batch_size_env=config.n_envs,
         padding_atoms=config.padding_atoms,
         padding_states=config.padding_states,
@@ -818,69 +344,57 @@ def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> 
         ent_coef=config.ent_coef,
         gamma=config.gamma,
         target_kl=config.target_kl,
-        device=comp['device'],
-        verbose=True,
+        device=device,
+        verbose=config.verbose,
         parity=config.parity,
-        compile_policy=not config.parity,  # Disable compilation in parity mode for numerical accuracy
-        # query_labels=comp['dh'].get_materialized_split('train').labels,
-        # query_depths=comp['dh'].get_materialized_split('train').depths,
+        compile_policy=not config.parity,
     )
+    
+    # Setup callbacks (MetricsCallback, RankingCallback, CheckpointCallback, ScalarAnnealingCallback)
+    callback, _, _ = build_callbacks(
+        config=config, ppo=ppo, policy=policy, sampler=comp['sampler'],
+        dh=comp['dh'], eval_env=env,
+    ) if config.use_callbacks else (None, None, None)
+    
+    # Load model via CheckpointCallback if requested
+    if config.load_model and callback:
+        ckpt_cb = next((cb for cb in callback.callbacks if isinstance(cb, CheckpointCallback)), None)
+        if ckpt_cb:
+            ckpt_cb.load_best_model(load_metric='train', device=device)
+    
+    if callback:
+        callback.on_training_start()
+    
+    # Train
     learn_result = ppo.learn(
         total_timesteps=config.total_timesteps,
         return_traces=return_traces,
+        callback=callback,
     )
     
-    # [PARITY] Output Policy trained checksum
     policy_checksum_trained = sum(p.sum().item() for p in policy.parameters())
     print(f"[PARITY] Policy checksum after training: {policy_checksum_trained:.6f}")
+
     
     # Evaluation
     print("\n[3/3] Running evaluation...")
     seed_all(config.seed + 1000, deterministic=config.parity)
-    
-    print(f"[PARITY] RNG before eval: {torch.get_rng_state().sum().item():.0f}")
-    
     policy.eval()
     
     test_queries = comp['dh'].test_queries[:config.n_envs * 4]
+    queries_tensor = torch.stack([
+        im.atom_to_tensor(q.predicate, q.args[0], q.args[1]) for q in test_queries
+    ], dim=0)
     
-    query_atoms = []
-    for q in test_queries:
-        query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
-        query_atoms.append(query_atom)
-    queries_tensor = torch.stack(query_atoms, dim=0)
-    
-    print(f"\n[COMPILED EVAL DEBUG]")
-    print(f"  corruption_scheme: {config.corruption_scheme}")
-    print(f"  n_corruptions: {config.n_corruptions}")
-    print(f"  num test queries: {len(test_queries)}")
-    print(f"  sampler default_mode: {config.sampler_default_mode}")
-    print(f"  first query: {test_queries[0]}")
-    
-    # Use PPOOptimized with same env for evaluation
-    eval_ppo = PPOOptimized(
-        policy=policy,
-        env=env,
-        batch_size_env=config.n_envs,
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        max_depth=config.max_steps,
-        n_steps=config.n_steps,
-        learning_rate=config.learning_rate,
-        n_epochs=config.n_epochs,
-        batch_size=config.batch_size,
-        device=comp['device'],
-        verbose=False,
-        eval_only=True,
-    )
-    
-    eval_results = eval_ppo.evaluate_with_corruptions(
+    eval_results = ppo.evaluate_with_corruptions(
         queries=queries_tensor,
         sampler=comp['sampler'],
         n_corruptions=config.n_corruptions,
         corruption_modes=tuple(config.corruption_scheme),
-        query_depths=torch.as_tensor(comp['dh'].test_depths[:config.n_envs * 4], 
-                                      dtype=torch.long, device=comp['device']),
+        query_depths=torch.as_tensor(
+            comp['dh'].test_depths[:config.n_envs * 4], 
+            dtype=torch.long, device=device
+        ),
         verbose=False,
         parity_mode=config.parity,
     )
@@ -891,29 +405,16 @@ def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> 
     hits3 = eval_results.get('Hits@3', 0.0)
     hits10 = eval_results.get('Hits@10', 0.0)
     
-    print(f"\n[PARITY] Evaluation Results:")
-    print(f"[PARITY] Compiled MRR: {mrr:.4f}")
-    print(f"[PARITY] Compiled Hits@1: {hits1:.4f}")
-    print(f"[PARITY] Compiled Hits@3: {hits3:.4f}")
-    print(f"[PARITY] Compiled Hits@10: {hits10:.4f}")
+    print(f"\n[PARITY] MRR: {mrr:.4f}, Hits@1: {hits1:.4f}, Hits@3: {hits3:.4f}, Hits@10: {hits10:.4f}")
     
-    # Get training stats from PPO
     train_stats = getattr(ppo, 'last_train_metrics', {})
-    
-    # Comprehensive results dict
     results = {
-        # Evaluation metrics
-        "MRR": mrr,
-        "Hits@1": hits1,
-        "Hits@3": hits3,
-        "Hits@10": hits10,
-        # Checksums
+        "MRR": mrr, "Hits@1": hits1, "Hits@3": hits3, "Hits@10": hits10,
         "index_manager_constants": im.constant_no,
         "index_manager_predicates": im.predicate_no,
         "embedder_checksum": embedder_checksum,
         "policy_checksum_init": policy_checksum_init,
         "policy_checksum_trained": policy_checksum_trained,
-        # Training losses (from last epoch)
         "policy_loss": train_stats.get('policy_loss', 0.0),
         "value_loss": train_stats.get('value_loss', 0.0),
         "entropy": train_stats.get('entropy', 0.0),
@@ -921,161 +422,8 @@ def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> 
         "clip_fraction": train_stats.get('clip_fraction', 0.0),
     }
     
-    # Add traces if requested
     if return_traces:
         results['rollout_traces'] = learn_result.get('rollout_traces', [])
         results['train_traces'] = learn_result.get('train_traces', [])
     
     return results
-
-
-# ==============================================================================
-# main - Legacy entry point for runner.py compatibility
-# ==============================================================================
-
-def main(args, log_filename, use_logger, use_WB, WB_path, date, external_components=None, profile_run=False):
-    """
-    Main training entry point.
-
-    Steps:
-    1. Check reproducibility settings.
-    2. Set random seeds.
-    3. Initialize data components (DataHandler, IndexManager, Sampler, Embedder).
-    4. Create environments (Train, Eval).
-    5. Initialize Policy and PPO algorithm.
-    6. Run training loop (`ppo.learn`).
-    7. Run evaluation (`_evaluate`).
-    
-    Args:
-        args (Namespace): Parsed command-line arguments.
-        log_filename (str): Path to log file.
-        use_logger (bool): Whether to enable logging.
-        use_WB (bool): Whether to use Weights & Biases.
-        WB_path (str): W&B run path.
-        date (str): Timestamp string.
-        external_components (Optional[Dict]): Pre-initialized components.
-    
-    Returns:
-        Tuple[Dict, Dict, Dict]: Metrics (train, valid, test).
-    """
-    
-    device = torch.device(args.device)
-    print(f"Device: {device}. CUDA available: {torch.cuda.is_available()}, Device count: {torch.cuda.device_count()}")
-    
-    # Step 1: build important components
-    dh, index_manager, sampler, embedder = _build_data_and_index(args, device)
-
-    # Step 2: Create environments using Env_vec
-    parity = getattr(args, 'parity', False)
-    env, eval_env, callback_env = create_environments(
-        args,
-        dh,
-        index_manager,
-        sampler,
-        parity=parity,
-    )
-
-    # Step 3: Create policy
-    action_size = args.padding_states
-    policy = TensorPolicy(
-        embedder=embedder,
-        embed_dim=args.state_embedding_size,
-        action_dim=action_size,
-        hidden_dim=args.hidden_dim,
-        num_layers=args.num_layers,
-        dropout_prob=args.dropout_prob,
-        device=device,
-        temperature=getattr(args, 'temperature', 1.0),
-        use_l2_norm=getattr(args, 'use_l2_norm', True),
-        sqrt_scale=getattr(args, 'sqrt_scale', False),
-    ).to(device)
-    
-    # Compile policy for the environment
-    if not parity:
-        env.compile()
-    
-    # Create PPOOptimized
-    ppo = PPOOptimized(
-        policy=policy,
-        env=env,
-        n_steps=args.n_steps,
-        learning_rate=args.lr,
-        n_epochs=args.n_epochs,
-        batch_size=args.batch_size,
-        clip_range=args.clip_range,
-        clip_range_vf=args.clip_range_vf,
-        ent_coef=args.ent_coef,
-        vf_coef=args.vf_coef,
-        max_grad_norm=args.max_grad_norm,
-        gamma=args.gamma,
-        gae_lambda=args.gae_lambda,
-        target_kl=args.target_kl,
-        device=device,
-        verbose=1,
-        seed=args.seed_run_i,
-        parity=parity,
-        query_labels=dh.get_materialized_split('train').labels,
-        query_depths=dh.get_materialized_split('train').depths,
-    )
-    
-    # Configure callbacks
-    callback_manager, best_model_path_train, best_model_path_eval = build_callbacks(
-        args, eval_env, policy, sampler, dh, index_manager, ppo, date
-    )
-    callbacks_list = callback_manager.callbacks if callback_manager else []
-
-
-    # Step 4: Train
-    if args.timesteps_train > 0 and not getattr(args, 'load_model', False): 
-        cb_func = callback_manager if callback_manager else None
-        iteration_start_cb = callback_manager.on_iteration_start if callback_manager else None
-        step_cb = callback_manager.on_step if callback_manager else None
-        
-        if callback_manager:
-            callback_manager.on_training_start()
-            
-        if profile_run:
-            print(f"\nProfiling PPO.learn() for {args.timesteps_train} timesteps...")
-            profiler = cProfile.Profile()
-            profiler.enable()
-
-        # Get train queries for PPO.learn
-        train_split = dh.get_materialized_split('train')
-        train_queries = train_split.queries.squeeze(1)  # [N, 3]
-
-        ppo.learn(
-            total_timesteps=args.timesteps_train, 
-            queries=train_queries,
-            callback=cb_func,
-            on_iteration_start_callback=iteration_start_cb,
-            on_step_callback=step_cb
-        )
-
-        if profile_run:
-            profiler.disable()
-            print("\nProfiling completed.")
-            save_profile_results(profiler, args, device)
-
-    
-    # Restore best model if configured
-    save_model = getattr(args, 'save_model', False)
-    restore_best = getattr(args, 'restore_best_val_model', True)
-    load_metric = getattr(args, 'load_best_metric', 'eval')
-    training_occurred = args.timesteps_train > 0 and not getattr(args, 'load_model', False)
-        
-
-    if training_occurred and save_model and restore_best and callback_manager:
-        ckpt_cb = next((cb for cb in callbacks_list if isinstance(cb, CheckpointCallback)), None)
-        if ckpt_cb:
-            ckpt_cb.load_best_model(load_metric=load_metric, device=device)
-
-    # Step 5: Evaluate
-    # Compile eval_env for evaluation
-    if not parity:
-        eval_env.compile()
-    metrics_train, metrics_valid, metrics_test = _evaluate(
-        args, ppo, sampler, dh, index_manager, device
-    )
-    
-    return metrics_train, metrics_valid, metrics_test
-

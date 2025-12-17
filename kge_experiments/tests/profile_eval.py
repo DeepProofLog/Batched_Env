@@ -297,7 +297,7 @@ def create_ppo_and_warmup(components, config) -> Tuple[any, float]:
     env = components['eval_env']
     queries = components['test_queries'][:config.n_test_queries].to(env.device)
     
-    # Compute batch size
+    # Compute batch size FIRST - this determines the fixed batch for both env and PPO
     effective_chunk = min(config.chunk_queries, len(queries))
     batch_size = compute_optimal_batch_size(
         chunk_queries=effective_chunk,
@@ -305,10 +305,18 @@ def create_ppo_and_warmup(components, config) -> Tuple[any, float]:
         max_vram_gb=config.vram_gb,
     )
     
+    # CRITICAL: Align env.batch_size with PPO's fixed_batch_size
+    # The env must handle padded queries of size fixed_batch_size
+    env.batch_size = batch_size
+    
     # Create PPOOptimized in eval-only mode (skips massive rollout buffer allocation)
     ppo = PPO(
         policy=policy,
         env=env,
+        batch_size_env=batch_size,  # Match the env batch size
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_depth,
         device=env.device,
         fixed_batch_size=batch_size,
         verbose=False,
@@ -630,7 +638,7 @@ def main():
     parser.add_argument('--dataset', type=str, default='family')
     parser.add_argument('--n-test-queries', type=int, default=100)
     parser.add_argument('--n-corruptions', type=int, default=100)
-    parser.add_argument('--corruption-modes', type=str, nargs='+', default=['both'])
+    parser.add_argument('--corruption-modes', type=str, nargs='+', default=['head', 'tail'])
     parser.add_argument('--chunk-queries', type=int, default=256)
     parser.add_argument('--batch-size-env', type=int, default=256)
     

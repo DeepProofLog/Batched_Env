@@ -42,7 +42,7 @@ from tests.test_utils.parity_config import ParityConfig, TOLERANCE, create_parse
 
 # Import train functions directly from train files - must be after setting env vars
 from tensor.tensor_train_parity import run_experiment as tensor_run_experiment, TrainParityConfig as TensorConfig
-from train import run_experiment as compiled_run_experiment, TrainCompiledConfig as CompiledConfig
+from train import run_experiment as compiled_run_experiment, TrainConfig as CompiledConfig
 
 
 def parity_config_to_tensor_config(parity_config: ParityConfig) -> TensorConfig:
@@ -86,7 +86,7 @@ def parity_config_to_tensor_config(parity_config: ParityConfig) -> TensorConfig:
 
 
 def parity_config_to_compiled_config(parity_config: ParityConfig) -> CompiledConfig:
-    """Convert ParityConfig to TrainCompiledConfig for train_compiled.py."""
+    """Convert ParityConfig to TrainConfig for train_compiled.py."""
     # Note: PPOOptimized will auto-adjust batch_size if > buffer_size
     return CompiledConfig(
         dataset=parity_config.dataset,
