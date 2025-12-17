@@ -1,6 +1,0 @@
-{
-    "metric": "mrr_mean",
-    "best_value": 0.9791666865348816,
-    "timesteps": 3,
-    "explained_variance": 0.4330393671989441
-}

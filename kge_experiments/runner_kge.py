@@ -17,9 +17,9 @@ import datetime
 from itertools import product
 from typing import List, Optional
 
-from utils import FileLogger
 from train import main
-from utils_config import (
+from utils import (
+    FileLogger,
     parse_scalar,
     coerce_config_value,
     update_config_value,
