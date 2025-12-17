@@ -35,7 +35,7 @@ def setup_components(device: torch.device, config: SimpleNamespace) -> dict:
     from index_manager import IndexManager
     from unification import UnificationEngineVectorized
     from nn.embeddings import EmbedderLearnable as TensorEmbedder
-    from model import ActorCriticPolicy as TensorPolicy
+    from policy import ActorCriticPolicy as TensorPolicy
     from env import EnvVec as EnvVec
     
     # Enable compile mode
@@ -208,7 +208,7 @@ def run_fused_benchmark(components: dict, config: SimpleNamespace) -> dict:
 def run_separate_benchmark(components: dict, config: SimpleNamespace) -> dict:
     """Benchmark the SEPARATE approach (policy and step compiled independently)."""
     from env import EnvVec, EnvObs
-    from model import create_policy_logits_fn
+    from policy import create_policy_logits_fn
     
     device = config.device
     policy = components['policy']

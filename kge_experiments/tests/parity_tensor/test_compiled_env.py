@@ -350,7 +350,7 @@ def run_batch_traces(
         tensor_obs = tensor_obs['next']
     
     # Reinitialize compiled env state with new queries (state is immutable)
-    compiled_state = compiled_env.reset_from_queries(query_atoms_tensor)
+    compiled_state = compiled_env._reset_from_queries(query_atoms_tensor)
     
     # Initialize trace storage: one list per query
     # Initialize trace storage: one list per query

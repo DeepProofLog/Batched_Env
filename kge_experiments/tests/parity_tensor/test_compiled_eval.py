@@ -42,6 +42,7 @@ from unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
 from tensor.tensor_embeddings import EmbedderLearnable as TensorEmbedder
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
+from policy import ActorCriticPolicy as OptimizedPolicy
 from tensor.tensor_sampler import Sampler
 from tensor.tensor_model_eval import eval_corruptions
 from ppo import PPO as PPOOptimized
@@ -230,10 +231,10 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
     test_queries_unpadded = convert_queries_unpadded(dh.test_queries)
     test_queries_padded = convert_queries_padded(dh.test_queries)
     
-    # Policy (shared)
+    # Policy (Original path)
     action_size = config.padding_states
     torch.manual_seed(config.seed)
-    policy = TensorPolicy(
+    policy_tensor = TensorPolicy(
         embedder=embedder,
         embed_dim=config.atom_embedding_size,
         action_dim=action_size,
@@ -241,8 +242,33 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
         num_layers=config.num_layers,
         dropout_prob=0.0,
         device=device,
-        compile_policy=config.compile,
     ).to(device)
+    
+    # Policy (Optimized path)
+    torch.manual_seed(config.seed)
+    policy_opt = OptimizedPolicy(
+        embedder=embedder,
+        embed_dim=config.embed_dim if hasattr(config, 'embed_dim') else config.atom_embedding_size,
+        action_dim=action_size,
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+        device=device,
+        parity=True,
+    ).to(device)
+    
+    # Manual key mapping for state_dict parity
+    tensor_state = policy_tensor.state_dict()
+    cleaned_state = {}
+    for k, v in tensor_state.items():
+        key = k
+        if key.startswith('mlp_extractor.shared_network.'):
+            key = key.replace('mlp_extractor.shared_network.', 'mlp_extractor.')
+        if 'policy_head.out_transform.' in key:
+            key = key.replace('policy_head.out_transform.', 'policy_head.')
+        if 'value_head.output_layer.' in key:
+            key = key.replace('value_head.output_layer.', 'value_head.')
+        cleaned_state[key] = v
+    policy_opt.load_state_dict(cleaned_state)
     
     return {
         'dh': dh,
@@ -250,7 +276,8 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
         'sampler': sampler,
         'base_engine': base_engine,
         'vec_engine': vec_engine,
-        'policy': policy,
+        'policy_tensor': policy_tensor,
+        'policy_opt': policy_opt,
         'test_queries_unpadded': test_queries_unpadded,
         'test_queries_padded': test_queries_padded,
     }
@@ -322,7 +349,7 @@ def run_original_eval(
 ) -> Dict[str, Any]:
     """Run evaluation using original path."""
     sampler = components['sampler']
-    policy = components['policy']
+    policy = components['policy_tensor']
     queries = components['test_queries_unpadded'][:config.n_queries]
     
     # Reset RNG for corruption parity
@@ -351,7 +378,7 @@ def run_optimized_eval(
 ) -> Tuple[Dict[str, Any], float]:
     """Run evaluation using optimized path. Returns (results, warmup_time_s)."""
     sampler = components['sampler']
-    policy = components['policy']
+    policy = components['policy_opt']
     queries = components['test_queries_unpadded'][:config.n_queries].to(env.device)
     
     # Configure compilation
@@ -364,19 +391,19 @@ def run_optimized_eval(
     
     # Create PPOOptimized instance for evaluation
     ppo = PPOOptimized(
-        env=env,
         policy=policy,
+        env=env,
+        batch_size_env=config.batch_size_env,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_depth,
         device=env.device,
+        n_steps=1, # Buffer not used for evaluation
     )
     
-    # Compute optimal batch size and compile
+    # Component warmup and compilation
     warmup_start = time.time()
     effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
-    batch_size = compute_optimal_batch_size(
-        chunk_queries=effective_chunk_queries,
-        n_corruptions=config.n_corruptions,
-    )
-    ppo.fixed_batch_size = batch_size
     
     # Compile environment (policy is compiled separately now)
     env.compile(
@@ -493,6 +520,16 @@ def run_parity_test(
     print("\nSetting up components...")
     components = setup_shared_components(config, device)
     
+    # Calculate optimal batch size for evaluation
+    # This ensures EnvVec and PPO use the same batch size for compilation
+    effective_chunk_queries = min(int(config.chunk_queries), int(config.n_queries))
+    batch_size = compute_optimal_batch_size(
+        chunk_queries=effective_chunk_queries,
+        n_corruptions=config.n_corruptions,
+    )
+    config.batch_size_env = batch_size
+    print(f"Using batch_size_env: {batch_size}")
+
     # Create environments
     print("Creating original environment...")
     env_orig = create_original_env(components, config, device)

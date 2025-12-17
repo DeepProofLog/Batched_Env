@@ -47,7 +47,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from unification import UnificationEngine, set_compile_mode
     from env import BatchedEnv
     from nn.embeddings import EmbedderLearnable as TensorEmbedder
-    from model import ActorCriticPolicy as TensorPolicy
+    from policy import ActorCriticPolicy as TensorPolicy
     from nn.sampler import Sampler
     
     # Enable compile mode for maximum performance

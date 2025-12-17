@@ -36,7 +36,8 @@ from unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
 from env import EnvVec, EnvObs, EnvState
 from tensor.tensor_embeddings import EmbedderLearnable
-from tensor.tensor_model import ActorCriticPolicy
+from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
+from policy import ActorCriticPolicy as OptimizedPolicy
 from tensor.tensor_ppo import PPO as TensorPPO
 from ppo import PPO as PPOOptimized
 from tensor.tensor_rollout import RolloutBuffer
@@ -273,7 +274,7 @@ def create_optimized_env(env_data: Dict, config: SimpleNamespace) -> EnvVec:
     )
 
 
-def create_policy(env_data: Dict, config: SimpleNamespace) -> ActorCriticPolicy:
+def create_policy(env_data: Dict, config: SimpleNamespace, optimized: bool = False) -> torch.nn.Module:
     """Create a policy network."""
     device = torch.device(config.device)
     im = env_data['im']
@@ -296,24 +297,38 @@ def create_policy(env_data: Dict, config: SimpleNamespace) -> ActorCriticPolicy:
     )
     embedder.embed_dim = config.embed_dim
     
-    policy = ActorCriticPolicy(
-        embedder=embedder,
-        embed_dim=config.embed_dim,
-        action_dim=config.padding_states,
-        hidden_dim=256,
-        num_layers=8,
-        dropout_prob=0.0,
-        device=device,
-        parity=True,
-        use_l2_norm=False,
-        sqrt_scale=True,
-        temperature=None,
-    ).to(device)
+    if optimized:
+        policy = OptimizedPolicy(
+            embedder=embedder,
+            embed_dim=config.embed_dim,
+            action_dim=config.padding_states,
+            hidden_dim=256,
+            num_layers=8,
+            device=device,
+            parity=True,
+            use_l2_norm=False,
+            sqrt_scale=True,
+            temperature=None,
+        ).to(device)
+    else:
+        policy = TensorPolicy(
+            embedder=embedder,
+            embed_dim=config.embed_dim,
+            action_dim=config.padding_states,
+            hidden_dim=256,
+            num_layers=8,
+            dropout_prob=0.0,
+            device=device,
+            parity=True,
+            use_l2_norm=False,
+            sqrt_scale=True,
+            temperature=None,
+        ).to(device)
     
     return policy
 
 
-def create_tensor_ppo(env: BatchedEnv, policy: ActorCriticPolicy, config: SimpleNamespace) -> TensorPPO:
+def create_tensor_ppo(env: BatchedEnv, policy: TensorPolicy, config: SimpleNamespace) -> TensorPPO:
     """Create tensor PPO."""
     return TensorPPO(
         policy=policy,
@@ -334,11 +349,15 @@ def create_tensor_ppo(env: BatchedEnv, policy: ActorCriticPolicy, config: Simple
     )
 
 
-def create_optimized_ppo(env: EnvVec, policy: ActorCriticPolicy, config: SimpleNamespace) -> PPOOptimized:
+def create_optimized_ppo(env: EnvVec, policy: OptimizedPolicy, config: SimpleNamespace) -> PPOOptimized:
     """Create optimized PPO."""
     return PPOOptimized(
         policy=policy,
         env=env,
+        batch_size_env=config.n_envs,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_depth,
         n_steps=config.n_steps,
         learning_rate=config.learning_rate,
         n_epochs=config.n_epochs,
@@ -427,45 +446,37 @@ def collect_optimized_rollout_traces(
     
     # Initialize state with first n_envs queries
     # ppo.env.train_queries is [N, 3] tensor
-    init_queries = ppo.env.train_queries[:ppo.n_envs]
-    state = ppo.env.reset_from_queries(init_queries)
-    
-    # Initialize per-env pointers to match tensor env's round-robin
-    # Tensor env initializes _per_env_train_ptrs to [0, 1, 2, ...] initially
-    # After first reset, each env advances: env[i] -> query (i+1) % num_queries
-    # Must be done after set_queries/train() since it initializes pointers
-    ppo.env._per_env_ptrs = torch.arange(ppo.n_envs, device=device) + 1  # [1, 2, 3, ..., n_envs]
-
+    init_queries = ppo.env.train_queries[:ppo.batch_size_env]
     # [PARITY FIX] Manually sample negatives to match BatchedEnv.reset() behavior and RNG consumption
     # BatchedEnv.reset() calls sample_negatives which consumes RNG and updates counters
     # Even if no negatives are sampled (counter=0), we must replicate internal state changes
-    if ppo.env._train_neg_counters is not None:
-        init_labels = torch.ones(ppo.n_envs, dtype=torch.long, device=device)
-        reset_mask = torch.ones(ppo.n_envs, dtype=torch.bool, device=device)
-        # Verify cycle logic: ratio=1 -> cycle=2. Counter=0. 0%2==0 -> No sample.
-        # But counters increment: (0+1)%2 = 1.
-        
-        # We must call sample_negatives to potentially consume RNG (if needed) and update counters
-        # However, sample_negatives in env.py updates counters internally
-        state_queries, state_labels = ppo.env.sample_negatives(init_queries, init_labels, reset_mask)
-        init_queries = state_queries
-        
-        # NOTE: sample_negatives updates counters in-place
-    else:
-        # No negative sampling enabled
-        pass
+    
+    # Initialize counters for the initial queries
+    temp_counters = torch.zeros(ppo.batch_size_env, dtype=torch.long, device=device)
+    init_labels = torch.ones(ppo.batch_size_env, dtype=torch.long, device=device)
+    reset_mask = torch.ones(ppo.batch_size_env, dtype=torch.bool, device=device)
+    
+    # Sample negatives BEFORE computing derived states
+    init_queries, state_labels, new_cnt = ppo.env.sample_negatives(init_queries, init_labels, reset_mask, temp_counters)
+    
+    # Now create initial state from the (potentially corrupted) queries
+    state = ppo.env._reset_from_queries(init_queries, state_labels)
+    state['neg_counters'] = new_cnt
+    
+    # Initialize per-env pointers to match tensor env's round-robin
+    ppo.env._per_env_ptrs = torch.arange(ppo.batch_size_env, device=device) + 1
     
     # Create initial observation
-    action_mask = torch.arange(ppo.padding_states, device=device).unsqueeze(0) < state.derived_counts.unsqueeze(1)
+    action_mask = torch.arange(ppo.padding_states, device=device).unsqueeze(0) < state['derived_counts'].unsqueeze(1)
     obs = EnvObs(
-        sub_index=state.current_states.unsqueeze(1),
-        derived_sub_indices=state.derived_states,
+        sub_index=state['current_states'].unsqueeze(1),
+        derived_sub_indices=state['derived_states'],
         action_mask=action_mask,
     )
     
-    episode_starts = torch.ones(ppo.n_envs, dtype=torch.float32, device=device)
-    current_episode_reward = torch.zeros(ppo.n_envs, dtype=torch.float32, device=device)
-    current_episode_length = torch.zeros(ppo.n_envs, dtype=torch.long, device=device)
+    episode_starts = torch.ones(ppo.batch_size_env, dtype=torch.float32, device=device)
+    current_episode_reward = torch.zeros(ppo.batch_size_env, dtype=torch.float32, device=device)
+    current_episode_length = torch.zeros(ppo.batch_size_env, dtype=torch.long, device=device)
     episode_rewards = []
     episode_lengths = []
     
@@ -661,8 +672,20 @@ def run_rollout_compile_parity_test(
     optimized_env = create_optimized_env(env_data, cfg)
     
     # Clone policy weights for optimized PPO
-    optimized_policy = create_policy(env_data, cfg)
-    optimized_policy.load_state_dict(tensor_policy.state_dict())
+    optimized_policy = create_policy(env_data, cfg, optimized=True)
+    # Manual key mapping for state_dict parity
+    tensor_state = tensor_policy.state_dict()
+    cleaned_state = {}
+    for k, v in tensor_state.items():
+        key = k
+        if key.startswith('mlp_extractor.shared_network.'):
+            key = key.replace('mlp_extractor.shared_network.', 'mlp_extractor.')
+        if 'policy_head.out_transform.' in key:
+            key = key.replace('policy_head.out_transform.', 'policy_head.')
+        if 'value_head.output_layer.' in key:
+            key = key.replace('value_head.output_layer.', 'value_head.')
+        cleaned_state[key] = v
+    optimized_policy.load_state_dict(cleaned_state)
     
     optimized_ppo = create_optimized_ppo(optimized_env, optimized_policy, cfg)
     

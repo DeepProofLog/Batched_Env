@@ -41,7 +41,7 @@ from index_manager import IndexManager
 from unification import UnificationEngineVectorized
 from env import EnvVec, EnvObs, EnvState
 from nn.embeddings import EmbedderLearnable as TensorEmbedder
-from model import ActorCriticPolicy as TensorPolicy
+from policy import ActorCriticPolicy as TensorPolicy
 from ppo import PPO as PPOOptimized
 from nn.sampler import Sampler
 
@@ -806,6 +806,10 @@ def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> 
     ppo = PPOOptimized(
         policy=policy,
         env=env,
+        batch_size_env=config.n_envs,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_steps,
         n_steps=config.n_steps,
         learning_rate=config.learning_rate,
         n_epochs=config.n_epochs,
@@ -857,13 +861,17 @@ def run_experiment(config: TrainCompiledConfig, return_traces: bool = False) -> 
     eval_ppo = PPOOptimized(
         policy=policy,
         env=env,
+        batch_size_env=config.n_envs,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_steps,
         n_steps=config.n_steps,
         learning_rate=config.learning_rate,
         n_epochs=config.n_epochs,
         batch_size=config.batch_size,
         device=comp['device'],
         verbose=False,
-        eval_only=True,  # Skip buffer allocation for eval
+        eval_only=True,
     )
     
     eval_results = eval_ppo.evaluate_with_corruptions(

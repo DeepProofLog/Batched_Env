@@ -52,6 +52,7 @@ from tensor.tensor_embeddings import EmbedderLearnable as TensorEmbedder
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
 from tensor.tensor_ppo import PPO as TensorPPO
 from ppo import PPO as PPOOptimized
+from policy import ActorCriticPolicy as OptimizedPolicy
 from tensor.tensor_rollout import RolloutBuffer as TensorRolloutBuffer
 from rollout import RolloutBuffer as RolloutBufferOptimized
 
@@ -359,13 +360,12 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
     # Create policy with SAME fixed seed
     action_size = padding_states
     torch.manual_seed(config.seed)
-    policy = TensorPolicy(
+    policy = OptimizedPolicy(
         embedder=embedder,
         embed_dim=config.embed_dim,
         action_dim=action_size,
         hidden_dim=256,
         num_layers=8,
-        dropout_prob=0.0,
         device=device,
         parity=True,
         use_l2_norm=False,
@@ -377,10 +377,23 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
     # Strip _orig_mod prefix if present (from torch.compile)
     cleaned_state = {}
     for k, v in tensor_policy_state.items():
-        if k.startswith('_orig_mod.'):
-            cleaned_state[k.replace('_orig_mod.', '')] = v
-        else:
-            cleaned_state[k] = v
+        # Handle torch.compile prefix
+        key = k.replace('_orig_mod.', '')
+        
+        # Handle structural changes: mlp_extractor.shared_network.X -> mlp_extractor.X
+        if key.startswith('mlp_extractor.shared_network.'):
+            key = key.replace('mlp_extractor.shared_network.', 'mlp_extractor.')
+        
+        # Handle head restructuring: policy_head.out_transform.X -> policy_head.X
+        if 'policy_head.out_transform.' in key:
+            key = key.replace('policy_head.out_transform.', 'policy_head.')
+            
+        # Handle value head restructuring: value_head.output_layer.X -> value_head.X
+        if 'value_head.output_layer.' in key:
+            key = key.replace('value_head.output_layer.', 'value_head.')
+            
+        cleaned_state[key] = v
+    
     policy.load_state_dict(cleaned_state)
     
     # Create PPO with fixed seed
@@ -388,6 +401,10 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
     ppo = PPOOptimized(
         policy=policy,
         env=env,
+        batch_size_env=config.n_envs,
+        padding_atoms=padding_atoms,
+        padding_states=padding_states,
+        max_depth=config.max_depth,
         n_steps=config.n_steps,
         learning_rate=config.learning_rate,
         n_epochs=config.n_epochs,
@@ -401,7 +418,7 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
         max_grad_norm=config.max_grad_norm,
         device=device,
         verbose=False,
-        parity=True,  # Enable parity mode
+        parity=True,
     )
     
     # Convert queries to tensor format [N, 3]
@@ -476,11 +493,10 @@ def collect_optimized_rollout_with_traces(
     Returns traces, buffer, and training metrics.
     """
     device = ppo.device
-    n_envs = ppo.n_envs
+    n_envs = ppo.batch_size_env
     
     # Setup policy for step_with_policy (eager mode for parity tests)
-    from model import create_policy_logits_fn
-    ppo.env._policy_logits_fn = create_policy_logits_fn(ppo.policy)
+    ppo.env._policy_logits_fn = ppo.policy.get_logits
     ppo.env._compile_deterministic = False  # Training uses sampling
     ppo.env._compiled = False
     
@@ -757,13 +773,19 @@ def run_learn_compiled_parity_test(
     results = LearnCompiledParityResults()
     base_cfg = config or get_default_config()
     
-    # Note: PPOOptimized will auto-adjust batch_size if > buffer_size
+    # Ensure batch_size is compatible with buffer_size (n_envs * n_steps)
+    buffer_size = n_envs * n_steps
+    batch_size = base_cfg.batch_size
+    if batch_size > buffer_size or buffer_size % batch_size != 0:
+        batch_size = buffer_size
+        
     cfg = base_cfg.update(
         data_path=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data'),
         dataset=dataset,
         n_envs=n_envs,
         n_steps=n_steps,
         n_epochs=n_epochs,
+        batch_size=batch_size,
         seed=seed,
         verbose=verbose,
         skip_unary_actions=False,  # Required for parity

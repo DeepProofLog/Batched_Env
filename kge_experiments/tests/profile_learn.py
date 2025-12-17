@@ -69,7 +69,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from index_manager import IndexManager
     from unification import UnificationEngineVectorized
     from nn.embeddings import EmbedderLearnable as TensorEmbedder
-    from model import ActorCriticPolicy as TensorPolicy
+    from policy import ActorCriticPolicy as TensorPolicy
     from nn.sampler import Sampler
     from env import EnvVec, EnvObs
     from ppo import PPO
@@ -205,6 +205,10 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     ppo = PPO(
         policy=policy,
         env=train_env,
+        batch_size_env=config.batch_size_env,
+        padding_atoms=config.padding_atoms,
+        padding_states=config.padding_states,
+        max_depth=config.max_depth,
         n_steps=config.n_steps,
         learning_rate=config.lr,
         n_epochs=config.n_epochs,
