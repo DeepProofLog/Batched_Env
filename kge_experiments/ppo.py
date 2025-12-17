@@ -2,11 +2,11 @@
 PPO (Proximal Policy Optimization) for Optimized Environment.
 
 This module implements PPO for use with EvalEnvOptimized which uses
-EvalObs/EvalState instead of TensorDict.
+EnvObs/EnvState instead of TensorDict.
 
 Key Differences from ppo.py:
     - Uses step_functional() instead of step_and_maybe_reset()
-    - Works with EvalObs NamedTuples
+    - Works with EnvObs NamedTuples
     - Uses RolloutBufferOptimized
     
 Evaluation Methods:
@@ -28,7 +28,7 @@ from tensordict import TensorDict
 import time
 
 from rollout import RolloutBuffer
-from env import EvalEnvOptimized, EvalObs, EvalState
+from env import EvalEnvOptimized, EnvObs, EnvState
 
 
 def compute_metrics_from_ranks(ranks: Tensor) -> Dict[str, float]:
@@ -302,8 +302,8 @@ class PPO:
             self.rollout_buffer = None
         
         # Persistent state
-        self._last_state: Optional[EvalState] = None
-        self._last_obs: Optional[EvalObs] = None
+        self._last_state: Optional[EnvState] = None
+        self._last_obs: Optional[EnvObs] = None
         self.num_timesteps = 0
         
         # Skip optimizer and policy compilation in eval-only mode
@@ -423,8 +423,8 @@ class PPO:
         """
         self._fixed_batch_size = value
     
-    def _obs_to_tensordict(self, obs: EvalObs) -> TensorDict:
-        """Convert EvalObs to TensorDict for policy forward pass."""
+    def _obs_to_tensordict(self, obs: EnvObs) -> TensorDict:
+        """Convert EnvObs to TensorDict for policy forward pass."""
         return TensorDict({
             'sub_index': obs.sub_index,
             'derived_sub_indices': obs.derived_sub_indices,
@@ -433,8 +433,8 @@ class PPO:
     
     def collect_rollouts(
         self,
-        current_state: EvalState,
-        current_obs: EvalObs,
+        current_state: EnvState,
+        current_obs: EnvObs,
         episode_starts: torch.Tensor,
         current_episode_reward: torch.Tensor,
         current_episode_length: torch.Tensor,
@@ -443,15 +443,15 @@ class PPO:
         iteration: int,
         return_traces: bool = False,
         on_step_callback: Optional[Callable] = None,
-    ) -> Tuple[EvalState, EvalObs, torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[List]]:
+    ) -> Tuple[EnvState, EnvObs, torch.Tensor, torch.Tensor, torch.Tensor, int, Optional[List]]:
         """
         Collect experiences using the current policy and fill the rollout buffer.
         
         Uses EvalEnvOptimized's step_with_policy which handles query cycling internally.
         
         Args:
-            current_state: Current EvalState from previous rollout
-            current_obs: Current EvalObs observation
+            current_state: Current EnvState from previous rollout
+            current_obs: Current EnvObs observation
             episode_starts: [N] Binary mask for episode starts
             current_episode_reward: [N] Accumulator for rewards
             current_episode_length: [N] Accumulator for lengths
@@ -462,7 +462,7 @@ class PPO:
             
         Returns:
             Tuple containing:
-                - next_state: Latest EvalState
+                - next_state: Latest EnvState
                 - next_obs: Latest observation
                 - episode_starts: Updated start masks
                 - current_episode_reward: Updated reward accumulators
@@ -490,7 +490,7 @@ class PPO:
                 obs_snapshot_derived = obs.derived_sub_indices.clone()
                 obs_snapshot_mask = obs.action_mask.clone()
                 
-                # Convert EvalObs to TensorDict for policy value prediction
+                # Convert EnvObs to TensorDict for policy value prediction
                 obs_td = self._obs_to_tensordict(obs)
                 
                 # Predict values (critic) separate from actor (step_with_policy)
@@ -971,7 +971,7 @@ class PPO:
         
         # Create initial observation
         action_mask = self.env._positions_S < state.derived_counts.unsqueeze(1)
-        obs = EvalObs(
+        obs = EnvObs(
             sub_index=state.current_states.unsqueeze(1),
             derived_sub_indices=state.derived_states,
             action_mask=action_mask,

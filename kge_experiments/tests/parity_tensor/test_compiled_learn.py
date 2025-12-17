@@ -45,7 +45,7 @@ from index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
 from unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
-from env import EvalEnvOptimized, EvalObs, EvalState
+from env import EvalEnvOptimized, EnvObs, EnvState
 from tensor.tensor_embeddings import EmbedderLearnable as TensorEmbedder
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
 from tensor.tensor_ppo import PPO as TensorPPO
@@ -143,9 +143,9 @@ def create_aligned_environments(config: SimpleNamespace):
         'n_constants': im.constant_no
     }
     
-    # Create base unification engine
+    # Create base unification engine (for tensor environment only)
     base_engine = UnificationEngine.from_index_manager(
-        im, take_ownership=True,
+        im, take_ownership=False,
         stringifier_params=stringifier_params,
         end_pred_idx=im.end_pred_idx,
         end_proof_action=config.end_proof_action,
@@ -154,12 +154,14 @@ def create_aligned_environments(config: SimpleNamespace):
     base_engine.index_manager = im
     
     # Create vectorized engine for optimized env (parity_mode=True for determinism)
-    vec_engine = UnificationEngineVectorized.from_base_engine(
-        base_engine,
+    vec_engine = UnificationEngineVectorized.from_index_manager(
+        im,
         max_fact_pairs=None,
         max_rule_pairs=None,
         padding_atoms=padding_atoms,
         parity_mode=True,  # Enable parity mode for determinism
+        max_derived_per_state=padding_states,
+        end_proof_action=config.end_proof_action,
     )
     
     queries = dh.train_queries
@@ -273,7 +275,6 @@ def create_tensor_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
         max_grad_norm=config.max_grad_norm,
         device=device,
         verbose=False,
-        use_compile=False,  # Disable compile for parity testing
         parity=True,  # Enable parity mode for consistent shuffling
     )
     
@@ -339,7 +340,14 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
     ).to(device)
     
     # Load tensor policy weights for exact parity
-    policy.load_state_dict(tensor_policy_state)
+    # Strip _orig_mod prefix if present (from torch.compile)
+    cleaned_state = {}
+    for k, v in tensor_policy_state.items():
+        if k.startswith('_orig_mod.'):
+            cleaned_state[k.replace('_orig_mod.', '')] = v
+        else:
+            cleaned_state[k] = v
+    policy.load_state_dict(cleaned_state)
     
     # Create PPO with fixed seed
     torch.manual_seed(config.seed)
@@ -427,7 +435,7 @@ def collect_optimized_rollout_with_traces(
     n_steps: int,
     return_train_traces: bool = False,
     seeder: ParityTestSeeder = None,
-) -> Tuple[List[Dict], RolloutBuffer, Dict[str, float]]:
+) -> Tuple[List[Dict], RolloutBufferOptimized, Dict[str, float]]:
     """
     Collect rollouts using optimized PPO with trace collection, then perform training.
     Returns traces, buffer, and training metrics.
@@ -454,7 +462,7 @@ def collect_optimized_rollout_with_traces(
     
     # Create initial observation
     action_mask = torch.arange(ppo.padding_states, device=device).unsqueeze(0) < state.derived_counts.unsqueeze(1)
-    obs = EvalObs(
+    obs = EnvObs(
         sub_index=state.current_states.unsqueeze(1),
         derived_sub_indices=state.derived_states,
         action_mask=action_mask,

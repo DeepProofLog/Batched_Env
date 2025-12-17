@@ -12,9 +12,9 @@ Key Design Principles:
     - All branches replaced with torch.where
 
 Usage:
-    from unification_vectorized import UnificationEngineVectorized
+    from unification import UnificationEngineVectorized
     
-    engine = UnificationEngineVectorized.from_base_engine(base_engine)
+    engine = UnificationEngineVectorized.from_index_manager(index_manager)
     derived, counts, new_vars = engine.get_derived_states_compiled(
         states, next_vars, excluded
     )
@@ -53,29 +53,6 @@ def _pack_triples_64(atoms: Tensor, base: int) -> Tensor:
     base_t = _pack_base_cache[cache_key]
     
     return ((p * base_t) + a) * base_t + b
-
-
-class GPUHashCache:
-    """Cache for precomputed polynomial hash powers used in state deduplication."""
-    
-    def __init__(self, device: torch.device, max_len: int = 4096):
-        self.device = device
-        self.prime = 31
-        self.mod_val = 2**61 - 1
-        self._build_cache(max_len)
-
-    def _build_cache(self, max_len: int):
-        powers = torch.arange(max_len, device=self.device, dtype=torch.int64)
-        self.prime_powers = torch.pow(
-            torch.tensor(self.prime, device=self.device, dtype=torch.int64), 
-            powers
-        ) % self.mod_val
-        self.max_len = max_len
-
-    def get_powers(self, length: int) -> Tensor:
-        if length > self.max_len:
-            self._build_cache(length)
-        return self.prime_powers[:length]
 
 
 class GPUFactIndex:
@@ -1203,42 +1180,7 @@ class UnificationEngineVectorized:
             end_proof_action=end_proof_action,
         )
     
-    @classmethod
-    def from_base_engine(
-        cls,
-        base_engine: Any,
-        max_fact_pairs: int = None,
-        max_rule_pairs: int = None,
-        padding_atoms: int = None,
-        parity_mode: bool = False,
-    ) -> "UnificationEngineVectorized":
-        """
-        Factory method to create from existing engine.
-        """
-        return cls(
-            facts_idx=base_engine.facts_idx,
-            rules_idx=base_engine.rules_idx,
-            rule_lens=base_engine.rule_lens,
-            rules_heads_idx=base_engine.rules_heads_idx,
-            padding_idx=base_engine.padding_idx,
-            constant_no=base_engine.constant_no,
-            runtime_var_end_index=base_engine.runtime_var_end_index,
-            true_pred_idx=base_engine.true_pred_idx,
-            false_pred_idx=base_engine.false_pred_idx,
-            max_arity=base_engine.max_arity,
-            predicate_range_map=base_engine.predicate_range_map,
-            device=base_engine.device,
-            pack_base=base_engine.pack_base,
-            max_derived_per_state=base_engine.max_derived_per_state,
-            predicate_no=base_engine.predicate_no,
-            max_fact_pairs=max_fact_pairs,
-            max_rule_pairs=max_rule_pairs,
-            padding_atoms=padding_atoms,
-            parity_mode=parity_mode,
-            end_pred_idx=base_engine.end_pred_idx,
-            end_proof_action=base_engine.end_proof_action,
-        )
-    
+
     @torch.no_grad()
     def get_derived_states_compiled(
         self,

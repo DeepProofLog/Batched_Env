@@ -34,10 +34,10 @@ from torchrl.envs import EnvBase
 
 from tensor.tensor_unification import UnificationEngine
 from tensor.tensor_utils.tensor_memory import BloomFilter, ExactMemory, GPUExactMemory
-import tensor.tensor_utils as utils_funcs
+import tensor.tensor_utils.tensor_utils as utils_funcs
 from typing import NamedTuple
 
-class EvalObs(NamedTuple):
+class EnvObs(NamedTuple):
     """Observation type for compiled evaluation environment."""
     sub_index: Tensor           # [B, 1, A, 3] Current state
     derived_sub_indices: Tensor # [B, S, A, 3] Successor states

@@ -39,7 +39,7 @@ from data_handler import DataHandler
 from index_manager import IndexManager
 
 from unification import UnificationEngineVectorized
-from env import Env_vec as EvalEnvOptimized, EvalObs, EvalState
+from env import Env_vec as EvalEnvOptimized, EnvObs, EnvState
 from nn.embeddings import EmbedderLearnable as TensorEmbedder
 from model import ActorCriticPolicy as TensorPolicy
 from ppo import PPO as PPOOptimized
@@ -54,7 +54,7 @@ from callbacks import (
     AnnealingTarget
 )
 
-from utils import save_profile_results
+from utils import save_profile_results, seed_all
 
 
 # ==============================================================================
@@ -126,19 +126,6 @@ class TrainCompiledConfig:
     verbose: bool = True
     parity: bool = False
 
-
-# ==============================================================================
-# Seed utilities
-# ==============================================================================
-
-def seed_all(seed: int):
-    """Set all random seeds."""
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 # ==============================================================================
@@ -781,7 +768,7 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
     
     # Create compiled components
     print("\n[1/3] Creating compiled components...")
-    seed_all(config.seed)
+    seed_all(config.seed, deterministic=config.parity)
     comp = create_compiled_components(config)
     
     # [PARITY] Output IndexManager info
@@ -809,7 +796,7 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
     
     # Create PPOOptimized
     print("\n[2/3] Running training...")
-    seed_all(config.seed)
+    seed_all(config.seed, deterministic=config.parity)
     ppo = PPOOptimized(
         policy=policy,
         env=train_env,
@@ -835,7 +822,7 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
     
     # Evaluation
     print("\n[3/3] Running evaluation...")
-    seed_all(config.seed + 1000)
+    seed_all(config.seed + 1000, deterministic=config.parity)
     
     print(f"[PARITY] RNG before eval: {torch.get_rng_state().sum().item():.0f}")
     

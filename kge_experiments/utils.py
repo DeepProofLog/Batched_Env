@@ -559,8 +559,8 @@ class FileLogger:
 
 def seed_all(
     seed: int,
-    deterministic: bool = True,
-    deterministic_cudnn: bool = True,
+    deterministic: bool = False,
+    deterministic_cudnn: bool = False,
     warn: bool = False
 ) -> None:
     """

@@ -71,7 +71,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from nn.embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
     from nn.sampler import Sampler
-    from env import Env_vec as EvalEnvOptimized, EvalObs
+    from env import Env_vec as EvalEnvOptimized, EnvObs
     from ppo import PPO
     
     # Enable compile mode

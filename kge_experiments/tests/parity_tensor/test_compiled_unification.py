@@ -150,9 +150,14 @@ def setup_engines(config: SimpleNamespace) -> Tuple[UnificationEngine, Unificati
         max_derived_per_state=config.max_derived_per_state, sort_states=False
     )
     
-    vectorized_engine = UnificationEngineVectorized.from_base_engine(
-        original_engine, max_fact_pairs=None, max_rule_pairs=None,
-        padding_atoms=config.padding_atoms, parity_mode=True,  # Enable exact matching
+    vectorized_engine = UnificationEngineVectorized.from_index_manager(
+        im, 
+        max_fact_pairs=None, 
+        max_rule_pairs=None,
+        padding_atoms=config.padding_atoms, 
+        parity_mode=True,  # Enable exact matching
+        max_derived_per_state=config.max_derived_per_state,
+        end_proof_action=False,
     )
     
     return original_engine, vectorized_engine, im, stringifier_params

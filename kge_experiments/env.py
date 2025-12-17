@@ -42,22 +42,14 @@ from unification import UnificationEngineVectorized
 # Raw Tensor Observation Type (No TensorDict)
 # ============================================================================
 
-class EvalObs(NamedTuple):
+class EnvObs(NamedTuple):
     """Observation type for compiled evaluation environment."""
     sub_index: Tensor           # [B, 1, A, 3] Current state
     derived_sub_indices: Tensor # [B, S, A, 3] Successor states
     action_mask: Tensor         # [B, S] Valid action mask
 
 
-class EvalStepOutput(NamedTuple):
-    """Step output for compiled evaluation environment."""
-    obs: EvalObs
-    rewards: Tensor   # [B]
-    dones: Tensor     # [B]  
-    success: Tensor   # [B]
-
-
-class EvalState(NamedTuple):
+class EnvState(NamedTuple):
     """Immutable state for functional evaluation loop.
     
     This enables full trajectory compilation by avoiding mutable self.* attributes.
@@ -75,10 +67,10 @@ class EvalState(NamedTuple):
     history_count: Tensor       # [B] Number of valid history entries
 
 
-class EvalStepFunctionalOutput(NamedTuple):
+class EnvStepFunctionalOutput(NamedTuple):
     """Output from functional step (includes new state)."""
-    state: EvalState            # New state after step
-    obs: EvalObs                # Observation
+    state: EnvState            # New state after step
+    obs: EnvObs                # Observation
     rewards: Tensor             # [B] Rewards
 
 
@@ -189,8 +181,8 @@ class Env_vec:
         else:
             self._query_pool = None
             self._per_env_ptrs = None
-        self._current_state: Optional[EvalState] = None
-        self._current_obs: Optional[EvalObs] = None
+        self._current_state: Optional[EnvState] = None
+        self._current_obs: Optional[EnvObs] = None
 
     
     def set_queries(self, queries: Tensor) -> None:
@@ -208,7 +200,7 @@ class Env_vec:
         # This matches BatchedEnv's _per_env_train_ptrs initialization
         self._per_env_ptrs = torch.arange(self.batch_size, device=self.device)
     
-    def reset(self) -> Tuple[EvalObs, EvalState]:
+    def reset(self) -> Tuple[EnvObs, EnvState]:
         """
         Reset environment using stored query pool with round-robin cycling.
         
@@ -217,7 +209,7 @@ class Env_vec:
         when an environment finishes (newly_done).
         
         Returns:
-            Tuple of (EvalObs, EvalState)
+            Tuple of (EnvObs, EnvState)
         """
         if self._query_pool is None:
             raise RuntimeError("Must call set_queries() before reset()")
@@ -237,7 +229,7 @@ class Env_vec:
         
         # Create observation
         action_mask = self._positions_S < state.derived_counts.unsqueeze(1)
-        obs = EvalObs(
+        obs = EnvObs(
             sub_index=state.current_states.unsqueeze(1),
             derived_sub_indices=state.derived_states,
             action_mask=action_mask,
@@ -252,13 +244,13 @@ class Env_vec:
     # =========================================================================
 
     
-    def init_state_from_queries(self, queries: Tensor) -> EvalState:
+    def init_state_from_queries(self, queries: Tensor) -> EnvState:
         """
         Create initial state from queries (pure function, no mutation).        Args:
             queries: [B, 3] or [B, A, 3] Query tensor
             
         Returns:
-            EvalState containing all mutable state as immutable tensors
+            EnvState containing all mutable state as immutable tensors
         """
         device = self.device
         
@@ -301,7 +293,7 @@ class Env_vec:
             history_hashes, history_count
         )
         
-        return EvalState(
+        return EnvState(
             current_states=current_states,
             derived_states=derived,
             derived_counts=counts,
@@ -696,17 +688,17 @@ class Env_vec:
         return new_states, new_counts
     
     def step_functional(
-        self, state: EvalState, actions: Tensor
-    ) -> EvalStepFunctionalOutput:
+        self, state: EnvState, actions: Tensor
+    ) -> EnvStepFunctionalOutput:
         """
         Execute one step - pure function, returns new state.
         
         Args:
-            state: Current EvalState
+            state: Current EnvState
             actions: [B] Action indices
             
         Returns:
-            EvalStepFunctionalOutput with (new_state, obs, rewards)
+            EnvStepFunctionalOutput with (new_state, obs, rewards)
             
         Note: For CUDA graph compatibility (reduce-overhead mode), outputs are
         cloned OUTSIDE this function in step_with_policy().
@@ -800,7 +792,7 @@ class Env_vec:
         new_var = torch.where(still_active, new_var, state.next_var_indices)
         
         # Create new state
-        new_state = EvalState(
+        new_state = EnvState(
             current_states=new_current,
             derived_states=new_derived,
             derived_counts=new_counts,
@@ -816,13 +808,13 @@ class Env_vec:
         # Create observation
         action_mask = self._positions_S < new_counts.unsqueeze(1)
         
-        obs = EvalObs(
+        obs = EnvObs(
             sub_index=new_current.unsqueeze(1),
             derived_sub_indices=new_derived,
             action_mask=action_mask,
         )
         
-        return EvalStepFunctionalOutput(state=new_state, obs=obs, rewards=rewards)
+        return EnvStepFunctionalOutput(state=new_state, obs=obs, rewards=rewards)
     
     # =========================================================================
     # Compilation API
@@ -889,19 +881,19 @@ class Env_vec:
     
     def _step_with_policy_impl(
         self,
-        state: EvalState,
-        obs: EvalObs,
+        state: EnvState,
+        obs: EnvObs,
         query_pool: Tensor,
         per_env_ptrs: Tensor,
         deterministic: bool,
         eval_mode: bool,
         eval_done_mask: Tensor,
-    ) -> Tuple[EvalState, EvalObs, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[EnvState, EnvObs, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Unified step with policy - works for both training and evaluation.
         
         Args:
-            state: Current EvalState
+            state: Current EnvState
             obs: Current observation
             query_pool: [N, 3] Pool of queries to cycle through
             per_env_ptrs: [B] Current pointer per environment into query_pool
@@ -1019,7 +1011,7 @@ class Env_vec:
             new_history_hashes = torch.where(reset_mask_H, reset_state.history_hashes, new_state.history_hashes)
             new_history_count = torch.where(reset_mask, reset_state.history_count, new_state.history_count)
             
-            new_state = EvalState(
+            new_state = EnvState(
                 current_states=new_current_states,
                 derived_states=new_derived_states,
                 derived_counts=new_derived_counts,
@@ -1034,7 +1026,7 @@ class Env_vec:
             
             # 7. Update Observation (must match new_state)
             action_mask = self._positions_S < new_state.derived_counts.unsqueeze(1)
-            new_obs = EvalObs(
+            new_obs = EnvObs(
                 sub_index=new_state.current_states.unsqueeze(1),
                 derived_sub_indices=new_state.derived_states,
                 action_mask=action_mask,
@@ -1044,21 +1036,21 @@ class Env_vec:
     
     def step_with_policy(
         self,
-        state: EvalState,
-        obs: EvalObs,
+        state: EnvState,
+        obs: EnvObs,
         query_pool: Tensor = None,
         per_env_ptrs: Tensor = None,
         deterministic: bool = None,
         eval_mode: bool = False,
         eval_done_mask: Tensor = None,
-    ) -> Tuple[EvalState, EvalObs, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[EnvState, EnvObs, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Unified step function for both training and evaluation.
         
         Must call compile() first to set the policy.
         
         Args:
-            state: Current EvalState
+            state: Current EnvState
             obs: Current observation  
             query_pool: [N, 3] Pool of queries (uses internal _query_pool if None)
             per_env_ptrs: [B] Pointer per env (uses internal _per_env_ptrs if None)
@@ -1099,7 +1091,7 @@ class Env_vec:
             new_state, new_obs, actions, log_probs, values, rewards, dones, new_ptrs, new_eval_done_mask = result
             
             # Clone state tensors
-            cloned_state = EvalState(
+            cloned_state = EnvState(
                 current_states=new_state.current_states.clone(),
                 derived_states=new_state.derived_states.clone(),
                 derived_counts=new_state.derived_counts.clone(),
@@ -1113,7 +1105,7 @@ class Env_vec:
             )
             
             # Clone obs tensors
-            cloned_obs = EvalObs(
+            cloned_obs = EnvObs(
                 sub_index=new_obs.sub_index.clone(),
                 derived_sub_indices=new_obs.derived_sub_indices.clone(),
                 action_mask=new_obs.action_mask.clone(),

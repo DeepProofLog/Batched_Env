@@ -188,9 +188,9 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
         'n_constants': im.constant_no
     }
     
-    # Base unification engine
+    # Base unification engine (for original path only)
     base_engine = UnificationEngine.from_index_manager(
-        im, take_ownership=True,
+        im, take_ownership=False,
         stringifier_params=stringifier_params,
         end_pred_idx=im.end_pred_idx,
         end_proof_action=config.end_proof_action,
@@ -200,12 +200,14 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
     
     # Vectorized engine (for optimized path)
     # Use parity_mode=True to match original engine behavior exactly
-    vec_engine = UnificationEngineVectorized.from_base_engine(
-        base_engine,
+    vec_engine = UnificationEngineVectorized.from_index_manager(
+        im,
         max_fact_pairs=None,
         max_rule_pairs=None,
         padding_atoms=config.padding_atoms,
         parity_mode=True,  # Critical for parity tests
+        max_derived_per_state=config.padding_states,
+        end_proof_action=config.end_proof_action,
     )
     
     # Convert test queries

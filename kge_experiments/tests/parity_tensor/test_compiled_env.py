@@ -170,9 +170,9 @@ def setup_environments(config: SimpleNamespace) -> Tuple:
         'n_constants': im.constant_no
     }
     
-    # Create base unification engine for both environments
+    # Create base unification engine for tensor environment only
     base_engine = UnificationEngine.from_index_manager(
-        im, take_ownership=True,
+        im, take_ownership=False,
         stringifier_params=stringifier_params,
         end_pred_idx=im.end_pred_idx if config.end_proof_action else None,
         end_proof_action=config.end_proof_action,
@@ -182,12 +182,14 @@ def setup_environments(config: SimpleNamespace) -> Tuple:
     base_engine.index_manager = im
     
     # Create vectorized engine for compiled env (with parity_mode=True)
-    vec_engine = UnificationEngineVectorized.from_base_engine(
-        base_engine,
+    vec_engine = UnificationEngineVectorized.from_index_manager(
+        im,
         max_fact_pairs=None,
         max_rule_pairs=None,
         padding_atoms=config.padding_atoms,
         parity_mode=True,  # Enable exact matching
+        max_derived_per_state=config.max_derived_per_state,
+        end_proof_action=config.end_proof_action,
     )
     
     return base_engine, vec_engine, im, stringifier_params, dh

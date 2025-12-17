@@ -2,13 +2,13 @@
 Rollout Buffer for On-Policy Reinforcement Learning with Optimized Environment.
 
 This module provides a GPU-accelerated rollout buffer designed to work with
-EvalEnvOptimized (which uses EvalObs NamedTuples instead of TensorDict).
+EvalEnvOptimized (which uses EnvObs NamedTuples instead of TensorDict).
 
 Key Features:
     - GPU-native storage using torch tensors
     - GAE (Generalized Advantage Estimation) computation
     - Efficient minibatch generation for training
-    - Compatible with EvalObs observation format
+    - Compatible with EnvObs observation format
 """
 
 import torch
@@ -41,7 +41,7 @@ class RolloutBuffer:
     Rollout buffer for on-policy algorithms working with EvalEnvOptimized.
     
     Unlike RolloutBuffer which uses TensorDict, this stores observations
-    as separate tensor fields matching the EvalObs structure.
+    as separate tensor fields matching the EnvObs structure.
     
     Storage shapes:
         sub_index:            (buffer_size, n_envs, 1, A, 3)
@@ -107,7 +107,7 @@ class RolloutBuffer:
         """Initialize storage tensors for observations and other data."""
         T, N, A, S = self.buffer_size, self.n_envs, self.padding_atoms, self.padding_states
         
-        # Observation storage matching EvalObs structure
+        # Observation storage matching EnvObs structure
         self.sub_index = torch.zeros((T, N, 1, A, 3), dtype=torch.long, device=self.device)
         self.derived_sub_indices = torch.zeros((T, N, S, A, 3), dtype=torch.long, device=self.device)
         self.action_mask = torch.zeros((T, N, S), dtype=torch.bool, device=self.device)

@@ -788,12 +788,12 @@ def create_policy_logits_fn(
         deterministic: Whether evaluation is deterministic (unused, kept for API)
         
     Returns:
-        Function that takes EvalObs and returns logits [B, S]
+        Function that takes EnvObs and returns logits [B, S]
     """
-    from tensor.tensor_env import EvalObs
+    from tensor.tensor_env import EnvObs
     
     @torch.no_grad()
-    def policy_fn(obs: 'EvalObs') -> torch.Tensor:
+    def policy_fn(obs: 'EnvObs') -> torch.Tensor:
         # Build observation dict that the actor expects
         obs_dict = {
             'sub_index': obs.sub_index,
@@ -852,12 +852,12 @@ def create_policy_value_fn(
         actor: Policy network (ActorCriticPolicy)
         
     Returns:
-        Function that takes EvalObs and returns values [B]
+        Function that takes EnvObs and returns values [B]
     """
-    from env import EvalObs
+    from env import EnvObs
     
     @torch.no_grad()
-    def value_fn(obs: 'EvalObs') -> torch.Tensor:
+    def value_fn(obs: 'EnvObs') -> torch.Tensor:
         # Build observation dict that the actor expects
         obs_dict = {
             'sub_index': obs.sub_index,

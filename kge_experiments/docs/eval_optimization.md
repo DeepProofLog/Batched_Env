@@ -46,7 +46,7 @@ The optimized pipeline replaces standard Python logic with tensor-based operatio
 
 2.  **`EvalOnlyEnvOptimized`** (`env_optimized.py`):
     *   A "functional" environment designed for `torch.compile()`.
-    *   **State**: Uses `EvalState` NamedTuple instead of mutable objects.
+    *   **State**: Uses `EnvState` NamedTuple instead of mutable objects.
     *   **Step**: `step_functional` is a pure function (state, action) → (next_state, obs, reward).
     *   **Policy Step**: `step_with_policy_functional` combines policy + step for compilation.
     *   **Trajectory**: `evaluate_trajectory` loops in Python, calling compiled single-step.
