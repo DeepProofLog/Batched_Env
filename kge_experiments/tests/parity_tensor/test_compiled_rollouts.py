@@ -38,9 +38,9 @@ from env import EvalEnvOptimized, EvalObs, EvalState
 from tensor.tensor_embeddings import EmbedderLearnable
 from tensor.tensor_model import ActorCriticPolicy
 from tensor.tensor_ppo import PPO
-from ppo import PPOOptimized
+from ppo import PPO
 from tensor.tensor_rollout import RolloutBuffer
-from rollout import RolloutBufferOptimized
+from rollout import RolloutBuffer as RolloutBufferOptimized
 
 
 # ============================================================================
@@ -298,9 +298,9 @@ def create_tensor_ppo(env: BatchedEnv, policy: ActorCriticPolicy, config: Simple
     )
 
 
-def create_optimized_ppo(env: EvalEnvOptimized, policy: ActorCriticPolicy, config: SimpleNamespace) -> PPOOptimized:
+def create_optimized_ppo(env: EvalEnvOptimized, policy: ActorCriticPolicy, config: SimpleNamespace) -> PPO:
     """Create optimized PPO."""
-    return PPOOptimized(
+    return PPO(
         policy=policy,
         env=env,
         n_steps=config.n_steps,
@@ -361,12 +361,12 @@ def collect_tensor_rollout_traces(
 
 
 def collect_optimized_rollout_traces(
-    ppo: PPOOptimized,
+    ppo: PPO,
     im: IndexManager,
     queries: List,
     n_steps: int,
     use_compile: bool = False,  # Set to False for parity tests (parity_mode=True uses dynamic shapes)
-) -> Tuple[List[Dict], RolloutBufferOptimized]:
+) -> Tuple[List[Dict], RolloutBuffer]:
     """Collect rollouts using optimized PPO with trace collection.
     
     Args:

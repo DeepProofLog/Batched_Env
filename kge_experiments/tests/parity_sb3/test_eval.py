@@ -39,7 +39,7 @@ if str(TEST_ENVS_ROOT) not in sys.path:
     sys.path.insert(2, str(TEST_ENVS_ROOT))
 
 # Import seeding utilities (must be before other local imports to set up paths correctly)
-from tensor.utils.tensor_seeding import ParityTestSeeder, ParityTestConfig, seed_all
+from tensor.tensor_utils.tensor_seeding import ParityTestSeeder, ParityTestConfig, seed_all
 from tests.test_utils.parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 from stable_baselines3.common.monitor import Monitor

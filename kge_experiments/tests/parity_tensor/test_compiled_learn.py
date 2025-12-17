@@ -36,7 +36,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # Import seeding utilities
-from tensor.utils.tensor_seeding import ParityTestSeeder, ParityTestConfig, ParityTolerances, seed_all
+from tensor.tensor_utils.tensor_seeding import ParityTestSeeder, ParityTestConfig, ParityTolerances, seed_all
 from tests.test_utils.parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 # Tensor imports
@@ -49,9 +49,9 @@ from env import EvalEnvOptimized, EvalObs, EvalState
 from tensor.tensor_embeddings import EmbedderLearnable as TensorEmbedder
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
 from tensor.tensor_ppo import PPO as TensorPPO
-from ppo import PPOOptimized
+from ppo import PPO as PPOOptimized
 from tensor.tensor_rollout import RolloutBuffer as TensorRolloutBuffer
-from rollout import RolloutBufferOptimized
+from rollout import RolloutBuffer as RolloutBufferOptimized
 
 
 # ============================================================================
@@ -427,7 +427,7 @@ def collect_optimized_rollout_with_traces(
     n_steps: int,
     return_train_traces: bool = False,
     seeder: ParityTestSeeder = None,
-) -> Tuple[List[Dict], RolloutBufferOptimized, Dict[str, float]]:
+) -> Tuple[List[Dict], RolloutBuffer, Dict[str, float]]:
     """
     Collect rollouts using optimized PPO with trace collection, then perform training.
     Returns traces, buffer, and training metrics.

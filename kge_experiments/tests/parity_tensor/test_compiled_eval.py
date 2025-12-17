@@ -44,9 +44,9 @@ from tensor.tensor_embeddings import EmbedderLearnable as TensorEmbedder
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
 from tensor.tensor_sampler import Sampler
 from tensor.tensor_model_eval import eval_corruptions
-from ppo import PPOOptimized, compute_optimal_batch_size
+from ppo import PPO as PPOOptimized
 from env import EvalEnvOptimized
-
+from tests.profile_eval import compute_optimal_batch_size
 
 # ============================================================================
 # Configuration

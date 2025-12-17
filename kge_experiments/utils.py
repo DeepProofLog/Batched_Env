@@ -1,6 +1,6 @@
 import re
 import copy
-from typing import Dict, Union, List, Any, Tuple, Iterable, Optional, Sequence
+from typing import Dict, Union, List, Any, Tuple, Iterable, Optional, Sequence, Mapping
 import datetime
 import os
 import random
@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from tensordict import TensorDict, TensorDictBase
 import functools
+from pathlib import Path
+
 
 import os
 import numpy as np
@@ -64,19 +66,24 @@ class Term:
             [f'"{arg}"' if not arg.startswith('Var') else f'_{arg}' for arg in self.args]
         )
         return f'{self.predicate}({args_str})'
-    # include a sorting method to sort terms alphabetically by predicate and then by args
-    # def __lt__(self, other):
-    #     """
-    #     Less than comparison for sorting terms.
-    #     Compares first by predicate, then by arguments.
-    #     """
-    #     if not isinstance(other, Term):
-    #         return NotImplemented
-    #     if self.predicate != other.predicate:
-    #         return self.predicate < other.predicate
-    #     return self.args < other.args
 
+@dataclasses.dataclass
+class Rule:
+    """
+    Represents a logical rule with a head term and a body of terms.
+    """
+    head: Term
+    body: List[Term]
 
+    def __str__(self):
+        """String representation of the rule in the form 'head :- body'."""
+        body_str = ", ".join(str(term) for term in self.body)
+        return f"{self.head} :- {body_str}"
+
+    def __repr__(self):
+        """Representation is the same as the string form for readability."""
+        body_str = ", ".join(str(term) for term in self.body)
+        return f"{self.head} :- {body_str}"
 
 def atom_to_str(atom: torch.Tensor, idx2predicate: Sequence[str], idx2constant: Sequence[str], n_constants: int, padding_idx: int = 0) -> str:
     """Convert a single atom tensor to string."""
@@ -121,182 +128,6 @@ def state_to_str(state: torch.Tensor, idx2predicate: Sequence[str], idx2constant
     atoms = state[valid]
     atom_strs = [atom_to_str(atom, idx2predicate, idx2constant, n_constants, padding_idx) for atom in atoms]
     return "|".join(atom_strs)
-
-
-def canonical_state_to_str(state: torch.Tensor, idx2predicate: Sequence[str], idx2constant: Sequence[str], n_constants: int, padding_idx: int = 0) -> str:
-    """
-    Canonicalize a tensor state and convert to string for comparisons.
-    
-    Unified canonicalization logic (matches string engine):
-    1. Sort atoms alphabetically by (predicate, arg_types)
-       - All variables are treated as equivalent for sorting (type 'VAR')
-       - Constants are distinguished by their values (type 'CONST')
-    2. After sorting, rename variables to Var_1, Var_2, ... in order of first appearance
-    
-    This ensures that structurally identical states produce the same canonical string,
-    regardless of the original variable numbering.
-    """
-    # Handle batch dimension if present
-    if state.dim() == 3:
-        if state.shape[0] != 1:
-            raise ValueError("Expected single batch dimension for canonicalization")
-        state_2d = state[0]
-    else:
-        state_2d = state
-
-    # Filter out padding atoms
-    valid_mask = state_2d[:, 0] != padding_idx
-    if not valid_mask.any():
-        return ''
-    
-    valid_atoms = state_2d[valid_mask]
-    
-    # Step 1: Create sortable keys that don't depend on actual variable indices
-    # Key structure: (predicate_str, tuple of (arg_type, arg_value))
-    atoms_with_data: List[Tuple[tuple, int, int, int, bool, bool]] = []
-    
-    for atom in valid_atoms:
-        pred, arg1, arg2 = int(atom[0].item()), int(atom[1].item()), int(atom[2].item())
-        
-        # Track whether args are variables
-        arg1_is_var = arg1 != padding_idx and arg1 > n_constants
-        arg2_is_var = arg2 != padding_idx and arg2 > n_constants
-        
-        # Get predicate string
-        if idx2predicate and 0 <= pred < len(idx2predicate):
-            pred_str = idx2predicate[pred]
-        else:
-            pred_str = f"?p{pred}"
-        
-        # Create normalized sort key
-        # All variables are treated as equal for sorting (only constants have distinguishing values)
-        key_parts = [pred_str]
-        
-        # For arg1
-        if arg1 == padding_idx:
-            key_parts.append(('PAD',))
-        elif arg1_is_var:
-            # Variables: use ('VAR',) without the actual index
-            key_parts.append(('VAR',))
-        else:
-            # Constants: include the constant value to distinguish them
-            if idx2constant and 0 <= arg1 < len(idx2constant):
-                key_parts.append(('CONST', idx2constant[arg1]))
-            else:
-                key_parts.append(('CONST', f"?c{arg1}"))
-        
-        # For arg2
-        if arg2 == padding_idx:
-            key_parts.append(('PAD',))
-        elif arg2_is_var:
-            # Variables: use ('VAR',) without the actual index
-            key_parts.append(('VAR',))
-        else:
-            # Constants: include the constant value
-            if idx2constant and 0 <= arg2 < len(idx2constant):
-                key_parts.append(('CONST', idx2constant[arg2]))
-            else:
-                key_parts.append(('CONST', f"?c{arg2}"))
-        
-        sort_key = tuple(key_parts)
-        atoms_with_data.append((sort_key, pred, arg1, arg2, arg1_is_var, arg2_is_var))
-    
-    # Sort by the normalized key
-    atoms_with_data.sort(key=lambda x: x[0])
-    
-    # Step 2: Rename variables in sorted order
-    var_mapping: Dict[int, int] = {}
-    next_var_num = 1
-    canonical_atoms: List[str] = []
-    
-    for _, pred, arg1, arg2, arg1_is_var, arg2_is_var in atoms_with_data:
-        # Rename variables
-        if arg1_is_var:
-            if arg1 not in var_mapping:
-                var_mapping[arg1] = next_var_num
-                next_var_num += 1
-            arg1 = var_mapping[arg1]
-        
-        if arg2_is_var:
-            if arg2 not in var_mapping:
-                var_mapping[arg2] = next_var_num
-                next_var_num += 1
-            arg2 = var_mapping[arg2]
-        
-        # Format final string with renamed variables
-        def format_arg_final(val: int, is_var: bool) -> str:
-            if val == padding_idx:
-                return "PAD"
-            if is_var:
-                return f"Var_{val}"
-            else:
-                if idx2constant and 0 <= val < len(idx2constant):
-                    return idx2constant[val]
-                else:
-                    return f"?c{val}"
-        
-        if idx2predicate and 0 <= pred < len(idx2predicate):
-            pred_str = idx2predicate[pred]
-        else:
-            pred_str = f"?p{pred}"
-        
-        if pred_str in ['True', 'False', 'Endf'] and arg1 == padding_idx and arg2 == padding_idx:
-            canonical_atoms.append(f"{pred_str}()")
-        else:
-            canonical_atoms.append(f"{pred_str}({format_arg_final(arg1, arg1_is_var)},{format_arg_final(arg2, arg2_is_var)})")
-    
-    return '|'.join(canonical_atoms)
-
-
-def sort_candidates_by_str_order(states: torch.Tensor,
-                                 counts: torch.Tensor,
-                                 owners: torch.Tensor,
-                                 next_vars: torch.Tensor,
-                                 idx2predicate: Sequence[str],
-                                 idx2constant: Sequence[str],
-                                 n_constants: int,
-                                 padding_idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Sort candidates by canonical STRING representation."""
-    if states.numel() == 0:
-        return states, counts, owners, next_vars
-
-    # Generate canonical string for each state
-    canonical_strings = [
-        canonical_state_to_str(states[i], idx2predicate, idx2constant, n_constants, padding_idx) 
-        for i in range(states.shape[0])
-    ]
-    
-    # Sort by (owner, canonical_string)
-    order = sorted(range(len(canonical_strings)), key=lambda idx: (int(owners[idx].item()), canonical_strings[idx]))
-    
-    # Check if already sorted
-    if order == list(range(len(canonical_strings))):
-        return states, counts, owners, next_vars
-
-    order_tensor = torch.tensor(order, dtype=torch.long, device=states.device)
-    states = states.index_select(0, order_tensor)
-    counts = counts.index_select(0, order_tensor)
-    owners = owners.index_select(0, order_tensor)
-    next_vars = next_vars.index_select(0, order_tensor)
-    return states, counts, owners, next_vars
-
-@dataclasses.dataclass
-class Rule:
-    """
-    Represents a logical rule with a head term and a body of terms.
-    """
-    head: Term
-    body: List[Term]
-
-    def __str__(self):
-        """String representation of the rule in the form 'head :- body'."""
-        body_str = ", ".join(str(term) for term in self.body)
-        return f"{self.head} :- {body_str}"
-
-    def __repr__(self):
-        """Representation is the same as the string form for readability."""
-        body_str = ", ".join(str(term) for term in self.body)
-        return f"{self.head} :- {body_str}"
 
 
 @lru_cache(maxsize=10000)
@@ -386,387 +217,6 @@ def get_rule_from_string(rule_str: str) -> Rule:
         rule = Rule(get_atom_from_string(head), [])
     
     return rule
-
-
-def apply_substitution(term: Term, substitution: Dict[str, str]) -> Term:
-    """
-    Apply a variable substitution to a Term's arguments.
-
-    Args:
-        term (Term): Term object containing original arguments.
-        substitution (Dict[str, str]): Mapping of variable names to replacement strings.
-
-    Returns:
-        Term: New Term with substituted argument values.
-    """
-    substituted_args_list = [substitution.get(arg, arg) for arg in term.args]
-    return Term(term.predicate, tuple(substituted_args_list))
-
-
-def is_variable(arg: str) -> bool:
-    """
-    Check if a string represents a logic variable.
-
-    Args:
-        arg (str): Argument name to evaluate.
-
-    Returns:
-        bool: True if name starts with an uppercase letter or underscore.
-    """
-    return arg[0].isupper() or arg[0] == '_'
-
-
-def extract_var(state: str) -> list:
-    """
-    Extract unique variable names from a state string.
-
-    Args:
-        state (str): String containing terms with variables.
-
-    Returns:
-        list: Unique variable identifiers found.
-    """
-    pattern = r'\b[A-Z_][a-zA-Z0-9_]*\b'
-    vars = re.findall(pattern, state)
-    return list(dict.fromkeys(vars))
-
-
-# ----------------------
-# Environment utils       
-# ----------------------
-
-
-def simple_rollout(env, policy=None, batch_size: int=2, steps: int=10, tensordict: TensorDict = None, verbose: int=0) -> TensorDict:
-    """
-    Perform a basic rollout in an environment, collecting TensorDicts over time.
-
-    Args:
-        env: Environment providing reset, step, and action_spec.sample().
-        policy: Optional policy with forward_dict method; if None, actions are random.
-        batch_size (int): Number of parallel episodes.
-        steps (int): Maximum number of steps per episode.
-        tensordict (TensorDict, optional): Initial TensorDict for reset.
-        verbose (int): Verbosity level (0=silent, >0=debug prints).
-
-    Returns:
-        TensorDict: Time-stacked TensorDict of observations, actions, rewards, etc.
-    """
-    data = []
-    if tensordict is None:
-        _data = env.reset(env.gen_params(batch_size=[batch_size]))
-    else:
-        _data = env.reset(tensordict)
-    for i in range(steps):
-        print('i', i, '------------------------------------') if verbose > 0 else None
-        _data["action"] = env.action_spec.sample() if policy is None else policy.forward_dict(_data)["action"]
-        _data = env.step(_data)
-
-        if verbose > 0:
-            for state, action, derived_states, reward, done in zip(_data['state'], _data['action'], _data['derived_states'], _data['reward'], _data['done']):
-                print(*state, '-> action', action.item(), '/', len(derived_states)-1)
-                print('reward', reward)
-                print('Done', done)
-                print('     Derived states:', *derived_states, '\n')
-
-        print('actions', _data['action'], 'rewards', _data['reward'], 'dones', _data['done']) if verbose > 0 else None
-        data.append(_data)  # We append it here because we want to keep the "next" data. Those will be datapoint samples
-        if _data["done"].all():
-            print('\nDONE', _data["done"]) if verbose > 0 else None
-            break
-        _data = step_mdp(_data, keep_other=True, exclude_reward=False, exclude_done=False, exclude_action=False)
-
-    data = TensorDict.stack(data, dim=1)
-    return data
-
-def print_eval_info(split_name: str, metrics: Dict[str, float]):
-    """
-    Display evaluation metrics for a specified dataset split.
-
-    Args:
-        split_name (str): Name of the dataset split (e.g. 'train', 'valid', 'test').
-        metrics (Dict[str, float]): Mapping of metric names to their values.
-    """
-
-    def _format_stat(mean: Optional[float], std: Optional[float], count: Optional[int]) -> str:
-        if mean is None:
-            return "N/A"
-        if std is None and count is None:
-            return f"{mean:.3f}"
-        if std is None:
-            return f"{mean:.3f} (n={count})" if count is not None else f"{mean:.3f}"
-        if count is None:
-            return f"{mean:.3f} +/- {std:.2f}"
-        return f"{mean:.3f} +/- {std:.2f} ({count})"
-
-    def _sort_key(base: str) -> Tuple[int, int, Union[int, float], int]:
-        """Sort key for metric ordering."""
-        # Priority: proven_d_ > proven_ > ep_len_d_ > ep_len_ > reward_d_ > reward_ > others
-        # Within each category, sort by: label (pos before neg), then depth, then success (true before false)
-        
-        if base.startswith("proven_d_"):
-            priority = 0
-            parts = base.split('_')
-            label = parts[-1]  # 'pos' or 'neg'
-            label_order = 0 if label == 'pos' else 1
-            depth_str = parts[2] if len(parts) > 2 else "unknown"
-            if depth_str == "unknown":
-                depth_order: Union[int, float] = float("inf")
-            else:
-                try:
-                    depth_order = int(depth_str)
-                except (TypeError, ValueError):
-                    depth_order = float("inf")
-            return (priority, label_order, depth_order, 0)
-        elif base.startswith("proven_"):
-            priority = 1
-            label = base.split('_')[-1]
-            label_order = 0 if label == 'pos' else 1
-            return (priority, label_order, 0, 0)
-        elif base.startswith("ep_len_d_"):
-            priority = 2
-            parts = base.split('_')
-            # ep_len_d_{depth}_{label}_{success} or ep_len_d_{depth}_{label}
-            label_idx = -1
-            success_order = 0
-            # Check if we have a success suffix
-            if len(parts) > 4 and parts[-1] in ('true', 'false'):
-                label_idx = -2
-                success_order = 0 if parts[-1] == 'true' else 1
-            label = parts[label_idx]  # 'pos' or 'neg'
-            label_order = 0 if label == 'pos' else 1
-            depth_str = parts[3] if len(parts) > 3 else "unknown"
-            if depth_str == "unknown":
-                depth_order: Union[int, float] = float("inf")
-            else:
-                try:
-                    depth_order = int(depth_str)
-                except (TypeError, ValueError):
-                    depth_order = float("inf")
-            return (priority, label_order, depth_order, success_order)
-        elif base.startswith("ep_len_"):
-            # ep_len_{label}_{success} or ep_len_{label}
-            priority = 3
-            parts = base.split('_')
-            success_order = 0
-            label_idx = -1
-            if len(parts) > 3 and parts[-1] in ('true', 'false'):
-                label_idx = -2
-                success_order = 0 if parts[-1] == 'true' else 1
-            label = parts[label_idx]
-            label_order = 0 if label == 'pos' else 1
-            return (priority, label_order, 0, success_order)
-        elif base.startswith("reward_d_"):
-            priority = 4
-            parts = base.split('_')
-            label = parts[-1]  # 'pos' or 'neg'
-            label_order = 0 if label == 'pos' else 1
-            depth_str = parts[2] if len(parts) > 2 else "unknown"
-            if depth_str == "unknown":
-                depth_order = float("inf")
-            else:
-                try:
-                    depth_order = int(depth_str)
-                except (TypeError, ValueError):
-                    depth_order = float("inf")
-            return (priority, label_order, depth_order, 0)
-        elif "reward" in base.lower():
-            priority = 5
-            label_order = 0 if "pos" in base else 1 if "neg" in base else 2
-            return (priority, label_order, 0, 0)
-        else:
-            # Other metrics come last
-            priority = 6
-            return (priority, 0, 0, 0)
-
-    print(f'\n\n{split_name} set metrics:')
-    grouped: Dict[str, Dict[str, Optional[float]]] = {}
-    grouped_order: List[str] = []
-    grouped_suffixes = {"mean", "std", "count"}
-    handled_keys: set[str] = set()
-
-    for key, value in metrics.items():
-        if not isinstance(value, (int, float, np.integer, np.floating)):
-            continue
-        for suffix in grouped_suffixes:
-            token = f"_{suffix}"
-            if key.endswith(token):
-                base = key[: -len(token)]
-                if base not in grouped:
-                    grouped[base] = {"mean": None, "std": None, "count": None}
-                    grouped_order.append(base)
-                grouped[base][suffix] = float(value)
-                handled_keys.add(key)
-                break
-
-    # Sort the grouped metrics by priority
-    grouped_order.sort(key=_sort_key)
-
-    for base in grouped_order:
-        stats = grouped[base]
-        count_val = stats.get("count")
-        display = _format_stat(stats.get("mean"), stats.get("std"), int(count_val) if count_val is not None else None)
-        print(f"{base}: {display}")
-
-    for key, value in metrics.items():
-        if key in handled_keys:
-            continue
-        if isinstance(value, (float, np.floating)):
-            print(f"{key}: {value:.3f}")
-        elif isinstance(value, (int, np.integer)):
-            print(f"{key}: {value}")
-        else:
-            print(f"{key}: {value}")
-
-def print_state_transition(state, derived_states, reward, done, action=None, truncated=None, label=None):
-    """
-    Print details of a single state transition.
-
-    Args:
-        state: Current state representation.
-        derived_states: Possible next states list.
-        reward: Received reward 
-        done: Done flag 
-        action: Executed action tensor (optional).
-        truncated: Truncated flag (optional).
-        label: Additional label for display (optional).
-    """
-    if action is not None:
-        # Handle both tensor and int actions
-        action_value = action.item() if hasattr(action, 'item') else action
-        print('\nState', state, '( action', action_value, ')')
-        print('Reward', reward.item(), 'Done', done.item())
-        if truncated is not None or truncated!=False: print(f" Truncated {truncated}")
-        print('     Derived states:', *derived_states[:100])
-        if len(derived_states) > 100:
-            print('     ... in total', len(derived_states),'\n')
-    else:
-        print('\nState', state, label) if label is not None else print(state)
-        print('Reward', reward.item(), 'Done', done.item())
-        if truncated is not None or truncated!=False: print(f" Truncated {truncated}")
-        print('     Derived states:', *derived_states[:100])
-        if len(derived_states) > 100:
-            print('     ... in total', len(derived_states),'\n')
-
-def print_rollout(data):
-    """
-    Print a rollout first by batch, then transposed by timestep.
-
-    Args:
-        data: Stacked TensorDict of rollout (batch x time).
-    """
-    # Print data by batch
-    for i, batch_data in enumerate(data):
-        print(f'Batch {i}')
-        print_td(batch_data)
-        print('\n')
-    print('\n')
-
-    # Print data by step after transposing
-    data = data.transpose(0, 1)
-    for i, step_data in enumerate(data):
-        print(f'Step {i}:', [[str(atom) for atom in state] for state in step_data['state']])
-        for j, state in enumerate(step_data['state']):
-            print(f'     Step {i}, Batch {j}:', [str(atom) for atom in state])
-    print('\n')
-
-
-def print_td(td: TensorDictBase, next=False, exclude_states=False):
-    """
-    Pretty-print the contents of a TensorDict, showing nested next states if present.
-
-    Args:
-        td (TensorDictBase): TensorDict to display.
-        next (bool): If True, label as 'Next TensorDict'.
-        exclude_states (bool): Skip printing 'state' and 'derived_states' entries.
-    """
-    print_title = 'Next TensorDict' if next else 'TensorDict'
-    print(f'{"="*10} {print_title} {"="*10}')
-    
-    for key, value in td.items():
-        if (key == 'derived_states' and not exclude_states):
-            value_data = value.data
-            print(f'Key: {key}', value_data)
-            for i, batch in enumerate(value_data):
-                for j, next_state in enumerate(batch):
-                    print(f'     {i}, {j} next_possible_state:', [str(atom) for atom in next_state])
-
-        elif (key == 'state' and not exclude_states):
-            value_data = value.data
-            for i, state in enumerate(value_data):
-                print(f'     {i} state:', [str(atom) for atom in state])
-
-        elif key == 'next':
-            print(f'Key: {key}')
-            print_td(value, next=True, exclude_states=exclude_states)
-
-        elif key not in {'state', 'derived_states'}:
-            if isinstance(value, torch.Tensor):
-                print(f'Key: {key} Shape: {value.shape} Values:\n{value}')
-            elif isinstance(value, list):
-                print(f'Key: {key} Length: {len(value)} Values:\n{value}')
-            else:
-                print(f'Key: {key} Value:\n{value}')
-    
-    print("="*30 if not next else "^"*30)
-
-
-def get_device(device: Union[torch.device, str] = "auto") -> torch.device:
-    """
-    Resolve and return a torch.device, preferring CUDA if available.
-
-    Args:
-        device (Union[torch.device, str]): 'auto', 'cuda', 'cpu' or torch.device.
-
-    Returns:
-        torch.device: Resolved compute device (CPU or GPU).
-    """
-    # Cuda by default
-    if device == "auto":
-        device = "cuda"
-    # Force conversion to torch.device
-    device = torch.device(device)
-
-    # Cuda not available
-    if device.type == torch.device("cuda").type and not torch.cuda.is_available():
-        return torch.device("cpu")
-
-    return device
-
-
-
-
-
-def save_profile_results(profiler: cProfile.Profile, args: Any, device: Any, output_path: str = 'profile_results.txt', n_functions: int = 30):
-    """
-    Save profiling results to a file.
-    
-    Args:
-        profiler (cProfile.Profile): The profiler object containing stats.
-        args (Any): Configuration namespace (used for metadata).
-        device (Any): Device used for training.
-        output_path (str): Path to save the profile results.
-        n_functions (int): Number of top functions to display.
-    """
-    with open(output_path, 'w') as f:
-        f.write(f"Device: {device}\n")
-        f.write(f"Total timesteps: {args.timesteps_train}\n")
-        f.write(f"Dataset: {args.dataset_name}\n\n")
-        
-        ps = pstats.Stats(profiler, stream=f)
-        ps.strip_dirs()
-        f.write("="*80 + "\n")
-        f.write("Top by Cumulative Time\n")
-        f.write("="*80 + "\n")
-        ps.sort_stats('cumulative')
-        ps.print_stats(n_functions)
-    
-        f.write("\n\n" + "="*80 + "\n")
-        f.write("Top by Total Time\n")
-        f.write("="*80 + "\n")
-        ps.sort_stats('tottime')
-        ps.print_stats(n_functions)
-    
-    print(f"\nResults saved to {output_path}")
 
 
 # ----------------------
@@ -1104,96 +554,8 @@ class FileLogger:
 
 
 # ----------------------
-# Train utils       
+# Seeding       
 # ----------------------
-
-def profile_code(profiler_type, function_to_profile, *args, **kwargs):
-    """
-    Profiles a function using either cProfile or torch.profiler.
-    """
-    if profiler_type == "cProfile":
-        profiler = cProfile.Profile()
-        profiler.enable()
-        result = function_to_profile(*args, **kwargs)
-        profiler.disable()
-
-        s = io.StringIO()
-        stats = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
-        stats.print_stats(30)
-        print("\n--- cProfile Cumulative Time ---")
-        print(s.getvalue())
-
-        s = io.StringIO()
-        stats = pstats.Stats(profiler, stream=s).sort_stats('tottime')
-        stats.print_stats(30)
-        print("\n--- cProfile Total Time ---")
-        print(s.getvalue())
-
-        return result
-
-    elif profiler_type == "torch":
-        prof_activities = [ProfilerActivity.CPU]
-        if torch.cuda.is_available():
-            prof_activities.append(ProfilerActivity.CUDA)
-        
-        trace_dir = "./profiler_traces"
-        os.makedirs(trace_dir, exist_ok=True)
-
-        with torch.profiler.profile(
-            activities=prof_activities,
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=True
-        ) as prof:
-            result = function_to_profile(*args, **kwargs)
-        
-        sort_key = "cuda_time_total" if torch.cuda.is_available() else "cpu_time_total"
-        print(prof.key_averages().table(sort_by=sort_key, row_limit=30))
-        
-        trace_file = f"{trace_dir}/{function_to_profile.__name__}_trace.json"
-        try:
-            prof.export_chrome_trace(trace_file)
-            print(f"--- Trace exported to {trace_file}. ---")
-        except Exception as e:
-            print(f"--- Failed to export trace: {e} ---")
-
-        return result
-
-    else:
-        # print("No valid profiler specified, running function without profiling.")
-        return function_to_profile(*args, **kwargs)
-
-
-def _freeze_dropout_layernorm(m: nn.Module):
-    if isinstance(m, (nn.Dropout, nn.LayerNorm)):
-        m.eval()          # freeze statistics
-        m.training = False
-
-
-
-def _warn_non_reproducible(args: Any) -> None:
-    if args.restore_best_val_model is False:
-        print(
-            "Warning: This setting is not reproducible when creating 2 models from scratch, "
-            "but it is when loading pretrained models. You can use\n"
-            "  export CUBLAS_WORKSPACE_CONFIG=:16:8; export PYTHONHASHSEED=0\n"
-            "to make runs reproducible."
-        )
-
-def _maybe_enable_wandb(use_WB: bool, args: Any, WB_path: str, model_name: str):
-    if not use_WB:
-        return None
-    wandb = _get_wandb()  # Lazy import
-    return wandb.init(
-        project="RL-NeSy",
-        group=args.run_signature,
-        name=model_name,
-        dir=WB_path,
-        sync_tensorboard=True,
-        config=vars(args),
-    )
-
-
 
 def seed_all(
     seed: int,
@@ -1259,4 +621,363 @@ def seed_all(
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True  # Enable cuDNN autotuner
 
+# ----------------------
+# Config utils     
+# ----------------------
 
+
+
+BOOLEAN_TRUE = {'true', 't', 'yes', 'y', 'on', '1'}
+BOOLEAN_FALSE = {'false', 'f', 'no', 'n', 'off', '0'}
+
+
+def load_experiment_configs(config_path: str) -> Sequence[Dict[str, Any]]:
+    """Load experiments from a YAML file containing an 'experiments' list."""
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:  # pragma: no cover - import guard
+        raise ImportError(
+            "PyYAML is required to read experiment configuration files. "
+            "Install it with `pip install pyyaml`."
+        ) from exc
+
+    data = yaml.safe_load(path.read_text())
+    if data is None:
+        raise ValueError("Configuration file is empty.")
+
+    if not isinstance(data, Mapping) or "experiments" not in data:
+        raise ValueError(
+            "Configuration file must be a YAML mapping with an 'experiments' list."
+        )
+
+    experiments = data["experiments"]
+    if not isinstance(experiments, Sequence):
+        raise ValueError("The 'experiments' entry must be a list.")
+
+    for idx, experiment in enumerate(experiments):
+        if not isinstance(experiment, Mapping):
+            raise ValueError(f"Experiment entry at index {idx} must be a dictionary.")
+
+    return list(experiments)
+
+
+def parse_scalar(
+    text: str,
+    *,
+    boolean_true: Iterable[str] = BOOLEAN_TRUE,
+    boolean_false: Iterable[str] = BOOLEAN_FALSE,
+) -> Any:
+    """Best-effort conversion of a string literal to Python types."""
+    text = text.strip()
+    if not text:
+        return ''
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        lowered = text.lower()
+        if lowered in boolean_true:
+            return True
+        if lowered in boolean_false:
+            return False
+        if lowered in {'none', 'null'}:
+            return None
+    return text
+
+
+def coerce_config_value(
+    key: str,
+    value: Any,
+    defaults: Mapping[str, Any],
+    *,
+    boolean_true: Iterable[str] = BOOLEAN_TRUE,
+    boolean_false: Iterable[str] = BOOLEAN_FALSE,
+) -> Any:
+    """Match override type to default config entry."""
+    if key not in defaults:
+        raise ValueError(f"Unknown configuration key '{key}'.")
+
+    default = defaults[key]
+
+    if isinstance(default, list):
+        if isinstance(value, (list, tuple)):
+            return [copy.deepcopy(v) for v in value]
+        return [value]
+
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.lower()
+            if lowered in boolean_true:
+                return True
+            if lowered in boolean_false:
+                return False
+            raise ValueError(f"Cannot parse boolean for '{key}': {value}")
+        return bool(value)
+
+    if isinstance(default, int) and not isinstance(default, bool):
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            return int(value)
+
+    if isinstance(default, float):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            return float(value)
+
+    if isinstance(default, str):
+        if value is None:
+            return None
+        return str(value)
+
+    return copy.deepcopy(value)
+
+
+def update_config_value(
+    config: Dict[str, Any],
+    key: str,
+    value: Any,
+    defaults: Mapping[str, Any],
+    *,
+    prevalidated: bool = False,
+    boolean_true: Iterable[str] = BOOLEAN_TRUE,
+    boolean_false: Iterable[str] = BOOLEAN_FALSE,
+) -> None:
+    """Update configuration dict, coercing value types unless already validated."""
+    if key not in defaults:
+        raise ValueError(f"Unknown configuration key '{key}'.")
+    if not prevalidated:
+        value = coerce_config_value(
+            key,
+            value,
+            defaults,
+            boolean_true=boolean_true,
+            boolean_false=boolean_false,
+        )
+    if isinstance(value, (list, dict)):
+        config[key] = copy.deepcopy(value)
+    else:
+        config[key] = value
+
+
+def parse_assignment(entry: str) -> tuple[str, str]:
+    if '=' not in entry:
+        raise ValueError(f"Assignments must be in key=value format, got '{entry}'.")
+    key, raw = entry.split('=', 1)
+    key = key.strip()
+    if not key:
+        raise ValueError(f"Invalid assignment '{entry}'.")
+    return key, raw.strip()
+
+
+def select_best_gpu(min_free_gb: float = 1.0) -> Optional[int]:
+    """
+    Automatically select the GPU with the most free memory.
+    
+    Args:
+        min_free_gb: Minimum free memory in GB required to consider a GPU
+    
+    Returns:
+        GPU index with most free memory, or None if no suitable GPU found
+    """
+    if not torch.cuda.is_available():
+        return None
+    
+    num_gpus = torch.cuda.device_count()
+    if num_gpus == 0:
+        return None
+    
+    # Get free memory for each GPU
+    max_free_memory = 0
+    best_gpu = None
+    min_free_bytes = min_free_gb * 1e9
+    
+    for gpu_id in range(num_gpus):
+        try:
+            # Query memory without setting device (to avoid OOM on full GPUs)
+            free_memory, total_memory = torch.cuda.mem_get_info(gpu_id)
+            used_memory = total_memory - free_memory
+            
+            print(f"GPU {gpu_id}: {free_memory / 1e9:.2f} GB free / {total_memory / 1e9:.2f} GB total "
+                  f"({used_memory / 1e9:.2f} GB used, {100 * used_memory / total_memory:.1f}% utilized)")
+            
+            # Only consider GPUs with sufficient free memory
+            if free_memory >= min_free_bytes and free_memory > max_free_memory:
+                max_free_memory = free_memory
+                best_gpu = gpu_id
+        except Exception as e:
+            print(f"Warning: Could not query GPU {gpu_id}: {e}")
+            continue
+    
+    if best_gpu is not None:
+        print(f"Selected GPU {best_gpu} with {max_free_memory / 1e9:.2f} GB free memory")
+    else:
+        print(f"No GPU found with at least {min_free_gb:.1f} GB free memory")
+    
+    return best_gpu
+
+
+def get_available_gpus(min_free_gb: float = 1.0) -> List[int]:
+    """
+    Get list of all GPUs with sufficient free memory.
+    
+    Args:
+        min_free_gb: Minimum free memory in GB required
+    
+    Returns:
+        List of GPU indices with sufficient free memory
+    """
+    if not torch.cuda.is_available():
+        return []
+    
+    num_gpus = torch.cuda.device_count()
+    if num_gpus == 0:
+        return []
+    
+    available_gpus = []
+    min_free_bytes = min_free_gb * 1e9
+    
+    for gpu_id in range(num_gpus):
+        try:
+            free_memory, total_memory = torch.cuda.mem_get_info(gpu_id)
+            used_memory = total_memory - free_memory
+            
+            print(f"GPU {gpu_id}: {free_memory / 1e9:.2f} GB free / {total_memory / 1e9:.2f} GB total "
+                  f"({used_memory / 1e9:.2f} GB used, {100 * used_memory / total_memory:.1f}% utilized)")
+            
+            if free_memory >= min_free_bytes:
+                available_gpus.append(gpu_id)
+        except Exception as e:
+            print(f"Warning: Could not query GPU {gpu_id}: {e}")
+            continue
+    
+    return available_gpus
+
+
+
+def select_device_with_min_memory(min_memory_gb: float = 2.0, use_multiple_gpus: bool = True) -> str:
+    """
+    Select device using GPUs with sufficient free memory.
+    
+    If use_multiple_gpus is False, selects the best single GPU.
+    If use_multiple_gpus is True and multiple GPUs available, selects all of them
+    and returns "cuda:0" (which maps to the GPU with most free memory).
+    Sets CUDA_VISIBLE_DEVICES to restrict to selected GPU(s), ordered by free memory.
+    
+    Args:
+        min_memory_gb: Minimum free memory in GB required
+        use_multiple_gpus: If True, use all available GPUs instead of just the best one
+    
+    Returns:
+        Device string ("cpu", "cuda:X", or "cuda:0" for multi-GPU with best GPU as primary)
+    """
+    available_gpus = get_available_gpus(min_free_gb=min_memory_gb)
+    
+    if len(available_gpus) == 0:
+        print(f"No GPU with at least {min_memory_gb} GB free memory found.")
+        print("Falling back to CPU")
+        return "cpu"
+    elif len(available_gpus) == 1 or not use_multiple_gpus:
+        # Select single GPU (best if multiple available)
+        if len(available_gpus) == 1:
+            gpu_id = available_gpus[0]
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            print(f"Selected GPU {gpu_id}")
+            return f"cuda:{gpu_id}"
+        else:
+            # Select the GPU with most free memory
+            max_free_memory = 0
+            best_gpu = None
+            
+            for gpu_id in available_gpus:
+                free_memory, _ = torch.cuda.mem_get_info(gpu_id)
+                if free_memory > max_free_memory:
+                    max_free_memory = free_memory
+                    best_gpu = gpu_id
+            
+            if best_gpu is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
+                print(f"Selected best GPU {best_gpu} from {available_gpus} with {max_free_memory / 1e9:.2f} GB free")
+                return f"cuda:{best_gpu}"
+            else:
+                print("Unexpected error selecting best GPU")
+                return "cpu"
+    else:
+        # Use multiple GPUs - sort by free memory (highest first)
+        gpu_memory_pairs = []
+        for gpu_id in available_gpus:
+            free_memory, _ = torch.cuda.mem_get_info(gpu_id)
+            gpu_memory_pairs.append((gpu_id, free_memory))
+        
+        # Sort by free memory descending
+        gpu_memory_pairs.sort(key=lambda x: x[1], reverse=True)
+        sorted_gpus = [gpu_id for gpu_id, _ in gpu_memory_pairs]
+        
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, sorted_gpus))
+        best_gpu = sorted_gpus[0]
+        best_memory = gpu_memory_pairs[0][1]
+        print(f"Selected multiple GPUs: {sorted_gpus}")
+        print(f"Primary GPU (cuda:0) is GPU {best_gpu} with {best_memory / 1e9:.2f} GB free memory")
+        return f"cuda:0"  # PyTorch will see them as cuda:0, cuda:1, etc. with cuda:0 having most memory
+
+
+__all__ = [
+    'BOOLEAN_TRUE',
+    'BOOLEAN_FALSE',
+    'load_experiment_configs',
+    'parse_scalar',
+    'coerce_config_value',
+    'update_config_value',
+    'parse_assignment',
+    'select_device_with_min_memory',
+]
+
+
+# ----------------------
+# Other utils     
+# ----------------------
+
+
+def save_profile_results(profiler: cProfile.Profile, args: Any, device: Any, output_path: str = 'profile_results.txt', n_functions: int = 30):
+    """
+    Save profiling results to a file.
+    
+    Args:
+        profiler (cProfile.Profile): The profiler object containing stats.
+        args (Any): Configuration namespace (used for metadata).
+        device (Any): Device used for training.
+        output_path (str): Path to save the profile results.
+        n_functions (int): Number of top functions to display.
+    """
+    with open(output_path, 'w') as f:
+        f.write(f"Device: {device}\n")
+        f.write(f"Total timesteps: {args.timesteps_train}\n")
+        f.write(f"Dataset: {args.dataset_name}\n\n")
+        
+        ps = pstats.Stats(profiler, stream=f)
+        ps.strip_dirs()
+        f.write("="*80 + "\n")
+        f.write("Top by Cumulative Time\n")
+        f.write("="*80 + "\n")
+        ps.sort_stats('cumulative')
+        ps.print_stats(n_functions)
+    
+        f.write("\n\n" + "="*80 + "\n")
+        f.write("Top by Total Time\n")
+        f.write("="*80 + "\n")
+        ps.sort_stats('tottime')
+        ps.print_stats(n_functions)
+    
+    print(f"\nResults saved to {output_path}")

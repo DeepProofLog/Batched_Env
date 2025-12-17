@@ -32,21 +32,21 @@ from stable_baselines3.common.utils import obs_as_tensor
 from stable_baselines3.common.callbacks import BaseCallback
 
 # sb3 imports
-from sb3_custom_dummy_env import CustomDummyVecEnv
-from sb3_dataset import DataHandler as SB3DataHandler
-from sb3_index_manager import IndexManager as SB3IndexManager
-from sb3_env import LogicEnv_gym as SB3Env
-from sb3_model import PPO_custom as SB3PPO, CustomActorCriticPolicy, CustomCombinedExtractor
-from sb3_embeddings import EmbedderLearnable as SB3Embedder
-from sb3_model_eval import eval_corruptions as sb3_eval_corruptions
-from sb3_neg_sampling import get_sampler as get_sb3_sampler
+from sb3.sb3_custom_dummy_env import CustomDummyVecEnv
+from sb3.sb3_dataset import DataHandler as SB3DataHandler
+from sb3.sb3_index_manager import IndexManager as SB3IndexManager
+from sb3.sb3_env import LogicEnv_gym as SB3Env
+from sb3.sb3_model import PPO_custom as SB3PPO, CustomActorCriticPolicy, CustomCombinedExtractor
+from sb3.sb3_embeddings import EmbedderLearnable as SB3Embedder
+from sb3.sb3_model_eval import eval_corruptions as sb3_eval_corruptions
+from sb3.sb3_neg_sampling import get_sampler as get_sb3_sampler
 
 @dataclass
 class TrainParityConfig:
     """Configuration for train parity tests."""
     # Dataset / data files
     dataset: str = "countries_s3"
-    data_path: str = "./data/"
+    data_path: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
     train_file: str = "train.txt"
     valid_file: str = "valid.txt"
     test_file: str = "test.txt"

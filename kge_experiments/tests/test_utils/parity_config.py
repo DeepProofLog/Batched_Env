@@ -17,6 +17,7 @@ Usage:
     config = config_from_args(args)
 """
 import argparse
+import os
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List, Any
 from types import SimpleNamespace
@@ -140,7 +141,7 @@ def create_parser(description: str = "Parity Test") -> argparse.ArgumentParser:
     # Dataset
     parser.add_argument("--dataset", type=str, default="countries_s3",
                         help="Dataset name (default: countries_s3)")
-    parser.add_argument("--data-path", type=str, default="./data/",
+    parser.add_argument("--data-path", type=str, default=None,
                         help="Path to data directory")
     
     # Environment

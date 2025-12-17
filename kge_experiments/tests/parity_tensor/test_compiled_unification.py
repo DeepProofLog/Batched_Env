@@ -36,7 +36,7 @@ from index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
 from unification import UnificationEngineVectorized
 from unification import UnificationEngineVectorized
-import utils.utils as utils_funcs
+import tensor.tensor_utils.tensor_utils as utils_funcs
 import re
 
 

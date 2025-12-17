@@ -128,7 +128,7 @@ def sb3_obs_to_canonical_state(obs, im, env_idx: int = 0) -> str:
 
 def create_aligned_environments(dataset: str, n_envs: int):
     """Create SB3 and tensor environments with the SAME queries (all train queries)."""
-    base_path = "./data/"
+    base_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data')
     device = torch.device("cpu")
     padding_atoms = 100
     padding_states = 500

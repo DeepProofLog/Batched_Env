@@ -40,7 +40,7 @@ if str(TEST_ENVS_ROOT) not in sys.path:
     sys.path.insert(2, str(TEST_ENVS_ROOT))
 
 # Import seeding utilities (now paths are set up correctly)
-from tensor.utils.tensor_seeding import ParityTestSeeder, ParityTestConfig, ParityTolerances, seed_all
+from tensor.tensor_utils.tensor_seeding import ParityTestSeeder, ParityTestConfig, ParityTolerances, seed_all
 from tests.test_utils.parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 # SB3 imports
@@ -51,11 +51,11 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import configure
 
 # sb3 imports
-from sb3_dataset import DataHandler as StrDataHandler
-from sb3_index_manager import IndexManager as StrIndexManager
-from sb3_env import LogicEnv_gym as StrEnv
-from sb3_model import PPO_custom, CustomActorCriticPolicy, CustomCombinedExtractor
-from sb3_embeddings import EmbedderLearnable as SB3Embedder
+from sb3.sb3_dataset import DataHandler as StrDataHandler
+from sb3.sb3_index_manager import IndexManager as StrIndexManager
+from sb3.sb3_env import LogicEnv_gym as StrEnv
+from sb3.sb3_model import PPO_custom, CustomActorCriticPolicy, CustomCombinedExtractor
+from sb3.sb3_embeddings import EmbedderLearnable as SB3Embedder
 
 # Tensor imports
 # Tensor imports

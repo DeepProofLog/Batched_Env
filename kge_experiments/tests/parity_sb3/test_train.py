@@ -44,7 +44,7 @@ if str(TEST_ENVS_ROOT) not in sys.path:
     sys.path.insert(2, str(TEST_ENVS_ROOT))
 
 # Import seeding utilities (now paths are set up correctly)
-from tensor.utils.tensor_seeding import ParityTestSeeder, ParityTestConfig, seed_all
+from tensor.tensor_utils.tensor_seeding import ParityTestSeeder, ParityTestConfig, seed_all
 from tests.test_utils.parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 # SB3 imports
@@ -55,14 +55,14 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import configure
 
 # sb3 imports
-from sb3_custom_dummy_env import CustomDummyVecEnv
-from sb3_dataset import DataHandler as SB3DataHandler
-from sb3_index_manager import IndexManager as SB3IndexManager
-from sb3_env import LogicEnv_gym as SB3Env
-from sb3_model import PPO_custom as SB3PPO, CustomActorCriticPolicy, CustomCombinedExtractor
-from sb3_embeddings import EmbedderLearnable as SB3Embedder
-from sb3_model_eval import eval_corruptions as sb3_eval_corruptions
-from sb3_neg_sampling import get_sampler as get_sb3_sampler
+from sb3.sb3_custom_dummy_env import CustomDummyVecEnv
+from sb3.sb3_dataset import DataHandler as SB3DataHandler
+from sb3.sb3_index_manager import IndexManager as SB3IndexManager
+from sb3.sb3_env import LogicEnv_gym as SB3Env
+from sb3.sb3_model import PPO_custom as SB3PPO, CustomActorCriticPolicy, CustomCombinedExtractor
+from sb3.sb3_embeddings import EmbedderLearnable as SB3Embedder
+from sb3.sb3_model_eval import eval_corruptions as sb3_eval_corruptions
+from sb3.sb3_neg_sampling import get_sampler as get_sb3_sampler
 
 # Tensor imports  
 # Tensor imports  
@@ -78,12 +78,16 @@ from tensor.tensor_model_eval import eval_corruptions as tensor_eval_corruptions
 from tensor.tensor_sampler import Sampler, SamplerConfig
 
 
+# Compute default data path
+_DEFAULT_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data')
+
+
 @dataclass
 class TrainParityConfig:
     """Configuration for train parity tests."""
     # Dataset / data files
     dataset: str = "countries_s3"
-    data_path: str = "./data/"
+    data_path: str = _DEFAULT_DATA_PATH
     train_file: str = "train.txt"
     valid_file: str = "valid.txt"
     test_file: str = "test.txt"

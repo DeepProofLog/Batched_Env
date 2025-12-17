@@ -58,6 +58,85 @@ class Tee(object):
         return any(getattr(f, 'isatty', lambda: False)() for f in self.files)
 
 
+
+
+def compute_optimal_batch_size(
+    chunk_queries: int = None,
+    n_corruptions: int = None,
+    max_vram_gb: float = None,
+    min_batch_size: int = 64,
+    prefer_power_of_two: bool = False,
+) -> int:
+    """
+    Compute optimal batch size for evaluation.
+    
+    Uses adaptive batch size: smaller for small evaluations, larger for large ones.
+    This optimizes compilation time for small tests while supporting large-scale ranking.
+    
+    Memory model:
+    - Each query in a batch requires ~3-4MB for state tensors:
+      - derived_states: [K_max=120, M_max=26, 3] × 8 bytes ≈ 75KB per query
+      - Multiple intermediate tensors during unification: ~3MB per query
+    - For 8GB GPU with ~6GB usable: max ~2000 queries safely, ~1500 conservatively
+    
+    CRITICAL: Batch sizes > 512 have pathologically worse per-query performance
+    due to GPU memory bandwidth saturation with large derived_states tensors.
+    
+    Args:
+        chunk_queries: Number of queries per chunk (used for sizing)
+        n_corruptions: Number of corruptions per query (used for sizing)
+        max_vram_gb: Maximum VRAM to use (default: detected from GPU)
+        min_batch_size: Minimum allowed batch size
+        prefer_power_of_two: If True, round to nearest power of 2
+        
+    Returns:
+        Batch size (adaptive based on actual needs)
+    """
+    # Detect available VRAM if not specified
+    if max_vram_gb is None and torch.cuda.is_available():
+        total_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        # Use ~60% of total memory to leave room for PyTorch overhead
+        max_vram_gb = total_mem * 0.6
+    elif max_vram_gb is None:
+        max_vram_gb = 4.0  # Conservative default for CPU
+    
+    # Adaptive: use smaller batch for small evaluations
+    # This speeds up compilation for small tests
+    # NOTE: Batch sizes > 512 tend to have much worse per-query performance
+    # due to GPU memory bandwidth limits with large derived_states tensors
+    if chunk_queries is not None and n_corruptions is not None:
+        actual_need = chunk_queries * (1 + n_corruptions)
+        if actual_need <= 64:
+            batch_size = 64
+        elif actual_need <= 256:
+            batch_size = 256
+        else:
+            # Cap at 512 for best throughput (larger sizes have worse per-query time)
+            batch_size = 512
+    else:
+        # Default to moderate size if params not provided
+        batch_size = 256
+    
+    # Clamp to VRAM limit - use more accurate memory estimation
+    # Each query uses approximately 3MB during unification
+    mem_per_query_mb = 3.0
+    max_batch_from_vram = int(max_vram_gb * 1024 / mem_per_query_mb)
+    batch_size = min(batch_size, max_batch_from_vram)
+    
+    # Apply minimum
+    batch_size = max(batch_size, min_batch_size)
+    
+    # Align to multiples of 32 for GPU efficiency
+    batch_size = ((batch_size + 31) // 32) * 32
+    
+    # Optional: round to power of 2
+    if prefer_power_of_two:
+        import math
+        log2 = math.log2(batch_size)
+        batch_size = 2 ** round(log2)
+    
+    return batch_size
+
 def setup_components(device: torch.device, config: SimpleNamespace):
     """
     Initialize all components needed for optimized evaluation.
@@ -70,7 +149,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from unification import UnificationEngineVectorized
     from nn.embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
-    from sampler import Sampler
+    from nn.sampler import Sampler
     from env import Env_vec as EvalEnvOptimized
     
     # Enable compile mode
@@ -209,7 +288,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
 
 def create_ppo_and_warmup(components, config) -> Tuple[any, float]:
     """Create PPOOptimized and run warmup. Returns (ppo, warmup_time_s)."""
-    from ppo import PPOOptimized, compute_optimal_batch_size
+    from ppo import PPO
     
     policy = components['policy']
     env = components['eval_env']
@@ -224,7 +303,7 @@ def create_ppo_and_warmup(components, config) -> Tuple[any, float]:
     )
     
     # Create PPOOptimized in eval-only mode (skips massive rollout buffer allocation)
-    ppo = PPOOptimized(
+    ppo = PPO(
         policy=policy,
         env=env,
         device=env.device,

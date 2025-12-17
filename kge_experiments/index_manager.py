@@ -330,28 +330,3 @@ class IndexManager:
             self.rules_heads_idx = self.rules_heads_idx.to(self.device)
         else:
             self.rules_heads_idx = torch.empty((0,3), dtype=torch.long, device=self.device)
-
-    def adjust_runtime_start_for_head_vars(self, head_var_count: int) -> None:
-        """
-        Move the runtime variable window so that head variables do not offset the
-        starting index. SB3 effectively begins fresh variables after the *body-only*
-        variables, whereas this manager initially offsets by all template vars.
-        """
-        # SB3 starts fresh variables immediately after constants, regardless of
-        # how many template variables appear in the rules. Mirroring that behavior
-        # prevents body/head variables from shifting the runtime window.
-        old_start = self.runtime_var_start_index
-        new_start = self.constant_no + 1
-        if new_start != self.runtime_var_start_index:
-            self.runtime_var_start_index = new_start
-            self.runtime_var_end_index = self.runtime_var_start_index + self.runtime_variable_no - 1
-            print(f"[DEBUG] Adjusted runtime_var_start: {old_start} -> {new_start} (template_vars={self.template_variable_no})")
-
-    def get_stringifier_params(self):
-        """Return the parameters needed for atom stringification."""
-        return {
-            'n_constants': self.constant_no,
-            'idx2constant': tuple(self.idx2constant),
-            'idx2predicate': tuple(self.idx2predicate),
-            'idx2template_var': tuple(self.idx2template_var),
-        }

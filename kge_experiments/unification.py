@@ -30,30 +30,6 @@ from torch import Tensor
 from typing import List, Dict, Any, Union
 import torch._dynamo
 
-# ============================================================================
-# Compilation Helpers
-# ============================================================================
-
-COMPILE_MODE = False
-_compiled_cache = {}
-
-def maybe_compile(fn, name: str, dynamic: bool = True):
-    """Conditionally compile a function with torch.compile when COMPILE_MODE is True."""
-    if not COMPILE_MODE:
-        return fn
-    cache_key = f"{name}_dyn{dynamic}"
-    if cache_key not in _compiled_cache:
-        _compiled_cache[cache_key] = torch.compile(
-            fn, 
-            mode='default',
-            fullgraph=False,
-            dynamic=dynamic
-        )
-    return _compiled_cache[cache_key]
-
-# ============================================================================
-# Copied Dependencies from tensor/tensor_unification.py
-# ============================================================================
 
 # Cache for pack base tensors - avoids repeated torch.as_tensor allocations
 _pack_base_cache: dict = {}
@@ -244,10 +220,10 @@ def unify_one_to_one(
 
 
 # ============================================================================
-# Vectorized Fact Lookup (No nonzero() or boolean indexing)
+# Vectorized Fact Lookup
 # ============================================================================
 
-def fact_contains_vectorized(
+def fact_contains(
     atoms: Tensor,              # [N, 3]
     fact_hashes: Tensor,        # [F] sorted fact hashes
     pack_base: int,
@@ -337,7 +313,7 @@ def all_atoms_are_ground_facts(
     
     # Flatten states for fact lookup: [N*M, 3]
     flat_states = states.view(-1, 3)
-    is_fact_flat = fact_contains_vectorized(flat_states, fact_hashes, pack_base)
+    is_fact_flat = fact_contains(flat_states, fact_hashes, pack_base)
     is_fact = is_fact_flat.view(N, M)  # [N, M]
     
     # Atom is confirmed fact if: can_be_fact AND is_fact
@@ -384,7 +360,7 @@ def all_atoms_are_ground_facts(
 
 
 @torch._dynamo.disable
-def standardize_vars_fixed_parity(
+def standardize_vars_parity(
     states: Tensor,          # [B, K, M, 3] derived states
     counts: Tensor,          # [B] valid count per batch
     next_var_indices: Tensor, # [B] starting variable index per batch
@@ -502,7 +478,7 @@ def standardize_vars_fixed_parity(
     return standardized, new_next_var
 
 
-def standardize_vars_fixed(
+def standardize_vars(
     states: Tensor,          # [B, K, M, 3]
     counts: Tensor,          # [B] valid count per batch
     next_var_indices: Tensor, # [B] starting variable index per batch
@@ -583,7 +559,7 @@ def standardize_vars_fixed(
     return standardized, new_next_var
 
 
-def pairs_via_predicate_ranges_fixed(
+def pairs_via_predicate_ranges(
     query_preds: Tensor,        # [B] predicate ID per query
     seg_starts: Tensor,         # [P] start index for each predicate
     seg_lens: Tensor,           # [P] count for each predicate  
@@ -626,7 +602,7 @@ def pairs_via_predicate_ranges_fixed(
     return item_idx, valid_mask, query_idx
 
 
-def unify_with_facts_fixed(
+def unify_with_facts(
     queries: Tensor,                # [B, 3] query atoms
     remaining: Tensor,              # [B, G, 3] remaining atoms
     remaining_counts: Tensor,       # [B] valid remaining count
@@ -708,7 +684,7 @@ def unify_with_facts_fixed(
     return derived_states, success_mask, subs
 
 
-def unify_with_rules_fixed(
+def unify_with_rules(
     queries: Tensor,                    # [B, 3]
     remaining: Tensor,                  # [B, G, 3]
     remaining_counts: Tensor,           # [B]
@@ -828,7 +804,7 @@ def unify_with_rules_fixed(
     return derived_states, success_mask, subs, rule_lens_sel
 
 
-def prune_ground_facts_fixed(
+def prune_ground_facts(
     candidates: Tensor,         # [B, K, M, 3]
     valid_mask: Tensor,         # [B, K]
     fact_hashes: Tensor,        # [F] sorted fact hashes
@@ -866,7 +842,7 @@ def prune_ground_facts_fixed(
     
     # Check ALL atoms against fact hashes (fully vectorized)
     flat_atoms = candidates.view(-1, 3)          # [B*K*M, 3]
-    is_fact_flat = fact_contains_vectorized(flat_atoms, fact_hashes, pack_base)
+    is_fact_flat = fact_contains(flat_atoms, fact_hashes, pack_base)
     is_fact = is_fact_flat.view(B, K, M)
     
     # Only mark as fact if it was actually a ground atom
@@ -906,7 +882,7 @@ def prune_ground_facts_fixed(
     return pruned_states, pruned_counts, is_proof
 
 
-def pack_results_fixed_parity(
+def pack_results_parity(
     fact_states: Tensor,        # [B, K_f, G, 3]
     fact_mask: Tensor,          # [B, K_f]
     rule_states: Tensor,        # [B, K_r, M, 3]
@@ -956,7 +932,7 @@ def pack_results_fixed_parity(
     return derived, counts
 
 
-def pack_results_fixed(
+def pack_results(
     fact_states: Tensor,        # [B, K_f, G, 3]
     fact_mask: Tensor,          # [B, K_f]
     rule_states: Tensor,        # [B, K_r, M, 3]
@@ -1185,14 +1161,7 @@ class UnificationEngineVectorized:
         
         self.max_fact_pairs = max_fact_pairs
         self.max_rule_pairs = max_rule_pairs
-        
-        self._compute_pred_limits()
 
-    def _compute_pred_limits(self):
-        """Pre-compute max pairs per predicate for fixed shapes."""
-        # For now, use the class parameters
-        # In a more sophisticated version, we'd analyze the actual data
-        pass
 
     @classmethod
     def from_index_manager(
@@ -1352,12 +1321,12 @@ class UnificationEngineVectorized:
         # ---------------------------------------------------------------------
         # 2. Fact Unification
         # ---------------------------------------------------------------------
-        fact_item_idx, fact_valid, _ = pairs_via_predicate_ranges_fixed(
+        fact_item_idx, fact_valid, _ = pairs_via_predicate_ranges(
             query_preds, self.fact_seg_starts, self.fact_seg_lens,
             self.max_fact_pairs, device
         )
         
-        fact_states, fact_success, _ = unify_with_facts_fixed(
+        fact_states, fact_success, _ = unify_with_facts(
             queries, remaining, remaining_counts,
             fact_item_idx, fact_valid,
             self.facts_idx, self.constant_no, pad
@@ -1431,12 +1400,12 @@ class UnificationEngineVectorized:
         # ---------------------------------------------------------------------
         # 3. Rule Unification
         # ---------------------------------------------------------------------
-        rule_item_idx, rule_valid, _ = pairs_via_predicate_ranges_fixed(
+        rule_item_idx, rule_valid, _ = pairs_via_predicate_ranges(
             query_preds, self.rule_seg_starts, self.rule_seg_lens,
             self.max_rule_pairs, device
         )
         
-        rule_states, rule_success, _, rule_lens = unify_with_rules_fixed(
+        rule_states, rule_success, _, rule_lens = unify_with_rules(
             queries, remaining, remaining_counts,
             rule_item_idx, rule_valid,
             self.rules_heads_sorted, self.rules_idx_sorted, self.rule_lens_sorted,
@@ -1464,13 +1433,13 @@ class UnificationEngineVectorized:
         # 4. Combine Results
         # ---------------------------------------------------------------------
         if self.parity_mode:
-            combined, combined_counts = pack_results_fixed_parity(
+            combined, combined_counts = pack_results_parity(
                 fact_states, fact_success,
                 rule_states, rule_success,
                 self.K_max, self.M_max, pad,
             )
         else:
-            combined, combined_counts = pack_results_fixed(
+            combined, combined_counts = pack_results(
                 fact_states, fact_success,
                 rule_states, rule_success,
                 self.K_max, self.M_max, pad,
@@ -1482,7 +1451,7 @@ class UnificationEngineVectorized:
         combined_valid = (combined_counts > 0)
         combined_valid_exp = torch.arange(self.K_max, device=device).unsqueeze(0) < combined_counts.unsqueeze(1)
         
-        pruned, pruned_atom_counts, is_proof = prune_ground_facts_fixed(
+        pruned, pruned_atom_counts, is_proof = prune_ground_facts(
             combined, combined_valid_exp,
             self.fact_hashes, self.pack_base, self.constant_no, pad,
             true_pred_idx=self.true_pred_idx,
@@ -1552,59 +1521,16 @@ class UnificationEngineVectorized:
         # This matches the original engine's standardize_derived_states step
         # ---------------------------------------------------------------------
         if self.parity_mode:
-            std_derived, std_new_vars = standardize_vars_fixed_parity(
+            std_derived, std_new_vars = standardize_vars_parity(
                 final_derived, final_counts, next_var_indices,
                 self.constant_no, pad,
                 input_states=current_states
             )
         else:
-            std_derived, std_new_vars = standardize_vars_fixed(
+            std_derived, std_new_vars = standardize_vars(
                 final_derived, final_counts, next_var_indices,
                 self.constant_no, pad
             )
         
         return std_derived, final_counts, std_new_vars
 
-
-# ============================================================================
-# Compiled Wrapper Function
-# ============================================================================
-
-def create_compiled_engine(
-    base_engine,
-    max_fact_pairs: int = 50,
-    max_rule_pairs: int = 100,
-    compile_mode: str = 'reduce-overhead',
-) -> UnificationEngineVectorized:
-    """
-    Create a vectorized engine with compiled get_derived_states.
-    NOTE: deprecated way, prefers from_index_manager
-    """
-    # Create via manual property transfer (legacy support)
-    engine = UnificationEngineVectorized(
-        facts_idx=base_engine.facts_idx,
-        rules_idx=base_engine.rules_idx,
-        rule_lens=base_engine.rule_lens,
-        rules_heads_idx=base_engine.rules_heads_idx,
-        padding_idx=base_engine.padding_idx,
-        constant_no=base_engine.constant_no,
-        runtime_var_end_index=base_engine.runtime_var_end_index,
-        true_pred_idx=base_engine.true_pred_idx,
-        false_pred_idx=base_engine.false_pred_idx,
-        max_arity=base_engine.max_arity,
-        predicate_range_map=base_engine.predicate_range_map,
-        device=base_engine.device,
-        pack_base=base_engine.pack_base,
-        max_derived_per_state=base_engine.max_derived_per_state,
-        max_fact_pairs=max_fact_pairs,
-        max_rule_pairs=max_rule_pairs,
-    )
-    
-    # Compile the main method
-    engine.get_derived_states_compiled = torch.compile(
-        engine.get_derived_states_compiled,
-        mode=compile_mode,
-        dynamic=False,  # Fixed shapes!
-    )
-    
-    return engine

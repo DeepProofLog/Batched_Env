@@ -43,7 +43,7 @@ from unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
 from env import EvalEnvOptimized
 from env import EvalEnvOptimized
-import utils.utils as utils_funcs
+import tensor.tensor_utils.tensor_utils as utils_funcs
 
 
 # ============================================================================

@@ -49,7 +49,7 @@ def create_default_config() -> SimpleNamespace:
     return SimpleNamespace(
         # Dataset/files
         dataset="countries_s3",
-        data_path=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data'),
+        base_path=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data'),
         train_file="train.txt",
         valid_file="valid.txt",
         test_file="test.txt",
@@ -104,7 +104,7 @@ def prepare_queries(config: SimpleNamespace) -> List[Tuple[str, Tuple[str, str, 
     
     dh = DataHandler(
         dataset_name=config.dataset,
-        base_path=config.data_path,
+        base_path=config.base_path,
         train_file=config.train_file,
         valid_file=config.valid_file,
         test_file=config.test_file,

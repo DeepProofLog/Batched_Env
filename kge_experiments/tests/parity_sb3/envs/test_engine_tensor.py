@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from data_handler import DataHandler
 from index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
-import utils.utils as utils_funcs
+import tensor.tensor_utils.tensor_utils as utils_funcs
 
 
 def setup_tensor_engine(

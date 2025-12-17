@@ -70,9 +70,9 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from unification import UnificationEngineVectorized
     from nn.embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
-    from sampler import Sampler
+    from nn.sampler import Sampler
     from env import Env_vec as EvalEnvOptimized, EvalObs
-    from ppo import PPOOptimized
+    from ppo import PPO
     
     # Enable compile mode
     import unification
@@ -199,7 +199,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     ).to(device)
     
     # PPOOptimized
-    ppo = PPOOptimized(
+    ppo = PPO(
         policy=policy,
         env=train_env,
         n_steps=config.n_steps,

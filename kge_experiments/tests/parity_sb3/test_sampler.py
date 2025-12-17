@@ -40,7 +40,7 @@ def _ensure_root_module(name: str):
 _ensure_root_module("index_manager")
 from data_handler import DataHandler as NewDataHandler
 from index_manager import IndexManager as NewIndexManager
-from sampler import Sampler as NewSampler
+from nn.sampler import Sampler as NewSampler
 
 from sb3.sb3_dataset import DataHandler as SB3DataHandler
 from sb3.sb3_index_manager import IndexManager as SB3IndexManager

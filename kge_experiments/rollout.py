@@ -36,7 +36,7 @@ def _batch_index_select(
         torch.index_select(src, 0, indices, out=dst)
 
 
-class RolloutBufferOptimized:
+class RolloutBuffer:
     """
     Rollout buffer for on-policy algorithms working with EvalEnvOptimized.
     

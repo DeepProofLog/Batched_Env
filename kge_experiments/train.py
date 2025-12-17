@@ -42,8 +42,8 @@ from unification import UnificationEngineVectorized
 from env import Env_vec as EvalEnvOptimized, EvalObs, EvalState
 from nn.embeddings import EmbedderLearnable as TensorEmbedder
 from model import ActorCriticPolicy as TensorPolicy
-from ppo import PPOOptimized
-from sampler import Sampler
+from ppo import PPO as PPOOptimized
+from nn.sampler import Sampler
 
 from callbacks import (
     TorchRLCallbackManager, 
@@ -1071,55 +1071,3 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     
     return metrics_train, metrics_valid, metrics_test
 
-
-def main_cli():
-    """Command-line interface for train.py (standalone use)."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Train Compiled (Optimized)")
-    parser.add_argument("--dataset", type=str, default="countries_s3")
-    parser.add_argument("--n-envs", type=int, default=16)
-    parser.add_argument("--n-steps", type=int, default=128)
-    parser.add_argument("--total-timesteps", type=int, default=2000)
-    parser.add_argument("--n-corruptions", type=int, default=10)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--verbose", action="store_true", default=True)
-    parser.add_argument("--n-epochs", type=int, default=4)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--ent-coef", type=float, default=0.0)
-    parser.add_argument("--eval-freq", type=int, default=0,
-                        help="Evaluate every N timesteps (0=only at end)")
-    parser.add_argument("--save-model", action="store_true", default=False,
-                        help="Save model checkpoints")
-    parser.add_argument("--model-path", type=str, default="./models/",
-                        help="Path to save models")
-    parser.add_argument("--no-restore-best", action="store_true", default=False,
-                        help="Don't restore best model after training")
-    
-    args = parser.parse_args()
-    
-    config = TrainCompiledConfig(
-        dataset=args.dataset,
-        n_envs=args.n_envs,
-        n_steps=args.n_steps,
-        total_timesteps=args.total_timesteps,
-        n_corruptions=args.n_corruptions,
-        seed=args.seed,
-        device=args.device,
-        verbose=args.verbose,
-        n_epochs=args.n_epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        ent_coef=args.ent_coef,
-        eval_freq=args.eval_freq,
-        save_model=args.save_model,
-        model_path=args.model_path,
-        restore_best=not args.no_restore_best,
-    )
-    
-    run_experiment(config)
-
-
-if __name__ == "__main__":
-    main_cli()
