@@ -323,6 +323,15 @@ class PPO:
         else:
             self.optimizer = None
             self.loss_module = None
+            # Still need compiled policy function for evaluation
+            from model import create_policy_logits_fn
+            policy_logits_fn = create_policy_logits_fn(self.policy)
+            self._compiled_policy_fn = torch.compile(
+                policy_logits_fn,
+                mode=self._compile_mode,
+                fullgraph=True,
+            )
+            self._uncompiled_policy = self.policy
     
     def _compile_policy_network(self):
         """Compile the policy network for faster training.
@@ -357,8 +366,17 @@ class PPO:
         # Without this, the first few backward passes allocate new gradient tensors
         self._warmup_gradients()
         
-        # For inference (collect_rollouts), compile the policy separately
+        # For inference (collect_rollouts), compile the policy logits function separately
         # This creates a different CUDA graph than the training graph
+        from model import create_policy_logits_fn
+        policy_logits_fn = create_policy_logits_fn(self._uncompiled_policy)
+        self._compiled_policy_fn = torch.compile(
+            policy_logits_fn,
+            mode=self._compile_mode,
+            fullgraph=True,
+        )
+        
+        # Also compile the policy for other uses (predict_values, etc)
         self.policy = torch.compile(
             self._uncompiled_policy,
             mode=self._compile_mode,
@@ -493,19 +511,16 @@ class PPO:
                 # Convert EnvObs to TensorDict for policy value prediction
                 obs_td = self._obs_to_tensordict(obs)
                 
-                # Predict values (critic) separate from actor (step_with_policy)
+                # Predict values (critic)
                 values = self.policy.predict_values(obs_td)
                 
-                # Capture NEXT query indices (which will be used if reset happens)
-                # env._per_env_ptrs points to the NEXT query to be picked by reset
+                # Capture NEXT query indices for callback tracking
                 next_query_indices = None
                 
                 # Initialize current_query_indices if needed
                 if self.current_query_indices is None and self.env._per_env_ptrs is not None:
-                     # Best effort initialization: assume current queries are derived from current pointers
                      pool_size = self.env._query_pool.shape[0] if self.env._query_pool is not None else 0
                      if pool_size > 0:
-                         # Initialize on CPU
                          self.current_query_indices = (self.env._per_env_ptrs % pool_size).cpu().numpy().copy()
                          
                 if self.current_query_indices is not None and self.env._per_env_ptrs is not None:
@@ -513,19 +528,34 @@ class PPO:
                     if pool_size > 0:
                         next_query_indices = self.env._per_env_ptrs % pool_size
 
-                # Step environment using compiled step_with_policy
-                # Uses env's internal query pool for reset cycling (set via set_queries)
-                step_result = self.env.step_with_policy(
-                    state, obs,
-                    deterministic=False,
-                    eval_mode=False
+                # === SEPARATE COMPILATION: Policy forward (compiled separately) ===
+                torch.compiler.cudagraph_mark_step_begin()
+                
+                # Get logits from compiled policy
+                logits = self._compiled_policy_fn(obs)
+                logits = logits.clone()  # Break aliasing with CUDA graph buffer
+                
+                # Mask invalid actions
+                masked_logits = torch.where(
+                    obs.action_mask,
+                    logits,
+                    torch.full_like(logits, float('-inf'))
                 )
                 
-                # step_with_policy returns: state, obs, actions, log_probs, values, rewards, dones, ptrs, mask
-                new_state, new_obs, actions, log_probs, _step_values, rewards, dones, _, _ = step_result
-
+                # Sample actions (training mode = stochastic)
+                probs = torch.softmax(masked_logits, dim=-1)
+                actions = torch.multinomial(probs, 1).squeeze(-1)
                 
-                # Store transition
+                # Get log probs
+                log_probs_all = torch.log_softmax(masked_logits, dim=-1)
+                log_probs = log_probs_all.gather(1, actions.unsqueeze(1)).squeeze(1)
+                
+                # Mask log probs for done environments
+                active = ~state.done
+                log_probs = torch.where(active, log_probs, torch.zeros_like(log_probs))
+                
+                # === SEPARATE COMPILATION: Env step + reset (fused for performance) ===
+                new_state, new_obs, rewards, dones = self.env.step_and_reset(state, actions)
                 self.rollout_buffer.add(
                     sub_index=obs_snapshot_sub,
                     derived_sub_indices=obs_snapshot_derived,
@@ -955,14 +985,14 @@ class PPO:
             lengths: [B] Trajectory lengths
             rewards: [B] Accumulated rewards
         """
-        if self.env._policy_logits_fn is None:
-            raise RuntimeError("Must call env.compile(policy) before evaluate_policy()")
+        if self._compiled_policy_fn is None:
+            raise RuntimeError("PPO must be compiled for evaluation (not in eval_only mode)")
         
         device = self.device
         max_steps = max_steps or self.env.max_depth
         
         # Initialize state
-        state = self.env.init_state_from_queries(queries)
+        state = self.env.reset_from_queries(queries)
         B = state.current_states.shape[0]
         
         # Pre-allocate accumulators
@@ -977,23 +1007,35 @@ class PPO:
             action_mask=action_mask,
         )
         
-        # Empty query pool and pointers for eval mode (no resets)
-        empty_pool = torch.empty((0, 3), dtype=torch.long, device=device)
-        empty_ptrs = torch.zeros(B, dtype=torch.long, device=device)
-        eval_done_mask = torch.zeros(B, dtype=torch.bool, device=device)
-        
-        # Python loop over transitions
+        # Python loop over transitions  
         for step_idx in range(max_steps):
             # Early exit if all done
             if state.done.all():
                 break
             
-            state, obs, actions, step_log_probs, _values, rewards, dones, _, _ = self.env.step_with_policy(
-                state, obs, empty_pool, empty_ptrs,
-                deterministic=deterministic,
-                eval_mode=True,
-                eval_done_mask=eval_done_mask,
+            # === Policy forward (compiled separately) ===
+            torch.compiler.cudagraph_mark_step_begin()
+            logits = self._compiled_policy_fn(obs)
+            logits = logits.clone()
+            
+            # Mask invalid actions and select
+            masked_logits = torch.where(
+                obs.action_mask,
+                logits,
+                torch.full_like(logits, float('-inf'))
             )
+            actions = masked_logits.argmax(dim=-1) if deterministic else \
+                      torch.multinomial(torch.softmax(masked_logits, dim=-1), 1).squeeze(-1)
+            
+            # Get log probs for the selected actions
+            step_log_probs = torch.log_softmax(masked_logits, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1)
+            step_log_probs = torch.where(~state.done, step_log_probs, torch.zeros_like(step_log_probs))
+            
+            # === Env step (compiled separately) ===
+            step_result = self.env.step(state, actions)
+            state = step_result.state
+            obs = step_result.obs
+            rewards = step_result.rewards
             
             # Accumulate
             total_log_probs = total_log_probs + step_log_probs
@@ -1058,8 +1100,8 @@ class PPO:
         """
         from callbacks import Display # Delayed import to avoid circular dependency
         
-        if not self.env._compiled and self.env._policy_logits_fn is None:
-            raise RuntimeError("Must call env.compile(policy) before evaluate_with_corruptions()")
+        if self._compiled_policy_fn is None:
+            raise RuntimeError("PPO must be compiled for evaluation (not in eval_only mode)")
         
         device = self.device
         N = queries.shape[0]

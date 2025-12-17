@@ -454,7 +454,7 @@ def collect_optimized_rollout_with_traces(
     
     # Initialize state with first n_envs queries
     init_queries = query_pool[:n_envs]
-    state = ppo.env.init_state_from_queries(init_queries)
+    state = ppo.env.reset_from_queries(init_queries)
     
     # Initialize per-env pointers to match tensor env's round-robin
     # Must be done after set_queries since it initializes pointers

@@ -378,13 +378,10 @@ def run_optimized_eval(
     )
     ppo.fixed_batch_size = batch_size
     
-    # Compile environment with policy
+    # Compile environment (policy is compiled separately now)
     env.compile(
-        policy=policy,
-        deterministic=True,
         mode=compile_mode,
         fullgraph=fullgraph,
-        include_value=False,  # Eval mode doesn't need values
     )
     
     # Warmup with padded queries to trigger JIT compilation

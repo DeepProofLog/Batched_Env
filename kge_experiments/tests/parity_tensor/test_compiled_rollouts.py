@@ -380,17 +380,10 @@ def collect_optimized_rollout_traces(
     """
     device = ppo.device
     
-    # Convert queries to tensor format (this is the query pool)
-    
-    # Setup policy for step_with_policy (compile only if requested)
-    if use_compile:
-        ppo.env.compile(ppo.policy, fullgraph=True)
-    else:
-        # Eager mode: just set up the policy logits function without compiling
-        from model import create_policy_logits_fn
-        ppo.env._policy_logits_fn = create_policy_logits_fn(ppo.policy)
-        ppo.env._compile_deterministic = True
-        ppo.env._compiled = False
+    # Convert queries to tensor format (this is the query pool)\n    
+    # PPO now handles policy compilation internally via _compiled_policy_fn
+    # For parity tests, we use eager mode (no compilation) since parity_mode=True uses dynamic shapes
+    # The collect_rollouts method will handle policy forward and env step separately
     
     query_atoms = []
     for q in queries:
@@ -403,7 +396,7 @@ def collect_optimized_rollout_traces(
     
     # Initialize state with first n_envs queries
     init_queries = query_pool[:ppo.n_envs]
-    state = ppo.env.init_state_from_queries(init_queries)
+    state = ppo.env.reset_from_queries(init_queries)
     
     # Initialize per-env pointers to match tensor env's round-robin
     # Tensor env initializes _per_env_train_ptrs to [0, 1, 2, ...] initially

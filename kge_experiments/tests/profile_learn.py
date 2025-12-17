@@ -242,13 +242,10 @@ def compile_and_warmup(components, config) -> float:
     
     warmup_start = time()
     
-    # Compile environment with policy (for training, include values)
+    # Compile environment step function (policy compiled separately in PPO)
     env.compile(
-        policy=policy,
-        deterministic=False,
         mode=config.compile_mode,
         fullgraph=config.fullgraph,
-        include_value=True,
     )
     
     # Simple warmup: just run learn() with full settings

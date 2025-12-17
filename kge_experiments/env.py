@@ -81,13 +81,16 @@ class EnvStepFunctionalOutput(NamedTuple):
 
 class Env_vec:
     """
-    Optimized evaluation environment with single-step compilation.
+    Optimized evaluation environment with optional compilation.
     
-    This environment uses torch.compile() for the single-step transition
-    (policy + env step) rather than the full trajectory. This provides:
-    - Fast compilation: ~5-10s vs ~22-24s for full trajectory
-    - Same correctness: Python loop doesn't affect results
-    - Good runtime: Minimal Python overhead
+    Args:
+        compile: If True, compile step functions for GPU acceleration
+        compile_mode: torch.compile mode ('reduce-overhead', 'default', etc.)
+    
+    Public API:
+        reset() -> (obs, state): Initialize environment
+        step(state, actions) -> StepResult: Execute one step
+        step_and_reset(state, actions) -> (state, obs, rewards, dones): Step + auto-reset
     """
     
     def __init__(
@@ -100,9 +103,13 @@ class Env_vec:
         end_proof_action: bool = True,
         runtime_var_start_index: Optional[int] = None,
         device: Optional[torch.device] = None,
-        memory_pruning: bool = True,  # Enable cycle detection
-        queries: Optional[Tensor] = None,  # Query pool for training
-        sample_deterministic_per_env: bool = False,  # Round-robin (parity) vs random
+        memory_pruning: bool = True,
+        queries: Optional[Tensor] = None,
+        sample_deterministic_per_env: bool = False,
+        # Compilation settings
+        compile: bool = False,
+        compile_mode: str = 'reduce-overhead',
+        compile_fullgraph: bool = True,
     ):
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.batch_size = batch_size
@@ -111,12 +118,13 @@ class Env_vec:
         self.max_depth = max_depth
         self.end_proof_action = end_proof_action
         self.memory_pruning = memory_pruning
-        self.max_history_size = max_depth + 1  # +1 for initial query
+        self.max_history_size = max_depth + 1
         self.sample_deterministic_per_env = sample_deterministic_per_env
+        self._compiled = compile
 
         
-        # Hash computation constants (matching memory.py)
-        self._hash_mix_const = 0x9E3779B97F4A7C15  # Golden ratio mixing constant
+        # Hash computation constants
+        self._hash_mix_const = 0x9E3779B97F4A7C15
         self._hash_mask63 = (1 << 63) - 1
         
         # Vectorized unification engine
@@ -134,14 +142,10 @@ class Env_vec:
         else:
             self.runtime_var_start_index = vec_engine.constant_no + 1
         
-        # Pack base for hash computation - MUST match BloomFilter._pack_base
-        # BloomFilter uses total_vocab_size + 1 where total_vocab_size = constant_no + runtime_vars
-        # This ensures identical hash values between BloomFilter and _compute_state_hash64
-        # Use pack_base from engine which should be synchronized
+        # Pack base for hash computation
         if hasattr(vec_engine, 'pack_base'):
              self._hash_pack_base = vec_engine.pack_base
         else:
-             # Fallback if not available (should be there)
              self._hash_pack_base = vec_engine.constant_no + 1001
         
         # Pre-build end action tensor
@@ -152,39 +156,74 @@ class Env_vec:
             end_state[0, 0] = self.end_pred_idx
             end_state[0, 1] = self.padding_idx
             end_state[0, 2] = self.padding_idx
-            self.end_state = end_state  # [A, 3]
+            self.end_state = end_state
         
-        # ====================================================================
         # Pre-allocated static tensors for CUDA graph stability
-        # These tensors are created once and reused across calls to avoid
-        # memory allocation during compiled execution.
-        # ====================================================================
+        self._positions_S = torch.arange(padding_states, device=self.device).unsqueeze(0)
+        self._batch_idx_B = None
         
-        # Index tensors - these are constant and can be safely reused
-        self._positions_S = torch.arange(padding_states, device=self.device).unsqueeze(0)  # [1, S]
-        self._batch_idx_B = None  # Lazy allocated when batch size is known
-        
-        # Compilation state
-        self._compiled = False
-        self._policy_logits_fn = None
-        self._policy_value_fn = None
-        self._compiled_step_fn = None
-        self._compile_deterministic = True
-        
-        # Query storage for training (like BatchedEnv)
-        # Initialize from constructor parameter if provided
+        # Query storage for training
         if queries is not None:
             self._query_pool = queries.to(self.device)
-            # Initialize per-env pointers: env i starts pointing at query i
-            # This matches BatchedEnv's _per_env_train_ptrs initialization
             self._per_env_ptrs = torch.arange(batch_size, device=self.device)
         else:
             self._query_pool = None
             self._per_env_ptrs = None
         self._current_state: Optional[EnvState] = None
         self._current_obs: Optional[EnvObs] = None
-
+        
+        # =====================================================================
+        # Compile functions if requested
+        # =====================================================================
+        if compile:
+            self._setup_compilation(compile_mode, compile_fullgraph)
+        else:
+            # Eager mode: functions are used directly
+            self._step_fn = self._step_core
+            self._step_and_reset_fn = self._step_and_reset_core
     
+    def _setup_compilation(self, mode: str, fullgraph: bool) -> None:
+        """Internal: Setup compiled versions of step functions."""
+        import os
+        import torch._inductor.config as inductor_config
+        
+        torch.set_float32_matmul_precision('high')
+        os.environ['TORCHINDUCTOR_MAX_AUTOTUNE'] = '0'
+        os.environ['TORCHINDUCTOR_COORDINATE_DESCENT_TUNING'] = '0'
+        os.environ['TORCHINDUCTOR_FREEZING'] = '0'
+        inductor_config.compile_threads = 4
+        
+        print(f"Compiling env.step (mode='{mode}', fullgraph={fullgraph})...")
+        
+        self._step_fn = torch.compile(
+            self._step_core,
+            mode=mode,
+            fullgraph=fullgraph,
+            dynamic=False,
+        )
+        
+        self._step_and_reset_fn = torch.compile(
+            self._step_and_reset_core,
+            mode=mode,
+            fullgraph=fullgraph,
+            dynamic=False,
+        )
+    
+    def compile(
+        self,
+        mode: str = 'reduce-overhead',
+        fullgraph: bool = True,
+    ) -> None:
+        """
+        Compile environment for faster execution.
+        
+        Alternative to passing compile=True at construction time.
+        Useful for deferred compilation or changing compile settings.
+        """
+        self._compiled = True
+        self._setup_compilation(mode, fullgraph)
+
+
     def set_queries(self, queries: Tensor) -> None:
         """
         Set the query pool for training with round-robin cycling.
@@ -200,54 +239,15 @@ class Env_vec:
         # This matches BatchedEnv's _per_env_train_ptrs initialization
         self._per_env_ptrs = torch.arange(self.batch_size, device=self.device)
     
-    def reset(self) -> Tuple[EnvObs, EnvState]:
+    def reset_from_queries(self, queries: Tensor, active_mask: Tensor = None) -> EnvState:
         """
-        Reset environment using stored query pool with round-robin cycling.
+        Create initial state from queries (pure function, no mutation).
         
-        Each environment gets the query at its pointer position.
-        Pointers are NOT advanced here - they're advanced in step_with_policy
-        when an environment finishes (newly_done).
-        
-        Returns:
-            Tuple of (EnvObs, EnvState)
-        """
-        if self._query_pool is None:
-            raise RuntimeError("Must call set_queries() before reset()")
-        
-        pool_size = self._query_pool.shape[0]
-        
-        # Get queries for each env using current pointers (modulo pool size)
-        query_indices = self._per_env_ptrs % pool_size
-        init_queries = self._query_pool[query_indices]  # [batch_size, 3]
-        
-        # Advance pointers for next reset (the first reset after init picks next query)
-        self._per_env_ptrs = (self._per_env_ptrs + 1) % pool_size
-
-        
-        # Initialize state
-        state = self.init_state_from_queries(init_queries)
-        
-        # Create observation
-        action_mask = self._positions_S < state.derived_counts.unsqueeze(1)
-        obs = EnvObs(
-            sub_index=state.current_states.unsqueeze(1),
-            derived_sub_indices=state.derived_states,
-            action_mask=action_mask,
-        )
-        
-        self._current_state = state
-        self._current_obs = obs
-        
-        return obs, state
-    
-    # Functional API for Full Trajectory Compilation
-    # =========================================================================
-
-    
-    def init_state_from_queries(self, queries: Tensor) -> EnvState:
-        """
-        Create initial state from queries (pure function, no mutation).        Args:
+        Args:
             queries: [B, 3] or [B, A, 3] Query tensor
+            active_mask: [B] Optional bool mask - if provided, only compute derived
+                         states for True entries. This dramatically speeds up reset
+                         when only a few envs need it.
             
         Returns:
             EnvState containing all mutable state as immutable tensors
@@ -287,10 +287,11 @@ class Env_vec:
         history_hashes[:, 0] = initial_hash
         history_count = torch.ones(B, dtype=torch.long, device=device)
         
-        # Compute initial derived states (with or without memory pruning)
+        # Compute initial derived states (with active_mask for efficiency)
         derived, counts, new_var_indices = self._compute_derived_functional(
             current_states, next_var_indices, original_queries,
-            history_hashes, history_count
+            history_hashes, history_count,
+            active_mask=active_mask,  # Pass through for optimization
         )
         
         return EnvState(
@@ -306,6 +307,318 @@ class Env_vec:
             history_count=history_count,
         )
     
+    def reset(self) -> Tuple[EnvObs, EnvState]:
+        """
+        Reset environment using stored query pool with round-robin cycling.
+        
+        Each environment gets the query at its pointer position.
+        Pointers are NOT advanced here - they're advanced in step_with_policy
+        when an environment finishes (newly_done).
+        
+        Returns:
+            Tuple of (EnvObs, EnvState)
+        """
+        if self._query_pool is None:
+            raise RuntimeError("Must call set_queries() before reset()")
+        
+        pool_size = self._query_pool.shape[0]
+        
+        # Get queries for each env using current pointers (modulo pool size)
+        query_indices = self._per_env_ptrs % pool_size
+        init_queries = self._query_pool[query_indices]  # [batch_size, 3]
+        
+        # Advance pointers for next reset (the first reset after init picks next query)
+        self._per_env_ptrs = (self._per_env_ptrs + 1) % pool_size
+
+        
+        # Initialize state
+        state = self.reset_from_queries(init_queries)
+        
+        # Create observation
+        action_mask = self._positions_S < state.derived_counts.unsqueeze(1)
+        obs = EnvObs(
+            sub_index=state.current_states.unsqueeze(1),
+            derived_sub_indices=state.derived_states,
+            action_mask=action_mask,
+        )
+        
+        self._current_state = state
+        self._current_obs = obs
+        
+        return obs, state
+    
+
+
+    def _step_core(
+        self, state: EnvState, actions: Tensor
+    ) -> EnvStepFunctionalOutput:
+        """
+        Internal: Execute one step - pure function, returns new state.
+        
+        Use step() as the public API.
+        
+        Args:
+            state: Current EnvState
+            actions: [B] Action indices
+            
+        Returns:
+            EnvStepFunctionalOutput with (new_state, obs, rewards)
+        """
+        n = actions.shape[0]
+        device = self.device
+        
+        # =================================================================
+        # OPTIMIZATION (Issue 4): Mask all computation for done queries
+        # =================================================================
+        # For done envs: skip all computation, preserve existing state
+        # Use torch.where throughout for compile compatibility (no branching)
+        was_done = state.done
+        active = ~was_done  # [n] - envs that need computation
+        
+        # Get selected next states (only meaningful for active envs)
+        batch_idx = torch.arange(n, device=device)
+        next_states = state.derived_states[batch_idx, actions]
+        
+        # Update current states for active envs only
+        new_current = torch.where(
+            active.view(n, 1, 1),
+            next_states,
+            state.current_states
+        )
+        new_depths = torch.where(
+            active,
+            state.depths + 1,
+            state.depths
+        )
+        
+        # Check termination (results only matter for active envs)
+        first_pred = next_states[:, 0, 0]
+        
+        is_true = (first_pred == self.true_pred_idx) if self.true_pred_idx else \
+                  torch.zeros(n, dtype=torch.bool, device=device)
+        is_false = (first_pred == self.false_pred_idx) if self.false_pred_idx else \
+                   torch.zeros(n, dtype=torch.bool, device=device)
+        is_end = (first_pred == self.end_pred_idx) if self.end_pred_idx else \
+                 torch.zeros(n, dtype=torch.bool, device=device)
+        is_depth_limit = (new_depths >= self.max_depth)
+        
+        # Mask termination checks with active - only active envs can newly terminate
+        newly_done = active & (is_true | is_false | is_end | is_depth_limit)
+        new_done = was_done | newly_done
+        new_success = state.success | (active & is_true)
+        
+        # Rewards (only for active envs that found TRUE)
+        rewards = torch.zeros(n, device=device)
+        rewards = torch.where(active & is_true, torch.ones_like(rewards), rewards)
+        
+        # Update history only for active envs
+        write_pos = state.history_count.clamp(max=self.max_history_size - 1)
+        new_state_hash = self._compute_state_hash64(new_current)  # [n]
+        
+        # Scatter: write hash to history at write_pos for active envs only
+        update_val = torch.where(active, new_state_hash, state.history_hashes[batch_idx, write_pos])
+        new_history_hashes = state.history_hashes.clone()
+        new_history_hashes.scatter_(1, write_pos.unsqueeze(1), update_val.unsqueeze(1))
+        
+        # Increment count for active envs only
+        new_history_count = torch.where(
+            active,
+            (state.history_count + 1).clamp(max=self.max_history_size),
+            state.history_count
+        )
+        
+        # =================================================================
+        # Compute derived states - skip for envs that are now done
+        # =================================================================
+        # still_active = envs that will need derived states for next step
+        still_active = ~new_done
+        
+        # Compute derived with active_mask - done envs get padding input
+        new_derived, new_counts, new_var = self._compute_derived_functional(
+            new_current, state.next_var_indices, state.original_queries,
+            new_history_hashes, new_history_count,
+            active_mask=still_active,
+        )
+        # Preserve old derived states for done envs
+        new_derived = torch.where(
+            still_active.view(n, 1, 1, 1),
+            new_derived,
+            state.derived_states
+        )
+        new_counts = torch.where(still_active, new_counts, state.derived_counts)
+        new_var = torch.where(still_active, new_var, state.next_var_indices)
+        
+        # Create new state
+        new_state = EnvState(
+            current_states=new_current,
+            derived_states=new_derived,
+            derived_counts=new_counts,
+            original_queries=state.original_queries,
+            next_var_indices=new_var,
+            depths=new_depths,
+            done=new_done,
+            success=new_success,
+            history_hashes=new_history_hashes,
+            history_count=new_history_count,
+        )
+        
+        # Create observation
+        action_mask = self._positions_S < new_counts.unsqueeze(1)
+        
+        obs = EnvObs(
+            sub_index=new_current.unsqueeze(1),
+            derived_sub_indices=new_derived,
+            action_mask=action_mask,
+        )
+        
+        return EnvStepFunctionalOutput(state=new_state, obs=obs, rewards=rewards)
+    
+    def _step_and_reset_core(
+        self,
+        state: EnvState,
+        actions: Tensor,
+        query_pool: Tensor,
+        per_env_ptrs: Tensor,
+    ) -> Tuple[EnvState, EnvObs, Tensor, Tensor, Tensor]:
+        """
+        Internal: Fused step + reset in one compiled graph.
+        
+        This avoids Python-level orchestration between step and reset,
+        keeping all operations in a single CUDA graph for maximum performance.
+        
+        Returns:
+            (new_state, new_obs, rewards, newly_done, new_ptrs)
+        """
+        # First execute the step
+        step_result = self._step_core(state, actions)
+        new_state = step_result.state
+        rewards = step_result.rewards
+        
+        # Detect newly done environments
+        was_done = state.done
+        newly_done = new_state.done & ~was_done
+        
+        # === Vectorized reset using masked operations ===
+        device = self.device
+        n = state.current_states.shape[0]
+        reset_mask = newly_done
+        
+        # Get queries for reset using CURRENT pointer (before advancing)
+        pool_size = query_pool.shape[0]
+        safe_indices = per_env_ptrs % pool_size
+        candidate_queries = query_pool[safe_indices]  # [B, 3]
+        
+        # Compute next pointers for envs that reset
+        next_ptrs = (per_env_ptrs + 1) % pool_size
+        new_ptrs = torch.where(reset_mask, next_ptrs, per_env_ptrs)
+        
+        # Create padding query [3]
+        padding_atom = torch.full((3,), self.padding_idx, dtype=torch.long, device=device)
+        
+        # Mask: if NOT reset, use padding (fast to process)
+        reset_mask_3 = reset_mask.unsqueeze(-1).expand(-1, 3)
+        queries_for_reset = torch.where(reset_mask_3, candidate_queries, padding_atom)
+        
+        # Compute initial state for reset queries (with active_mask to skip unification for non-reset envs)
+        reset_state = self.reset_from_queries(queries_for_reset, active_mask=reset_mask)
+        
+        # Mix states: where(done, reset_state, new_state)
+        reset_mask_A3 = reset_mask.view(-1, 1, 1).expand(-1, self.padding_atoms, 3)
+        reset_mask_SA3 = reset_mask.view(-1, 1, 1, 1).expand(-1, self.padding_states, self.padding_atoms, 3)
+        reset_mask_H = reset_mask.view(-1, 1).expand(-1, self.max_history_size)
+        
+        mixed_state = EnvState(
+            current_states=torch.where(reset_mask_A3, reset_state.current_states, new_state.current_states),
+            derived_states=torch.where(reset_mask_SA3, reset_state.derived_states, new_state.derived_states),
+            derived_counts=torch.where(reset_mask, reset_state.derived_counts, new_state.derived_counts),
+            original_queries=torch.where(reset_mask_A3, reset_state.original_queries, new_state.original_queries),
+            next_var_indices=torch.where(reset_mask, reset_state.next_var_indices, new_state.next_var_indices),
+            depths=torch.where(reset_mask, reset_state.depths, new_state.depths),
+            done=torch.where(reset_mask, reset_state.done, new_state.done),
+            success=torch.where(reset_mask, reset_state.success, new_state.success),
+            history_hashes=torch.where(reset_mask_H, reset_state.history_hashes, new_state.history_hashes),
+            history_count=torch.where(reset_mask, reset_state.history_count, new_state.history_count),
+        )
+        
+        # Update observation
+        action_mask = self._positions_S < mixed_state.derived_counts.unsqueeze(1)
+        new_obs = EnvObs(
+            sub_index=mixed_state.current_states.unsqueeze(1),
+            derived_sub_indices=mixed_state.derived_states,
+            action_mask=action_mask,
+        )
+        
+        return mixed_state, new_obs, rewards, newly_done, new_ptrs
+
+    def step(
+        self,
+        state: EnvState,
+        actions: Tensor,
+    ) -> EnvStepFunctionalOutput:
+        """
+        Execute a step in the environment.
+        
+        Args:
+            state: Current EnvState
+            actions: [B] Action indices
+            
+        Returns:
+            EnvStepFunctionalOutput with (new_state, obs, rewards)
+        """
+        if self._compiled:
+            torch.compiler.cudagraph_mark_step_begin()
+            result = self._step_fn(state, actions)
+            return EnvStepFunctionalOutput(
+                state=self._clone_state(result.state),
+                obs=self._clone_obs(result.obs),
+                rewards=result.rewards.clone(),
+            )
+        else:
+            return self._step_fn(state, actions)
+    
+    def step_and_reset(
+        self,
+        state: EnvState,
+        actions: Tensor,
+    ) -> Tuple[EnvState, EnvObs, Tensor, Tensor]:
+        """
+        Execute step and handle resets (high-performance training API).
+        
+        Args:
+            state: Current EnvState
+            actions: [B] Action indices
+            
+        Returns:
+            (new_state, new_obs, rewards, newly_done)
+        """
+        query_pool = self._query_pool
+        per_env_ptrs = self._per_env_ptrs
+        
+        if query_pool is None:
+            # No query pool - just step without reset
+            result = self.step(state, actions)
+            dones = result.state.done & ~state.done
+            return result.state, result.obs, result.rewards, dones
+        
+        if self._compiled:
+            torch.compiler.cudagraph_mark_step_begin()
+            new_state, new_obs, rewards, newly_done, new_ptrs = self._step_and_reset_fn(
+                state, actions, query_pool, per_env_ptrs
+            )
+            self._per_env_ptrs = new_ptrs.clone()
+            return (
+                self._clone_state(new_state),
+                self._clone_obs(new_obs),
+                rewards.clone(),
+                newly_done.clone(),
+            )
+        else:
+            new_state, new_obs, rewards, newly_done, new_ptrs = self._step_and_reset_fn(
+                state, actions, query_pool, per_env_ptrs
+            )
+            self._per_env_ptrs = new_ptrs
+            return new_state, new_obs, rewards, newly_done
+
     def _compute_state_hash64(self, states: Tensor) -> Tensor:
         """
         Compute order-independent 64-bit hash for states.
@@ -686,449 +999,30 @@ class Env_vec:
         
         new_counts = torch.where(can_end, counts + 1, counts)
         return new_states, new_counts
-    
-    def step_functional(
-        self, state: EnvState, actions: Tensor
-    ) -> EnvStepFunctionalOutput:
-        """
-        Execute one step - pure function, returns new state.
-        
-        Args:
-            state: Current EnvState
-            actions: [B] Action indices
-            
-        Returns:
-            EnvStepFunctionalOutput with (new_state, obs, rewards)
-            
-        Note: For CUDA graph compatibility (reduce-overhead mode), outputs are
-        cloned OUTSIDE this function in step_with_policy().
-        
-        OPTIMIZATION (Issue 4): Uses masked computation for done queries.
-        All tensor operations use torch.where to skip computation for done envs,
-        preserving their existing state. This is compile-friendly (no branching).
-        """
-        n = actions.shape[0]
-        device = self.device
-        
-        # =================================================================
-        # OPTIMIZATION (Issue 4): Mask all computation for done queries
-        # =================================================================
-        # For done envs: skip all computation, preserve existing state
-        # Use torch.where throughout for compile compatibility (no branching)
-        was_done = state.done
-        active = ~was_done  # [n] - envs that need computation
-        
-        # Get selected next states (only meaningful for active envs)
-        batch_idx = torch.arange(n, device=device)
-        next_states = state.derived_states[batch_idx, actions]
-        
-        # Update current states for active envs only
-        new_current = torch.where(
-            active.view(n, 1, 1),
-            next_states,
-            state.current_states
-        )
-        new_depths = torch.where(
-            active,
-            state.depths + 1,
-            state.depths
-        )
-        
-        # Check termination (results only matter for active envs)
-        first_pred = next_states[:, 0, 0]
-        
-        is_true = (first_pred == self.true_pred_idx) if self.true_pred_idx else \
-                  torch.zeros(n, dtype=torch.bool, device=device)
-        is_false = (first_pred == self.false_pred_idx) if self.false_pred_idx else \
-                   torch.zeros(n, dtype=torch.bool, device=device)
-        is_end = (first_pred == self.end_pred_idx) if self.end_pred_idx else \
-                 torch.zeros(n, dtype=torch.bool, device=device)
-        is_depth_limit = (new_depths >= self.max_depth)
-        
-        # Mask termination checks with active - only active envs can newly terminate
-        newly_done = active & (is_true | is_false | is_end | is_depth_limit)
-        new_done = was_done | newly_done
-        new_success = state.success | (active & is_true)
-        
-        # Rewards (only for active envs that found TRUE)
-        rewards = torch.zeros(n, device=device)
-        rewards = torch.where(active & is_true, torch.ones_like(rewards), rewards)
-        
-        # Update history only for active envs
-        write_pos = state.history_count.clamp(max=self.max_history_size - 1)
-        new_state_hash = self._compute_state_hash64(new_current)  # [n]
-        
-        # Scatter: write hash to history at write_pos for active envs only
-        update_val = torch.where(active, new_state_hash, state.history_hashes[batch_idx, write_pos])
-        new_history_hashes = state.history_hashes.clone()
-        new_history_hashes.scatter_(1, write_pos.unsqueeze(1), update_val.unsqueeze(1))
-        
-        # Increment count for active envs only
-        new_history_count = torch.where(
-            active,
-            (state.history_count + 1).clamp(max=self.max_history_size),
-            state.history_count
-        )
-        
-        # =================================================================
-        # Compute derived states - skip for envs that are now done
-        # =================================================================
-        # still_active = envs that will need derived states for next step
-        still_active = ~new_done
-        
-        # Compute derived with active_mask - done envs get padding input
-        new_derived, new_counts, new_var = self._compute_derived_functional(
-            new_current, state.next_var_indices, state.original_queries,
-            new_history_hashes, new_history_count,
-            active_mask=still_active,
-        )
-        # Preserve old derived states for done envs
-        new_derived = torch.where(
-            still_active.view(n, 1, 1, 1),
-            new_derived,
-            state.derived_states
-        )
-        new_counts = torch.where(still_active, new_counts, state.derived_counts)
-        new_var = torch.where(still_active, new_var, state.next_var_indices)
-        
-        # Create new state
-        new_state = EnvState(
-            current_states=new_current,
-            derived_states=new_derived,
-            derived_counts=new_counts,
-            original_queries=state.original_queries,
-            next_var_indices=new_var,
-            depths=new_depths,
-            done=new_done,
-            success=new_success,
-            history_hashes=new_history_hashes,
-            history_count=new_history_count,
-        )
-        
-        # Create observation
-        action_mask = self._positions_S < new_counts.unsqueeze(1)
-        
-        obs = EnvObs(
-            sub_index=new_current.unsqueeze(1),
-            derived_sub_indices=new_derived,
-            action_mask=action_mask,
-        )
-        
-        return EnvStepFunctionalOutput(state=new_state, obs=obs, rewards=rewards)
-    
-    # =========================================================================
-    # Compilation API
-    # =========================================================================
 
     
-    def compile(
-        self,
-        policy: 'nn.Module',
-        deterministic: bool = True,
-        mode: str = 'reduce-overhead',
-        fullgraph: bool = True,
-        include_value: bool = True,
-    ) -> None:
-        """
-        Compile the step function with the given policy.
-        
-        After calling this, step_with_policy() uses the compiled version.
-        
-        Note: For parity testing with parity_mode=True in the vectorized engine,
-        use compile=False (eager mode) since parity_mode uses dynamic shapes.
-        For production with parity_mode=False, fullgraph=True works.
-        
-        Args:
-            policy: ActorCriticPolicy or similar with mlp_extractor
-            deterministic: Default deterministic mode (can be overridden in step_with_policy)
-            mode: torch.compile mode ('default', 'reduce-overhead', etc.)
-            fullgraph: If True, require fullgraph compilation
-            include_value: If True, also compile value function for training mode
-        """
-        from model import create_policy_logits_fn, create_policy_value_fn
-        
-        # Store policy logits function
-        self._policy_logits_fn = create_policy_logits_fn(policy)
-        
-        # Store policy value function for training mode
-        if include_value:
-            self._policy_value_fn = create_policy_value_fn(policy)
-        else:
-            self._policy_value_fn = None
-        
-        self._compile_deterministic = deterministic
-        
-        # Compile settings
-        import os
-        import torch._inductor.config as inductor_config
-        
-        torch.set_float32_matmul_precision('high')
-        os.environ['TORCHINDUCTOR_MAX_AUTOTUNE'] = '0'
-        os.environ['TORCHINDUCTOR_COORDINATE_DESCENT_TUNING'] = '0'
-        os.environ['TORCHINDUCTOR_FREEZING'] = '0'
-        inductor_config.compile_threads = 4
-        
-        print(f"Compiling step_with_policy (mode='{mode}', fullgraph={fullgraph})...")
-        
-        # Compile the implementation function directly
-        self._compiled_step_fn = torch.compile(
-            self._step_with_policy_impl,
-            mode=mode,
-            fullgraph=fullgraph,
-            dynamic=False,
+    def _clone_state(self, state: EnvState) -> EnvState:
+        """Clone state tensors to break CUDA graph aliasing."""
+        return EnvState(
+            current_states=state.current_states.clone(),
+            derived_states=state.derived_states.clone(),
+            derived_counts=state.derived_counts.clone(),
+            original_queries=state.original_queries.clone(),
+            next_var_indices=state.next_var_indices.clone(),
+            depths=state.depths.clone(),
+            done=state.done.clone(),
+            success=state.success.clone(),
+            history_hashes=state.history_hashes.clone(),
+            history_count=state.history_count.clone(),
         )
-        self._compiled = True
     
-    def _step_with_policy_impl(
-        self,
-        state: EnvState,
-        obs: EnvObs,
-        query_pool: Tensor,
-        per_env_ptrs: Tensor,
-        deterministic: bool,
-        eval_mode: bool,
-        eval_done_mask: Tensor,
-    ) -> Tuple[EnvState, EnvObs, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """
-        Unified step with policy - works for both training and evaluation.
-        
-        Args:
-            state: Current EnvState
-            obs: Current observation
-            query_pool: [N, 3] Pool of queries to cycle through
-            per_env_ptrs: [B] Current pointer per environment into query_pool
-            deterministic: Use argmax (True) or sample (False)
-            eval_mode: If True, stop processing finished slots
-            eval_done_mask: [B] bool mask of slots that finished ALL their queries
-            
-        Returns:
-            new_state, new_obs, actions, log_probs, values, rewards, dones, per_env_ptrs, eval_done_mask
-        """
-        device = self.device
-        n = state.current_states.shape[0]
-        
-        # Get policy output
-        logits = self._policy_logits_fn(obs)  # [B, S]
-        
-        # Mask invalid actions
-        masked_logits = torch.where(
-            obs.action_mask,
-            logits,
-            torch.full_like(logits, float('-inf'))
+    def _clone_obs(self, obs: EnvObs) -> EnvObs:
+        """Clone obs tensors to break CUDA graph aliasing."""
+        return EnvObs(
+            sub_index=obs.sub_index.clone(),
+            derived_sub_indices=obs.derived_sub_indices.clone(),
+            action_mask=obs.action_mask.clone(),
         )
-        
-        # Select actions
-        if deterministic:
-            actions = masked_logits.argmax(dim=-1)
-        else:
-            probs = torch.softmax(masked_logits, dim=-1)
-            actions = torch.multinomial(probs, 1).squeeze(-1)
-        
-        # Get log probs
-        log_probs = torch.log_softmax(masked_logits, dim=-1)
-        selected_log_probs = log_probs.gather(1, actions.unsqueeze(1)).squeeze(1)
-        
-        # Mask log probs for done environments
-        active = ~state.done
-        selected_log_probs = torch.where(
-            active,
-            selected_log_probs,
-            torch.zeros_like(selected_log_probs)
-        )
-        
-        # Get values for rollout collection (needed for PPO)
-        # Values are computed only if we have a value function and not in eval_mode
-        if self._policy_value_fn is not None and not eval_mode:
-            values = self._policy_value_fn(obs)  # [B]
-            # Mask values for done environments
-            values = torch.where(active, values, torch.zeros_like(values))
-        else:
-            values = torch.zeros(n, device=device)
-        
-        # Execute step and maybe reset
-        step_result = self.step_functional(state, actions)
-        new_state = step_result.state
-        new_obs = step_result.obs
-        rewards = step_result.rewards
-        
-        # Check for newly done environments
-        was_done = state.done
-        newly_done = new_state.done & ~was_done
-        
-        # Handle resets for done environments
-        num_queries = query_pool.shape[0]
-        new_ptrs = per_env_ptrs.clone()
-        
-        # For eval_mode: update eval_done_mask when an env finishes its last query
-        new_eval_done_mask = eval_done_mask.clone() if eval_done_mask is not None else \
-                             torch.zeros(n, dtype=torch.bool, device=device)
-        
-        # Vectorized Reset Logic
-        # We perform resets only in training mode (eval_mode=False) and when query_pool is provided.
-        # To maintain static graph (fullgraph=True), we avoid python loops and use masked operations.
-        new_ptrs = per_env_ptrs
-        if (not eval_mode) and (query_pool is not None) and (query_pool.numel() > 0):
-            # 1. Identify envs needing reset
-            reset_mask = newly_done  # [B] bool (already 1D)
-            
-            # 2. Get queries for reset using CURRENT pointer (before advancing)
-            # Tensor env pattern: use ptr, THEN advance
-            pool_size = query_pool.shape[0]
-            safe_indices = per_env_ptrs % pool_size
-            candidate_queries = query_pool[safe_indices]  # [B, 3]
-            
-            # 3. Compute next pointers for envs that reset
-            next_ptrs = (per_env_ptrs + 1) % pool_size
-            
-            # 4. Select appropriate next pointer (only update if done)
-            new_ptrs = torch.where(reset_mask, next_ptrs, per_env_ptrs)
-            
-            # Create padding query [3]
-            padding_atom = torch.full((3,), self.padding_idx, dtype=torch.long, device=device)
-            
-            # Mask: if NOT reset, use padding
-            reset_mask_3 = reset_mask.unsqueeze(-1).expand(-1, 3)  # [B, 3]
-            queries_for_reset_calc = torch.where(reset_mask_3, candidate_queries, padding_atom)
-            
-            # 5. Compute initial state for reset queries
-            # This runs unification on [B] queries. Active envs process "padding", which is fast (0 derived).
-            reset_state = self.init_state_from_queries(queries_for_reset_calc)
-            
-            # 6. Mix states: where(done, reset_state, new_state)
-            # Helper masks for different tensor shapes
-            reset_mask_A3 = reset_mask.view(-1, 1, 1).expand(-1, self.padding_atoms, 3)  # [B, A, 3]
-            reset_mask_SA3 = reset_mask.view(-1, 1, 1, 1).expand(-1, self.padding_states, self.padding_atoms, 3)  # [B, S, A, 3]
-            reset_mask_H = reset_mask.view(-1, 1).expand(-1, self.max_history_size)  # [B, H]
-            
-            new_current_states = torch.where(reset_mask_A3, reset_state.current_states, new_state.current_states)
-            new_derived_states = torch.where(reset_mask_SA3, reset_state.derived_states, new_state.derived_states)
-            new_derived_counts = torch.where(reset_mask, reset_state.derived_counts, new_state.derived_counts)
-            new_original_queries = torch.where(reset_mask_A3, reset_state.original_queries, new_state.original_queries)
-            new_next_var_indices = torch.where(reset_mask, reset_state.next_var_indices, new_state.next_var_indices)
-            new_depths = torch.where(reset_mask, reset_state.depths, new_state.depths)
-            new_done = torch.where(reset_mask, reset_state.done, new_state.done)
-            new_success = torch.where(reset_mask, reset_state.success, new_state.success)
-            new_history_hashes = torch.where(reset_mask_H, reset_state.history_hashes, new_state.history_hashes)
-            new_history_count = torch.where(reset_mask, reset_state.history_count, new_state.history_count)
-            
-            new_state = EnvState(
-                current_states=new_current_states,
-                derived_states=new_derived_states,
-                derived_counts=new_derived_counts,
-                original_queries=new_original_queries,
-                next_var_indices=new_next_var_indices,
-                depths=new_depths,
-                done=new_done,
-                success=new_success,
-                history_hashes=new_history_hashes,
-                history_count=new_history_count,
-            )
-            
-            # 7. Update Observation (must match new_state)
-            action_mask = self._positions_S < new_state.derived_counts.unsqueeze(1)
-            new_obs = EnvObs(
-                sub_index=new_state.current_states.unsqueeze(1),
-                derived_sub_indices=new_state.derived_states,
-                action_mask=action_mask,
-            )
-        
-        return new_state, new_obs, actions, selected_log_probs, values, rewards, newly_done, new_ptrs, new_eval_done_mask
     
-    def step_with_policy(
-        self,
-        state: EnvState,
-        obs: EnvObs,
-        query_pool: Tensor = None,
-        per_env_ptrs: Tensor = None,
-        deterministic: bool = None,
-        eval_mode: bool = False,
-        eval_done_mask: Tensor = None,
-    ) -> Tuple[EnvState, EnvObs, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """
-        Unified step function for both training and evaluation.
-        
-        Must call compile() first to set the policy.
-        
-        Args:
-            state: Current EnvState
-            obs: Current observation  
-            query_pool: [N, 3] Pool of queries (uses internal _query_pool if None)
-            per_env_ptrs: [B] Pointer per env (uses internal _per_env_ptrs if None)
-            deterministic: True=argmax, False=sample (default: use compile setting)
-            eval_mode: If True, stop slots that finish all queries
-            eval_done_mask: [B] Optional mask for eval mode
-            
-        Returns:
-            new_state, new_obs, actions, log_probs, values, rewards, dones, per_env_ptrs, eval_done_mask
-        """
-        if not self._compiled and self._policy_logits_fn is None:
-            raise RuntimeError("Must call env.compile(policy) before step_with_policy()")
-        
-        # Use internal query pool if not provided (training mode like BatchedEnv)
-        if query_pool is None:
-            query_pool = self._query_pool
-        if per_env_ptrs is None:
-            per_env_ptrs = self._per_env_ptrs
-        
-        if deterministic is None:
-            deterministic = self._compile_deterministic
-        
-        if eval_done_mask is None:
-            eval_done_mask = torch.zeros(state.current_states.shape[0], 
-                                          dtype=torch.bool, device=self.device)
-
-        
-        if self._compiled and self._compiled_step_fn is not None:
-            # Mark step begin for CUDA graphs (reduce-overhead mode)
-            # This signals that prior iteration tensors can be freed
-            torch.compiler.cudagraph_mark_step_begin()
-            result = self._compiled_step_fn(
-                state, obs, query_pool, per_env_ptrs,
-                deterministic, eval_mode, eval_done_mask
-            )
-            # Clone all output tensors OUTSIDE the compiled graph
-            # This breaks aliasing with CUDA graph internal buffers
-            new_state, new_obs, actions, log_probs, values, rewards, dones, new_ptrs, new_eval_done_mask = result
-            
-            # Clone state tensors
-            cloned_state = EnvState(
-                current_states=new_state.current_states.clone(),
-                derived_states=new_state.derived_states.clone(),
-                derived_counts=new_state.derived_counts.clone(),
-                original_queries=new_state.original_queries.clone(),
-                next_var_indices=new_state.next_var_indices.clone(),
-                depths=new_state.depths.clone(),
-                done=new_state.done.clone(),
-                success=new_state.success.clone(),
-                history_hashes=new_state.history_hashes.clone(),
-                history_count=new_state.history_count.clone(),
-            )
-            
-            # Clone obs tensors
-            cloned_obs = EnvObs(
-                sub_index=new_obs.sub_index.clone(),
-                derived_sub_indices=new_obs.derived_sub_indices.clone(),
-                action_mask=new_obs.action_mask.clone(),
-            )
-
-            # Update internal pointers after step (for round-robin cycling)
-            if self._per_env_ptrs is not None:
-                self._per_env_ptrs = new_ptrs.clone()
-            
-            return (
-                cloned_state, cloned_obs,
-                actions.clone(), log_probs.clone(), values.clone(),
-                rewards.clone(), dones.clone(), new_ptrs.clone(), new_eval_done_mask.clone()
-            )
-        else:
-            # Eager mode
-            result = self._step_with_policy_impl(
-                state, obs, query_pool, per_env_ptrs,
-                deterministic, eval_mode, eval_done_mask
-            )
-            # Update internal pointers after step (for round-robin cycling)
-            if self._per_env_ptrs is not None:
-                self._per_env_ptrs = result[7]  # new_ptrs is 8th element
-            return result
 
 EvalEnvOptimized = Env_vec

@@ -315,12 +315,10 @@ def create_ppo_and_warmup(components, config) -> Tuple[any, float]:
     # Warmup and compile
     warmup_start = time()
     
+    # Compile env step function
     env.compile(
-        policy=policy,
-        deterministic=True,
         mode=config.compile_mode,
         fullgraph=config.fullgraph,
-        include_value=False,
     )
     
     # Trigger JIT compilation with exact batch size

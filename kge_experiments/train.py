@@ -788,11 +788,10 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
     # [PARITY] Output RNG state before sampler
     print(f"[PARITY] RNG state before sampler: {torch.get_rng_state().sum().item():.0f}")
     
-    # Compile the policy for the environment
-    # When parity=True, use fullgraph=False because parity_mode uses functions with @torch.compiler.disable
+    # Compile the step function for the environment (policy compiled separately in PPO)
     train_env = comp['train_env']
     compile_fullgraph = not config.parity
-    train_env.compile(policy, fullgraph=compile_fullgraph, mode='default' if config.parity else 'reduce-overhead')
+    train_env.compile(fullgraph=compile_fullgraph, mode='default' if config.parity else 'reduce-overhead')
     
     # Create PPOOptimized
     print("\n[2/3] Running training...")
@@ -828,9 +827,9 @@ def run_experiment(config: TrainCompiledConfig) -> Dict[str, float]:
     
     policy.eval()
     
-    # Compile eval env (same settings as train_env)
+    # Compile eval env step function
     eval_env = comp['eval_env']
-    eval_env.compile(policy, fullgraph=compile_fullgraph, mode='default' if config.parity else 'reduce-overhead')
+    eval_env.compile(fullgraph=compile_fullgraph, mode='default' if config.parity else 'reduce-overhead')
     
     test_queries = comp['dh'].test_queries[:config.n_envs * 4]
     
@@ -972,7 +971,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
     ).to(device)
     
     # Compile policy for the environment
-    env.compile(policy)
+    env.compile()
     
     # Create PPOOptimized
     ppo = PPOOptimized(
@@ -1051,7 +1050,7 @@ def main(args, log_filename, use_logger, use_WB, WB_path, date, external_compone
 
     # Step 5: Evaluate
     # Compile eval_env for evaluation
-    eval_env.compile(policy)
+    eval_env.compile()
     metrics_train, metrics_valid, metrics_test = _evaluate(
         args, ppo, sampler, dh, index_manager, device
     )

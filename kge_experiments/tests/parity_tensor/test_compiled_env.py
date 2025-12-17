@@ -351,7 +351,7 @@ def run_batch_traces(
         tensor_obs = tensor_obs['next']
     
     # Reinitialize compiled env state with new queries (state is immutable)
-    compiled_state = compiled_env.init_state_from_queries(query_atoms_tensor)
+    compiled_state = compiled_env.reset_from_queries(query_atoms_tensor)
     
     # Initialize trace storage: one list per query
     # Initialize trace storage: one list per query
@@ -452,7 +452,7 @@ def run_batch_traces(
         # Take step for compiled env (action=0 for all)
         if not compiled_done.all():
             actions_compiled = torch.zeros(effective_batch_size, dtype=torch.long, device=device)
-            step_result = compiled_env.step_functional(compiled_state, actions_compiled)
+            step_result = compiled_env.step(compiled_state, actions_compiled)
             compiled_state = step_result.state
             # Update done flags
             compiled_done = compiled_done | compiled_state.done
