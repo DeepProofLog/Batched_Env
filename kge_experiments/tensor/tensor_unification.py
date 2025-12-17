@@ -72,7 +72,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 import torch
 from torch import Tensor
-import utils.utils as utils_funcs
+import tensor.tensor_utils as utils_funcs
 
 # Global flag for parity mode - when True, uses deterministic behavior for tests
 # When False, uses optimized behavior without synchronization points

@@ -33,9 +33,16 @@ from tensordict import TensorDict
 from torchrl.envs import EnvBase
 
 from tensor.tensor_unification import UnificationEngine
-from utils.memory import BloomFilter, ExactMemory, GPUExactMemory
-from utils.memory import BloomFilter, ExactMemory, GPUExactMemory
-import utils.utils as utils_funcs
+from tensor.tensor_utils.tensor_memory import BloomFilter, ExactMemory, GPUExactMemory
+import tensor.tensor_utils as utils_funcs
+from typing import NamedTuple
+
+class EvalObs(NamedTuple):
+    """Observation type for compiled evaluation environment."""
+    sub_index: Tensor           # [B, 1, A, 3] Current state
+    derived_sub_indices: Tensor # [B, S, A, 3] Successor states
+    action_mask: Tensor         # [B, S] Valid action mask
+
 
 
 def _safe_device(device: Optional[torch.device]) -> torch.device:

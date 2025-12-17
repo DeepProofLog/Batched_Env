@@ -68,7 +68,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from data_handler import DataHandler
     from index_manager import IndexManager
     from unification import UnificationEngineVectorized
-    from embeddings import EmbedderLearnable as TensorEmbedder
+    from nn.embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
     from sampler import Sampler
     from env import Env_vec as EvalEnvOptimized

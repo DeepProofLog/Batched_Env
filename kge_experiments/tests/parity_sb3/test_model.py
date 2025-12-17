@@ -42,7 +42,7 @@ if str(SB3_ROOT) not in sys.path:
     sys.path.insert(1, str(SB3_ROOT))
 
 # Import tensor-based components
-from embeddings import EmbedderLearnable
+from nn.embeddings import EmbedderLearnable
 from model import ActorCriticPolicy
 
 # Try to import SB3 components for parity testing

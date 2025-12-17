@@ -34,7 +34,7 @@ from tensordict import TensorDict
 import os
 if os.environ.get("USE_FAST_CATEGORICAL", "1") == "1":
     try:
-        from utils.fast_distributions import FastCategoricalDistribution as CategoricalDistribution
+        from utils.distributions import FastCategoricalDistribution as CategoricalDistribution
     except ImportError:
         from stable_baselines3.common.distributions import CategoricalDistribution
 else:

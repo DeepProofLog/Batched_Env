@@ -40,7 +40,7 @@ from index_manager import IndexManager
 
 from unification import UnificationEngineVectorized
 from env import Env_vec as EvalEnvOptimized, EvalObs, EvalState
-from embeddings import EmbedderLearnable as TensorEmbedder
+from nn.embeddings import EmbedderLearnable as TensorEmbedder
 from model import ActorCriticPolicy as TensorPolicy
 from ppo import PPOOptimized
 from sampler import Sampler
@@ -54,7 +54,7 @@ from callbacks import (
     AnnealingTarget
 )
 
-from utils.utils import save_profile_results
+from utils import save_profile_results
 
 
 # ==============================================================================

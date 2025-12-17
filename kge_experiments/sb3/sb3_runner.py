@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 # Early imports for seeding
 import numpy as np
 import torch
-from utils.utils import seed_all
+from sb3.sb3_utils import seed_all
 
 # Set float32 matmul precision
 torch.set_float32_matmul_precision('high')

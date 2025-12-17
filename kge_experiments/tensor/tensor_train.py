@@ -51,7 +51,7 @@ from tensor.tensor_callbacks import (
     AnnealingTarget
 )
 
-from utils.utils import save_profile_results
+from tensor.tensor_utils import save_profile_results
 
 # ==============================================================================
 # _build_data_and_index 

@@ -43,7 +43,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from index_manager import IndexManager
     from unification import UnificationEngine, set_compile_mode
     from env import BatchedEnv
-    from embeddings import EmbedderLearnable as TensorEmbedder
+    from nn.embeddings import EmbedderLearnable as TensorEmbedder
     from model import ActorCriticPolicy as TensorPolicy
     from ppo import PPO as TensorPPO
     from sampler import Sampler

@@ -27,7 +27,7 @@ if hasattr(torch._dynamo.config, 'compiled_autograd'):
 from tensordict import TensorDict
 
 from tensor.tensor_rollout import RolloutBuffer
-from utils.trace_utils import TraceRecorder
+from tensor.tensor_utils.tensor_trace_utils import TraceRecorder
 from tensor.tensor_callbacks import Display
 try:
     from debug_training import analyze_logits, analyze_values_returns, analyze_advantages, print_training_health_report

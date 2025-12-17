@@ -14,7 +14,7 @@ from typing import Dict, List, Tuple, Iterable, Optional, Literal, Set
 import torch
 
 from index_manager import IndexManager
-from utils.utils import Term, Rule, get_atom_from_string, get_rule_from_string
+from utils import Term, Rule, get_atom_from_string, get_rule_from_string
 
 
 LongTensor = torch.LongTensor

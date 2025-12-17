@@ -790,7 +790,7 @@ def create_policy_logits_fn(
     Returns:
         Function that takes EvalObs and returns logits [B, S]
     """
-    from env import EvalObs
+    from tensor.tensor_env import EvalObs
     
     @torch.no_grad()
     def policy_fn(obs: 'EvalObs') -> torch.Tensor:

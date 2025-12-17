@@ -1,0 +1,6 @@
+{
+    "metric": "rollout/ep_rew_mean",
+    "last_rollout/ep_rew_mean": 0.1175,
+    "timesteps": 16384,
+    "finished_train": true
+}

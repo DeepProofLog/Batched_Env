@@ -29,9 +29,9 @@ import datetime
 from itertools import product
 from typing import List, Optional
 
-from utils.utils import FileLogger
+from tensor.tensor_utils import FileLogger
 from tensor.tensor_train import main
-from utils.utils_config import (
+from tensor.tensor_utils.tensor_utils_config import (
 
     parse_scalar,
     coerce_config_value,
