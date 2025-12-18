@@ -231,8 +231,6 @@ class EnvVec:
         # import torch._inductor.config as inductor_config
         # inductor_config.triton.cudagraphs = True
         
-        print(f"Compiling env.step (mode='{mode}', fullgraph={fullgraph})...")
-        
         # Compile standard step
         self._step_fn = torch.compile(
             self._step_core,

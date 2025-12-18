@@ -11,7 +11,7 @@ Key Differences from ppo.py:
     
 Evaluation Methods:
     - evaluate_policy(): Run trajectories for a batch of queries
-    - evaluate_with_corruptions(): Full MRR/Hits@K evaluation with corruptions
+    - evaluate(): Full MRR/Hits@K evaluation with corruptions
     
 The PPOOptimized class maintains a fixed_batch_size that is set during
 compile() and enforced during evaluation to avoid recompilation with
@@ -43,6 +43,16 @@ def compute_metrics_from_ranks(ranks: Tensor) -> Dict[str, float]:
         "Hits@10": float(torch.mean((ranks_float <= 10.0).float()).item()),
     }
 
+
+def compute_auc_pr(y_true: np.ndarray, y_scores: np.ndarray) -> float:
+    """Compute AUC-PR (Area Under Precision-Recall Curve)."""
+    try:
+        from sklearn.metrics import average_precision_score
+        if len(y_true) == 0 or y_true.sum() == 0 or y_true.sum() == len(y_true):
+            return 1.0 if y_true.sum() == len(y_true) else 0.0
+        return float(average_precision_score(y_true, y_scores))
+    except Exception:
+        return 0.0
 
 
 def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
@@ -155,7 +165,7 @@ class PPO:
     
     Key Features:
         - Fixed batch size for CUDA graph compatibility (reduce-overhead mode)
-        - Integrated evaluation methods (evaluate_policy, evaluate_with_corruptions)
+        - Integrated evaluation methods (evaluate_policy, evaluate)
         - Single-step compilation for fast warmup
         - eval_only mode for memory-efficient evaluation (skips 8-16GB buffer allocation)
     
@@ -236,6 +246,27 @@ class PPO:
         # Metrics info (CPU-only to avoid synchronization)
         query_labels = kwargs.get('query_labels', None)
         query_depths = kwargs.get('query_depths', None)
+        
+        # Try to extract from components if not provided
+        if query_depths is None and components.get('dh'):
+            dh = components.get('dh')
+            if hasattr(dh, 'get_materialized_split'):
+                try:
+                    train_split = dh.get_materialized_split('train')
+                    query_depths = train_split.depths
+                    # query_labels = train_split.labels # Usually all 1s for train, but could assume so
+                    # FIX: Extract labels or default to ones (all positives for training)
+                    if hasattr(train_split, 'labels') and train_split.labels.numel() == query_depths.numel():
+                        query_labels = train_split.labels
+                    else:
+                        query_labels = torch.ones_like(query_depths)
+                        
+                    if self.verbose:
+                        print(f"[PPO] Extracted training depths from DataHandler: shape={query_depths.shape}")
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[PPO] Warning: Could not extract training depths: {e}")
+
         self.query_labels = query_labels.detach().cpu() if query_labels is not None else None
         self.query_depths = query_depths.detach().cpu() if query_depths is not None else None
         self.current_query_indices = None
@@ -304,6 +335,17 @@ class PPO:
             self.callback = self._build_callbacks()
         else:
             self.callback = None
+            
+        # Handle initial model loading if requested in config
+        if not self.eval_only and getattr(config, 'load_model', False) and self.callback:
+            from callbacks import CheckpointCallback
+            ckpt_cb = next((cb for cb in self.callback.callbacks if isinstance(cb, CheckpointCallback)), None)
+            if ckpt_cb:
+                # Load train model by default unless specified otherwise
+                load_metric = getattr(config, 'load_best_metric', 'train')
+                if ckpt_cb.load_best_model(load_metric=load_metric, device=self.device):
+                    if self.verbose:
+                        print(f"[PPO] Loaded model (metric={load_metric})")
     
     def _build_callbacks(self):
         """Build callbacks based on config flags."""
@@ -327,7 +369,7 @@ class PPO:
         # Get components from config
         components = getattr(config, '_components', {})
         sampler = components.get('sampler')
-        dh = components.get('data_handler')
+        dh = components.get('dh')  # Key is 'dh', not 'data_handler'
         
         # RankingCallback for evaluation
         if getattr(config, 'use_ranking_callback', True) and getattr(config, 'eval_freq', 0) > 0:
@@ -425,9 +467,6 @@ class PPO:
         because TensorDict creation inside the forward pass causes CUDA graph instability.
         The environment still uses 'reduce-overhead' since it has stable tensor patterns.
         """
-
-        if self.verbose:
-            print("Compiling policy network and loss module for training...")
         
         # Store reference to uncompiled policy for loss_module
         self._uncompiled_policy = self.policy
@@ -537,8 +576,21 @@ class PPO:
             
             # Fetch meta info if available
             batch_q_idxs = self.current_query_indices[done_idx_cpu] if self.current_query_indices is not None else None
-            batch_lbls = self.query_labels[torch.as_tensor(batch_q_idxs, dtype=torch.long)].numpy() if batch_q_idxs is not None and self.query_labels is not None else None
-            batch_depths = self.query_depths[torch.as_tensor(batch_q_idxs, dtype=torch.long)].numpy() if batch_q_idxs is not None and self.query_depths is not None else None
+            
+            batch_lbls = None
+            batch_depths = None
+            
+            # Safe indexing with modulo (batch_size can exceed num_queries)
+            if batch_q_idxs is not None:
+                n_labels = self.query_labels.shape[0] if self.query_labels is not None else 0
+                n_depths = self.query_depths.shape[0] if self.query_depths is not None else 0
+                
+                if n_labels > 0:
+                    safe_idx = torch.as_tensor(batch_q_idxs, dtype=torch.long) % n_labels
+                    batch_lbls = self.query_labels[safe_idx].numpy()
+                if n_depths > 0:
+                    safe_idx = torch.as_tensor(batch_q_idxs, dtype=torch.long) % n_depths
+                    batch_depths = self.query_depths[safe_idx].numpy()
             
             # Construct infos using efficient zipping
             iterators = [
@@ -595,7 +647,7 @@ class PPO:
         with torch.no_grad():
             while n_collected < self.n_steps:
                 if self.verbose and n_collected % max(1, self.n_steps // 5) == 0:
-                    print(f"Rollout: {n_collected}/{self.n_steps}")
+                    print(f"[Rollout]: {n_collected}/{self.n_steps}")
                 
                 obs_snap = {k: v.clone() for k, v in obs.items()}
                 values = self.policy.predict_values(obs)
@@ -782,7 +834,7 @@ class PPO:
                     if kl_val > 1.5 * self.target_kl:
                         continue_training = False
                         if self.verbose:
-                            print(f"Early stopping at step {epoch} due to reaching max kl: {kl_val:.2f}")
+                            print(f"[Train] Early stopping at step {epoch} due to reaching max kl: {kl_val:.2f}")
                         break
                 
                 # Optimizer step - use set_to_none=False to keep gradient addresses stable
@@ -801,7 +853,10 @@ class PPO:
                 break
             
             if self.verbose:
-                print(f"Epoch {epoch+1}/{self.n_epochs}")
+                print(f"[Train] Epoch {epoch+1}/{self.n_epochs}")
+        
+        # End of training
+        total_time = time.time() - train_start_time
         
         # Compute metrics - single sync point for all accumulated tensors
         with torch.no_grad():
@@ -859,14 +914,15 @@ class PPO:
             on_iteration_start_callback: Optional callback called at start of each iteration
             on_step_callback: Optional callback called when episodes complete
             return_traces: If True, return detailed traces for debugging
-            
-        Returns:
             Dict containing training info and optionally traces
         """
         if reset_num_timesteps:
             self.num_timesteps = 0
         else:
             total_timesteps += self.num_timesteps
+            
+        if self.callback:
+            self.callback.on_training_start()
         
         iteration = 0
         
@@ -898,8 +954,13 @@ class PPO:
                 on_iteration_start_callback(iteration, self.num_timesteps)
             
             # Collect rollouts using env's internal query cycling
-            print("\nCollecting rollouts")
+            print("\n[Rollout] Collecting...")
             start_time = time.time()
+            # Determine step callback
+            step_cb = on_step_callback
+            if self.callback is not None:
+                 step_cb = self.callback.on_step
+
             result = self.collect_rollouts(
                 current_state=state,
                 current_obs=obs,
@@ -909,7 +970,7 @@ class PPO:
                 episode_rewards=episode_rewards,
                 episode_lengths=episode_lengths,
                 iteration=iteration,
-                on_step_callback=on_step_callback,
+                on_step_callback=step_cb,
                 return_traces=return_traces,
             )
             state, obs, episode_starts, current_episode_reward, current_episode_length, n_steps, rollout_info = result
@@ -922,10 +983,10 @@ class PPO:
             
             self.num_timesteps += n_steps
             end_time = time.time()-start_time
-            print(f"Rollout collected in {end_time:.2f}s. FPS: {n_steps / end_time:.2f}\n")            
+            print(f"[Rollout] Collected in {end_time:.2f}s. FPS: {n_steps / end_time:.2f}\n")            
             
             # Train
-            print("\nTraining")
+            print("\n[Train] Start...")
             start_time = time.time()
             train_metrics = self.train(return_traces=return_traces)
             
@@ -936,11 +997,11 @@ class PPO:
                 })
             
             self.last_train_metrics = train_metrics
-            print(f"Training completed in {time.time() - start_time:.2f}s")
+            print(f"[Train] Completed in {time.time() - start_time:.2f}s")
             
             if self.verbose:
-                print(f"Iteration {iteration}, timesteps: {self.num_timesteps}/{total_timesteps}.  "
-                    f"total loss: {train_metrics['policy_loss'] + train_metrics['value_loss']:.4f}, "
+                print(f"[Train] Iteration {iteration}, timesteps: {self.num_timesteps}/{total_timesteps}.  "
+                    f"\n[Train] total loss: {train_metrics['policy_loss'] + train_metrics['value_loss']:.4f}, "
                     f"policy_loss: {train_metrics['policy_loss']:.4f}, "
                     f"value_loss: {train_metrics['value_loss']:.4f}, "
                     f"entropy_loss: {train_metrics['entropy']:.4f}, "
@@ -960,8 +1021,17 @@ class PPO:
                 callback_result = self.callback(locals_dict, globals())
                 if callback_result is False:
                     if self.verbose:
-                        print("[PPOOptimized] Training stopped by callback")
+                        print("[Train] Stopped by callback")
                     break
+        
+        # Restore best model at end of training
+        if getattr(self.config, 'restore_best', True) and self.callback:
+            from callbacks import CheckpointCallback
+            ckpt_cb = next((cb for cb in self.callback.callbacks if isinstance(cb, CheckpointCallback)), None)
+            if ckpt_cb:
+                if self.verbose:
+                    print("\n[Learn] Restoring best model from evaluation...")
+                ckpt_cb.load_best_model(load_metric='eval', device=self.device)
         
         # Return results
         result_dict = {
@@ -1098,6 +1168,19 @@ class PPO:
         if corruption_modes is None:
             corruption_modes = tuple(getattr(self.config, 'corruption_scheme', ('head', 'tail'))) if hasattr(self, 'config') else ('head', 'tail')
         
+        # Auto-fetch query_depths from config if not provided
+        if query_depths is None:
+            dh = getattr(getattr(self.config, '_components', {}), 'get', lambda k: None)('dh')
+            if dh is None:
+                dh = self.config._components.get('dh') if hasattr(self.config, '_components') else None
+            if dh is not None:
+                try:
+                    test_split = dh.get_materialized_split('test')
+                    if test_split.depths.numel() == queries.shape[0]:
+                        query_depths = test_split.depths
+                except Exception:
+                    pass
+        
         if self._compiled_policy_fn is None:
             raise RuntimeError("PPO must be compiled for evaluation (not in eval_only mode)")
         
@@ -1115,6 +1198,7 @@ class PPO:
         acc_success = []
         acc_is_pos = []
         acc_depths = []
+        acc_log_probs = []  # For AUC-PR computation
         
         # Initialize RNG for parity mode once (outside loop)
         rng = None
@@ -1128,7 +1212,7 @@ class PPO:
             Q = end - start
             
             if verbose:
-                print(f"Processing queries {start}-{end} / {total_queries}")
+                print(f"[EVAL] Processing queries {start}-{end} / {total_queries}")
             
             chunk_queries_tensor = queries[start:end]  # [Q, 3]
             
@@ -1186,6 +1270,7 @@ class PPO:
                 all_rewards = []
                 
                 for cand_start in range(0, total_candidates, fixed_batch_size):
+                    print(f"\n[Eval] Processing candidates {cand_start}/{total_candidates}", end="\r")
                     cand_end = min(cand_start + fixed_batch_size, total_candidates)
                     batch_candidates = flat_candidates[cand_start:cand_end]
                     actual_size = batch_candidates.shape[0]
@@ -1229,6 +1314,7 @@ class PPO:
                 is_pos = torch.zeros(Q * (1 + n_corruptions), dtype=torch.bool, device=device)
                 is_pos[torch.arange(0, Q * (1 + n_corruptions), 1 + n_corruptions, device=device)] = True
                 acc_is_pos.append(is_pos[flat_valid])
+                acc_log_probs.append(log_probs[flat_valid])
                 
                 # Depths
                 if query_depths is not None:
@@ -1288,9 +1374,15 @@ class PPO:
         n_modes = len(corruption_modes)
         for k in ["MRR", "Hits@1", "Hits@3", "Hits@10"]:
             results[k] /= n_modes if n_modes > 0 else 1.0
-            
-        results["_mrr"] = results["MRR"]
         
+        # Compute AUC-PR
+        if acc_log_probs and acc_is_pos:
+            all_lp = torch.cat(acc_log_probs, dim=0).cpu().numpy()
+            all_is_pos = torch.cat(acc_is_pos, dim=0).cpu().numpy().astype(int)
+            results["AUC_PR"] = compute_auc_pr(all_is_pos, all_lp)
+        else:
+            results["AUC_PR"] = 0.0
+
         # --- Stats Formatting (matching model_eval.py) ---
         if acc_lengths:
             all_lens = torch.cat(acc_lengths).float()

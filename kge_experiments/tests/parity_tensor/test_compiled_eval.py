@@ -440,7 +440,7 @@ def run_optimized_eval(
             f"chunk_queries ({effective_chunk_queries}). Increase chunk_queries or reduce n_queries."
         )
     
-    # Run evaluation using ppo.evaluate (renamed from evaluate_with_corruptions)
+    # Run evaluation using ppo.evaluate (renamed from evaluate)
     # parity_mode=True uses numpy RNG for tie-breaking to match model_eval.py exactly
     results = ppo.evaluate(
         queries=queries,

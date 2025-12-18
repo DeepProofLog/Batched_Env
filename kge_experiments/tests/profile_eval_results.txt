@@ -1,5 +1,5 @@
 Profile Optimized Eval Results
-Date: 2025-12-18 02:37:06
+Date: 2025-12-18 04:17:51
 Device: cuda
 Dataset: family
 
@@ -11,11 +11,217 @@ Configuration:
   Fullgraph: True
 
 Setting up components...
-Queries loaded - Train: 19845/19845, Valid: 2799, Test: 5626
   Total candidates: 20200
 
 Running warmup (compilation)...
-Compiling env.step (mode='reduce-overhead', fullgraph=True)...
-Warmup time: 5.90s
+Warmup time: 4.60s
 
 Profiling evaluation...
+
+[Eval] Processing candidates 0/10100
+[Eval] Processing candidates 256/10100
+[Eval] Processing candidates 512/10100
+[Eval] Processing candidates 768/10100
+[Eval] Processing candidates 1024/10100
+[Eval] Processing candidates 1280/10100
+[Eval] Processing candidates 1536/10100
+[Eval] Processing candidates 1792/10100
+[Eval] Processing candidates 2048/10100
+[Eval] Processing candidates 2304/10100
+[Eval] Processing candidates 2560/10100
+[Eval] Processing candidates 2816/10100
+[Eval] Processing candidates 3072/10100
+[Eval] Processing candidates 3328/10100
+[Eval] Processing candidates 3584/10100
+[Eval] Processing candidates 3840/10100
+[Eval] Processing candidates 4096/10100
+[Eval] Processing candidates 4352/10100
+[Eval] Processing candidates 4608/10100
+[Eval] Processing candidates 4864/10100
+[Eval] Processing candidates 5120/10100
+[Eval] Processing candidates 5376/10100
+[Eval] Processing candidates 5632/10100
+[Eval] Processing candidates 5888/10100
+[Eval] Processing candidates 6144/10100
+[Eval] Processing candidates 6400/10100
+[Eval] Processing candidates 6656/10100
+[Eval] Processing candidates 6912/10100
+[Eval] Processing candidates 7168/10100
+[Eval] Processing candidates 7424/10100
+[Eval] Processing candidates 7680/10100
+[Eval] Processing candidates 7936/10100
+[Eval] Processing candidates 8192/10100
+[Eval] Processing candidates 8448/10100
+[Eval] Processing candidates 8704/10100
+[Eval] Processing candidates 8960/10100
+[Eval] Processing candidates 9216/10100
+[Eval] Processing candidates 9472/10100
+[Eval] Processing candidates 9728/10100
+[Eval] Processing candidates 9984/10100
+[Eval] Processing candidates 0/10100
+[Eval] Processing candidates 256/10100
+[Eval] Processing candidates 512/10100
+[Eval] Processing candidates 768/10100
+[Eval] Processing candidates 1024/10100
+[Eval] Processing candidates 1280/10100
+[Eval] Processing candidates 1536/10100
+[Eval] Processing candidates 1792/10100
+[Eval] Processing candidates 2048/10100
+[Eval] Processing candidates 2304/10100
+[Eval] Processing candidates 2560/10100
+[Eval] Processing candidates 2816/10100
+[Eval] Processing candidates 3072/10100
+[Eval] Processing candidates 3328/10100
+[Eval] Processing candidates 3584/10100
+[Eval] Processing candidates 3840/10100
+[Eval] Processing candidates 4096/10100
+[Eval] Processing candidates 4352/10100
+[Eval] Processing candidates 4608/10100
+[Eval] Processing candidates 4864/10100
+[Eval] Processing candidates 5120/10100
+[Eval] Processing candidates 5376/10100
+[Eval] Processing candidates 5632/10100
+[Eval] Processing candidates 5888/10100
+[Eval] Processing candidates 6144/10100
+[Eval] Processing candidates 6400/10100
+[Eval] Processing candidates 6656/10100
+[Eval] Processing candidates 6912/10100
+[Eval] Processing candidates 7168/10100
+[Eval] Processing candidates 7424/10100
+[Eval] Processing candidates 7680/10100
+[Eval] Processing candidates 7936/10100
+[Eval] Processing candidates 8192/10100
+[Eval] Processing candidates 8448/10100
+[Eval] Processing candidates 8704/10100
+[Eval] Processing candidates 8960/10100
+[Eval] Processing candidates 9216/10100
+[Eval] Processing candidates 9472/10100
+[Eval] Processing candidates 9728/10100
+[Eval] Processing candidates 9984/10100
+================================================================================
+TIMING SUMMARY
+================================================================================
+Warmup time:      4.5976s
+Runtime:          89.1322s
+Total time:       93.7298s
+ms/query:         891.322
+ms/candidate:     4.412
+
+MRR:              0.5048
+Hits@1:           0.4150
+Hits@10:          0.6400
+
+================================================================================
+PROFILING RESULTS - Top by Cumulative Time
+================================================================================
+         3215422 function calls (3169630 primitive calls) in 16.115 seconds
+
+   Ordered by: cumulative time
+   List reduced from 3049 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       80    0.013    0.000   10.385    0.130 env.py:297(reset)
+       80    0.008    0.000   10.352    0.129 env.py:601(_reset_from_queries)
+       80    9.625    0.120   10.284    0.129 env.py:1137(_compute_derived)
+       71    0.002    0.000    3.788    0.053 __init__.py:1(<module>)
+     9504    0.077    0.000    1.859    0.000 eval_frame.py:1039(_fn)
+     3168    0.010    0.000    1.689    0.001 aot_autograd.py:1126(forward)
+     3168    0.014    0.000    1.677    0.001 runtime_wrappers.py:310(runtime_wrapper)
+     3168    0.031    0.000    1.659    0.001 utils.py:119(call_func_at_runtime_with_args)
+     3168    0.011    0.000    1.605    0.001 runtime_wrappers.py:512(wrapper)
+     3168    0.034    0.000    1.591    0.001 output_code.py:590(__call__)
+     3168    0.013    0.000    1.220    0.000 compile_fx.py:1767(run)
+     3168    0.004    0.000    1.205    0.000 cudagraph_trees.py:378(deferred_cudagraphify)
+     3168    0.015    0.000    1.201    0.000 utils.py:3013(run)
+     1584    0.126    0.000    1.153    0.001 policy.py:285(get_logits)
+6335/3168    0.055    0.000    1.150    0.000 cudagraph_trees.py:2008(run)
+6335/3168    0.013    0.000    1.098    0.000 cudagraph_trees.py:2073(_run)
+        1    0.000    0.000    1.085    1.085 ppo.py:47(compute_auc_pr)
+    747/2    0.003    0.000    1.082    0.541 <frozen importlib._bootstrap>:1349(_find_and_load)
+    718/2    0.003    0.000    1.082    0.541 <frozen importlib._bootstrap>:1304(_find_and_load_unlocked)
+    698/3    0.003    0.000    1.082    0.361 <frozen importlib._bootstrap>:911(_load_unlocked)
+    585/3    0.001    0.000    1.081    0.360 <frozen importlib._bootstrap_external>:993(exec_module)
+   1722/5    0.001    0.000    1.081    0.216 <frozen importlib._bootstrap>:480(_call_with_frames_removed)
+    896/3    0.026    0.000    1.080    0.360 {built-in method builtins.exec}
+    213/3    0.001    0.000    1.065    0.355 {built-in method builtins.__import__}
+     1584    0.159    0.000    1.045    0.001 env.py:714(_step_core)
+        4    0.000    0.000    1.019    0.255 base.py:1(<module>)
+        1    0.000    0.000    1.003    1.003 _chunking.py:1(<module>)
+        1    0.000    0.000    1.002    1.002 _param_validation.py:1(<module>)
+     3168    0.023    0.000    0.943    0.000 cudagraph_trees.py:2241(execute_node)
+        2    0.000    0.000    0.924    0.462 _array_api.py:1(<module>)
+        1    0.000    0.000    0.851    0.851 validation.py:1(<module>)
+     3168    0.022    0.000    0.834    0.000 cudagraph_trees.py:1105(run)
+     3168    0.005    0.000    0.778    0.000 base.py:12480(clone)
+     3168    0.006    0.000    0.773    0.000 _td.py:3261(_clone)
+     3168    0.063    0.000    0.766    0.000 base.py:10716(_clone_recurse)
+     3168    0.011    0.000    0.745    0.000 cudagraph_trees.py:1219(run_graph)
+     1584    0.012    0.000    0.702    0.000 c6gv6pttsrr33vwq34qjhdtn7fjcbb4wwuiwgsu4wkz3tsuzbxko.py:1385(call)
+     1584    0.011    0.000    0.672    0.000 cqipfelg7623bqzhow36eqsekgl6eq4tp6pxpaobeb5mjeadl6u4.py:5971(call)
+3823/3518    0.010    0.000    0.652    0.000 <frozen importlib._bootstrap>:1390(_handle_fromlist)
+     3168    0.048    0.000    0.558    0.000 cudagraph_trees.py:1057(_copy_inputs_and_remove_from_src)
+
+
+
+
+================================================================================
+PROFILING RESULTS - Top by Total Time
+================================================================================
+         3215422 function calls (3169630 primitive calls) in 16.115 seconds
+
+   Ordered by: internal time
+   List reduced from 3049 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       80    9.625    0.120   10.284    0.129 env.py:1137(_compute_derived)
+   1680/6    0.831    0.000    0.472    0.079 eval_frame.py:791(compile_wrapper)
+     3168    0.488    0.000    0.488    0.000 {built-in method torch._foreach_copy_}
+     3168    0.303    0.000    0.303    0.000 {built-in method torch._foreach_add}
+  111/109    0.230    0.002    0.232    0.002 {built-in method _imp.create_dynamic}
+    586/2    0.216    0.000    0.000    0.000 {method 'read' of '_io.BufferedReader' objects}
+     8644    0.200    0.000    0.200    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
+     3168    0.176    0.000    0.176    0.000 graphs.py:139(replay)
+     7410    0.167    0.000    0.167    0.000 {built-in method torch.where}
+     1584    0.159    0.000    1.045    0.001 env.py:714(_step_core)
+     1584    0.126    0.000    1.153    0.001 policy.py:285(get_logits)
+     29/7    0.086    0.003    0.093    0.013 {method 'acquire' of '_thread.lock' objects}
+     2946    0.084    0.000    0.084    0.000 {built-in method torch.full_like}
+     3168    0.084    0.000    0.084    0.000 {built-in method torch._ops.profiler._record_function_enter_new}
+     9504    0.077    0.000    1.859    0.000 eval_frame.py:1039(_fn)
+      160    0.067    0.000    0.098    0.001 unification.py:132(unify_one_to_one)
+     3168    0.063    0.000    0.766    0.000 base.py:10716(_clone_recurse)
+     1584    0.059    0.000    0.059    0.000 {method 'argmax' of 'torch._C.TensorBase' objects}
+6335/3168    0.055    0.000    1.150    0.000 cudagraph_trees.py:2008(run)
+       80    0.055    0.001    0.482    0.006 unification.py:1184(get_derived_states_compiled)
+     2227    0.053    0.000    0.053    0.000 {method 'all' of 'torch._C.TensorBase' objects}
+     3168    0.053    0.000    0.188    0.000 _td.py:1368(_apply_nest)
+      585    0.052    0.000    0.052    0.000 {built-in method marshal.loads}
+   279972    0.050    0.000    0.068    0.000 {built-in method builtins.isinstance}
+  240/160    0.049    0.000    0.063    0.000 env.py:1008(_compute_state_hash64)
+     3168    0.048    0.000    0.558    0.000 cudagraph_trees.py:1057(_copy_inputs_and_remove_from_src)
+     1584    0.045    0.000    0.045    0.000 {method 'gather' of 'torch._C.TensorBase' objects}
+    22176    0.043    0.000    0.070    0.000 _config_module.py:370(__getattr__)
+     1584    0.041    0.000    0.041    0.000 {built-in method torch.log_softmax}
+     1206    0.040    0.000    0.040    0.000 {method 'sum' of 'torch._C.TensorBase' objects}
+     2064    0.039    0.000    0.039    0.000 {built-in method torch.zeros_like}
+     3168    0.038    0.000    0.038    0.000 {built-in method torch._ops.profiler.}
+     8070    0.037    0.000    0.037    0.000 {method 'unsqueeze' of 'torch._C.TensorBase' objects}
+     3168    0.034    0.000    1.591    0.001 output_code.py:590(__call__)
+     2446    0.031    0.000    0.031    0.000 {built-in method posix.stat}
+     3168    0.031    0.000    1.659    0.001 utils.py:119(call_func_at_runtime_with_args)
+     3168    0.030    0.000    0.036    0.000 cudagraph_trees.py:1126(reconstruct_outputs)
+     3168    0.029    0.000    0.048    0.000 __init__.py:373(cudagraph_mark_step_begin)
+   111/90    0.028    0.000    0.109    0.001 {built-in method _imp.exec_dynamic}
+     6335    0.027    0.000    0.046    0.000 cudagraph_trees.py:2062(exceed_rerecord_limit)
+
+
+
+
+================================================================================
+WALLCLOCK SUMMARY
+================================================================================
+Initial wallclock: 1766027871.8612
+Final wallclock:   1766027967.7902
+Total wallclock:   95.9291s
+
+Results saved to /home/castellanoontiv/Batched_env/kge_experiments/tests/profile_eval_results.txt

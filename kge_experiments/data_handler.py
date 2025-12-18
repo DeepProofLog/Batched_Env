@@ -245,7 +245,7 @@ class DataHandler:
         if corruption_mode and ('countries' in dataset_name or 'ablation' in dataset_name):
             self._load_domain_mapping(dataset_path)
 
-        print(f"Queries loaded - Train: {len(self.train_queries)}/{train_total}, Valid: {len(self.valid_queries)}, Test: {len(self.test_queries)}")
+        # print(f"Queries loaded - Train: {len(self.train_queries)}/{train_total}, Valid: {len(self.valid_queries)}, Test: {len(self.test_queries)}")
         
         # Discover vocabulary
         self._discover_vocabulary()

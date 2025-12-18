@@ -381,7 +381,6 @@ class MetricsCallback:
     def on_training_start(self) -> None:
         self.train_start_time = time.time()
         self.last_time = time.time()
-        print("[MetricsCallback] Training started")
     
     def on_step(self, infos: List[Dict[str, Any]]) -> None:
         self.collector.accumulate(infos)
@@ -467,29 +466,7 @@ class CheckpointCallback:
     def check_and_save(self, metrics: Dict[str, Any], iteration: int) -> None:
         """Called manually or by Manager if we enhance the API."""
         
-        # 1. Check Train Metric
-        if self.train_metric in metrics:
-            val = metrics[self.train_metric]
-            # Handle formatted string "0.123 +/- ..."
-            if isinstance(val, str):
-                try: val = float(val.split()[0])
-                except: val = float('-inf')
-            
-            if val > self.best_train_value:
-                self.best_train_value = val
-                
-                if self.date:
-                    stem = self.best_model_name_train.replace('.pt', '')
-                    filename = f"{stem}_{self.date}.pt"
-                else:
-                    filename = self.best_model_name_train
-                
-                path = self.save_path / filename
-                torch.save(self.policy.state_dict(), path)
-                if self.verbose:
-                    print(f"[Checkpoint] New best train model saved to {path} ({self.train_metric}={val:.4f})")
-                    
-        # 2. Check Eval Metric (RankingCallback output)
+        # 1. Check Eval Metric (RankingCallback output)
         if self.eval_metric in metrics:
             val = metrics[self.eval_metric]
             # Handle formatted string/list if necessary, though typical Eval callbacks return floats for main metrics
@@ -537,6 +514,18 @@ class CheckpointCallback:
 
                 if self.verbose:
                     print(f"[Checkpoint] New best eval model saved to {path} ({self.eval_metric}={val:.4f})")
+        
+        # Always save "last" train model whenever checkpoint is called
+        stem = "last_model_train"
+        if self.date:
+            filename = f"{stem}_{self.date}.pt"
+        else:
+            filename = f"{stem}.pt"
+        
+        path = self.save_path / filename
+        torch.save(self.policy.state_dict(), path)
+        if self.verbose:
+            print(f"[Checkpoint] Saved last train model to {path}")
 
     def load_best_model(self, load_metric: str = 'eval', device: Any = None) -> bool:
         """
@@ -641,7 +630,6 @@ class EvaluationCallback:
 # ============================================================================
 # RankingCallback (MRR/Hits)
 # ============================================================================
-# moved import to RankingCallback.on_iteration_end to avoid circular dependency
 
 class RankingCallback:
     """
@@ -675,18 +663,26 @@ class RankingCallback:
         self.ppo_agent = ppo_agent
         
         self.mrr_tracker = MRRTracker(patience=20)
+        self.last_eval_step = 0
         
     def on_training_start(self) -> None:
         """Run initial evaluation before training starts."""
         print("\n" + "="*60 + "\nInitial evaluation (untrained model)\n" + "="*60)
         self.on_iteration_end(iteration=0, global_step=0)
+        # Reset last_eval_step so we count from 0 correctly (if we want to exclude initial)
+        self.last_eval_step = 0
         print("="*60 + "\n")
 
     def should_evaluate(self, iteration: int) -> bool:
-        return (iteration % self.eval_freq == 0)
+        # NOTE: iteration passed here is roughly (timesteps / batch_size)
+        # However, users typically specify eval_freq in steps.
+        # Since we don't pass global_step to should_evaluate in manager (only iteration),
+        # we need to be careful. The manager's on_iteration_end receives global_step.
+        return True # Handled in on_iteration_end with global_step check
 
     def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
-        if not self.should_evaluate(iteration):
+        # eval_freq is now measured in iterations (rollouts), not steps
+        if iteration > 0 and iteration % self.eval_freq != 0:
             return {}
 
         self.policy.eval()
@@ -694,7 +690,7 @@ class RankingCallback:
         start_time = time.time()
         
         # Optimized evaluation path
-        results = self.ppo_agent.evaluate_with_corruptions(
+        results = self.ppo_agent.evaluate(
             queries=self.eval_data,
             sampler=self.sampler,
             n_corruptions=self.n_corruptions,
@@ -703,7 +699,7 @@ class RankingCallback:
             query_depths=self.eval_data_depths, 
         )
 
-        print(f"Evaluation took {time.time() - start_time:.2f} seconds")
+        print(f"[Eval] Took {time.time() - start_time:.2f} seconds\n")
         self.policy.train()
         
         # Parse metrics for clean dictionary

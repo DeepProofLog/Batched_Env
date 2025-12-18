@@ -981,3 +981,117 @@ def save_profile_results(profiler: cProfile.Profile, args: Any, device: Any, out
         ps.print_stats(n_functions)
     
     print(f"\nResults saved to {output_path}")
+
+
+
+"""
+Utility functions for KGE experiments.
+"""
+
+def print_results(results):
+    """
+    Prints experiment results in a structured, readable format using tabulate.
+    """
+    try:
+        from tabulate import tabulate
+    except ImportError:
+        # Fallback if tabulate is not available
+        print(f"\nResults summary:")
+        for k, v in results.items():
+            if k != 'per_mode':
+                print(f"  {k}: {v}")
+        return
+
+    print("\n" + "═" * 80)
+    print(f"║ {'EXPERIMENT RESULTS REPORT':^76} ║")
+    print("═" * 80)
+
+    res = results.copy()
+    
+    # --- 1. CORE PERFORMANCE METRICS ---
+    core_keys = ['MRR', 'Hits@1', 'Hits@3', 'Hits@10', 'AUC_PR', 'success_rate']
+    core_data = []
+    for k in core_keys:
+        if k in res:
+            val = res.pop(k)
+            formatted_val = f"{val:.4f}" if isinstance(val, (int, float)) else str(val)
+            core_data.append([k, formatted_val])
+    
+    if core_data:
+        print(f"\n[ Core Performance ]")
+        print(tabulate(core_data, headers=["Metric", "Value"], tablefmt="fancy_grid"))
+
+    # --- 2. TRAINING & ROLLOUT SUMMARY ---
+    train_keys = ['ep_rew_mean', 'ep_len_mean', 'reward', 'len']
+    train_data = []
+    for k in train_keys:
+        if k in res:
+            val = res.pop(k)
+            if isinstance(val, (int, float)):
+                formatted_val = f"{val:.4f}"
+            else:
+                formatted_val = str(val)
+            train_data.append([k, formatted_val])
+            
+    if train_data:
+        print(f"\n[ Training & Rollout Summary ]")
+        print(tabulate(train_data, headers=["Metric", "Value"], tablefmt="fancy_grid"))
+
+    # --- 3. PER-MODE RANK METRICS ---
+    if 'per_mode' in res:
+        per_mode = res.pop('per_mode')
+        print(f"\n[ Per-Mode Rank breakdown ]")
+        # Get headers from first mode entry
+        try:
+            first_mode = next(iter(per_mode.values()))
+            mode_headers = ["Mode"] + list(first_mode.keys())
+            mode_rows = []
+            for mode, metrics in per_mode.items():
+                row = [mode]
+                for m_key in mode_headers[1:]:
+                    mv = metrics.get(m_key, "-")
+                    row.append(f"{mv:.4f}" if isinstance(mv, (int, float)) else str(mv))
+                mode_rows.append(row)
+            print(tabulate(mode_rows, headers=mode_headers, tablefmt="fancy_grid"))
+        except (StopIteration, AttributeError):
+            pass
+
+    # --- 4. DETAILED CATEGORY BREAKDOWN ---
+    detailed_map = {} # tag -> {prefix -> value}
+    prefixes = ('len_', 'reward_', 'proven_')
+    
+    for k in list(res.keys()):
+        for p in prefixes:
+            if k.startswith(p):
+                val = res.pop(k)
+                tag = k[len(p):]
+                if tag not in detailed_map:
+                    detailed_map[tag] = {}
+                detailed_map[tag][p[:-1]] = val
+                break
+                
+    if detailed_map:
+        print(f"\n[ Detailed Result breakdown ]")
+        det_headers = ["Category"] + [p[:-1] for p in prefixes]
+        det_rows = []
+        sorted_tags = sorted(detailed_map.keys(), key=lambda x: (x not in ['pos', 'neg'], x))
+        
+        for tag in sorted_tags:
+            row = [tag]
+            for p_key in det_headers[1:]:
+                val = detailed_map[tag].get(p_key, "-")
+                row.append(str(val))
+            det_rows.append(row)
+        print(tabulate(det_rows, headers=det_headers, tablefmt="fancy_grid"))
+
+    # --- 5. MISCELLANEOUS ---
+    if res:
+        print(f"\n[ Other Metrics ]")
+        misc_data = []
+        for k in sorted(res.keys()):
+            val = res[k]
+            formatted_val = f"{val:.4f}" if isinstance(val, (int, float)) else str(val)
+            misc_data.append([k, formatted_val])
+        print(tabulate(misc_data, headers=["Metric", "Value"], tablefmt="grid"))
+
+    print("\n" + "═" * 80 + "\n")

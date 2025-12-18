@@ -205,7 +205,7 @@ The `_compute_derived_functional()` may have optimization opportunities:
 3. `PPOOptimized.fixed_batch_size` property - Getter/setter for consistent batch sizes
 4. `PPOOptimized._pad_queries()` - Helper to pad query tensors to fixed_batch_size
 5. `PPOOptimized.evaluate_policy()` - Core trajectory evaluation (no padding, expects exact batch size)
-6. `PPOOptimized.evaluate_with_corruptions()` - Full MRR evaluation, handles ALL chunking/padding internally
+6. `PPOOptimized.evaluate()` - Full MRR evaluation, handles ALL chunking/padding internally
 
 **Usage Pattern:**
 ```python
@@ -218,7 +218,7 @@ warmup_queries = ppo._pad_queries(sample_queries)
 ppo.evaluate_policy(warmup_queries)
 
 # Evaluate - handles any number of queries with chunking/padding
-results = ppo.evaluate_with_corruptions(queries, n_negatives=100)
+results = ppo.evaluate(queries, n_negatives=100)
 ```
 
 **`model_eval_optimized.py`** - Simplified to re-exports only:
@@ -228,13 +228,13 @@ from ppo_optimized import compute_metrics_from_ranks, compute_optimal_batch_size
 
 **`tests/test_eval_perf.py`**:
 1. Creates `PPOOptimized` instances for evaluation
-2. Uses `ppo.fixed_batch_size` and `ppo.evaluate_with_corruptions()`
+2. Uses `ppo.fixed_batch_size` and `ppo.evaluate()`
 3. Warmup uses proper batch_size parameter
 
 ### Key Design Decisions
 
 1. **evaluate_policy() doesn't pad** - Expects queries at exact fixed_batch_size
-2. **evaluate_with_corruptions() handles everything** - Chunking, padding, metric computation
+2. **evaluate() handles everything** - Chunking, padding, metric computation
 3. **_pad_queries() is public helper** - Available for manual warmup scenarios
 4. **No backward compatibility** - Clean API, use PPOOptimized directly
 
@@ -269,7 +269,7 @@ Example:
 config.chunk_queries = config.batch_size_env  # MUST match!
 torch.manual_seed(42)
 torch.cuda.manual_seed_all(42)
-results = ppo.evaluate_with_corruptions(queries, sampler, ...)
+results = ppo.evaluate(queries, sampler, ...)
 ```
 
 ---

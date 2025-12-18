@@ -332,11 +332,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
     seed_all(config.seed, deterministic=config.parity)
     ppo = PPOOptimized(policy, env, config)
     
-    # Load model via CheckpointCallback if requested
-    if config.load_model and ppo.callback:
-        ckpt_cb = next((cb for cb in ppo.callback.callbacks if isinstance(cb, CheckpointCallback)), None)
-        if ckpt_cb:
-            ckpt_cb.load_best_model(load_metric='train', device=device)
+    # Load model via CheckpointCallback if requested (Now handled in PPO.learn)
     
     if ppo.callback:
         ppo.callback.on_training_start()

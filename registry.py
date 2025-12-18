@@ -1,9 +1,13 @@
-"""
-Experiment Registry - Manages experiment type builders and provides public API.
-
-This module handles registration, lookup, and factory functions for experiments.
-"""
+import sys
+from pathlib import Path
 from typing import Any, Dict
+
+# Automatically set up paths for experiments
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "kge_experiments") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "kge_experiments"))
 
 # Registry of experiment builders
 _BUILDERS: Dict[str, Any] = {}

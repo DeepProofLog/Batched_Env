@@ -91,7 +91,7 @@ class TrainConfig:
     ent_coef_transform: str = 'linear'
     
     # Model Saving / Logging
-    save_model: bool = False
+    save_model: bool = True
     load_model: Any = False # False or 'last_epoch' or path
     restore_best: bool = True # restore_best_val_model
     load_best_metric: str = 'eval'
@@ -143,3 +143,9 @@ class TrainConfig:
         # Aliases / Compatibility
         if self.n_corruptions is None:
             self.n_corruptions = 10 # default
+
+        # Dynamic Run Signature
+        if self.run_signature in [None, "run_v1", "compiled_run"]:
+            import datetime
+            date_str = datetime.datetime.now().strftime("%Y%m%d")
+            self.run_signature = f"{self.dataset}-{self.seed}-{date_str}"

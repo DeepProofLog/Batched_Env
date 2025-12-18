@@ -1,5 +1,5 @@
 """
-Profile the PPOOptimized.evaluate_with_corruptions() function.
+Profile the PPOOptimized.evaluate() function.
 
 This script profiles the optimized evaluation loop to identify bottlenecks.
 Uses cProfile, torch.profiler, and optional line profiling for comprehensive
@@ -615,7 +615,7 @@ def profile_memory(config: SimpleNamespace):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Profile PPOOptimized.evaluate_with_corruptions()')
+    parser = argparse.ArgumentParser(description='Profile PPOOptimized.evaluate()')
     
     # Profiler selection
     parser.add_argument('--use-gpu-profiler', action='store_true',
