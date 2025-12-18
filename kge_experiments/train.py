@@ -330,46 +330,21 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
     # Create PPO
     print("\n[2/3] Running training...")
     seed_all(config.seed, deterministic=config.parity)
-    ppo = PPOOptimized(
-        policy=policy, env=env,
-        batch_size_env=config.n_envs,
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        max_depth=config.max_steps,
-        n_steps=config.n_steps,
-        learning_rate=config.learning_rate,
-        n_epochs=config.n_epochs,
-        batch_size=config.batch_size,
-        clip_range=config.clip_range,
-        ent_coef=config.ent_coef,
-        gamma=config.gamma,
-        target_kl=config.target_kl,
-        device=device,
-        verbose=config.verbose,
-        parity=config.parity,
-        compile_policy=not config.parity,
-    )
-    
-    # Setup callbacks (MetricsCallback, RankingCallback, CheckpointCallback, ScalarAnnealingCallback)
-    callback, _, _ = build_callbacks(
-        config=config, ppo=ppo, policy=policy, sampler=comp['sampler'],
-        dh=comp['dh'], eval_env=env,
-    ) if config.use_callbacks else (None, None, None)
+    ppo = PPOOptimized(policy, env, config)
     
     # Load model via CheckpointCallback if requested
-    if config.load_model and callback:
-        ckpt_cb = next((cb for cb in callback.callbacks if isinstance(cb, CheckpointCallback)), None)
+    if config.load_model and ppo.callback:
+        ckpt_cb = next((cb for cb in ppo.callback.callbacks if isinstance(cb, CheckpointCallback)), None)
         if ckpt_cb:
             ckpt_cb.load_best_model(load_metric='train', device=device)
     
-    if callback:
-        callback.on_training_start()
+    if ppo.callback:
+        ppo.callback.on_training_start()
     
     # Train
     learn_result = ppo.learn(
         total_timesteps=config.total_timesteps,
         return_traces=return_traces,
-        callback=callback,
     )
     
     policy_checksum_trained = sum(p.sum().item() for p in policy.parameters())
@@ -386,7 +361,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         im.atom_to_tensor(q.predicate, q.args[0], q.args[1]) for q in test_queries
     ], dim=0)
     
-    eval_results = ppo.evaluate_with_corruptions(
+    eval_results = ppo.evaluate(
         queries=queries_tensor,
         sampler=comp['sampler'],
         n_corruptions=config.n_corruptions,

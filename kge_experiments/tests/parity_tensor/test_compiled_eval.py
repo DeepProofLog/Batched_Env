@@ -105,6 +105,23 @@ def create_default_config() -> SimpleNamespace:
         
         seed=42,
         verbose=False,
+        
+        # PPO-specific
+        n_envs=50,  # Will be overridden by batch_size_env
+        n_steps=1,  # Buffer not used for evaluation
+        learning_rate=3e-4,
+        n_epochs=5,
+        batch_size=64,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.0,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        max_steps=20,  # Alias for max_depth
+        parity=True,
+        use_callbacks=False,
+        eval_only=True,  # Skip rollout buffer allocation
     )
 
 
@@ -389,17 +406,8 @@ def run_optimized_eval(
         compile_mode = 'default'
         fullgraph = False
     
-    # Create PPOOptimized instance for evaluation
-    ppo = PPOOptimized(
-        policy=policy,
-        env=env,
-        batch_size_env=config.batch_size_env,
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        max_depth=config.max_depth,
-        device=env.device,
-        n_steps=1, # Buffer not used for evaluation
-    )
+    # Create PPOOptimized instance for evaluation - use new config-based API
+    ppo = PPOOptimized(policy, env, config)
     
     # Component warmup and compilation
     warmup_start = time.time()
@@ -432,9 +440,9 @@ def run_optimized_eval(
             f"chunk_queries ({effective_chunk_queries}). Increase chunk_queries or reduce n_queries."
         )
     
-    # Run evaluation using ppo.evaluate_with_corruptions
+    # Run evaluation using ppo.evaluate (renamed from evaluate_with_corruptions)
     # parity_mode=True uses numpy RNG for tie-breaking to match model_eval.py exactly
-    results = ppo.evaluate_with_corruptions(
+    results = ppo.evaluate(
         queries=queries,
         sampler=sampler,
         n_corruptions=config.n_corruptions,
@@ -515,6 +523,9 @@ def run_parity_test(
     print(f"skip_unary_actions: {config.skip_unary_actions}")
     print(f"Compile mode: {config.compile} ({config.compile_mode})")
     print("=" * 70)
+    
+    # Ensure device is in config for PPO
+    config.device = device
     
     # Setup
     print("\nSetting up components...")

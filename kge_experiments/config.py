@@ -38,6 +38,7 @@ class TrainConfig:
     sample_deterministic_per_env: bool = True
     
     # Model Architecture
+    algorithm_type: str = "ppo"  # Algorithm to use (ppo, etc.)
     model_name: str = "PPO"
     atom_embedding_size: int = 64
     state_embedding_size: int = 64 # derived
@@ -109,6 +110,12 @@ class TrainConfig:
     parity: bool = False
     profile: bool = False
     use_callbacks: bool = True  # Enable callbacks in run_experiment
+    
+    # Callback control (individual toggles)
+    use_metrics_callback: bool = True
+    use_ranking_callback: bool = True
+    use_checkpoint_callback: bool = True
+    use_annealing_callback: bool = True
     
     def __post_init__(self):
         # Default corruption scheme logic

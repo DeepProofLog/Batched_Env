@@ -309,19 +309,8 @@ def create_ppo_and_warmup(components, config) -> Tuple[any, float]:
     # The env must handle padded queries of size fixed_batch_size
     env.batch_size = batch_size
     
-    # Create PPOOptimized in eval-only mode (skips massive rollout buffer allocation)
-    ppo = PPO(
-        policy=policy,
-        env=env,
-        batch_size_env=batch_size,  # Match the env batch size
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        max_depth=config.max_depth,
-        device=env.device,
-        fixed_batch_size=batch_size,
-        verbose=False,
-        eval_only=True,  # Skip rollout buffer allocation - saves ~8-16GB VRAM
-    )
+    # Create PPOOptimized in eval-only mode - use new config-based API
+    ppo = PPO(policy, env, config, device=env.device)
     
     # Warmup and compile
     warmup_start = time()
@@ -351,7 +340,7 @@ def run_evaluation(ppo, components, config):
     
     effective_chunk = min(config.chunk_queries, len(queries))
     
-    results = ppo.evaluate_with_corruptions(
+    results = ppo.evaluate(
         queries=queries,
         sampler=sampler,
         n_corruptions=config.n_corruptions,
@@ -661,9 +650,11 @@ def main():
         corruption_modes=args.corruption_modes,
         chunk_queries=args.chunk_queries,
         batch_size_env=args.batch_size_env,
+        n_envs=args.batch_size_env,  # Alias for PPO
         padding_atoms=6,
         padding_states=120,
         max_depth=20,
+        max_steps=20,  # Alias for PPO
         end_proof_action=True,
         max_total_vars=100,
         atom_embedding_size=250,
@@ -673,6 +664,16 @@ def main():
         fullgraph=args.fullgraph,
         vram_gb=args.vram_gb,
         verbose=args.verbose,
+        eval_only=True,  # Skip rollout buffer allocation
+        parity=False,
+        use_callbacks=False,  # Disable callbacks for profiling
+        n_steps=1,  # Required for PPO init but not used in eval_only mode
+        learning_rate=3e-4, # Required for PPO init
+        gamma=0.99, # Required for PPO init
+        n_epochs=5,
+        batch_size=64,
+        clip_range=0.2,
+        ent_coef=0.0,
     )
     
     if args.use_gpu_profiler:

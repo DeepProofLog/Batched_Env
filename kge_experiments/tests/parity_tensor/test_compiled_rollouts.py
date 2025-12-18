@@ -94,6 +94,11 @@ def create_default_config() -> SimpleNamespace:
         # Seeds/logging
         seed=42,
         verbose=False,
+        
+        # PPO-specific
+        max_steps=20,  # Alias for max_depth
+        parity=True,
+        use_callbacks=False,
     )
 
 
@@ -351,28 +356,7 @@ def create_tensor_ppo(env: BatchedEnv, policy: TensorPolicy, config: SimpleNames
 
 def create_optimized_ppo(env: EnvVec, policy: OptimizedPolicy, config: SimpleNamespace) -> PPOOptimized:
     """Create optimized PPO."""
-    return PPOOptimized(
-        policy=policy,
-        env=env,
-        batch_size_env=config.n_envs,
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        max_depth=config.max_depth,
-        n_steps=config.n_steps,
-        learning_rate=config.learning_rate,
-        n_epochs=config.n_epochs,
-        batch_size=config.batch_size,
-        gamma=config.gamma,
-        gae_lambda=config.gae_lambda,
-        clip_range=config.clip_range,
-        normalize_advantage=True,
-        ent_coef=config.ent_coef,
-        vf_coef=config.vf_coef,
-        max_grad_norm=config.max_grad_norm,
-        device=torch.device(config.device),
-        verbose=False,
-        parity=True,
-    )
+    return PPOOptimized(policy, env, config)
 
 
 # ============================================================================

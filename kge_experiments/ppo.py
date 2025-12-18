@@ -178,77 +178,70 @@ class PPO:
             This saves ~8-16GB VRAM but disables training methods.
     """
     
+    
     def __init__(
         self,
         policy: nn.Module,
         env: EnvVec,
-        # Environment dimensions (passed explicitly for production readiness)
-        batch_size_env: int,
-        padding_atoms: int,
-        padding_states: int,
-        max_depth: int,
-        # PPO Hyperparameters
-        n_steps: int = 2048,
-        learning_rate: float = 3e-4,
-        n_epochs: int = 10,
-        batch_size: int = 64,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        clip_range: float = 0.2,
-        clip_range_vf: Optional[float] = None,
-        normalize_advantage: bool = True,
-        ent_coef: float = 0.0,
-        vf_coef: float = 0.5,
-        max_grad_norm: float = 0.5,
-        target_kl: Optional[float] = None,
-        device: torch.device = None,
-        verbose: bool = True,
-        seed: Optional[int] = None,
-        parity: bool = False,
-        fixed_batch_size: Optional[int] = None,
-        compile_policy: bool = True,
-        compile_mode: str = 'reduce-overhead',
-        use_amp: bool = True,
-        eval_only: bool = False,
-        query_labels: Optional[Tensor] = None,
-        query_depths: Optional[Tensor] = None,
+        config,  # Accept config object (KGEConfig or TrainConfig)
+        **kwargs  # Optional overrides
     ):
+        """
+        Initialize PPO with config object.
+        
+        Args:
+            policy: Actor-critic policy network
+            env: EnvVec environment
+            config: Configuration object (e.g., KGEConfig from builder)
+            **kwargs: Optional parameter overrides
+        """
+        self.config = config
         self.policy = policy
         self.env = env
-        self.batch_size_env = batch_size_env
-        self.padding_atoms = padding_atoms
-        self.padding_states = padding_states
-        self.max_depth = max_depth
+        
+        # Extract parameters from config with optional kwargs overrides
+        self.batch_size_env = kwargs.get('batch_size_env', config.n_envs)
+        self.padding_atoms = kwargs.get('padding_atoms', config.padding_atoms)
+        self.padding_states = kwargs.get('padding_states', config.padding_states)
+        # Handle both max_steps (TrainConfig) and max_depth (test configs)
+        self.max_depth = kwargs.get('max_depth', getattr(config, 'max_steps', getattr(config, 'max_depth', 20)))
         
         # PPO Hyperparameters
-        self.n_steps = n_steps
-        self.learning_rate = learning_rate
-        self.n_epochs = n_epochs
-        self.batch_size = batch_size
-        self.gamma = gamma
-        self.gae_lambda = gae_lambda
-        self.clip_range = clip_range
-        self.clip_range_vf = clip_range_vf
-        self.normalize_advantage = normalize_advantage
-        self.ent_coef = ent_coef
-        self.vf_coef = vf_coef
-        self.max_grad_norm = max_grad_norm
-        self.target_kl = target_kl
-        self.device = device if device is not None else torch.device('cpu')
-        self.verbose = verbose
-        self.seed = seed
-        self.parity = parity
-        self.eval_only = eval_only
-        self._compile_policy = compile_policy
-        self._compile_mode = compile_mode
-        self._fixed_batch_size = fixed_batch_size
+        self.n_steps = kwargs.get('n_steps', config.n_steps)
+        self.learning_rate = kwargs.get('learning_rate', config.learning_rate)
+        self.n_epochs = kwargs.get('n_epochs', config.n_epochs)
+        self.batch_size = kwargs.get('batch_size', config.batch_size)
+        self.gamma = kwargs.get('gamma', config.gamma)
+        self.gae_lambda = kwargs.get('gae_lambda', getattr(config, 'gae_lambda', 0.95))
+        self.clip_range = kwargs.get('clip_range', config.clip_range)
+        self.clip_range_vf = kwargs.get('clip_range_vf', getattr(config, 'clip_range_vf', None))
+        self.normalize_advantage = kwargs.get('normalize_advantage', getattr(config, 'normalize_advantage', True))
+        self.ent_coef = kwargs.get('ent_coef', config.ent_coef)
+        self.vf_coef = kwargs.get('vf_coef', getattr(config, 'vf_coef', 0.5))
+        self.max_grad_norm = kwargs.get('max_grad_norm', getattr(config, 'max_grad_norm', 0.5))
+        self.target_kl = kwargs.get('target_kl', getattr(config, 'target_kl', None))
+        # Handle both KGEConfig (with _components) and TrainConfig (without)
+        components = getattr(config, '_components', {})
+        self.device = kwargs.get('device', components.get('device', getattr(config, 'device', torch.device('cpu'))))
+        if isinstance(self.device, str):
+            self.device = torch.device(self.device)
+        self.verbose = kwargs.get('verbose', config.verbose)
+        self.seed = kwargs.get('seed', config.seed)
+        self.parity = kwargs.get('parity', config.parity)
+        self.eval_only = kwargs.get('eval_only', getattr(config, 'eval_only', False))
+        self._compile_policy = kwargs.get('compile_policy', not config.parity)
+        self._compile_mode = kwargs.get('compile_mode', 'reduce-overhead')
+        self._fixed_batch_size = kwargs.get('fixed_batch_size', None)
         
         # Metrics info (CPU-only to avoid synchronization)
+        query_labels = kwargs.get('query_labels', None)
+        query_depths = kwargs.get('query_depths', None)
         self.query_labels = query_labels.detach().cpu() if query_labels is not None else None
         self.query_depths = query_depths.detach().cpu() if query_depths is not None else None
         self.current_query_indices = None
         
         # AMP (Automatic Mixed Precision) configuration
+        use_amp = kwargs.get('use_amp', True)
         self.use_amp = use_amp and (self.device.type == "cuda")
         if self.use_amp:
             self.amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
@@ -256,24 +249,21 @@ class PPO:
             self.amp_dtype = torch.float32
         
         # Validation
-        buffer_size = n_steps * self.batch_size_env
-        if batch_size > buffer_size:
-            raise ValueError(f"batch_size ({batch_size}) must be <= buffer_size ({buffer_size})")
+        buffer_size = self.n_steps * self.batch_size_env
+        if not self.eval_only and self.batch_size > buffer_size:
+            raise ValueError(f"batch_size ({self.batch_size}) must be <= buffer_size ({buffer_size})")
         
-        if not eval_only and buffer_size % self.batch_size != 0:
-            raise ValueError(f"batch_size ({self.batch_size}) must divide buffer_size ({buffer_size}) evenly")
-        
-        if not eval_only:
+        if not self.eval_only:
             # Pre-allocate rollout buffer and training tensors
             self.rollout_buffer = RolloutBuffer(
-                buffer_size=n_steps,
+                buffer_size=self.n_steps,
                 n_envs=self.batch_size_env,
                 device=self.device,
-                gamma=gamma,
-                gae_lambda=gae_lambda,
+                gamma=self.gamma,
+                gae_lambda=self.gae_lambda,
                 padding_atoms=self.padding_atoms,
                 padding_states=self.padding_states,
-                parity=parity,
+                parity=self.parity,
                 batch_size=self.batch_size,
             )
             
@@ -308,6 +298,122 @@ class PPO:
         self._last_state = None
         self._last_obs = None
         self.num_timesteps = 0
+        
+        # Build callbacks if enabled
+        if not self.eval_only and getattr(config, 'use_callbacks', True):
+            self.callback = self._build_callbacks()
+        else:
+            self.callback = None
+    
+    def _build_callbacks(self):
+        """Build callbacks based on config flags."""
+        from callbacks import (
+            TorchRLCallbackManager, MetricsCallback, RankingCallback,
+            CheckpointCallback, ScalarAnnealingCallback, AnnealingTarget
+        )
+        from pathlib import Path
+        
+        callbacks = []
+        config = self.config
+        
+        # MetricsCallback - always included if use_metrics_callback
+        if getattr(config, 'use_metrics_callback', True):
+            callbacks.append(MetricsCallback(
+                log_interval=1,
+                verbose=self.verbose,
+                collect_detailed=True
+            ))
+        
+        # Get components from config
+        components = getattr(config, '_components', {})
+        sampler = components.get('sampler')
+        dh = components.get('data_handler')
+        
+        # RankingCallback for evaluation
+        if getattr(config, 'use_ranking_callback', True) and getattr(config, 'eval_freq', 0) > 0:
+            if sampler and dh:
+                valid_split = dh.get_materialized_split('valid')
+                valid_queries = valid_split.queries.squeeze(1)
+                valid_depths = valid_split.depths
+                n_eval = getattr(config, 'n_eval_queries', None)
+                if n_eval:
+                    valid_queries = valid_queries[:n_eval]
+                    valid_depths = valid_depths[:n_eval]
+                
+                n_corruptions = getattr(config, 'eval_neg_samples', getattr(config, 'n_corruptions', 50))
+                scheme = getattr(config, 'corruption_scheme', ('head', 'tail'))
+                
+                callbacks.append(RankingCallback(
+                    eval_env=self.env,
+                    policy=self.policy,
+                    sampler=sampler,
+                    eval_data=valid_queries,
+                    eval_data_depths=valid_depths,
+                    eval_freq=int(config.eval_freq),
+                    n_corruptions=n_corruptions,
+                    corruption_scheme=tuple(scheme),
+                    ppo_agent=self
+                ))
+        
+        # CheckpointCallback for model saving
+        if getattr(config, 'use_checkpoint_callback', True) and getattr(config, 'save_model', False):
+            models_path = getattr(config, 'models_path', './models/')
+            run_sig = getattr(config, 'run_signature', getattr(config, 'dataset', 'run'))
+            save_path = Path(models_path) / run_sig
+            best_metric = getattr(config, 'eval_best_metric', 'mrr_mean')
+            if best_metric == 'mrr':
+                best_metric = 'mrr_mean'
+            
+            callbacks.append(CheckpointCallback(
+                save_path=save_path,
+                policy=self.policy,
+                train_metric="ep_rew_mean",
+                eval_metric=best_metric,
+                verbose=True,
+                date=None
+            ))
+        
+        # ScalarAnnealingCallback for lr/entropy decay
+        if getattr(config, 'use_annealing_callback', True):
+            annealing_targets = []
+            total_timesteps = getattr(config, 'total_timesteps', 0)
+            
+            if getattr(config, 'lr_decay', False):
+                lr_init = getattr(config, 'lr_init_value', self.learning_rate)
+                lr_final = getattr(config, 'lr_final_value', 1e-6)
+                def _set_lr(v):
+                    for pg in self.optimizer.param_groups:
+                        pg['lr'] = float(v)
+                    self.learning_rate = float(v)
+                annealing_targets.append(AnnealingTarget(
+                    name='lr', setter=_set_lr, initial=float(lr_init), final=float(lr_final),
+                    start_point=float(getattr(config, 'lr_start', 0.0)),
+                    end_point=float(getattr(config, 'lr_end', 1.0)),
+                    transform=getattr(config, 'lr_transform', 'linear'),
+                    value_type='float',
+                ))
+            
+            if getattr(config, 'ent_coef_decay', False):
+                ent_init = getattr(config, 'ent_coef_init_value', self.ent_coef)
+                ent_final = getattr(config, 'ent_coef_final_value', 0.01)
+                def _set_ent(v):
+                    self.ent_coef = float(v)
+                annealing_targets.append(AnnealingTarget(
+                    name='ent_coef', setter=_set_ent, initial=float(ent_init), final=float(ent_final),
+                    start_point=float(getattr(config, 'ent_coef_start', 0.0)),
+                    end_point=float(getattr(config, 'ent_coef_end', 1.0)),
+                    transform=getattr(config, 'ent_coef_transform', 'linear'),
+                    value_type='float',
+                ))
+            
+            if annealing_targets:
+                callbacks.append(ScalarAnnealingCallback(
+                    total_timesteps=total_timesteps,
+                    targets=annealing_targets,
+                    verbose=1
+                ))
+        
+        return TorchRLCallbackManager(callbacks=callbacks) if callbacks else None
     
     def _compile_policy_network(self):
         """Compile the policy network for faster training.
@@ -739,7 +845,6 @@ class PPO:
         total_timesteps: int,
         queries: Optional[torch.Tensor] = None, # Deprecated, env handles queries
         reset_num_timesteps: bool = True,
-        callback=None,
         on_iteration_start_callback=None,
         on_step_callback=None,
         return_traces: bool = False,
@@ -751,7 +856,6 @@ class PPO:
             total_timesteps: Total number of environment steps to train for
             queries: [Deprecated] Query tensor - env handles this now
             reset_num_timesteps: If True, reset the timestep counter
-            callback: Optional callback called at end of each iteration (like SB3)
             on_iteration_start_callback: Optional callback called at start of each iteration
             on_step_callback: Optional callback called when episodes complete
             return_traces: If True, return detailed traces for debugging
@@ -845,7 +949,7 @@ class PPO:
                     f"explained_var: {train_metrics['explained_var']:.4f}\n")
             
             # Callback: End of iteration (matching SB3/PPO interface)
-            if callback is not None:
+            if self.callback is not None:
                 locals_dict = {
                     'iteration': iteration,
                     'total_steps_done': self.num_timesteps,
@@ -853,7 +957,7 @@ class PPO:
                     'episode_lengths': episode_lengths,
                     'train_metrics': train_metrics,
                 }
-                callback_result = callback(locals_dict, globals())
+                callback_result = self.callback(locals_dict, globals())
                 if callback_result is False:
                     if self.verbose:
                         print("[PPOOptimized] Training stopped by callback")
@@ -927,13 +1031,13 @@ class PPO:
         return padded, B
     
     @torch.no_grad()
-    def evaluate_with_corruptions(
+    def evaluate(
         self,
-        queries: Tensor,
-        sampler: Any,
+        queries: Optional[Tensor] = None,
+        sampler: Optional[Any] = None,
         *,
-        n_corruptions: int = 50,
-        corruption_modes: Sequence[str] = ("head", "tail"),
+        n_corruptions: Optional[int] = None,
+        corruption_modes: Optional[Sequence[str]] = None,
         chunk_queries: int = 50,
         verbose: bool = False,
         deterministic: bool = True,
@@ -942,6 +1046,8 @@ class PPO:
     ) -> Dict[str, Any]:
         """
         Evaluate policy on queries with corruptions for ranking metrics (MRR, Hits@K).
+        
+        Auto-configures from config._components if parameters not provided.
         
         For each query, generates corruptions and evaluates all candidates 
         (positive + corruptions) to compute ranking metrics.
@@ -954,10 +1060,10 @@ class PPO:
         5. Computes ranks and aggregates metrics
         
         Args:
-            queries: [total_queries, 3] Tensor of test triples
-            sampler: Sampler for generating corruptions
-            n_corruptions: Number of corruptions per query
-            corruption_modes: Tuple of modes ('head', 'tail')
+            queries: [total_queries, 3] Tensor of test triples (auto-fetched if None)
+            sampler: Sampler for generating corruptions (auto-fetched if None)
+            n_corruptions: Number of corruptions per query (uses config if None)
+            corruption_modes: Tuple of modes ('head', 'tail') (uses config if None)
             chunk_queries: Number of positive queries to process at once
             verbose: Print progress
             deterministic: Use deterministic action selection
@@ -969,12 +1075,34 @@ class PPO:
         """
         from callbacks import Display # Delayed import to avoid circular dependency
         
+        # Auto-configure from config if parameters not provided
+        if queries is None:
+            if hasattr(self, 'config') and hasattr(self.config, '_components'):
+                queries = self.config._components.get('test_queries')
+                if queries is None:
+                    raise ValueError("No queries provided and config._components['test_queries'] not found")
+            else:
+                raise ValueError("queries parameter is required when config is not available")
+        
+        if sampler is None:
+            if hasattr(self, 'config') and hasattr(self.config, '_components'):
+                sampler = self.config._components.get('sampler')
+                if sampler is None:
+                    raise ValueError("No sampler provided and config._components['sampler'] not found")
+            else:
+                raise ValueError("sampler parameter is required when config is not available")
+        
+        if n_corruptions is None:
+            n_corruptions = getattr(self.config, 'n_corruptions', 50) if hasattr(self, 'config') else 50
+        
+        if corruption_modes is None:
+            corruption_modes = tuple(getattr(self.config, 'corruption_scheme', ('head', 'tail'))) if hasattr(self, 'config') else ('head', 'tail')
+        
         if self._compiled_policy_fn is None:
             raise RuntimeError("PPO must be compiled for evaluation (not in eval_only mode)")
         
         device = self.device
         total_queries = queries.shape[0]
-        n_corruptions = n_corruptions
         fixed_batch_size = self.fixed_batch_size
         per_mode_ranks = {
             mode: torch.zeros(total_queries, device=device) 

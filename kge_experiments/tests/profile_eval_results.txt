@@ -1,5 +1,5 @@
 Profile Optimized Eval Results
-Date: 2025-12-18 00:42:32
+Date: 2025-12-18 02:37:06
 Device: cuda
 Dataset: family
 
@@ -16,6 +16,6 @@ Queries loaded - Train: 19845/19845, Valid: 2799, Test: 5626
 
 Running warmup (compilation)...
 Compiling env.step (mode='reduce-overhead', fullgraph=True)...
-Warmup time: 3.72s
+Warmup time: 5.90s
 
 Profiling evaluation...

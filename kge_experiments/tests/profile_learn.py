@@ -201,31 +201,8 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         use_amp=config.use_amp,
     ).to(device)
     
-    # PPOOptimized
-    ppo = PPO(
-        policy=policy,
-        env=train_env,
-        batch_size_env=config.batch_size_env,
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        max_depth=config.max_depth,
-        n_steps=config.n_steps,
-        learning_rate=config.lr,
-        n_epochs=config.n_epochs,
-        batch_size=config.batch_size,
-        gamma=config.gamma,
-        gae_lambda=0.95,
-        clip_range=config.clip_range,
-        ent_coef=config.ent_coef,
-        vf_coef=0.5,
-        max_grad_norm=0.5,
-        device=device,
-        verbose=True,
-        fixed_batch_size=config.batch_size_env,
-        compile_policy=config.compile,  # Compile policy for faster training
-        compile_mode=config.compile_mode,  # Compile mode (reduce-overhead, default, etc.)
-        use_amp=config.use_amp,  # Use AMP for faster training
-    )
+    # PPOOptimized - use new config-based API
+    ppo = PPO(policy, train_env, config, device=device)
     
     return {
         'ppo': ppo,
@@ -585,19 +562,25 @@ def main():
         data_path=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data'),
         total_timesteps=args.total_timesteps,
         batch_size_env=args.batch_size_env,
+        n_envs=args.batch_size_env,  # Alias for PPO
         n_steps=args.n_steps,
         n_epochs=args.n_epochs,
         batch_size=args.batch_size,
         lr=5e-5,
+        learning_rate=5e-5,  # Alias for PPO
         gamma=0.99,
+        gae_lambda=0.95,
         clip_range=0.2,
         ent_coef=0.2,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
         padding_atoms=6,
         padding_states={
             "countries_s3": 20, "countries_s2": 20, "countries_s1": 20,
             "family": 130, "wn18rr": 262, "fb15k237": 358,
         }.get(args.dataset, 150),
         max_depth=20,
+        max_steps=20,  # Alias for PPO
         end_proof_action=True,
         max_total_vars=100,
         atom_embedding_size=250,
@@ -606,6 +589,9 @@ def main():
         compile_mode=args.compile_mode,
         fullgraph=args.fullgraph,
         use_amp=args.amp,
+        verbose=True,
+        parity=False,
+        use_callbacks=False,  # Disable callbacks for profiling
     )
     
     print(f"Using padding_states={config.padding_states} for dataset={config.dataset}")

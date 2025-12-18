@@ -398,28 +398,7 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
     
     # Create PPO with fixed seed
     torch.manual_seed(config.seed)
-    ppo = PPOOptimized(
-        policy=policy,
-        env=env,
-        batch_size_env=config.n_envs,
-        padding_atoms=padding_atoms,
-        padding_states=padding_states,
-        max_depth=config.max_depth,
-        n_steps=config.n_steps,
-        learning_rate=config.learning_rate,
-        n_epochs=config.n_epochs,
-        batch_size=config.batch_size,
-        gamma=config.gamma,
-        gae_lambda=config.gae_lambda,
-        clip_range=config.clip_range,
-        normalize_advantage=True,
-        ent_coef=config.ent_coef,
-        vf_coef=config.vf_coef,
-        max_grad_norm=config.max_grad_norm,
-        device=device,
-        verbose=False,
-        parity=True,
-    )
+    ppo = PPOOptimized(policy, env, config)
     
     # Convert queries to tensor format [N, 3]
     # IMPORTANT: Only use the first n_envs queries to match tensor env's query cycling
