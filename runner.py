@@ -1,16 +1,3 @@
-"""
-Runner - Generic interface for multiple experiment types.
-
-Example:
-    from runner import load_config, build_env, build_policy, get_algorithm
-    
-    config = load_config('kge')
-    env = build_env(config)
-    policy = build_policy(config)
-    algorithm = get_algorithm(policy, env, config)
-    algorithm.learn()
-    results = algorithm.evaluate()
-"""
 import argparse
 from registry import (
     load_config,

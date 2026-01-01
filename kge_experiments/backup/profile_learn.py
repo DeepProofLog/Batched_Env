@@ -26,7 +26,7 @@ import io
 from datetime import datetime
 from types import SimpleNamespace
 from time import time
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -105,13 +105,14 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     dh.materialize_indices(im=im, device=device)
     
     # Sampler
+    default_mode = 'tail' if 'countries' in config.dataset else 'both'
     domain2idx, entity2domain = dh.get_sampler_domain_info()
     sampler = Sampler.from_data(
         all_known_triples_idx=dh.all_known_triples_idx,
         num_entities=im.constant_no,
         num_relations=im.predicate_no,
         device=device,
-        default_mode="both",
+        default_mode=default_mode,
         seed=config.seed,
         domain2idx=domain2idx,
         entity2domain=entity2domain,
@@ -527,7 +528,7 @@ def main():
                         help='Use tracemalloc for memory profiling')
     
     # Dataset/training config
-    parser.add_argument('--dataset', type=str, default='countries_s3')
+    parser.add_argument('--dataset', type=str, default='family')
     parser.add_argument('--total-timesteps', type=int, default=1, # just one rollout+train
                         help='Total timesteps to profile (excluding warmup)')
     parser.add_argument('--batch-size-env', type=int, default=128,

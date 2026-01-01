@@ -1,11 +1,5 @@
 """
-Optimal PPO (Proximal Policy Optimization) with CUDA graph support.
-
-Optimized implementation combining best practices from deep dive documents:
-- Separate _compiled_rollout_step (stochastic) and _compiled_eval_step (deterministic)
-- Uses _uncompiled_policy in fused functions to avoid nested compilation
-- Buffer-copy pattern for CUDA graph stability
-- V10-style evaluation with slot recycling
+PPO (Proximal Policy Optimization) with CUDA graph support.
 
 Training: collect_rollouts() + train()
 Evaluation: evaluate_policy() + evaluate()
@@ -24,7 +18,7 @@ if torch.cuda.is_available():
     torch.set_float32_matmul_precision('high')
 
 from rollout import RolloutBuffer
-from env import EnvOptimal, EnvObs, EnvState
+from env import EnvVec, EnvObs, EnvState
 
 
 # =============================================================================
@@ -41,6 +35,14 @@ def compute_metrics_from_ranks(ranks: Tensor) -> Dict[str, float]:
         "Hits@3": float((r <= 3.0).float().mean().item()),
         "Hits@10": float((r <= 10.0).float().mean().item()),
     }
+
+def compute_auc_pr(y_true: np.ndarray, y_scores: np.ndarray) -> float:
+    try:
+        if len(y_true) == 0 or y_true.sum() == 0 or y_true.sum() == len(y_true):
+            return 1.0 if y_true.sum() == len(y_true) else 0.0
+        return float(average_precision_score(y_true, y_scores))
+    except Exception:
+        return 0.0
 
 def explained_variance(y_pred: Tensor, y_true: Tensor) -> Tensor:
     var_y = torch.var(y_true)
@@ -87,17 +89,17 @@ class PPOLossModule(nn.Module):
 
 
 # =============================================================================
-# PPO OPTIMAL CLASS
+# PPO CLASS
 # =============================================================================
 
-class PPOOptimal:
-    """Optimal PPO with CUDA graph support and separate train/eval compilation."""
+class PPO:
+    """PPO with CUDA graph support."""
 
     # -------------------------------------------------------------------------
     # INITIALIZATION
     # -------------------------------------------------------------------------
 
-    def __init__(self, policy: nn.Module, env: EnvOptimal, config, **kwargs):
+    def __init__(self, policy: nn.Module, env: EnvVec, config, **kwargs):
         self.config = config
         self.policy = policy
         self.env = env
@@ -136,15 +138,31 @@ class PPOOptimal:
         self._compile_mode = kwargs.get('compile_mode', 'reduce-overhead')
         self._fixed_batch_size = kwargs.get('fixed_batch_size', getattr(config, 'fixed_batch_size', None))
 
-        # IMPORTANT: Keep uncompiled policy reference for fused steps
-        self._uncompiled_policy = policy
-
-        # Pre-allocated eval buffers
+        # Pre-allocated buffers
         self._eval_padded_buffer = torch.zeros(self.fixed_batch_size, 3, dtype=torch.long, device=self.device)
         max_cand = self.fixed_batch_size * 1001
+        self._eval_acc_log_probs = torch.zeros(max_cand, device=self.device)
         self._eval_acc_success = torch.zeros(max_cand, dtype=torch.bool, device=self.device)
+        self._eval_acc_depths = torch.zeros(max_cand, dtype=torch.long, device=self.device)
+        self._eval_acc_rewards = torch.zeros(max_cand, device=self.device)
+        self._eval_result_log_probs = torch.zeros(self.fixed_batch_size, device=self.device)
         self._eval_result_success = torch.zeros(self.fixed_batch_size, dtype=torch.bool, device=self.device)
         self._eval_result_depths = torch.zeros(self.fixed_batch_size, dtype=torch.long, device=self.device)
+        self._eval_result_rewards = torch.zeros(self.fixed_batch_size, device=self.device)
+
+        # Metrics
+        query_labels = kwargs.get('query_labels', None)
+        query_depths = kwargs.get('query_depths', None)
+        if query_depths is None and components.get('dh'):
+            try:
+                train_split = components['dh'].get_materialized_split('train')
+                query_depths = train_split.depths
+                query_labels = getattr(train_split, 'labels', torch.ones_like(query_depths))
+            except Exception:
+                pass
+        self.query_labels = query_labels.detach().cpu() if query_labels is not None else None
+        self.query_depths = query_depths.detach().cpu() if query_depths is not None else None
+        self.current_query_indices = None
 
         # AMP
         use_amp = kwargs.get('use_amp', True)
@@ -174,12 +192,12 @@ class PPOOptimal:
         else:
             self.rollout_buffer = None
             self.optimizer = None
-            self._setup_fused_eval_step()
+            self._uncompiled_policy = policy
+            self._compiled_policy_fn = torch.compile(policy.get_logits, mode=self._compile_mode, fullgraph=True)
 
         self.num_timesteps = 0
-        self.callback = None  # Disabled for optimal version
-        self.current_query_indices = None
-        print(f"[PPOOptimal] Initialized with device={self.device}, batch_size_env={self.batch_size_env}")
+        self.callback = self._build_callbacks() if not self.eval_only and getattr(config, 'use_callbacks', True) else None
+        print(f"[DEBUG] PPO.__init__ finished setup.")
 
     @property
     def fixed_batch_size(self) -> int:
@@ -190,22 +208,15 @@ class PPOOptimal:
     # -------------------------------------------------------------------------
 
     def _compile_all(self):
-        """Compile all functions using uncompiled policy in fused steps."""
-        # Compile loss module
+        """Compile all policy and env functions."""
+        self._uncompiled_policy = self.policy
         self.loss_module = torch.compile(PPOLossModule(self._uncompiled_policy), mode=self._compile_mode, fullgraph=True)
-        
-        # Warmup gradients
         self._warmup_gradients()
-        
-        # Compile policy for standalone use
         self._compiled_policy_fn = torch.compile(self._uncompiled_policy.get_logits, mode=self._compile_mode, fullgraph=True)
         self.policy = torch.compile(self._uncompiled_policy, mode=self._compile_mode, fullgraph=True)
-        
-        # Setup fused steps (uses _uncompiled_policy!)
         if self.config.compile:
             self._setup_fused_rollout_step()
-            
-        print("[PPOOptimal] Compilation complete")
+        print("[DEBUG] PPO.__init__ reached compiled_evaluate_loop init block")
 
     def _warmup_gradients(self):
         """Pre-allocate gradients for CUDA graph stability."""
@@ -223,60 +234,36 @@ class PPOOptimal:
         self.optimizer.zero_grad(set_to_none=False)
 
     def _setup_fused_rollout_step(self):
-        """Fused policy + env step for training (stochastic, with log_probs).
-        
-        CRITICAL: Uses self._uncompiled_policy to avoid nested compilation!
-        """
-        policy = self._uncompiled_policy  # Uncompiled!
-        env = self.env
+        """Fused policy + env step for training."""
+        policy, env = self._uncompiled_policy, self.env
 
         def fused_step(obs, state):
-            # Policy forward (not compiled here - compiled as part of fused_step)
             logits = policy.get_logits(obs)
             masked = logits.masked_fill(obs['action_mask'] == 0, -3.4e38)
-            
-            # Stochastic action selection
             probs = torch.softmax(masked, dim=-1)
             actions = torch.multinomial(probs, 1).squeeze(-1)
-            
-            # Log probabilities for PPO
             log_probs = torch.log_softmax(masked, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1)
             log_probs = log_probs.masked_fill(state['done'].bool(), 0.0)
-            
-            # Environment step with auto-reset
             new_obs, new_state = env._step_and_reset_core(state, actions, env._query_pool, env._per_env_ptrs)
-            
             return new_obs, new_state, actions, log_probs
 
         self._compiled_rollout_step = torch.compile(fused_step, mode=self._compile_mode, fullgraph=True)
-        print("[PPOOptimal] Fused rollout step compiled")
 
     def _setup_fused_eval_step(self):
-        """Fused policy + env step for eval (deterministic, no log_probs).
-        
-        CRITICAL: Uses self._uncompiled_policy to avoid nested compilation!
-        """
+        """Fused policy + env step for eval (deterministic)."""
         if hasattr(self, '_compiled_eval_step'):
             return
-            
-        policy = self._uncompiled_policy  # Uncompiled!
-        env = self.env
+        policy, env = self._uncompiled_policy, self.env
 
         def fused_eval(obs, state):
-            # Policy forward
             logits = policy.get_logits(obs)
             masked = logits.masked_fill(obs['action_mask'] == 0, -3.4e38)
-            
-            # Deterministic action (argmax)
             actions = masked.argmax(dim=-1)
-            
-            # Environment step (no auto-reset for eval)
             new_obs, new_state = env._step_core(state, actions)
-            
             return new_obs, new_state
 
         self._compiled_eval_step = torch.compile(fused_eval, mode=self._compile_mode, fullgraph=True)
-        print("[PPOOptimal] Fused eval step compiled")
+        print("[PPO] Eval compilation complete.")
 
     # -------------------------------------------------------------------------
     # TRAINING
@@ -284,7 +271,7 @@ class PPOOptimal:
 
     def collect_rollouts(self, current_state, current_obs, episode_starts, current_episode_reward, current_episode_length,
                          episode_rewards, episode_lengths, iteration, return_traces=False, on_step_callback=None):
-        """Collect experiences using compiled fused step."""
+        """Collect experiences."""
         self.policy.eval()
         self.rollout_buffer.reset()
         n_collected, traces = 0, [] if return_traces else None
@@ -296,23 +283,10 @@ class PPOOptimal:
         with torch.no_grad():
             while n_collected < self.n_steps:
                 obs_snap = {k: v.clone() for k, v in obs.items()}
-                values = self._uncompiled_policy.predict_values(obs)
-                
+                values = self.policy.predict_values(obs)
                 torch.compiler.cudagraph_mark_step_begin()
                 obs_in, state_in = {k: v.clone() for k, v in obs.items()}, state.clone()
-                
-                # Use compiled step if available, otherwise fallback to uncompiled
-                if hasattr(self, '_compiled_rollout_step') and self._compiled_rollout_step is not None:
-                    new_obs, new_state, actions, log_probs = self._compiled_rollout_step(obs_in, state_in)
-                else:
-                    # Uncompiled fallback for parity tests
-                    logits = self._uncompiled_policy.get_logits(obs_in)
-                    masked = logits.masked_fill(obs_in['action_mask'] == 0, -3.4e38)
-                    probs = torch.softmax(masked, dim=-1)
-                    actions = torch.multinomial(probs, 1).squeeze(-1)
-                    log_probs = torch.log_softmax(masked, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1)
-                    log_probs = log_probs.masked_fill(state_in['done'].bool(), 0.0)
-                    new_obs, new_state = self.env._step_and_reset_core(state_in, actions, self.env._query_pool, self.env._per_env_ptrs)
+                new_obs, new_state, actions, log_probs = self._compiled_rollout_step(obs_in, state_in)
 
                 self.rollout_buffer.add(
                     sub_index=obs_snap['sub_index'], derived_sub_indices=obs_snap['derived_sub_indices'],
@@ -326,26 +300,31 @@ class PPOOptimal:
 
                 done_idx = torch.nonzero(new_state['step_dones']).squeeze(-1)
                 if done_idx.numel() > 0:
-                    idx_cpu = done_idx.cpu().numpy()
-                    rews = current_episode_reward[done_idx].float().cpu().numpy()
-                    lens = current_episode_length[done_idx].cpu().numpy().astype(int)
-                    episode_rewards.extend(rews.tolist())
-                    episode_lengths.extend(lens.tolist())
+                    self._handle_done_episodes(done_idx, current_episode_reward, current_episode_length, state, new_state['per_env_ptrs'], episode_rewards, episode_lengths, on_step_callback)
                     current_episode_reward.masked_fill_(new_state['step_dones'].bool(), 0.0)
                     current_episode_length.masked_fill_(new_state['step_dones'].bool(), 0)
-                    if self.current_query_indices is not None:
-                        self.current_query_indices[idx_cpu] = new_state['per_env_ptrs'][done_idx].cpu().numpy()
 
                 episode_starts = new_state['step_dones'].float()
                 state, obs = new_state, new_obs
 
-            last_values = self._uncompiled_policy.predict_values(obs)
+            last_values = self.policy.predict_values(obs)
 
         self.rollout_buffer.compute_returns_and_advantage(last_values=last_values, dones=new_state['step_dones'].float())
         return state, obs, episode_starts, current_episode_reward, current_episode_length, n_collected * self.batch_size_env, traces
 
+    def _handle_done_episodes(self, done_idx, ep_rew, ep_len, state, next_ptrs, episode_rewards, episode_lengths, callback):
+        idx_cpu = done_idx.cpu().numpy()
+        rews = ep_rew[done_idx].float().cpu().numpy()
+        lens = ep_len[done_idx].cpu().numpy().astype(int)
+        episode_rewards.extend(rews.tolist())
+        episode_lengths.extend(lens.tolist())
+        if callback and self.current_query_indices is not None:
+            batch_infos = [{"episode": {"r": float(r), "l": int(l)}} for r, l in zip(rews, lens)]
+            callback(batch_infos)
+            self.current_query_indices[idx_cpu] = next_ptrs[done_idx].cpu().numpy()
+
     def train(self, return_traces=False):
-        """Update policy from rollout buffer using compiled loss."""
+        """Update policy from rollout buffer."""
         self.policy.train()
         buffer_size = self.n_steps * self.batch_size_env
         n_batches = buffer_size // self.batch_size
@@ -412,11 +391,14 @@ class PPOOptimal:
         }
 
     def learn(self, total_timesteps, queries=None, reset_num_timesteps=True, on_iteration_start_callback=None, on_step_callback=None, return_traces=False):
-        """Main PPO training loop."""
+        """Main PPO loop."""
         if reset_num_timesteps:
             self.num_timesteps = 0
         else:
             total_timesteps += self.num_timesteps
+
+        if self.callback:
+            self.callback.on_training_start()
 
         self.env.train()
         obs, state = self.env.reset()
@@ -431,13 +413,18 @@ class PPOOptimal:
             if on_iteration_start_callback:
                 on_iteration_start_callback(iteration, self.num_timesteps)
 
-            result = self.collect_rollouts(state, obs, ep_starts, curr_ep_rew, curr_ep_len, ep_rews, ep_lens, iteration, return_traces, on_step_callback)
+            step_cb = self.callback.on_step if self.callback else on_step_callback
+            result = self.collect_rollouts(state, obs, ep_starts, curr_ep_rew, curr_ep_len, ep_rews, ep_lens, iteration, return_traces, step_cb)
             state, obs, ep_starts, curr_ep_rew, curr_ep_len, n_steps, _ = result
             state = state.clone()
             self.num_timesteps += n_steps
 
             train_metrics = self.train(return_traces)
             self.last_train_metrics = train_metrics
+
+            if self.callback:
+                if self.callback({'iteration': iteration, 'total_steps_done': self.num_timesteps, 'episode_rewards': ep_rews, 'episode_lengths': ep_lens, 'train_metrics': train_metrics}, None) is False:
+                    break
 
         return {'num_timesteps': self.num_timesteps, 'episode_rewards': ep_rews, 'episode_lengths': ep_lens, 'last_train_metrics': self.last_train_metrics}
 
@@ -448,6 +435,7 @@ class PPOOptimal:
     @torch.no_grad()
     def evaluate_policy(self, queries: Tensor, max_steps: Optional[int] = None, deterministic: bool = True):
         """Evaluate queries with compiled step loop."""
+        assert queries.shape[0] == self.env.batch_size
         max_steps = max_steps or self.max_depth
         self._setup_fused_eval_step()
 
@@ -460,9 +448,11 @@ class PPOOptimal:
             obs, state = self._compiled_eval_step(obs, state)
             obs, state = obs.clone(), state.clone()
 
+        self._eval_result_log_probs.zero_()
         self._eval_result_success[:] = state['success']
         self._eval_result_depths[:] = state['depths']
-        return self._eval_result_success, self._eval_result_depths
+        self._eval_result_rewards[:] = state['cumulative_rewards']
+        return self._eval_result_log_probs, self._eval_result_success, self._eval_result_depths, self._eval_result_rewards
 
     def _pad_queries(self, queries: Tensor) -> Tuple[Tensor, int]:
         B = queries.shape[0]
@@ -473,312 +463,111 @@ class PPOOptimal:
             self._eval_padded_buffer[B:] = queries[-1]
         return self._eval_padded_buffer, B
 
-    # -------------------------------------------------------------------------
-    # V10-STYLE EVALUATION WITH SLOT RECYCLING
-    # -------------------------------------------------------------------------
-
-    def _setup_v10_eval_buffers(self):
-        """Initialize V10-style evaluation buffers including history for memory pruning."""
-        if hasattr(self, '_v10_current'):
-            return  # Already initialized
-            
-        B = self.fixed_batch_size
-        A = self.padding_atoms
-        S = self.padding_states
-        H = self.max_depth + 1  # History size matches env.max_history_size
-        device = self.device
-        pad = self.env.padding_idx
-        
-        # Persistent state buffers
-        self._v10_current = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
-        self._v10_derived = torch.full((B, S, A, 3), pad, dtype=torch.long, device=device)
-        self._v10_counts = torch.zeros(B, dtype=torch.long, device=device)
-        self._v10_mask = torch.zeros(B, S, dtype=torch.bool, device=device)
-        self._v10_depths = torch.zeros(B, dtype=torch.long, device=device)
-        self._v10_done = torch.zeros(B, dtype=torch.bool, device=device)
-        self._v10_pool_ptr = torch.zeros(B, dtype=torch.long, device=device)
-        
-        # History tracking buffers for memory pruning
-        self._v10_history_hashes = torch.zeros(B, H, dtype=torch.long, device=device)
-        self._v10_history_count = torch.zeros(B, dtype=torch.long, device=device)
-        self._v10_max_history = H
-        
-        # Pool buffers
-        max_pool = 100000
-        self._v10_max_pool = max_pool
-        self._v10_pool = torch.zeros(max_pool, 3, dtype=torch.long, device=device)
-        self._v10_pool_size = torch.tensor(0, dtype=torch.long, device=device)
-        self._v10_result_buf = torch.zeros(max_pool, dtype=torch.bool, device=device)
-        
-        # Constants
-        self._v10_stride = torch.tensor(B, dtype=torch.long, device=device)
-        self._v10_arange_B = torch.arange(B, device=device)
-        self._v10_arange_S = torch.arange(S, device=device)
-        self._v10_N = 0
-        self._v10_K = 0
-
-    def _compile_v10_eval_step(self):
-        """Compile V10-style evaluation step with full history tracking and memory pruning."""
-        if hasattr(self, '_compiled_v10_step'):
-            return
-            
-        self._setup_v10_eval_buffers()
-        
-        policy = self._uncompiled_policy
-        env = self.env  # Use env for get_derived_simple and hash computation
-        B, S, A = self.fixed_batch_size, self.padding_states, self.padding_atoms
-        H = self._v10_max_history
-        pad = self.env.padding_idx
-        max_depth = self.max_depth
-        device = self.device
-        max_pool = self._v10_max_pool
-        true_pred_idx = self.env.true_pred_idx
-        false_pred_idx = self.env.false_pred_idx
-        end_pred_idx = self.env.end_pred_idx
-        mask_fill_val = -3.4e38
-        
-        # References to persistent buffers
-        current = self._v10_current
-        derived = self._v10_derived
-        counts = self._v10_counts
-        mask = self._v10_mask
-        depths = self._v10_depths
-        done = self._v10_done
-        pool_ptr = self._v10_pool_ptr
-        history_hashes = self._v10_history_hashes
-        history_count = self._v10_history_count
-        arange_B = self._v10_arange_B
-        arange_S = self._v10_arange_S
-        stride_tensor = self._v10_stride
-        
-        def step_fn(pool: Tensor, pool_size: Tensor):
-            """V10-style step with full history tracking and memory pruning."""
-            # 1. Policy forward
-            obs = {
-                'sub_index': current.unsqueeze(1),
-                'derived_sub_indices': derived,
-                'action_mask': mask.to(torch.uint8),
-            }
-            logits = policy.get_logits(obs)
-            masked_logits = logits.masked_fill(~mask, mask_fill_val)
-            actions = masked_logits.argmax(dim=-1)
-            
-            # 2. Take step
-            active = ~done
-            next_states = derived[arange_B, actions]
-            new_current = torch.where(active.view(B, 1, 1), next_states, current)
-            new_depths = torch.where(active, depths + 1, depths)
-            
-            # 3. Update history (compute hash of new state and add to history)
-            new_hash = env._compute_hash(new_current)
-            write_pos = history_count.clamp(max=H - 1)
-            update_val = torch.where(active, new_hash, history_hashes[arange_B, write_pos])
-            new_history = history_hashes.clone()
-            new_history.scatter_(1, write_pos.unsqueeze(1), update_val.unsqueeze(1))
-            new_h_count = torch.where(active, (history_count + 1).clamp(max=H), history_count)
-            
-            # 4. Compute derived with memory pruning for active slots
-            still_active = active  # Compute for all active
-            new_derived, new_counts = env.get_derived_simple(new_current, new_history, new_h_count)
-            # Keep old derived for done slots
-            new_derived = torch.where(still_active.view(B, 1, 1, 1), new_derived, derived)
-            new_counts = torch.where(still_active, new_counts, counts)
-            
-            # 5. Terminal check
-            first_pred = new_current[:, 0, 0]
-            is_true = (first_pred == true_pred_idx) if true_pred_idx is not None else torch.zeros(B, dtype=torch.bool, device=device)
-            is_false_pred = (first_pred == false_pred_idx) if false_pred_idx is not None else torch.zeros(B, dtype=torch.bool, device=device)
-            is_pad = (first_pred == pad)
-            is_end = (first_pred == end_pred_idx) if end_pred_idx is not None else torch.zeros(B, dtype=torch.bool, device=device)
-            is_terminal = is_true | is_false_pred | is_pad | is_end
-            is_success = is_true & active
-            truncated = (new_depths >= max_depth) & active
-            newly_done = active & (is_terminal | truncated)
-            
-            # 6. Slot recycling
-            finished_idx = torch.where(newly_done, pool_ptr, torch.full_like(pool_ptr, -1))
-            new_ptr = torch.where(newly_done, pool_ptr + stride_tensor, pool_ptr)
-            needs_reset = newly_done & (new_ptr < pool_size)
-            
-            # 7. Get new queries for reset slots
-            safe_idx = new_ptr.clamp(0, max_pool - 1)
-            new_queries_raw = pool[safe_idx]
-            reset_queries = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
-            reset_queries[:, 0, :] = new_queries_raw
-            
-            # Reset history for recycled slots
-            reset_history = torch.zeros_like(new_history)
-            reset_h_count = torch.zeros_like(new_h_count)
-            
-            # Compute derived for reset queries (with empty history)
-            reset_derived, reset_counts = env.get_derived_simple(reset_queries, reset_history, reset_h_count)
-            
-            # 8. Merge with torch.where
-            m1 = needs_reset.view(B, 1, 1)
-            m3 = needs_reset.view(B, 1, 1, 1)
-            mH = needs_reset.view(B, 1).expand(B, H)
-            final_current = torch.where(m1, reset_queries, new_current)
-            final_derived = torch.where(m3, reset_derived, new_derived)
-            final_counts = torch.where(needs_reset, reset_counts, new_counts)
-            final_depths = torch.where(needs_reset, torch.zeros_like(new_depths), new_depths)
-            final_done = torch.where(needs_reset, torch.zeros_like(done), done | newly_done)
-            final_history = torch.where(mH, reset_history, new_history)
-            final_h_count = torch.where(needs_reset, reset_h_count, new_h_count)
-            
-            # Handle exhausted pool
-            exhausted = new_ptr >= pool_size
-            final_done = torch.where(exhausted & newly_done, torch.ones_like(final_done), final_done)
-            new_mask = arange_S.unsqueeze(0) < final_counts.unsqueeze(1)
-            
-            return (final_current, final_derived, final_counts, new_mask, 
-                    final_depths, final_done, new_ptr, final_history, final_h_count,
-                    newly_done, is_success, finished_idx)
-        
-        self._compiled_v10_step = torch.compile(step_fn, mode=self._compile_mode, fullgraph=True, dynamic=False)
-        print("[PPOOptimal] V10-style evaluation step compiled (with history tracking)")
-
-    def _setup_v10_pool(self, queries: Tensor, sampler, n_corruptions: int, modes: Sequence[str]):
-        """Setup pool with transposed layout for V10 evaluation."""
-        N = queries.shape[0]
-        K = 1 + n_corruptions
-        B = self.fixed_batch_size
-        H = self._v10_max_history
-        device = self.device
-        pad = self.env.padding_idx
-        
-        pools = []
-        for mode in modes:
-            neg = sampler.corrupt(queries, num_negatives=n_corruptions, mode=mode, device=device)
-            cands = torch.cat([queries.unsqueeze(1), neg], dim=1)
-            # Transposed layout: K x N instead of N x K
-            cands_t = cands.transpose(0, 1).contiguous()
-            pools.append(cands_t.view(-1, 3))
-        
-        new_pool = torch.cat(pools, dim=0)
-        new_size = new_pool.size(0)
-        
-        if new_size > self._v10_max_pool:
-            raise ValueError(f"Pool size {new_size} exceeds max {self._v10_max_pool}")
-        
-        self._v10_pool[:new_size].copy_(new_pool)
-        self._v10_pool[new_size:].fill_(pad)
-        self._v10_pool_size.fill_(new_size)
-        self._v10_result_buf.zero_()
-        
-        self._v10_N = N
-        self._v10_K = K
-        self._v10_stride.fill_(N)
-        
-        # Initialize from pool
-        init_idx = torch.arange(B, device=device).clamp(max=max(0, N - 1))
-        queries_raw = self._v10_pool[init_idx]
-        
-        init_queries = torch.full((B, self.padding_atoms, 3), pad, dtype=torch.long, device=device)
-        init_queries[:, 0, :] = queries_raw
-        
-        # Initialize with empty history (start of new episode)
-        init_history = torch.zeros(B, H, dtype=torch.long, device=device)
-        init_h_count = torch.zeros(B, dtype=torch.long, device=device)
-        
-        # Get derived with empty history (no memory pruning on first step)
-        init_derived, init_counts = self.env.get_derived_simple(init_queries, init_history, init_h_count)
-        
-        self._v10_current.copy_(init_queries)
-        self._v10_derived.copy_(init_derived)
-        self._v10_counts.copy_(init_counts)
-        self._v10_mask.copy_(self._v10_arange_S.unsqueeze(0) < init_counts.unsqueeze(1))
-        self._v10_depths.zero_()
-        self._v10_history_hashes.zero_()
-        self._v10_history_count.zero_()
-        
-        self._v10_done.zero_()
-        if N < B:
-            self._v10_done[N:] = True
-        
-        self._v10_pool_ptr.copy_(torch.arange(B, device=device))
-
     @torch.no_grad()
     def evaluate(self, queries: Tensor, sampler, n_corruptions: int = 50, corruption_modes: Sequence[str] = ('head', 'tail'), *,
-                 chunk_queries: int = 50, verbose: bool = False, deterministic: bool = True):
-        """V10-style evaluation with slot recycling for maximum throughput."""
+                 chunk_queries: int = 50, verbose: bool = False, deterministic: bool = True, parity_mode: bool = False, query_depths: Optional[Tensor] = None):
+        """Compute MRR/Hits@K metrics."""
+        from callbacks import Display
         device = self.device
-        N = queries.shape[0]
-        K = 1 + n_corruptions
-        
-        # Setup V10 evaluation
-        self._setup_v10_eval_buffers()
-        self._compile_v10_eval_step()
-        
-        # Setup pool with transposed layout
-        self._setup_v10_pool(queries, sampler, n_corruptions, corruption_modes)
-        pool_size_int = int(self._v10_pool_size.item())
-        
-        if verbose:
-            print(f"V10 Pool: {pool_size_int}, batch: {self.fixed_batch_size}")
-        
-        # Run evaluation loop
-        max_steps = (pool_size_int // self.fixed_batch_size + 2) * self.max_depth
-        steps = 0
-        
-        while steps < max_steps:
-            torch.compiler.cudagraph_mark_step_begin()
-            
-            (new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr,
-             new_history, new_h_count, newly_done, success, indices) = self._compiled_v10_step(self._v10_pool, self._v10_pool_size)
-            
-            # Copy back to persistent buffers (including history)
-            torch._foreach_copy_(
-                [self._v10_current, self._v10_derived, self._v10_counts, self._v10_mask, 
-                 self._v10_depths, self._v10_done, self._v10_pool_ptr,
-                 self._v10_history_hashes, self._v10_history_count],
-                [new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr,
-                 new_history, new_h_count]
-            )
-            
-            # Record results
-            safe_idx = indices.clamp(min=0, max=pool_size_int - 1)
-            valid_mask = (indices >= 0) & (indices < pool_size_int)
-            safe_val = success & valid_mask
-            self._v10_result_buf.scatter_(0, safe_idx, safe_val)
-            
-            steps += 1
-            
-            if self._v10_done.all():
-                break
-        
-        if verbose:
-            print(f"V10 Steps: {steps}")
-        
-        # Compute metrics
-        results = {}
-        offset = 0
+        total = queries.shape[0]
+        per_mode_ranks = {m: torch.zeros(total, device=device) for m in corruption_modes}
+        rng = np.random.RandomState(0) if parity_mode else None
+
+        for start in range(0, total, chunk_queries):
+            end = min(start + chunk_queries, total)
+            Q = end - start
+            chunk = queries[start:end]
+
+            for mode in corruption_modes:
+                corruptions = sampler.corrupt(chunk, num_negatives=n_corruptions, mode=mode, device=device)
+                valid_mask = corruptions.sum(dim=-1) != 0
+                candidates = torch.zeros(Q, 1 + n_corruptions, 3, dtype=torch.long, device=device)
+                candidates[:, 0, :] = chunk
+                candidates[:, 1:, :] = corruptions
+                flat = candidates.view(-1, 3)
+                total_cand = flat.shape[0]
+
+                acc_success = self._eval_acc_success[:total_cand]
+                acc_success.fill_(False)
+
+                for cand_start in range(0, total_cand, self.fixed_batch_size):
+                    cand_end = min(cand_start + self.fixed_batch_size, total_cand)
+                    batch = flat[cand_start:cand_end]
+                    actual = batch.shape[0]
+                    padded, _ = self._pad_queries(batch)
+                    _, success, _, _ = self.evaluate_policy(padded, self.max_depth, deterministic)
+                    acc_success[cand_start:cand_end].copy_(success[:actual] if actual < self.fixed_batch_size else success)
+
+                success = acc_success.view(Q, 1 + n_corruptions)
+                log_probs = torch.zeros_like(success, dtype=torch.float32)
+                log_probs[~success] -= 100.0
+
+                pos_score = log_probs[:, 0:1]
+                neg_scores = log_probs[:, 1:]
+                rnd = torch.as_tensor(rng.rand(Q, 1 + n_corruptions), device=device, dtype=torch.float32) if parity_mode else torch.rand(Q, 1 + n_corruptions, device=device)
+                better = (neg_scores > pos_score) & valid_mask
+                tied = (neg_scores == pos_score) & (rnd[:, 1:] > rnd[:, 0:1]) & valid_mask
+                ranks = 1 + better.sum(dim=1) + tied.sum(dim=1)
+                per_mode_ranks[mode][start:end] = ranks.float()
+
+        results = {"MRR": 0.0, "Hits@1": 0.0, "Hits@3": 0.0, "Hits@10": 0.0, "per_mode": {}}
         for mode in corruption_modes:
-            # Untranspose: K x N -> N x K
-            ms_t = self._v10_result_buf[offset:offset + N * K].view(K, N)
-            ms = ms_t.t().contiguous()
-            
-            scores = torch.where(ms, torch.zeros(N, K, device=device),
-                               torch.full((N, K), -100.0, device=device))
-            
-            pos, neg = scores[:, 0:1], scores[:, 1:]
-            rnd = torch.rand(N, K, device=device)
-            better = neg > pos
-            tied = (neg == pos) & (rnd[:, 1:] > rnd[:, 0:1])
-            ranks = 1 + better.sum(1) + tied.sum(1)
-            
-            results[f'{mode}_mrr'] = (1.0 / ranks.float()).mean().item()
-            results[f'{mode}_hits1'] = (ranks <= 1).float().mean().item()
-            results[f'{mode}_hits3'] = (ranks <= 3).float().mean().item()
-            results[f'{mode}_hits10'] = (ranks <= 10).float().mean().item()
-            offset += N * K
-        
-        nm = len(corruption_modes)
-        results['MRR'] = sum(results[f'{m}_mrr'] for m in corruption_modes) / nm
-        results['Hits@1'] = sum(results[f'{m}_hits1'] for m in corruption_modes) / nm
-        results['Hits@3'] = sum(results[f'{m}_hits3'] for m in corruption_modes) / nm
-        results['Hits@10'] = sum(results[f'{m}_hits10'] for m in corruption_modes) / nm
-        
+            results["per_mode"][mode] = compute_metrics_from_ranks(per_mode_ranks[mode])
+        for mode in corruption_modes:
+            for k, v in results["per_mode"][mode].items():
+                results[k] += v
+        n = len(corruption_modes)
+        for k in ["MRR", "Hits@1", "Hits@3", "Hits@10"]:
+            results[k] /= n if n > 0 else 1.0
         return results
 
-# Backward compatibility alias
-PPO = PPOOptimal
+    # -------------------------------------------------------------------------
+    # CALLBACKS
+    # -------------------------------------------------------------------------
+
+    def _build_callbacks(self):
+        from callbacks import TorchRLCallbackManager, MetricsCallback, RankingCallback, CheckpointCallback, ScalarAnnealingCallback, AnnealingTarget
+        from pathlib import Path
+        callbacks = []
+        config = self.config
+        components = getattr(config, '_components', {})
+
+        if getattr(config, 'use_metrics_callback', True):
+            callbacks.append(MetricsCallback(log_interval=1, verbose=self.verbose, collect_detailed=True))
+
+        sampler = components.get('sampler')
+        dh = components.get('dh')
+        if getattr(config, 'use_ranking_callback', True) and getattr(config, 'eval_freq', 0) > 0 and sampler and dh:
+            valid_split = dh.get_materialized_split('valid')
+            valid_queries = valid_split.queries.squeeze(1)
+            valid_depths = valid_split.depths
+            n_eval = getattr(config, 'n_eval_queries', None)
+            if n_eval:
+                valid_queries, valid_depths = valid_queries[:n_eval], valid_depths[:n_eval]
+            callbacks.append(RankingCallback(
+                eval_env=self.env, policy=self.policy, sampler=sampler, eval_data=valid_queries,
+                eval_data_depths=valid_depths, eval_freq=int(config.eval_freq),
+                n_corruptions=getattr(config, 'eval_neg_samples', 50),
+                corruption_scheme=tuple(getattr(config, 'corruption_scheme', ('head', 'tail'))),
+                ppo_agent=self
+            ))
+
+        if getattr(config, 'use_checkpoint_callback', True) and getattr(config, 'save_model', False):
+            save_path = Path(getattr(config, 'models_path', './models/')) / getattr(config, 'run_signature', 'run')
+            callbacks.append(CheckpointCallback(save_path=save_path, policy=self.policy, train_metric="ep_rew_mean", eval_metric=getattr(config, 'eval_best_metric', 'mrr_mean'), verbose=True))
+
+        if getattr(config, 'use_annealing_callback', True):
+            targets = []
+            total = getattr(config, 'total_timesteps', 0)
+            if getattr(config, 'lr_decay', False):
+                def _set_lr(v):
+                    for pg in self.optimizer.param_groups: pg['lr'] = float(v)
+                    self.learning_rate = float(v)
+                targets.append(AnnealingTarget(name='lr', setter=_set_lr, initial=float(getattr(config, 'lr_init_value', self.learning_rate)), final=float(getattr(config, 'lr_final_value', 1e-6)), start_point=0.0, end_point=1.0, transform='linear', value_type='float'))
+            if getattr(config, 'ent_coef_decay', False):
+                def _set_ent(v): self.ent_coef = float(v)
+                targets.append(AnnealingTarget(name='ent_coef', setter=_set_ent, initial=float(getattr(config, 'ent_coef_init_value', self.ent_coef)), final=float(getattr(config, 'ent_coef_final_value', 0.01)), start_point=0.0, end_point=1.0, transform='linear', value_type='float'))
+            if targets:
+                callbacks.append(ScalarAnnealingCallback(total_timesteps=total, targets=targets, verbose=1))
+
+        return TorchRLCallbackManager(callbacks=callbacks) if callbacks else None

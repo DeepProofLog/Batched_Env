@@ -336,6 +336,7 @@ def all_atoms_are_ground_facts(
     return is_proof
 
 
+@torch._dynamo.disable
 def standardize_vars_parity(
     states: Tensor,          # [B, K, M, 3] derived states
     counts: Tensor,          # [B] valid count per batch

@@ -1,0 +1,121 @@
+Raw Tensor Eval Profile
+Date: 2025-12-31 13:02:08
+Device: cuda
+
+Configuration:
+  Dataset: family
+  Queries: 100
+  Corruptions: 100
+  Batch size: 256
+  Compile mode: reduce-overhead
+  Total candidates: 20200
+
+Setting up components...
+Init time: 2.23s
+
+Running warmup...
+Warmup time: 14.32s
+
+Profiling evaluation...
+
+============================================================
+TIMING SUMMARY
+============================================================
+Warmup time:      14.3239s
+Runtime:          27.9189s
+Total time:       42.2428s
+
+ms/query:         279.189
+ms/candidate:     1.382  (target: 0.3)
+
+MRR:              0.0700
+Hits@1:           0.0200
+Hits@10:          0.1200
+
+============================================================
+TOP FUNCTIONS BY CUMULATIVE TIME
+============================================================
+         1883819 function calls (1875365 primitive calls) in 29.217 seconds
+
+   Ordered by: cumulative time
+   List reduced from 284 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      2/1    0.000    0.000   29.397   29.397 profile_eval_raw.py:181(run_evaluation)
+    554/1    0.350    0.001   29.397   29.397 _contextlib.py:117(decorate_context)
+     1580    0.134    0.000   22.031    0.014 eval_frame.py:791(compile_wrapper)
+     1580    0.034    0.000   21.848    0.014 ppo_evaluate_raw.py:50(zero_arg_step)
+     4740    0.014    0.000   21.808    0.005 eval_frame.py:1039(_fn)
+     1580    0.004    0.000   21.775    0.014 aot_autograd.py:1126(forward)
+     1580    0.013    0.000   21.769    0.014 runtime_wrappers.py:310(runtime_wrapper)
+     1580    0.008    0.000   21.741    0.014 utils.py:119(call_func_at_runtime_with_args)
+     1580    0.002    0.000   21.730    0.014 runtime_wrappers.py:716(inner_fn)
+     1580    0.003    0.000   21.728    0.014 runtime_wrappers.py:512(wrapper)
+     1580    0.021    0.000   21.725    0.014 output_code.py:590(__call__)
+     1580    0.007    0.000   21.567    0.014 c7ax5cfeuwb6dkyprtdiggy4mign7za37kwlanxoas3it32fbrmn.py:5614(call)
+     1580    0.002    0.000   21.560    0.014 compile_fx.py:1767(run)
+     1580    0.005    0.000   21.558    0.014 cudagraph_trees.py:378(deferred_cudagraphify)
+     1580    0.007    0.000   21.536    0.014 utils.py:3013(run)
+     1580    0.018    0.000   21.494    0.014 cudagraph_trees.py:2008(run)
+     1580    0.007    0.000   21.466    0.014 cudagraph_trees.py:2073(_run)
+     1580    0.424    0.000   21.454    0.014 c7ax5cfeuwb6dkyprtdiggy4mign7za37kwlanxoas3it32fbrmn.py:5100(partition_0)
+        1    0.812    0.812   20.708   20.708 ppo_evaluate_raw.py:78(evaluate)
+    88480    0.415    0.000   12.848    0.000 triton_heuristics.py:1242(run)
+    83740    0.284    0.000   11.939    0.000 static_cuda_launcher.py:215(run)
+    83740   11.632    0.000   11.632    0.000 {_launch_kernel}
+    31600    6.554    0.000    6.554    0.000 {built-in method torch.mm}
+       79    0.036    0.000    5.638    0.071 env_evaluate_raw.py:126(reset_into_buffers)
+       79    0.001    0.000    5.313    0.067 env_evaluate_raw.py:246(_compute_derived_external)
+       79    0.023    0.000    5.312    0.067 env_evaluate_raw.py:254(_compute_derived_impl)
+       79    0.651    0.008    5.265    0.067 unification.py:1336(get_derived_states_compiled)
+      158    1.001    0.006    1.316    0.008 unification.py:132(unify_one_to_one)
+       79    0.026    0.000    1.130    0.014 unification.py:664(unify_with_rules)
+     4981    1.070    0.000    1.070    0.000 {built-in method torch.where}
+
+
+
+
+============================================================
+TOP FUNCTIONS BY TOTAL TIME
+============================================================
+         1883819 function calls (1875365 primitive calls) in 29.217 seconds
+
+   Ordered by: internal time
+   List reduced from 284 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+    83740   11.632    0.000   11.632    0.000 {_launch_kernel}
+    31600    6.554    0.000    6.554    0.000 {built-in method torch.mm}
+     4981    1.070    0.000    1.070    0.000 {built-in method torch.where}
+      158    1.001    0.006    1.316    0.008 unification.py:132(unify_one_to_one)
+        1    0.812    0.812   20.708   20.708 ppo_evaluate_raw.py:78(evaluate)
+       79    0.651    0.008    5.265    0.067 unification.py:1336(get_derived_states_compiled)
+     3160    0.515    0.000    0.515    0.000 {built-in method torch.addmm}
+     1580    0.424    0.000   21.454    0.014 c7ax5cfeuwb6dkyprtdiggy4mign7za37kwlanxoas3it32fbrmn.py:5100(partition_0)
+    88480    0.415    0.000   12.848    0.000 triton_heuristics.py:1242(run)
+      794    0.398    0.001    0.398    0.001 {method 'sum' of 'torch._C.TensorBase' objects}
+       79    0.386    0.005    0.753    0.010 unification.py:250(all_atoms_are_ground_facts)
+     3160    0.365    0.000    0.365    0.000 {built-in method torch._ops.aten.}
+    554/1    0.350    0.001   29.397   29.397 _contextlib.py:117(decorate_context)
+      158    0.293    0.002    0.353    0.002 unification.py:85(apply_substitutions)
+    83740    0.284    0.000   11.939    0.000 static_cuda_launcher.py:215(run)
+      794    0.282    0.000    0.282    0.000 {built-in method torch.full_like}
+       79    0.272    0.003    0.441    0.006 unification.py:784(prune_ground_facts)
+    66360    0.256    0.000    0.256    0.000 {built-in method torch._C._dynamo.guards._empty_strided_cuda}
+     1580    0.227    0.000    0.227    0.000 {built-in method torch.bmm}
+        8    0.203    0.025    0.203    0.025 {method 'item' of 'torch._C.TensorBase' objects}
+    83740    0.164    0.000    0.164    0.000 {built-in method torch._C._dynamo.guards._reinterpret_tensor}
+       79    0.150    0.002    0.533    0.007 unification.py:458(standardize_vars)
+      632    0.142    0.000    0.142    0.000 {method 'all' of 'torch._C.TensorBase' objects}
+     1580    0.134    0.000   22.031    0.014 eval_frame.py:791(compile_wrapper)
+       79    0.130    0.002    0.777    0.010 unification.py:582(unify_with_facts)
+      158    0.112    0.001    0.229    0.001 unification.py:203(fact_contains)
+      632    0.110    0.000    0.110    0.000 {method 'copy_' of 'torch._C.TensorBase' objects}
+      316    0.106    0.000    0.106    0.000 {built-in method torch.ones_like}
+      158    0.106    0.001    0.106    0.001 unification.py:37(_pack_triples_64)
+      158    0.089    0.001    0.131    0.001 unification.py:539(pairs_via_predicate_ranges)
+
+
+
+
+Results saved to /home/castellanoontiv/Batched_env/kge_experiments/tests/profile_eval_raw_results.txt

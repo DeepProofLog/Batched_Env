@@ -1,0 +1,123 @@
+Simple Eval Profile Results
+Date: 2025-12-31 12:49:26
+Device: cuda
+
+Configuration:
+  Dataset: family
+  Queries: 100
+  Corruptions: 100
+  Corruption modes: ['head', 'tail']
+  Batch size: 256
+  Compile mode: reduce-overhead
+  Total candidates: 20200
+
+Setting up components...
+Init time: 3.44s
+
+Running warmup (compilation)...
+Warmup time: 13.84s
+
+Profiling evaluation...
+
+============================================================
+TIMING SUMMARY
+============================================================
+Warmup time:      13.8379s
+Runtime:          34.6820s
+Total time:       48.5199s
+
+ms/query:         346.820
+ms/candidate:     1.717  (target: 0.3)
+
+MRR:              0.2317
+Hits@1:           0.1100
+Hits@3:           0.2400
+Hits@10:          0.5500
+
+============================================================
+TOP FUNCTIONS BY CUMULATIVE TIME
+============================================================
+         1823486 function calls (1811686 primitive calls) in 35.747 seconds
+
+   Ordered by: cumulative time
+   List reduced from 563 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+     4740    0.039    0.000   22.760    0.005 eval_frame.py:1039(_fn)
+     1580    0.005    0.000   22.673    0.014 aot_autograd.py:1126(forward)
+     1580    0.007    0.000   22.667    0.014 runtime_wrappers.py:310(runtime_wrapper)
+     1580    0.015    0.000   22.615    0.014 utils.py:119(call_func_at_runtime_with_args)
+     1580    0.003    0.000   22.584    0.014 runtime_wrappers.py:512(wrapper)
+     1580    0.020    0.000   22.581    0.014 output_code.py:590(__call__)
+     1580    0.007    0.000   22.374    0.014 compile_fx.py:1767(run)
+     1580    0.003    0.000   22.365    0.014 cudagraph_trees.py:378(deferred_cudagraphify)
+     1580    0.008    0.000   22.363    0.014 utils.py:3013(run)
+3158/1580    0.027    0.000   22.339    0.014 cudagraph_trees.py:2008(run)
+3158/1580    0.007    0.000   22.300    0.014 cudagraph_trees.py:2073(_run)
+     1579    0.012    0.000   22.136    0.014 cudagraph_trees.py:2241(execute_node)
+     1579    0.015    0.000   22.078    0.014 cudagraph_trees.py:1105(run)
+     1579    0.009    0.000   21.979    0.014 cudagraph_trees.py:1219(run_graph)
+     1580    0.044    0.000   21.554    0.014 cudagraph_trees.py:1057(_copy_inputs_and_remove_from_src)
+1581/1580   21.490    0.014   21.490    0.014 {built-in method torch._foreach_copy_}
+     1501    0.150    0.000   21.228    0.014 ppo_evaluate.py:48(eval_step)
+     1501    0.005    0.000   20.930    0.014 runtime_wrappers.py:716(inner_fn)
+     1501    0.012    0.000   20.804    0.014 crnn3r5vsfqh7c6spweylukcaz4tdzpkpeh7zebmuxgbqmof2gl7.py:6027(call)
+       79    0.008    0.000   11.454    0.145 env_evaluate.py:74(reset)
+       79    0.520    0.007   11.401    0.144 env_evaluate.py:212(_compute_derived)
+       79    0.003    0.000    9.754    0.123 env_evaluate.py:201(_get_derived_raw)
+       79    1.462    0.019    9.742    0.123 unification.py:1336(get_derived_states_compiled)
+      158    3.146    0.020    3.205    0.020 unification.py:132(unify_one_to_one)
+     5455    1.843    0.000    1.843    0.000 {built-in method torch.where}
+       79    0.022    0.000    1.669    0.021 unification.py:664(unify_with_rules)
+       79    0.025    0.000    1.664    0.021 unification.py:582(unify_with_facts)
+       79    0.001    0.000    1.650    0.021 c4hg7f7fqbhdktflle6gxhf66rvbd6rbewcws7c523k6lid35epx.py:6025(call)
+       79    0.008    0.000    1.615    0.020 unification.py:912(pack_results)
+       79    0.947    0.012    1.577    0.020 unification.py:250(all_atoms_are_ground_facts)
+
+
+
+
+============================================================
+TOP FUNCTIONS BY TOTAL TIME
+============================================================
+         1823486 function calls (1811686 primitive calls) in 35.747 seconds
+
+   Ordered by: internal time
+   List reduced from 563 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+1581/1580   21.490    0.014   21.490    0.014 {built-in method torch._foreach_copy_}
+      158    3.146    0.020    3.205    0.020 unification.py:132(unify_one_to_one)
+     5455    1.843    0.000    1.843    0.000 {built-in method torch.where}
+       79    1.462    0.019    9.742    0.123 unification.py:1336(get_derived_states_compiled)
+      952    1.298    0.001    1.298    0.001 {method 'sum' of 'torch._C.TensorBase' objects}
+       79    0.947    0.012    1.577    0.020 unification.py:250(all_atoms_are_ground_facts)
+      316    0.709    0.002    0.709    0.002 {built-in method torch.ones_like}
+      715    0.540    0.001    0.540    0.001 {built-in method torch.cat}
+       79    0.520    0.007   11.401    0.144 env_evaluate.py:212(_compute_derived)
+    25280    0.436    0.000    0.436    0.000 {method 'copy_' of 'torch._C.TensorBase' objects}
+     1580    0.416    0.000    0.479    0.000 graphs.py:139(replay)
+      632    0.390    0.001    0.390    0.001 {method 'all' of 'torch._C.TensorBase' objects}
+        8    0.386    0.048    0.386    0.048 {method 'item' of 'torch._C.TensorBase' objects}
+      871    0.228    0.000    0.228    0.000 {method 'clamp' of 'torch._C.TensorBase' objects}
+     1501    0.150    0.000   21.228    0.014 ppo_evaluate.py:48(eval_step)
+     1580    0.090    0.000    0.090    0.000 {method 'bool' of 'torch._C.TensorBase' objects}
+        7    0.066    0.009    0.066    0.009 {built-in method torch._C._cuda_synchronize}
+    53957    0.056    0.000    0.319    0.000 base.py:555(__getitem__)
+     1580    0.044    0.000   21.554    0.014 cudagraph_trees.py:1057(_copy_inputs_and_remove_from_src)
+    53957    0.040    0.000    0.169    0.000 base.py:6954(_get_tuple_maybe_non_tensor)
+     4740    0.039    0.000   22.760    0.005 eval_frame.py:1039(_fn)
+     1581    0.037    0.000    0.037    0.000 {built-in method torch._ops.profiler._record_function_enter_new}
+   110916    0.036    0.000    0.045    0.000 __init__.py:436(is_compiling)
+    53957    0.036    0.000    0.055    0.000 _td.py:2733(_get_tuple)
+   263023    0.033    0.000    0.033    0.000 {built-in method builtins.isinstance}
+       11    0.030    0.003    0.030    0.003 {method 'acquire' of '_thread.lock' objects}
+    55221    0.030    0.000    0.030    0.000 {built-in method tensordict._C._unravel_key_to_tuple}
+    53957    0.028    0.000    0.056    0.000 utils.py:2340(_pass_through_cls)
+    55221    0.028    0.000    0.083    0.000 utils.py:2403(_unravel_key_to_tuple)
+      790    0.027    0.000    0.027    0.000 {built-in method torch.full}
+
+
+
+
+Results saved to /home/castellanoontiv/Batched_env/kge_experiments/tests/profile_eval_simple_results.txt

@@ -24,7 +24,7 @@ if torch.cuda.is_available():
     torch.set_float32_matmul_precision('high')
 
 from rollout import RolloutBuffer
-from env import EnvOptimal, EnvObs, EnvState
+from env_optimal import EnvOptimal, EnvObs, EnvState
 
 
 # =============================================================================
@@ -300,19 +300,7 @@ class PPOOptimal:
                 
                 torch.compiler.cudagraph_mark_step_begin()
                 obs_in, state_in = {k: v.clone() for k, v in obs.items()}, state.clone()
-                
-                # Use compiled step if available, otherwise fallback to uncompiled
-                if hasattr(self, '_compiled_rollout_step') and self._compiled_rollout_step is not None:
-                    new_obs, new_state, actions, log_probs = self._compiled_rollout_step(obs_in, state_in)
-                else:
-                    # Uncompiled fallback for parity tests
-                    logits = self._uncompiled_policy.get_logits(obs_in)
-                    masked = logits.masked_fill(obs_in['action_mask'] == 0, -3.4e38)
-                    probs = torch.softmax(masked, dim=-1)
-                    actions = torch.multinomial(probs, 1).squeeze(-1)
-                    log_probs = torch.log_softmax(masked, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1)
-                    log_probs = log_probs.masked_fill(state_in['done'].bool(), 0.0)
-                    new_obs, new_state = self.env._step_and_reset_core(state_in, actions, self.env._query_pool, self.env._per_env_ptrs)
+                new_obs, new_state, actions, log_probs = self._compiled_rollout_step(obs_in, state_in)
 
                 self.rollout_buffer.add(
                     sub_index=obs_snap['sub_index'], derived_sub_indices=obs_snap['derived_sub_indices'],
@@ -448,6 +436,7 @@ class PPOOptimal:
     @torch.no_grad()
     def evaluate_policy(self, queries: Tensor, max_steps: Optional[int] = None, deterministic: bool = True):
         """Evaluate queries with compiled step loop."""
+        assert queries.shape[0] == self.env.batch_size
         max_steps = max_steps or self.max_depth
         self._setup_fused_eval_step()
 
@@ -779,6 +768,3 @@ class PPOOptimal:
         results['Hits@10'] = sum(results[f'{m}_hits10'] for m in corruption_modes) / nm
         
         return results
-
-# Backward compatibility alias
-PPO = PPOOptimal

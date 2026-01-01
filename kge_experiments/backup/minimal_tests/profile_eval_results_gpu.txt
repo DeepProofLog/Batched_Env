@@ -1,0 +1,16 @@
+Profile Optimized Eval GPU Results
+Date: 2025-12-31 11:37:44
+Device: cuda
+
+Setting up components...
+
+Running warmup (compilation)...
+[DEBUG] PPO.__init__ finished setup.
+Warming up batched eval...
+[Evaluation] Batched eval step compilation complete (reduce-overhead, copy-outside pattern).
+Warmup time: 5.22s
+
+GPU Profiling evaluation...
+[DEBUG] run_evaluation config: batch_size=128, use_batched=True
+[DEBUG] Using evaluate_batched
+[Evaluation] Batched eval step compilation complete (reduce-overhead, copy-outside pattern).
