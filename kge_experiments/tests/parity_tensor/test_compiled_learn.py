@@ -941,7 +941,7 @@ def run_learn_compiled_parity_test(
 # ============================================================
 
 @pytest.mark.parametrize("n_envs,n_steps", [(1, 10), (4, 10)])
-def test_learn_compiled_parity(n_envs: int, n_steps: int) -> bool:
+def test_learn_compiled_parity(n_envs: int, n_steps: int) -> None:
     """Test learn parity between tensor and optimized implementations."""
     results = run_learn_compiled_parity_test(
         dataset="countries_s3",
@@ -951,15 +951,17 @@ def test_learn_compiled_parity(n_envs: int, n_steps: int) -> bool:
         seed=42,
         verbose=True,
     )
-    if not results.success:
-        print(f"Learn compiled parity test failed for n_envs={n_envs}, n_steps={n_steps}")
-        return False
-    return True
+    assert results.success, f"Learn compiled parity test failed for n_envs={n_envs}, n_steps={n_steps}"
 
 
 @pytest.mark.parametrize("n_epochs", [1, 2])
-def test_learn_compiled_parity_multiple_epochs(n_epochs: int) -> bool:
-    """Test learn parity with multiple training epochs."""
+def test_learn_compiled_parity_multiple_epochs(n_epochs: int) -> None:
+    """Test learn parity with multiple training epochs.
+    
+    Uses semantic parity (traces + weights) rather than exact buffer matches
+    since stochastic sampling can produce different actions despite identical
+    probability distributions.
+    """
     results = run_learn_compiled_parity_test(
         dataset="countries_s3",
         n_envs=2,
@@ -968,13 +970,8 @@ def test_learn_compiled_parity_multiple_epochs(n_epochs: int) -> bool:
         seed=42,
         verbose=True,
     )
-    if not results.rollout_traces_match:
-        print(f"Rollout traces don't match for n_epochs={n_epochs}")
-        return False
-    if not results.buffer_actions_match:
-        print(f"Buffer actions don't match for n_epochs={n_epochs}")
-        return False
-    return True
+    assert results.rollout_traces_match, f"Rollout traces don't match for n_epochs={n_epochs}"
+    assert results.weights_match, f"Weights don't match for n_epochs={n_epochs}"
 
 
 def run_all_tests(args) -> bool:
@@ -992,11 +989,17 @@ def run_all_tests(args) -> bool:
         print(f"Running test_learn_compiled_parity[{n_envs}-{n_steps}]")
         print(f"{'='*70}")
         
-        if test_learn_compiled_parity(n_envs, n_steps):
+        # Reset RNG state before each test for isolation
+        seed_all(42)
+        
+        try:
+            test_learn_compiled_parity(n_envs, n_steps)
             print(f"✓ PASSED: test_learn_compiled_parity[{n_envs}-{n_steps}]")
-        else:
+        except AssertionError as e:
             print(f"✗ FAILED: test_learn_compiled_parity[{n_envs}-{n_steps}]")
+            print(f"  Reason: {e}")
             all_passed = False
+
     
     # Test 2: Multiple epochs tests
     for n_epochs in [1, 2]:
@@ -1004,10 +1007,15 @@ def run_all_tests(args) -> bool:
         print(f"Running test_learn_compiled_parity_multiple_epochs[{n_epochs}]")
         print(f"{'='*70}")
         
-        if test_learn_compiled_parity_multiple_epochs(n_epochs):
+        # Reset RNG state before each test for isolation
+        seed_all(42)
+        
+        try:
+            test_learn_compiled_parity_multiple_epochs(n_epochs)
             print(f"✓ PASSED: test_learn_compiled_parity_multiple_epochs[{n_epochs}]")
-        else:
+        except AssertionError as e:
             print(f"✗ FAILED: test_learn_compiled_parity_multiple_epochs[{n_epochs}]")
+            print(f"  Reason: {e}")
             all_passed = False
     
     return all_passed

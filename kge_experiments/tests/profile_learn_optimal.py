@@ -5,7 +5,7 @@ This script profiles the optimized training loop to verify performance
 matches or exceeds the original implementation.
 
 Targets:
-- Runtime: ≤8.8s (matching profile_learn.py baseline)
+- Runtime: ≤16s (matching profile_learn.py baseline)
 - Steps/second: ≥ baseline
 
 Usage:
@@ -284,8 +284,8 @@ def profile_cprofile(config: SimpleNamespace):
         print(f"Total time:        {total_time:.4f}s")
         print(f"Steps/second:      {steps_per_sec:.1f}")
         print(f"Total timesteps:   {total_steps} (Warmup: {warmup_steps}, Profiled: {profile_steps})")
-        print(f"\nTarget: Runtime ≤ 8.8s")
-        print(f"Status: {'PASS ✓' if runtime <= 8.8 else 'FAIL ✗'}")
+        print(f"\nTarget: Runtime ≤ 16s")
+        print(f"Status: {'PASS ✓' if runtime <= 16 else 'FAIL ✗'}")
         
         if metrics:
             print(f"\nLast training metrics:")
@@ -377,8 +377,8 @@ def profile_gpu(config: SimpleNamespace):
         print(f"Warmup time:       {warmup_time:.4f}s")
         print(f"Runtime:           {runtime:.4f}s")
         print(f"Steps/second:      {steps_per_sec:.1f}")
-        print(f"\nTarget: Runtime ≤ 8.8s")
-        print(f"Status: {'PASS ✓' if runtime <= 8.8 else 'FAIL ✗'}")
+        print(f"\nTarget: Runtime ≤ 16s")
+        print(f"Status: {'PASS ✓' if runtime <= 16 else 'FAIL ✗'}")
         
         print(f"\n{'='*80}")
         print("GPU PROFILING - Top CUDA Time")

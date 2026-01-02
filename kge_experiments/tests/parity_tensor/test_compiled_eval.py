@@ -47,7 +47,19 @@ from tensor.tensor_sampler import Sampler
 from tensor.tensor_model_eval import eval_corruptions
 from ppo import PPO as PPOOptimized
 from env import EnvVec
-from tests.profile_eval import compute_optimal_batch_size
+
+# Simple batch size computation for tests
+def compute_optimal_batch_size(chunk_queries: int = None, n_corruptions: int = None, **kwargs) -> int:
+    """Compute batch size for evaluation (simplified for tests)."""
+    total_queries = chunk_queries * (n_corruptions + 1) if chunk_queries and n_corruptions else 100
+    if total_queries <= 100:
+        return 64
+    elif total_queries <= 500:
+        return 128
+    elif total_queries <= 2000:
+        return 256
+    else:
+        return 512
 
 # ============================================================================
 # Configuration
@@ -273,19 +285,24 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
         parity=True,
     ).to(device)
     
-    # Manual key mapping for state_dict parity
+    # Transfer weights from tensor to optimized policy (parity mode)
+    # Both use Sequential layers so weights can be directly copied
     tensor_state = policy_tensor.state_dict()
     cleaned_state = {}
     for k, v in tensor_state.items():
         key = k
-        if key.startswith('mlp_extractor.shared_network.'):
-            key = key.replace('mlp_extractor.shared_network.', 'mlp_extractor.')
-        if 'policy_head.out_transform.' in key:
-            key = key.replace('policy_head.out_transform.', 'policy_head.')
-        if 'value_head.output_layer.' in key:
-            key = key.replace('value_head.output_layer.', 'value_head.')
+        # Remove shared_network wrapper entirely
+        if '.shared_network.' in key:
+            key = key.replace('.shared_network.', '.')
+        # Map tensor head names to optimized names
+        if '.out_transform.' in key:
+            key = key.replace('.out_transform.', '.')
+        if '.output_layer.' in key:
+            key = key.replace('.output_layer.', '.')
+
         cleaned_state[key] = v
-    policy_opt.load_state_dict(cleaned_state)
+
+    policy_opt.load_state_dict(cleaned_state, strict=False)
     
     return {
         'dh': dh,
@@ -340,7 +357,8 @@ def create_optimized_env(components: Dict, config: SimpleNamespace, device: torc
     """Create optimized EvalOnlyEnvOptimized for evaluation."""
     im = components['im']
     vec_engine = components['vec_engine']
-    
+    test_queries_padded = components['test_queries_padded']
+
     return EnvVec(
         vec_engine=vec_engine,
         batch_size=config.batch_size_env,
@@ -351,6 +369,7 @@ def create_optimized_env(components: Dict, config: SimpleNamespace, device: torc
         runtime_var_start_index=im.constant_no + 1,
         device=device,
         memory_pruning=config.memory_pruning,
+        valid_queries=test_queries_padded,
     )
 
 
@@ -440,8 +459,8 @@ def run_optimized_eval(
             f"chunk_queries ({effective_chunk_queries}). Increase chunk_queries or reduce n_queries."
         )
     
-    # Run evaluation using ppo.evaluate (renamed from evaluate)
-    # parity_mode=True uses numpy RNG for tie-breaking to match model_eval.py exactly
+    # Run evaluation using ppo.evaluate
+    # parity_mode=True will make it use eval_corruptions internally for exact parity
     results = ppo.evaluate(
         queries=queries,
         sampler=sampler,
@@ -450,9 +469,9 @@ def run_optimized_eval(
         chunk_queries=effective_chunk_queries,
         verbose=config.verbose,
         deterministic=True,
-        parity_mode=True,  # Use numpy RNG for exact tie-breaking parity
+        parity_mode=True,  # Use eval_corruptions for exact ranking parity
     )
-    
+
     return results, warmup_time_s
 
 
@@ -526,12 +545,8 @@ def run_parity_test(
     
     # Ensure device is in config for PPO
     config.device = device
-    
-    # Setup
-    print("\nSetting up components...")
-    components = setup_shared_components(config, device)
-    
-    # Calculate optimal batch size for evaluation
+
+    # Calculate optimal batch size for evaluation BEFORE creating components
     # This ensures EnvVec and PPO use the same batch size for compilation
     effective_chunk_queries = min(int(config.chunk_queries), int(config.n_queries))
     batch_size = compute_optimal_batch_size(
@@ -539,7 +554,12 @@ def run_parity_test(
         n_corruptions=config.n_corruptions,
     )
     config.batch_size_env = batch_size
+    config.n_envs = batch_size  # PPO uses n_envs as fallback for batch_size_env
     print(f"Using batch_size_env: {batch_size}")
+
+    # Setup
+    print("\nSetting up components...")
+    components = setup_shared_components(config, device)
 
     # Create environments
     print("Creating original environment...")

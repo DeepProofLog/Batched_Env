@@ -720,10 +720,9 @@ class EnvOptimal:
 
         # Reward based on type
         if self.reward_type == 0:
-            # Simple: +1 for success (TRUE proof with positive label only), 0 otherwise
-            # This matches tensor env behavior where only TRUE proofs for positive examples are rewarded
-            reward_mask = (terminated | truncated) & is_true & pos_label
-            rewards = torch.where(reward_mask, self._reward_pos, self._reward_zero)
+            # Simple: +1 for success, -1 for failure/truncation
+            rewards = torch.where(is_success, self._reward_pos, 
+                        torch.where(terminated | truncated, self._reward_neg, self._reward_zero))
         else:
             # Type 1: weighted negatives
             rewards = torch.where(is_success & pos_label, self._reward_pos,
@@ -737,51 +736,26 @@ class EnvOptimal:
     # =========================================================================
 
     def _sample_negatives(self, queries, labels, mask, counters):
-        """Apply negative sampling for training.
-        
-        When sample_deterministic_per_env=True, uses sequential corruption for RNG parity.
-        Otherwise uses vectorized corruption for efficiency.
-        """
+        """Apply negative sampling for training (graph-safe, no branching)."""
         if self.negative_ratio <= 0.0 or self.sampler is None:
             return queries, labels, counters
 
         B = queries.shape[0]
+        neg_threshold = int(1.0 / (1.0 + self.negative_ratio) * 1000)
         
-        # Use same cycling logic as tensor env for parity
-        # ratio=1 -> cycle=2
-        # Counter 0=positive, counter 1=negative, counter 2=positive, etc.
-        ratio = int(round(float(self.negative_ratio)))
-        cycle = ratio + 1
-        
-        # Check CURRENT counter to determine if negative (before incrementing)
-        # This matches tensor env's logic: (local_counters % cycle) != 0
-        should_neg = (counters % cycle) != 0
+        # Round-robin between positive and negative
+        new_counters = torch.where(mask, counters + 1, counters)
+        should_neg = (new_counters % 1000) >= neg_threshold
         should_neg = should_neg & mask
-        
-        # Increment counters for next call
-        new_counters = torch.where(mask, (counters + 1) % cycle, counters)
 
-        if self.sample_deterministic_per_env:
-            # Sequential corruption for RNG parity with tensor env
-            # Only corrupt queries that need it, one at a time
-            neg_indices = should_neg.nonzero(as_tuple=True)[0]
-            if neg_indices.numel() > 0:
-                queries = queries.clone()
-                labels = labels.clone()
-                for idx in neg_indices:
-                    atom_to_corrupt = queries[idx:idx+1]  # [1, 3]
-                    mode = self.corruption_scheme[0]
-                    corrupted = self.sampler.corrupt(atom_to_corrupt, num_negatives=1, mode=mode, device=self.device)
-                    if corrupted.dim() == 3:
-                        corrupted = corrupted[:, 0, :]
-                    queries[idx] = corrupted.squeeze(0)
-                    labels[idx] = 0
-        else:
-            # Vectorized corruption (efficient but not RNG-deterministic per env)
-            mode = self.corruption_scheme[0]
-            neg_queries = self.sampler.corrupt(queries, num_negatives=1, mode=mode, device=self.device).squeeze(1)
-            queries = torch.where(should_neg.unsqueeze(-1), neg_queries, queries)
-            labels = torch.where(should_neg, torch.zeros_like(labels), labels)
+        # Always compute negative samples (no should_neg.any() branch for graph compatibility)
+        # Use first mode unconditionally to avoid data-dependent indexing
+        mode = self.corruption_scheme[0]
+        neg_queries = self.sampler.corrupt(queries, num_negatives=1, mode=mode, device=self.device).squeeze(1)
+        
+        # Select based on should_neg mask
+        queries = torch.where(should_neg.unsqueeze(-1), neg_queries, queries)
+        labels = torch.where(should_neg, torch.zeros_like(labels), labels)
 
         return queries, labels, new_counters
 

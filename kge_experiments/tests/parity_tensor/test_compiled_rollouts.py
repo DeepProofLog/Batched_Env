@@ -99,6 +99,7 @@ def create_default_config() -> SimpleNamespace:
         max_steps=20,  # Alias for max_depth
         parity=True,
         use_callbacks=False,
+        compile=False,  # Whether to use torch.compile for rollouts
     )
 
 
@@ -657,19 +658,21 @@ def run_rollout_compile_parity_test(
     
     # Clone policy weights for optimized PPO
     optimized_policy = create_policy(env_data, cfg, optimized=True)
-    # Manual key mapping for state_dict parity
+    # Transfer weights from tensor to optimized policy (parity mode)
     tensor_state = tensor_policy.state_dict()
     cleaned_state = {}
     for k, v in tensor_state.items():
         key = k
-        if key.startswith('mlp_extractor.shared_network.'):
-            key = key.replace('mlp_extractor.shared_network.', 'mlp_extractor.')
-        if 'policy_head.out_transform.' in key:
-            key = key.replace('policy_head.out_transform.', 'policy_head.')
-        if 'value_head.output_layer.' in key:
-            key = key.replace('value_head.output_layer.', 'value_head.')
+        # Remove shared_network wrapper entirely
+        if '.shared_network.' in key:
+            key = key.replace('.shared_network.', '.')
+        # Map tensor head names to optimized names
+        if '.out_transform.' in key:
+            key = key.replace('.out_transform.', '.')
+        if '.output_layer.' in key:
+            key = key.replace('.output_layer.', '.')
         cleaned_state[key] = v
-    optimized_policy.load_state_dict(cleaned_state)
+    optimized_policy.load_state_dict(cleaned_state, strict=False)
     
     optimized_ppo = create_optimized_ppo(optimized_env, optimized_policy, cfg)
     

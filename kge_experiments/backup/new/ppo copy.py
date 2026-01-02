@@ -191,29 +191,20 @@ class PPOOptimal:
 
     def _compile_all(self):
         """Compile all functions using uncompiled policy in fused steps."""
-        # In parity mode, use uncompiled versions for exact reproducibility
-        if self.parity:
-            self.loss_module = PPOLossModule(self._uncompiled_policy)
-            self._compiled_policy_fn = self._uncompiled_policy.get_logits
-            # Keep self.policy as the uncompiled policy
-            # (already set: self.policy = policy in __init__)
-            print("[PPOOptimal] Parity mode - skipping compilation")
-            return
-
         # Compile loss module
         self.loss_module = torch.compile(PPOLossModule(self._uncompiled_policy), mode=self._compile_mode, fullgraph=True)
-
+        
         # Warmup gradients
         self._warmup_gradients()
-
+        
         # Compile policy for standalone use
         self._compiled_policy_fn = torch.compile(self._uncompiled_policy.get_logits, mode=self._compile_mode, fullgraph=True)
         self.policy = torch.compile(self._uncompiled_policy, mode=self._compile_mode, fullgraph=True)
-
+        
         # Setup fused steps (uses _uncompiled_policy!)
         if self.config.compile:
             self._setup_fused_rollout_step()
-
+            
         print("[PPOOptimal] Compilation complete")
 
     def _warmup_gradients(self):
@@ -300,9 +291,8 @@ class PPOOptimal:
         n_collected, traces = 0, [] if return_traces else None
         state, obs = current_state, current_obs
 
-        # Initialize query indices tracking (per_env_ptrs always present in EnvOptimal state)
-        if self.current_query_indices is None and hasattr(self.env, '_per_env_ptrs') and self.env._per_env_ptrs is not None:
-            self.current_query_indices = self.env._per_env_ptrs.cpu().numpy()
+        if self.current_query_indices is None and 'per_env_ptrs' in state.keys():
+            self.current_query_indices = state['per_env_ptrs'].cpu().numpy()
 
         with torch.no_grad():
             while n_collected < self.n_steps:
@@ -331,47 +321,21 @@ class PPOOptimal:
                     episode_start=episode_starts, value=values.flatten(), log_prob=log_probs,
                 )
 
-                # Collect traces if requested (for parity testing)
-                if return_traces:
-                    for idx in range(self.batch_size_env):
-                        trace_entry = {
-                            "step": n_collected,
-                            "env": idx,
-                            "pointer": int(self.env._per_env_ptrs[idx]) if hasattr(self.env, '_per_env_ptrs') else None,
-                            "query_idx": int(self.current_query_indices[idx]) if self.current_query_indices is not None else None,
-                            "state_obs": {
-                                "sub_index": obs_snap['sub_index'][idx].cpu().numpy().copy(),
-                                "derived_sub_indices": obs_snap['derived_sub_indices'][idx].cpu().numpy().copy(),
-                                "action_mask": obs_snap['action_mask'][idx].cpu().numpy().copy(),
-                            },
-                            "action": int(actions[idx]),
-                            "reward": float(new_state['step_rewards'][idx]),
-                            "done": bool(new_state['step_dones'][idx]),
-                            "value": float(values[idx]),
-                            "log_prob": float(log_probs[idx]),
-                        }
-                        traces.append(trace_entry)
-
                 current_episode_reward += new_state['step_rewards']
                 current_episode_length += 1
                 n_collected += 1
 
-                # Update per-env pointers from state (critical for query cycling parity)
-                # Use copy_() to preserve CUDA graph compatibility
-                self.env._per_env_ptrs.copy_(new_state['per_env_ptrs'])
-
-                done_mask = new_state['step_dones'].bool()
-                if done_mask.any():
-                    # Use masked_select for efficiency (avoids nonzero call)
-                    rews = current_episode_reward[done_mask].float().cpu().numpy()
-                    lens = current_episode_length[done_mask].cpu().numpy().astype(int)
+                done_idx = torch.nonzero(new_state['step_dones']).squeeze(-1)
+                if done_idx.numel() > 0:
+                    idx_cpu = done_idx.cpu().numpy()
+                    rews = current_episode_reward[done_idx].float().cpu().numpy()
+                    lens = current_episode_length[done_idx].cpu().numpy().astype(int)
                     episode_rewards.extend(rews.tolist())
                     episode_lengths.extend(lens.tolist())
-                    current_episode_reward.masked_fill_(done_mask, 0.0)
-                    current_episode_length.masked_fill_(done_mask, 0)
+                    current_episode_reward.masked_fill_(new_state['step_dones'].bool(), 0.0)
+                    current_episode_length.masked_fill_(new_state['step_dones'].bool(), 0)
                     if self.current_query_indices is not None:
-                        done_idx_cpu = done_mask.nonzero(as_tuple=True)[0].cpu().numpy()
-                        self.current_query_indices[done_idx_cpu] = new_state['per_env_ptrs'][done_mask].cpu().numpy()
+                        self.current_query_indices[idx_cpu] = new_state['per_env_ptrs'][done_idx].cpu().numpy()
 
                 episode_starts = new_state['step_dones'].float()
                 state, obs = new_state, new_obs

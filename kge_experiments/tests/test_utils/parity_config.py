@@ -103,6 +103,7 @@ class ParityConfig:
     skip_training: bool = False
     skip_eval: bool = False
     parity: bool = True
+    compile: bool = False  # Whether to use torch.compile for rollouts
     
     # For runner parity
     timesteps_train: int = 120

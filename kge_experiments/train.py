@@ -49,6 +49,15 @@ from callbacks import (
 
 from utils import seed_all
 
+# Parity mode imports (lazy-loaded to avoid circular imports)
+def get_parity_modules():
+    """Get tensor modules for parity mode (BatchedEnv, UnificationEngine, TensorPPO, tensor_eval_corruptions)."""
+    from tensor.tensor_env import BatchedEnv
+    from tensor.tensor_unification import UnificationEngine
+    from tensor.tensor_ppo import PPO as TensorPPO
+    from tensor.tensor_model_eval import eval_corruptions as tensor_eval_corruptions
+    return BatchedEnv, UnificationEngine, TensorPPO, tensor_eval_corruptions
+
 
 # ==============================================================================
 # build_callbacks
@@ -200,51 +209,155 @@ def create_compiled_components(config: TrainConfig) -> Dict[str, Any]:
         entity2domain=entity2domain,
     )
     
-    # Create vectorized engine
-    vec_engine = UnificationEngineVectorized.from_index_manager(
-        im,
-        padding_atoms=config.padding_atoms,
-        parity_mode=config.parity,
-        max_derived_per_state=config.padding_states,
-        end_proof_action=config.end_proof_action,
-    )
-    
-    # Clean up index manager tensors
-    im.facts_idx = None
-    im.rules_idx = None
-    im.rule_lens = None
-    im.rules_heads_idx = None
-    
-    # Convert queries to tensor format
+    # Create queries in tensor format
     def convert_queries_to_tensor(queries):
         return torch.stack([
             im.atom_to_tensor(q.predicate, q.args[0], q.args[1]) for q in queries
         ], dim=0)
     
+    def convert_queries_to_padded_tensor(queries):
+        """Convert queries to padded format for BatchedEnv."""
+        query_tensors = []
+        for q in queries:
+            query_atom = im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+            query_padded = torch.full((config.padding_atoms, 3), im.padding_idx, dtype=torch.long, device=device)
+            query_padded[0] = query_atom
+            query_tensors.append(query_padded)
+        return torch.stack(query_tensors, dim=0)
+    
     train_queries_tensor = convert_queries_to_tensor(dh.train_queries)
     test_queries_tensor = convert_queries_to_tensor(dh.test_queries)
     
-    # Create environment
-    env = EnvVec(
-        vec_engine=vec_engine,
-        batch_size=config.n_envs,
-        padding_atoms=config.padding_atoms,
-        padding_states=config.padding_states,
-        max_depth=config.max_steps,
-        end_proof_action=config.end_proof_action,
-        runtime_var_start_index=im.constant_no + 1,
-        device=device,
-        memory_pruning=config.memory_pruning,
-        train_queries=train_queries_tensor,
-        valid_queries=test_queries_tensor,
-        sample_deterministic_per_env=config.sample_deterministic_per_env,
-        sampler=sampler,
-        order=True if config.parity else False,
-        negative_ratio=config.negative_ratio,
-        compile=not config.parity,
-        compile_mode='reduce-overhead',
-        compile_fullgraph=True,
-    )
+    # PARITY MODE: Use BatchedEnv (same as tensor_train_parity.py)
+    # NON-PARITY: Use EnvVec (optimized/compiled)
+    parity_ppo_class = None
+    parity_eval_fn = None
+    eval_env = None
+    if config.parity:
+        # Get tensor modules for parity mode
+        BatchedEnv, TensorUnificationEngine, TensorPPO, tensor_eval_corruptions = get_parity_modules()
+        parity_ppo_class = TensorPPO
+        parity_eval_fn = tensor_eval_corruptions
+        
+        # Get stringifier params for engine
+        stringifier_params = {
+            'verbose': 0,
+            'idx2predicate': im.idx2predicate,
+            'idx2constant': im.idx2constant,
+            'idx2template_var': im.idx2template_var,
+            'padding_idx': im.padding_idx,
+            'n_constants': im.constant_no
+        }
+        
+        # Create tensor unification engine (same as tensor_train_parity.py)
+        engine = TensorUnificationEngine.from_index_manager(
+            im, take_ownership=False,
+            stringifier_params=stringifier_params,
+            end_pred_idx=im.end_pred_idx,
+            end_proof_action=config.end_proof_action,
+            max_derived_per_state=config.padding_states,
+        )
+        engine.index_manager = im
+        
+        # Create padded queries for BatchedEnv
+        train_queries_padded = convert_queries_to_padded_tensor(dh.train_queries)
+        
+        # Create BatchedEnv (same as tensor_train_parity.py)
+        env = BatchedEnv(
+            batch_size=config.n_envs,
+            queries=train_queries_padded,
+            labels=torch.ones(len(dh.train_queries), dtype=torch.long, device=device),
+            query_depths=torch.as_tensor(dh.train_depths, dtype=torch.long, device=device),
+            unification_engine=engine,
+            mode='train',
+            max_depth=config.max_steps,
+            memory_pruning=config.memory_pruning,
+            use_exact_memory=config.use_exact_memory,
+            skip_unary_actions=config.skip_unary_actions,
+            end_proof_action=config.end_proof_action,
+            reward_type=getattr(config, 'reward_type', 0),
+            padding_atoms=config.padding_atoms,
+            padding_states=config.padding_states,
+            true_pred_idx=im.predicate_str2idx.get('True'),
+            false_pred_idx=im.predicate_str2idx.get('False'),
+            end_pred_idx=im.predicate_str2idx.get('Endf'),
+            verbose=0,
+            prover_verbose=0,
+            device=device,
+            runtime_var_start_index=im.constant_no + 1,
+            total_vocab_size=im.constant_no + config.max_total_vars,
+            sample_deterministic_per_env=config.sample_deterministic_per_env,
+            train_neg_ratio=config.negative_ratio,
+            corruption_mode=(config.negative_ratio > 0),
+            sampler=sampler,
+        )
+        
+        # Create parity eval environment (same as tensor_train_parity.py)
+        test_queries_padded = convert_queries_to_padded_tensor(dh.test_queries)
+        eval_env = BatchedEnv(
+            batch_size=config.n_envs,
+            queries=test_queries_padded,
+            labels=torch.ones(len(dh.test_queries), dtype=torch.long, device=device),
+            query_depths=torch.as_tensor(dh.test_depths, dtype=torch.long, device=device),
+            unification_engine=engine,
+            mode='eval',
+            max_depth=config.max_steps,
+            memory_pruning=config.memory_pruning,
+            use_exact_memory=config.use_exact_memory,
+            skip_unary_actions=config.skip_unary_actions,
+            end_proof_action=config.end_proof_action,
+            reward_type=getattr(config, 'reward_type', 0),
+            padding_atoms=config.padding_atoms,
+            padding_states=config.padding_states,
+            true_pred_idx=im.predicate_str2idx.get('True'),
+            false_pred_idx=im.predicate_str2idx.get('False'),
+            end_pred_idx=im.predicate_str2idx.get('Endf'),
+            verbose=0,
+            prover_verbose=0,
+            device=device,
+            runtime_var_start_index=im.constant_no + 1,
+            total_vocab_size=im.constant_no + config.max_total_vars,
+            sample_deterministic_per_env=config.sample_deterministic_per_env,
+        )
+        
+        vec_engine = None  # Not used in parity mode
+    else:
+        # Create vectorized engine
+        vec_engine = UnificationEngineVectorized.from_index_manager(
+            im,
+            padding_atoms=config.padding_atoms,
+            parity_mode=config.parity,
+            max_derived_per_state=config.padding_states,
+            end_proof_action=config.end_proof_action,
+        )
+        
+        # Clean up index manager tensors
+        im.facts_idx = None
+        im.rules_idx = None
+        im.rule_lens = None
+        im.rules_heads_idx = None
+        
+        # Create EnvVec environment
+        env = EnvVec(
+            vec_engine=vec_engine,
+            batch_size=config.n_envs,
+            padding_atoms=config.padding_atoms,
+            padding_states=config.padding_states,
+            max_depth=config.max_steps,
+            end_proof_action=config.end_proof_action,
+            runtime_var_start_index=im.constant_no + 1,
+            device=device,
+            memory_pruning=config.memory_pruning,
+            train_queries=train_queries_tensor,
+            valid_queries=test_queries_tensor,
+            sample_deterministic_per_env=config.sample_deterministic_per_env,
+            sampler=sampler,
+            order=True if config.parity else False,
+            negative_ratio=config.negative_ratio,
+            compile=not config.parity,
+            compile_mode='reduce-overhead',
+            compile_fullgraph=True,
+        )
     
     # Create embedder
     torch.manual_seed(config.seed)
@@ -283,9 +396,12 @@ def create_compiled_components(config: TrainConfig) -> Dict[str, Any]:
         'embedder': embedder,
         'vec_engine': vec_engine,
         'env': env,
+        'eval_env': eval_env,  # Parity eval env when parity=True
         'policy': policy,
         'device': device,
         'train_queries_tensor': train_queries_tensor,
+        'parity_ppo_class': parity_ppo_class,  # TensorPPO class when parity=True, else None
+        'parity_eval_fn': parity_eval_fn,  # tensor_eval_corruptions when parity=True, else None
     }
 
 
@@ -327,14 +443,39 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
     print(f"[PARITY] Embedder checksum: {embedder_checksum:.6f}")
     print(f"[PARITY] Policy checksum: {policy_checksum_init:.6f}")
     
-    # Create PPO
+    # Create PPO - use TensorPPO in parity mode for exact match with tensor_train_parity
     print("\n[2/3] Running training...")
     seed_all(config.seed, deterministic=config.parity)
-    ppo = PPOOptimized(policy, env, config)
+    
+    parity_ppo_class = comp.get('parity_ppo_class')
+    if parity_ppo_class is not None:
+        # PARITY MODE: Use TensorPPO (same as tensor_train_parity.py)
+        print("[PARITY] Using TensorPPO for exact parity with tensor_train_parity.py")
+        ppo = parity_ppo_class(
+            policy=policy,
+            env=env,
+            learning_rate=config.learning_rate,
+            gamma=config.gamma,
+            gae_lambda=config.gae_lambda,
+            clip_range=config.clip_range,
+            ent_coef=config.ent_coef,
+            vf_coef=config.vf_coef,
+            max_grad_norm=config.max_grad_norm,
+            n_steps=config.n_steps,
+            n_epochs=config.n_epochs,
+            batch_size=config.batch_size,
+            target_kl=config.target_kl,
+            device=device,
+            verbose=True,  # Match tensor_train_parity.py
+            parity=config.parity,  # Enable parity mode for consistent RNG behavior
+        )
+    else:
+        # NON-PARITY: Use PPOOptimized
+        ppo = PPOOptimized(policy, env, config)
     
     # Load model via CheckpointCallback if requested (Now handled in PPO.learn)
     
-    if ppo.callback:
+    if hasattr(ppo, 'callback') and ppo.callback:
         ppo.callback.on_training_start()
     
     # Train
@@ -357,18 +498,39 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         im.atom_to_tensor(q.predicate, q.args[0], q.args[1]) for q in test_queries
     ], dim=0)
     
-    eval_results = ppo.evaluate(
-        queries=queries_tensor,
-        sampler=comp['sampler'],
-        n_corruptions=config.n_corruptions,
-        corruption_modes=tuple(config.corruption_scheme),
-        query_depths=torch.as_tensor(
-            comp['dh'].test_depths[:config.n_envs * 4], 
-            dtype=torch.long, device=device
-        ),
-        verbose=False,
-        parity_mode=config.parity,
-    )
+    parity_eval_fn = comp.get('parity_eval_fn')
+    eval_env = comp.get('eval_env')
+    
+    if parity_eval_fn is not None and eval_env is not None:
+        # PARITY MODE: Use tensor_eval_corruptions (same as tensor_train_parity.py)
+        print("[PARITY] Using tensor_eval_corruptions for exact parity")
+        eval_results = parity_eval_fn(
+            actor=policy,
+            env=eval_env,
+            queries=queries_tensor,
+            sampler=comp['sampler'],
+            n_corruptions=config.n_corruptions,
+            corruption_modes=tuple(config.corruption_scheme),
+            query_depths=torch.as_tensor(
+                comp['dh'].test_depths[:config.n_envs * 4], 
+                dtype=torch.long, device=device
+            ),
+            verbose=False,
+        )
+    else:
+        # NON-PARITY: Use PPOOptimized.evaluate
+        eval_results = ppo.evaluate(
+            queries=queries_tensor,
+            sampler=comp['sampler'],
+            n_corruptions=config.n_corruptions,
+            corruption_modes=tuple(config.corruption_scheme),
+            query_depths=torch.as_tensor(
+                comp['dh'].test_depths[:config.n_envs * 4], 
+                dtype=torch.long, device=device
+            ),
+            verbose=False,
+            parity_mode=config.parity,
+        )
     
     # Extract results
     mrr = eval_results.get('MRR', 0.0)

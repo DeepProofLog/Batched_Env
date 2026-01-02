@@ -1,17 +1,16 @@
 """
 Environment Compiled Parity Tests.
 
-Tests verifying that EvalOnlyEnvOptimized (compiled environment) produces
-EXACTLY the same step-by-step traces as the tensor BatchedEnv when both use
-skip_unary_actions=False.
+Tests verifying that EnvVec (compiled environment) produces semantically correct
+behavior compared to tensor BatchedEnv.
 
 Usage:
     # Run with pytest
     pytest tests/parity/test_env_compiled_parity.py -v -s
-    
+
     # Run with torch.compile enabled
     pytest tests/parity/test_env_compiled_parity.py -v -s --compile
-    
+
     # CLI
     python tests/parity/test_env_compiled_parity.py --dataset countries_s3 --n-queries 50
 """
@@ -264,6 +263,7 @@ def create_compiled_env(
         runtime_var_start_index=im.constant_no + 1,
         device=device,
         memory_pruning=config.memory_pruning,
+        use_exact_memory=config.use_exact_memory,  # Enable exact memory matching for parity tests
     )
 
 
@@ -366,20 +366,25 @@ def run_batch_traces(
         # ===== Process tensor env for all queries =====
         tensor_mask = tensor_obs['action_mask']  # [B, S]
         tensor_n_actions = tensor_mask.sum(dim=1).int()  # [B]
-        
+        tensor_env_done = tensor_obs['done'].squeeze(-1) if 'done' in tensor_obs else torch.zeros(effective_batch_size, dtype=torch.bool, device=device)
+
         for i in range(effective_batch_size):
             if tensor_done[i]:
                 continue
-            
+
             n_actions = int(tensor_n_actions[i])
             state_str = tensor_env.state_to_str(tensor_env.current_queries[i])
-            
-            if n_actions == 0:
+            is_env_done = bool(tensor_env_done[i])
+
+            # Mark as done if n_actions == 0 OR environment reports done
+            is_done = (n_actions == 0) or is_env_done
+
+            if is_done:
                 all_tensor_traces[i].append({
                     'step': step,
                     'state': state_str,
                     'derived_states': [],
-                    'num_actions': 0,
+                    'num_actions': n_actions,
                     'action': None,
                     'done': True,
                 })
@@ -397,23 +402,28 @@ def run_batch_traces(
                     'action': 0,
                     'done': False,
                 })
-        
+
         # ===== Process compiled env for all queries =====
         compiled_counts = compiled_state['derived_counts']  # [B]
-        
+        compiled_env_done = compiled_state['done'].bool() if 'done' in compiled_state else torch.zeros(effective_batch_size, dtype=torch.bool, device=device)
+
         for i in range(effective_batch_size):
             if compiled_done[i]:
                 continue
-            
+
             n_actions = int(compiled_counts[i])
             state_str = utils_funcs.state_to_str(compiled_state['current_states'][i], **stringifier_params)
-            
-            if n_actions == 0:
+            is_env_done = bool(compiled_env_done[i])
+
+            # Mark as done if n_actions == 0 OR environment reports done
+            is_done = (n_actions == 0) or is_env_done
+
+            if is_done:
                 all_compiled_traces[i].append({
                     'step': step,
                     'state': state_str,
                     'derived_states': [],
-                    'num_actions': 0,
+                    'num_actions': n_actions,
                     'action': None,
                     'done': True,
                 })
@@ -445,15 +455,11 @@ def run_batch_traces(
                 tensor_obs = result_td['next']
             else:
                 tensor_obs = result_td
-            # Update done flags
-            tensor_done = tensor_done | tensor_obs['done'].squeeze(-1)
-        
+
         # Take step for compiled env (action=0 for all)
         if not compiled_done.all():
             actions_compiled = torch.zeros(effective_batch_size, dtype=torch.long, device=device)
-            _, compiled_state = compiled_env.step(compiled_state, actions_compiled)
-            # Update done flags
-            compiled_done = compiled_done | compiled_state['done']
+            _, compiled_state = compiled_env.step(compiled_state, actions_compiled, auto_reset=False)
     
     return all_tensor_traces[:batch_size], all_compiled_traces[:batch_size]
 
@@ -500,15 +506,18 @@ def compare_trace_step(step_tensor: Dict, step_compiled: Dict, step_idx: int) ->
 
 
 def compare_full_traces(trace_tensor: List[Dict], trace_compiled: List[Dict]) -> Tuple[bool, str]:
-    """Compare full traces step-by-step. Returns (match, error_message)."""
+    """Compare full traces step-by-step. Returns (match, error_message).
+
+    STRICT PARITY: Since unification tests pass, environments must produce identical traces.
+    """
     if len(trace_tensor) != len(trace_compiled):
         return False, f"Trace length mismatch: {len(trace_tensor)} vs {len(trace_compiled)}"
-    
+
     for i, (step_t, step_c) in enumerate(zip(trace_tensor, trace_compiled)):
         match, error = compare_trace_step(step_t, step_c, i)
         if not match:
             return False, error
-    
+
     return True, ""
 
 
@@ -700,8 +709,8 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Test environment compiled parity')
-    parser.add_argument('--dataset', type=str, default='countries_s3')
-    parser.add_argument('--n-queries', type=int, default=111)
+    parser.add_argument('--dataset', type=str, default='family')
+    parser.add_argument('--n-queries', type=int, default=800)
     parser.add_argument('--batch-size', type=int, default=100,
                        help='Batch size for processing queries (default: 100)')
     parser.add_argument('--max-depth', type=int, default=20)
