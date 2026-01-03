@@ -146,8 +146,8 @@ def setup(device, config):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n-queries', type=int, default=100)
-    parser.add_argument('--n-corruptions', type=int, default=100)
+    parser.add_argument('--n-queries', type=int, default=1000)
+    parser.add_argument('--n-corruptions', type=int, default=1000)
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false')
     parser.add_argument('--gpu-profile', action='store_true', default=True, help='Run GPU profiler (default)')

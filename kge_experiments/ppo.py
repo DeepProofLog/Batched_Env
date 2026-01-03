@@ -540,8 +540,8 @@ class PPOOptimal:
         self._v10_history_count = torch.zeros(B, dtype=torch.long, device=device)
         self._v10_max_history = H
         
-        # Pool buffers
-        max_pool = 100000
+        # Pool buffers - 1M entries = ~24MB, handles large eval sets
+        max_pool = 1_000_000
         self._v10_max_pool = max_pool
         self._v10_pool = torch.zeros(max_pool, 3, dtype=torch.long, device=device)
         self._v10_pool_size = torch.tensor(0, dtype=torch.long, device=device)
@@ -736,13 +736,19 @@ class PPOOptimal:
 
     @torch.no_grad()
     def evaluate(self, queries: Tensor, sampler, n_corruptions: int = 50, corruption_modes: Sequence[str] = ('head', 'tail'), *,
-                 chunk_queries: int = 50, verbose: bool = False, deterministic: bool = True, parity_mode: bool = False,
+                 chunk_queries: int = None, verbose: bool = False, deterministic: bool = True, parity_mode: bool = False,
                  query_depths: Optional[Tensor] = None):
         """V10-style evaluation with slot recycling for maximum throughput.
 
         Args:
+            queries: [N, 3] Query triples to evaluate
+            sampler: Negative sampler for corruption generation
+            n_corruptions: Number of negative samples per query (default 50)
+            corruption_modes: Tuple of corruption modes, e.g. ('head', 'tail')
+            chunk_queries: Max queries per chunk (auto-computed if None to fit pool)
+            verbose: Print progress information
+            deterministic: Use deterministic action selection
             parity_mode: If True, use eval_corruptions for exact ranking parity with tensor implementation.
-                        This wraps the environment and uses log probability-based ranking.
             query_depths: Optional tensor of query depths for evaluation metrics by depth.
         """
         # If parity mode, delegate to eval_corruptions for exact parity
@@ -784,10 +790,131 @@ class PPOOptimal:
         device = self.device
         N = queries.shape[0]
         K = 1 + n_corruptions
+        num_modes = len(corruption_modes)
         
-        # Setup V10 evaluation
+        # Setup V10 evaluation buffers (needed to get max_pool size)
         self._setup_v10_eval_buffers()
         self._compile_v10_eval_step()
+        
+        # Auto-compute chunk size to fit within pool limit
+        # Pool size = N_chunk * K * num_modes
+        # So N_chunk = max_pool // (K * num_modes)
+        max_queries_per_chunk = self._v10_max_pool // (K * num_modes)
+        if chunk_queries is None:
+            chunk_queries = max_queries_per_chunk
+        else:
+            chunk_queries = min(chunk_queries, max_queries_per_chunk)
+        
+        if chunk_queries < 1:
+            raise ValueError(f"Too many corruptions ({n_corruptions}) or modes ({num_modes}) to fit in pool. "
+                           f"Max pool: {self._v10_max_pool}, needed per query: {K * num_modes}")
+        
+        # If all queries fit in one chunk, use single-pass evaluation
+        if N <= chunk_queries:
+            return self._evaluate_chunk(queries, sampler, n_corruptions, corruption_modes, verbose)
+        
+        # Otherwise, process in chunks and aggregate results
+        if verbose:
+            print(f"Processing {N} queries in chunks of {chunk_queries} (pool limit: {self._v10_max_pool})")
+        
+        # Accumulate per-mode results
+        all_ranks = {mode: [] for mode in corruption_modes}
+        
+        for start_idx in range(0, N, chunk_queries):
+            end_idx = min(start_idx + chunk_queries, N)
+            chunk = queries[start_idx:end_idx]
+            
+            if verbose:
+                print(f"  Chunk {start_idx//chunk_queries + 1}: queries {start_idx}-{end_idx-1}")
+            
+            # Get ranks for this chunk (only run once per chunk!)
+            chunk_ranks = self._evaluate_chunk_ranks(chunk, sampler, n_corruptions, corruption_modes)
+            for mode in corruption_modes:
+                all_ranks[mode].append(chunk_ranks[mode])
+        
+        # Aggregate ranks across all chunks
+        results = {}
+        for mode in corruption_modes:
+            ranks = torch.cat(all_ranks[mode], dim=0)  # [N_total]
+            results[f'{mode}_mrr'] = (1.0 / ranks.float()).mean().item()
+            results[f'{mode}_hits1'] = (ranks <= 1).float().mean().item()
+            results[f'{mode}_hits3'] = (ranks <= 3).float().mean().item()
+            results[f'{mode}_hits10'] = (ranks <= 10).float().mean().item()
+        
+        # Average across modes
+        nm = len(corruption_modes)
+        results['MRR'] = sum(results[f'{m}_mrr'] for m in corruption_modes) / nm
+        results['Hits@1'] = sum(results[f'{m}_hits1'] for m in corruption_modes) / nm
+        results['Hits@3'] = sum(results[f'{m}_hits3'] for m in corruption_modes) / nm
+        results['Hits@10'] = sum(results[f'{m}_hits10'] for m in corruption_modes) / nm
+        
+        return results
+
+    def _evaluate_chunk_ranks(self, queries: Tensor, sampler, n_corruptions: int, 
+                               corruption_modes: Sequence[str]) -> Dict[str, Tensor]:
+        """Evaluate a chunk and return raw ranks per mode (for aggregation)."""
+        device = self.device
+        N = queries.shape[0]
+        K = 1 + n_corruptions
+        
+        # Setup pool for this chunk
+        self._setup_v10_pool(queries, sampler, n_corruptions, corruption_modes)
+        pool_size_int = int(self._v10_pool_size.item())
+        
+        # Run evaluation loop
+        max_steps = (pool_size_int // self.fixed_batch_size + 2) * self.max_depth
+        steps = 0
+        
+        while steps < max_steps:
+            torch.compiler.cudagraph_mark_step_begin()
+            
+            (new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr,
+             new_history, new_h_count, newly_done, success, indices) = self._compiled_v10_step(self._v10_pool, self._v10_pool_size)
+            
+            torch._foreach_copy_(
+                [self._v10_current, self._v10_derived, self._v10_counts, self._v10_mask, 
+                 self._v10_depths, self._v10_done, self._v10_pool_ptr,
+                 self._v10_history_hashes, self._v10_history_count],
+                [new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr,
+                 new_history, new_h_count]
+            )
+            
+            safe_idx = indices.clamp(min=0, max=pool_size_int - 1)
+            valid_mask = (indices >= 0) & (indices < pool_size_int)
+            safe_val = success & valid_mask
+            self._v10_result_buf.scatter_(0, safe_idx, safe_val)
+            
+            steps += 1
+            if self._v10_done.all():
+                break
+        
+        # Compute ranks per mode
+        ranks_per_mode = {}
+        offset = 0
+        for mode in corruption_modes:
+            ms_t = self._v10_result_buf[offset:offset + N * K].view(K, N)
+            ms = ms_t.t().contiguous()
+            
+            scores = torch.where(ms, torch.zeros(N, K, device=device),
+                               torch.full((N, K), -100.0, device=device))
+            
+            pos, neg = scores[:, 0:1], scores[:, 1:]
+            rnd = torch.rand(N, K, device=device)
+            better = neg > pos
+            tied = (neg == pos) & (rnd[:, 1:] > rnd[:, 0:1])
+            ranks = 1 + better.sum(1) + tied.sum(1)
+            
+            ranks_per_mode[mode] = ranks
+            offset += N * K
+        
+        return ranks_per_mode
+
+    def _evaluate_chunk(self, queries: Tensor, sampler, n_corruptions: int, 
+                        corruption_modes: Sequence[str], verbose: bool = False) -> Dict[str, float]:
+        """Evaluate a single chunk of queries (must fit in pool)."""
+        device = self.device
+        N = queries.shape[0]
+        K = 1 + n_corruptions
         
         # Setup pool with transposed layout
         self._setup_v10_pool(queries, sampler, n_corruptions, corruption_modes)
