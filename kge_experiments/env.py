@@ -419,88 +419,26 @@ class EnvVec:
     # UNIFICATION ENGINE
     # =========================================================================
 
-    def get_derived_simple(self, current_states: Tensor, history_hashes: Optional[Tensor] = None, 
-                            history_count: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
-        """Get derived states for V10 evaluation (full logic including memory pruning).
+    def _get_derived_raw(self, current_states, next_var_indices, excluded):
+        """Get raw derived states from engine."""
+        B, S, A = self.batch_size, self.padding_states, self.padding_atoms
+        derived_raw, counts_raw, new_vars = self.engine.get_derived_states_compiled(current_states, next_var_indices, excluded)
         
-        This uses the same logic as _compute_derived:
-        - Full validation and compaction
-        - Memory pruning (when history provided)
-        - END action (if end_proof_action is True)
+        # Track original atom counts BEFORE truncation for budget rejection
+        # A state with > A atoms should be rejected, not truncated
+        raw_valid_atoms = derived_raw[:, :, :, 0] != self.padding_idx
+        original_atom_counts = raw_valid_atoms.sum(dim=2)  # [B, K] - true atom count per state
         
-        Args:
-            current_states: [B, A, 3] current states
-            history_hashes: Optional [B, H] history hashes for memory pruning
-            history_count: Optional [B] count of valid history entries
-            
-        Returns:
-            derived: [B, S, A, 3] derived states
-            counts: [B] number of valid derived states per batch
-        """
-        B = current_states.shape[0]
-        S, A = self.padding_states, self.padding_atoms
-        pad = self.padding_idx
-        device = self.device
-        
-        # Get raw derived from engine
-        next_var = torch.zeros(B, dtype=torch.long, device=device)
-        derived_raw, counts_raw, _ = self.engine.get_derived_states_compiled(current_states, next_var, None)
-        
-        # Pad to fixed size
-        derived = torch.full((B, S, A, 3), pad, dtype=torch.long, device=device)
+        buf = torch.full((B, S, A, 3), self.padding_idx, dtype=torch.long, device=self.device)
         K, M = min(derived_raw.shape[1], S), min(derived_raw.shape[2], A)
-        derived[:, :K, :M, :] = derived_raw[:, :K, :M, :]
+        buf[:, :K, :M, :] = derived_raw[:, :K, :M, :]
         
-        # Validate: check within count and valid atoms
-        arange_S = torch.arange(S, device=device)
-        ones_B = torch.ones(B, dtype=torch.long, device=device)
-        within_count = arange_S.unsqueeze(0) < counts_raw.unsqueeze(1)
-        valid_atom = derived[:, :, :, 0] != pad
-        atom_counts = valid_atom.sum(dim=2)
-        base_valid = within_count & (atom_counts <= A) & (atom_counts > 0)
+        # Pad original_atom_counts to match S dimension
+        atom_counts_buf = torch.zeros((B, S), dtype=torch.long, device=self.device)
+        atom_counts_buf[:, :K] = original_atom_counts[:, :K]
         
-        # Apply false state for invalid positions
-        if self._false_state_base is not None:
-            derived = torch.where(base_valid.unsqueeze(-1).unsqueeze(-1), derived, 
-                                  self._false_state_base.unsqueeze(0).expand(B, -1, -1, -1))
-        new_counts = base_valid.sum(dim=1)
-        
-        # Compact valid states to front
-        flat_dim = A * 3
-        target_pos = torch.cumsum(base_valid.long(), dim=1) - 1
-        target_pos = torch.where(base_valid, target_pos.clamp(min=0, max=S-1), ones_B.unsqueeze(1) * (S-1))
-        src = torch.where(base_valid.unsqueeze(-1), derived.reshape(B, S, flat_dim), 
-                          torch.zeros(B, S, flat_dim, dtype=torch.long, device=device))
-        compact = torch.full((B, S, flat_dim), pad, dtype=torch.long, device=device)
-        compact.scatter_(1, target_pos.unsqueeze(-1).expand(B, S, flat_dim), src)
-        derived = compact.view(B, S, A, 3)
-        
-        # Handle zero counts - set to false state
-        needs_false = new_counts == 0
-        if self._false_state_base is not None:
-            derived = torch.where(needs_false.view(-1,1,1,1), 
-                                  self._false_state_base.unsqueeze(0).expand(B,-1,-1,-1), derived)
-            new_counts = torch.where(needs_false, ones_B, new_counts)
-        
-        # Memory pruning (same as _compute_derived)
-        if self.memory_pruning and history_hashes is not None and history_count is not None:
-            derived, new_counts = self._prune_visited(derived, new_counts, history_hashes, history_count)
-            needs_false2 = new_counts == 0
-            if self._false_state_base is not None:
-                derived = torch.where(needs_false2.view(-1,1,1,1), 
-                                      self._false_state_base.unsqueeze(0).expand(B,-1,-1,-1), derived)
-                new_counts = torch.where(needs_false2, ones_B, new_counts)
-        
-        # Add END action (same as _compute_derived)
-        if self.end_proof_action and self.end_state is not None:
-            new_counts = new_counts.clamp(max=S-1)
-            safe_pos = new_counts.clamp(max=S-1)
-            idx = safe_pos.view(B, 1, 1, 1).expand(B, 1, A, 3)
-            end_exp = self.end_state.unsqueeze(0).expand(B, 1, -1, -1)
-            derived = derived.scatter(1, idx, end_exp)
-            new_counts = (new_counts + 1).clamp(max=S)
-        
-        return derived, new_counts
+        return buf, counts_raw, new_vars, atom_counts_buf
+
 
     def _compute_derived(self, current_states, next_var_indices, original_queries, history_hashes=None, history_count=None, excluded_queries=None):
         """Compute derived states with static shapes."""

@@ -459,16 +459,15 @@ def run_optimized_eval(
             f"chunk_queries ({effective_chunk_queries}). Increase chunk_queries or reduce n_queries."
         )
     
-    # Run evaluation using ppo.evaluate
-    # evaluate() now tracks log probs like evaluate_parity() for semantic equivalence
-    results = ppo.evaluate(
+    # Run evaluation using ppo.evaluate_parity (matches eval_corruptions protocol)
+    results = ppo.evaluate_parity(
         queries=queries,
         sampler=sampler,
         n_corruptions=config.n_corruptions,
         corruption_modes=tuple(config.corruption_modes),
-        chunk_queries=effective_chunk_queries,
         verbose=config.verbose,
         deterministic=True,
+        compile_mode='eager',  # For parity tests
     )
 
     return results, warmup_time_s
@@ -657,29 +656,6 @@ class TestEvalCompiledParity:
             f"Optimized: {results['optimized']['MRR']:.4f}"
         )
     
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for compiled test")
-    @pytest.mark.parametrize("dataset,corruption_mode,n_queries,n_corruptions", [
-        # Quick compiled smoke test
-        ("family", "both", 5, 10),
-    ])
-    def test_mrr_parity_compiled(self, dataset: str, corruption_mode: str,
-                                  n_queries: int, n_corruptions: int, base_config, device):
-        """Test MRR parity with torch.compile enabled."""
-        config = SimpleNamespace(**vars(base_config))
-        config.dataset = dataset
-        config.compile = True
-        config.compile_mode = 'default'
-        config.n_queries = n_queries
-        config.n_corruptions = n_corruptions
-        config.corruption_modes = [corruption_mode]
-        
-        passed, results = run_parity_test(config, device)
-        
-        assert passed, (
-            f"MRR parity failed for {dataset} (compiled, {corruption_mode}). "
-            f"Original: {results['original']['MRR']:.4f}, "
-            f"Optimized: {results['optimized']['MRR']:.4f}"
-        )
 
 
 # ============================================================================

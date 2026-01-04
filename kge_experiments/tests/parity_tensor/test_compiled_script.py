@@ -147,12 +147,11 @@ def compare_results(tensor_results: dict, compiled_results: dict) -> bool:
         'Hits@1': TOLERANCE,
         'Hits@3': TOLERANCE,
         'Hits@10': TOLERANCE,
-        # Looser tolerance for training metrics (can diverge during optimization)
-        'policy_checksum_trained': 10.0,
+        'policy_checksum_trained': 3.0,
         'policy_loss': 0.1,
-        'value_loss': 0.5,
+        'value_loss': 0.1,
         'entropy': 0.1,
-        'approx_kl': 0.001,  # Strict tolerance for KL divergence parity
+        'approx_kl': 0.001,
         'clip_fraction': 0.1,
     }
     

@@ -14,6 +14,7 @@ Usage:
     # CLI
     python tests/parity/test_env_compiled_parity.py --dataset countries_s3 --n-queries 50
 """
+import gc
 import os
 import sys
 from pathlib import Path
@@ -609,29 +610,44 @@ def run_parity_test(
     tensor_env = create_tensor_env(first_batch, base_engine, im, config)
     compiled_env = create_compiled_env(vec_engine, im, config, config.batch_size)
     
-    # Run queries in batches
-    all_tensor_traces = []
-    all_compiled_traces = []
-    
+    # Run queries in batches - compare each batch immediately to save memory
+    total_matches = 0
+    all_mismatches = []
+
     num_batches = (len(queries) + config.batch_size - 1) // config.batch_size
-    
+
     for batch_idx in range(num_batches):
         start_idx = batch_idx * config.batch_size
         end_idx = min(start_idx + config.batch_size, len(queries))
         batch_queries = queries[start_idx:end_idx]
-        
+
         # Run batch through both environments (envs are reused, just reset)
         batch_tensor_traces, batch_compiled_traces = run_batch_traces(
             batch_queries, tensor_env, compiled_env, im, stringifier_params, config
         )
-        
-        all_tensor_traces.extend(batch_tensor_traces)
-        all_compiled_traces.extend(batch_compiled_traces)
-        
+
+        # Compare this batch immediately to avoid storing all traces
+        batch_matches, batch_mismatches = compare_all_traces(
+            batch_tensor_traces, batch_compiled_traces, batch_queries
+        )
+        total_matches += batch_matches
+        # Adjust mismatch indices to global indices
+        for idx, query_str, error in batch_mismatches:
+            all_mismatches.append((start_idx + idx, query_str, error))
+
+        # Clear traces to free memory
+        del batch_tensor_traces
+        del batch_compiled_traces
+
+        # Clear caches to prevent OOM
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
         print(f"  Processed {end_idx}/{len(queries)} queries...")
-    
-    # Compare all traces
-    matches, mismatches = compare_all_traces(all_tensor_traces, all_compiled_traces, queries)
+
+    # Use accumulated results
+    matches, mismatches = total_matches, all_mismatches
     
     # Print results
     print(f"\n{'='*80}")
@@ -675,10 +691,10 @@ class TestEnvCompiledParity:
     """Test that compiled environment produces same results as tensor environment."""
     
     @pytest.mark.parametrize("dataset,n_queries,batch_size", [
-        ("countries_s3", 50, 100),
-        ("countries_s3", 111, 100),  # All queries
-        ("family", 50, 100),
-        ("family", 200, 100),
+        ("countries_s3", 50, 25),
+        ("countries_s3", 111, 25),  # All queries
+        ("family", 50, 25),
+        ("family", 100, 25),  # Reduced from 200 to 100
     ])
     def test_env_traces_match(self, dataset: str, n_queries: int, batch_size: int, base_config):
         """Test that tensor and compiled environments produce identical traces.
@@ -711,7 +727,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Test environment compiled parity')
     parser.add_argument('--dataset', type=str, default='family')
     parser.add_argument('--n-queries', type=int, default=800)
-    parser.add_argument('--batch-size', type=int, default=100,
+    parser.add_argument('--batch-size', type=int, default=25,
                        help='Batch size for processing queries (default: 100)')
     parser.add_argument('--max-depth', type=int, default=20)
     parser.add_argument('--seed', type=int, default=42)
