@@ -460,7 +460,7 @@ def run_optimized_eval(
         )
     
     # Run evaluation using ppo.evaluate
-    # parity_mode=True will make it use eval_corruptions internally for exact parity
+    # evaluate() now tracks log probs like evaluate_parity() for semantic equivalence
     results = ppo.evaluate(
         queries=queries,
         sampler=sampler,
@@ -469,7 +469,6 @@ def run_optimized_eval(
         chunk_queries=effective_chunk_queries,
         verbose=config.verbose,
         deterministic=True,
-        parity_mode=True,  # Use eval_corruptions for exact ranking parity
     )
 
     return results, warmup_time_s

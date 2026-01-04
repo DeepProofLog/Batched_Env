@@ -27,7 +27,7 @@ EnvObs = TensorDict
 EnvState = TensorDict
 
 
-class EnvVec:
+class EnvOptimal:
     """Optimal vectorized KG reasoning environment for CUDA graphs."""
 
     # =========================================================================
@@ -51,12 +51,6 @@ class EnvVec:
         negative_ratio: float = 1.0,
         corruption_scheme: Tuple[str, ...] = ('head', 'tail'),
         reward_type: int = 0,
-        order: bool = False,
-        sample_deterministic_per_env: bool = False,
-        compile: bool = True,
-        compile_mode: str = 'reduce-overhead',
-        compile_fullgraph: bool = True,
-        use_exact_memory: bool = False,  # For parity tests: use exact atom matching instead of hashes
     ) -> None:
         # Device & dimensions
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -66,24 +60,17 @@ class EnvVec:
         self.max_depth = max_depth
         self.end_proof_action = end_proof_action
         self.memory_pruning = memory_pruning
-        self.use_exact_memory = use_exact_memory
         self.max_history_size = max_depth + 1
-        
-        # Vectorized state history buffer for exact memory (replaces Python sets)
-        # Stores actual states [B, H, A, 3] for collision-free matching
-        # This is now fully GPU-vectorized and torch.compile compatible
-        self._state_history = None  # Allocated in _allocate_buffers
-        self._state_history_count = None  # [B] count of valid entries per env
 
         # Training config
         self.sampler = sampler
         self.default_negative_ratio = float(negative_ratio)
         self.negative_ratio = float(negative_ratio)
-        self.default_order = order
-        self.order = order
-        self.sample_deterministic_per_env = sample_deterministic_per_env
+        self.default_order = False
+        self.order = False
         self.corruption_scheme = corruption_scheme
         self.reward_type = reward_type
+        self.sample_deterministic_per_env = False
         self.rejection_weight = 1.0 / negative_ratio if negative_ratio > 0 else 1.0
 
         # Pre-allocated reward scalars
@@ -138,14 +125,10 @@ class EnvVec:
         self._reset_fn = None
         self._step_fn = None
         self._step_and_reset_fn = None
-
+        
         # State buffer for CUDA graph stability
         self._state_buffer = None
         self._allocate_buffers()
-
-        # Auto-compile if requested (now works with exact memory too - fully vectorized)
-        if compile:
-            self.compile(mode=compile_mode, fullgraph=compile_fullgraph)
 
     @property
     def batch_size(self) -> int:
@@ -188,10 +171,7 @@ class EnvVec:
 
         if queries is not None:
             torch.compiler.cudagraph_mark_step_begin()
-            if self._reset_fn is not None:
-                state = self._reset_fn(queries.to(device), torch.ones(B, dtype=torch.long, device=device))
-            else:
-                state = self._reset_from_queries(queries.to(device), torch.ones(B, dtype=torch.long, device=device))
+            state = self._reset_fn(queries.to(device), torch.ones(B, dtype=torch.long, device=device))
             return self._state_to_obs(state), state
 
         if self._query_pool is None:
@@ -206,10 +186,7 @@ class EnvVec:
         self._per_env_ptrs = (self._per_env_ptrs + 1) % pool_size
 
         torch.compiler.cudagraph_mark_step_begin()
-        if self._reset_fn is not None:
-            state = self._reset_fn(init_q, init_labels)
-        else:
-            state = self._reset_from_queries(init_q, init_labels)
+        state = self._reset_fn(init_q, init_labels)
         state['per_env_ptrs'].copy_(self._per_env_ptrs)
         state['neg_counters'].copy_(new_counters)
 
@@ -221,77 +198,35 @@ class EnvVec:
 
         if auto_reset and self._query_pool is not None:
             self._copy_state_to_buffer(state)
-            if self._step_and_reset_fn is not None:
-                new_obs, new_state = self._step_and_reset_fn(self._state_buffer, actions, self._query_pool, self._per_env_ptrs)
-            else:
-                new_obs, new_state = self._step_and_reset_core(self._state_buffer, actions, self._query_pool, self._per_env_ptrs)
+            new_obs, new_state = self._step_and_reset_fn(self._state_buffer, actions, self._query_pool, self._per_env_ptrs)
             new_obs = self._clone_obs(new_obs)
             self._copy_state_from_buffer(state, new_state)
             return new_obs, state
         else:
-            # Fallback to uncompiled version if compile() wasn't called
-            if self._step_fn is not None:
-                return self._step_fn(state, actions)
-            else:
-                return self._step_core(state, actions)
+            return self._step_fn(state, actions)
 
     # =========================================================================
     # STEP LOGIC
     # =========================================================================
 
-    def _reset_from_queries(self, queries: Tensor, labels: Optional[Tensor] = None) -> EnvState:
+    def _reset_from_queries(self, queries: Tensor, labels: Tensor) -> EnvState:
         """Create initial state from queries."""
         device = self.device
-        A, S, H, pad = self.padding_atoms, self.padding_states, self.max_history_size, self.padding_idx
+        B, A, S, H, pad = self.batch_size, self.padding_atoms, self.padding_states, self.max_history_size, self.padding_idx
 
-        # Handle input shape - can be [B, 3], [B, 1, 3], or [B, A, 3]
-        if queries.ndim == 2:
-            # [B, 3] -> [B, A, 3]
-            B = queries.shape[0]
-            padded = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
-            padded[:, 0, :] = queries.to(device)
-            queries = padded
-        elif queries.ndim == 3 and queries.shape[1] == 1:
-            # [B, 1, 3] -> [B, A, 3]  
-            B = queries.shape[0]
-            padded = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
-            padded[:, 0, :] = queries.squeeze(1).to(device)
-            queries = padded
-        else:
-            # Assume [B, A, 3]
-            queries = queries.to(device)
-            B = queries.shape[0]
+        current = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
+        current[:, 0, :] = queries
 
-        # Handle None labels - default to all positive (1)
-        if labels is None:
-            labels = torch.ones(B, dtype=torch.long, device=device)
-        else:
-            labels = labels.to(device)
-
-        # Initialize runtime variable indices from start index (matching original)
-        var_idx = torch.full((B,), self.runtime_var_start_index, dtype=torch.long, device=device)
-
-        # Initialize history with the initial state hash (matching original)
-        h_hashes = torch.zeros((B, H), dtype=torch.int64, device=device)
-        h_hashes[:, 0] = self._compute_hash(queries)
-        h_count = torch.ones(B, dtype=torch.long, device=device)
-        
-        # Reset and populate state history for exact memory (fully vectorized)
-        if self.use_exact_memory:
-            reset_mask = torch.ones(B, dtype=torch.bool, device=device)
-            self._state_history_reset(reset_mask)
-            self._state_history_add(queries, reset_mask)
-
-        # Compute derived with excluded_queries being the first atom (matching original)
-        excluded = queries[:, 0:1, :]  # [B, 1, 3]
-        derived, counts, new_var = self._compute_derived(queries, var_idx, queries, h_hashes, h_count, excluded)
+        derived, counts, next_var = self._compute_derived(current, torch.zeros(B, dtype=torch.long, device=device), current.clone())
+        h_hashes = torch.zeros(B, H, dtype=torch.long, device=device)
+        h_count = torch.zeros(B, dtype=torch.long, device=device)
 
         return TensorDict({
-            "current_states": queries,
-            "derived_states": derived.clone(),
+            "current_states": current,
+            "derived_states": derived,
             "derived_counts": counts,
-            "original_queries": queries,
-            "next_var_indices": new_var,
+            "original_queries": current.clone(),
+            "next_var_indices": next_var,
             "depths": torch.zeros(B, dtype=torch.long, device=device),
             "done": torch.zeros(B, dtype=torch.uint8, device=device),
             "success": torch.zeros(B, dtype=torch.uint8, device=device),
@@ -331,14 +266,7 @@ class EnvVec:
         new_h_count = torch.where(active, (state['history_count'] + 1).clamp(max=self.max_history_size), state['history_count'])
 
         still_active = ~new_done
-        
-        # Update state history for exact memory (vectorized - add new current states before computing derived)
-        if self.use_exact_memory:
-            self._state_history_add(new_current, active & ~was_done)
-        
-        # Pass excluded_queries = first atom of original query to match tensor env behavior
-        excluded = state['original_queries'][:, 0:1, :] if state['original_queries'] is not None else None
-        new_derived, new_counts, new_var = self._compute_derived(new_current, state['next_var_indices'], state['original_queries'], new_history, new_h_count, excluded)
+        new_derived, new_counts, new_var = self._compute_derived(new_current, state['next_var_indices'], state['original_queries'], new_history, new_h_count)
         new_derived = torch.where(still_active.view(B, 1, 1, 1), new_derived, state['derived_states'])
         new_counts = torch.where(still_active, new_counts, state['derived_counts'])
         new_var = torch.where(still_active, new_var, state['next_var_indices'])
@@ -418,6 +346,15 @@ class EnvVec:
     # =========================================================================
     # UNIFICATION ENGINE
     # =========================================================================
+
+    def _get_derived_raw(self, current_states, next_var_indices, excluded):
+        """Get raw derived states from engine."""
+        B, S, A = self.batch_size, self.padding_states, self.padding_atoms
+        derived_raw, counts_raw, new_vars = self.engine.get_derived_states_compiled(current_states, next_var_indices, excluded)
+        buf = torch.full((B, S, A, 3), self.padding_idx, dtype=torch.long, device=self.device)
+        K, M = min(derived_raw.shape[1], S), min(derived_raw.shape[2], A)
+        buf[:, :K, :M, :] = derived_raw[:, :K, :M, :]
+        return buf, counts_raw, new_vars
 
     def get_derived_simple(self, current_states: Tensor, history_hashes: Optional[Tensor] = None, 
                             history_count: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
@@ -506,13 +443,12 @@ class EnvVec:
         """Compute derived states with static shapes."""
         B, S, A, pad = self.batch_size, self.padding_states, self.padding_atoms, self.padding_idx
 
-        derived, raw_counts, new_var, original_atom_counts = self._get_derived_raw(current_states, next_var_indices, excluded_queries)
+        derived, raw_counts, new_var = self._get_derived_raw(current_states, next_var_indices, excluded_queries)
 
         within_count = self._arange_S.unsqueeze(0) < raw_counts.unsqueeze(1)
         valid_atom = derived[:, :, :, 0] != pad
-        # Use ORIGINAL atom counts (before truncation) to properly reject over-budget states
-        # A 7-atom state truncated to 6 should be rejected, not kept
-        base_valid = within_count & (original_atom_counts <= A) & (original_atom_counts > 0)
+        atom_counts = valid_atom.sum(dim=2)
+        base_valid = within_count & (atom_counts <= A) & (atom_counts > 0)
 
         derived = torch.where(base_valid.unsqueeze(-1).unsqueeze(-1), derived, self._false_state_base.unsqueeze(0).expand(B, -1, -1, -1))
         new_counts = base_valid.sum(dim=1)
@@ -565,154 +501,37 @@ class EnvVec:
         mixed = (packed * self._hash_mix_const) & self._hash_mask63
         return torch.where(valid, mixed, torch.zeros_like(mixed)).sum(dim=1) & self._hash_mask63
 
-    # =========================================================================
-    # VECTORIZED STATE HISTORY (replaces Python set-based exact memory)
-    # =========================================================================
-    
-    def _state_history_reset(self, env_mask: Tensor) -> None:
-        """Reset state history for environments specified by mask. Fully vectorized."""
-        # Zero out history entries and reset counts for masked environments
-        self._state_history_count = torch.where(env_mask, torch.zeros_like(self._state_history_count), self._state_history_count)
-        # Fill history with padding for reset envs
-        pad_fill = torch.full_like(self._state_history[0:1], self.padding_idx).expand(self.batch_size, -1, -1, -1)
-        self._state_history = torch.where(env_mask.view(-1, 1, 1, 1), pad_fill, self._state_history)
-    
-    def _state_history_add(self, states: Tensor, active_mask: Optional[Tensor] = None) -> None:
-        """Add states to history buffer. Fully vectorized.
-        
-        Args:
-            states: [B, A, 3] current states to add
-            active_mask: [B] optional mask of which envs to update
-        """
-        B, A = states.shape[0], self.padding_atoms
-        H = self.max_history_size
-        
-        if active_mask is None:
-            active_mask = torch.ones(B, dtype=torch.bool, device=self.device)
-        
-        # Compute write position (clamped to max)
-        write_pos = self._state_history_count.clamp(max=H - 1)  # [B]
-        
-        # Create index for scatter: [B, 1, A, 3]
-        idx = write_pos.view(B, 1, 1, 1).expand(B, 1, A, 3)
-        
-        # Scatter states into history at write position
-        new_history = self._state_history.scatter(1, idx, states.unsqueeze(1))
-        
-        # Only update for active environments
-        self._state_history = torch.where(active_mask.view(B, 1, 1, 1), new_history, self._state_history)
-        
-        # Increment count for active environments (clamped to max)
-        new_count = (self._state_history_count + 1).clamp(max=H)
-        self._state_history_count = torch.where(active_mask, new_count, self._state_history_count)
-    
-    def _normalize_state_for_comparison(self, states: Tensor) -> Tensor:
-        """Normalize states by zeroing out terminal predicates for comparison.
-        
-        This ensures that states with terminals (True, False, Endf) are compared
-        consistently - we ignore terminal atoms when checking membership.
-        
-        Args:
-            states: [..., A, 3] tensor of states
-            
-        Returns:
-            Normalized states with terminal atoms zeroed
-        """
-        pad = self.padding_idx
-        preds = states[..., 0]  # [..., A]
-        
-        # Create mask for terminal predicates
-        is_terminal = torch.zeros_like(preds, dtype=torch.bool)
-        if self.true_pred_idx is not None:
-            is_terminal = is_terminal | (preds == self.true_pred_idx)
-        if self.false_pred_idx is not None:
-            is_terminal = is_terminal | (preds == self.false_pred_idx)
-        if self.end_pred_idx is not None:
-            is_terminal = is_terminal | (preds == self.end_pred_idx)
-        
-        # Zero out terminal atoms (replace with padding)
-        return torch.where(is_terminal.unsqueeze(-1), pad, states)
-
     def _prune_visited(self, derived, counts, history, h_count):
-        """Remove visited states from derived. Vectorized for both hash and exact modes."""
+        """Remove visited states from derived."""
         B, K, A, _ = derived.shape
-        pad = self.padding_idx
-        
-        # Use vectorized exact memory if enabled
-        if self.use_exact_memory:
-            # Use hash-based comparison on the state history buffer
-            # This gives us exact matching (no collisions) because we control what goes in
-            # and the hash is computed consistently for both sides
-            
-            # Compute hashes based on normalized states (terminal atoms removed)
-            # This matches the hash computation used when adding to history
-            derived_norm = self._normalize_state_for_comparison(derived)  # [B, K, A, 3]
-            history_norm = self._normalize_state_for_comparison(self._state_history)  # [B, H, A, 3]
-            
-            H = self._state_history.shape[1]
-            
-            # Compute hashes for derived states [B, K]
-            derived_hashes = self._compute_hash(derived_norm)
-            
-            # Compute hashes for history states [B, H]
-            history_hashes = self._compute_hash(history_norm)
-            
-            # Compare hashes: [B, K, 1] vs [B, 1, H] -> [B, K, H]
-            hash_match = derived_hashes.unsqueeze(2) == history_hashes.unsqueeze(1)
-            
-            # Mask valid history entries
-            h_valid = torch.arange(H, device=self.device).unsqueeze(0) < self._state_history_count.unsqueeze(1)  # [B, H]
-            is_visited = (hash_match & h_valid.unsqueeze(1)).any(dim=2)  # [B, K]
-            
-            # Also check if derived state is padding
-            is_padding = derived[:, :, 0, 0] == pad
-            keep = ~is_visited & ~is_padding
-            
-            # Within count mask
-            within_count = self._arange_S.unsqueeze(0) < counts.unsqueeze(1)
-            keep = keep & within_count
-        else:
-            # Hash-based pruning (fast, but can have collisions)
-            H = history.shape[1]
-            hashes = self._compute_hash(derived)
-            hist_exp = history.unsqueeze(1).expand(-1, K, -1)
-            h_mask = self._arange_S[:H].unsqueeze(0).unsqueeze(0) < h_count.unsqueeze(1).unsqueeze(2)
-            match = (hashes.unsqueeze(-1) == hist_exp) & h_mask
-            is_visited = match.any(dim=-1)
-            keep = ~is_visited
+        H, pad = history.shape[1], self.padding_idx
+        hashes = self._compute_hash(derived)
+        hist_exp = history.unsqueeze(1).expand(-1, K, -1)
+        h_mask = self._arange_S[:H].unsqueeze(0).unsqueeze(0) < h_count.unsqueeze(1).unsqueeze(2)
+        match = (hashes.unsqueeze(-1) == hist_exp) & h_mask
+        is_visited = match.any(dim=-1)
+        keep = ~is_visited
 
-            within_count = self._arange_S.unsqueeze(0) < counts.unsqueeze(1)
-            keep = keep & within_count
+        within_count = self._arange_S.unsqueeze(0) < counts.unsqueeze(1)
+        keep = keep & within_count
 
-        # Compact kept states (same for both modes)
         flat_dim = A * 3
         new_pos = torch.cumsum(keep.long(), dim=1) - 1
-        ones_B = torch.ones(B, dtype=torch.long, device=self.device)
-        new_pos = torch.where(keep, new_pos.clamp(min=0, max=K-1), ones_B.unsqueeze(1) * (K-1))
+        new_pos = torch.where(keep, new_pos.clamp(min=0, max=K-1), self._ones_B.unsqueeze(1) * (K-1))
         src = torch.where(keep.unsqueeze(-1), derived.view(B, K, flat_dim), torch.zeros(B, K, flat_dim, dtype=torch.long, device=self.device))
         out = torch.full((B, K, flat_dim), pad, dtype=torch.long, device=self.device)
         out.scatter_(1, new_pos.unsqueeze(-1).expand(B, K, flat_dim), src)
         new_counts = keep.sum(dim=1)
         return out.view(B, K, A, 3), new_counts
 
-    # =========================================================================
-    # END ACTION
-    # =========================================================================
-
     def _add_end_action(self, current, states, counts):
-        """Add END action if no terminal state exists."""
-        B, S = states.shape[:2]
-        preds = states[:, :, 0, 0]
-        valid = torch.arange(S, device=self.device).unsqueeze(0) < counts.unsqueeze(1)
-        has_terminal = ((((preds == self.true_pred_idx) | (preds == self.false_pred_idx)) & valid).sum(dim=1) > 0) & (counts > 0)
-        can_end = ~has_terminal & (counts < self.padding_states)
-        pos = torch.arange(S, device=self.device).unsqueeze(0)
-        at_end = pos == counts.unsqueeze(1)
-        should_place = can_end.unsqueeze(1) & at_end
-        new_states = states.clone()
-        end_exp = self.end_state.unsqueeze(0).unsqueeze(0).expand(B, S, -1, -1)
-        new_states = torch.where(should_place.unsqueeze(-1).unsqueeze(-1), end_exp, new_states)
-        return new_states, torch.where(can_end, counts + 1, counts)
+        """Add END action at position counts."""
+        B, S = self.batch_size, self.padding_states
+        safe_pos = counts.clamp(max=S-1)
+        idx = safe_pos.view(B, 1, 1, 1).expand(B, 1, self.padding_atoms, 3)
+        end_exp = self.end_state.unsqueeze(0).expand(B, 1, -1, -1)
+        states = states.scatter(1, idx, end_exp)
+        return states, (counts + 1).clamp(max=S)
 
     # =========================================================================
     # REWARD
@@ -736,12 +555,15 @@ class EnvVec:
 
         # Reward based on type
         if self.reward_type == 0:
-            # Simple: +1 for success (TRUE proof with positive label only), 0 otherwise
-            # This matches tensor env behavior where only TRUE proofs for positive examples are rewarded
-            reward_mask = (terminated | truncated) & is_true & pos_label
-            rewards = torch.where(reward_mask, self._reward_pos, self._reward_zero)
+            # Simple: +1 for success, -1 for failure/truncation
+            rewards = torch.where(is_success, self._reward_pos, 
+                        torch.where(terminated | truncated, self._reward_neg, self._reward_zero))
         else:
-            raise ValueError(f"Invalid reward type: {self.reward_type}")
+            # Type 1: weighted negatives
+            rewards = torch.where(is_success & pos_label, self._reward_pos,
+                        torch.where(is_success & neg_label, self._reward_pos * self.rejection_weight,
+                        torch.where(terminated | truncated, self._reward_neg, self._reward_zero)))
+
         return rewards, terminated, truncated, is_success
 
     # =========================================================================
@@ -749,57 +571,28 @@ class EnvVec:
     # =========================================================================
 
     def _sample_negatives(self, queries, labels, mask, counters):
-        """Apply negative sampling for training.
-        
-        When sample_deterministic_per_env=True, uses sequential corruption for RNG parity.
-        Otherwise uses vectorized corruption for efficiency.
-        """
+        """Apply negative sampling for training (graph-safe, no branching)."""
         if self.negative_ratio <= 0.0 or self.sampler is None:
             return queries, labels, counters
 
         B = queries.shape[0]
+        neg_threshold = int(1.0 / (1.0 + self.negative_ratio) * 1000)
         
-        # Use same cycling logic as tensor env for parity
-        # ratio=1 -> cycle=2
-        # Counter 0=positive, counter 1=negative, counter 2=positive, etc.
-        ratio = int(round(float(self.negative_ratio)))
-        cycle = ratio + 1
-        
-        # Check CURRENT counter to determine if negative (before incrementing)
-        # This matches tensor env's logic: (local_counters % cycle) != 0
-        should_neg = (counters % cycle) != 0
+        # Round-robin between positive and negative
+        new_counters = torch.where(mask, counters + 1, counters)
+        should_neg = (new_counters % 1000) >= neg_threshold
         should_neg = should_neg & mask
-        
-        # Increment counters for next call
-        new_counters = torch.where(mask, (counters + 1) % cycle, counters)
 
-        if self.sample_deterministic_per_env:
-            # Sequential corruption for RNG parity with tensor env
-            # Only corrupt queries that need it, one at a time
-            neg_indices = should_neg.nonzero(as_tuple=True)[0]
-            if neg_indices.numel() > 0:
-                queries = queries.clone()
-                labels = labels.clone()
-                for idx in neg_indices:
-                    atom_to_corrupt = queries[idx:idx+1]  # [1, 3]
-                    mode = self.corruption_scheme[0]
-                    corrupted = self.sampler.corrupt(atom_to_corrupt, num_negatives=1, mode=mode, device=self.device)
-                    if corrupted.dim() == 3:
-                        corrupted = corrupted[:, 0, :]
-                    queries[idx] = corrupted.squeeze(0)
-                    labels[idx] = 0
-        else:
-            # Vectorized corruption (efficient but not RNG-deterministic per env)
-            mode = self.corruption_scheme[0]
-            neg_queries = self.sampler.corrupt(queries, num_negatives=1, mode=mode, device=self.device).squeeze(1)
-            queries = torch.where(should_neg.unsqueeze(-1), neg_queries, queries)
-            labels = torch.where(should_neg, torch.zeros_like(labels), labels)
+        # Always compute negative samples (no should_neg.any() branch for graph compatibility)
+        # Use first mode unconditionally to avoid data-dependent indexing
+        mode = self.corruption_scheme[0]
+        neg_queries = self.sampler.corrupt(queries, num_negatives=1, mode=mode, device=self.device).squeeze(1)
+        
+        # Select based on should_neg mask
+        queries = torch.where(should_neg.unsqueeze(-1), neg_queries, queries)
+        labels = torch.where(should_neg, torch.zeros_like(labels), labels)
 
         return queries, labels, new_counters
-
-    def sample_negatives(self, queries, labels, mask, counters):
-        """Public alias for _sample_negatives (for test compatibility)."""
-        return self._sample_negatives(queries, labels, mask, counters)
 
     # =========================================================================
     # BUFFER MANAGEMENT
@@ -808,20 +601,12 @@ class EnvVec:
     def _set_queries_internal(self, queries):
         """Set query pool for training/eval."""
         self._query_pool = queries.to(self.device)
-        # Initialize per-env pointers with arange for deterministic per-env query assignment
-        # This matches BatchedEnv's per-env round-robin behavior when sample_deterministic_per_env=True
-        # Each env starts with a different query index: env0->query0, env1->query1, etc.
-        self._per_env_ptrs = torch.arange(self.batch_size, dtype=torch.long, device=self.device)
+        self._per_env_ptrs = torch.zeros(self.batch_size, dtype=torch.long, device=self.device)
 
     def _allocate_buffers(self):
         """Pre-allocate CUDA graph buffers."""
         B, A, S, H = self.batch_size, self.padding_atoms, self.padding_states, self.max_history_size
         device = self.device
-        
-        # State history buffer for vectorized exact memory
-        # Stores actual states [B, H, A, 3] for collision-free matching
-        self._state_history = torch.full((B, H, A, 3), self.padding_idx, dtype=torch.long, device=device)
-        self._state_history_count = torch.zeros(B, dtype=torch.long, device=device)
         
         self._state_buffer = TensorDict({
             "current_states": torch.zeros(B, A, 3, dtype=torch.long, device=device),
@@ -865,178 +650,3 @@ class EnvVec:
     def _clone_obs(self, obs):
         """Clone observation tensors."""
         return TensorDict({k: v.clone() for k, v in obs.items()}, batch_size=obs.batch_size, device=self.device)
-
-    def set_eval_dataset(self, queries: Tensor, labels: Tensor, query_depths: Tensor,
-                         per_slot_lengths: Optional[Tensor] = None):
-        """Compatibility method for eval_corruptions. Simply calls eval()."""
-        self.eval(queries)
-
-
-
-
-class TensorDictEnvWrapper:
-    """Compatibility wrapper for eval_corruptions and parity tests."""
-    def __init__(self, env: EnvVec):
-        self.env = env
-        self.batch_size, self.device = env.batch_size, env.device
-        self._state = None
-        self._eval_queries = None
-        self._per_slot_lengths = None
-        self._per_slot_offsets = None
-        self._slot_ep_counts = None
-
-    def eval(self, q: Optional[Tensor] = None): return self.env.eval(q)
-    def train(self): return self.env.train()
-
-    # Forward critical engine properties for PPOOptimal compatibility
-    @property
-    def train_queries(self): return self.env.train_queries
-    @property
-    def eval_queries(self): return self.env.eval_queries
-    @property
-    def _query_pool(self): return self.env._query_pool
-    @property
-    def _per_env_ptrs(self): return self.env._per_env_ptrs
-    @_per_env_ptrs.setter
-    def _per_env_ptrs(self, val): self.env._per_env_ptrs = val
-
-    @property
-    def padding_idx(self): return self.env.padding_idx
-    @property
-    def true_pred_idx(self): return self.env.true_pred_idx
-    @property
-    def false_pred_idx(self): return self.env.false_pred_idx
-    @property
-    def end_pred_idx(self): return self.env.end_pred_idx
-    @property
-    def max_depth(self): return self.env.max_depth
-    
-    def get_derived_simple(self, *args, **kwargs): return self.env.get_derived_simple(*args, **kwargs)
-    def sample_negatives(self, *args, **kwargs): return self.env.sample_negatives(*args, **kwargs)
-    def _compute_hash(self, *args, **kwargs): return self.env._compute_hash(*args, **kwargs)
-    def _reset_from_queries(self, *args, **kwargs): return self.env._reset_from_queries(*args, **kwargs)
-    def _step_and_reset_core(self, *args, **kwargs): return self.env._step_and_reset_core(*args, **kwargs)
-    def _state_to_obs(self, *args, **kwargs): return self.env._state_to_obs(*args, **kwargs)
-
-    def set_eval_dataset(self, queries: Tensor, labels: Tensor, query_depths: Tensor,
-                         per_slot_lengths: Optional[Tensor] = None):
-        """Setup per-query slot tracking for eval_corruptions."""
-        B = self.batch_size
-        self._eval_queries = queries.to(self.device)
-        self._per_slot_lengths = per_slot_lengths[:B].clone().to(self.device) if per_slot_lengths is not None else torch.ones(B, dtype=torch.long, device=self.device)
-        cumsum = torch.cumsum(self._per_slot_lengths, dim=0)
-        self._per_slot_offsets = torch.cat([torch.zeros(1, dtype=torch.long, device=self.device), cumsum[:-1]])
-        self._slot_ep_counts = torch.zeros(B, dtype=torch.long, device=self.device)
-        self.env.eval(queries)
-
-    def _get_slot_queries(self, reset_mask: Optional[Tensor] = None) -> Tensor:
-        B, pad = self.batch_size, self.env.padding_idx
-        if self._eval_queries is None: return torch.full((B, 3), pad, dtype=torch.long, device=self.device)
-        if reset_mask is None: # Initial fetch
-            self._slot_ep_counts = torch.zeros(B, dtype=torch.long, device=self.device)
-            valid = self._per_slot_lengths > 0
-            q = torch.full((B, 3), pad, dtype=torch.long, device=self.device)
-            if valid.any():
-                idx = self._per_slot_offsets[valid].clamp(max=self._eval_queries.shape[0]-1)
-                fetched = self._eval_queries[idx]
-                q[valid] = fetched.squeeze(1) if fetched.ndim == 3 else fetched
-            return q
-        self._slot_ep_counts[reset_mask] += 1
-        safe_counts = self._slot_ep_counts.clamp(max=self._per_slot_lengths.clamp(min=1)-1).clamp(min=0)
-        query_idx = self._per_slot_offsets + safe_counts
-        q = torch.full((B, 3), pad, dtype=torch.long, device=self.device)
-        valid = reset_mask & (self._slot_ep_counts < self._per_slot_lengths)
-        if valid.any():
-            idx = query_idx[valid].clamp(max=self._eval_queries.shape[0]-1)
-            fetched = self._eval_queries[idx]
-            q[valid] = fetched.squeeze(1) if fetched.ndim == 3 else fetched
-        return q
-
-    def _make_combined_td(self, obs: TensorDict, state: EnvState) -> TensorDict:
-        B = self.batch_size
-        combined = TensorDict({}, batch_size=[B], device=self.device)
-        for k, v in obs.items(): combined[k] = v
-        for k, v in state.items():
-            if k not in combined.keys() and k not in {'done', 'success', 'step_dones', 'is_success'}:
-                combined[k] = v
-        combined['done'] = state.get('done', torch.zeros(B, dtype=torch.uint8, device=self.device)).bool()
-        combined['is_success'] = state.get('success', torch.zeros(B, dtype=torch.uint8, device=self.device)).bool()
-        return combined
-
-    def _merge_states(self, old: EnvState, new: EnvState, mask: Tensor) -> EnvState:
-        merged = {}
-        for k in new.keys():
-            if k in old.keys() and old[k].shape == new[k].shape:
-                val = old[k].clone()
-                val[mask] = new[k][mask]
-                merged[k] = val
-            else: 
-                # For keys not in old or with different shape, just take from new
-                merged[k] = new[k]
-        return TensorDict(merged, batch_size=new.batch_size, device=self.device)
-
-    def reset(self, queries: Optional[Union[Tensor, TensorDict]] = None) -> TensorDict:
-        if isinstance(queries, TensorDict):
-            mask = queries.get("_reset", None)
-            if mask is None or self._state is None:
-                # If no reset mask or no existing state, perform a full reset
-                if self._state is not None: 
-                    # If state exists but no mask, just return current observation
-                    return self._make_combined_td(self.env._state_to_obs(self._state), self._state)
-                # If no state and no mask, return empty TD (shouldn't happen in normal flow)
-                return TensorDict({}, batch_size=[self.batch_size], device=self.device)
-            
-            mask = mask.squeeze(-1).bool() # Ensure mask is 1D boolean
-            if not mask.any(): 
-                # If no environments need reset, return current state
-                return self._make_combined_td(self.env._state_to_obs(self._state), self._state)
-            
-            # Get new queries for the environments that need reset
-            q_for_reset = self._get_slot_queries(mask)
-            
-            # Perform reset only for the masked environments
-            # The env.reset expects a full batch, so we need to create a batch with new queries for masked, and padding for others
-            full_queries_batch = torch.full((self.batch_size, 3), self.env.padding_idx, dtype=torch.long, device=self.device)
-            full_queries_batch[mask] = q_for_reset[mask]
-            
-            # Call env.reset with the full batch, it will only process the non-padding queries effectively
-            obs_reset, new_s_reset = self.env.reset(full_queries_batch)
-            
-            # Merge the new state for reset environments with the old state for non-reset environments
-            self._state = self._merge_states(self._state, new_s_reset, mask)
-            
-            return self._make_combined_td(self.env._state_to_obs(self._state), self._state)
-        
-        # Standard full reset path
-        if queries is None and self._eval_queries is not None: 
-            queries = self._get_slot_queries(None) # Initial fetch for all slots
-        obs, self._state = self.env.reset(queries)
-        return self._make_combined_td(obs, self._state)
-
-    def step(self, actions) -> TensorDict:
-        act = actions['action'] if isinstance(actions, TensorDict) else actions
-        obs, self._state = self.env.step(self._state, act, auto_reset=False)
-        combined = self._make_combined_td(obs, self._state)
-        combined['reward'], combined['done'] = self._state['step_rewards'], self._state['step_dones'].bool()
-        return combined
-
-    def step_and_maybe_reset(self, action_td: TensorDict) -> Tuple[TensorDict, TensorDict]:
-        if self.env._query_pool is not None: # Training
-            obs, self._state = self.env._step_and_reset_core(self._state, action_td.get('action'), self.env._query_pool, self.env._per_env_ptrs)
-            res = self._make_combined_td(obs, self._state)
-            res['reward'], res['done'] = self._state['step_rewards'], self._state['step_dones'].bool()
-            nxt = self._make_combined_td(obs, self._state)
-            nxt['done'] = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-            nxt['is_success'] = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-            return res, nxt
-        res = self.step(action_td)
-        done = res.get('done').squeeze(-1).bool() if res.get('done').dim() > 1 else res.get('done').bool()
-        if done.any():
-            nxt_obs = self.reset(TensorDict({"_reset": done.unsqueeze(-1)}, batch_size=[self.batch_size], device=self.device))
-            nxt = res.clone()
-            for k in nxt_obs.keys():
-                if k in nxt.keys() and nxt[k].shape == nxt_obs[k].shape: nxt[k][done] = nxt_obs[k][done]
-            return res, nxt
-        return res, res
-
-

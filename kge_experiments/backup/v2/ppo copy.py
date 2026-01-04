@@ -92,7 +92,7 @@ class PPOLossModule(nn.Module):
 # PPO OPTIMAL CLASS
 # =============================================================================
 
-class PPO:
+class PPOOptimal:
     """Optimal PPO with CUDA graph support and separate train/eval compilation."""
 
     # -------------------------------------------------------------------------
@@ -310,10 +310,7 @@ class PPO:
         self._ranking_depths = torch.zeros(B, dtype=torch.long, device=device)
         self._ranking_done = torch.zeros(B, dtype=torch.bool, device=device)
         self._ranking_pool_ptr = torch.zeros(B, dtype=torch.long, device=device)
-
-        # Original queries for excluded_queries computation
-        self._ranking_original_queries = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
-
+        
         # History tracking for memory pruning
         self._ranking_history_hashes = torch.zeros(B, H, dtype=torch.long, device=device)
         self._ranking_history_count = torch.zeros(B, dtype=torch.long, device=device)
@@ -334,11 +331,6 @@ class PPO:
         self._ranking_stride = torch.tensor(B, dtype=torch.long, device=device)
         self._ranking_arange_B = torch.arange(B, device=device)
         self._ranking_arange_S = torch.arange(S, device=device)
-
-        # Capture predicate indices as constants for torch.compile compatibility
-        true_pred_idx = env.true_pred_idx
-        false_pred_idx = env.false_pred_idx
-        end_pred_idx = env.end_pred_idx
 
         # Ranking Loop Kernel
         def ranking_step(pool: Tensor, pool_size: Tensor):
@@ -374,21 +366,18 @@ class PPO:
             new_history.scatter_(1, write_pos.unsqueeze(1), update_val.unsqueeze(1))
             new_h_count = torch.where(active, (self._ranking_history_count + 1).clamp(max=H), self._ranking_history_count)
             
-            # Derived - use _compute_derived with excluded_queries for proper unification
-            # Note: We use zeros for next_var_indices since ranking evaluation doesn't need variable tracking
-            excluded = self._ranking_original_queries[:, 0:1, :]  # [B, 1, 3]
-            next_var = torch.zeros(B, dtype=torch.long, device=device)
-            new_derived, new_counts, _ = env._compute_derived(new_current, next_var, self._ranking_original_queries, new_history, new_h_count, excluded)
+            # Derived
+            new_derived, new_counts = env.get_derived_simple(new_current, new_history, new_h_count)
             new_derived = torch.where(active.view(B, 1, 1, 1), new_derived, self._ranking_derived)
             new_counts = torch.where(active, new_counts, self._ranking_counts)
             
-            # Termination (using captured constants for torch.compile compatibility)
+            # Termination
             first_pred = new_current[:, 0, 0]
-            is_terminal = (first_pred == true_pred_idx) | (first_pred == false_pred_idx) | \
-                          (first_pred == pad) | (first_pred == end_pred_idx)
-            is_success = (first_pred == true_pred_idx) & active
+            is_terminal = (first_pred == self.env.true_pred_idx) | (first_pred == self.env.false_pred_idx) | \
+                          (first_pred == pad) | (first_pred == self.env.end_pred_idx)
+            is_success = (first_pred == self.env.true_pred_idx) & active
             newly_done = active & (is_terminal | (new_depths >= self.max_depth))
-
+            
             # Recycling
             finished_idx = torch.where(newly_done, self._ranking_pool_ptr, torch.full_like(self._ranking_pool_ptr, -1))
             new_ptr = torch.where(newly_done, self._ranking_pool_ptr + self._ranking_stride, self._ranking_pool_ptr)
@@ -398,19 +387,15 @@ class PPO:
             valid_finish = newly_done & (finished_idx >= 0) & (finished_idx < pool_size)
             ep_logprob_to_store = torch.where(valid_finish, new_ep_logprob, torch.zeros_like(new_ep_logprob))
 
-            # Reset - use env._reset_from_queries for proper derived state computation
+            # Reset
             safe_idx = new_ptr.clamp(0, max_pool - 1)
-            reset_queries_raw = pool[safe_idx]  # [B, 3]
-
-            # Use env's reset logic to get proper derived states
-            reset_labels = torch.ones(B, dtype=torch.long, device=device)
-            reset_state = env._reset_from_queries(reset_queries_raw, reset_labels)
-            reset_queries = reset_state['current_states']
-            reset_derived = reset_state['derived_states']
-            reset_counts = reset_state['derived_counts']
-            reset_history = reset_state['history_hashes']
-            reset_h_count = reset_state['history_count']
-            reset_original = reset_state['original_queries']
+            reset_queries_raw = pool[safe_idx]
+            reset_queries = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
+            reset_queries[:, 0, :] = reset_queries_raw
+            
+            reset_history = torch.zeros_like(new_history)
+            reset_h_count = torch.zeros_like(new_h_count)
+            reset_derived, reset_counts = env.get_derived_simple(reset_queries, reset_history, reset_h_count)
             
             # Merge
             m1, m3, mH = needs_reset.view(B, 1, 1), needs_reset.view(B, 1, 1, 1), needs_reset.view(B, 1).expand(B, H)
@@ -421,7 +406,6 @@ class PPO:
             final_done = torch.where(needs_reset, torch.zeros_like(self._ranking_done), self._ranking_done | newly_done)
             final_history = torch.where(mH, reset_history, new_history)
             final_h_count = torch.where(needs_reset, reset_h_count, new_h_count)
-            final_original = torch.where(m1, reset_original, self._ranking_original_queries)
 
             # Reset ep_logprob for recycled slots
             final_ep_logprob = torch.where(needs_reset, torch.zeros_like(new_ep_logprob), new_ep_logprob)
@@ -434,7 +418,7 @@ class PPO:
 
             return (final_current, final_derived, final_counts, new_mask,
                     final_depths, final_done, new_ptr, final_history, final_h_count,
-                    newly_done, is_success, finished_idx, final_ep_logprob, ep_logprob_to_store, final_original)
+                    newly_done, is_success, finished_idx, final_ep_logprob, ep_logprob_to_store)
 
         if not self.parity:
             self._compiled_ranking_step = torch.compile(ranking_step, mode=_compile_mode, fullgraph=True)
@@ -738,6 +722,10 @@ class PPO:
             self._eval_padded_buffer[B:] = queries[-1]
         return self._eval_padded_buffer, B
 
+    # -------------------------------------------------------------------------
+    # V10-STYLE EVALUATION WITH SLOT RECYCLING
+    # -------------------------------------------------------------------------
+
     def _setup_ranking_pool(self, queries: Tensor, sampler, n_corruptions: int, modes: Sequence[str]):
         """Consolidated pool setup for corruption ranking."""
         N, K, device = queries.shape[0], 1 + n_corruptions, self.device
@@ -762,25 +750,25 @@ class PPO:
         self._ranking_result_buf.zero_()
         self._ranking_stride.fill_(N)
         
-        # Initialize loop buffers using env._reset_from_queries for proper derived computation
+        # Initialize loop buffers
         init_idx = torch.arange(B, device=device).clamp(max=max(0, N - 1))
-        initial_queries_raw = self._ranking_pool[init_idx]  # [B, 3]
-
-        # Use env's reset logic to get proper initial state with correct derived states
-        env = self.env.env if hasattr(self.env, 'env') and not isinstance(self.env, EnvVec) else self.env
-        init_state = env._reset_from_queries(initial_queries_raw, torch.ones(B, dtype=torch.long, device=device))
-
-        self._ranking_current.copy_(init_state['current_states'])
-        self._ranking_derived.copy_(init_state['derived_states'])
-        self._ranking_counts.copy_(init_state['derived_counts'])
-        self._ranking_original_queries.copy_(init_state['original_queries'])
-        self._ranking_mask.copy_(self._ranking_arange_S.unsqueeze(0) < init_state['derived_counts'].unsqueeze(1))
+        initial_queries = torch.full((B, self.padding_atoms, 3), pad, dtype=torch.long, device=device)
+        initial_queries[:, 0, :] = self._ranking_pool[init_idx]
+        
+        init_h = torch.zeros(B, H, dtype=torch.long, device=device)
+        init_hc = torch.zeros(B, dtype=torch.long, device=device)
+        d_der, d_cnt = self.env.get_derived_simple(initial_queries, init_h, init_hc)
+        
+        self._ranking_current.copy_(initial_queries)
+        self._ranking_derived.copy_(d_der)
+        self._ranking_counts.copy_(d_cnt)
+        self._ranking_mask.copy_(self._ranking_arange_S.unsqueeze(0) < d_cnt.unsqueeze(1))
         self._ranking_depths.zero_()
         self._ranking_done.zero_()
         if N < B: self._ranking_done[N:].fill_(True)
         self._ranking_pool_ptr.copy_(torch.arange(B, device=device))
-        self._ranking_history_hashes.copy_(init_state['history_hashes'])
-        self._ranking_history_count.copy_(init_state['history_count'])
+        self._ranking_history_hashes.zero_()
+        self._ranking_history_count.zero_()
 
         # Initialize log prob tracking buffers
         self._ranking_ep_logprob.zero_()
@@ -814,13 +802,13 @@ class PPO:
             for _ in range(max_steps):
                 torch.compiler.cudagraph_mark_step_begin()
                 (new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr,
-                 new_h, new_hc, _, success, indices, new_ep_logprob, logprob_to_store, new_orig) = self._compiled_ranking_step(self._ranking_pool, self._ranking_pool_size)
+                 new_h, new_hc, _, success, indices, new_ep_logprob, logprob_to_store) = self._compiled_ranking_step(self._ranking_pool, self._ranking_pool_size)
 
                 torch._foreach_copy_(
                     [self._ranking_current, self._ranking_derived, self._ranking_counts, self._ranking_mask,
                      self._ranking_depths, self._ranking_done, self._ranking_pool_ptr,
-                     self._ranking_history_hashes, self._ranking_history_count, self._ranking_ep_logprob, self._ranking_original_queries],
-                    [new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr, new_h, new_hc, new_ep_logprob, new_orig]
+                     self._ranking_history_hashes, self._ranking_history_count, self._ranking_ep_logprob],
+                    [new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr, new_h, new_hc, new_ep_logprob]
                 )
 
                 # Result record (success and log probs)

@@ -27,7 +27,7 @@ EnvObs = TensorDict
 EnvState = TensorDict
 
 
-class EnvVec:
+class EnvOptimal:
     """Optimal vectorized KG reasoning environment for CUDA graphs."""
 
     # =========================================================================
@@ -418,6 +418,26 @@ class EnvVec:
     # =========================================================================
     # UNIFICATION ENGINE
     # =========================================================================
+
+    def _get_derived_raw(self, current_states, next_var_indices, excluded):
+        """Get raw derived states from engine."""
+        B, S, A = self.batch_size, self.padding_states, self.padding_atoms
+        derived_raw, counts_raw, new_vars = self.engine.get_derived_states_compiled(current_states, next_var_indices, excluded)
+        
+        # Track original atom counts BEFORE truncation for budget rejection
+        # A state with > A atoms should be rejected, not truncated
+        raw_valid_atoms = derived_raw[:, :, :, 0] != self.padding_idx
+        original_atom_counts = raw_valid_atoms.sum(dim=2)  # [B, K] - true atom count per state
+        
+        buf = torch.full((B, S, A, 3), self.padding_idx, dtype=torch.long, device=self.device)
+        K, M = min(derived_raw.shape[1], S), min(derived_raw.shape[2], A)
+        buf[:, :K, :M, :] = derived_raw[:, :K, :M, :]
+        
+        # Pad original_atom_counts to match S dimension
+        atom_counts_buf = torch.zeros((B, S), dtype=torch.long, device=self.device)
+        atom_counts_buf[:, :K] = original_atom_counts[:, :K]
+        
+        return buf, counts_raw, new_vars, atom_counts_buf
 
     def get_derived_simple(self, current_states: Tensor, history_hashes: Optional[Tensor] = None, 
                             history_count: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
@@ -876,7 +896,7 @@ class EnvVec:
 
 class TensorDictEnvWrapper:
     """Compatibility wrapper for eval_corruptions and parity tests."""
-    def __init__(self, env: EnvVec):
+    def __init__(self, env: EnvOptimal):
         self.env = env
         self.batch_size, self.device = env.batch_size, env.device
         self._state = None
