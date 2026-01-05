@@ -37,6 +37,7 @@ from policy import ActorCriticPolicy as TensorPolicy
 from ppo import PPO as PPOOptimized
 from nn.sampler import Sampler
 from config import TrainConfig
+from tests.test_utils.parity_utils import evaluate_parity
 
 from callbacks import (
     TorchRLCallbackManager, 
@@ -358,17 +359,18 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
 
     
     if config.parity:
-        eval_results = ppo.evaluate_parity(
+        eval_results = evaluate_parity(
+            ppo,
             queries=queries_tensor,
             sampler=comp['sampler'],
             n_corruptions=config.n_corruptions,
             corruption_modes=tuple(config.corruption_scheme),
-        query_depths=torch.as_tensor(
-            comp['dh'].test_depths[:config.n_envs * 4], 
-            dtype=torch.long, device=device
-        ),
-        verbose=False,
-    )
+            query_depths=torch.as_tensor(
+                comp['dh'].test_depths[:config.n_envs * 4], 
+                dtype=torch.long, device=device
+            ),
+            verbose=False,
+        )
     else:
         eval_results = ppo.evaluate(
             queries=queries_tensor,

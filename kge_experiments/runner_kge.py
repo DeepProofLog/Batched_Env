@@ -76,7 +76,7 @@ if __name__ == "__main__":
         'test_depth': None,
         
         # Evaluation
-        'eval_freq': 1,
+        'eval_freq': 4,
         'eval_neg_samples': 4,
         'n_corruptions': None,  # test_neg_samples alias
         'eval_best_metric': 'mrr',

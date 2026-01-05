@@ -92,6 +92,7 @@ class EnvVec:
         self._reward_zero = torch.tensor(0.0, device=self.device)
         self._reward_neg_half = torch.tensor(-0.5, device=self.device)
         self._reward_neg_1_5 = torch.tensor(-1.5, device=self.device)
+        self._reward_rejection = torch.tensor(self.rejection_weight, device=self.device)
 
         # Hash constants
         self._hash_mix_const = 0x9E3779B97F4A7C15
@@ -316,7 +317,7 @@ class EnvVec:
         new_current = torch.where(active.view(B, 1, 1), next_states, state['current_states'])
         new_depths = torch.where(active, state['depths'] + 1, state['depths'])
 
-        rewards, terminated, truncated, is_success = self._compute_reward(new_current, state['current_labels'], new_depths, B)
+        rewards, terminated, truncated, is_success = self._get_done_reward(new_current, state['current_labels'], new_depths, B)
         newly_done = active & (terminated | truncated)
         new_done = was_done | newly_done
         new_success = state['success'].bool() | (active & is_success)
@@ -681,30 +682,102 @@ class EnvVec:
     # REWARD
     # =========================================================================
 
-    def _compute_reward(self, states, labels, depths, B):
-        """Compute reward and termination signals."""
-        first_pred = states[:, 0, 0]
-        is_true = first_pred == self.true_pred_idx if self.true_pred_idx is not None else torch.zeros(B, dtype=torch.bool, device=self.device)
-        is_false = first_pred == self.false_pred_idx if self.false_pred_idx is not None else torch.zeros(B, dtype=torch.bool, device=self.device)
-        is_pad = first_pred == self.padding_idx
-        is_end = first_pred == self.end_pred_idx if self.end_pred_idx is not None else torch.zeros(B, dtype=torch.bool, device=self.device)
+    def _get_done_reward(
+        self,
+        states: Tensor,
+        labels: Tensor,
+        depths: Tensor,
+        n: int
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        """
+        Compute rewards and termination flags.
+        Adapted from BatchedEnv._get_done_reward pure functional style.
+        """
+        device = self.device
+        pad = self.padding_idx
+        
+        # states: [n, A, 3]
+        non_pad = states[:, :, 0] != pad
+        preds = states[:, :, 0]
 
-        pos_label = labels == 1
-        neg_label = labels == 0
-
-        # Success: true proof for pos OR false proof for neg
-        is_success = (is_true & pos_label) | (is_false & neg_label)
-        terminated = is_true | is_false | is_pad | is_end
-        truncated = depths >= self.max_depth
-
-        # Reward based on type
-        if self.reward_type == 0:
-            # Simple: +1 for success (TRUE proof with positive label only), 0 otherwise
-            # This matches tensor env behavior where only TRUE proofs for positive examples are rewarded
-            reward_mask = (terminated | truncated) & is_true & pos_label
-            rewards = torch.where(reward_mask, self._reward_pos, self._reward_zero)
+        # 1. Compute 'is_end' condition (if enabled)
+        is_end = torch.zeros(n, dtype=torch.bool, device=device)
+        if self.end_proof_action:
+            # single_pred: [n]
+            single_pred = non_pad.sum(dim=1) == 1
+            # first_pos: [n]
+            first_pos = non_pad.long().argmax(dim=1)
+            # first_pred: [n]
+            first_pred = preds[torch.arange(n, device=device), first_pos]
+            is_end = single_pred & (first_pred == self.end_pred_idx)
+            
+        # 2. Compute 'all_true' (success condition)
+        if self.true_pred_idx is not None:
+            # check if ALL non-pad atoms are TRUE
+            true_mask = (preds == self.true_pred_idx) | ~non_pad
+            all_true = true_mask.all(dim=1) & non_pad.any(dim=1)
         else:
-            raise ValueError(f"Invalid reward type: {self.reward_type}")
+            all_true = torch.zeros(n, dtype=torch.bool, device=device)
+            
+        # all_true must be false if is_end is true
+        all_true = all_true & ~is_end
+            
+        # 3. Compute 'terminated' logic (all_true | any_false)
+        terminated = all_true.clone()
+        if self.false_pred_idx is not None:
+             terminated = terminated | (preds == self.false_pred_idx).any(dim=1)
+             
+        # is_end implies terminated (failure)
+        terminated = terminated | is_end
+        
+        # Termination on fully padded states (safety)
+        terminated = terminated | ~non_pad.any(dim=1)
+            
+        # 4. Truncation
+        depth_exceeded = depths >= self.max_depth
+        truncated = depth_exceeded & ~terminated
+        
+        # Done Status
+        done = terminated | truncated
+        
+        # 5. Success
+        is_success = all_true
+
+        # 6. Rewards logic (Matching BatchedEnv reward types)
+        rewards = torch.zeros(n, dtype=torch.float32, device=device)
+        pos = labels == 1
+        neg = labels == 0
+        
+        if self.reward_type == 0:
+            reward_mask = done & is_success & pos
+            rewards = torch.where(reward_mask, self._reward_pos, self._reward_zero)
+        elif self.reward_type == 1:
+            tp = done & is_success & pos
+            fp = done & is_success & neg
+            rewards = torch.where(tp, self._reward_pos, rewards)
+            rewards = torch.where(fp, self._reward_neg, rewards)
+        elif self.reward_type == 2:
+            reward_mask = done & ((is_success & pos) | (~is_success & neg))
+            rewards = torch.where(reward_mask, self._reward_pos, self._reward_zero)
+        elif self.reward_type == 3:
+            tp = done & is_success & pos
+            fn = done & ~is_success & pos
+            fp = done & is_success & neg
+            tn = done & ~is_success & neg
+            rewards = torch.where(tp, self._reward_pos, rewards)
+            rewards = torch.where(fn, self._reward_neg_half, rewards)
+            rewards = torch.where(fp, self._reward_neg_1_5, rewards)
+            rewards = torch.where(tn, self._reward_pos, rewards)
+        elif self.reward_type == 4:
+            tp = done & is_success & pos
+            fn = done & ~is_success & pos
+            fp = done & is_success & neg
+            tn = done & ~is_success & neg
+            rewards = torch.where(tp, self._reward_pos, rewards)
+            rewards = torch.where(fn, self._reward_neg, rewards)
+            rewards = torch.where(fp, self._reward_neg, rewards)
+            rewards = torch.where(tn, self._reward_rejection, rewards)
+            
         return rewards, terminated, truncated, is_success
 
     # =========================================================================

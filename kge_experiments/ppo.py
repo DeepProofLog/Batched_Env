@@ -696,7 +696,14 @@ class PPO:
                       f"approx_kl {mean_kl:.5f} clip_fraction {mean_clip:.5f}. ")
 
         with torch.no_grad():
-            ev = explained_variance(self.rollout_buffer.values, self.rollout_buffer.returns)
+            values = self.rollout_buffer.values.flatten()
+            returns = self.rollout_buffer.returns.flatten()
+            ev = explained_variance(values, returns)
+            
+            if self.verbose:
+                print(f"[PPOOptimal] Values: min={values.min().item():.3f}, max={values.max().item():.3f}, mean={values.mean().item():.3f}, std={values.std().item():.3f}")
+                print(f"[PPOOptimal] Returns: min={returns.min().item():.3f}, max={returns.max().item():.3f}, mean={returns.mean().item():.3f}, std={returns.std().item():.3f}")
+                print(f"[PPOOptimal] Explained variance: {ev.item():.4f}")
         
         result = {
             "policy_loss": pg_losses[:batch_count].mean().item(),
@@ -745,11 +752,22 @@ class PPO:
                 else:
                     step_cb = self.callback.on_step
 
+            # Collect rollouts
+            rollout_start_time = time.time()
             result = self.collect_rollouts(state, obs, ep_starts, curr_ep_rew, curr_ep_len, ep_rews, ep_lens, iteration, return_traces, step_cb)
             state, obs, ep_starts, curr_ep_rew, curr_ep_len, n_steps, _ = result
             state = state.clone()
             obs = {k: v.clone() for k, v in obs.items()}
             self.num_timesteps += n_steps
+
+            rollout_time = time.time() - rollout_start_time
+            if self.verbose:
+                print(f"[PPOOptimal] Rollout collected in {rollout_time:.2f}s")
+                print(f"[PPOOptimal] FPS: {n_steps/rollout_time:.2f}")
+                if ep_rews:
+                    recent_reward = np.mean(ep_rews[-10:])
+                    recent_length = np.mean(ep_lens[-10:])
+                    print(f"[PPOOptimal] Recent episodes: reward={recent_reward:.3f}, length={recent_length:.1f}")
 
             train_metrics = self.train(return_traces)
             self.last_train_metrics = train_metrics

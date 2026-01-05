@@ -387,11 +387,18 @@ class TorchRLCallbackManager:
         
         self.on_step(batch_infos)
 
-    def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
+    def on_iteration_end(self, iteration: int, global_step: int, train_metrics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         metrics = {}
         for cb in self.callbacks:
             if hasattr(cb, 'on_iteration_end'):
-                m = cb.on_iteration_end(iteration, global_step)
+                # Check if callback accepts train_metrics
+                import inspect
+                sig = inspect.signature(cb.on_iteration_end)
+                if 'train_metrics' in sig.parameters:
+                    m = cb.on_iteration_end(iteration, global_step, train_metrics=train_metrics)
+                else:
+                    m = cb.on_iteration_end(iteration, global_step)
+                
                 if m and isinstance(m, dict):
                     metrics.update(m)
         return metrics
@@ -403,11 +410,12 @@ class TorchRLCallbackManager:
         iteration = locals_.get('iteration', 0)
         total_steps = locals_.get('total_steps_done', 0)
         
-        # Call on_iteration_end which aggregates metrics
-        metrics = self.on_iteration_end(iteration, total_steps)
-        
         # Merge PPO training metrics if available
         train_metrics = locals_.get('train_metrics', {})
+        
+        # Call on_iteration_end which aggregates metrics
+        metrics = self.on_iteration_end(iteration, total_steps, train_metrics=train_metrics)
+        
         if train_metrics:
             metrics.update(train_metrics)
             
@@ -442,7 +450,7 @@ class MetricsCallback:
     def on_step(self, infos: List[Dict[str, Any]]) -> None:
         self.collector.accumulate(infos)
     
-    def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
+    def on_iteration_end(self, iteration: int, global_step: int, train_metrics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if iteration % self.log_interval != 0:
             self.collector.reset()
             return {}
@@ -464,6 +472,9 @@ class MetricsCallback:
             "time/elapsed": int(current_time - self.train_start_time),
             "total_timesteps": global_step,
         }
+        
+        if train_metrics and "explained_var" in train_metrics:
+            timing["explained_variance"] = train_metrics["explained_var"]
         
         # Update reward tracker if 'ep_rew_mean' exists
         if "ep_rew_mean" in rollout_metrics:
@@ -670,7 +681,7 @@ class EvaluationCallback:
     def should_evaluate(self, iteration: int) -> bool:
         return (iteration % self.eval_freq == 0)
 
-    def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
+    def on_iteration_end(self, iteration: int, global_step: int, train_metrics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not self.should_evaluate(iteration):
             return {}
         
@@ -737,7 +748,7 @@ class RankingCallback:
         # we need to be careful. The manager's on_iteration_end receives global_step.
         return True # Handled in on_iteration_end with global_step check
 
-    def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
+    def on_iteration_end(self, iteration: int, global_step: int, train_metrics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         # eval_freq is now measured in iterations (rollouts), not steps
         if iteration > 0 and iteration % self.eval_freq != 0:
             return {}
