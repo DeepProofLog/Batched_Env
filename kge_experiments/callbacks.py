@@ -311,14 +311,20 @@ class TorchRLCallbackManager:
     
     def __init__(self, callbacks: Optional[List[Any]] = None):
         self.callbacks = callbacks or []
+        self.last_metrics = {}
     
     def add_callback(self, callback: Any) -> None:
         self.callbacks.append(callback)
     
-    def on_training_start(self) -> None:
+    def on_training_start(self, total_timesteps: Optional[int] = None) -> None:
         for cb in self.callbacks:
             if hasattr(cb, 'on_training_start'):
-                cb.on_training_start()
+                import inspect
+                sig = inspect.signature(cb.on_training_start)
+                if 'total_timesteps' in sig.parameters:
+                    cb.on_training_start(total_timesteps=total_timesteps)
+                else:
+                    cb.on_training_start()
                 
     def on_iteration_start(self, iteration: int, global_step: int) -> None:
         for cb in self.callbacks:
@@ -430,9 +436,11 @@ class TorchRLCallbackManager:
         
         # Call on_iteration_end which aggregates metrics
         metrics = self.on_iteration_end(iteration, total_steps, train_metrics=train_metrics)
+        self.last_metrics = metrics # Store for PPO to retrieve
         
         if train_metrics:
             metrics.update(train_metrics)
+            self.last_metrics.update(train_metrics)
             
         # Trigger CheckpointCallback check_and_save manually with full metrics
         # This is a bridge between PPO iteration end and CheckpointCallback
@@ -529,7 +537,8 @@ class CheckpointCallback:
         verbose: bool = True,
         date: str = None,
         restore_best: bool = False,
-        load_best_metric: str = 'eval'
+        load_best_metric: str = 'eval',
+        load_model: Any = False
     ):
         self.save_path = Path(save_path)
         self.save_path.mkdir(parents=True, exist_ok=True)
@@ -546,6 +555,29 @@ class CheckpointCallback:
         self.date = date
         self.restore_best = restore_best
         self.load_best_metric = load_best_metric
+        self.load_model = load_model
+        
+    def on_training_start(self, total_timesteps: Optional[int] = None) -> None:
+        """Called at the start of training to load an existing model if specified."""
+        if self.load_model:
+            if self.verbose:
+                print(f"\n[Checkpoint] Loading existing model at start of training (load_model={self.load_model})...")
+            
+            # If load_model is a path string, load it directly
+            if isinstance(self.load_model, str) and self.load_model not in ["True", "eval", "train"]:
+                path = Path(self.load_model)
+                if path.exists():
+                    if self.verbose:
+                        print(f"Loading model from path: {path}")
+                    self.policy.load_state_dict(torch.load(path, map_location=next(self.policy.parameters()).device))
+                    return
+            
+            # Otherwise use the standard load_best_model logic
+            load_metric = 'eval'
+            if isinstance(self.load_model, str) and self.load_model in ["eval", "train"]:
+                load_metric = self.load_model
+            
+            self.load_best_model(load_metric=load_metric)
         
     def on_iteration_end(self, iteration: int, global_step: int) -> None:
         pass
@@ -649,22 +681,57 @@ class CheckpointCallback:
         
         if load_metric == 'train':
             path_to_load = best_model_path_train
-            if best_model_path_train.exists():
+            if not path_to_load.exists():
+                 # Fallback to non-dated file
+                 path_to_load = self.save_path / self.best_model_name_train
+            
+            if not path_to_load.exists():
+                # Search for latest dated train model
+                stem = self.best_model_name_train.replace('.pt', '')
+                import glob
+                files = sorted(glob.glob(str(self.save_path / f"{stem}_*.pt")))
+                if files:
+                    path_to_load = Path(files[-1])
+            
+            if path_to_load.exists():
                 print(f"Restoring best TRAIN model (reward) from {path_to_load}")
             else:
-                 print(f"Warning: Best train model not found at {path_to_load}")
+                 print(f"Warning: Best train model not found at {path_to_load} or dated version.")
                  path_to_load = None
         else: # eval
             path_to_load = best_model_path_eval
-            if best_model_path_eval.exists():
+            if not path_to_load.exists():
+                 # Fallback to non-dated file
+                 path_to_load = self.save_path / self.best_model_name_eval
+            
+            if not path_to_load.exists():
+                # Search for latest dated eval model
+                stem = self.best_model_name_eval.replace('.pt', '')
+                import glob
+                files = sorted(glob.glob(str(self.save_path / f"{stem}_*.pt")))
+                if files:
+                    path_to_load = Path(files[-1])
+
+            if path_to_load.exists():
                  print(f"Restoring best EVAL model (MRR) from {path_to_load}")
             else:
                  print(f"Warning: Best eval model not found at {path_to_load}. Falling back to train model?")
-                 if best_model_path_train.exists():
-                     print(f"Restoring best TRAIN model instead from {best_model_path_train}")
-                     path_to_load = best_model_path_train
+                 path_to_load = best_model_path_train
+                 if not path_to_load.exists():
+                      path_to_load = self.save_path / self.best_model_name_train
+                 
+                 if not path_to_load.exists():
+                     # Search for latest dated train model as last resort
+                     stem = self.best_model_name_train.replace('.pt', '')
+                     import glob
+                     files = sorted(glob.glob(str(self.save_path / f"{stem}_*.pt")))
+                     if files:
+                         path_to_load = Path(files[-1])
+
+                 if path_to_load.exists():
+                      print(f"Restoring best TRAIN model instead from {path_to_load}")
                  else:
-                     path_to_load = None
+                      path_to_load = None
                      
         if path_to_load:
             if device is None:
@@ -767,8 +834,13 @@ class RankingCallback:
         self.mrr_tracker = MRRTracker(patience=20)
         self.last_eval_step = 0
         
-    def on_training_start(self) -> None:
+    def on_training_start(self, total_timesteps: Optional[int] = None) -> None:
         """Run initial evaluation before training starts."""
+        if total_timesteps == 0:
+            if self.verbose:
+                print("[Ranking] Skipping initial evaluation as total_timesteps=0")
+            return
+            
         print("\n" + "="*60 + "\nInitial evaluation (untrained model)\n" + "="*60)
         self.on_iteration_end(iteration=0, global_step=0)
         # Reset last_eval_step so we count from 0 correctly (if we want to exclude initial)

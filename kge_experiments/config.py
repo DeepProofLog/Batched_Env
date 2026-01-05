@@ -35,6 +35,7 @@ class TrainConfig:
     end_proof_action: bool = True
     reward_type: int = 0
     max_total_vars: int = 1000
+    max_fact_pairs_cap: Optional[int] = None  # Cap for large predicates (None = no cap, 8000 for wn18rr)
     sample_deterministic_per_env: bool = False  # False for fullgraph compilation compatibility
     
     # Model Architecture

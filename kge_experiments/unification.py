@@ -865,6 +865,7 @@ class UnificationEngineVectorized:
         # Vectorized specific options
         max_fact_pairs: int = None,
         max_rule_pairs: int = None,
+        max_fact_pairs_cap: int = None,  # Cap for large predicates (None = no cap)
         padding_atoms: int = None,
         end_pred_idx: Optional[int] = None,
         end_proof_action: bool = False,
@@ -958,15 +959,19 @@ class UnificationEngineVectorized:
         self.false_atom = torch.tensor([self.false_pred_idx, pad, pad], dtype=torch.long, device=device) if self.false_pred_idx is not None else None
         
         # Compute/Set max pairs
-        # TODO: Optimize to use K_max cap after resolving correctness issues
+        # Apply cap to limit tensor sizes for large predicates
         if max_fact_pairs is None:
             if predicate_range_map is not None:
                 fact_lens = (
-                    predicate_range_map[:, 1] - 
+                    predicate_range_map[:, 1] -
                     predicate_range_map[:, 0]
                 )
-                max_fact_pairs = int(fact_lens.max().item()) if fact_lens.numel() > 0 else 50
-                max_fact_pairs = max(max_fact_pairs, 50)
+                raw_max = int(fact_lens.max().item()) if fact_lens.numel() > 0 else 50
+                max_fact_pairs = max(raw_max, 50)
+                # Apply cap if specified
+                if max_fact_pairs_cap is not None and raw_max > max_fact_pairs_cap:
+                    print(f"[UnificationEngine] Capping max_fact_pairs from {raw_max} to {max_fact_pairs_cap}")
+                    max_fact_pairs = max_fact_pairs_cap
             else:
                 max_fact_pairs = 50
             
@@ -1140,6 +1145,7 @@ class UnificationEngineVectorized:
         im,
         max_fact_pairs: int = None,
         max_rule_pairs: int = None,
+        max_fact_pairs_cap: int = None,
         padding_atoms: int = None,
         max_derived_per_state: Optional[int] = None,
         end_proof_action: bool = False,
@@ -1167,6 +1173,7 @@ class UnificationEngineVectorized:
             max_derived_per_state=max_derived_per_state,
             max_fact_pairs=max_fact_pairs,
             max_rule_pairs=max_rule_pairs,
+            max_fact_pairs_cap=max_fact_pairs_cap,
             padding_atoms=padding_atoms,
             end_pred_idx=im.end_pred_idx,
             end_proof_action=end_proof_action,

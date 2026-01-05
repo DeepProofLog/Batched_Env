@@ -160,6 +160,7 @@ class PPO:
 
         # IMPORTANT: Keep uncompiled policy reference for fused steps
         self._uncompiled_policy = policy
+        self.last_train_metrics = {}
 
         # Pre-allocated eval buffers
         self._eval_padded_buffer = torch.zeros(self.fixed_batch_size, 3, dtype=torch.long, device=self.device)
@@ -899,7 +900,7 @@ class PPO:
             total_timesteps += self.num_timesteps
 
         if self.callback and hasattr(self.callback, 'on_training_start'):
-            self.callback.on_training_start()
+            self.callback.on_training_start(total_timesteps=total_timesteps)
 
         self.env.train()
         # Handle flexible reset return (EnvOptimal returns Tuple, Wrapper returns TensorDict)
@@ -960,7 +961,10 @@ class PPO:
         if self.callback and hasattr(self.callback, 'on_training_end'):
             self.callback.on_training_end()
 
-        return {'num_timesteps': self.num_timesteps, 'episode_rewards': ep_rews, 'episode_lengths': ep_lens, 'last_train_metrics': self.last_train_metrics}
+        # Retrieve final metrics from callback manager if available, else fallback to instance variable
+        final_metrics = getattr(self.callback, 'last_metrics', self.last_train_metrics) if self.callback else self.last_train_metrics
+
+        return {'num_timesteps': self.num_timesteps, 'episode_rewards': ep_rews, 'episode_lengths': ep_lens, 'last_train_metrics': final_metrics}
 
     # -------------------------------------------------------------------------
     # EVALUATION
@@ -1194,6 +1198,7 @@ class PPO:
         }
 
         for start in range(0, N, chunk_queries):
+            t_start = time.time()
             print(f"Chunk {start}-{min(start + chunk_queries, N)}")
             end = min(start + chunk_queries, N)
             chunk = queries[start:end]
@@ -1294,6 +1299,7 @@ class PPO:
                 tied = (neg == pos) & (rnd[:, 1:] > rnd[:, 0:1])
                 all_ranks[mode].append(1 + better.sum(1) + tied.sum(1))
                 offset += CQ * K
+                print(f" Took {time.time() - t_start:.2f} seconds. ms/cand: {1000 * (time.time() - t_start) / (CQ * K)}")
 
         # Metric Aggregation
         res = self._aggregate_metrics(all_stats, query_depths, N, chunk_queries, corruption_modes, all_ranks=all_ranks)

@@ -75,39 +75,40 @@ def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str =
         best_model_path_train = save_path / "best_model_train.pt"
         best_model_path_eval = save_path / "best_model_eval.pt"
         
-        # RankingCallback for evaluation
-        if eval_freq > 0 and eval_env is not None:
-            valid_split = dh.get_materialized_split('valid')
-            valid_queries = valid_split.queries.squeeze(1)
-            valid_depths = valid_split.depths
-            n_eval = getattr(config, 'n_eval_queries', None)
-            if n_eval:
-                valid_queries, valid_depths = valid_queries[:n_eval], valid_depths[:n_eval]
-            
-            n_corruptions = getattr(config, 'eval_neg_samples')
-            scheme = getattr(config, 'corruption_scheme', ('head', 'tail'))
-            
-            callbacks.append(RankingCallback(
-                eval_env=eval_env, policy=policy, sampler=sampler,
-                eval_data=valid_queries, eval_data_depths=valid_depths,
-                eval_freq=int(eval_freq), n_corruptions=n_corruptions,
-                corruption_scheme=tuple(scheme), ppo_agent=ppo
-            ))
+    # 1. CheckpointCallback for saving/loading
+    if save_model:
+        best_metric = getattr(config, 'eval_best_metric', 'mrr_mean')
+        if best_metric == 'mrr':
+            best_metric = 'mrr_mean'
+        callbacks.append(CheckpointCallback(
+            save_path=save_path, policy=policy,
+            train_metric="ep_rew_mean", eval_metric=best_metric,
+            verbose=True, date=date,
+            restore_best=getattr(config, 'restore_best', False),
+            load_best_metric=getattr(config, 'load_best_metric', 'eval'),
+            load_model=getattr(config, 'load_model', False)
+        ))
+
+    # 2. RankingCallback for evaluation
+    if eval_freq > 0 and eval_env is not None:
+        valid_split = dh.get_materialized_split('valid')
+        valid_queries = valid_split.queries.squeeze(1)
+        valid_depths = valid_split.depths
+        n_eval = getattr(config, 'n_eval_queries', None)
+        if n_eval:
+            valid_queries, valid_depths = valid_queries[:n_eval], valid_depths[:n_eval]
         
-        # CheckpointCallback for saving
-        if save_model:
-            best_metric = getattr(config, 'eval_best_metric', 'mrr_mean')
-            if best_metric == 'mrr':
-                best_metric = 'mrr_mean'
-            callbacks.append(CheckpointCallback(
-                save_path=save_path, policy=policy,
-                train_metric="ep_rew_mean", eval_metric=best_metric,
-                verbose=True, date=date,
-                restore_best=getattr(config, 'restore_best', False),
-                load_best_metric=getattr(config, 'load_best_metric', 'eval')
-            ))
+        n_corruptions = getattr(config, 'eval_neg_samples')
+        scheme = getattr(config, 'corruption_scheme', ('head', 'tail'))
+        
+        callbacks.append(RankingCallback(
+            eval_env=eval_env, policy=policy, sampler=sampler,
+            eval_data=valid_queries, eval_data_depths=valid_depths,
+            eval_freq=int(eval_freq), n_corruptions=n_corruptions,
+            corruption_scheme=tuple(scheme), ppo_agent=ppo
+        ))
     
-    # ScalarAnnealingCallback for lr/entropy decay
+    # 3. ScalarAnnealingCallback for lr/entropy decay
     annealing_targets = []
     total_timesteps = getattr(config, 'timesteps_train', getattr(config, 'total_timesteps', 0))
     
@@ -203,6 +204,7 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         parity_mode=False,
         max_derived_per_state=config.padding_states,
         end_proof_action=config.end_proof_action,
+        max_fact_pairs_cap=getattr(config, 'max_fact_pairs_cap', None),
     )
     
     # Create environment

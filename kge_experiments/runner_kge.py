@@ -30,7 +30,7 @@ if __name__ == "__main__":
         
         # Training
         'seed': [0],
-        'total_timesteps': 3000000,
+        'total_timesteps': 0,
         'n_envs': 128,
         'n_steps': 128,
         'batch_size': 512,
@@ -70,6 +70,7 @@ if __name__ == "__main__":
         'memory_pruning': True,
         'use_exact_memory': False,
         'max_total_vars': 100,
+        'max_fact_pairs_cap': None,  # Auto-set per dataset in config_from_dict
         
         # Depths
         'train_depth': {1,2,3,4,5,6},
@@ -79,9 +80,9 @@ if __name__ == "__main__":
         # Evaluation
         'eval_freq': 4,
         'n_eval_queries': 100,
-        'n_test_queries': 100,
+        'n_test_queries': 128,
         'eval_neg_samples': 10,
-        'test_neg_samples': 10,
+        'test_neg_samples': 25,
         'eval_best_metric': 'mrr',
         
         # LR decay
@@ -102,7 +103,7 @@ if __name__ == "__main__":
         
         # Model saving/loading
         'save_model': True,
-        'load_model': False,
+        'load_model': True,
         'restore_best': True,
         'load_best_metric': 'eval',
         'models_path': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models'),
@@ -187,6 +188,17 @@ if __name__ == "__main__":
                 "family": 130, "wn18rr": 262, "fb15k237": 358,
             }
             cfg_dict['padding_states'] = padding_map.get(dataset, 64)
+
+        # Auto-configure max_fact_pairs_cap for large datasets
+        # wn18rr has 35k facts for hypernym predicate, cap to 8000 for 7x speedup
+        if cfg_dict.get('max_fact_pairs_cap') is None:
+            dataset = cfg_dict.get('dataset', 'countries_s3')
+            cap_map = {
+                "wn18rr": 1000,     # hypernym has 35k facts, cap for 7x speedup
+                "fb15k237": 1000,   # similar issue expected
+                # family, countries: no cap needed (max ~2.5k facts per predicate)
+            }
+            cfg_dict['max_fact_pairs_cap'] = cap_map.get(dataset, None)
         
         # Build run signature
         dataset = cfg_dict.get('dataset', 'run')

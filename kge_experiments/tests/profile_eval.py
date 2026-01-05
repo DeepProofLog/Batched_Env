@@ -76,6 +76,7 @@ def setup(device, config):
     vec_engine = UnificationEngineVectorized.from_index_manager(
         im, padding_atoms=config.padding_atoms,
         max_derived_per_state=config.padding_states, end_proof_action=True,
+        max_fact_pairs_cap=config.max_fact_pairs_cap,
     )
     
     def convert_queries_unpadded(queries):
@@ -147,6 +148,7 @@ def setup(device, config):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset', type=str, default='wn18rr')
     parser.add_argument('--n-queries', type=int, default=10)
     parser.add_argument('--n-corruptions', type=int, default=10)
     parser.add_argument('--batch-size', type=int, default=100)
@@ -154,13 +156,20 @@ def main():
     parser.add_argument('--gpu-profile', action='store_true',  help='Run GPU profiler (default)')
     parser.add_argument('--cpu-profile', action='store_true', help='Run CPU profiler instead of GPU')
     parser.add_argument('--no-profile', action='store_true', default=True, help='Run without any profiler (pure timing)')
+    parser.add_argument('--max-fact-pairs-cap', type=int, default=None, help='Cap max_fact_pairs to limit tensor sizes')
     args = parser.parse_args()
+
+    if args.max_fact_pairs_cap is None and args.dataset == 'wn18rr':
+        print("Setting max_fact_pairs_cap to 8000 for wn18rr")
+        args.max_fact_pairs_cap = 1000
     
+
     config = SimpleNamespace(
-        dataset='wn18rr',
+        dataset=args.dataset,
         data_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data'),
-        padding_atoms=6, padding_states=120, max_depth=20,
+        padding_atoms=6, padding_states=262, max_depth=20,
         batch_size=args.batch_size, compile=args.compile,
+        max_fact_pairs_cap=args.max_fact_pairs_cap,
     )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
