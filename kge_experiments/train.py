@@ -250,7 +250,7 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         num_layers=8,
         dropout_prob=0.0,
         device=device,
-        parity=False,
+        parity=True,
     ).to(device)
     
     return {

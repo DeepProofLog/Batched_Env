@@ -47,6 +47,7 @@ from tensor.tensor_sampler import Sampler
 from tensor.tensor_model_eval import eval_corruptions
 from ppo import PPO as PPOOptimized
 from env import EnvVec
+from tests.test_utils.parity_utils import evaluate_parity
 
 # Simple batch size computation for tests
 def compute_optimal_batch_size(chunk_queries: int = None, n_corruptions: int = None, **kwargs) -> int:
@@ -459,8 +460,9 @@ def run_optimized_eval(
             f"chunk_queries ({effective_chunk_queries}). Increase chunk_queries or reduce n_queries."
         )
     
-    # Run evaluation using ppo.evaluate_parity (matches eval_corruptions protocol)
-    results = ppo.evaluate_parity(
+    # Run evaluation using standalone evaluate_parity (matches eval_corruptions protocol)
+    results = evaluate_parity(
+        ppo=ppo,
         queries=queries,
         sampler=sampler,
         n_corruptions=config.n_corruptions,

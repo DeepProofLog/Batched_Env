@@ -10,6 +10,7 @@ from test_compiled_eval import (
     compute_optimal_batch_size
 )
 from ppo import PPO as PPOOptimized
+from tests.test_utils.parity_utils import evaluate_parity
 
 
 def test_evaluate_vs_evaluate_parity_mrr():
@@ -19,7 +20,7 @@ def test_evaluate_vs_evaluate_parity_mrr():
     # Create config
     config = create_default_config()
     config.dataset = 'family'
-    config.n_queries = 20
+    config.n_queries = 30
     config.n_corruptions = 10
     config.corruption_modes = ['head', 'tail']
     config.compile = False
@@ -53,9 +54,9 @@ def test_evaluate_vs_evaluate_parity_mrr():
 
     # Warmup both
     print("\nWarming up evaluate()...")
-    _ = ppo.evaluate(queries[:3], sampler, n_corruptions=5, corruption_modes=('head',))
+    _ = ppo.evaluate(queries, sampler, n_corruptions=config.n_corruptions, corruption_modes=tuple(config.corruption_modes))
     print("Warming up evaluate_parity()...")
-    _ = ppo.evaluate_parity(queries[:3], sampler, n_corruptions=5, corruption_modes=('head',), compile_mode='default')
+    _ = evaluate_parity(ppo, queries, sampler, n_corruptions=config.n_corruptions, corruption_modes=tuple(config.corruption_modes), compile_mode='default')
 
     # Reset RNG for both
     seed = 42
@@ -78,7 +79,8 @@ def test_evaluate_vs_evaluate_parity_mrr():
 
     # Run evaluate_parity()
     print("Running evaluate_parity()...")
-    res_parity = ppo.evaluate_parity(
+    res_parity = evaluate_parity(
+        ppo,
         queries, sampler,
         n_corruptions=config.n_corruptions,
         corruption_modes=tuple(config.corruption_modes),
