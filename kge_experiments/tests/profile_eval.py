@@ -151,9 +151,9 @@ def main():
     parser.add_argument('--n-corruptions', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false')
-    parser.add_argument('--gpu-profile', action='store_true', default=True, help='Run GPU profiler (default)')
+    parser.add_argument('--gpu-profile', action='store_true',  help='Run GPU profiler (default)')
     parser.add_argument('--cpu-profile', action='store_true', help='Run CPU profiler instead of GPU')
-    parser.add_argument('--no-profile', action='store_true', help='Run without any profiler (pure timing)')
+    parser.add_argument('--no-profile', action='store_true', default=True, help='Run without any profiler (pure timing)')
     args = parser.parse_args()
     
     config = SimpleNamespace(

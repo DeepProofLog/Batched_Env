@@ -25,7 +25,7 @@ if __name__ == "__main__":
 
     DEFAULT_CONFIG = {
         # Dataset
-        'dataset': 'countries_s3',
+        'dataset': 'family',
         'data_path': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'),
         
         # Training
@@ -35,6 +35,7 @@ if __name__ == "__main__":
         'n_steps': 128,
         'batch_size': 512,
         'n_epochs': 5,
+        'augment_train': True, # for countries dataset
         
         # PPO hyperparams  
         'learning_rate': 3e-5,
@@ -77,8 +78,10 @@ if __name__ == "__main__":
         
         # Evaluation
         'eval_freq': 4,
-        'eval_neg_samples': None,
-        'test_neg_samples': None,
+        'n_eval_queries': 100,
+        'n_test_queries': 100,
+        'eval_neg_samples': 10,
+        'test_neg_samples': 10,
         'eval_best_metric': 'mrr',
         
         # LR decay
@@ -198,12 +201,14 @@ if __name__ == "__main__":
             cfg_dict['corruption_scheme'] = ['head', 'tail']
         
         # File names based on depth
-        # Use oversampled training file with D3+ queries heavily weighted
-        cfg_dict['train_file'] = "combined_train_oversampled.txt" if cfg_dict.get('train_depth') else "train.txt"
+        cfg_dict['train_file'] = "train_depths.txt" if cfg_dict.get('train_depth') else "train.txt"
         cfg_dict['valid_file'] = "valid_depths.txt" if cfg_dict.get('valid_depth') else "valid.txt"
         cfg_dict['test_file'] = "test_depths.txt" if cfg_dict.get('test_depth') else "test.txt"
         cfg_dict['rules_file'] = 'rules.txt'
         cfg_dict['facts_file'] = 'train.txt'
+
+        if 'countries' in dataset and cfg_dict.get('augment_train'):
+            cfg_dict['train_file'] = "combined_train_oversampled.txt"
         
         # Create TrainConfig with matching fields
         config_fields = {f.name for f in TrainConfig.__dataclass_fields__.values()}

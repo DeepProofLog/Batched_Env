@@ -22,8 +22,8 @@ class TrainConfig:
     
     # Sample counts (None means use all)
     n_train_queries: Optional[int] = None
-    n_eval_queries: Optional[int] = None
-    n_test_queries: Optional[int] = None
+    n_eval_queries: Optional[int] = 100
+    n_test_queries: Optional[int] = 100
     
     # Environment / Logic
     padding_atoms: int = 6
@@ -35,7 +35,7 @@ class TrainConfig:
     end_proof_action: bool = True
     reward_type: int = 0
     max_total_vars: int = 1000
-    sample_deterministic_per_env: bool = True
+    sample_deterministic_per_env: bool = False  # False for fullgraph compilation compatibility
     
     # Model Architecture
     algorithm_type: str = "ppo"  # Algorithm to use (ppo, etc.)
@@ -70,7 +70,7 @@ class TrainConfig:
     # Sampling / Corruption
     negative_ratio: float = 1.0 # train_neg_ratio
     eval_neg_samples: Optional[int] = 4
-    test_neg_samples: Optional[int] = None
+    test_neg_samples: Optional[int] = 10  # Default to non-exhaustive evaluation
     n_corruptions: Optional[int] = 10 # test_neg_samples alias
     corruption_scheme: List[str] = field(default_factory=lambda: ['head', 'tail'])
     sampler_default_mode: str = "both"
