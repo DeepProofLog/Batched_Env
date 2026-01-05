@@ -1,0 +1,6 @@
+{
+    "metric": "eval/_mrr",
+    "best_value": 0.9583333333333334,
+    "timesteps": 146432,
+    "epoch": 146432
+}

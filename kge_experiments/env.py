@@ -301,6 +301,8 @@ class EnvVec:
             "history_count": h_count,
             "step_rewards": torch.zeros(B, dtype=torch.float32, device=device),
             "step_dones": torch.zeros(B, dtype=torch.uint8, device=device),
+            "step_successes": torch.zeros(B, dtype=torch.uint8, device=device),
+            "step_labels": torch.zeros(B, dtype=torch.long, device=device),
             "cumulative_rewards": torch.zeros(B, dtype=torch.float32, device=device),
             "per_env_ptrs": torch.zeros(B, dtype=torch.long, device=device),
             "neg_counters": torch.zeros(B, dtype=torch.int64, device=device),
@@ -416,6 +418,10 @@ class EnvVec:
         m_SA3 = done_mask.view(-1, 1, 1, 1).expand(-1, self.padding_states, self.padding_atoms, 3)
         m_H = done_mask.view(-1, 1).expand(-1, self.max_history_size)
 
+        # Capture step success and labels BEFORE reset overwrites them (for callback tracking)
+        step_successes = next_state['success']
+        step_labels = next_state['current_labels']
+
         mixed = TensorDict({
             "current_states": torch.where(m_A3, reset_state['current_states'], next_state['current_states']),
             "derived_states": torch.where(m_SA3, reset_state['derived_states'], next_state['derived_states']),
@@ -430,6 +436,8 @@ class EnvVec:
             "history_count": torch.where(done_mask, reset_state['history_count'], next_state['history_count']),
             "step_rewards": rewards,
             "step_dones": done_mask.to(torch.uint8),
+            "step_successes": step_successes,  # Success from completed step, not reset
+            "step_labels": step_labels,  # Labels from completed step, not reset
             "cumulative_rewards": torch.where(done_mask, reset_state['cumulative_rewards'], next_state['cumulative_rewards']),
             "per_env_ptrs": new_ptrs,
             "neg_counters": new_counters,
@@ -873,6 +881,8 @@ class EnvVec:
             "history_count": torch.zeros(B, dtype=torch.long, device=device),
             "step_rewards": torch.zeros(B, dtype=torch.float32, device=device),
             "step_dones": torch.zeros(B, dtype=torch.uint8, device=device),
+            "step_successes": torch.zeros(B, dtype=torch.uint8, device=device),
+            "step_labels": torch.zeros(B, dtype=torch.long, device=device),
             "cumulative_rewards": torch.zeros(B, dtype=torch.float32, device=device),
             "per_env_ptrs": torch.zeros(B, dtype=torch.long, device=device),
             "neg_counters": torch.zeros(B, dtype=torch.int64, device=device),

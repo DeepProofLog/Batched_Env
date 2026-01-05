@@ -338,30 +338,39 @@ class TorchRLCallbackManager:
         current_query_indices: Any,
         query_labels: Any,
         query_depths: Any,
+        successes: Optional[Any] = None,
+        step_labels: Optional[Any] = None,  # Actual labels with negative sampling
     ) -> None:
         """Helper to construct rich infos from raw rollout stats and call on_step."""
         num_dones = len(rewards)
         if num_dones == 0:
             return
 
-        # Success flag default to False as we can't safely infer from reward or state
-        batch_succ = [False] * num_dones
-        
+        # Use provided successes if available, else default to False
+        if successes is not None:
+            batch_succ = list(successes)
+        else:
+            batch_succ = [False] * num_dones
+
         # Fetch meta info if available
         batch_q_idxs = current_query_indices[done_idx_cpu] if current_query_indices is not None else None
-        
+
         batch_lbls = None
         batch_depths = None
-        
-        # Safe indexing with modulo
-        if batch_q_idxs is not None:
-            n_labels = query_labels.shape[0] if query_labels is not None else 0
-            n_depths = query_depths.shape[0] if query_depths is not None else 0
-            
+
+        # Use step_labels directly if provided (actual labels with negative sampling)
+        if step_labels is not None:
+            batch_lbls = step_labels
+        elif batch_q_idxs is not None and query_labels is not None:
+            # Fallback to indexing original labels (legacy behavior)
+            n_labels = query_labels.shape[0]
             if n_labels > 0:
-                # Ensure on CPU or appropriate device, query_labels should be CPU usually
                 safe_idx = torch.as_tensor(batch_q_idxs, dtype=torch.long) % n_labels
                 batch_lbls = query_labels[safe_idx].numpy()
+
+        # Get depths from query pool
+        if batch_q_idxs is not None and query_depths is not None:
+            n_depths = query_depths.shape[0]
             if n_depths > 0:
                 safe_idx = torch.as_tensor(batch_q_idxs, dtype=torch.long) % n_depths
                 batch_depths = query_depths[safe_idx].numpy()

@@ -220,6 +220,7 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         sampler=sampler,
         order=False,  # Random query selection (production)
         negative_ratio=config.negative_ratio,
+        reward_type=config.reward_type,
         compile=True,
         compile_mode='reduce-overhead',
         compile_fullgraph=True,
