@@ -365,18 +365,39 @@ class EnvVec:
 
         return self._state_to_obs(new_state), new_state
 
-    def _step_and_reset_core(self, state: EnvState, actions: Tensor, query_pool: Tensor, per_env_ptrs: Tensor) -> Tuple[EnvObs, EnvState]:
-        """Fused step + reset (for training with auto-reset)."""
+    def _step_and_reset_core(self, state: EnvState, actions: Tensor, query_pool: Tensor, per_env_ptrs: Tensor,
+                              slot_lengths: Optional[Tensor] = None, slot_offsets: Optional[Tensor] = None,
+                              ) -> Tuple[EnvObs, EnvState]:
+        """Fused step + reset for training and evaluation.
+        
+        Query selection modes:
+        - Training (slot_lengths=None): 
+            - self.order=True: round-robin through query_pool (parity tests)
+            - self.order=False: random selection from query_pool (production)
+        - Evaluation (slot_lengths provided):
+            - Per-slot scheduling: query_idx = slot_offsets + (per_env_ptrs % slot_lengths)
+            - Each slot processes its own sequence of queries (positive + corruptions)
+        """
         _, next_state = self._step_core(state, actions)
         rewards = next_state['step_rewards']
         done_mask = next_state['step_dones'].bool()
         B, device = state['current_states'].shape[0], self.device
         pool_size = query_pool.shape[0]
 
-        if self.order:
+        if slot_lengths is not None and slot_offsets is not None:
+            # Slot-based scheduling for evaluation
+            # Each slot has its own query sequence: slot_offsets[i] + (ptr % slot_lengths[i])
+            safe_slot_len = slot_lengths.clamp(min=1)  # Avoid div by zero
+            local_idx = per_env_ptrs % safe_slot_len
+            query_idx = (slot_offsets + local_idx).clamp(max=pool_size - 1)
+            safe_idx = query_idx
+            next_ptrs = per_env_ptrs + 1  # Per-slot counter, no wraparound needed (handled by caller)
+        elif self.order:
+            # Round-robin for parity tests
             safe_idx = per_env_ptrs % pool_size
             next_ptrs = (per_env_ptrs + 1) % pool_size
         else:
+            # Random selection for production training
             safe_idx = torch.randint(0, pool_size, (B,), device=device)
             next_ptrs = per_env_ptrs
 
@@ -414,6 +435,7 @@ class EnvVec:
         }, batch_size=[B], device=device)
 
         return self._state_to_obs(mixed), mixed
+
 
     # =========================================================================
     # UNIFICATION ENGINE
@@ -612,12 +634,15 @@ class EnvVec:
         else:
             # Hash-based pruning (fast, but can have collisions)
             H = history.shape[1]
-            hashes = self._compute_hash(derived)
-            hist_exp = history.unsqueeze(1).expand(-1, K, -1)
-            h_mask = self._arange_S[:H].unsqueeze(0).unsqueeze(0) < h_count.unsqueeze(1).unsqueeze(2)
-            match = (hashes.unsqueeze(-1) == hist_exp) & h_mask
-            is_visited = match.any(dim=-1)
+            hashes = self._compute_hash(derived)  # [B, K]
+            hist_exp = history.unsqueeze(1).expand(-1, K, -1)  # [B, K, H]
+            # Create valid history mask: [B, 1, H] - expanded to [B, K, H]
+            arange_H = torch.arange(H, device=self.device)
+            h_mask = arange_H.view(1, 1, H) < h_count.view(B, 1, 1)  # [B, 1, H] broadcasts to [B, K, H]
+            match = (hashes.unsqueeze(-1) == hist_exp) & h_mask  # [B, K, H]
+            is_visited = match.any(dim=-1)  # [B, K]
             keep = ~is_visited
+
 
             within_count = self._arange_S.unsqueeze(0) < counts.unsqueeze(1)
             keep = keep & within_count
@@ -813,7 +838,32 @@ class EnvVec:
 
 
 class TensorDictEnvWrapper:
-    """Compatibility wrapper for eval_corruptions and parity tests."""
+    """TensorDict wrapper for EnvVec providing slot-based evaluation logic.
+    
+    This wrapper serves two purposes:
+    
+    1. **TensorDict API Compatibility**: Provides reset()/step() methods that accept
+       and return TensorDict objects, matching BatchedEnv's interface for parity tests.
+    
+    2. **Slot-Based Evaluation Protocol**: Implements per-slot query scheduling for
+       eval_corruptions/evaluate_parity. Each environment slot processes a different
+       number of queries (positive + N corruptions), requiring:
+       - per_slot_lengths: Number of queries per slot
+       - per_slot_offsets: Starting index in query pool per slot  
+       - slot_ep_counts: Episode counter per slot
+       - Partial reset via _reset mask to reset only finished slots
+    
+    Why not use _step_and_reset_core()?
+        The compiled _step_and_reset_core() handles training resets via round-robin
+        cycling through a flat query_pool. It doesn't support the ragged per-slot
+        scheduling needed for evaluation where slot 0 might have 11 queries and
+        slot 1 might have 8 queries.
+    
+    Usage:
+        - Training: Use EnvVec directly with _step_and_reset_core() (no wrapper needed)
+        - Evaluation: Use TensorDictEnvWrapper for slot-based query scheduling
+    """
+
     def __init__(self, env: EnvVec):
         self.env = env
         self.batch_size, self.device = env.batch_size, env.device
@@ -868,27 +918,26 @@ class TensorDictEnvWrapper:
         self.env.eval(queries)
 
     def _get_slot_queries(self, reset_mask: Optional[Tensor] = None) -> Tensor:
+        """Fetch initial queries for all slots (used for first reset only).
+        
+        Incremental query fetching is handled by _step_and_reset_core via slot_lengths/slot_offsets.
+        """
         B, pad = self.batch_size, self.env.padding_idx
-        if self._eval_queries is None: return torch.full((B, 3), pad, dtype=torch.long, device=self.device)
-        if reset_mask is None: # Initial fetch
-            self._slot_ep_counts = torch.zeros(B, dtype=torch.long, device=self.device)
-            valid = self._per_slot_lengths > 0
-            q = torch.full((B, 3), pad, dtype=torch.long, device=self.device)
-            if valid.any():
-                idx = self._per_slot_offsets[valid].clamp(max=self._eval_queries.shape[0]-1)
-                fetched = self._eval_queries[idx]
-                q[valid] = fetched.squeeze(1) if fetched.ndim == 3 else fetched
-            return q
-        self._slot_ep_counts[reset_mask] += 1
-        safe_counts = self._slot_ep_counts.clamp(max=self._per_slot_lengths.clamp(min=1)-1).clamp(min=0)
-        query_idx = self._per_slot_offsets + safe_counts
+        if self._eval_queries is None:
+            return torch.full((B, 3), pad, dtype=torch.long, device=self.device)
+        
+        # Initialize slot counters
+        self._slot_ep_counts = torch.zeros(B, dtype=torch.long, device=self.device)
+        
+        # Fetch first query for each slot
+        valid = self._per_slot_lengths > 0
         q = torch.full((B, 3), pad, dtype=torch.long, device=self.device)
-        valid = reset_mask & (self._slot_ep_counts < self._per_slot_lengths)
         if valid.any():
-            idx = query_idx[valid].clamp(max=self._eval_queries.shape[0]-1)
+            idx = self._per_slot_offsets[valid].clamp(max=self._eval_queries.shape[0] - 1)
             fetched = self._eval_queries[idx]
             q[valid] = fetched.squeeze(1) if fetched.ndim == 3 else fetched
         return q
+
 
     def _make_combined_td(self, obs: TensorDict, state: EnvState) -> TensorDict:
         B = self.batch_size
@@ -901,55 +950,20 @@ class TensorDictEnvWrapper:
         combined['is_success'] = state.get('success', torch.zeros(B, dtype=torch.uint8, device=self.device)).bool()
         return combined
 
-    def _merge_states(self, old: EnvState, new: EnvState, mask: Tensor) -> EnvState:
-        merged = {}
-        for k in new.keys():
-            if k in old.keys() and old[k].shape == new[k].shape:
-                val = old[k].clone()
-                val[mask] = new[k][mask]
-                merged[k] = val
-            else: 
-                # For keys not in old or with different shape, just take from new
-                merged[k] = new[k]
-        return TensorDict(merged, batch_size=new.batch_size, device=self.device)
-
     def reset(self, queries: Optional[Union[Tensor, TensorDict]] = None) -> TensorDict:
+
+        """Full reset. Partial resets are handled by _step_and_reset_core in step_and_maybe_reset."""
+        # Extract queries from TensorDict if needed (for compatibility)
         if isinstance(queries, TensorDict):
-            mask = queries.get("_reset", None)
-            if mask is None or self._state is None:
-                # If no reset mask or no existing state, perform a full reset
-                if self._state is not None: 
-                    # If state exists but no mask, just return current observation
-                    return self._make_combined_td(self.env._state_to_obs(self._state), self._state)
-                # If no state and no mask, return empty TD (shouldn't happen in normal flow)
-                return TensorDict({}, batch_size=[self.batch_size], device=self.device)
-            
-            mask = mask.squeeze(-1).bool() # Ensure mask is 1D boolean
-            if not mask.any(): 
-                # If no environments need reset, return current state
-                return self._make_combined_td(self.env._state_to_obs(self._state), self._state)
-            
-            # Get new queries for the environments that need reset
-            q_for_reset = self._get_slot_queries(mask)
-            
-            # Perform reset only for the masked environments
-            # The env.reset expects a full batch, so we need to create a batch with new queries for masked, and padding for others
-            full_queries_batch = torch.full((self.batch_size, 3), self.env.padding_idx, dtype=torch.long, device=self.device)
-            full_queries_batch[mask] = q_for_reset[mask]
-            
-            # Call env.reset with the full batch, it will only process the non-padding queries effectively
-            obs_reset, new_s_reset = self.env.reset(full_queries_batch)
-            
-            # Merge the new state for reset environments with the old state for non-reset environments
-            self._state = self._merge_states(self._state, new_s_reset, mask)
-            
-            return self._make_combined_td(self.env._state_to_obs(self._state), self._state)
+            queries = None  # Ignore _reset mask, use slot queries
         
-        # Standard full reset path
-        if queries is None and self._eval_queries is not None: 
-            queries = self._get_slot_queries(None) # Initial fetch for all slots
+        if queries is None and self._eval_queries is not None:
+            queries = self._get_slot_queries(None)
+        
         obs, self._state = self.env.reset(queries)
         return self._make_combined_td(obs, self._state)
+
+
 
     def step(self, actions) -> TensorDict:
         act = actions['action'] if isinstance(actions, TensorDict) else actions
@@ -959,22 +973,48 @@ class TensorDictEnvWrapper:
         return combined
 
     def step_and_maybe_reset(self, action_td: TensorDict) -> Tuple[TensorDict, TensorDict]:
-        if self.env._query_pool is not None: # Training
-            obs, self._state = self.env._step_and_reset_core(self._state, action_td.get('action'), self.env._query_pool, self.env._per_env_ptrs)
-            res = self._make_combined_td(obs, self._state)
-            res['reward'], res['done'] = self._state['step_rewards'], self._state['step_dones'].bool()
-            nxt = self._make_combined_td(obs, self._state)
-            nxt['done'] = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-            nxt['is_success'] = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
-            return res, nxt
-        res = self.step(action_td)
-        done = res.get('done').squeeze(-1).bool() if res.get('done').dim() > 1 else res.get('done').bool()
-        if done.any():
-            nxt_obs = self.reset(TensorDict({"_reset": done.unsqueeze(-1)}, batch_size=[self.batch_size], device=self.device))
-            nxt = res.clone()
-            for k in nxt_obs.keys():
-                if k in nxt.keys() and nxt[k].shape == nxt_obs[k].shape: nxt[k][done] = nxt_obs[k][done]
-            return res, nxt
-        return res, res
+        """Fused step + auto-reset using _step_and_reset_core for both training and eval.
+        
+        - Training: Uses flat query_pool with round-robin or random selection
+        - Eval: Uses slot-based scheduling via slot_lengths/slot_offsets
+        """
+        action = action_td.get('action')
+        
+        # Determine query pool and pointer source
+        if self._eval_queries is not None:
+            # Eval mode: slot-based scheduling
+            query_pool = self._eval_queries
+            per_env_ptrs = self._slot_ep_counts if self._slot_ep_counts is not None else torch.zeros(self.batch_size, dtype=torch.long, device=self.device)
+            slot_lengths = self._per_slot_lengths
+            slot_offsets = self._per_slot_offsets
+        elif self.env._query_pool is not None:
+            # Training mode: flat pool
+            query_pool = self.env._query_pool
+            per_env_ptrs = self.env._per_env_ptrs
+            slot_lengths = None
+            slot_offsets = None
+        else:
+            # Fallback: step without auto-reset
+            res = self.step(action_td)
+            return res, res
+        
+        obs, self._state = self.env._step_and_reset_core(
+            self._state, action, query_pool, per_env_ptrs,
+            slot_lengths=slot_lengths, slot_offsets=slot_offsets,
+        )
+        
+        # Update pointers
+        if self._slot_ep_counts is not None:
+            self._slot_ep_counts = self._state['per_env_ptrs']
+        
+        res = self._make_combined_td(obs, self._state)
+        res['reward'], res['done'] = self._state['step_rewards'], self._state['step_dones'].bool()
+        
+        nxt = self._make_combined_td(obs, self._state)
+        nxt['done'] = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        nxt['is_success'] = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+        
+        return res, nxt
+
 
 

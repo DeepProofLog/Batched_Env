@@ -87,7 +87,7 @@ if __name__ == "__main__":
 
         # Training params
         'seed': [0],
-        'timesteps_train': 1,
+        'timesteps_train': 100000,
         'restore_best_val_model': True,
         'load_model': False,
         'save_model': True,
@@ -95,7 +95,7 @@ if __name__ == "__main__":
         'n_steps': 128,
         'n_eval_envs': 128,
         'batch_size': 4096,
-        'eval_freq': 4, # in multiples of (n_steps * n_envs) -> how many rollouts between evaluations
+        'eval_freq': 1, # in multiples of (n_steps * n_envs) -> how many rollouts between evaluations
 
         # Env params
         'reward_type': 4,

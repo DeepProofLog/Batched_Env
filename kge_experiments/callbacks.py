@@ -330,6 +330,63 @@ class TorchRLCallbackManager:
             if hasattr(cb, 'on_step'):
                 cb.on_step(infos)
 
+    def prepare_batch_infos(
+        self,
+        rewards: Any,
+        lengths: Any,
+        done_idx_cpu: Any,
+        current_query_indices: Any,
+        query_labels: Any,
+        query_depths: Any,
+    ) -> None:
+        """Helper to construct rich infos from raw rollout stats and call on_step."""
+        num_dones = len(rewards)
+        if num_dones == 0:
+            return
+
+        # Success flag default to False as we can't safely infer from reward or state
+        batch_succ = [False] * num_dones
+        
+        # Fetch meta info if available
+        batch_q_idxs = current_query_indices[done_idx_cpu] if current_query_indices is not None else None
+        
+        batch_lbls = None
+        batch_depths = None
+        
+        # Safe indexing with modulo
+        if batch_q_idxs is not None:
+            n_labels = query_labels.shape[0] if query_labels is not None else 0
+            n_depths = query_depths.shape[0] if query_depths is not None else 0
+            
+            if n_labels > 0:
+                # Ensure on CPU or appropriate device, query_labels should be CPU usually
+                safe_idx = torch.as_tensor(batch_q_idxs, dtype=torch.long) % n_labels
+                batch_lbls = query_labels[safe_idx].numpy()
+            if n_depths > 0:
+                safe_idx = torch.as_tensor(batch_q_idxs, dtype=torch.long) % n_depths
+                batch_depths = query_depths[safe_idx].numpy()
+        
+        # Construct infos using efficient zipping
+        iterators = [
+            rewards, lengths, batch_succ,
+            batch_q_idxs if batch_q_idxs is not None else [None] * num_dones,
+            batch_lbls if batch_lbls is not None else [None] * num_dones,
+            batch_depths if batch_depths is not None else [None] * num_dones
+        ]
+        
+        batch_infos = [
+            {
+                "episode": {"r": float(r), "l": int(l)},
+                "is_success": bool(s),
+                **({ "episode_idx": int(q) } if q is not None else {}),
+                **({ "label": int(lbl) } if lbl is not None else {}),
+                **({ "query_depth": int(d) } if d is not None else {})
+            }
+            for r, l, s, q, lbl, d in zip(*iterators)
+        ]
+        
+        self.on_step(batch_infos)
+
     def on_iteration_end(self, iteration: int, global_step: int) -> Dict[str, Any]:
         metrics = {}
         for cb in self.callbacks:
@@ -719,7 +776,7 @@ class RankingCallback:
              print(f"[Ranking] {self.mrr_tracker.get_summary()}")
              Display.print_formatted_metrics(
                  metrics=eval_metrics,
-                 prefix="eval_rank",
+                 prefix="eval",
              )
         
         return eval_metrics

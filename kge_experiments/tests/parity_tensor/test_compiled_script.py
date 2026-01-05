@@ -42,7 +42,7 @@ from tests.test_utils.parity_config import ParityConfig, TOLERANCE, create_parse
 
 # Import train functions directly from train files - must be after setting env vars
 from tensor.tensor_train_parity import run_experiment as tensor_run_experiment, TrainParityConfig as TensorConfig
-from train import run_experiment as compiled_run_experiment, TrainConfig as CompiledConfig
+from train_parity import run_experiment as compiled_run_experiment, TrainConfig as CompiledConfig
 
 
 def parity_config_to_tensor_config(parity_config: ParityConfig) -> TensorConfig:
@@ -143,6 +143,7 @@ def compare_results(tensor_results: dict, compiled_results: dict) -> bool:
         # Strict tolerance for checksums (architecture/initialization)
         'embedder_checksum': TOLERANCE,
         'policy_checksum_init': TOLERANCE,
+        # Strict tolerance for eval metrics (using evaluate_parity for parity)
         'MRR': TOLERANCE,
         'Hits@1': TOLERANCE,
         'Hits@3': TOLERANCE,
@@ -154,7 +155,7 @@ def compare_results(tensor_results: dict, compiled_results: dict) -> bool:
         'approx_kl': 0.001,
         'clip_fraction': 0.1,
     }
-    
+
     all_passed = True
     passed_count = 0
     failed_count = 0

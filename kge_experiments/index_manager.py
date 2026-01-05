@@ -249,6 +249,22 @@ class IndexManager:
         out[:, 2] = torch.as_tensor(b, dtype=torch.long)
         return out
 
+    def queries_to_tensor(self, queries: List, device: Optional[torch.device] = None) -> LongTensor:
+        """Convert list of Term queries to [N, 3] tensor format.
+        
+        Args:
+            queries: List of Term objects with .predicate and .args attributes
+            device: Target device (defaults to self.device)
+            
+        Returns:
+            Tensor of shape [N, 3] with query indices
+        """
+        device = device or self.device
+        return torch.stack([
+            self.atom_to_tensor(q.predicate, q.args[0], q.args[1]) for q in queries
+        ], dim=0).to(device)
+
+
     def rules_to_tensor(
         self,
         rules: Iterable[Tuple[Tuple[str, str, str], List[Tuple[str, str, str]]]],

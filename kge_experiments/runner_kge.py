@@ -107,7 +107,7 @@ if __name__ == "__main__":
         # Logging
         'use_logger': True,
         'logger_path': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'runs'),
-        'verbose': False,
+        'verbose': True,
         
         # Device
         'device': 'cuda',
@@ -235,14 +235,20 @@ if __name__ == "__main__":
             # Log results
             if logger:
                 # Create metrics dicts for logger compatibility
-                test_metrics = {
-                    'mrr_mean': results.get('MRR', 0),
-                    'hits1_mean': results.get('Hits@1', 0),
-                    'hits3_mean': results.get('Hits@3', 0),
-                    'hits10_mean': results.get('Hits@10', 0),
-                }
+                test_metrics = {}
+                for k, v in results.items():
+                    # Pass through all scalar metrics (int/float)
+                    if isinstance(v, (int, float)):
+                        test_metrics[k] = v
+                    # Try to parse string numbers if any
+                    elif isinstance(v, str):
+                        try:
+                            test_metrics[k] = float(v)
+                        except ValueError:
+                            pass
                 log_filename = logger.get_tmp_log_filename(config.run_signature, date, seed)
-                logger.log_run(cfg_dict, {}, {}, test_metrics, log_filename, date, seed)
+                logger.log_run(config, {}, {}, test_metrics, log_filename, date, seed)
+
         
         if logger:
             logger.log_avg_results(cfg_dict, config.run_signature, seeds)

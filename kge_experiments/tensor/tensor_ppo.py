@@ -686,21 +686,13 @@ class PPO:
             dones = dones.squeeze(-1)
         self.rollout_buffer.compute_returns_and_advantage(last_values=last_values, dones=dones)
         
-        if return_traces:
-            return (
-                current_obs,
-                episode_starts,
-                current_episode_reward,
-                current_episode_length,
-                n_collected * self.n_envs,
-                traces,
-            )
         return (
             current_obs,
             episode_starts,
             current_episode_reward,
             current_episode_length,
             n_collected * self.n_envs,
+            traces if return_traces else None,
         )
 
     def train(self, return_traces: bool = False) -> Dict[str, float]:

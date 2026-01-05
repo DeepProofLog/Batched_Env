@@ -142,6 +142,28 @@ class PPO:
         if self.parity:
             self.env = TensorDictEnvWrapper(env)
 
+        # Metrics info (CPU-only to avoid synchronization) - copied from PPOOld
+        query_labels = kwargs.get('query_labels', None)
+        query_depths = kwargs.get('query_depths', None)
+        
+        # Try to extract from components if not provided
+        components = getattr(config, '_components', {}) 
+        if query_depths is None and components.get('dh'):
+            dh = components.get('dh')
+            if hasattr(dh, 'get_materialized_split'):
+                try:
+                    train_split = dh.get_materialized_split('train')
+                    query_depths = train_split.depths
+                    # FIX: Extract labels or default to ones (all positives for training)
+                    if hasattr(train_split, 'labels') and train_split.labels.numel() == query_depths.numel():
+                        query_labels = train_split.labels
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[PPOOptimal] Warning: Could not extract training depths: {e}")
+
+        self.query_labels = query_labels.detach().cpu() if query_labels is not None else None
+        self.query_depths = query_depths.detach().cpu() if query_depths is not None else None
+
         # IMPORTANT: Keep uncompiled policy reference for fused steps
         self._uncompiled_policy = policy
 
@@ -328,7 +350,11 @@ class PPO:
 
         # Log probability tracking buffers
         self._ranking_ep_logprob = torch.zeros(B, dtype=torch.float32, device=device)  # Per-slot accumulator
+        self._ranking_ep_logprob = torch.zeros(B, dtype=torch.float32, device=device)  # Per-slot accumulator
         self._ranking_result_logprob = torch.zeros(max_pool, dtype=torch.float32, device=device)  # Per-query final log prob
+        self._ranking_result_depths = torch.zeros(max_pool, dtype=torch.long, device=device)
+        self._ranking_result_success = torch.zeros(max_pool, dtype=torch.bool, device=device)
+        self._ranking_result_rewards = torch.zeros(max_pool, dtype=torch.float32, device=device)
 
         # Helper buffers
         self._ranking_stride = torch.tensor(B, dtype=torch.long, device=device)
@@ -527,17 +553,35 @@ class PPO:
                 # Update per-env pointers from state (critical for query cycling parity)
                 self.env._per_env_ptrs.copy_(new_state['per_env_ptrs'])
 
-                done_mask = new_state['step_dones'].bool()
-                if done_mask.any():
-                    rews = current_episode_reward[done_mask].float().cpu().numpy()
-                    lens = current_episode_length[done_mask].cpu().numpy().astype(int)
-                    episode_rewards.extend(rews.tolist())
-                    episode_lengths.extend(lens.tolist())
-                    current_episode_reward.masked_fill_(done_mask, 0.0)
-                    current_episode_length.masked_fill_(done_mask, 0)
+                # Handle callbacks for done episodes
+                done_indices = torch.nonzero(new_state['step_dones']).flatten()
+                num_dones = done_indices.numel()
+                if num_dones > 0:
+                    done_idx_cpu = done_indices.cpu().numpy()
+                    batch_rs = current_episode_reward[done_indices].float().cpu().numpy()
+                    batch_ls = current_episode_length[done_indices].cpu().numpy().astype(int)
+                    episode_rewards.extend(batch_rs.tolist())
+                    episode_lengths.extend(batch_ls.tolist())
+
+                    if on_step_callback is not None:
+                        on_step_callback(
+                            rewards=batch_rs,
+                            lengths=batch_ls,
+                            done_idx_cpu=done_idx_cpu,
+                            current_query_indices=self.current_query_indices,
+                            query_labels=self.query_labels,
+                            query_depths=self.query_depths,
+                        )
+
+                    # Update pointers
                     if self.current_query_indices is not None:
-                        done_idx_cpu = done_mask.nonzero(as_tuple=True)[0].cpu().numpy()
-                        self.current_query_indices[done_idx_cpu] = new_state['per_env_ptrs'][done_mask].cpu().numpy()
+                         # Use per_env_ptrs from new_state (which is the next query index)
+                         self.current_query_indices[done_idx_cpu] = new_state['per_env_ptrs'][done_indices].cpu().numpy()
+                    
+                    # Manual masking is still needed for accumulators
+                    current_episode_reward.masked_fill_(new_state['step_dones'].bool(), 0.0)
+                    current_episode_length.masked_fill_(new_state['step_dones'].bool(), 0)
+
 
                 episode_starts = new_state['step_dones'].float()
                 state, obs = new_state, new_obs
@@ -695,13 +739,28 @@ class PPO:
             if on_iteration_start_callback:
                 on_iteration_start_callback(iteration, self.num_timesteps)
 
-            result = self.collect_rollouts(state, obs, ep_starts, curr_ep_rew, curr_ep_len, ep_rews, ep_lens, iteration, return_traces, on_step_callback)
+            step_cb = on_step_callback
+            if self.callback is not None:
+                if hasattr(self.callback, 'prepare_batch_infos'):
+                    step_cb = self.callback.prepare_batch_infos
+                else:
+                    step_cb = self.callback.on_step
+
+            result = self.collect_rollouts(state, obs, ep_starts, curr_ep_rew, curr_ep_len, ep_rews, ep_lens, iteration, return_traces, step_cb)
             state, obs, ep_starts, curr_ep_rew, curr_ep_len, n_steps, _ = result
             state = state.clone()
+            obs = {k: v.clone() for k, v in obs.items()}
             self.num_timesteps += n_steps
 
             train_metrics = self.train(return_traces)
             self.last_train_metrics = train_metrics
+            
+            # Callback: End of iteration (logs metrics)
+            if self.callback:
+                # Prepare locals for callback manager
+                # Manager expects 'iteration', 'total_steps_done', 'train_metrics'
+                total_steps_done = self.num_timesteps
+                self.callback(locals(), globals())
 
         return {'num_timesteps': self.num_timesteps, 'episode_rewards': ep_rews, 'episode_lengths': ep_lens, 'last_train_metrics': self.last_train_metrics}
 
@@ -760,6 +819,10 @@ class PPO:
         self._ranking_pool[new_size:].fill_(pad)
         self._ranking_pool_size.fill_(new_size)
         self._ranking_result_buf.zero_()
+        self._ranking_result_logprob.zero_()
+        self._ranking_result_depths.zero_()
+        self._ranking_result_success.zero_()
+        self._ranking_result_rewards.zero_()
         self._ranking_stride.fill_(N)
         
         # Initialize loop buffers using env._reset_from_queries for proper derived computation
@@ -781,10 +844,116 @@ class PPO:
         self._ranking_pool_ptr.copy_(torch.arange(B, device=device))
         self._ranking_history_hashes.copy_(init_state['history_hashes'])
         self._ranking_history_count.copy_(init_state['history_count'])
-
-        # Initialize log prob tracking buffers
         self._ranking_ep_logprob.zero_()
         self._ranking_result_logprob.zero_()
+
+    def _collect_chunk_stats(self, pool_size, corruption_modes, device, all_stats, CQ, K):
+        """Helper to collect detailed stats for a chunk."""
+        chunk_depths = self._ranking_result_depths[:pool_size]
+        chunk_rewards = self._ranking_result_rewards[:pool_size]
+        chunk_success = self._ranking_result_success[:pool_size]
+        chunk_proven = chunk_success  # Use success buffer directly
+        
+        # Identify Positive Indices vs Negative Indices
+        pos_indices = []
+        neg_indices = []
+        
+        off = 0
+        for _ in corruption_modes:
+            # First CQ are positives
+            pos_indices.append(torch.arange(off, off + CQ, device=device))
+            # Remaining CQ * n_corruptions are negatives
+            neg_indices.append(torch.arange(off + CQ, off + CQ * K, device=device))
+            off += CQ * K
+            
+        pos_idx = torch.cat(pos_indices)
+        neg_idx = torch.cat(neg_indices)
+        
+        # Collect and store (move to CPU to save GPU mem)
+        if pos_idx.numel() > 0:
+            all_stats['len_pos'].append(chunk_depths[pos_idx].float().cpu())
+            all_stats['rew_pos'].append(chunk_rewards[pos_idx].float().cpu())
+            all_stats['pvn_pos'].append(chunk_proven[pos_idx].float().cpu())
+        
+        if neg_idx.numel() > 0:
+            all_stats['len_neg'].append(chunk_depths[neg_idx].float().cpu())
+            all_stats['rew_neg'].append(chunk_rewards[neg_idx].float().cpu())
+            all_stats['pvn_neg'].append(chunk_proven[neg_idx].float().cpu())
+
+    def _aggregate_metrics(self, all_stats, query_depths, N, chunk_queries, corruption_modes, all_ranks=None):
+        """Helper to aggregate all collected metrics."""
+        res = {}
+        
+        # Concat detailed stats
+        full_stats = {k: torch.cat(v) if v else torch.tensor([]) for k, v in all_stats.items()}
+        
+        # Global means (for mapping only, don't store in res directly as requested)
+        global_means = {}
+        for k, v in full_stats.items():
+            global_means[k] = v.mean().item() if v.numel() > 0 else 0.0
+            
+        # Map to SB3 names
+        res['proven_pos'] = global_means.get('pvn_pos', 0)
+        res['proven_neg'] = global_means.get('pvn_neg', 0)
+        res['len_pos']    = global_means.get('len_pos', 0)
+        res['len_neg']    = global_means.get('len_neg', 0)
+        res['reward_label_pos'] = global_means.get('rew_pos', 0)
+        res['reward_label_neg'] = global_means.get('rew_neg', 0)
+        
+        # Depth-based stats for POSITIVES
+        if query_depths is not None:
+            # Reconstruct expanded_depths matching full_stats['len_pos']
+            qd = query_depths.cpu()
+            expanded_depths_list = []
+            
+            # The loop structure was: for start in 0..N: for mode in modes: append pos stats
+            # So we mirror that structure to gather depths
+            for start in range(0, N, chunk_queries):
+                end = min(start + chunk_queries, N)
+                chunk_d = qd[start:end]
+                for _ in corruption_modes:
+                    expanded_depths_list.append(chunk_d)
+            
+            if expanded_depths_list:
+                expanded_depths = torch.cat(expanded_depths_list)
+                unique_d = torch.unique(qd)
+                
+                for d in unique_d.tolist():
+                    mask = (expanded_depths == d)
+                    if mask.any():
+                        res[f"len_d_{d}_pos"] = full_stats['len_pos'][mask].mean().item()
+                        res[f"proven_d_{d}_pos"] = full_stats['pvn_pos'][mask].mean().item()
+                        res[f"reward_d_{d}_pos"] = full_stats['rew_pos'][mask].mean().item()
+
+        # Compute Ranking Metrics (MRR, Hits@K)
+        if all_ranks is not None:
+            def compute_stats(r):
+                if r.numel() == 0: return {}
+                return {
+                    'MRR': (1.0 / r.float()).mean().item(),
+                    'Hits@1': (r <= 1).float().mean().item(),
+                    'Hits@3': (r <= 3).float().mean().item(),
+                    'Hits@10': (r <= 10).float().mean().item(),
+                }
+
+            global_metrics = {'MRR': [], 'Hits@1': [], 'Hits@3': [], 'Hits@10': []}
+
+            for m in corruption_modes:
+                if all_ranks[m]:
+                    ranks = torch.cat(all_ranks[m])
+                    m_stats = compute_stats(ranks)
+                    for k, v in m_stats.items():
+                        global_metrics[k].append(v)
+                # Per-mode and depth-based breakdowns removed as requested
+
+            # Aggregate overall
+            for k in global_metrics.keys():
+                if global_metrics[k]:
+                    res[k] = np.mean(global_metrics[k])
+                else:
+                    res[k] = 0.0
+                        
+        return res
 
     def evaluate(self, queries: Tensor, sampler, n_corruptions: int = 50, corruption_modes: Sequence[str] = ('head', 'tail'), *,
                  chunk_queries: int = None, verbose: bool = False, deterministic: bool = True,
@@ -801,6 +970,14 @@ class PPO:
         if chunk_queries < 1: raise ValueError("Queries/modes too large for pool.")
         
         all_ranks = {mode: [] for mode in corruption_modes}
+        
+        # Accumulators for detailed stats
+        all_stats = {
+            'len_pos': [], 'len_neg': [], 
+            'rew_pos': [], 'rew_neg': [], 
+            'pvn_pos': [], 'pvn_neg': []
+        }
+
         for start in range(0, N, chunk_queries):
             end = min(start + chunk_queries, N)
             chunk = queries[start:end]
@@ -827,11 +1004,31 @@ class PPO:
                 v_idx = (indices >= 0) & (indices < pool_size)
                 clamped_indices = indices.clamp(0, pool_size-1)
                 self._ranking_result_buf.scatter_(0, clamped_indices, success & v_idx)
-                # For log probs, only update valid indices (preserve existing values for invalid)
+                
+                # For log probs
                 current_logprob = self._ranking_result_logprob[clamped_indices]
                 final_logprob = torch.where(v_idx, logprob_to_store, current_logprob)
                 self._ranking_result_logprob.scatter_(0, clamped_indices, final_logprob)
+                
+                # Capture depths, success, and rewards
+                current_depths = self._ranking_result_depths[clamped_indices]
+                final_depths = torch.where(v_idx, new_dep, current_depths)
+                self._ranking_result_depths.scatter_(0, clamped_indices, final_depths)
+                
+                # Track success independently
+                current_success = self._ranking_result_success[clamped_indices]
+                final_success = torch.where(v_idx, success, current_success)
+                self._ranking_result_success.scatter_(0, clamped_indices, final_success)
+                
+                current_rewards = self._ranking_result_rewards[clamped_indices]
+                # In this env, reward is success.float(), but we track it separately as requested
+                final_rewards = torch.where(v_idx, success.float(), current_rewards)
+                self._ranking_result_rewards.scatter_(0, clamped_indices, final_rewards)
+
                 if self._ranking_done.all(): break
+
+            # --- Collect Detailed Stats for this Chunk ---
+            self._collect_chunk_stats(pool_size, corruption_modes, device, all_stats, CQ, K)
 
             # Ranking computation per mode (using accumulated log probs)
             offset = 0
@@ -855,16 +1052,8 @@ class PPO:
                 offset += CQ * K
 
         # Metric Aggregation
-        res = {}
-        for m in corruption_modes:
-            ranks = torch.cat(all_ranks[m])
-            res[f'{m}_mrr'] = (1.0 / ranks.float()).mean().item()
-            res[f'{m}_hits1'] = (ranks <= 1).float().mean().item()
-            res[f'{m}_hits3'] = (ranks <= 3).float().mean().item()
-            res[f'{m}_hits10'] = (ranks <= 10).float().mean().item()
+        res = self._aggregate_metrics(all_stats, query_depths, N, chunk_queries, corruption_modes, all_ranks=all_ranks)
         
-        for k in ['MRR', 'Hits@1', 'Hits@3', 'Hits@10']:
-            res[k] = np.mean([res[f'{m}_{k.lower().replace("@","")}'] for m in corruption_modes])
         return res
 
     # -------------------------------------------------------------------------
