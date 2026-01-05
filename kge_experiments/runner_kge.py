@@ -25,12 +25,12 @@ if __name__ == "__main__":
 
     DEFAULT_CONFIG = {
         # Dataset
-        'dataset': 'family',
+        'dataset': 'wn18rr',
         'data_path': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'),
         
         # Training
         'seed': [0],
-        'total_timesteps': 700000,
+        'total_timesteps': 3000000,
         'n_envs': 128,
         'n_steps': 128,
         'batch_size': 512,
@@ -61,7 +61,7 @@ if __name__ == "__main__":
         
         # Environment
         'padding_atoms': 6,
-        'padding_states': -1,  # Auto from dataset
+        'padding_states': 120,  # Auto from dataset
         'max_steps': 20,
         'reward_type': 4,
         'negative_ratio': 1,

@@ -336,124 +336,6 @@ def all_atoms_are_ground_facts(
     return is_proof
 
 
-def standardize_vars_parity(
-    states: Tensor,          # [B, K, M, 3] derived states
-    counts: Tensor,          # [B] valid count per batch
-    next_var_indices: Tensor, # [B] starting variable index per batch
-    constant_no: int,
-    padding_idx: int,
-    input_states: Optional[Tensor], # [B, M_in, 3] Input states for variable seeding
-    max_vocab_size: int = 4096,
-) -> Tuple[Tensor, Tensor]:
-    """
-    Vectorized implementation of parity mode variable standardization.
-    Standardizes each candidate state INDEPENDENTLY but fully vectorized across batch and candidates.
-    
-    This replaces the loop-based logic to avoid graph breaks in torch.compile.
-    
-    Logic:
-    1. Reshape to treat (Batch * Candidates) as a single large batch dimension (BK).
-    2. Seed assignments using input_states (mapped to self).
-    3. Iterate sequentially over atoms in derived states to assign new variables
-       in appearance order (only if not already assigned).
-    4. Compute new next_var based on max used variable per batch.
-    """
-    B, K, M, _ = states.shape
-    device = states.device
-    pad = padding_idx
-    
-    # 1. Reshape to [BK] batch dimension
-    BK = B * K
-    
-    # Flatten states to [BK, M, 3]
-    states_flat = states.reshape(BK, M, 3)
-    
-    # Prepare assignment table: [BK, MaxVocab] (Init -1)
-    assign_table = torch.full((BK, max_vocab_size), -1, dtype=torch.long, device=device)
-    
-    # 2. Seed `input_states` assignments (map to self)
-    if input_states is not None:
-        # input_states: [B, Min, 3] -> expand to [B, K, Min, 3] -> reshape [BK, Min, 3]
-        Min = input_states.shape[1]
-        input_exp = input_states.unsqueeze(1).expand(-1, K, -1, -1).reshape(BK, Min, 3)
-        
-        # Extract args: [BK, Min*2]
-        input_args = input_exp[:, :, 1:3].reshape(BK, -1)
-        
-        # Identify variables
-        is_var_in = (input_args > constant_no) & (input_args != pad)
-        
-        # Scatter self-assignment (write to table index=value)
-        # Handle masking by writing to index 0 for non-vars (0 is constant/pad, we ignore its entry)
-        safe_idx = torch.where(is_var_in, input_args, torch.zeros_like(input_args))
-        assign_table.scatter_(1, safe_idx, safe_idx)
-        
-    # 3. Initialize next variable counters [BK]
-    next_gen = next_var_indices.unsqueeze(1).expand(-1, K).reshape(BK)
-    
-    # 4. Sequential Scan over Derived State Args
-    # Flatten args: [BK, M*2]
-    # CAUTION: We must clone because we update state_args conceptually, 
-    # but practically we just read from original states and write to output
-    state_args = states_flat[:, :, 1:3].reshape(BK, -1)
-    L = state_args.shape[1]
-    
-    # To store results
-    out_args = state_args.clone()
-    
-    # Iterate over the sequence length L (e.g., 40-60 iterations)
-    for t in range(L):
-        # Current column of args: [BK]
-        vals = state_args[:, t]
-        
-        # Check if valid variable
-        is_var = (vals > constant_no) & (vals != pad)
-        
-        # Determine current assignment from table
-        curr_assign = assign_table.gather(1, vals.unsqueeze(1)).squeeze(1)
-        
-        # Unassigned if -1 AND is a variable
-        is_unassigned = (curr_assign == -1) & is_var
-        
-        # Determine new value to assign
-        new_assign = torch.where(is_unassigned, next_gen, curr_assign)
-        
-        # Update next_gen counters
-        next_gen = torch.where(is_unassigned, next_gen + 1, next_gen)
-        
-        # Update assignment table (scatter new assignment)
-        safe_indices = torch.where(is_var, vals, torch.zeros_like(vals))
-        assign_table.scatter_(1, safe_indices.unsqueeze(1), new_assign.unsqueeze(1))
-        
-        # Store standardized value in output
-        out_args[:, t] = torch.where(is_var, new_assign, vals)
-
-    # 5. Reconstruct standardized states
-    out_args_reshaped = out_args.reshape(BK, M, 2)
-    states_flat = states_flat.clone() # Clone to avoid modifying original if needed
-    states_flat[:, :, 1:3] = out_args_reshaped
-    
-    # Reshape back to [B, K, M, 3]
-    standardized = states_flat.reshape(B, K, M, 3)
-    
-    # 6. Compute new_next_var [B] based on max used variable per batch
-    # Mask out invalid candidates using counts
-    next_gen_b = next_gen.reshape(B, K)
-    
-    # mask: [B, K]
-    k_indices = torch.arange(K, device=device).unsqueeze(0).expand(B, -1)
-    is_valid_cand = k_indices < counts.unsqueeze(1)
-    
-    # Filter next_gen: use baseline for invalid ones
-    base_next = next_var_indices.unsqueeze(1).expand(-1, K)
-    valid_next_gen = torch.where(is_valid_cand, next_gen_b, base_next)
-    
-    # Take max over K
-    new_next_var, _ = valid_next_gen.max(dim=1)
-    
-    return standardized, new_next_var
-
-
 def standardize_vars(
     states: Tensor,          # [B, K, M, 3]
     counts: Tensor,          # [B] valid count per batch
@@ -871,209 +753,6 @@ def prune_ground_facts(
     return pruned_states, pruned_counts, is_proof
 
 
-def compact_atoms(
-    states: Tensor,             # [B, K, M, 3]
-    padding_idx: int,
-) -> Tensor:
-    """
-    Left-align atoms by removing gaps (padding) in the M dimension.
-    
-    After prune_ground_facts, atoms may have gaps where facts were removed.
-    This function compacts atoms to the front (position 0, 1, 2, ...) and
-    fills the rest with padding.
-    
-    This matches the tensor engine's compact operation for parity.
-    Uses scatter_ operations that are compatible with torch.compile.
-    
-    Args:
-        states: [B, K, M, 3] states with potential gaps in M dimension
-        padding_idx: value used for padding
-        
-    Returns:
-        compacted: [B, K, M, 3] states with atoms left-aligned
-    """
-    B, K, M, _ = states.shape
-    device = states.device
-    pad = padding_idx
-    
-    # Identify valid (non-padding) atoms
-    valid_atom = (states[:, :, :, 0] != pad)  # [B, K, M]
-    
-    # Compute target positions via cumsum
-    # cumsum gives 1-indexed positions, subtract 1 for 0-indexed
-    pos = torch.cumsum(valid_atom.long(), dim=2) - 1  # [B, K, M]
-    
-    # For invalid atoms, set position to M (out of bounds that we won't use)
-    # This ensures they don't interfere with valid scatter targets
-    pos_safe = torch.where(valid_atom, pos, torch.tensor(M - 1, dtype=pos.dtype, device=device))
-    
-    # Create output tensor filled with padding
-    compacted = torch.full_like(states, pad)
-    
-    # CRITICAL: We must scatter in order from position 0 to M-1 (low to high)
-    # so that valid atoms at lower positions are not overwritten by padding from higher positions.
-    # But scatter_ doesn't guarantee order when multiple sources target same destination.
-    
-    # Instead, use argsort on positions to get a reordering where we process in target order
-    # This way, valid atoms with their correct target positions come before invalid atoms
-    # that all have position M-1.
-    
-    # Actually, let's use a cleaner approach: for each target position j in [0, M),
-    # find which source position maps to it (the one with valid_atom[i] and pos[i]==j)
-    
-    # Build inverse mapping: for each target position, which source gives it?
-    # We can use scatter with the source position as value, then gather
-    
-    # Approach: Create sorted order within each (B, K) slice by (valid descending, pos ascending)
-    # This puts valid atoms with low target positions first.
-    
-    # Simpler: use scatter with the maximum valid target as the source
-    # If valid_atom[i] and pos[i] = j, then compacted[j] = states[i]
-    
-    # To avoid conflicts, we can iterate conceptually: 
-    # For gather-based approach, we need to know which source index maps to each target index.
-    # source_for_target[j] = i where valid_atom[i] and pos[i] == j, or M-1 (padding) if none
-    
-    # Build source_for_target via scatter of source indices
-    source_indices = torch.arange(M, device=device).view(1, 1, M).expand(B, K, M)  # [B, K, M]
-    
-    # Scatter source indices to target positions
-    # Initialize with M (invalid marker that will gather padding)
-    source_for_target = torch.full((B, K, M), M - 1, dtype=torch.long, device=device)
-    
-    # Only scatter valid atoms' source indices to their target positions
-    # Use scatter_ with the source index as the value
-    # For pos_safe, valid atoms have their correct target, invalid have M-1
-    # Scatter source_indices to positions pos_safe
-    source_for_target.scatter_(2, pos_safe, source_indices)
-    
-    # Now for invalid atoms (that all went to M-1), we have multiple sources targeting M-1
-    # Last one wins, but M-1 position should be padding anyway, so it's fine.
-    
-    # But wait - valid atoms might also have target position M-1 if there are M valid atoms.
-    # In that case, we want the valid one, not the invalid one.
-    # The scatter order depends on iteration order which is problematic.
-    
-    # Let's fix: For invalid atoms, don't scatter at all. Use where to filter.
-    # Reset and scatter only valid
-    source_for_target = torch.full((B, K, M), M - 1, dtype=torch.long, device=device)
-    
-    # Scatter only where valid - we need to mask invalid positions to not participate
-    # Unfortunately scatter_ doesn't support masking directly
-    
-    # Alternative: scatter with values that indicate "no valid source" for invalids
-    # Then in a second pass, overwrite with valid sources
-    
-    # Actually, the key insight: if we process scatter in increasing order of source position,
-    # and valid atoms appear at various positions, we need the valid source to "win".
-    
-    # Simple solution: scatter twice - first scatter all as if valid, then 
-    # the result will have the last source index at each target position.
-    # If we order sources so valid ones come last, they win.
-    
-    # But easier: use the fact that for a given target position j, there's at most one 
-    # valid source i with pos[i] = j (since cumsum is strictly increasing for valid positions).
-    # Invalid sources all map to M-1 (by our pos_safe definition).
-    
-    # So the only conflict is at position M-1 where multiple invalids and possibly one valid collide.
-    # For positions 0..M-2, there's no conflict - at most one valid source maps there.
-    
-    # Fix: change invalid target to M (out of bounds) and use a temporary buffer of size M+1,
-    # then slice back to M.
-    
-    # Even simpler: just use the existing pos_safe with M-1 for invalids.
-    # Positions 0 to count-1 will have exactly one valid source each.
-    # Position M-1 might have both valid (if count==M) and invalid sources.
-    # If count==M, valid source should win - but scatter order is undefined.
-    
-    # Safest fix: use scatter_reduce with 'max' or 'min' on source indices, then gather.
-    # But scatter_reduce might not be compile-friendly.
-    
-    # Simplest fix that works: re-implement without scatter, using pure gather logic.
-    # For each target position j, find if there exists a valid source with pos==j.
-    
-    # Use eq and any: is_target[j] = any(valid_atom & (pos == j))
-    # But this is O(M^2) comparisons.
-    
-    # Let's just try the simple scatter and hope the order works in practice.
-    # If valid atoms appear before invalids in memory order, and valid sources for 
-    # positions 0..count-1 are scattered first, they should be fine.
-    # Only M-1 position is problematic if count==M.
-    
-    # Actually, let's try: scatter valid sources first, then don't scatter invalids at all.
-    # We can do this by setting invalid sources' target to their own source index 
-    # (a no-op that just reads what's already there)... but that doesn't work either.
-    
-    # Let's go back to the working nonzero approach but guard it with torch._dynamo.disable
-    # for the compact operation, so it doesn't break compilation of the outer function.
-    
-    # For now, use a cleaner approach: argsort-based reorder
-    # Sort each (B, K) row by (valid desc, pos asc) and take first M elements
-    # This is equivalent to stable argsort on pos where invalid atoms have pos=M.
-    
-    # Set invalid atoms' positions to M (so they sort to the end)
-    sort_key = torch.where(valid_atom, pos, torch.tensor(M, dtype=pos.dtype, device=device))
-    
-    # Argsort gives indices that would sort the tensor
-    sorted_indices = torch.argsort(sort_key, dim=2, stable=True)  # [B, K, M]
-    
-    # Gather states in sorted order
-    sorted_indices_exp = sorted_indices.unsqueeze(-1).expand(-1, -1, -1, 3)  # [B, K, M, 3]
-    compacted = torch.gather(states, 2, sorted_indices_exp)
-    
-    return compacted
-
-
-def pack_results_parity(
-    fact_states: Tensor,        # [B, K_f, G, 3]
-    fact_mask: Tensor,          # [B, K_f]
-    rule_states: Tensor,        # [B, K_r, M, 3]
-    rule_mask: Tensor,          # [B, K_r]
-    K_max: int,
-    M_max: int,
-    padding_idx: int,
-) -> Tuple[Tensor, Tensor]:
-    """
-    Combine fact and rule results using stable sort for parity.
-    Slower but deterministic and exact matching original order.
-    """
-    B = fact_states.shape[0]
-    device = fact_states.device
-    pad = padding_idx
-    K_f = fact_states.shape[1]
-    K_r = rule_states.shape[1]
-    G = fact_states.shape[2]
-    M_r = rule_states.shape[2]
-    
-    # Normalize dimensions
-    if G < M_max:
-        fact_pad = torch.full((B, K_f, M_max - G, 3), pad, dtype=fact_states.dtype, device=device)
-        fact_states = torch.cat([fact_states, fact_pad], dim=2)
-    elif G > M_max:
-        fact_states = fact_states[:, :, :M_max, :]
-    
-    if M_r < M_max:
-        rule_pad = torch.full((B, K_r, M_max - M_r, 3), pad, dtype=rule_states.dtype, device=device)
-        rule_states = torch.cat([rule_states, rule_pad], dim=2)
-    elif M_r > M_max:
-        rule_states = rule_states[:, :, :M_max, :]
-    
-    # Concatenate rules before facts
-    all_states = torch.cat([rule_states, fact_states], dim=1)  # [B, K_r+K_f, M_max, 3]
-    all_masks = torch.cat([rule_mask, fact_mask], dim=1)  # [B, K_r+K_f]
-    
-    counts = all_masks.sum(dim=1).clamp(max=K_max)
-    
-    # PARITY MODE: Use stable argsort
-    sorted_idx = torch.argsort(all_masks.int(), dim=1, descending=True, stable=True)
-    top_idx = sorted_idx[:, :K_max]
-    
-    top_idx_exp = top_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, M_max, 3)
-    derived = torch.gather(all_states, 1, top_idx_exp)
-    
-    return derived, counts
-
-
 def pack_results(
     fact_states: Tensor,        # [B, K_f, G, 3]
     fact_mask: Tensor,          # [B, K_f]
@@ -1187,7 +866,6 @@ class UnificationEngineVectorized:
         max_fact_pairs: int = None,
         max_rule_pairs: int = None,
         padding_atoms: int = None,
-        parity_mode: bool = False,
         end_pred_idx: Optional[int] = None,
         end_proof_action: bool = False,
     ):
@@ -1206,8 +884,7 @@ class UnificationEngineVectorized:
         self.end_proof_action = bool(end_proof_action)
         self.max_derived_per_state = int(max_derived_per_state) if max_derived_per_state is not None else 120
         self.K_max = self.max_derived_per_state
-        
-        self.parity_mode = parity_mode
+
         self.padding_atoms_limit = padding_atoms
 
         # Tensors
@@ -1464,11 +1141,10 @@ class UnificationEngineVectorized:
         max_fact_pairs: int = None,
         max_rule_pairs: int = None,
         padding_atoms: int = None,
-        parity_mode: bool = False,
         max_derived_per_state: Optional[int] = None,
         end_proof_action: bool = False,
         # kept for compatibility with train caller signature
-        **kwargs 
+        **kwargs
     ):
         """
         Create UnificationEngineVectorized from an IndexManager.
@@ -1492,7 +1168,6 @@ class UnificationEngineVectorized:
             max_fact_pairs=max_fact_pairs,
             max_rule_pairs=max_rule_pairs,
             padding_atoms=padding_atoms,
-            parity_mode=parity_mode,
             end_pred_idx=im.end_pred_idx,
             end_proof_action=end_proof_action,
         )
@@ -1681,25 +1356,15 @@ class UnificationEngineVectorized:
             next_var_indices + max_body,
             new_vars
         )
-        
+
         # ---------------------------------------------------------------------
         # 4. Combine Results
         # ---------------------------------------------------------------------
-        # ---------------------------------------------------------------------
-        # 4. Combine Results
-        # ---------------------------------------------------------------------
-        if self.parity_mode:
-            combined, combined_counts = pack_results_parity(
-                fact_states, fact_success,
-                rule_states, rule_success,
-                self.K_max, self.M_max, pad,
-            )
-        else:
-            combined, combined_counts = pack_results(
-                fact_states, fact_success,
-                rule_states, rule_success,
-                self.K_max, self.M_max, pad,
-            )
+        combined, combined_counts = pack_results(
+            fact_states, fact_success,
+            rule_states, rule_success,
+            self.K_max, self.M_max, pad,
+        )
         
         # ---------------------------------------------------------------------
         # 5. Prune Ground Facts
@@ -1713,12 +1378,7 @@ class UnificationEngineVectorized:
             true_pred_idx=self.true_pred_idx,
             excluded_queries=excluded_queries
         )
-        
-        # Compact atoms in parity mode to match tensor engine behavior
-        # This left-aligns atoms after pruning (removes gaps)
-        if self.parity_mode:
-            pruned = compact_atoms(pruned, pad)
-        
+
         # Handle proofs - combine fact-based proofs with prune-detected proofs
         prune_proof_batch = is_proof.sum(dim=1) > 0  # [B]
         proof_batch = fact_proof_batch | prune_proof_batch  # Either source counts
@@ -1781,19 +1441,12 @@ class UnificationEngineVectorized:
         # Renumber runtime variables to start from next_var_indices
         # This matches the original engine's standardize_derived_states step
         # ---------------------------------------------------------------------
-        if self.parity_mode:
-            std_derived, std_new_vars = standardize_vars_parity(
-                final_derived, final_counts, next_var_indices,
-                self.constant_no, pad,
-                input_states=current_states
-            )
-        else:
-            std_derived, std_new_vars = standardize_vars(
-                final_derived, final_counts, next_var_indices,
-                self.constant_no, pad,
-                input_states=current_states,
-                extra_new_vars=self.max_rule_body_size + 2  # Safe margin for new vars
-            )
+        std_derived, std_new_vars = standardize_vars(
+            final_derived, final_counts, next_var_indices,
+            self.constant_no, pad,
+            input_states=current_states,
+            extra_new_vars=self.max_rule_body_size + 2  # Safe margin for new vars
+        )
         
         return std_derived, final_counts, std_new_vars
 

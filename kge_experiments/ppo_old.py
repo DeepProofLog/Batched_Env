@@ -131,10 +131,16 @@ class PPO:
 
         self.verbose = kwargs.get('verbose', config.verbose)
         self.seed = kwargs.get('seed', config.seed)
+        self.parity = kwargs.get('parity', config.parity)
         self.eval_only = kwargs.get('eval_only', getattr(config, 'eval_only', False))
         self._compile_mode = kwargs.get('compile_mode', 'reduce-overhead')
         self.ranking_compile_mode = kwargs.get('ranking_compile_mode', getattr(config, 'ranking_compile_mode', 'default'))
         self._fixed_batch_size = kwargs.get('fixed_batch_size', getattr(config, 'fixed_batch_size', None))
+
+        # In parity mode, wrap env with TensorDictEnvWrapper for TensorPPO-compatible interface
+        if self.parity:
+            from tests.test_utils.parity_utils import TensorDictEnvWrapper
+            self.env = TensorDictEnvWrapper(env)
 
         # Metrics info (CPU-only to avoid synchronization) - copied from PPOOld
         query_labels = kwargs.get('query_labels', None)
@@ -179,7 +185,7 @@ class PPO:
                 buffer_size=self.n_steps, n_envs=self.batch_size_env, device=self.device,
                 gamma=self.gamma, gae_lambda=self.gae_lambda,
                 padding_atoms=self.padding_atoms, padding_states=self.padding_states,
-                batch_size=self.batch_size,
+                parity=self.parity, batch_size=self.batch_size,
             )
             A, S = self.padding_atoms, self.padding_states
             self._train_sub_index = torch.zeros((self.batch_size, 1, A, 3), dtype=torch.long, device=self.device)
@@ -214,6 +220,15 @@ class PPO:
 
     def _compile_all(self):
         """Compile all functions using uncompiled policy in fused steps."""
+        # In parity mode, use uncompiled versions for exact reproducibility
+        if self.parity:
+            self.loss_module = PPOLossModule(self._uncompiled_policy)
+            self._compiled_policy_fn = self._uncompiled_policy.get_logits
+            # Keep self.policy as the uncompiled policy
+            # (already set: self.policy = policy in __init__)
+            print("[PPO] Parity mode - skipping compilation")
+            return
+
         # Compile loss module
         self.loss_module = torch.compile(PPOLossModule(self._uncompiled_policy), mode=self._compile_mode, fullgraph=True)
 
@@ -296,8 +311,11 @@ class PPO:
             new_obs, new_state = env._step_core(state, actions)
             return new_obs, new_state
 
-        # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph caching of weights
-        self._compiled_eval_step = torch.compile(fused_eval, mode='default', fullgraph=True)
+        if not self.parity:
+            # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph caching of weights
+            self._compiled_eval_step = torch.compile(fused_eval, mode='default', fullgraph=True)
+        else:
+            self._compiled_eval_step = fused_eval
 
         # 2. Ranking Evaluation Setup (Buffers + Compilation)
         B, S, A = self.fixed_batch_size, self.padding_states, self.padding_atoms
@@ -345,35 +363,6 @@ class PPO:
         self._ranking_arange_B = torch.arange(B, device=device)
         self._ranking_arange_S = torch.arange(S, device=device)
 
-        # Pre-allocated obs dict for ranking_step (avoids dict creation overhead)
-        self._ranking_obs = {
-            'sub_index': torch.zeros((B, 1, A, 3), dtype=torch.long, device=device),
-            'derived_sub_indices': torch.zeros((B, S, A, 3), dtype=torch.long, device=device),
-            'action_mask': torch.zeros((B, S), dtype=torch.uint8, device=device),
-        }
-
-        # Pre-allocated state dict for _step_core (avoids TensorDict creation overhead)
-        self._ranking_state_dict = TensorDict({
-            "current_states": torch.zeros((B, A, 3), dtype=torch.long, device=device),
-            "derived_states": torch.zeros((B, S, A, 3), dtype=torch.long, device=device),
-            "derived_counts": torch.zeros(B, dtype=torch.long, device=device),
-            "original_queries": torch.zeros((B, A, 3), dtype=torch.long, device=device),
-            "next_var_indices": torch.zeros(B, dtype=torch.long, device=device),
-            "depths": torch.zeros(B, dtype=torch.long, device=device),
-            "done": torch.zeros(B, dtype=torch.uint8, device=device),
-            "success": torch.zeros(B, dtype=torch.uint8, device=device),
-            "current_labels": torch.ones(B, dtype=torch.long, device=device),
-            "history_hashes": torch.zeros((B, H), dtype=torch.long, device=device),
-            "history_count": torch.zeros(B, dtype=torch.long, device=device),
-            "step_rewards": torch.zeros(B, dtype=torch.float32, device=device),
-            "step_dones": torch.zeros(B, dtype=torch.uint8, device=device),
-            "step_successes": torch.zeros(B, dtype=torch.uint8, device=device),
-            "step_labels": torch.zeros(B, dtype=torch.long, device=device),
-            "cumulative_rewards": torch.zeros(B, dtype=torch.float32, device=device),
-            "per_env_ptrs": torch.zeros(B, dtype=torch.long, device=device),
-            "neg_counters": torch.zeros(B, dtype=torch.int64, device=device),
-        }, batch_size=[B], device=device)
-
         # Capture predicate indices as constants for torch.compile compatibility
         true_pred_idx = env.true_pred_idx
         false_pred_idx = env.false_pred_idx
@@ -382,13 +371,14 @@ class PPO:
         # Ranking Loop Kernel
         def ranking_step(pool: Tensor, pool_size: Tensor):
             """Fused step with slot recycling, history tracking and memory pruning."""
-            # Create obs dict with views to current ranking state (no copies needed)
+            # Policy
+            # IMPORTANT: Use self._uncompiled_policy directly, not the captured 'policy' variable,
+            # to ensure torch.compile sees the current weights rather than caching stale weights
             obs = {
                 'sub_index': self._ranking_current.unsqueeze(1),
                 'derived_sub_indices': self._ranking_derived,
                 'action_mask': self._ranking_mask.to(torch.uint8),
             }
-            # Policy forward
             logits = self._uncompiled_policy.get_logits(obs)
             masked_logits = logits.masked_fill(~self._ranking_mask, -3.4e38)
             actions = masked_logits.argmax(dim=-1)
@@ -396,7 +386,8 @@ class PPO:
             # Compute log probabilities for selected actions (detach to avoid gradient tracking)
             log_probs = torch.log_softmax(masked_logits, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1).detach()
 
-            # Create state dict with views to current ranking state (no copies for basic fields)
+            # Env Core: Reusing _step_and_reset_core logic
+            # Update state dict to match current ranking state
             current_state_dict = TensorDict({
                 "current_states": self._ranking_current,
                 "derived_states": self._ranking_derived,
@@ -405,8 +396,8 @@ class PPO:
                 "next_var_indices": self._ranking_next_var,
                 "depths": self._ranking_depths,
                 "done": self._ranking_done.to(torch.uint8),
-                "success": torch.zeros(B, dtype=torch.uint8, device=device),
-                "current_labels": torch.ones(B, dtype=torch.long, device=device),
+                "success": torch.zeros(B, dtype=torch.uint8, device=device), # Placeholder
+                "current_labels": torch.ones(B, dtype=torch.long, device=device), # Placeholder for labels
                 "history_hashes": self._ranking_history_hashes,
                 "history_count": self._ranking_history_count,
                 "step_rewards": torch.zeros(B, dtype=torch.float32, device=device),
@@ -415,7 +406,7 @@ class PPO:
                 "step_labels": torch.zeros(B, dtype=torch.long, device=device),
                 "cumulative_rewards": torch.zeros(B, dtype=torch.float32, device=device),
                 "per_env_ptrs": self._ranking_pool_ptr,
-                "neg_counters": torch.zeros(B, dtype=torch.int64, device=device),
+                "neg_counters": torch.zeros(B, dtype=torch.int64, device=device), # Not used in eval (neg_ratio=0)
             }, batch_size=[B], device=device)
 
             # Call shared logic
@@ -539,11 +530,14 @@ class PPO:
                     final_depths, final_done, new_ptr, final_history, final_h_count,
                     step_dones, new_success, finished_idx, final_ep_logprob, ep_logprob_to_store, final_original, final_next_var, new_depths)
 
-        # Use configurable mode. 'default' is safer for interleaved training/eval.
-        # 'reduce-overhead' makes profile_eval faster but risks stale weights if not careful.
-        mode = getattr(self, 'ranking_compile_mode', 'default')
-        self._compiled_ranking_step = torch.compile(ranking_step, mode=mode, fullgraph=True)
-        print(f"[PPO] Compiled ranking_step with mode={mode}")
+        if not self.parity:
+            # Use configurable mode. 'default' is safer for interleaved training/eval.
+            # 'reduce-overhead' makes profile_eval faster but risks stale weights if not careful.
+            mode = getattr(self, 'ranking_compile_mode', 'default')
+            self._compiled_ranking_step = torch.compile(ranking_step, mode=mode, fullgraph=True)
+            print(f"[PPO] Compiled ranking_step with mode={mode}")
+        else:
+            self._compiled_ranking_step = ranking_step
 
     def _create_ranking_step_fn(self):
         """Factory method to create ranking_step function with fresh policy weight references.
@@ -683,15 +677,29 @@ class PPO:
                 # Snapshot obs BEFORE policy forward (matches TensorPPO)
                 obs_snap = {k: v.clone() for k, v in obs.items()}
                 
-                if hasattr(self, '_compiled_rollout_step') and self._compiled_rollout_step is not None:
+                if not self.parity and hasattr(self, '_compiled_rollout_step') and self._compiled_rollout_step is not None:
                     torch.compiler.cudagraph_mark_step_begin()
                     obs_in, state_in = {k: v.clone() for k, v in obs.items()}, state.clone()
                     new_obs, new_state, actions, log_probs = self._compiled_rollout_step(obs_in, state_in)
                     values = self._uncompiled_policy.predict_values(obs_snap)
                 else:
-                    # Uncompiled fallback
+                    # Uncompiled fallback (Parity or Standard)
                     actions, values, log_probs = self._uncompiled_policy(obs_snap, deterministic=False)
-                    new_obs, new_state = self.env._step_and_reset_core(state, actions, self.env._query_pool, self.env._per_env_ptrs)
+                    
+                    if self.parity and hasattr(self.env, "step_and_maybe_reset"):
+                        # Ensure wrapper state is synced
+                        self.env._state = state
+                        # Use wrapper's auto-reset logic for matching TensorPPO/SB3 exactly
+                        action_td = TensorDict({"action": actions}, batch_size=[self.batch_size_env], device=self.device)
+                        step_result, new_obs = self.env.step_and_maybe_reset(action_td)
+                        new_state = self.env._state
+                        # Ensure state has rewards/dones for the loop below
+                        if 'reward' in step_result.keys(): 
+                            new_state['step_rewards'] = step_result['reward'].squeeze(-1) if step_result['reward'].dim() > 1 else step_result['reward']
+                        if 'done' in step_result.keys():
+                            new_state['step_dones'] = step_result['done'].squeeze(-1) if step_result['done'].dim() > 1 else step_result['done']
+                    else:
+                        new_obs, new_state = self.env._step_and_reset_core(state, actions, self.env._query_pool, self.env._per_env_ptrs)
 
                 self.rollout_buffer.add(
                     sub_index=obs_snap['sub_index'], derived_sub_indices=obs_snap['derived_sub_indices'],
@@ -1047,30 +1055,33 @@ class PPO:
         self._ranking_result_logprob.zero_()
 
     def _collect_chunk_stats(self, pool_size, corruption_modes, device, all_stats, CQ, K):
-        """Helper to collect detailed stats for a chunk (GPU-only, defer CPU transfer)."""
-        # Keep all data on GPU until final aggregation to avoid sync overhead
-        chunk_depths = self._ranking_result_depths[:pool_size].clone()
-        chunk_proven = self._ranking_result_buf[:pool_size].clone()
-        # Rewards = proven.float() (binary success converted to float)
+        """Helper to collect detailed stats for a chunk."""
+        chunk_depths = self._ranking_result_depths[:pool_size]
+        chunk_rewards = self._ranking_result_rewards[:pool_size]
+        chunk_success = self._ranking_result_success[:pool_size]
+        chunk_proven = chunk_success  # Use success buffer directly
 
+        # Identify Positive Indices vs Negative Indices
+        # Append SEPARATELY per mode to match _aggregate_metrics depth reconstruction
         off = 0
         for mode_i, _ in enumerate(corruption_modes):
-            pos_start, pos_end = off, off + CQ
-            neg_start, neg_end = off + CQ, off + CQ * K
+            # First CQ are positives for this mode
+            pos_idx = torch.arange(off, off + CQ, device=device)
+            # Remaining CQ * (K-1) are negatives
+            neg_idx = torch.arange(off + CQ, off + CQ * K, device=device)
 
-            # Keep tensors on GPU (defer .cpu() to aggregation)
-            # Note: rewards = proven.float() since success is binary (0 or 1)
-            if CQ > 0:
-                proven_pos = chunk_proven[pos_start:pos_end].float()
-                all_stats['len_pos'].append(chunk_depths[pos_start:pos_end].float())
-                all_stats['rew_pos'].append(proven_pos)
-                all_stats['pvn_pos'].append(proven_pos)
+            pos_success = chunk_proven[pos_idx].float().cpu()
 
-            if neg_end > neg_start:
-                proven_neg = chunk_proven[neg_start:neg_end].float()
-                all_stats['len_neg'].append(chunk_depths[neg_start:neg_end].float())
-                all_stats['rew_neg'].append(proven_neg)
-                all_stats['pvn_neg'].append(proven_neg)
+            # Collect per mode (separate appends)
+            if pos_idx.numel() > 0:
+                all_stats['len_pos'].append(chunk_depths[pos_idx].float().cpu())
+                all_stats['rew_pos'].append(chunk_rewards[pos_idx].float().cpu())
+                all_stats['pvn_pos'].append(pos_success)
+
+            if neg_idx.numel() > 0:
+                all_stats['len_neg'].append(chunk_depths[neg_idx].float().cpu())
+                all_stats['rew_neg'].append(chunk_rewards[neg_idx].float().cpu())
+                all_stats['pvn_neg'].append(chunk_proven[neg_idx].float().cpu())
 
             off += CQ * K
 
@@ -1194,7 +1205,6 @@ class PPO:
         }
 
         for start in range(0, N, chunk_queries):
-            print(f"Chunk {start}-{min(start + chunk_queries, N)}")
             end = min(start + chunk_queries, N)
             chunk = queries[start:end]
             CQ = end - start
@@ -1218,7 +1228,6 @@ class PPO:
             max_steps = (pool_size // self.fixed_batch_size + 2) * self.max_depth
             debug_step = 0
             for _ in range(max_steps):
-                print(f"Step {debug_step}/{max_steps}", end='\r')
                 torch.compiler.cudagraph_mark_step_begin()
 
                 # Always use original compiled step (logits inside)
@@ -1237,24 +1246,35 @@ class PPO:
                     [new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr, new_h, new_hc, new_ep_logprob, new_orig, new_next_var]
                 )
                 
-                # Result record - optimized with single batched scatter
+                # Result record (success and log probs)
                 v_idx = (indices >= 0) & (indices < pool_size)
                 clamped_indices = indices.clamp(0, pool_size-1)
-
-                # Gather current values (batch read)
+                # Use torch.where to avoid overwriting valid results with False from invalid indices
                 current_buf = self._ranking_result_buf[clamped_indices]
-                current_logprob = self._ranking_result_logprob[clamped_indices]
-                current_depths = self._ranking_result_depths[clamped_indices]
-
-                # Compute final values with masking
                 final_buf = torch.where(v_idx, success, current_buf)
-                final_logprob = torch.where(v_idx, logprob_to_store, current_logprob)
-                final_depths = torch.where(v_idx, step_depths, current_depths)
-
-                # Scatter back - 3 scatters (rewards removed, same as buf.float())
                 self._ranking_result_buf.scatter_(0, clamped_indices, final_buf)
+                
+                # For log probs
+                current_logprob = self._ranking_result_logprob[clamped_indices]
+                final_logprob = torch.where(v_idx, logprob_to_store, current_logprob)
                 self._ranking_result_logprob.scatter_(0, clamped_indices, final_logprob)
+                
+                # Capture depths, success, and rewards
+                # Use step_depths (pre-merge) for recording, not new_dep (post-merge)
+                # This ensures we record the actual finishing depth, not 0 after reset
+                current_depths = self._ranking_result_depths[clamped_indices]
+                final_depths = torch.where(v_idx, step_depths, current_depths)
                 self._ranking_result_depths.scatter_(0, clamped_indices, final_depths)
+                
+                # Track success independently
+                current_success = self._ranking_result_success[clamped_indices]
+                final_success = torch.where(v_idx, success, current_success)
+                self._ranking_result_success.scatter_(0, clamped_indices, final_success)
+                
+                current_rewards = self._ranking_result_rewards[clamped_indices]
+                # In this env, reward is success.float(), but we track it separately as requested
+                final_rewards = torch.where(v_idx, success.float(), current_rewards)
+                self._ranking_result_rewards.scatter_(0, clamped_indices, final_rewards)
 
                 if self._ranking_done.all(): break
 

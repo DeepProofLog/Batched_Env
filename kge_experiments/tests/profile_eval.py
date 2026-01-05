@@ -147,9 +147,9 @@ def setup(device, config):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n-queries', type=int, default=100)
-    parser.add_argument('--n-corruptions', type=int, default=100)
-    parser.add_argument('--batch-size', type=int, default=256)
+    parser.add_argument('--n-queries', type=int, default=10)
+    parser.add_argument('--n-corruptions', type=int, default=10)
+    parser.add_argument('--batch-size', type=int, default=100)
     parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false')
     parser.add_argument('--gpu-profile', action='store_true',  help='Run GPU profiler (default)')
     parser.add_argument('--cpu-profile', action='store_true', help='Run CPU profiler instead of GPU')
@@ -157,7 +157,7 @@ def main():
     args = parser.parse_args()
     
     config = SimpleNamespace(
-        dataset='family',
+        dataset='wn18rr',
         data_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data'),
         padding_atoms=6, padding_states=120, max_depth=20,
         batch_size=args.batch_size, compile=args.compile,

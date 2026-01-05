@@ -73,7 +73,6 @@ class RolloutBuffer:
         gae_lambda: float = 0.95,
         padding_atoms: int = 6,
         padding_states: int = 100,
-        parity: bool = False,
         batch_size: int = 64,  # Pre-allocate batch tensors for this size
     ):
         self.buffer_size = buffer_size
@@ -83,7 +82,6 @@ class RolloutBuffer:
         self.gae_lambda = gae_lambda
         self.padding_atoms = padding_atoms
         self.padding_states = padding_states
-        self.parity = parity
         self._default_batch_size = batch_size
         
         # Current position in buffer
@@ -339,11 +337,7 @@ class RolloutBuffer:
             self._initialize_batch_storage(batch_size)
         
         # Generate permutation INTO pre-allocated tensor (stable memory address)
-        if self.parity:
-            perm_np = np.random.permutation(total_size)
-            self._permutation.copy_(torch.from_numpy(perm_np))
-        else:
-            torch.randperm(total_size, out=self._permutation)
+        torch.randperm(total_size, out=self._permutation)
         
         # Copy data INTO pre-allocated flattened tensors (preserves memory addresses)
         self._swap_and_flatten_into(self.sub_index, self.flat_sub_index)
