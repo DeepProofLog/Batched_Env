@@ -134,6 +134,7 @@ class PPO:
         self.parity = kwargs.get('parity', config.parity)
         self.eval_only = kwargs.get('eval_only', getattr(config, 'eval_only', False))
         self._compile_mode = kwargs.get('compile_mode', 'reduce-overhead')
+        self.ranking_compile_mode = kwargs.get('ranking_compile_mode', getattr(config, 'ranking_compile_mode', 'default'))
         self._fixed_batch_size = kwargs.get('fixed_batch_size', getattr(config, 'fixed_batch_size', None))
 
         # In parity mode, wrap env with TensorDictEnvWrapper for TensorPPO-compatible interface
@@ -385,106 +386,156 @@ class PPO:
             # Compute log probabilities for selected actions (detach to avoid gradient tracking)
             log_probs = torch.log_softmax(masked_logits, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1).detach()
 
-            # Env Core
-            active = ~self._ranking_done
+            # Env Core: Reusing _step_and_reset_core logic
+            # Update state dict to match current ranking state
+            current_state_dict = TensorDict({
+                "current_states": self._ranking_current,
+                "derived_states": self._ranking_derived,
+                "derived_counts": self._ranking_counts,
+                "original_queries": self._ranking_original_queries,
+                "next_var_indices": self._ranking_next_var,
+                "depths": self._ranking_depths,
+                "done": self._ranking_done.to(torch.uint8),
+                "success": torch.zeros(B, dtype=torch.uint8, device=device), # Placeholder
+                "current_labels": torch.ones(B, dtype=torch.long, device=device), # Placeholder for labels
+                "history_hashes": self._ranking_history_hashes,
+                "history_count": self._ranking_history_count,
+                "step_rewards": torch.zeros(B, dtype=torch.float32, device=device),
+                "step_dones": torch.zeros(B, dtype=torch.uint8, device=device),
+                "step_successes": torch.zeros(B, dtype=torch.uint8, device=device),
+                "step_labels": torch.zeros(B, dtype=torch.long, device=device),
+                "cumulative_rewards": torch.zeros(B, dtype=torch.float32, device=device),
+                "per_env_ptrs": self._ranking_pool_ptr,
+                "neg_counters": torch.zeros(B, dtype=torch.int64, device=device), # Not used in eval (neg_ratio=0)
+            }, batch_size=[B], device=device)
 
-            # Accumulate log probs for active slots (tensor-wise, no Python branch)
+            # Call shared logic
+            # Note: We pass stride as slot_lengths/offsets is not exactly what we need for linear scan with reset
+            # But the ranking logic relies on strided pool buffer access.
+            # Actually, `ranking_step` logic in `_step_and_reset_core` supports `per_env_ptrs` as index into pool.
+            # We just need to handle the `finished_idx` logic externally?
+            # Wait, `_step_and_reset_core` automatically advances `per_env_ptrs`.
+            # In our case, `self._ranking_stride` logic was: `new_ptr = ptr + stride`.
+            # `_step_and_reset_core` does `next_ptrs = per_env_ptrs + 1` (linear) or `+ stride`?
+            # It assumes `per_env_ptrs` behaves like an index. 
+            # In `ranking_step` (original), we used `_ranking_stride` (B). So ptrs were: 0, B, 2B...
+            # This is "Bucket Scheduling".
+            # `_step_and_reset_core` supports "Slot Scheduling" via `slot_lengths` and `slot_offsets`.
+            # If we pass `slot_lengths=1` (effectively) and proper `slot_offsets`, we can replicate it.
+            # Or simpler: we update pointers manually if `_step_and_reset_core` doesn't do what we want.
+            # Actually `_step_and_reset_core` updates `per_env_ptrs`.
+            # Let's check `_step_and_reset_core`: 
+            # if slot_lengths/offsets: query_idx = offset + (ptr % len). ptr++.
+            # if order=True (eval): query_idx = ptr % size. ptr++.
+            
+            # The original `ranking_step` logic was: `ptr += stride`.
+            # This suggests we are treating the pool as a flat list, but jumping by B?
+            # No, `ptr` was initialized to `arange(B)`. Then `ptr += B`.
+            # So slot 0 gets 0, B, 2B...
+            # Slot 1 gets 1, B+1, 2B+1...
+            # This is INTERLEAVED scheduling.
+            # `_step_and_reset_core` with `order=True` does `ptr++`.
+            # `ptr` starts at `arange(B)`.
+            # Next step `ptr` becomes `arange(B) + 1`.
+            # Slot 0 gets 0, 1, 2...
+            # Slot 1 gets 1, 2, 3...
+            # This means multiple slots would work on the SAME query (redundant work!).
+            
+            # We MUST maintain the strided behavior: Slot i works on queries {i, i+B, i+2B...}.
+            # `_step_and_reset_core` with `slot_lengths` and `slot_offsets` can do this.
+            # Slot Length = Total Queries / B (approx).
+            # Slot Offset = i * Slot Length? No.
+            
+            # To restore "Interleaved" behavior with `_step_and_reset_core`:
+            # We can rely on `per_env_ptrs` tracking the ACTUAL index.
+            # But `_step_and_reset_core` increments by 1.
+            # WE NEED TO INCREMENT BY B.
+            
+            # Option 1: Pass `slot_lengths=None` (default). `_step_and_reset_core` increments by 1.
+            # This breaks interleaving.
+            
+            # Option 2: Use `_step_core` -> Manual Reset.
+            # This basically brings us back to `ranking_step` logic, but using `_step_core` for the step part.
+            
+            active = ~self._ranking_done
+            
+            # Accumulate log probs for active slots
             new_ep_logprob = torch.where(active, self._ranking_ep_logprob + log_probs, self._ranking_ep_logprob)
 
-            next_states = self._ranking_derived[self._ranking_arange_B, actions]
-            new_current = torch.where(active.view(B, 1, 1), next_states, self._ranking_current)
-            new_depths = torch.where(active, self._ranking_depths + 1, self._ranking_depths)
+            # 1. Step Core
+            new_obs, new_state = env._step_core(current_state_dict, actions)
             
-            # History
-            new_hash = env._compute_hash(new_current)
-            write_pos = self._ranking_history_count.clamp(max=H - 1)
-            update_val = torch.where(active, new_hash, self._ranking_history_hashes[self._ranking_arange_B, write_pos])
-            new_history = self._ranking_history_hashes.clone()
-            new_history.scatter_(1, write_pos.unsqueeze(1), update_val.unsqueeze(1))
-            new_h_count = torch.where(active, (self._ranking_history_count + 1).clamp(max=H), self._ranking_history_count)
+            new_current = new_state['current_states']
+            new_derived = new_state['derived_states']
+            new_counts = new_state['derived_counts']
+            new_depths = new_state['depths']
+            new_done = new_state['done'].bool()
+            new_success = new_state['success'].bool()
+            new_history = new_state['history_hashes']
+            new_h_count = new_state['history_count']
+            new_original = new_state['original_queries'] # Just passed through
+            new_next_var = new_state['next_var_indices']
             
-            # Derived - use _compute_derived with excluded_queries for proper unification
-            # IMPORTANT: Must track next_var_indices properly for the unification engine!
-            excluded = self._ranking_original_queries[:, 0:1, :]  # [B, 1, 3]
-            new_derived, new_counts, new_var = env._compute_derived(new_current, self._ranking_next_var, self._ranking_original_queries, new_history, new_h_count, excluded)
-            new_derived = torch.where(active.view(B, 1, 1, 1), new_derived, self._ranking_derived)
-            new_counts = torch.where(active, new_counts, self._ranking_counts)
-            new_next_var = torch.where(active, new_var, self._ranking_next_var)
+            rewards = new_state['step_rewards']
+            step_dones = new_state['step_dones'].bool()
             
-            # Termination (matching _get_done_reward logic exactly)
-            first_pred = new_current[:, 0, 0]
-            preds = new_current[:, :, 0]  # [B, A]
-            non_pad = preds != pad
+            # 2. Reset / Recycle Logic (Custom for Ranking Step)
+            # Use step_dones from env (handles max_dist, terminal)
+            finished_idx = torch.where(step_dones, self._ranking_pool_ptr, torch.full_like(self._ranking_pool_ptr, -1))
             
-            # Check if ALL non-pad atoms are TRUE (matching _get_done_reward)
-            true_mask = (preds == true_pred_idx) | ~non_pad
-            all_true = true_mask.all(dim=1) & non_pad.any(dim=1)
+            # Stride update: ptr += B
+            new_ptr = torch.where(step_dones, self._ranking_pool_ptr + self._ranking_stride, self._ranking_pool_ptr)
+            needs_reset = step_dones & (new_ptr < pool_size)
             
-            # is_end check (single non-pad atom that is END predicate)
-            single_pred = non_pad.sum(dim=1) == 1
-            is_end = single_pred & (first_pred == end_pred_idx)
-            
-            # all_true must be false if is_end is true
-            all_true = all_true & ~is_end
-            
-            # Terminal conditions (matching _get_done_reward)
-            is_terminal = all_true | (preds == false_pred_idx).any(dim=1) | is_end | ~non_pad.any(dim=1)
-            is_success = all_true & active
-            newly_done = active & (is_terminal | (new_depths >= self.max_depth))
-
-            # Recycling
-            finished_idx = torch.where(newly_done, self._ranking_pool_ptr, torch.full_like(self._ranking_pool_ptr, -1))
-            new_ptr = torch.where(newly_done, self._ranking_pool_ptr + self._ranking_stride, self._ranking_pool_ptr)
-            needs_reset = newly_done & (new_ptr < pool_size)
-
-            # Prepare log probs for finished episodes (tensor-wise, no Python branch)
-            valid_finish = newly_done & (finished_idx >= 0) & (finished_idx < pool_size)
+            # Prepare log probs for finished episodes
+            valid_finish = step_dones & (finished_idx >= 0) & (finished_idx < pool_size)
             ep_logprob_to_store = torch.where(valid_finish, new_ep_logprob, torch.zeros_like(new_ep_logprob))
-
-            # Reset - use env._reset_from_queries for proper derived state computation
+            
+            # Perform Reset using Env's reset logic
             safe_idx = new_ptr.clamp(0, max_pool - 1)
-            reset_queries_raw = pool[safe_idx]  # [B, 3]
-
-            # Use env's reset logic to get proper derived states
+            reset_queries_raw = pool[safe_idx]
             reset_labels = torch.ones(B, dtype=torch.long, device=device)
             reset_state = env._reset_from_queries(reset_queries_raw, reset_labels)
-            reset_queries = reset_state['current_states']
-            reset_derived = reset_state['derived_states']
-            reset_counts = reset_state['derived_counts']
-            reset_history = reset_state['history_hashes']
-            reset_h_count = reset_state['history_count']
-            reset_original = reset_state['original_queries']
-            reset_next_var = reset_state['next_var_indices']
             
-            # Merge
-            m1, m3, mH = needs_reset.view(B, 1, 1), needs_reset.view(B, 1, 1, 1), needs_reset.view(B, 1).expand(B, H)
-            final_current = torch.where(m1, reset_queries, new_current)
-            final_derived = torch.where(m3, reset_derived, new_derived)
-            final_counts = torch.where(needs_reset, reset_counts, new_counts)
-            final_depths = torch.where(needs_reset, torch.zeros_like(new_depths), new_depths)
-            final_done = torch.where(needs_reset, torch.zeros_like(self._ranking_done), self._ranking_done | newly_done)
-            final_history = torch.where(mH, reset_history, new_history)
-            final_h_count = torch.where(needs_reset, reset_h_count, new_h_count)
-            final_original = torch.where(m1, reset_original, self._ranking_original_queries)
-            final_next_var = torch.where(needs_reset, reset_next_var, new_next_var)
-
-            # Reset ep_logprob for recycled slots
+            # Merge logic (needs_reset mask)
+            # Inlined merge since _step_and_reset_core_merge is not exposed
+            
+            m1 = needs_reset.view(B, 1, 1)
+            m3 = needs_reset.view(B, 1, 1, 1)
+            mH = needs_reset.view(B, 1).expand(B, H)
+            
+            final_current = torch.where(m1, reset_state['current_states'], new_current)
+            final_derived = torch.where(m3, reset_state['derived_states'], new_derived)
+            final_counts = torch.where(needs_reset, reset_state['derived_counts'], new_counts)
+            final_depths = torch.where(needs_reset, reset_state['depths'], new_depths)
+            final_done = torch.where(needs_reset, reset_state['done'], new_done)
+            final_history = torch.where(mH, reset_state['history_hashes'], new_history)
+            final_h_count = torch.where(needs_reset, reset_state['history_count'], new_h_count)
+            final_original = torch.where(m1, reset_state['original_queries'], new_original)
+            final_next_var = torch.where(needs_reset, reset_state['next_var_indices'], new_next_var)
+            
+            # Reset ep_logprob
             final_ep_logprob = torch.where(needs_reset, torch.zeros_like(new_ep_logprob), new_ep_logprob)
-
+            
             # Handle exhausted
-            exhausted = (new_ptr >= pool_size) & newly_done
+            exhausted = (new_ptr >= pool_size) & step_dones
             final_done = torch.where(exhausted, torch.ones_like(final_done), final_done)
             final_ep_logprob = torch.where(exhausted, torch.zeros_like(final_ep_logprob), final_ep_logprob)
+            
             new_mask = self._ranking_arange_S.unsqueeze(0) < final_counts.unsqueeze(1)
 
+            # Return both final_depths (for state) and new_depths (for recording)
+            # new_depths is the depth at step completion BEFORE reset merge
             return (final_current, final_derived, final_counts, new_mask,
                     final_depths, final_done, new_ptr, final_history, final_h_count,
-                    newly_done, is_success, finished_idx, final_ep_logprob, ep_logprob_to_store, final_original, final_next_var)
+                    step_dones, new_success, finished_idx, final_ep_logprob, ep_logprob_to_store, final_original, final_next_var, new_depths)
 
         if not self.parity:
-            # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph caching of weights
-            # CUDA graphs in reduce-overhead mode cache parameter values, so eval would use stale weights
-            self._compiled_ranking_step = torch.compile(ranking_step, mode='default', fullgraph=True)
+            # Use configurable mode. 'default' is safer for interleaved training/eval.
+            # 'reduce-overhead' makes profile_eval faster but risks stale weights if not careful.
+            mode = getattr(self, 'ranking_compile_mode', 'default')
+            self._compiled_ranking_step = torch.compile(ranking_step, mode=mode, fullgraph=True)
+            print(f"[PPO] Compiled ranking_step with mode={mode}")
         else:
             self._compiled_ranking_step = ranking_step
 
@@ -1041,17 +1092,20 @@ class PPO:
             
             self._setup_ranking_pool(chunk, sampler, n_corruptions, corruption_modes)
             pool_size = int(self._ranking_pool_size.item())
-            
+
+            # Ensure fresh weights before ranking loop (signal to torch.compile)
+            torch.compiler.cudagraph_mark_step_begin()
+
             # Correct K if exhaustive (n_corruptions is None)
             if n_corruptions is None:
                 K = pool_size // (CQ * nm)
-            
+
             # Ranking step loop
             max_steps = (pool_size // self.fixed_batch_size + 2) * self.max_depth
             for _ in range(max_steps):
                 torch.compiler.cudagraph_mark_step_begin()
                 (new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr,
-                 new_h, new_hc, _, success, indices, new_ep_logprob, logprob_to_store, new_orig, new_next_var) = self._compiled_ranking_step(self._ranking_pool, self._ranking_pool_size)
+                 new_h, new_hc, _, success, indices, new_ep_logprob, logprob_to_store, new_orig, new_next_var, step_depths) = self._compiled_ranking_step(self._ranking_pool, self._ranking_pool_size)
 
                 torch._foreach_copy_(
                     [self._ranking_current, self._ranking_derived, self._ranking_counts, self._ranking_mask,
@@ -1074,8 +1128,10 @@ class PPO:
                 self._ranking_result_logprob.scatter_(0, clamped_indices, final_logprob)
                 
                 # Capture depths, success, and rewards
+                # Use step_depths (pre-merge) for recording, not new_dep (post-merge)
+                # This ensures we record the actual finishing depth, not 0 after reset
                 current_depths = self._ranking_result_depths[clamped_indices]
-                final_depths = torch.where(v_idx, new_dep, current_depths)
+                final_depths = torch.where(v_idx, step_depths, current_depths)
                 self._ranking_result_depths.scatter_(0, clamped_indices, final_depths)
                 
                 # Track success independently

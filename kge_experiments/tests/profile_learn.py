@@ -1,5 +1,5 @@
 """
-Profile the PPOOptimal.learn() function.
+Profile the PPO.learn() function.
 
 This script profiles the optimized training loop to verify performance
 matches or exceeds the original implementation.
@@ -10,8 +10,8 @@ Targets:
 
 Usage:
     conda activate rl
-    python tests/profile_learn_optimal.py
-    python tests/profile_learn_optimal.py --use-gpu-profiler
+    python tests/profile_learn_.py
+    python tests/profile_learn_.py --use-gpu-profiler
 """
 
 import os
@@ -53,7 +53,7 @@ class Tee(object):
 
 
 def setup_components(device: torch.device, config: SimpleNamespace):
-    """Initialize all components for optimal training."""
+    """Initialize all components for  training."""
     torch.set_float32_matmul_precision('high')
     
     from data_handler import DataHandler
@@ -137,7 +137,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     train_queries = convert_queries_unpadded(dh.train_queries)
     test_queries = convert_queries_unpadded(dh.test_queries)
     
-    # Use EnvOptimal instead of EnvVec
+    # Use Env instead of EnvVec
     train_env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.batch_size_env,
@@ -166,7 +166,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         use_amp=config.use_amp,
     ).to(device)
     
-    # Use PPOOptimal instead of PPO
+    # Use PPO instead of PPO
     ppo = PPO(policy, train_env, config, device=device)
     
     return {
@@ -217,7 +217,7 @@ def run_training(components, config):
 
 def profile_cprofile(config: SimpleNamespace):
     """Profile with cProfile for CPU bottlenecks."""
-    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profile_learn_optimal_results.txt')
+    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profile_learn.txt')
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     log_file = open(output_path, 'w')
@@ -230,7 +230,7 @@ def profile_cprofile(config: SimpleNamespace):
         initial_wallclock = time()
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        print(f"Profile Optimal Learn Results")
+        print(f"Profile  Learn Results")
         print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Device: {device}")
         print(f"Dataset: {config.dataset}")
@@ -334,7 +334,7 @@ def profile_gpu(config: SimpleNamespace):
         print("torch.profiler not available")
         return
         
-    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profile_learn_optimal_gpu_results.txt')
+    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profile_learn_gpu.txt')
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     log_file = open(output_path, 'w')
@@ -344,7 +344,7 @@ def profile_gpu(config: SimpleNamespace):
     sys.stderr = sys.stdout
     
     try:
-        print(f"Profile Optimal Learn GPU Results")
+        print(f"Profile  Learn GPU Results")
         print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Device: {device}")
         
@@ -399,7 +399,7 @@ def profile_gpu(config: SimpleNamespace):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Profile PPOOptimal.learn()')
+    parser = argparse.ArgumentParser(description='Profile PPO.learn()')
     
     parser.add_argument('--use-gpu-profiler', action='store_true',
                         help='Use torch.profiler for GPU profiling')

@@ -198,7 +198,8 @@ if __name__ == "__main__":
             cfg_dict['corruption_scheme'] = ['head', 'tail']
         
         # File names based on depth
-        cfg_dict['train_file'] = "train_depths.txt" if cfg_dict.get('train_depth') else "train.txt"
+        # Use oversampled training file with D3+ queries heavily weighted
+        cfg_dict['train_file'] = "combined_train_oversampled.txt" if cfg_dict.get('train_depth') else "train.txt"
         cfg_dict['valid_file'] = "valid_depths.txt" if cfg_dict.get('valid_depth') else "valid.txt"
         cfg_dict['test_file'] = "test_depths.txt" if cfg_dict.get('test_depth') else "test.txt"
         cfg_dict['rules_file'] = 'rules.txt'

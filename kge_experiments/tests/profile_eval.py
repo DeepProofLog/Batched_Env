@@ -1,7 +1,7 @@
 """
-Profile the PPOOptimal.evaluate() function.
+Profile the PPO.evaluate() function.
 
-This script profiles the optimal evaluation to verify performance
+This script profiles the  evaluation to verify performance
 matches or exceeds the V10 implementation.
 
 Targets:
@@ -10,8 +10,8 @@ Targets:
 
 Usage:
     conda activate rl
-    python tests/profile_eval_optimal.py
-    python tests/profile_eval_optimal.py --n-queries 100 --n-corruptions 100
+    python tests/profile_eval_.py
+    python tests/profile_eval_.py --n-queries 100 --n-corruptions 100
 """
 
 import os
@@ -88,7 +88,7 @@ def setup(device, config):
     train_queries = convert_queries_unpadded(dh.train_queries)
     test_queries = convert_queries_unpadded(dh.test_queries)
     
-    # Use EnvOptimal
+    # Use Env
     env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.batch_size,
@@ -108,7 +108,7 @@ def setup(device, config):
         hidden_dim=256, num_layers=8, dropout_prob=0.0, device=device, compile_policy=False,
     ).to(device)
     
-    # Create config for PPOOptimal
+    # Create config for PPO
     ppo_config = SimpleNamespace(
         n_envs=config.batch_size,
         batch_size_env=config.batch_size,
@@ -131,9 +131,10 @@ def setup(device, config):
         eval_only=True,
         compile=config.compile,
         fixed_batch_size=config.batch_size,
+        ranking_compile_mode='reduce-overhead',
     )
     
-    # Use PPOOptimal
+    # Use PPO
     ppo = PPO(policy, env, ppo_config, device=device)
     
     return {
@@ -152,6 +153,7 @@ def main():
     parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false')
     parser.add_argument('--gpu-profile', action='store_true', default=True, help='Run GPU profiler (default)')
     parser.add_argument('--cpu-profile', action='store_true', help='Run CPU profiler instead of GPU')
+    parser.add_argument('--no-profile', action='store_true', help='Run without any profiler (pure timing)')
     args = parser.parse_args()
     
     config = SimpleNamespace(
@@ -164,7 +166,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     total = args.n_queries * (1 + args.n_corruptions) * 2
     
-    print(f"PPOOptimal Evaluation | Candidates: {total}, Batch: {config.batch_size}")
+    print(f"PPO Evaluation | Candidates: {total}, Batch: {config.batch_size}")
     
     print("Setup...")
     c = setup(device, config)
@@ -180,7 +182,26 @@ def main():
     
     print("Profiling...")
     
-    if not args.cpu_profile:
+    if args.no_profile:
+        # Pure Timing
+        torch.cuda.synchronize()
+        t0 = time()
+        results = c['ppo'].evaluate(
+            c['queries'][:args.n_queries].to(device),
+            c['sampler'], n_corruptions=args.n_corruptions,
+            corruption_modes=('head', 'tail'), verbose=True,
+        )
+        torch.cuda.synchronize()
+        runtime = time() - t0
+        
+        ms_cand = (runtime / total) * 1000
+        print(f"\n{'='*50}")
+        print(f"Runtime:      {runtime:.4f}s")
+        print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
+        print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
+        print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
+
+    elif not args.cpu_profile:
         # GPU Profiler
         torch.cuda.synchronize()
         t0 = time()
