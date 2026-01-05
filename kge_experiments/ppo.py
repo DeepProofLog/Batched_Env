@@ -158,7 +158,7 @@ class PPO:
                         query_labels = train_split.labels
                 except Exception as e:
                     if self.verbose:
-                        print(f"[PPOOptimal] Warning: Could not extract training depths: {e}")
+                        print(f"[PPO] Warning: Could not extract training depths: {e}")
 
         self.query_labels = query_labels.detach().cpu() if query_labels is not None else None
         self.query_depths = query_depths.detach().cpu() if query_depths is not None else None
@@ -208,7 +208,6 @@ class PPO:
         self.num_timesteps = 0
         self.callback = None  # Disabled for optimal version
         self.current_query_indices = None
-        print(f"[PPOOptimal] Initialized with device={self.device}, batch_size_env={self.batch_size_env}")
 
     @property
     def fixed_batch_size(self) -> int:
@@ -226,7 +225,7 @@ class PPO:
             self._compiled_policy_fn = self._uncompiled_policy.get_logits
             # Keep self.policy as the uncompiled policy
             # (already set: self.policy = policy in __init__)
-            print("[PPOOptimal] Parity mode - skipping compilation")
+            print("[PPO] Parity mode - skipping compilation")
             return
 
         # Compile loss module
@@ -242,8 +241,6 @@ class PPO:
         # Setup fused steps (uses _uncompiled_policy!)
         if self.config.compile:
             self._setup_fused_rollout_step()
-
-        print("[PPOOptimal] Compilation complete")
 
     def _warmup_gradients(self):
         """Pre-allocate gradients for CUDA graph stability."""
@@ -288,7 +285,6 @@ class PPO:
             return new_obs, new_state, actions, log_probs
 
         self._compiled_rollout_step = torch.compile(fused_step, mode=self._compile_mode, fullgraph=True)
-        print("[PPOOptimal] Fused rollout step compiled")
 
     def _setup_fused_eval_step(self):
         """Consolidated setup for both standard and ranking evaluation.
@@ -306,7 +302,9 @@ class PPO:
 
         def fused_eval(obs, state):
             """Core deterministic step used by evaluate_policy."""
-            logits = policy.get_logits(obs)
+            # IMPORTANT: Use self._uncompiled_policy directly, not the captured 'policy' variable,
+            # to ensure torch.compile sees the current weights rather than caching stale weights
+            logits = self._uncompiled_policy.get_logits(obs)
             masked = logits.masked_fill(obs['action_mask'] == 0, -3.4e38)
             actions = masked.argmax(dim=-1)
             new_obs, new_state = env._step_core(state, actions)
@@ -315,7 +313,6 @@ class PPO:
         if not self.parity:
             # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph caching of weights
             self._compiled_eval_step = torch.compile(fused_eval, mode='default', fullgraph=True)
-            print("[PPOOptimal] Fused eval step compiled")
         else:
             self._compiled_eval_step = fused_eval
 
@@ -340,6 +337,10 @@ class PPO:
         self._ranking_history_hashes = torch.zeros(B, H, dtype=torch.long, device=device)
         self._ranking_history_count = torch.zeros(B, dtype=torch.long, device=device)
         self._ranking_max_history = H
+        
+        # Variable index tracking for proper unification
+        self._ranking_next_var = torch.zeros(B, dtype=torch.long, device=device)
+        self._runtime_var_start_index = env.runtime_var_start_index
         
         # Global ranking pool
         max_pool = 1_000_000
@@ -370,12 +371,14 @@ class PPO:
         def ranking_step(pool: Tensor, pool_size: Tensor):
             """Fused step with slot recycling, history tracking and memory pruning."""
             # Policy
+            # IMPORTANT: Use self._uncompiled_policy directly, not the captured 'policy' variable,
+            # to ensure torch.compile sees the current weights rather than caching stale weights
             obs = {
                 'sub_index': self._ranking_current.unsqueeze(1),
                 'derived_sub_indices': self._ranking_derived,
                 'action_mask': self._ranking_mask.to(torch.uint8),
             }
-            logits = policy.get_logits(obs)
+            logits = self._uncompiled_policy.get_logits(obs)
             masked_logits = logits.masked_fill(~self._ranking_mask, -3.4e38)
             actions = masked_logits.argmax(dim=-1)
 
@@ -401,18 +404,32 @@ class PPO:
             new_h_count = torch.where(active, (self._ranking_history_count + 1).clamp(max=H), self._ranking_history_count)
             
             # Derived - use _compute_derived with excluded_queries for proper unification
-            # Note: We use zeros for next_var_indices since ranking evaluation doesn't need variable tracking
+            # IMPORTANT: Must track next_var_indices properly for the unification engine!
             excluded = self._ranking_original_queries[:, 0:1, :]  # [B, 1, 3]
-            next_var = torch.zeros(B, dtype=torch.long, device=device)
-            new_derived, new_counts, _ = env._compute_derived(new_current, next_var, self._ranking_original_queries, new_history, new_h_count, excluded)
+            new_derived, new_counts, new_var = env._compute_derived(new_current, self._ranking_next_var, self._ranking_original_queries, new_history, new_h_count, excluded)
             new_derived = torch.where(active.view(B, 1, 1, 1), new_derived, self._ranking_derived)
             new_counts = torch.where(active, new_counts, self._ranking_counts)
+            new_next_var = torch.where(active, new_var, self._ranking_next_var)
             
-            # Termination (using captured constants for torch.compile compatibility)
+            # Termination (matching _get_done_reward logic exactly)
             first_pred = new_current[:, 0, 0]
-            is_terminal = (first_pred == true_pred_idx) | (first_pred == false_pred_idx) | \
-                          (first_pred == pad) | (first_pred == end_pred_idx)
-            is_success = (first_pred == true_pred_idx) & active
+            preds = new_current[:, :, 0]  # [B, A]
+            non_pad = preds != pad
+            
+            # Check if ALL non-pad atoms are TRUE (matching _get_done_reward)
+            true_mask = (preds == true_pred_idx) | ~non_pad
+            all_true = true_mask.all(dim=1) & non_pad.any(dim=1)
+            
+            # is_end check (single non-pad atom that is END predicate)
+            single_pred = non_pad.sum(dim=1) == 1
+            is_end = single_pred & (first_pred == end_pred_idx)
+            
+            # all_true must be false if is_end is true
+            all_true = all_true & ~is_end
+            
+            # Terminal conditions (matching _get_done_reward)
+            is_terminal = all_true | (preds == false_pred_idx).any(dim=1) | is_end | ~non_pad.any(dim=1)
+            is_success = all_true & active
             newly_done = active & (is_terminal | (new_depths >= self.max_depth))
 
             # Recycling
@@ -437,6 +454,7 @@ class PPO:
             reset_history = reset_state['history_hashes']
             reset_h_count = reset_state['history_count']
             reset_original = reset_state['original_queries']
+            reset_next_var = reset_state['next_var_indices']
             
             # Merge
             m1, m3, mH = needs_reset.view(B, 1, 1), needs_reset.view(B, 1, 1, 1), needs_reset.view(B, 1).expand(B, H)
@@ -448,6 +466,7 @@ class PPO:
             final_history = torch.where(mH, reset_history, new_history)
             final_h_count = torch.where(needs_reset, reset_h_count, new_h_count)
             final_original = torch.where(m1, reset_original, self._ranking_original_queries)
+            final_next_var = torch.where(needs_reset, reset_next_var, new_next_var)
 
             # Reset ep_logprob for recycled slots
             final_ep_logprob = torch.where(needs_reset, torch.zeros_like(new_ep_logprob), new_ep_logprob)
@@ -460,13 +479,12 @@ class PPO:
 
             return (final_current, final_derived, final_counts, new_mask,
                     final_depths, final_done, new_ptr, final_history, final_h_count,
-                    newly_done, is_success, finished_idx, final_ep_logprob, ep_logprob_to_store, final_original)
+                    newly_done, is_success, finished_idx, final_ep_logprob, ep_logprob_to_store, final_original, final_next_var)
 
         if not self.parity:
             # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph caching of weights
             # CUDA graphs in reduce-overhead mode cache parameter values, so eval would use stale weights
             self._compiled_ranking_step = torch.compile(ranking_step, mode='default', fullgraph=True)
-            print("[PPOOptimal] Ranking loop step compiled")
         else:
             self._compiled_ranking_step = ranking_step
 
@@ -617,10 +635,7 @@ class PPO:
 
         batch_count = 0
         continue_training = True
-        
-        if self.verbose:
-            print(f"[PPOOptimal] Training for {self.n_epochs} epochs...")
-        
+                
         last_epoch_start = 0
         for epoch in range(self.n_epochs):
             last_epoch_start = batch_count
@@ -677,7 +692,7 @@ class PPO:
                 # Check KL divergence BEFORE optimizer step (matching TensorPPO/SB3)
                 if self.target_kl and approx_kl_div.item() > 1.5 * self.target_kl:
                     if self.verbose:
-                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div.item():.2f}")
+                        print(f"[PPO] Early stopping at step {epoch} due to reaching max kl: {approx_kl_div.item():.2f}")
                     continue_training = False
                     break
                 
@@ -707,11 +722,6 @@ class PPO:
             values = self.rollout_buffer.values.flatten()
             returns = self.rollout_buffer.returns.flatten()
             ev = explained_variance(values, returns)
-            
-            if self.verbose:
-                print(f"[PPOOptimal] Values: min={values.min().item():.3f}, max={values.max().item():.3f}, mean={values.mean().item():.3f}, std={values.std().item():.3f}")
-                print(f"[PPOOptimal] Returns: min={returns.min().item():.3f}, max={returns.max().item():.3f}, mean={returns.mean().item():.3f}, std={returns.std().item():.3f}")
-                print(f"[PPOOptimal] Explained variance: {ev.item():.4f}")
         
         result = {
             "policy_loss": pg_losses[:batch_count].mean().item(),
@@ -733,6 +743,9 @@ class PPO:
             self.num_timesteps = 0
         else:
             total_timesteps += self.num_timesteps
+
+        if self.callback and hasattr(self.callback, 'on_training_start'):
+            self.callback.on_training_start()
 
         self.env.train()
         # Handle flexible reset return (EnvOptimal returns Tuple, Wrapper returns TensorDict)
@@ -760,6 +773,10 @@ class PPO:
                 else:
                     step_cb = self.callback.on_step
 
+            # Call invocation of on_iteration_start on the callback manager if it exists
+            if self.callback and hasattr(self.callback, 'on_iteration_start'):
+                 self.callback.on_iteration_start(iteration, self.num_timesteps)
+
             # Collect rollouts
             rollout_start_time = time.time()
             result = self.collect_rollouts(state, obs, ep_starts, curr_ep_rew, curr_ep_len, ep_rews, ep_lens, iteration, return_traces, step_cb)
@@ -770,12 +787,8 @@ class PPO:
 
             rollout_time = time.time() - rollout_start_time
             if self.verbose:
-                print(f"[PPOOptimal] Rollout collected in {rollout_time:.2f}s")
-                print(f"[PPOOptimal] FPS: {n_steps/rollout_time:.2f}")
-                if ep_rews:
-                    recent_reward = np.mean(ep_rews[-10:])
-                    recent_length = np.mean(ep_lens[-10:])
-                    print(f"[PPOOptimal] Recent episodes: reward={recent_reward:.3f}, length={recent_length:.1f}")
+                print(f"[PPO] Rollout collected in {rollout_time:.2f}s")
+                print(f"[PPO] FPS: {n_steps/rollout_time:.2f}")
 
             train_metrics = self.train(return_traces)
             self.last_train_metrics = train_metrics
@@ -786,6 +799,9 @@ class PPO:
                 # Manager expects 'iteration', 'total_steps_done', 'train_metrics'
                 total_steps_done = self.num_timesteps
                 self.callback(locals(), globals())
+        
+        if self.callback and hasattr(self.callback, 'on_training_end'):
+            self.callback.on_training_end()
 
         return {'num_timesteps': self.num_timesteps, 'episode_rewards': ep_rews, 'episode_lengths': ep_lens, 'last_train_metrics': self.last_train_metrics}
 
@@ -822,9 +838,9 @@ class PPO:
             self._eval_padded_buffer[B:] = queries[-1]
         return self._eval_padded_buffer, B
 
-    def _setup_ranking_pool(self, queries: Tensor, sampler, n_corruptions: int, modes: Sequence[str]):
+    def _setup_ranking_pool(self, queries: Tensor, sampler, n_corruptions, modes: Sequence[str]):
         """Consolidated pool setup for corruption ranking."""
-        N, K, device = queries.shape[0], 1 + n_corruptions, self.device
+        N, device = queries.shape[0], self.device
         B, H = self.fixed_batch_size, self._ranking_max_history
         pad = self.env.padding_idx
         
@@ -869,6 +885,7 @@ class PPO:
         self._ranking_pool_ptr.copy_(torch.arange(B, device=device))
         self._ranking_history_hashes.copy_(init_state['history_hashes'])
         self._ranking_history_count.copy_(init_state['history_count'])
+        self._ranking_next_var.copy_(init_state['next_var_indices'])
         self._ranking_ep_logprob.zero_()
         self._ranking_result_logprob.zero_()
 
@@ -878,10 +895,6 @@ class PPO:
         chunk_rewards = self._ranking_result_rewards[:pool_size]
         chunk_success = self._ranking_result_success[:pool_size]
         chunk_proven = chunk_success  # Use success buffer directly
-
-        # DEBUG: print buffer state
-        print(f"[DEBUG _collect_chunk_stats] pool_size={pool_size}, CQ={CQ}, K={K}, modes={len(corruption_modes)}")
-        print(f"[DEBUG] chunk_success sum: {chunk_success.sum().item()}")
 
         # Identify Positive Indices vs Negative Indices
         # Append SEPARATELY per mode to match _aggregate_metrics depth reconstruction
@@ -893,7 +906,6 @@ class PPO:
             neg_idx = torch.arange(off + CQ, off + CQ * K, device=device)
 
             pos_success = chunk_proven[pos_idx].float().cpu()
-            print(f"[DEBUG] mode {mode_i}: pos_idx={pos_idx[:5].tolist()}..., pos_success sum={pos_success.sum().item()}/{CQ}")
 
             # Collect per mode (separate appends)
             if pos_idx.numel() > 0:
@@ -916,8 +928,6 @@ class PPO:
         full_stats = {k: torch.cat(v) if v else torch.tensor([]) for k, v in all_stats.items()}
 
         # DEBUG
-        print(f"[DEBUG _aggregate_metrics] N={N}, chunk_queries={chunk_queries}, modes={len(corruption_modes)}")
-        print(f"[DEBUG] pvn_pos shape: {full_stats['pvn_pos'].shape}, sum: {full_stats['pvn_pos'].sum().item()}")
 
         # Global means (for mapping only, don't store in res directly as requested)
         global_means = {}
@@ -950,15 +960,12 @@ class PPO:
                 expanded_depths = torch.cat(expanded_depths_list)
                 unique_d = torch.unique(qd)
 
-                # DEBUG
-                print(f"[DEBUG] expanded_depths shape: {expanded_depths.shape}")
-                print(f"[DEBUG] unique depths: {unique_d.tolist()}")
                 for d in unique_d.tolist():
                     mask = (expanded_depths == d)
                     count = mask.sum().item()
                     if mask.any():
                         pvn = full_stats['pvn_pos'][mask]
-                        print(f"[DEBUG] depth {d}: count={count}, pvn_sum={pvn.sum().item()}, pvn_mean={pvn.mean().item():.3f}")
+                        
 
                 for d in unique_d.tolist():
                     mask = (expanded_depths == d)
@@ -1003,7 +1010,14 @@ class PPO:
         """Fast corruption ranking evaluation with slot recycling (production use)."""
         self._uncompiled_policy.eval()
         N, device = queries.shape[0], self.device
-        K, nm = 1 + n_corruptions, len(corruption_modes)
+        # If n_corruptions is None (exhaustive), use sampler info for safer K estimate
+        default_k = 100
+        if n_corruptions is None and hasattr(sampler, 'max_pool_len'):
+             # Use a safer overestimate
+             default_k = max(default_k, sampler.max_pool_len * 2) 
+        
+        K_est = 1 + (n_corruptions if n_corruptions is not None else default_k) 
+        K, nm = K_est, len(corruption_modes)
         
         # Auto-chunk to fit pool
         max_q = self._ranking_max_pool // (K * nm)
@@ -1028,20 +1042,24 @@ class PPO:
             self._setup_ranking_pool(chunk, sampler, n_corruptions, corruption_modes)
             pool_size = int(self._ranking_pool_size.item())
             
+            # Correct K if exhaustive (n_corruptions is None)
+            if n_corruptions is None:
+                K = pool_size // (CQ * nm)
+            
             # Ranking step loop
             max_steps = (pool_size // self.fixed_batch_size + 2) * self.max_depth
             for _ in range(max_steps):
                 torch.compiler.cudagraph_mark_step_begin()
                 (new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr,
-                 new_h, new_hc, _, success, indices, new_ep_logprob, logprob_to_store, new_orig) = self._compiled_ranking_step(self._ranking_pool, self._ranking_pool_size)
+                 new_h, new_hc, _, success, indices, new_ep_logprob, logprob_to_store, new_orig, new_next_var) = self._compiled_ranking_step(self._ranking_pool, self._ranking_pool_size)
 
                 torch._foreach_copy_(
                     [self._ranking_current, self._ranking_derived, self._ranking_counts, self._ranking_mask,
                      self._ranking_depths, self._ranking_done, self._ranking_pool_ptr,
-                     self._ranking_history_hashes, self._ranking_history_count, self._ranking_ep_logprob, self._ranking_original_queries],
-                    [new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr, new_h, new_hc, new_ep_logprob, new_orig]
+                     self._ranking_history_hashes, self._ranking_history_count, self._ranking_ep_logprob, self._ranking_original_queries, self._ranking_next_var],
+                    [new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr, new_h, new_hc, new_ep_logprob, new_orig, new_next_var]
                 )
-
+                
                 # Result record (success and log probs)
                 v_idx = (indices >= 0) & (indices < pool_size)
                 clamped_indices = indices.clamp(0, pool_size-1)
@@ -1084,10 +1102,23 @@ class PPO:
 
                 logprob_t = self._ranking_result_logprob[offset:offset + CQ * K].view(K, CQ)
                 logprobs = logprob_t.t().contiguous()  # [CQ, K]
+                
+                # Identify valid candidates (not padding)
+                # Check queries in pool: if (r,h,t) has 0, it's padding
+                # query layout: [r, h, t] or similar. DataHandler says (r, h, t). Padding is 0.
+                queries_t = self._ranking_pool[offset:offset + CQ * K].view(K, CQ, 3) 
+                # [K, CQ, 3] -> tranpose to [CQ, K, 3]
+                queries_batch = queries_t.permute(1, 0, 2)
+                # Check if head or tail is 0 (padding)
+                # Note: valid queries should have > 0 for at least h and t.
+                is_valid = (queries_batch[:, :, 1] > 0) & (queries_batch[:, :, 2] > 0)
 
                 # Apply success penalty (matching evaluate_parity)
                 # Successful proofs keep their log prob, failed get -100 penalty
                 scores = torch.where(success, logprobs, logprobs - 100.0)
+                
+                # Mask out invalid padding candidates with a very low score so they rank last
+                scores = torch.where(is_valid, scores, torch.tensor(-1e9, device=device))
 
                 pos, neg = scores[:, 0:1], scores[:, 1:]
                 rnd = torch.rand(CQ, K, device=device)

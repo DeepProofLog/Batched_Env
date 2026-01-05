@@ -77,8 +77,8 @@ if __name__ == "__main__":
         
         # Evaluation
         'eval_freq': 4,
-        'eval_neg_samples': 4,
-        'n_corruptions': None,  # test_neg_samples alias
+        'eval_neg_samples': None,
+        'test_neg_samples': None,
         'eval_best_metric': 'mrr',
         
         # LR decay

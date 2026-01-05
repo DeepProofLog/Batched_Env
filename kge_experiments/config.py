@@ -69,8 +69,9 @@ class TrainConfig:
     
     # Sampling / Corruption
     negative_ratio: float = 1.0 # train_neg_ratio
-    eval_neg_samples: int = 4
-    n_corruptions: int = 10 # test_neg_samples alias
+    eval_neg_samples: Optional[int] = 4
+    test_neg_samples: Optional[int] = None
+    n_corruptions: Optional[int] = 10 # test_neg_samples alias
     corruption_scheme: List[str] = field(default_factory=lambda: ['head', 'tail'])
     sampler_default_mode: str = "both"
     

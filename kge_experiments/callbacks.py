@@ -325,6 +325,12 @@ class TorchRLCallbackManager:
              if hasattr(cb, 'on_iteration_start'):
                 cb.on_iteration_start(iteration, global_step)
 
+    def on_training_end(self) -> None:
+        """Called at the end of training."""
+        for cb in self.callbacks:
+            if hasattr(cb, 'on_training_end'):
+                cb.on_training_end()
+
     def on_step(self, infos: List[Dict[str, Any]]) -> None:
         for cb in self.callbacks:
             if hasattr(cb, 'on_step'):
@@ -521,7 +527,9 @@ class CheckpointCallback:
         train_metric: str = "ep_rew_mean",
         eval_metric: str = "mrr_mean",  # Can be 'mrr_mean', 'auc_pr', etc.
         verbose: bool = True,
-        date: str = None
+        date: str = None,
+        restore_best: bool = False,
+        load_best_metric: str = 'eval'
     ):
         self.save_path = Path(save_path)
         self.save_path.mkdir(parents=True, exist_ok=True)
@@ -536,9 +544,26 @@ class CheckpointCallback:
         self.best_eval_value = float('-inf')
         self.verbose = verbose
         self.date = date
+        self.restore_best = restore_best
+        self.load_best_metric = load_best_metric
         
     def on_iteration_end(self, iteration: int, global_step: int) -> None:
         pass
+
+    def on_training_end(self) -> None:
+        """Called at the end of training to optionally restore best model."""
+        if self.restore_best:
+            if self.verbose:
+                print("\n[Checkpoint] Restoring best model at end of training...")
+            
+            # Determine device from policy
+            device = None
+            try:
+                device = next(self.policy.parameters()).device
+            except:
+                pass
+                
+            self.load_best_model(load_metric=self.load_best_metric, device=device)
 
     def check_and_save(self, metrics: Dict[str, Any], iteration: int) -> None:
         """Called manually or by Manager if we enhance the API."""

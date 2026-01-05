@@ -84,7 +84,7 @@ def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str =
             if n_eval:
                 valid_queries, valid_depths = valid_queries[:n_eval], valid_depths[:n_eval]
             
-            n_corruptions = getattr(config, 'eval_neg_samples', getattr(config, 'n_corruptions', 50))
+            n_corruptions = getattr(config, 'eval_neg_samples')
             scheme = getattr(config, 'corruption_scheme', ('head', 'tail'))
             
             callbacks.append(RankingCallback(
@@ -102,7 +102,9 @@ def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str =
             callbacks.append(CheckpointCallback(
                 save_path=save_path, policy=policy,
                 train_metric="ep_rew_mean", eval_metric=best_metric,
-                verbose=True, date=date
+                verbose=True, date=date,
+                restore_best=getattr(config, 'restore_best', False),
+                load_best_metric=getattr(config, 'load_best_metric', 'eval')
             ))
     
     # ScalarAnnealingCallback for lr/entropy decay
@@ -251,7 +253,7 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         num_layers=8,
         dropout_prob=0.0,
         device=device,
-        parity=True,
+        parity=False,
     ).to(device)
     
     return {
@@ -323,10 +325,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
             eval_env=eval_env, date=date
         )
         ppo.callback = callback_manager
-        
-        if callback_manager:
-            callback_manager.on_training_start()
-
+     
     # Train
     learn_result = ppo.learn(
         total_timesteps=config.total_timesteps,
@@ -344,7 +343,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
     eval_results = ppo.evaluate(
         queries=queries_tensor,
         sampler=comp['sampler'],
-        n_corruptions=config.n_corruptions,
+        n_corruptions=config.test_neg_samples,
         corruption_modes=tuple(config.corruption_scheme),
         query_depths=torch.as_tensor(
             comp['dh'].test_depths[:config.n_envs * 4], 
