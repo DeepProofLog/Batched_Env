@@ -133,7 +133,7 @@ if __name__ == "__main__":
         # 'inference_success_only': False,  # When inference_fusion=True, only use KGE on RL success
         # 'pbrs': False,              # Enable potential-based reward shaping
         # 'enable_top_k': False,      # Enable Top-K actions filtering with the value function
-        # 'kge_engine': 'tf',         # KGE backend: 'tf', 'pytorch', or 'pykeen'
+        # 'kge_engine': 'pytorch',    # KGE backend: 'pytorch' or 'pykeen'
         # 'kge_checkpoint_dir': './../../checkpoints/',
         # 'kge_run_signature': None,
         # 'kge_scores_file': None,
@@ -479,14 +479,12 @@ if __name__ == "__main__":
         cfg['annealing'] = annealing_specs
 
         # Validate KGE engine parameter
-        kge_engine = cfg.get('kge_engine', 'tf').strip().lower()
-        if kge_engine not in {'tf', 'tensorflow', 'pytorch', 'torch', 'pykeen'}:
-            raise ValueError(f"Invalid kge_engine '{kge_engine}'. Must be one of: 'tf', 'pytorch', or 'pykeen'.")
+        kge_engine = cfg.get('kge_engine', 'pytorch').strip().lower()
+        if kge_engine not in {'pytorch', 'torch', 'pykeen'}:
+            raise ValueError(f"Invalid kge_engine '{kge_engine}'. Must be one of: 'pytorch' or 'pykeen'.")
         
         # Normalize engine name
-        if kge_engine in {'tensorflow'}:
-            kge_engine = 'tf'
-        elif kge_engine in {'torch'}:
+        if kge_engine in {'torch'}:
             kge_engine = 'pytorch'
         cfg['kge_engine'] = kge_engine
 
@@ -495,20 +493,8 @@ if __name__ == "__main__":
             dataset = cfg['dataset_name']
             backend = cfg['kge_engine']
             
-            # TensorFlow backend uses the original signatures
-            if backend == 'tf':
-                if dataset in {"countries_s3", "countries_s2", "countries_s1"}:
-                    cfg['kge_run_signature'] = f"{dataset}-backward_0_1-no_reasoner-rotate-True-256-256-128-rules.txt"
-                elif dataset == "family":
-                    cfg['kge_run_signature'] = "kinship_family-backward_0_1-no_reasoner-rotate-True-256-256-4-rules.txt"
-                elif dataset == "wn18rr":
-                    cfg['kge_run_signature'] = "wn18rr-backward_0_1-no_reasoner-rotate-True-256-256-1-rules.txt"
-                else:
-                    raise ValueError(f"No default KGE run signature defined for dataset '{dataset}' with backend 'tf'. "
-                                     "Set 'kge_run_signature' manually or extend the defaults.")
-            
             # PyTorch backend - adapt signatures as needed
-            elif backend == 'pytorch':
+            if backend == 'pytorch':
                 if dataset in {"countries_s3", "countries_s2", "countries_s1"}:
                     cfg['kge_run_signature'] = f"{dataset}_pytorch_rotate_256"
                 elif dataset == "family":

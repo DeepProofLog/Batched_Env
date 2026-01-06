@@ -47,6 +47,7 @@ from callbacks import (
 )
 
 from utils import seed_all
+from kge_inference import build_kge_inference
 
 
 def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str = None):
@@ -310,7 +311,16 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         except Exception as e:
             print(f"Warning: Could not extract training metadata: {e}")
 
-    ppo = PPO(policy, env, config, query_labels=query_labels, query_depths=query_depths)
+    kge_engine = build_kge_inference(config, index_manager=im)
+    ppo = PPO(
+        policy,
+        env,
+        config,
+        query_labels=query_labels,
+        query_depths=query_depths,
+        kge_inference_engine=kge_engine,
+        kge_index_manager=im,
+    )
     
     # Build callbacks
     date = None

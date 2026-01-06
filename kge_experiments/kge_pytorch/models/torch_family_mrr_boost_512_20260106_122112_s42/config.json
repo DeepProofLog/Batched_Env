@@ -1,0 +1,9 @@
+{
+  "model": "RotatE",
+  "dim": 512,
+  "num_entities": 2968,
+  "num_relations": 24,
+  "run_signature": "torch_family_mrr_boost_512_20260106_122112_s42",
+  "gamma": 12.0,
+  "p": 1
+}

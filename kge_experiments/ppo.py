@@ -22,6 +22,7 @@ from tensordict import TensorDict
 
 from rollout import RolloutBuffer
 from env import EnvVec, EnvObs, EnvState
+from utils import atom_to_str
 
 if torch.cuda.is_available():
     torch.set_float32_matmul_precision('high')
@@ -97,7 +98,7 @@ class PPO:
     # INITIALIZATION
     # -------------------------------------------------------------------------
 
-    def __init__(self, policy: nn.Module, env: EnvVec, config, **kwargs):
+    def __init__(self, policy: nn.Module, env: EnvVec, config: Any, **kwargs: Any) -> None:
         self.config = config
         self.policy = policy
         self.env = env
@@ -135,6 +136,20 @@ class PPO:
         self._compile_mode = kwargs.get('compile_mode', 'reduce-overhead')
         self.ranking_compile_mode = kwargs.get('ranking_compile_mode', getattr(config, 'ranking_compile_mode', 'default'))
         self._fixed_batch_size = kwargs.get('fixed_batch_size', getattr(config, 'fixed_batch_size', None))
+        self.ranking_tie_seed = int(getattr(config, 'ranking_tie_seed', 0))
+
+        # KGE inference (eval-time fusion)
+        self.kge_inference_engine = kwargs.get(
+            'kge_inference_engine', getattr(config, 'kge_inference_engine', None)
+        )
+        self.kge_index_manager = kwargs.get(
+            'kge_index_manager', getattr(config, 'kge_index_manager', None)
+        )
+        self.kge_inference = bool(getattr(config, 'kge_inference', False))
+        self.kge_inference_success = bool(getattr(config, 'kge_inference_success', True))
+        self.kge_eval_kge_weight = float(getattr(config, 'kge_eval_kge_weight', 2.0))
+        self.kge_eval_rl_weight = float(getattr(config, 'kge_eval_rl_weight', 1.0))
+        self._kge_log_eps = 1e-9
 
         # Metrics info (CPU-only to avoid synchronization) - copied from PPOOld
         query_labels = kwargs.get('query_labels', None)
@@ -1146,6 +1161,49 @@ class PPO:
                         
         return res
 
+    def _format_kge_atoms(self, atoms: Tensor, index_manager: Any) -> List[str]:
+        """Convert atom indices to canonical strings for KGE scoring."""
+        idx2pred = index_manager.idx2predicate
+        idx2const = index_manager.idx2constant
+        n_constants = index_manager.constant_no
+        pad_idx = index_manager.padding_idx
+        return [
+            atom_to_str(atom, idx2pred, idx2const, n_constants, padding_idx=pad_idx)
+            for atom in atoms
+        ]
+
+    def _score_kge_candidates(
+        self,
+        queries: Tensor,
+        valid_mask: Tensor,
+        *,
+        device: torch.device,
+    ) -> Tensor:
+        """Score candidate triples with the KGE engine.
+
+        Args:
+            queries: [Q, K, 3] candidate triples.
+            valid_mask: [Q, K] validity mask for candidates.
+            device: target device for output tensor.
+
+        Returns:
+            Tensor of shape [Q, K] with KGE scores in [0, 1].
+        """
+        # [Q, K, 3] -> [Q*K, 3]
+        flat_queries = queries.reshape(-1, 3)
+        # [Q, K] -> [Q*K]
+        flat_valid = valid_mask.reshape(-1)
+        flat_valid_cpu = flat_valid.detach().cpu()
+        if not flat_valid_cpu.any():
+            return torch.zeros(queries.shape[0], queries.shape[1], device=device)
+
+        flat_queries_cpu = flat_queries.detach().cpu()[flat_valid_cpu]
+        atom_strs = self._format_kge_atoms(flat_queries_cpu, self.kge_index_manager)
+        scores_list = self.kge_inference_engine.predict_batch(atom_strs)
+        scores_cpu = torch.zeros(flat_queries.shape[0], dtype=torch.float32)
+        scores_cpu[flat_valid_cpu] = torch.as_tensor(scores_list, dtype=torch.float32)
+        return scores_cpu.view(queries.shape[0], queries.shape[1]).to(device=device)
+
     def evaluate(self, queries: Tensor, sampler, n_corruptions: int = 50, corruption_modes: Sequence[str] = ('head', 'tail'), *,
                  chunk_queries: int = None, verbose: bool = False, deterministic: bool = True,
                  query_depths: Optional[Tensor] = None, debug: bool = False):
@@ -1180,10 +1238,13 @@ class PPO:
             'rew_pos': [], 'rew_neg': [], 
             'pvn_pos': [], 'pvn_neg': []
         }
+        tie_generator = torch.Generator(device=device)
+        tie_generator.manual_seed(self.ranking_tie_seed)
 
         for start in range(0, N, chunk_queries):
             t_start = time.time()
-            print(f"Chunk {start}-{min(start + chunk_queries, N)}")
+            if verbose:
+                print(f"Chunk {start}-{min(start + chunk_queries, N)}")
             end = min(start + chunk_queries, N)
             chunk = queries[start:end]
             CQ = end - start
@@ -1265,30 +1326,53 @@ class PPO:
                 # Check queries in pool: if (r,h,t) has 0, it's padding
                 # query layout: [r, h, t] or similar. DataHandler says (r, h, t). Padding is 0.
                 queries_t = self._ranking_pool[offset:offset + CQ * K].view(K, CQ, 3) 
-                # [K, CQ, 3] -> tranpose to [CQ, K, 3]
+                # [K, CQ, 3] -> [CQ, K, 3]
                 queries_batch = queries_t.permute(1, 0, 2)
-                # Check if head or tail is 0 (padding)
-                # Note: valid queries should have > 0 for at least h and t.
-                is_valid = (queries_batch[:, :, 1] > 0) & (queries_batch[:, :, 2] > 0)
+                # Valid candidates: predicate/head/tail are non-padding
+                is_valid = (queries_batch[:, :, 0] > 0) & (queries_batch[:, :, 1] > 0) & (queries_batch[:, :, 2] > 0)
 
-                # Apply success penalty (matching evaluate_parity)
-                # Successful proofs keep their log prob, failed get -100 penalty
-                scores = torch.where(success, logprobs, logprobs - 100.0)
-                
+                use_kge = (
+                    self.kge_inference
+                    and self.kge_inference_engine is not None
+                    and self.kge_index_manager is not None
+                )
+
+                if use_kge:
+                    kge_scores = self._score_kge_candidates(
+                        queries_batch,
+                        is_valid,
+                        device=device,
+                    )
+                    # kge_scores: [CQ, K]
+                    kge_log_scores = torch.log(kge_scores.clamp(min=self._kge_log_eps))
+                    scores = self.kge_eval_kge_weight * kge_log_scores
+                    if self.kge_inference_success:
+                        scores = torch.where(
+                            success,
+                            scores + self.kge_eval_rl_weight * logprobs,
+                            scores,
+                        )
+                    else:
+                        scores = scores + self.kge_eval_rl_weight * logprobs
+                    scores = torch.where(success, scores, scores - 100.0)
+                else:
+                    # Successful proofs keep their log prob, failed get -100 penalty
+                    scores = torch.where(success, logprobs, logprobs - 100.0)
+
                 # Mask out invalid padding candidates with a very low score so they rank last
-                scores = torch.where(is_valid, scores, torch.tensor(-1e9, device=device))
+                scores = scores.masked_fill(~is_valid, -1e9)
 
                 pos, neg = scores[:, 0:1], scores[:, 1:]
-                rnd = torch.rand(CQ, K, device=device)
+                rnd = torch.rand((CQ, K), generator=tie_generator, device=device)  # [CQ, K]
                 better = (neg > pos)
                 tied = (neg == pos) & (rnd[:, 1:] > rnd[:, 0:1])
                 all_ranks[mode].append(1 + better.sum(1) + tied.sum(1))
                 offset += CQ * K
-                print(f" Took {time.time() - t_start:.2f} seconds. ms/cand: {1000 * (time.time() - t_start) / (CQ * K)}")
+            if verbose:
+                elapsed = time.time() - t_start
+                print(f" Took {elapsed:.2f} seconds. ms/cand: {1000 * elapsed / (CQ * K)}")
 
         # Metric Aggregation
         res = self._aggregate_metrics(all_stats, query_depths, N, chunk_queries, corruption_modes, all_ranks=all_ranks)
         
         return res
-
-

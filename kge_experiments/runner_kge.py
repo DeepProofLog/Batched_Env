@@ -18,6 +18,7 @@ torch.set_float32_matmul_precision('high')
 
 from train import run_experiment
 from config import TrainConfig
+from kge_inference import normalize_backend, default_checkpoint_dir
 from utils import FileLogger, parse_scalar, coerce_config_value, update_config_value, parse_assignment
 
 
@@ -84,6 +85,17 @@ if __name__ == "__main__":
         'eval_neg_samples': 10,
         'test_neg_samples': 25,
         'eval_best_metric': 'mrr',
+        'ranking_tie_seed': 0,
+
+        # KGE inference (eval-time fusion)
+        'kge_inference': False,
+        'kge_inference_success': True,
+        'kge_engine': 'pytorch',
+        'kge_checkpoint_dir': None,
+        'kge_run_signature': None,
+        'kge_scores_file': None,
+        'kge_eval_kge_weight': 2.0,
+        'kge_eval_rl_weight': 1.0,
         
         # LR decay
         'lr_decay': True,
@@ -205,7 +217,14 @@ if __name__ == "__main__":
         atom_size = cfg_dict.get('atom_embedding_size', 64)
         n_envs = cfg_dict.get('n_envs', 3)
         cfg_dict['run_signature'] = f"{dataset}-{atom_size}-{n_envs}-torchrl"
-        
+
+        # KGE inference defaults
+        if cfg_dict.get('kge_inference', False):
+            engine = normalize_backend(cfg_dict.get('kge_engine', 'pytorch'))
+            cfg_dict['kge_engine'] = engine
+            if not cfg_dict.get('kge_checkpoint_dir'):
+                cfg_dict['kge_checkpoint_dir'] = default_checkpoint_dir(engine)
+
         # Corruption scheme
         if 'countries' in dataset or 'ablation' in dataset:
             cfg_dict['corruption_scheme'] = ['tail']

@@ -1,3 +1,5 @@
+"""Tensor utilities for logic parsing, profiling, and lightweight logging helpers."""
+
 import re
 import copy
 from typing import Dict, Union, List, Any, Tuple, Iterable, Optional, Sequence
@@ -23,9 +25,9 @@ import torch.profiler
 from torch.profiler import ProfilerActivity
 import torch.nn as nn
 
-# Lazy import to avoid loading TensorFlow in worker processes
-def _get_wandb():
-    """Lazy import of wandb to avoid TensorFlow loading in workers"""
+# Lazy import to avoid loading heavy optional dependencies in worker processes.
+def _get_wandb() -> Any:
+    """Lazy import of wandb to keep worker initialization light."""
     import wandb
     return wandb
 

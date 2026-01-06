@@ -103,9 +103,20 @@ class TrainConfig:
     models_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
     eval_freq: int = 0
     eval_best_metric: str = 'mrr'
+    ranking_tie_seed: int = 0
     use_logger: bool = False
     logger_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
     run_signature: str = "compiled_run"
+
+    # KGE inference (evaluation-time fusion)
+    kge_inference: bool = False
+    kge_inference_success: bool = True
+    kge_engine: Optional[str] = None
+    kge_checkpoint_dir: Optional[str] = None
+    kge_run_signature: Optional[str] = None
+    kge_scores_file: Optional[str] = None
+    kge_eval_kge_weight: float = 2.0
+    kge_eval_rl_weight: float = 1.0
     
     # Misc
     seed: int = 42
