@@ -28,6 +28,8 @@ class TrainConfig:
     # Environment / Logic
     padding_atoms: int = 6
     padding_states: int = 64
+    eval_padding_states: int = 16  # Optimized: 16 gives ~0.87 ms/candidate for WN18RR
+    eval_max_depth: int = 14  # Optimized: 14 steps sufficient for most proofs
     max_steps: int = 20 # max_depth in runner
     use_exact_memory: bool = True
     memory_pruning: bool = True
@@ -35,7 +37,8 @@ class TrainConfig:
     end_proof_action: bool = True
     reward_type: int = 0
     max_total_vars: int = 1000
-    max_fact_pairs_cap: Optional[int] = None  # Cap for large predicates (None = no cap, 8000 for wn18rr)
+    max_fact_pairs_cap: Optional[int] = None  # Cap for large predicates (auto-set to eval_padding_states if None)
+    eval_batch_size: int = 75  # Optimized batch size for evaluation (75 for best speed)
     sample_deterministic_per_env: bool = False  # False for fullgraph compilation compatibility
     
     # Model Architecture

@@ -869,6 +869,8 @@ class UnificationEngineVectorized:
         padding_atoms: int = None,
         end_pred_idx: Optional[int] = None,
         end_proof_action: bool = False,
+        shuffle_facts: bool = False,  # Random sampling - disabled by default until debugged
+        shuffle_seed: int = 42,
     ):
         """
         Initialize the Vectorized Unification Engine.
@@ -985,63 +987,155 @@ class UnificationEngineVectorized:
         self.max_fact_pairs = max_fact_pairs
         self.max_rule_pairs = max_rule_pairs
 
-    def _create_block_sparse_index(self) -> None:
+        # Random fact sampling: shuffle facts within each predicate segment
+        # This ensures that when capped, we get a random sample instead of biased truncation
+        if shuffle_facts and self.facts_idx is not None and self.facts_idx.numel() > 0:
+            self._shuffle_facts_per_predicate(seed=shuffle_seed)
+
+    def _shuffle_facts_per_predicate(self, seed: int = 42) -> None:
+        """
+        Randomly shuffle facts within each predicate segment.
+
+        This implements random fact sampling: when max_fact_pairs_cap limits
+        the number of facts per predicate, the "first" facts are now a random
+        sample instead of a biased first-N truncation.
+
+        Args:
+            seed: Random seed for reproducible shuffling
+        """
+        if self.facts_idx is None or self.facts_idx.numel() == 0:
+            return
+
+        device = self.facts_idx.device
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+
+        # Get predicate for each fact
+        preds = self.facts_idx[:, 0]
+        num_preds = int(preds.max().item()) + 1 if preds.numel() > 0 else 1
+
+        # Sort facts by predicate to get contiguous groups
+        order = torch.argsort(preds, stable=True)
+        facts_sorted = self.facts_idx[order]
+        preds_sorted = preds[order]
+
+        # Compute segment boundaries
+        counts = torch.bincount(preds.long(), minlength=num_preds)
+        starts = torch.zeros(num_preds + 1, dtype=torch.long, device=device)
+        starts[1:] = counts.cumsum(0)
+
+        # Shuffle within each predicate segment
+        shuffled_facts = facts_sorted.clone()
+        for pred_id in range(num_preds):
+            start = starts[pred_id].item()
+            end = starts[pred_id + 1].item()
+            count = end - start
+            if count <= 1:
+                continue
+
+            # Random permutation within this segment
+            perm = torch.randperm(count, device=device, generator=generator)
+            shuffled_facts[start:end] = facts_sorted[start + perm]
+
+        # Update facts_idx with shuffled facts
+        self.facts_idx = shuffled_facts
+
+        # Rebuild predicate range map for the shuffled facts
+        # Since we sorted by predicate, the segments are now contiguous
+        self.fact_seg_starts = starts[:-1]
+        self.fact_seg_lens = counts
+
+        print(f"[UnificationEngine] Shuffled facts per predicate (seed={seed})")
+
+    def _create_block_sparse_index(self, seed: int = 42, use_random_sampling: bool = True) -> None:
         """
         Restructures flat facts [F, 3] into block-sparse [P, MAX_K, 3].
-        
+
         This enables O(1) fact lookup via block_index[predicate_id],
         eliminating the need for predicate range scanning.
+
+        Args:
+            seed: Random seed for reproducible sampling
+            use_random_sampling: If True, randomly sample facts for predicates exceeding MAX_K.
+                               If False, take the first MAX_K facts (truncation).
         """
         facts = self.facts_idx  # [F, 3]
         device = self.device
         pad = self.padding_idx
-        
+
         if facts.numel() == 0:
             # Empty facts - create minimal block index
             num_preds = self.predicate_no + 1 if self.predicate_no else 1
             self.block_index = torch.full((num_preds, 1, 3), pad, dtype=torch.long, device=device)
             self.max_facts_per_pred = 1
             return
-        
+
         # 1. Count facts per predicate
         preds = facts[:, 0]  # [F]
         num_preds = self.predicate_no + 1 if self.predicate_no else int(preds.max().item()) + 2
         counts = torch.bincount(preds.long(), minlength=num_preds)  # [P]
-        
+
         # 2. Determine MAX_K (cap to prevent OOM for bursty predicates)
         MAX_K_CAP = 4096  # Increased to handle datasets with many facts per predicate
         max_k = int(counts.max().item())
         max_k = min(max_k, MAX_K_CAP)
         max_k = max(max_k, 1)  # Ensure at least 1
         self.max_facts_per_pred = max_k
-        
+
         # 3. Allocate block tensor [P, MAX_K, 3]
         self.block_index = torch.full(
             (num_preds, max_k, 3), pad, dtype=torch.long, device=device
         )
-        
-        # 4. Fill blocks (vectorized scatter)
-        # Sort facts by predicate for contiguous insertion
-        order = torch.argsort(preds, stable=True)
-        facts_sorted = facts[order]  # [F, 3]
-        preds_sorted = preds[order]  # [F]
-        
-        # Compute position within each predicate group
-        group_starts = torch.zeros(num_preds + 1, dtype=torch.long, device=device)
-        group_starts[1:] = counts.cumsum(0)
-        
-        # For each fact, compute its local index within predicate group
-        global_idx = torch.arange(facts.shape[0], device=device)
-        local_idx = global_idx - group_starts[preds_sorted.long()]  # Position 0,1,2... within group
-        
-        # Clamp to MAX_K to handle predicates exceeding cap
-        valid = local_idx < max_k
-        local_idx_clamped = local_idx.clamp(max=max_k - 1)
-        
-        # Scatter facts into block_index
-        # block_index[pred, local_idx] = fact
-        self.block_index[preds_sorted[valid].long(), local_idx_clamped[valid]] = facts_sorted[valid]
-        
+
+        # 4. Fill blocks with random sampling for large predicates
+        if use_random_sampling:
+            # Use random permutation for each predicate group to sample diverse facts
+            generator = torch.Generator(device=device)
+            generator.manual_seed(seed)
+
+            # Sort facts by predicate for group processing
+            order = torch.argsort(preds, stable=True)
+            facts_sorted = facts[order]
+            preds_sorted = preds[order]
+
+            # Compute group boundaries
+            group_starts = torch.zeros(num_preds + 1, dtype=torch.long, device=device)
+            group_starts[1:] = counts.cumsum(0)
+
+            # Process each predicate group
+            for pred_id in range(num_preds):
+                start = group_starts[pred_id].item()
+                count = counts[pred_id].item()
+                if count == 0:
+                    continue
+
+                # Get facts for this predicate
+                pred_facts = facts_sorted[start:start + count]
+
+                if count <= max_k:
+                    # All facts fit - use them all
+                    self.block_index[pred_id, :count] = pred_facts
+                else:
+                    # Random sample MAX_K facts from this predicate
+                    perm = torch.randperm(count, device=device, generator=generator)[:max_k]
+                    self.block_index[pred_id] = pred_facts[perm]
+        else:
+            # Original truncation behavior (take first MAX_K)
+            order = torch.argsort(preds, stable=True)
+            facts_sorted = facts[order]
+            preds_sorted = preds[order]
+
+            group_starts = torch.zeros(num_preds + 1, dtype=torch.long, device=device)
+            group_starts[1:] = counts.cumsum(0)
+
+            global_idx = torch.arange(facts.shape[0], device=device)
+            local_idx = global_idx - group_starts[preds_sorted.long()]
+
+            valid = local_idx < max_k
+            local_idx_clamped = local_idx.clamp(max=max_k - 1)
+
+            self.block_index[preds_sorted[valid].long(), local_idx_clamped[valid]] = facts_sorted[valid]
+
         # Update max_fact_pairs to match block index dimension
         # This ensures compatibility with existing code that uses max_fact_pairs
 
@@ -1149,6 +1243,8 @@ class UnificationEngineVectorized:
         padding_atoms: int = None,
         max_derived_per_state: Optional[int] = None,
         end_proof_action: bool = False,
+        shuffle_facts: bool = False,  # Disabled until index bounds issue is fixed
+        shuffle_seed: int = 42,
         # kept for compatibility with train caller signature
         **kwargs
     ):
@@ -1177,6 +1273,8 @@ class UnificationEngineVectorized:
             padding_atoms=padding_atoms,
             end_pred_idx=im.end_pred_idx,
             end_proof_action=end_proof_action,
+            shuffle_facts=shuffle_facts,
+            shuffle_seed=shuffle_seed,
         )
     
 

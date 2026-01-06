@@ -30,23 +30,23 @@ if __name__ == "__main__":
         
         # Training
         'seed': [0],
-        'total_timesteps': 0,
+        'total_timesteps': 200000,
         'n_envs': 128,
-        'n_steps': 128,
+        'n_steps': 256,
         'batch_size': 512,
         'n_epochs': 5,
         'augment_train': True, # for countries dataset
         
-        # PPO hyperparams  
-        'learning_rate': 3e-5,
+        # PPO hyperparams
+        'learning_rate': 1e-4,  # Increased from 3e-5 for faster value function learning
         'gamma': 0.99,
         'gae_lambda': 0.95,
         'clip_range': 0.2,
         'clip_range_vf': None,
         'ent_coef': 0.1,
-        'vf_coef': 2.0,
+        'vf_coef': 0.5,  # Reduced from 2.0 to SB3 default for stable training
         'max_grad_norm': 0.5,
-        'target_kl': 0.07,
+        'target_kl': None,  # Disabled (was 0.07) - allows all epochs to complete for faster value learning
         
         # Model architecture
         'atom_embedding_size': 250,
@@ -87,7 +87,7 @@ if __name__ == "__main__":
         
         # LR decay
         'lr_decay': True,
-        'lr_init_value': 3e-5,
+        'lr_init_value': 1e-4,  # Match learning_rate
         'lr_final_value': 1e-6,
         'lr_start': 0.0,
         'lr_end': 1.0,

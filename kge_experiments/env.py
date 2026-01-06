@@ -325,12 +325,13 @@ class EnvVec:
         new_success = state['success'].bool() | (active & is_success)
         rewards = torch.where(active, rewards, torch.zeros_like(rewards))
 
-        # Update history
+        # Update history - avoid clone by computing hash and scattering into existing tensor view
         write_pos = state['history_count'].clamp(max=self.max_history_size - 1)
         new_hash = self._compute_hash(new_current)
-        update_val = torch.where(active, new_hash, state['history_hashes'][batch_idx, write_pos])
-        new_history = state['history_hashes'].clone()
-        new_history.scatter_(1, write_pos.unsqueeze(1), update_val.unsqueeze(1))
+        # Create new history by starting from existing and doing masked scatter
+        # Only update where active, keeping existing values otherwise
+        new_history = state['history_hashes'].scatter(1, write_pos.unsqueeze(1),
+            torch.where(active.unsqueeze(1), new_hash.unsqueeze(1), state['history_hashes'].gather(1, write_pos.unsqueeze(1))))
         new_h_count = torch.where(active, (state['history_count'] + 1).clamp(max=self.max_history_size), state['history_count'])
 
         still_active = ~new_done
@@ -490,7 +491,7 @@ class EnvVec:
         flat_dim = A * 3
         target_pos = torch.cumsum(base_valid.long(), dim=1) - 1
         target_pos = torch.where(base_valid, target_pos.clamp(min=0, max=S-1), self._ones_B.unsqueeze(1) * (S-1))
-        src = torch.where(base_valid.unsqueeze(-1), derived.reshape(B, S, flat_dim), torch.zeros(B, S, flat_dim, dtype=torch.long, device=self.device))
+        src = torch.where(base_valid.unsqueeze(-1), derived.reshape(B, S, flat_dim), self._compact_zeros)
         compact = torch.full((B, S, flat_dim), pad, dtype=torch.long, device=self.device)
         compact.scatter_(1, target_pos.unsqueeze(-1).expand(B, S, flat_dim), src)
         derived = compact.view(B, S, A, 3)
@@ -861,11 +862,16 @@ class EnvVec:
         """Pre-allocate CUDA graph buffers."""
         B, A, S, H = self.batch_size, self.padding_atoms, self.padding_states, self.max_history_size
         device = self.device
-        
+        flat_dim = A * 3
+
         # State history buffer for vectorized exact memory
         # Stores actual states [B, H, A, 3] for collision-free matching
         self._state_history = torch.full((B, H, A, 3), self.padding_idx, dtype=torch.long, device=device)
         self._state_history_count = torch.zeros(B, dtype=torch.long, device=device)
+
+        # Pre-allocated buffers for _compute_derived to avoid allocation per step
+        self._compact_zeros = torch.zeros(B, S, flat_dim, dtype=torch.long, device=device)
+        self._compact_full = torch.full((B, S, flat_dim), self.padding_idx, dtype=torch.long, device=device)
         
         self._state_buffer = TensorDict({
             "current_states": torch.zeros(B, A, 3, dtype=torch.long, device=device),

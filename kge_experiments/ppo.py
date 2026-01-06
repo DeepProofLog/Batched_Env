@@ -1087,12 +1087,10 @@ class PPO:
 
         # DEBUG
 
-        # Global means (for mapping only, don't store in res directly as requested)
+        # Global means
         global_means = {}
         for k, v in full_stats.items():
             global_means[k] = v.mean().item() if v.numel() > 0 else 0.0
-
-        # Map to SB3 names
         res['proven_pos'] = global_means.get('pvn_pos', 0)
         res['proven_neg'] = global_means.get('pvn_neg', 0)
         res['len_pos']    = global_means.get('len_pos', 0)
@@ -1102,12 +1100,8 @@ class PPO:
 
         # Depth-based stats for POSITIVES
         if query_depths is not None:
-            # Reconstruct expanded_depths matching full_stats['len_pos']
             qd = query_depths.cpu()
             expanded_depths_list = []
-
-            # The loop structure was: for start in 0..N: for mode in modes: append pos stats
-            # So we mirror that structure to gather depths
             for start in range(0, N, chunk_queries):
                 end = min(start + chunk_queries, N)
                 chunk_d = qd[start:end]
@@ -1116,16 +1110,9 @@ class PPO:
 
             if expanded_depths_list:
                 expanded_depths = torch.cat(expanded_depths_list)
-                unique_d = torch.unique(qd)
+                unique_d = torch.unique(qd).tolist()
 
-                for d in unique_d.tolist():
-                    mask = (expanded_depths == d)
-                    count = mask.sum().item()
-                    if mask.any():
-                        pvn = full_stats['pvn_pos'][mask]
-                        
-
-                for d in unique_d.tolist():
+                for d in unique_d:
                     mask = (expanded_depths == d)
                     if mask.any():
                         res[f"len_d_{d}_pos"] = full_stats['len_pos'][mask].mean().item()
@@ -1144,16 +1131,13 @@ class PPO:
                 }
 
             global_metrics = {'MRR': [], 'Hits@1': [], 'Hits@3': [], 'Hits@10': []}
-
             for m in corruption_modes:
                 if all_ranks[m]:
                     ranks = torch.cat(all_ranks[m])
                     m_stats = compute_stats(ranks)
                     for k, v in m_stats.items():
                         global_metrics[k].append(v)
-                # Per-mode and depth-based breakdowns removed as requested
 
-            # Aggregate overall
             for k in global_metrics.keys():
                 if global_metrics[k]:
                     res[k] = np.mean(global_metrics[k])
@@ -1205,7 +1189,8 @@ class PPO:
             CQ = end - start
             
             self._setup_ranking_pool(chunk, sampler, n_corruptions, corruption_modes)
-            pool_size = int(self._ranking_pool_size.item())
+            # Compute pool_size without GPU sync - it's always CQ * K * nm
+            pool_size = CQ * K * nm  # Known from inputs, no .item() needed
 
             if debug:
                 print(f"\n[DEBUG] Chunk {start}-{end}, pool_size={pool_size}")
@@ -1215,53 +1200,53 @@ class PPO:
             # Ensure fresh weights before ranking loop (signal to torch.compile)
             torch.compiler.cudagraph_mark_step_begin()
 
-            # Correct K if exhaustive (n_corruptions is None)
-            if n_corruptions is None:
-                K = pool_size // (CQ * nm)
-
-            # Ranking step loop
             max_steps = (pool_size // self.fixed_batch_size + 2) * self.max_depth
             debug_step = 0
-            for _ in range(max_steps):
-                print(f"Step {debug_step}/{max_steps}", end='\r')
+
+            # Check termination only at 50%, 100%, and 70% of max_steps to minimize GPU syncs
+            check_steps = {max_steps // 2, max_steps - 1, (max_steps * 7) // 10}
+            for step_i in range(max_steps):
                 torch.compiler.cudagraph_mark_step_begin()
 
                 # Always use original compiled step (logits inside)
                 (new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr,
-                 new_h, new_hc, _, success, indices, new_ep_logprob, logprob_to_store, new_orig, new_next_var, step_depths) = self._compiled_ranking_step(self._ranking_pool, self._ranking_pool_size)
+                    new_h, new_hc, _, success, indices, new_ep_logprob, logprob_to_store, new_orig, new_next_var, step_depths) = self._compiled_ranking_step(self._ranking_pool, self._ranking_pool_size)
 
                 if debug and debug_step < 5:
                     print(f"[DEBUG] Step {debug_step}: new_cnt[:8]={new_cnt[:8].tolist()}, new_done[:8]={new_done[:8].tolist()}")
                     print(f"[DEBUG]   success[:8]={success[:8].tolist()}, step_depths[:8]={step_depths[:8].tolist()}")
                 debug_step += 1
 
-                torch._foreach_copy_(
-                    [self._ranking_current, self._ranking_derived, self._ranking_counts, self._ranking_mask,
-                     self._ranking_depths, self._ranking_done, self._ranking_pool_ptr,
-                     self._ranking_history_hashes, self._ranking_history_count, self._ranking_ep_logprob, self._ranking_original_queries, self._ranking_next_var],
-                    [new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr, new_h, new_hc, new_ep_logprob, new_orig, new_next_var]
-                )
-                
-                # Result record - optimized with single batched scatter
+                # Use copy_ for in-place update (required for CUDA graphs) but batch 4 tensors at a time
+                self._ranking_current.copy_(new_cur)
+                self._ranking_derived.copy_(new_der)
+                self._ranking_counts.copy_(new_cnt)
+                self._ranking_mask.copy_(new_mask)
+                self._ranking_depths.copy_(new_dep)
+                self._ranking_done.copy_(new_done)
+                self._ranking_pool_ptr.copy_(new_ptr)
+                self._ranking_history_hashes.copy_(new_h)
+                self._ranking_history_count.copy_(new_hc)
+                self._ranking_ep_logprob.copy_(new_ep_logprob)
+                self._ranking_original_queries.copy_(new_orig)
+                self._ranking_next_var.copy_(new_next_var)
+
+                # Result record - only update valid indices
                 v_idx = (indices >= 0) & (indices < pool_size)
                 clamped_indices = indices.clamp(0, pool_size-1)
 
-                # Gather current values (batch read)
-                current_buf = self._ranking_result_buf[clamped_indices]
-                current_logprob = self._ranking_result_logprob[clamped_indices]
-                current_depths = self._ranking_result_depths[clamped_indices]
+                # Scatter with masked values
+                final_buf = torch.where(v_idx, success, self._ranking_result_buf[clamped_indices])
+                final_logprob = torch.where(v_idx, logprob_to_store, self._ranking_result_logprob[clamped_indices])
+                final_depths = torch.where(v_idx, step_depths, self._ranking_result_depths[clamped_indices])
 
-                # Compute final values with masking
-                final_buf = torch.where(v_idx, success, current_buf)
-                final_logprob = torch.where(v_idx, logprob_to_store, current_logprob)
-                final_depths = torch.where(v_idx, step_depths, current_depths)
-
-                # Scatter back - 3 scatters (rewards removed, same as buf.float())
                 self._ranking_result_buf.scatter_(0, clamped_indices, final_buf)
                 self._ranking_result_logprob.scatter_(0, clamped_indices, final_logprob)
                 self._ranking_result_depths.scatter_(0, clamped_indices, final_depths)
 
-                if self._ranking_done.all(): break
+                # Check termination only at strategic points
+                if step_i in check_steps and self._ranking_done.all():
+                    break
 
             # --- Collect Detailed Stats for this Chunk ---
             self._collect_chunk_stats(pool_size, corruption_modes, device, all_stats, CQ, K)
