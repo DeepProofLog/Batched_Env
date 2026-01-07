@@ -48,6 +48,8 @@ from callbacks import (
 
 from utils import seed_all
 from kge_inference import build_kge_inference
+from kge_pbrs import create_pbrs_module, PBRSWrapper
+from kge_neural_bridge import create_neural_bridge
 
 
 def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str = None):
@@ -158,12 +160,16 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         dataset_name=config.dataset,
         base_path=config.data_path,
         train_file=config.train_file,
-        valid_file=config.valid_file, 
+        valid_file=config.valid_file,
         test_file=config.test_file,
         rules_file=config.rules_file,
         facts_file=config.facts_file,
         train_depth=config.train_depth,
         corruption_mode="dynamic",
+        # KGE Integration: Probabilistic Facts
+        prob_facts=config.prob_facts,
+        topk_facts=config.prob_facts_topk,
+        topk_facts_threshold=config.prob_facts_threshold,
     )
     
     # Index manager
@@ -313,6 +319,28 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
             print(f"Warning: Could not extract training metadata: {e}")
 
     kge_engine = build_kge_inference(config, index_manager=im)
+
+    # Create PBRS wrapper if enabled
+    pbrs_wrapper = None
+    if getattr(config, 'pbrs_beta', 0.0) != 0.0:
+        pbrs_module = create_pbrs_module(
+            config=config,
+            kge_engine=kge_engine,
+            index_manager=im,
+            device=torch.device(config.device),
+        )
+        if pbrs_module is not None:
+            pbrs_wrapper = PBRSWrapper(pbrs_module, im)
+            print(f"[PBRS] Enabled with beta={config.pbrs_beta}, gamma={getattr(config, 'pbrs_gamma', 0.99)}")
+
+    # Create neural bridge if enabled
+    neural_bridge = None
+    if getattr(config, 'neural_bridge', False):
+        neural_bridge = create_neural_bridge(
+            config=config,
+            device=torch.device(config.device),
+        )
+
     ppo = PPO(
         policy,
         env,
@@ -321,6 +349,8 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         query_depths=query_depths,
         kge_inference_engine=kge_engine,
         kge_index_manager=im,
+        pbrs_wrapper=pbrs_wrapper,
+        neural_bridge=neural_bridge,
     )
     
     # Build callbacks
@@ -351,10 +381,26 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
             ppo.callback.on_training_start(total_timesteps=0)
         learn_result = {}
     
+    # Train neural bridge on validation data if enabled
+    if neural_bridge is not None and getattr(config, 'neural_bridge', False):
+        print("\n[2.5/3] Training neural bridge on validation data...")
+        n_val_bridge = min(100, len(comp['dh'].valid_queries))  # Use subset for bridge training
+        valid_queries_bridge = comp['dh'].valid_queries[:n_val_bridge]
+        valid_queries_tensor = im.queries_to_tensor(valid_queries_bridge, device)
+
+        ppo.train_neural_bridge(
+            queries=valid_queries_tensor,
+            sampler=comp['sampler'],
+            n_corruptions=getattr(config, 'eval_neg_samples', 10),
+            corruption_modes=tuple(config.corruption_scheme),
+            epochs=getattr(config, 'neural_bridge_train_epochs', 100),
+            lr=getattr(config, 'neural_bridge_lr', 0.01),
+        )
+
     # Evaluation
     print("\n[3/3] Running evaluation...")
     policy.eval()
-    
+
     n_test = getattr(config, 'n_test_queries', None)
     if n_test:
         test_queries = comp['dh'].test_queries[:n_test]

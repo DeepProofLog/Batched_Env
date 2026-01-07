@@ -21,6 +21,8 @@ conda activate rl
 # Basic training run
 python runner.py --dataset countries_s3 --experiment kge --total_timesteps 50000
 
+in day to day work and all agentic tasks, use runner_kge.py instead of runner.py
+
 # With custom parameters
 python runner.py --dataset family --n_envs 128 --n_steps 128 --batch_size 512 --device cuda
 ```
@@ -86,8 +88,8 @@ From `.agent/workflows/CLAUDE.md` (PhD Mode):
 
 - **Tensor Shape Annotations**: Always document tensor shapes as `[B, T, D]` with transformation comments
 - **Type Hints**: All function signatures must include type hints
-- **Vectorization First**: Avoid explicit loops; minimize GPU-CPU synchronization
-- **Config over Hardcoding**: Pass hyperparameters via `TrainConfig`, never hardcode
+- **Vectorization First**: Avoid explicit loops; minimize GPU-CPU synchronization, graph replays and always use reduce-overhead with full graphs.
+- **Config over Hardcoding**: Pass hyperparameters via params or configs, never hardcode
 - **Verify Optimizations**: When replacing components for performance, verify parity or profile speedup
 - **Concise Comments**: Explain functionality briefly; write script purpose at the top
 - **Use conda environment**: `/home/castellanoontiv/miniconda3/envs/rl/bin/python`
@@ -107,7 +109,7 @@ From `.agent/workflows/CLAUDE.md` (PhD Mode):
 These folders contain legacy versions kept to ensure correctness via parity tests. The parity tests compare the current optimized code against these references.
 
 ### Paper Results
-- `kge_experiments/AAAI26/` - Contains results from the published paper (if available)
+- `kge_experiments/AAAI26/` - Contains results from the published paper (if available) in case you are interested in the results of combining RL+KGE for link prediction at inference, otherwise not relevant.
 
 ### Dataset Location
 All datasets are in `kge_experiments/data/{dataset_name}/` with files:

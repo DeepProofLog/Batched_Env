@@ -161,6 +161,14 @@ class PPO:
         self.kge_only_eval = bool(getattr(config, 'kge_only_eval', False))
         self._kge_log_eps = 1e-9
 
+        # PBRS (Potential-Based Reward Shaping)
+        self.pbrs_wrapper = kwargs.get('pbrs_wrapper', None)
+        self.pbrs_beta = float(getattr(config, 'pbrs_beta', 0.0))
+
+        # Neural Bridge for learned RL+KGE fusion
+        self.neural_bridge = kwargs.get('neural_bridge', None)
+        self.neural_bridge_enabled = bool(getattr(config, 'neural_bridge', False))
+
         # Metrics info (CPU-only to avoid synchronization) - copied from PPOOld
         query_labels = kwargs.get('query_labels', None)
         query_depths = kwargs.get('query_depths', None)
@@ -719,9 +727,20 @@ class PPO:
                     actions, values, log_probs = self._uncompiled_policy(obs_snap, deterministic=False)
                     new_obs, new_state = self.env._step_and_reset_core(state, actions, self.env._query_pool, self.env._per_env_ptrs)
 
+                # Apply PBRS reward shaping if enabled
+                step_rewards = new_state['step_rewards']
+                if self.pbrs_wrapper is not None:
+                    step_rewards = self.pbrs_wrapper.shape_rewards(
+                        rewards=step_rewards,
+                        next_states=new_state['current_states'],
+                        done_mask=new_state['step_dones'].bool(),
+                        reset_mask=new_state['step_dones'].bool(),
+                        reset_states=new_state['current_states'],  # After auto-reset
+                    )
+
                 self.rollout_buffer.add(
                     sub_index=obs_snap['sub_index'], derived_sub_indices=obs_snap['derived_sub_indices'],
-                    action_mask=obs_snap['action_mask'], action=actions, reward=new_state['step_rewards'],
+                    action_mask=obs_snap['action_mask'], action=actions, reward=step_rewards,
                     episode_start=episode_starts, value=values.flatten(), log_prob=log_probs,
                 )
 
@@ -1357,10 +1376,13 @@ class PPO:
                     )
                     # kge_scores: [CQ, K]
                     kge_log_scores = torch.log(kge_scores.clamp(min=self._kge_log_eps))
-                    
+
                     if self.kge_only_eval:
                         # KGE-only mode: use pure KGE scores (matches paper evaluation)
                         scores = kge_log_scores
+                    elif self.neural_bridge is not None:
+                        # Neural Bridge mode: learned combination of RL and KGE
+                        scores = self.neural_bridge(logprobs, kge_log_scores, success)
                     else:
                         # Hybrid mode: KGE scores + binary bonus for proofs
                         # Successful: kge_weight * kge_log_scores + rl_weight (bonus)
@@ -1398,5 +1420,133 @@ class PPO:
 
         # Metric Aggregation
         res = self._aggregate_metrics(all_stats, query_depths, N, chunk_queries, corruption_modes, all_ranks=all_ranks)
-        
+
         return res
+
+    def train_neural_bridge(
+        self,
+        queries: Tensor,
+        sampler,
+        n_corruptions: int = 50,
+        corruption_modes: Sequence[str] = ('head', 'tail'),
+        epochs: int = 100,
+        lr: float = 0.01,
+    ) -> Dict[str, float]:
+        """Train neural bridge on validation data.
+
+        Runs evaluation to collect (rl_logprobs, kge_logprobs, success) triplets,
+        then trains the bridge to maximize MRR.
+
+        Args:
+            queries: [N, 3] validation queries.
+            sampler: Corruption sampler.
+            n_corruptions: Number of negative samples per query.
+            corruption_modes: Corruption modes to use.
+            epochs: Training epochs for bridge.
+            lr: Learning rate for bridge.
+
+        Returns:
+            Dict with training results (loss, alpha, etc.)
+        """
+        if self.neural_bridge is None:
+            print("[NeuralBridge] No bridge module configured, skipping training")
+            return {}
+
+        from kge_neural_bridge import NeuralBridgeTrainer
+
+        trainer = NeuralBridgeTrainer(
+            bridge=self.neural_bridge,
+            lr=lr,
+            epochs=epochs,
+            verbose=self.verbose,
+        )
+
+        # Run modified evaluation to collect training data
+        print(f"[NeuralBridge] Collecting training data from {queries.shape[0]} queries...")
+
+        self._uncompiled_policy.eval()
+        N, device = queries.shape[0], self.device
+        K = 1 + n_corruptions
+        nm = len(corruption_modes)
+
+        chunk_queries = min(self.fixed_batch_size, self._ranking_max_pool // (K * nm))
+        if chunk_queries < 1:
+            chunk_queries = 1
+
+        tie_generator = torch.Generator(device=device)
+        tie_generator.manual_seed(self.ranking_tie_seed)
+
+        for start in range(0, N, chunk_queries):
+            end = min(start + chunk_queries, N)
+            chunk = queries[start:end]
+            CQ = end - start
+
+            self._setup_ranking_pool(chunk, sampler, n_corruptions, corruption_modes)
+            pool_size = CQ * K * nm
+
+            # Run evaluation steps
+            max_steps = (pool_size // self.fixed_batch_size + 2) * self.max_depth
+            for step_i in range(max_steps):
+                torch.compiler.cudagraph_mark_step_begin()
+                (new_cur, new_der, new_cnt, new_mask, new_dep, new_done, new_ptr,
+                 new_h, new_hc, _, success, indices, new_ep_logprob, logprob_to_store, new_orig, new_next_var, step_depths) = self._compiled_ranking_step(self._ranking_pool, self._ranking_pool_size)
+
+                self._ranking_current.copy_(new_cur)
+                self._ranking_derived.copy_(new_der)
+                self._ranking_counts.copy_(new_cnt)
+                self._ranking_mask.copy_(new_mask)
+                self._ranking_depths.copy_(new_dep)
+                self._ranking_done.copy_(new_done)
+                self._ranking_pool_ptr.copy_(new_ptr)
+                self._ranking_history_hashes.copy_(new_h)
+                self._ranking_history_count.copy_(new_hc)
+                self._ranking_ep_logprob.copy_(new_ep_logprob)
+                self._ranking_original_queries.copy_(new_orig)
+                self._ranking_next_var.copy_(new_next_var)
+
+                v_idx = (indices >= 0) & (indices < pool_size)
+                clamped_indices = indices.clamp(0, pool_size - 1)
+                final_buf = torch.where(v_idx, success, self._ranking_result_buf[clamped_indices])
+                final_logprob = torch.where(v_idx, logprob_to_store, self._ranking_result_logprob[clamped_indices])
+                final_depths = torch.where(v_idx, step_depths, self._ranking_result_depths[clamped_indices])
+                self._ranking_result_buf.scatter_(0, clamped_indices, final_buf)
+                self._ranking_result_logprob.scatter_(0, clamped_indices, final_logprob)
+                self._ranking_result_depths.scatter_(0, clamped_indices, final_depths)
+
+                if step_i % 100 == 99 and self._ranking_done.all():
+                    break
+
+            # Collect data for each corruption mode
+            offset = 0
+            for mode in corruption_modes:
+                success_t = self._ranking_result_buf[offset:offset + CQ * K].view(K, CQ)
+                success_batch = success_t.t().contiguous()  # [CQ, K]
+
+                logprob_t = self._ranking_result_logprob[offset:offset + CQ * K].view(K, CQ)
+                logprobs_batch = logprob_t.t().contiguous()  # [CQ, K]
+
+                queries_t = self._ranking_pool[offset:offset + CQ * K].view(K, CQ, 3)
+                queries_batch = queries_t.permute(1, 0, 2)
+                is_valid = (queries_batch[:, :, 0] > 0) & (queries_batch[:, :, 1] > 0) & (queries_batch[:, :, 2] > 0)
+
+                # Get KGE scores
+                kge_scores = self._score_kge_candidates(queries_batch, is_valid, device=device)
+                kge_log_scores = torch.log(kge_scores.clamp(min=self._kge_log_eps))
+
+                # Add batch to trainer
+                trainer.add_validation_batch(
+                    rl_logprobs=logprobs_batch,
+                    kge_logprobs=kge_log_scores,
+                    success_mask=success_batch,
+                )
+
+                offset += CQ * K
+
+        # Train the bridge
+        print(f"[NeuralBridge] Training bridge on collected data...")
+        result = trainer.train()
+
+        if hasattr(self.neural_bridge, 'effective_alpha'):
+            print(f"[NeuralBridge] Trained alpha: {self.neural_bridge.effective_alpha:.4f}")
+
+        return result

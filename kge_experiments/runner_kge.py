@@ -103,7 +103,6 @@ if __name__ == "__main__":
         'kge_inference': True,
         'kge_inference_success': True,
         'kge_engine': 'pytorch',
-        'kge_run_signature': 'torch_wn18rr_RotatE_1024_20260107_125531_s42',
         'kge_checkpoint_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kge_pytorch', 'models'),
 
         'kge_scores_file': None,
@@ -112,7 +111,28 @@ if __name__ == "__main__":
         'kge_fail_penalty': 0.5,     # Penalty for failed proofs
         'kge_only_eval': False,      # False enables hybrid KGE+RL scoring
         # Hybrid: success = kge_weight * kge_logp + rl_weight, fail = kge_weight * kge_logp - penalty
-        
+
+        # KGE Integration: Probabilistic Facts
+        'prob_facts': False,
+        'prob_facts_topk': None,
+        'prob_facts_threshold': None,
+
+        # KGE Integration: PBRS (Potential-Based Reward Shaping)
+        'pbrs_beta': 0.0,
+        'pbrs_gamma': 0.99,
+        'pbrs_precompute': True,
+
+        # KGE Integration: Neural Bridge
+        'neural_bridge': False,
+        'neural_bridge_init_alpha': 0.5,
+        'neural_bridge_train_epochs': 100,
+        'neural_bridge_lr': 0.01,
+
+        # KGE Integration: Unification Scoring
+        'unification_scoring': False,
+        'unification_scoring_mode': 'offline',
+        'unification_top_k': None,
+
         # LR decay
         'lr_decay': True,
         'lr_init_value': 1e-4,  # Match learning_rate
@@ -243,14 +263,12 @@ if __name__ == "__main__":
 
         # KGE inference defaults
         if cfg_dict.get('kge_inference', False):
-            # Auto-disable KGE if dataset doesn't match signature (e.g. wn18rr running with family model)
-            # dataset = cfg_dict.get('dataset', 'run')
-            # dataset_in_signature = cfg_dict.get('kge_run_signature', '')
-            # kge_sig = cfg_dict.get('kge_run_signature', '')
-            # if dataset != dataset_in_signature:
-            #     print(f"[*] Auto-disabling kge_inference for {dataset} (signature {kge_sig} is for {dataset_in_signature})")
-            #     cfg_dict['kge_inference'] = False
-            
+            if cfg_dict.get('kge_run_signature') is None and cfg_dict.get('dataset') == 'wn18rr':
+                cfg_dict['kge_run_signature'] = 'torch_wn18rr_RotatE_1024_20260107_125531_s42'
+            elif cfg_dict.get('kge_run_signature') is None and cfg_dict.get('dataset') == 'family':
+                cfg_dict['kge_run_signature'] = 'torch_family_RotatE_1024_20260107_124531_s42'
+            else:
+                raise ValueError("kge_run_signature must be specified for dataset: {}".format(cfg_dict.get('dataset')))
             if cfg_dict.get('kge_inference'):
                 engine = normalize_backend(cfg_dict.get('kge_engine', 'pytorch'))
                 cfg_dict['kge_engine'] = engine

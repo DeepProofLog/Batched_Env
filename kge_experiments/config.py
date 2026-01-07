@@ -119,7 +119,28 @@ class TrainConfig:
     kge_eval_rl_weight: float = 1.0
     kge_fail_penalty: float = 100.0  # Penalty for failed proofs in hybrid mode
     kge_only_eval: bool = False  # If True, use KGE-only scoring at test time (matches paper)
-    
+
+    # KGE Integration: Probabilistic Facts
+    prob_facts: bool = False  # Enable loading probabilistic facts from KGE top-k file
+    prob_facts_topk: Optional[int] = None  # Top-K facts per (predicate, role, anchor)
+    prob_facts_threshold: Optional[float] = None  # Minimum score threshold for facts
+
+    # KGE Integration: PBRS (Potential-Based Reward Shaping)
+    pbrs_beta: float = 0.0  # PBRS weight (0 = disabled). Phi(s) = beta * log(KGE_score)
+    pbrs_gamma: float = 0.99  # Discount factor for PBRS
+    pbrs_precompute: bool = True  # Pre-compute potentials (faster) vs runtime scoring
+
+    # KGE Integration: Neural Bridge (learned RL+KGE fusion)
+    neural_bridge: bool = False  # Enable learned combination of RL and KGE logprobs
+    neural_bridge_init_alpha: float = 0.5  # Initial alpha value (α*RL + (1-α)*KGE)
+    neural_bridge_train_epochs: int = 100  # Epochs to train bridge on validation
+    neural_bridge_lr: float = 0.01  # Learning rate for bridge training
+
+    # KGE Integration: Unification Scoring
+    unification_scoring: bool = False  # Enable KGE scoring of derived states
+    unification_scoring_mode: str = 'offline'  # 'offline' (pre-computed) or 'online' (runtime)
+    unification_top_k: Optional[int] = None  # Filter to top-k scored states
+
     # Misc
     seed: int = 42
     seed_run_i: int = 42 # specific run seed
