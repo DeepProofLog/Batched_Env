@@ -81,6 +81,98 @@ class LinearBridge(nn.Module):
         return f"LinearBridge(alpha={self.effective_alpha:.4f})"
 
 
+class GatedBridge(nn.Module):
+    """Gated bridge with different weights for success vs failure.
+
+    Formula:
+    - If success: score = sigmoid(alpha_success) * rl + (1-sigmoid(alpha_success)) * kge
+    - Else:       score = sigmoid(alpha_fail) * rl + (1-sigmoid(alpha_fail)) * kge
+
+    Rationale: For proven candidates, RL signal is reliable. For unproven, rely more on KGE.
+
+    Attributes:
+        alpha_success: Learnable parameter for successful proofs.
+        alpha_fail: Learnable parameter for failed proofs.
+    """
+
+    def __init__(
+        self,
+        init_alpha_success: float = 0.7,
+        init_alpha_fail: float = 0.2,
+        device: Optional[torch.device] = None,
+    ) -> None:
+        """Initialize gated bridge.
+
+        Args:
+            init_alpha_success: Initial alpha for successful proofs (higher = more RL weight).
+            init_alpha_fail: Initial alpha for failed proofs (lower = more KGE weight).
+            device: Target device.
+        """
+        super().__init__()
+
+        # Initialize alphas using logit transform
+        self.alpha_success = nn.Parameter(
+            torch.logit(torch.tensor(init_alpha_success, dtype=torch.float32))
+        )
+        self.alpha_fail = nn.Parameter(
+            torch.logit(torch.tensor(init_alpha_fail, dtype=torch.float32))
+        )
+
+        if device is not None:
+            self.to(device)
+
+    @property
+    def effective_alpha_success(self) -> float:
+        """Return effective alpha for successful proofs."""
+        return torch.sigmoid(self.alpha_success).item()
+
+    @property
+    def effective_alpha_fail(self) -> float:
+        """Return effective alpha for failed proofs."""
+        return torch.sigmoid(self.alpha_fail).item()
+
+    @property
+    def effective_alpha(self) -> float:
+        """Return average alpha for compatibility."""
+        return (self.effective_alpha_success + self.effective_alpha_fail) / 2
+
+    def forward(
+        self,
+        rl_logprobs: Tensor,  # [B, K]
+        kge_logprobs: Tensor,  # [B, K]
+        success_mask: Optional[Tensor] = None,  # [B, K]
+    ) -> Tensor:
+        """Compute combined scores with gated weighting.
+
+        Args:
+            rl_logprobs: [B, K] RL log probabilities.
+            kge_logprobs: [B, K] KGE log scores.
+            success_mask: [B, K] boolean mask for proof success (required).
+
+        Returns:
+            [B, K] combined scores.
+        """
+        alpha_s = torch.sigmoid(self.alpha_success)
+        alpha_f = torch.sigmoid(self.alpha_fail)
+
+        scores_success = alpha_s * rl_logprobs + (1 - alpha_s) * kge_logprobs
+        scores_fail = alpha_f * rl_logprobs + (1 - alpha_f) * kge_logprobs
+
+        if success_mask is not None:
+            scores = torch.where(success_mask, scores_success, scores_fail)
+        else:
+            # Fallback to average if no mask provided
+            scores = (scores_success + scores_fail) / 2
+
+        return scores
+
+    def __repr__(self) -> str:
+        return (
+            f"GatedBridge(alpha_success={self.effective_alpha_success:.4f}, "
+            f"alpha_fail={self.effective_alpha_fail:.4f})"
+        )
+
+
 class MLPBridge(nn.Module):
     """MLP-based combination of RL and KGE features.
 
