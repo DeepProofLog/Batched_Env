@@ -31,7 +31,7 @@ if __name__ == "__main__":
         
         # Training
         'seed': [0],
-        'total_timesteps': 5000000,
+        'total_timesteps': 20000000,
         'n_envs': 128,
         'n_steps': 256,
         'batch_size': 512,
