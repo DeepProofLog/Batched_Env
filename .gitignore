@@ -16,3 +16,11 @@ data/kge_scores_wn18rr.txt
 logs_countries.txt
 top_k_scores/files/
 cudagraphs/
+kge_pytorch/models/
+kge_pykeen/models/
+AAAI26/
+kge_experiments/models/
+kge_experiments/runs/
+kge_experiments/AAAI26/
+kge_experiments/checkpoints/
+kge_experiments/cudagraphs/
