@@ -340,16 +340,29 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         ppo.callback = callback_manager
      
     # Train
-    learn_result = ppo.learn(
-        total_timesteps=config.total_timesteps,
-        return_traces=return_traces,
-    )
+    if config.total_timesteps > 0:
+        learn_result = ppo.learn(
+            total_timesteps=config.total_timesteps,
+            return_traces=return_traces,
+        )
+    else:
+        # If timesteps=0, skip learn but still trigger start callback for loading
+        if ppo.callback and hasattr(ppo.callback, 'on_training_start'):
+            ppo.callback.on_training_start(total_timesteps=0)
+        learn_result = {}
     
     # Evaluation
     print("\n[3/3] Running evaluation...")
     policy.eval()
     
-    test_queries = comp['dh'].test_queries[:config.n_envs * 4]
+    n_test = getattr(config, 'n_test_queries', None)
+    if n_test:
+        test_queries = comp['dh'].test_queries[:n_test]
+        test_depths = comp['dh'].test_depths[:n_test]
+    else:
+        test_queries = comp['dh'].test_queries
+        test_depths = comp['dh'].test_depths
+
     queries_tensor = im.queries_to_tensor(test_queries, device)
 
     
@@ -359,7 +372,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         n_corruptions=config.test_neg_samples,
         corruption_modes=tuple(config.corruption_scheme),
         query_depths=torch.as_tensor(
-            comp['dh'].test_depths[:config.n_envs * 4], 
+            test_depths, 
             dtype=torch.long, device=device
         ),
         verbose=False,

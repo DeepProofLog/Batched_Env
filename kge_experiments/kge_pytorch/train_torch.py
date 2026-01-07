@@ -717,17 +717,29 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
         valid_eval_triples = maybe_limit("validation", valid_triples)
         if valid_eval_triples:
             print('Computing validation metrics ...')
-            valid_metrics = evaluate_ranking(
-                model,
-                valid_eval_triples,
-                num_entities,
-                head_filter,
-                tail_filter,
-                device,
-                cfg.eval_chunk_size,
-                rank_mode=cfg.eval_rank_mode,
-                verbose=True,
-            )
+            if cfg.sampled_eval:
+                known_facts = set(triples + (valid_triples or []) + (test_triples or []))
+                valid_metrics = evaluate_sampled(
+                    model,
+                    valid_eval_triples,
+                    num_entities,
+                    known_facts,
+                    device,
+                    num_negatives=cfg.sampled_negatives,
+                    verbose=True,
+                )
+            else:
+                valid_metrics = evaluate_ranking(
+                    model,
+                    valid_eval_triples,
+                    num_entities,
+                    head_filter,
+                    tail_filter,
+                    device,
+                    cfg.eval_chunk_size,
+                    rank_mode=cfg.eval_rank_mode,
+                    verbose=True,
+                )
             record_metrics("valid", valid_metrics)
 
     if test_triples:
@@ -770,10 +782,16 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
     config_path = os.path.join(cfg.save_dir, "config.json")
     config_payload = {
         "model": cfg.model,
+        "dataset": cfg.dataset,
         "dim": cfg.dim,
         "num_entities": num_entities,
         "num_relations": num_relations,
     }
+    # Add final metrics to config for easier reference
+    mrr = metrics.get("test_mrr") or metrics.get("valid_mrr")
+    if mrr:
+        config_payload["mrr"] = mrr
+    
     if cfg.run_signature:
         config_payload["run_signature"] = cfg.run_signature
     model_name = cfg.model.lower()

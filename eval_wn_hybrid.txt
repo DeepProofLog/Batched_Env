@@ -1,0 +1,85 @@
+
+============================================================
+All experiments completed!
+============================================================
+
+(rl) castellanoontiv@robin:~/Batched_Env$ ^C
+(rl) castellanoontiv@robin:~/Batched_Env$ /home/castellanoontiv/miniconda3/envs/rl/bin/python /home/castellanoontiv/Batched_Env/kge_experiments/runner_kge.py
+Grid search: 1 params, 1 experiments.
+
+============================================================
+Experiment 1/1
+============================================================
+
+
+============================================================
+Seed 0
+============================================================
+Run signature: wn18rr-250-128-torchrl
+======================================================================
+Training: wn18rr
+Envs: 128, Steps: 256, Timesteps: 0
+Seed: 0
+======================================================================
+
+[1/3] Creating components...
+[UnificationEngine] Capping max_fact_pairs from 34796 to 1000
+[EnvOptimal] Compiled with mode=reduce-overhead, fullgraph=True
+
+[2/3] Running training...
+KGE Engine initialized with backend: pytorch (signature: torch_wn18rr_RotatE_1024_20260107_125531_s42)
+[PPO] Compiled ranking_step with mode=default
+
+[Checkpoint] Loading existing model at start of training (load_model=True)...
+Restoring best EVAL model (MRR) from /home/castellanoontiv/Batched_Env/kge_experiments/models/wn18rr-250-128-torchrl/best_model_eval_2026_01_07_08_58_56.pt
+[Ranking] Skipping initial evaluation as total_timesteps=0
+
+[3/3] Running evaluation...
+Evaluating 2924 queries and 100 negatives
+Chunk 0-128
+Building model and loading weights...
+Weights loaded successfully.
+  Took: 18.09s | Rolling MRR: 0.8438 | ms/cand: 1.40
+Chunk 128-256
+  Took: 13.12s | Rolling MRR: 0.8222 | ms/cand: 1.01
+Chunk 256-384
+
+....
+
+
+Chunk 1152-1280
+  Took: 20.53s | Rolling MRR: 0.8306 | ms/cand: 1.59
+Chunk 1280-1408
+  Took: 25.79s | Rolling MRR: 0.8328 | ms/cand: 2.00
+Chunk 1408-1536
+  Took: 19.66s | Rolling MRR: 0.8328 | ms/cand: 1.52
+Chunk 1536-1664
+  Took: 27.06s | Rolling MRR: 0.8311 | ms/cand: 2.09
+Chunk 1664-1792
+  Took: 19.39s | Rolling MRR: 0.8355 | ms/cand: 1.50
+Chunk 1792-1920
+  Took: 27.44s | Rolling MRR: 0.8333 | ms/cand: 2.12
+Chunk 1920-2048
+  Took: 18.00s | Rolling MRR: 0.8305 | ms/cand: 1.39
+Chunk 2048-2176
+  Took: 28.66s | Rolling MRR: 0.8280 | ms/cand: 2.22
+Chunk 2176-2304
+  Took: 16.83s | Rolling MRR: 0.8309 | ms/cand: 1.30
+Chunk 2304-2432
+  Took: 29.29s | Rolling MRR: 0.8272 | ms/cand: 2.27
+Chunk 2432-2560
+  Took: 16.44s | Rolling MRR: 0.8286 | ms/cand: 1.27
+Chunk 2560-2688
+  Took: 29.56s | Rolling MRR: 0.8257 | ms/cand: 2.29
+Chunk 2688-2816
+  Took: 17.01s | Rolling MRR: 0.8263 | ms/cand: 1.32
+Chunk 2816-2924
+  Took: 24.69s | Rolling MRR: 0.8258 | ms/cand: 2.26
+
+Results: MRR=0.8258, Hits@1=0.7722, Hits@3=0.8601, Hits@10=0.9177
+Proven: pos=0.3936, neg=0.0151
+Writing results to /home/castellanoontiv/Batched_Env/kge_experiments/runs/averaged_runs/experiments.csv
+
+============================================================
+All experiments completed!
+============================================================

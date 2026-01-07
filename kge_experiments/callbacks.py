@@ -557,8 +557,11 @@ class CheckpointCallback:
         self.load_best_metric = load_best_metric
         self.load_model = load_model
         
+        self._total_timesteps_config = 0 # Track for end-of-training behavior
+        
     def on_training_start(self, total_timesteps: Optional[int] = None) -> None:
         """Called at the start of training to load an existing model if specified."""
+        self._total_timesteps_config = total_timesteps or 0
         if self.load_model:
             if self.verbose:
                 print(f"\n[Checkpoint] Loading existing model at start of training (load_model={self.load_model})...")
@@ -584,7 +587,7 @@ class CheckpointCallback:
 
     def on_training_end(self) -> None:
         """Called at the end of training to optionally restore best model."""
-        if self.restore_best:
+        if self.restore_best and self._total_timesteps_config > 0:
             if self.verbose:
                 print("\n[Checkpoint] Restoring best model at end of training...")
             

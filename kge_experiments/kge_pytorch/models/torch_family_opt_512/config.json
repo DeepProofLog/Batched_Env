@@ -1,8 +1,0 @@
-{
-  "model": "RotatE",
-  "dim": 512,
-  "num_entities": 2968,
-  "num_relations": 24,
-  "gamma": 12.0,
-  "p": 1
-}

@@ -14,8 +14,20 @@ from typing import List, Optional
 
 import numpy as np
 import torch
-torch.set_float32_matmul_precision('high')
+import warnings
 
+if torch.cuda.is_available():
+    # Recommended TF32 settings for newer Pytorch versions (matches 'high' precision)
+    # This satisfies both core Pytorch and the Inductor compiler
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, message=".*use the new API settings to control TF32 behavior.*")
+        try:
+            torch.set_float32_matmul_precision('high')
+        except Exception:
+            # Fallback for older Pytorch
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+    
 from train import run_experiment
 from config import TrainConfig
 from kge_inference import normalize_backend, default_checkpoint_dir
@@ -26,12 +38,12 @@ if __name__ == "__main__":
 
     DEFAULT_CONFIG = {
         # Dataset
-        'dataset': ['family','wn18rr'],
+        'dataset': ['wn18rr'],
         'data_path': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'),
         
         # Training
         'seed': [0],
-        'total_timesteps': 20000000,
+        'total_timesteps': 0,
         'n_envs': 128,
         'n_steps': 256,
         'batch_size': 512,
@@ -88,17 +100,17 @@ if __name__ == "__main__":
         'ranking_tie_seed': 0,
 
         # KGE inference (eval-time fusion)
-        'kge_inference': False,
+        'kge_inference': True,
         'kge_inference_success': True,
         'kge_engine': 'pytorch',
-        'kge_run_signature': 'torch_family_complex_v5',
+        'kge_run_signature': 'torch_wn18rr_RotatE_1024_20260107_125531_s42',
         'kge_checkpoint_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kge_pytorch', 'models'),
 
         'kge_scores_file': None,
         'kge_eval_kge_weight': 2.0,  # Optimized: lower weight with low penalty works best
         'kge_eval_rl_weight': 1.0,
         'kge_fail_penalty': 0.5,  # Optimized: low penalty (0.5-1.0) gives best MRR
-        'kge_only_eval': False,  # If True, use KGE-only scoring at test time (no RL proofs)
+        'kge_only_eval': True,  # If True, use KGE-only scoring at test time (no RL proofs)
         
         # LR decay
         'lr_decay': True,
@@ -118,7 +130,7 @@ if __name__ == "__main__":
         
         # Model saving/loading
         'save_model': True,
-        'load_model': False,
+        'load_model': True,
         'restore_best': True,
         'load_best_metric': 'eval',
         'models_path': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models'),
@@ -231,12 +243,12 @@ if __name__ == "__main__":
         # KGE inference defaults
         if cfg_dict.get('kge_inference', False):
             # Auto-disable KGE if dataset doesn't match signature (e.g. wn18rr running with family model)
-            dataset = cfg_dict.get('dataset', 'run')
-            dataset_in_signature = cfg_dict.get('kge_run_signature', '')
-            kge_sig = cfg_dict.get('kge_run_signature', '')
-            if dataset != dataset_in_signature:
-                print(f"[*] Auto-disabling kge_inference for {dataset} (signature {kge_sig} is for {dataset_in_signature})")
-                cfg_dict['kge_inference'] = False
+            # dataset = cfg_dict.get('dataset', 'run')
+            # dataset_in_signature = cfg_dict.get('kge_run_signature', '')
+            # kge_sig = cfg_dict.get('kge_run_signature', '')
+            # if dataset != dataset_in_signature:
+            #     print(f"[*] Auto-disabling kge_inference for {dataset} (signature {kge_sig} is for {dataset_in_signature})")
+            #     cfg_dict['kge_inference'] = False
             
             if cfg_dict.get('kge_inference'):
                 engine = normalize_backend(cfg_dict.get('kge_engine', 'pytorch'))

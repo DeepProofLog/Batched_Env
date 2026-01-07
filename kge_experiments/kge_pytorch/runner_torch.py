@@ -84,6 +84,17 @@ class PyTorchRunner(BaseKGERunner):
             'scheduler': 'none',
             'description': 'Complex bilinear model',
         },
+        'DistMult': {
+            'lr': 5e-4,
+            'embedding_dim': 512,
+            'weight_decay': 1e-6,
+            'use_reciprocal': False,
+            'adv_temp': 0.0,
+            'grad_clip': 0.0,
+            'warmup_ratio': 0.0,
+            'scheduler': 'none',
+            'description': 'Bilinear diagonal model',
+        },
         'TuckER': {
             'lr': 5e-4,
             'embedding_dim': 512,
@@ -108,17 +119,6 @@ class PyTorchRunner(BaseKGERunner):
             'warmup_ratio': 0.0,
             'scheduler': 'none',
             'description': 'Translational embedding model',
-        },
-        'DistMult': {
-            'lr': 5e-4,
-            'embedding_dim': 512,
-            'weight_decay': 1e-6,
-            'use_reciprocal': False,
-            'adv_temp': 0.0,
-            'grad_clip': 0.0,
-            'warmup_ratio': 0.0,
-            'scheduler': 'none',
-            'description': 'Bilinear diagonal model',
         },
         'ConvE': {
             'lr': 1e-3,
@@ -287,12 +287,31 @@ class PyTorchRunner(BaseKGERunner):
             action='store_false',
             help='Disable full-graph torch.compile'
         )
+        parser.add_argument(
+            '--sampled_eval',
+            action='store_true',
+            default=True,
+            help='Use sampled evaluation (100 negatives)'
+        )
+        parser.add_argument(
+            '--no_sampled_eval',
+            dest='sampled_eval',
+            action='store_false',
+            help='Use exhaustive evaluation (all entities)'
+        )
+        parser.add_argument(
+            '--sampled_negatives',
+            type=int,
+            default=100,
+            help='Number of negatives for sampled evaluation'
+        )
         
         # Update description
         parser.description = 'Train PyTorch KGE models with hyperparameter search support'
         parser.set_defaults(
             data_root=str(base_dir / "data"),
             save_dir=str(base_dir / "kge_pytorch" / "models"),
+            save_models=True,
         )
         
         # Add examples
@@ -373,6 +392,10 @@ Examples:
             config.compile_mode = args.compile_mode
         if hasattr(args, 'compile_fullgraph'):
             config.compile_fullgraph = args.compile_fullgraph
+        if hasattr(args, 'sampled_eval'):
+            config.sampled_eval = args.sampled_eval
+        if hasattr(args, 'sampled_negatives'):
+            config.sampled_negatives = args.sampled_negatives
         
         # Only update if explicitly provided
         if args.lr is not None:
@@ -572,6 +595,8 @@ Examples:
             grad_clip=config.grad_clip if hasattr(config, 'grad_clip') else base_config.get('grad_clip', 0.0),
             warmup_ratio=config.warmup_ratio if hasattr(config, 'warmup_ratio') else base_config.get('warmup_ratio', 0.0),
             scheduler=config.scheduler if hasattr(config, 'scheduler') else base_config.get('scheduler', 'none'),
+            sampled_eval=config.sampled_eval,
+            sampled_negatives=config.sampled_negatives,
         )
         
         if config.verbose:
@@ -676,14 +701,21 @@ Examples:
             hparam_config = self.load_hparam_config(parsed_args.hparam_config)
             results = self.run_hparam_search(hparam_config, config)
         else:
-            # Determine which models to run
+            # Determine which models and datasets to run
             if parsed_args.models:
                 models = self.parse_model_list(parsed_args.models)
             else:
                 models = [parsed_args.model]
             
-            # Run experiments
-            results = self.run_experiments(models, config)
+            datasets = self.parse_dataset_list(parsed_args.dataset)
+            
+            # Run experiments for each dataset
+            all_results = []
+            for dataset in datasets:
+                config.dataset = dataset
+                results = self.run_experiments(models, config)
+                all_results.extend(results)
+            results = all_results
         
         # Check for failures
         failed_count = sum(1 for r in results if 'error' in r)

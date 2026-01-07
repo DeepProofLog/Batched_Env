@@ -91,7 +91,7 @@ class KGEInference:
             scores_file_path=scores_file_path,
             **kwargs,
         )
-        print(f"KGE Engine initialized with backend: {self.backend}")
+        print(f"KGE Engine initialized with backend: {self.backend} (signature: {run_signature})")
 
     def __getattr__(self, name: str) -> Any:
         """Delegate all attribute access to the backend engine."""

@@ -25,7 +25,15 @@ from env import EnvVec, EnvObs, EnvState
 from utils import atom_to_str
 
 if torch.cuda.is_available():
-    torch.set_float32_matmul_precision('high')
+    # Recommended TF32 settings for newer Pytorch versions
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, message=".*use the new API settings to control TF32 behavior.*")
+        try:
+            torch.set_float32_matmul_precision('high')
+        except Exception:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
 
 # =============================================================================
@@ -1242,11 +1250,13 @@ class PPO:
         }
         tie_generator = torch.Generator(device=device)
         tie_generator.manual_seed(self.ranking_tie_seed)
-
+        print(f'Evaluating {N} queries and {n_corruptions} negatives')
+        if self.kge_only_eval:
+            print("NOTE: KGE-only evaluation mode enabled (no RL ranking).")
         for start in range(0, N, chunk_queries):
             t_start = time.time()
-            if verbose:
-                print(f"Chunk {start}-{min(start + chunk_queries, N)}")
+            # if verbose:
+            print(f"Chunk {start}-{min(start + chunk_queries, N)}")
             end = min(start + chunk_queries, N)
             chunk = queries[start:end]
             CQ = end - start
@@ -1378,9 +1388,17 @@ class PPO:
                 tied = (neg == pos) & (rnd[:, 1:] > rnd[:, 0:1])
                 all_ranks[mode].append(1 + better.sum(1) + tied.sum(1))
                 offset += CQ * K
-            if verbose:
-                elapsed = time.time() - t_start
-                print(f" Took {elapsed:.2f} seconds. ms/cand: {1000 * elapsed / (CQ * K)}")
+
+            # Calculate rolling MRR for display
+            mode_mrrs = []
+            for m in corruption_modes:
+                if all_ranks[m]:
+                    ranks = torch.cat(all_ranks[m])
+                    mode_mrrs.append((1.0 / ranks.float()).mean().item())
+            
+            rolling_mrr = np.mean(mode_mrrs) if mode_mrrs else 0.0
+            elapsed = time.time() - t_start
+            print(f"  Took: {elapsed:.2f}s | Rolling MRR: {rolling_mrr:.4f} | ms/cand: {1000 * elapsed / (CQ * K):.2f}")
 
         # Metric Aggregation
         res = self._aggregate_metrics(all_stats, query_depths, N, chunk_queries, corruption_modes, all_ranks=all_ranks)

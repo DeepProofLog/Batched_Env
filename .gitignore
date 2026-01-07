@@ -24,3 +24,5 @@ kge_experiments/runs/
 kge_experiments/AAAI26/
 kge_experiments/checkpoints/
 kge_experiments/cudagraphs/
+kge_experiments/kge_pytorch/models/
+kge_experiments/kge_pykeen/models/

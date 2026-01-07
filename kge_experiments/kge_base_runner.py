@@ -57,6 +57,10 @@ class BaseKGEConfig:
 
     # Run metadata
     run_signature: Optional[str] = None
+
+    # Evaluation behavior
+    sampled_eval: bool = True
+    sampled_negatives: int = 100
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""
@@ -216,8 +220,7 @@ class BaseKGERunner(ABC):
             '--dataset',
             type=str,
             default='family',
-            choices=self.AVAILABLE_DATASETS,
-            help='Dataset to use'
+            help='Dataset to use (single name, comma-separated list, or "all")'
         )
         parser.add_argument(
             '--data_root',
@@ -436,7 +439,33 @@ class BaseKGERunner(ABC):
             )
         
         return models
-    
+
+    def parse_dataset_list(self, dataset_arg: str) -> List[str]:
+        """
+        Parse dataset argument.
+        
+        Args:
+            dataset_arg: Dataset string (single, comma-separated, or "all")
+            
+        Returns:
+            List of dataset names
+        """
+        if not dataset_arg:
+            return ['family']
+            
+        if dataset_arg.lower() == 'all':
+            return self.AVAILABLE_DATASETS
+        
+        datasets = [d.strip() for d in dataset_arg.split(',')]
+        
+        # Validate datasets
+        invalid_datasets = [d for d in datasets if d not in self.AVAILABLE_DATASETS]
+        if invalid_datasets:
+            print(f"Warning: Unknown dataset(s): {invalid_datasets}")
+            print(f"Available datasets: {self.AVAILABLE_DATASETS}")
+        
+        return [d for d in datasets if d in self.AVAILABLE_DATASETS]
+
     def run_experiments(
         self,
         models: List[str],
@@ -477,7 +506,7 @@ class BaseKGERunner(ABC):
             print(f"{'='*80}\n")
             
             # Create config for this model
-            model_config = BaseKGEConfig.from_dict(base_config.to_dict())
+            model_config = type(base_config).from_dict(base_config.to_dict())
             model_config.model = model_name
             
             # Update with model-specific defaults if not overridden
