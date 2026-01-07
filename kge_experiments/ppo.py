@@ -149,6 +149,8 @@ class PPO:
         self.kge_inference_success = bool(getattr(config, 'kge_inference_success', True))
         self.kge_eval_kge_weight = float(getattr(config, 'kge_eval_kge_weight', 2.0))
         self.kge_eval_rl_weight = float(getattr(config, 'kge_eval_rl_weight', 1.0))
+        self.kge_fail_penalty = float(getattr(config, 'kge_fail_penalty', 100.0))
+        self.kge_only_eval = bool(getattr(config, 'kge_only_eval', False))
         self._kge_log_eps = 1e-9
 
         # Metrics info (CPU-only to avoid synchronization) - copied from PPOOld
@@ -1345,19 +1347,27 @@ class PPO:
                     )
                     # kge_scores: [CQ, K]
                     kge_log_scores = torch.log(kge_scores.clamp(min=self._kge_log_eps))
-                    scores = self.kge_eval_kge_weight * kge_log_scores
-                    if self.kge_inference_success:
-                        scores = torch.where(
-                            success,
-                            scores + self.kge_eval_rl_weight * logprobs,
-                            scores,
-                        )
+                    
+                    if self.kge_only_eval:
+                        # KGE-only mode: use pure KGE scores (matches paper evaluation)
+                        scores = kge_log_scores
                     else:
-                        scores = scores + self.kge_eval_rl_weight * logprobs
-                    scores = torch.where(success, scores, scores - 100.0)
+                        # Hybrid mode: combine KGE with RL binary success (not logprobs)
+                        # Using binary success (+1 for proven) instead of negative logprobs
+                        scores = self.kge_eval_kge_weight * kge_log_scores
+                        if self.kge_inference_success:
+                            # Add bonus only for proven queries (binary: 1 if proven, 0 if not)
+                            scores = torch.where(
+                                success,
+                                scores + self.kge_eval_rl_weight,  # Binary +1 bonus for proven
+                                scores - self.kge_fail_penalty,    # Penalty for failed
+                            )
+                        else:
+                            scores = scores + self.kge_eval_rl_weight * logprobs
+                            scores = torch.where(success, scores, scores - self.kge_fail_penalty)
                 else:
-                    # Successful proofs keep their log prob, failed get -100 penalty
-                    scores = torch.where(success, logprobs, logprobs - 100.0)
+                    # Successful proofs keep their log prob, failed get penalty
+                    scores = torch.where(success, logprobs, logprobs - self.kge_fail_penalty)
 
                 # Mask out invalid padding candidates with a very low score so they rank last
                 scores = scores.masked_fill(~is_valid, -1e9)

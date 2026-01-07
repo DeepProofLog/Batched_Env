@@ -151,6 +151,7 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         sampler=sampler,
         train_queries=train_queries,
         valid_queries=test_queries,
+        skip_unary_actions=True,
     )
     
     action_size = config.padding_states

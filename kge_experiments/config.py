@@ -28,7 +28,7 @@ class TrainConfig:
     # Environment / Logic
     padding_atoms: int = 6
     padding_states: int = 64
-    eval_padding_states: int = 16  # Optimized: 16 gives ~0.87 ms/candidate for WN18RR
+    eval_padding_states: int = 120  # Optimized: 16 gives ~0.87 ms/candidate for WN18RR
     eval_max_depth: int = 14  # Optimized: 14 steps sufficient for most proofs
     max_steps: int = 20 # max_depth in runner
     use_exact_memory: bool = True
@@ -53,7 +53,7 @@ class TrainConfig:
     sqrt_scale: bool = False
     temperature: float = 1.0
     atom_embedder: str = 'transe'
-    state_embedder: str = 'sum'
+    state_embedder: str = 'mean'
     
     # PPO / Training Hyperparams
     n_envs: int = 3
@@ -117,6 +117,8 @@ class TrainConfig:
     kge_scores_file: Optional[str] = None
     kge_eval_kge_weight: float = 2.0
     kge_eval_rl_weight: float = 1.0
+    kge_fail_penalty: float = 100.0  # Penalty for failed proofs in hybrid mode
+    kge_only_eval: bool = False  # If True, use KGE-only scoring at test time (matches paper)
     
     # Misc
     seed: int = 42

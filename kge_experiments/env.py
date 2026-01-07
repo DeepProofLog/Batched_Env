@@ -57,6 +57,7 @@ class EnvVec:
         compile_mode: str = 'reduce-overhead',
         compile_fullgraph: bool = True,
         use_exact_memory: bool = False,  # For parity tests: use exact atom matching instead of hashes
+        skip_unary_actions: bool = False,  # Auto-advance when only 1 action available (AAAI26 parity)
     ) -> None:
         # Device & dimensions
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -67,6 +68,8 @@ class EnvVec:
         self.end_proof_action = end_proof_action
         self.memory_pruning = memory_pruning
         self.use_exact_memory = use_exact_memory
+        self.skip_unary_actions = skip_unary_actions
+        self.max_unary_iterations = 5  # Reduced from AAAI26's 20 for faster compilation
         self.max_history_size = max_depth + 1
         
         # Vectorized state history buffer for exact memory (replaces Python sets)
@@ -145,8 +148,11 @@ class EnvVec:
         self._allocate_buffers()
 
         # Auto-compile if requested (now works with exact memory too - fully vectorized)
-        if compile:
+        # Note: skip_unary_actions loop is expensive to compile - disable compilation for now
+        if compile and not skip_unary_actions:
             self.compile(mode=compile_mode, fullgraph=compile_fullgraph)
+        elif skip_unary_actions:
+            print(f"[EnvOptimal] skip_unary_actions enabled - skipping torch.compile for compatibility")
 
     @property
     def batch_size(self) -> int:
@@ -287,8 +293,16 @@ class EnvVec:
         excluded = queries[:, 0:1, :]  # [B, 1, 3]
         derived, counts, new_var = self._compute_derived(queries, var_idx, queries, h_hashes, h_count, excluded)
 
+        # Skip unary actions: auto-advance when only 1 non-terminal action (AAAI26 parity)
+        current_states = queries
+        if self.skip_unary_actions:
+            current_states, derived, counts, new_var, h_hashes, h_count = self._advance_through_unary(
+                queries, derived, counts, new_var,
+                queries, h_hashes, h_count, excluded
+            )
+
         return TensorDict({
-            "current_states": queries,
+            "current_states": current_states,
             "derived_states": derived.clone(),
             "derived_counts": counts,
             "original_queries": queries,
@@ -335,14 +349,22 @@ class EnvVec:
         new_h_count = torch.where(active, (state['history_count'] + 1).clamp(max=self.max_history_size), state['history_count'])
 
         still_active = ~new_done
-        
+
         # Update state history for exact memory (vectorized - add new current states before computing derived)
         if self.use_exact_memory:
             self._state_history_add(new_current, active & ~was_done)
-        
+
         # Pass excluded_queries = first atom of original query to match tensor env behavior
         excluded = state['original_queries'][:, 0:1, :] if state['original_queries'] is not None else None
         new_derived, new_counts, new_var = self._compute_derived(new_current, state['next_var_indices'], state['original_queries'], new_history, new_h_count, excluded)
+
+        # Skip unary actions: auto-advance when only 1 non-terminal action (AAAI26 parity)
+        if self.skip_unary_actions:
+            new_current, new_derived, new_counts, new_var, new_history, new_h_count = self._advance_through_unary(
+                new_current, new_derived, new_counts, new_var,
+                state['original_queries'], new_history, new_h_count, excluded
+            )
+
         new_derived = torch.where(still_active.view(B, 1, 1, 1), new_derived, state['derived_states'])
         new_counts = torch.where(still_active, new_counts, state['derived_counts'])
         new_var = torch.where(still_active, new_var, state['next_var_indices'])
@@ -686,6 +708,144 @@ class EnvVec:
         end_exp = self.end_state.unsqueeze(0).unsqueeze(0).expand(B, S, -1, -1)
         new_states = torch.where(should_place.unsqueeze(-1).unsqueeze(-1), end_exp, new_states)
         return new_states, torch.where(can_end, counts + 1, counts)
+
+    # =========================================================================
+    # SKIP UNARY ACTIONS (AAAI26 parity)
+    # =========================================================================
+
+    def _advance_through_unary(
+        self,
+        current_states: Tensor,
+        derived_states: Tensor,
+        counts: Tensor,
+        next_var_indices: Tensor,
+        original_queries: Tensor,
+        history_hashes: Tensor,
+        history_count: Tensor,
+        excluded_queries: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """
+        Auto-advance through unary actions (exactly 1 non-terminal derived state).
+
+        This matches AAAI26 behavior where the agent doesn't need to pick the only
+        available action - we advance automatically until there's a real choice.
+
+        Returns updated: current_states, derived_states, counts, next_var_indices,
+                        history_hashes, history_count
+        """
+        if not self.skip_unary_actions:
+            return current_states, derived_states, counts, next_var_indices, history_hashes, history_count
+
+        B, S, A = self.batch_size, self.padding_states, self.padding_atoms
+        device = self.device
+
+        # Fixed iterations with masking (torch.compile compatible - no data-dependent branching)
+        for iteration in range(self.max_unary_iterations):
+            # Check which envs have exactly 1 action
+            has_one_action = counts == 1
+
+            # Get the single derived state for each env (index 0)
+            single_state = derived_states[:, 0, :, :]  # [B, A, 3]
+
+            # Check if that state is terminal (True, False, End)
+            first_pred = single_state[:, 0, 0]  # [B]
+            is_terminal = torch.zeros(B, dtype=torch.bool, device=device)
+            if self.true_pred_idx is not None:
+                is_terminal = is_terminal | (first_pred == self.true_pred_idx)
+            if self.false_pred_idx is not None:
+                is_terminal = is_terminal | (first_pred == self.false_pred_idx)
+            if self.end_pred_idx is not None:
+                is_terminal = is_terminal | (first_pred == self.end_pred_idx)
+
+            # Only advance if: has_one_action AND not terminal
+            should_advance = has_one_action & ~is_terminal
+
+            # Even if no envs should advance, continue the loop (torch.compile compatible)
+            # The masking ensures no actual work is done when should_advance is all False
+
+            # Update current states for envs that should advance
+            new_current = torch.where(
+                should_advance.view(B, 1, 1),
+                single_state,
+                current_states
+            )
+
+            # Update history (add the new current state)
+            write_pos = history_count.clamp(max=self.max_history_size - 1)
+            new_hash = self._compute_hash(new_current)
+            new_history = history_hashes.scatter(
+                1, write_pos.unsqueeze(1),
+                torch.where(should_advance.unsqueeze(1), new_hash.unsqueeze(1),
+                           history_hashes.gather(1, write_pos.unsqueeze(1)))
+            )
+            new_h_count = torch.where(
+                should_advance,
+                (history_count + 1).clamp(max=self.max_history_size),
+                history_count
+            )
+
+            # Recompute derived for ALL envs (masking happens in the merge step)
+            # This is less efficient but torch.compile compatible
+            new_derived, new_counts, new_var = self._compute_derived_without_unary(
+                new_current, next_var_indices, original_queries,
+                new_history, new_h_count, excluded_queries
+            )
+
+            # Merge: only update envs that advanced
+            current_states = new_current
+            derived_states = torch.where(
+                should_advance.view(B, 1, 1, 1),
+                new_derived,
+                derived_states
+            )
+            counts = torch.where(should_advance, new_counts, counts)
+            next_var_indices = torch.where(should_advance, new_var, next_var_indices)
+            history_hashes = new_history
+            history_count = new_h_count
+
+        return current_states, derived_states, counts, next_var_indices, history_hashes, history_count
+
+    def _compute_derived_without_unary(self, current_states, next_var_indices, original_queries,
+                                        history_hashes=None, history_count=None, excluded_queries=None):
+        """Compute derived states without triggering unary advancement (to avoid recursion)."""
+        # This is the same as _compute_derived but called during unary advancement loop
+        B, S, A, pad = self.batch_size, self.padding_states, self.padding_atoms, self.padding_idx
+
+        derived, raw_counts, new_var, original_atom_counts = self._get_derived_raw(current_states, next_var_indices, excluded_queries)
+
+        within_count = self._arange_S.unsqueeze(0) < raw_counts.unsqueeze(1)
+        valid_atom = derived[:, :, :, 0] != pad
+        base_valid = within_count & (original_atom_counts <= A) & (original_atom_counts > 0)
+
+        derived = torch.where(base_valid.unsqueeze(-1).unsqueeze(-1), derived, self._false_state_base.unsqueeze(0).expand(B, -1, -1, -1))
+        new_counts = base_valid.sum(dim=1)
+
+        # Compact
+        flat_dim = A * 3
+        target_pos = torch.cumsum(base_valid.long(), dim=1) - 1
+        target_pos = torch.where(base_valid, target_pos.clamp(min=0, max=S-1), self._ones_B.unsqueeze(1) * (S-1))
+        src = torch.where(base_valid.unsqueeze(-1), derived.reshape(B, S, flat_dim), self._compact_zeros)
+        compact = torch.full((B, S, flat_dim), pad, dtype=torch.long, device=self.device)
+        compact.scatter_(1, target_pos.unsqueeze(-1).expand(B, S, flat_dim), src)
+        derived = compact.view(B, S, A, 3)
+
+        needs_false = new_counts == 0
+        if self._false_state_base is not None:
+            derived = torch.where(needs_false.view(-1,1,1,1), self._false_state_base.unsqueeze(0).expand(B,-1,-1,-1), derived)
+            new_counts = torch.where(needs_false, self._ones_B, new_counts)
+
+        if self.memory_pruning and history_hashes is not None:
+            derived, new_counts = self._prune_visited(derived, new_counts, history_hashes, history_count)
+            needs_false2 = new_counts == 0
+            if self._false_state_base is not None:
+                derived = torch.where(needs_false2.view(-1,1,1,1), self._false_state_base.unsqueeze(0).expand(B,-1,-1,-1), derived)
+                new_counts = torch.where(needs_false2, self._ones_B, new_counts)
+
+        if self.end_proof_action and self.end_state is not None:
+            new_counts = new_counts.clamp(max=S-1)
+            derived, new_counts = self._add_end_action(current_states, derived, new_counts)
+
+        return derived, new_counts, new_var
 
     # =========================================================================
     # REWARD

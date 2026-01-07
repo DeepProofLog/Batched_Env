@@ -118,6 +118,8 @@ class TrainConfig:
     grad_clip: float = 2.0
     warmup_ratio: float = 0.1         # fraction of total steps
     scheduler: str = "cosine"         # "cosine" or "none"
+    sampled_eval: bool = False        # Use sampled evaluation like Keras (faster, comparable metrics)
+    sampled_negatives: int = 100      # Number of negatives per query in sampled eval
 
 
 @dataclass
@@ -373,6 +375,102 @@ def evaluate_mrr(
         verbose=verbose,
     )
     return float(metrics.get("MRR", float("nan")))
+
+
+def evaluate_sampled(
+    model: torch.nn.Module,
+    triples: Sequence[Tuple[int, int, int]],
+    num_entities: int,
+    known_facts: Set[Tuple[int, int, int]],
+    device: torch.device,
+    num_negatives: int = 100,
+    verbose: bool = False,
+) -> Dict[str, float]:
+    """Sampled evaluation matching Keras methodology.
+    
+    For each test triple (h, r, t), sample num_negatives corruptions and
+    compute MRR by ranking the positive against the negatives within the batch.
+    This produces comparable results to Keras with the same num_negatives.
+    """
+    if not triples:
+        return {"MRR": float("nan"), "Hits@1": float("nan"), "Hits@3": float("nan"), "Hits@10": float("nan")}
+
+    training_mode = model.training
+    model.eval()
+    
+    # Access underlying model if wrapped
+    actual_model = model.module if isinstance(model, torch.nn.DataParallel) else model
+
+    total_rr = 0.0
+    total_hits1 = 0.0
+    total_hits3 = 0.0
+    total_hits10 = 0.0
+    count = 0
+
+    with torch.no_grad():
+        for i, (h, r, t) in enumerate(triples):
+            if verbose and i % 500 == 0:
+                print(f"Evaluating triple {i+1}/{len(triples)}", end="\r")
+            
+            # Sample head corruptions (replace head with random entities)
+            head_negs = []
+            attempts = 0
+            while len(head_negs) < num_negatives and attempts < num_negatives * 10:
+                cand = random.randint(0, num_entities - 1)
+                if (cand, r, t) not in known_facts:
+                    head_negs.append(cand)
+                attempts += 1
+            
+            # Sample tail corruptions (replace tail with random entities)
+            tail_negs = []
+            attempts = 0
+            while len(tail_negs) < num_negatives and attempts < num_negatives * 10:
+                cand = random.randint(0, num_entities - 1)
+                if (h, r, cand) not in known_facts:
+                    tail_negs.append(cand)
+                attempts += 1
+            
+            # Score head corruptions: positive (h,r,t) vs negatives (h_neg, r, t)
+            if head_negs:
+                h_batch = torch.tensor([h] + head_negs, dtype=torch.long, device=device)
+                r_batch = torch.full((len(h_batch),), r, dtype=torch.long, device=device)
+                t_batch = torch.full((len(h_batch),), t, dtype=torch.long, device=device)
+                scores = actual_model.score_triples(h_batch, r_batch, t_batch)
+                pos_score = scores[0]
+                neg_scores = scores[1:]
+                rank = 1.0 + (neg_scores > pos_score).sum().item()
+                total_rr += 1.0 / rank
+                total_hits1 += 1.0 if rank <= 1 else 0.0
+                total_hits3 += 1.0 if rank <= 3 else 0.0
+                total_hits10 += 1.0 if rank <= 10 else 0.0
+                count += 1
+            
+            # Score tail corruptions: positive (h,r,t) vs negatives (h, r, t_neg)
+            if tail_negs:
+                h_batch = torch.full((len(tail_negs) + 1,), h, dtype=torch.long, device=device)
+                r_batch = torch.full((len(tail_negs) + 1,), r, dtype=torch.long, device=device)
+                t_batch = torch.tensor([t] + tail_negs, dtype=torch.long, device=device)
+                scores = actual_model.score_triples(h_batch, r_batch, t_batch)
+                pos_score = scores[0]
+                neg_scores = scores[1:]
+                rank = 1.0 + (neg_scores > pos_score).sum().item()
+                total_rr += 1.0 / rank
+                total_hits1 += 1.0 if rank <= 1 else 0.0
+                total_hits3 += 1.0 if rank <= 3 else 0.0
+                total_hits10 += 1.0 if rank <= 10 else 0.0
+                count += 1
+
+    if training_mode:
+        model.train()
+
+    denom = max(1, count)
+    return {
+        "MRR": total_rr / denom,
+        "Hits@1": total_hits1 / denom,
+        "Hits@3": total_hits3 / denom,
+        "Hits@10": total_hits10 / denom,
+    }
+
 
 
 def add_reciprocal_triples(
@@ -634,17 +732,31 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
 
     if test_triples:
         print('Computing test metrics ...')
-        test_metrics = evaluate_ranking(
-            model,
-            test_triples,
-            num_entities,
-            head_filter,
-            tail_filter,
-            device,
-            cfg.eval_chunk_size,
-            rank_mode=cfg.eval_rank_mode,
-            verbose=True,
-        )
+        if cfg.sampled_eval:
+            # Use sampled evaluation like Keras (faster, comparable metrics)
+            known_facts = set(triples + (valid_triples or []) + (test_triples or []))
+            test_metrics = evaluate_sampled(
+                model,
+                test_triples,
+                num_entities,
+                known_facts,
+                device,
+                num_negatives=cfg.sampled_negatives,
+                verbose=True,
+            )
+        else:
+            # Exhaustive evaluation (more rigorous)
+            test_metrics = evaluate_ranking(
+                model,
+                test_triples,
+                num_entities,
+                head_filter,
+                tail_filter,
+                device,
+                cfg.eval_chunk_size,
+                rank_mode=cfg.eval_rank_mode,
+                verbose=True,
+            )
         record_metrics("test", test_metrics)
 
     if metric_logs:
@@ -752,6 +864,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad_clip", type=float, default=2.0, help="Gradient clipping max-norm (0 disables)")
     parser.add_argument("--warmup_ratio", type=float, default=0.1, help="Linear warmup ratio for LR schedule")
     parser.add_argument("--scheduler", type=str, default="cosine", choices=["cosine", "none"], help="LR schedule type")
+    parser.add_argument("--sampled_eval", action="store_true", help="Use sampled evaluation like Keras (faster, comparable metrics)")
+    parser.add_argument("--sampled_negatives", type=int, default=100, help="Number of negatives per query in sampled eval")
     return parser
 
 
@@ -796,6 +910,8 @@ def main(argv: List[str] | None = None) -> TrainArtifacts:
         grad_clip=args.grad_clip,
         warmup_ratio=args.warmup_ratio,
         scheduler=args.scheduler,
+        sampled_eval=args.sampled_eval,
+        sampled_negatives=args.sampled_negatives,
     )
     return train_model(cfg)
 

@@ -229,6 +229,7 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         compile=True,
         compile_mode='reduce-overhead',
         compile_fullgraph=True,
+        skip_unary_actions=config.skip_unary_actions,  # AAAI26 parity: auto-advance when only 1 action
     )
     
     # Create embedder
@@ -370,7 +371,10 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
     hits3 = eval_results.get('Hits@3', 0.0)
     hits10 = eval_results.get('Hits@10', 0.0)
     
+    proven_pos = eval_results.get('proven_pos', 0.0)
+    proven_neg = eval_results.get('proven_neg', 0.0)
     print(f"\nResults: MRR={mrr:.4f}, Hits@1={hits1:.4f}, Hits@3={hits3:.4f}, Hits@10={hits10:.4f}")
+    print(f"Proven: pos={proven_pos:.4f}, neg={proven_neg:.4f}")
     
     train_stats = getattr(ppo, 'last_train_metrics', {})
     results = {

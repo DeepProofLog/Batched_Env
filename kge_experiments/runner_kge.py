@@ -26,12 +26,12 @@ if __name__ == "__main__":
 
     DEFAULT_CONFIG = {
         # Dataset
-        'dataset': 'wn18rr',
+        'dataset': ['family','wn18rr'],
         'data_path': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'),
         
         # Training
         'seed': [0],
-        'total_timesteps': 200000,
+        'total_timesteps': 5000000,
         'n_envs': 128,
         'n_steps': 256,
         'batch_size': 512,
@@ -67,7 +67,7 @@ if __name__ == "__main__":
         'reward_type': 4,
         'negative_ratio': 1,
         'end_proof_action': True,
-        'skip_unary_actions': False,
+        'skip_unary_actions': False,  # AAAI26 parity: auto-advance when only 1 action
         'memory_pruning': True,
         'use_exact_memory': False,
         'max_total_vars': 100,
@@ -81,9 +81,9 @@ if __name__ == "__main__":
         # Evaluation
         'eval_freq': 4,
         'n_eval_queries': 100,
-        'n_test_queries': 128,
+        'n_test_queries': None,
         'eval_neg_samples': 10,
-        'test_neg_samples': 25,
+        'test_neg_samples': 100,
         'eval_best_metric': 'mrr',
         'ranking_tie_seed': 0,
 
@@ -91,11 +91,14 @@ if __name__ == "__main__":
         'kge_inference': False,
         'kge_inference_success': True,
         'kge_engine': 'pytorch',
-        'kge_checkpoint_dir': None,
-        'kge_run_signature': None,
+        'kge_run_signature': 'torch_family_complex_v5',
+        'kge_checkpoint_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kge_pytorch', 'models'),
+
         'kge_scores_file': None,
-        'kge_eval_kge_weight': 2.0,
+        'kge_eval_kge_weight': 2.0,  # Optimized: lower weight with low penalty works best
         'kge_eval_rl_weight': 1.0,
+        'kge_fail_penalty': 0.5,  # Optimized: low penalty (0.5-1.0) gives best MRR
+        'kge_only_eval': False,  # If True, use KGE-only scoring at test time (no RL proofs)
         
         # LR decay
         'lr_decay': True,
@@ -115,7 +118,7 @@ if __name__ == "__main__":
         
         # Model saving/loading
         'save_model': True,
-        'load_model': True,
+        'load_model': False,
         'restore_best': True,
         'load_best_metric': 'eval',
         'models_path': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models'),
@@ -164,6 +167,13 @@ if __name__ == "__main__":
 
     # Prepare grid search
     grid_spec = {}
+
+    # Automatically add list-valued parameters to grid search (excluding seed)
+    # This allows setting e.g. 'dataset': ['wn18rr', 'family'] in DEFAULT_CONFIG
+    for key, value in base_config.items():
+        if isinstance(value, list) and key != 'seed' and key not in grid_spec:
+            grid_spec[key] = value
+
     if args.grid:
         for entry in args.grid:
             key, raw_values = parse_assignment(entry)
@@ -220,10 +230,20 @@ if __name__ == "__main__":
 
         # KGE inference defaults
         if cfg_dict.get('kge_inference', False):
-            engine = normalize_backend(cfg_dict.get('kge_engine', 'pytorch'))
-            cfg_dict['kge_engine'] = engine
-            if not cfg_dict.get('kge_checkpoint_dir'):
-                cfg_dict['kge_checkpoint_dir'] = default_checkpoint_dir(engine)
+            # Auto-disable KGE if dataset doesn't match signature (e.g. wn18rr running with family model)
+            dataset = cfg_dict.get('dataset', 'run')
+            dataset_in_signature = cfg_dict.get('kge_run_signature', '')
+            kge_sig = cfg_dict.get('kge_run_signature', '')
+            if dataset != dataset_in_signature:
+                print(f"[*] Auto-disabling kge_inference for {dataset} (signature {kge_sig} is for {dataset_in_signature})")
+                cfg_dict['kge_inference'] = False
+            
+            if cfg_dict.get('kge_inference'):
+                engine = normalize_backend(cfg_dict.get('kge_engine', 'pytorch'))
+                cfg_dict['kge_engine'] = engine
+                if not cfg_dict.get('kge_checkpoint_dir'):
+                    cfg_dict['kge_checkpoint_dir'] = default_checkpoint_dir(engine)
+
 
         # Corruption scheme
         if 'countries' in dataset or 'ablation' in dataset:
