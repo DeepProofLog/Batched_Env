@@ -1362,19 +1362,15 @@ class PPO:
                         # KGE-only mode: use pure KGE scores (matches paper evaluation)
                         scores = kge_log_scores
                     else:
-                        # Hybrid mode: combine KGE with RL binary success (not logprobs)
-                        # Using binary success (+1 for proven) instead of negative logprobs
+                        # Hybrid mode: KGE scores + binary bonus for proofs
+                        # Successful: kge_weight * kge_log_scores + rl_weight (bonus)
+                        # Failed: kge_weight * kge_log_scores - fail_penalty
                         scores = self.kge_eval_kge_weight * kge_log_scores
-                        if self.kge_inference_success:
-                            # Add bonus only for proven queries (binary: 1 if proven, 0 if not)
-                            scores = torch.where(
-                                success,
-                                scores + self.kge_eval_rl_weight,  # Binary +1 bonus for proven
-                                scores - self.kge_fail_penalty,    # Penalty for failed
-                            )
-                        else:
-                            scores = scores + self.kge_eval_rl_weight * logprobs
-                            scores = torch.where(success, scores, scores - self.kge_fail_penalty)
+                        scores = torch.where(
+                            success,
+                            scores + self.kge_eval_rl_weight,  # Binary bonus for proven
+                            scores - self.kge_fail_penalty,    # Penalty for failed
+                        )
                 else:
                     # Successful proofs keep their log prob, failed get penalty
                     scores = torch.where(success, logprobs, logprobs - self.kge_fail_penalty)

@@ -21,7 +21,7 @@ kge_pykeen/models/
 AAAI26/
 kge_experiments/models/
 kge_experiments/runs/
-kge_experiments/AAAI26/
+kge_experiments/AAAI26/*
 kge_experiments/checkpoints/
 kge_experiments/cudagraphs/
 kge_experiments/kge_pytorch/models/

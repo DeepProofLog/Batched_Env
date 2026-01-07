@@ -107,10 +107,11 @@ if __name__ == "__main__":
         'kge_checkpoint_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kge_pytorch', 'models'),
 
         'kge_scores_file': None,
-        'kge_eval_kge_weight': 2.0,  # Optimized: lower weight with low penalty works best
-        'kge_eval_rl_weight': 1.0,
-        'kge_fail_penalty': 0.5,  # Optimized: low penalty (0.5-1.0) gives best MRR
-        'kge_only_eval': True,  # If True, use KGE-only scoring at test time (no RL proofs)
+        'kge_eval_kge_weight': 2.0,  # Hybrid weight for KGE scores
+        'kge_eval_rl_weight': 1.0,   # Binary bonus for proven queries
+        'kge_fail_penalty': 0.5,     # Penalty for failed proofs
+        'kge_only_eval': False,      # False enables hybrid KGE+RL scoring
+        # Hybrid: success = kge_weight * kge_logp + rl_weight, fail = kge_weight * kge_logp - penalty
         
         # LR decay
         'lr_decay': True,

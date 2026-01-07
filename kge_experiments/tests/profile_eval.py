@@ -10,8 +10,10 @@ Targets:
 
 Usage:
     conda activate rl
-    python tests/profile_eval_.py
-    python tests/profile_eval_.py --n-queries 100 --n-corruptions 100
+    python tests/profile_eval.py
+    python tests/profile_eval.py --n-queries 100 --n-corruptions 100
+
+Results are saved to profile_eval.txt for comparison.
 """
 
 import os
@@ -22,10 +24,29 @@ import argparse
 import cProfile
 import pstats
 import io
+from datetime import datetime
 from time import time
 from types import SimpleNamespace
 
 import torch
+
+
+class Tee(object):
+    """Write to multiple streams simultaneously."""
+    def __init__(self, *files):
+        self.files = files
+
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+    def isatty(self):
+        return any(getattr(f, 'isatty', lambda: False)() for f in self.files)
 
 
 def setup(device, config):
@@ -161,112 +182,145 @@ def main():
     parser.add_argument('--max-depth', type=int, default=20, help='Max steps per episode')
     args = parser.parse_args()
 
-    if args.max_fact_pairs_cap is None and args.dataset == 'wn18rr':
-        print("Setting max_fact_pairs_cap to 1000 for wn18rr")
-        args.max_fact_pairs_cap = 1000
+    # Setup output file for logging results
+    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profile_eval.txt')
+    log_file = open(output_path, 'w')
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = Tee(sys.stdout, log_file)
+    sys.stderr = sys.stdout
 
-    # Default eval_padding_states based on dataset
-    if args.eval_padding_states is None:
-        args.eval_padding_states = {'wn18rr': 120, 'fb15k237': 120, 'family': 130}.get(args.dataset, 262)
+    try:
+        if args.max_fact_pairs_cap is None and args.dataset == 'wn18rr':
+            print("Setting max_fact_pairs_cap to 1000 for wn18rr")
+            args.max_fact_pairs_cap = 1000
 
-    config = SimpleNamespace(
-        dataset=args.dataset,
-        data_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data'),
-        padding_atoms=6, padding_states=args.eval_padding_states, max_depth=args.max_depth,
-        batch_size=args.batch_size, compile=args.compile,
-        max_fact_pairs_cap=args.max_fact_pairs_cap,
-    )
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    total = args.n_queries * (1 + args.n_corruptions) * 2
-    
-    print(f"PPO Evaluation | Candidates: {total}, Batch: {config.batch_size}")
-    
-    print("Setup...")
-    c = setup(device, config)
-    
-    print("Compile + warmup...")
-    t0 = time()
-    c['env'].compile(mode='reduce-overhead', fullgraph=True)
-    # Warmup with small evaluation
-    c['ppo'].evaluate(c['queries'][:5].to(device), c['sampler'], n_corruptions=5, corruption_modes=('head',))
-    torch.cuda.synchronize()
-    warmup = time() - t0
-    print(f"Warmup: {warmup:.2f}s")
-    
-    print("Profiling...")
-    
-    if args.gpu_profile:
-        # GPU Profiler
-        torch.cuda.synchronize()
+        # Default eval_padding_states based on dataset
+        if args.eval_padding_states is None:
+            args.eval_padding_states = {'wn18rr': 120, 'fb15k237': 120, 'family': 130}.get(args.dataset, 262)
+
+        config = SimpleNamespace(
+            dataset=args.dataset,
+            data_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data'),
+            padding_atoms=6, padding_states=args.eval_padding_states, max_depth=args.max_depth,
+            batch_size=args.batch_size, compile=args.compile,
+            max_fact_pairs_cap=args.max_fact_pairs_cap,
+        )
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        total = args.n_queries * (1 + args.n_corruptions) * 2
+
+        print(f"Profile Eval Results")
+        print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Device: {device}")
+        print(f"Dataset: {config.dataset}")
+        print(f"\nConfiguration:")
+        print(f"  N queries: {args.n_queries}")
+        print(f"  N corruptions: {args.n_corruptions}")
+        print(f"  Batch size: {config.batch_size}")
+        print(f"  Padding states: {config.padding_states}")
+        print(f"  Max depth: {config.max_depth}")
+        print(f"  Total candidates: {total}")
+        print(f"")
+
+        print("Setup...")
+        c = setup(device, config)
+
+        print("Compile + warmup...")
         t0 = time()
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-        ) as prof:
+        c['env'].compile(mode='reduce-overhead', fullgraph=True)
+        # Warmup with small evaluation
+        c['ppo'].evaluate(c['queries'][:5].to(device), c['sampler'], n_corruptions=5, corruption_modes=('head',))
+        torch.cuda.synchronize()
+        warmup = time() - t0
+        print(f"Warmup: {warmup:.2f}s")
+
+        print("Profiling...")
+
+        if args.gpu_profile:
+            # GPU Profiler
+            torch.cuda.synchronize()
+            t0 = time()
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            ) as prof:
+                results = c['ppo'].evaluate(
+                    c['queries'][:args.n_queries].to(device),
+                    c['sampler'], n_corruptions=args.n_corruptions,
+                    corruption_modes=('head', 'tail'), verbose=True,
+                )
+            torch.cuda.synchronize()
+            runtime = time() - t0
+
+            ms_cand = (runtime / total) * 1000
+            print(f"\n{'='*50}")
+            print(f"TIMING SUMMARY")
+            print(f"{'='*50}")
+            print(f"Runtime:      {runtime:.4f}s")
+            print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
+            print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
+            print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
+
+            print(f"\n=== GPU PROFILE: Top 30 by CUDA time ===")
+            print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=30))
+
+            print(f"\n=== GPU PROFILE: Top 20 by Self CUDA time ===")
+            print(prof.key_averages().table(sort_by='self_cuda_time_total', row_limit=20))
+        elif args.cpu_profile:
+            # CPU Profiler
+            prof = cProfile.Profile()
+            prof.enable()
+            torch.cuda.synchronize()
+            t0 = time()
             results = c['ppo'].evaluate(
                 c['queries'][:args.n_queries].to(device),
                 c['sampler'], n_corruptions=args.n_corruptions,
                 corruption_modes=('head', 'tail'), verbose=True,
             )
-        torch.cuda.synchronize()
-        runtime = time() - t0
+            torch.cuda.synchronize()
+            runtime = time() - t0
+            prof.disable()
 
-        ms_cand = (runtime / total) * 1000
-        print(f"\n{'='*50}")
-        print(f"Runtime:      {runtime:.4f}s")
-        print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
-        print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
-        print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
+            ms_cand = (runtime / total) * 1000
+            print(f"\n{'='*50}")
+            print(f"TIMING SUMMARY")
+            print(f"{'='*50}")
+            print(f"Runtime:      {runtime:.4f}s")
+            print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
+            print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
+            print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
 
-        print(f"\n=== GPU PROFILE: Top 30 by CUDA time ===")
-        print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=30))
+            print(f"\nTop 20:")
+            s = io.StringIO()
+            pstats.Stats(prof, stream=s).strip_dirs().sort_stats('tottime').print_stats(20)
+            print(s.getvalue())
+        else:
+            # Pure Timing (default)
+            torch.cuda.synchronize()
+            t0 = time()
+            results = c['ppo'].evaluate(
+                c['queries'][:args.n_queries].to(device),
+                c['sampler'], n_corruptions=args.n_corruptions,
+                corruption_modes=('head', 'tail'), verbose=True,
+            )
+            torch.cuda.synchronize()
+            runtime = time() - t0
 
-        print(f"\n=== GPU PROFILE: Top 20 by Self CUDA time ===")
-        print(prof.key_averages().table(sort_by='self_cuda_time_total', row_limit=20))
-    elif args.cpu_profile:
-        # CPU Profiler
-        prof = cProfile.Profile()
-        prof.enable()
-        torch.cuda.synchronize()
-        t0 = time()
-        results = c['ppo'].evaluate(
-            c['queries'][:args.n_queries].to(device),
-            c['sampler'], n_corruptions=args.n_corruptions,
-            corruption_modes=('head', 'tail'), verbose=True,
-        )
-        torch.cuda.synchronize()
-        runtime = time() - t0
-        prof.disable()
+            ms_cand = (runtime / total) * 1000
+            print(f"\n{'='*50}")
+            print(f"TIMING SUMMARY")
+            print(f"{'='*50}")
+            print(f"Runtime:      {runtime:.4f}s")
+            print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
+            print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
+            print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
 
-        ms_cand = (runtime / total) * 1000
-        print(f"\n{'='*50}")
-        print(f"Runtime:      {runtime:.4f}s")
-        print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
-        print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
-        print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
+        print(f"\nResults saved to {output_path}")
 
-        print(f"\nTop 20:")
-        s = io.StringIO()
-        pstats.Stats(prof, stream=s).strip_dirs().sort_stats('tottime').print_stats(20)
-        print(s.getvalue())
-    else:
-        # Pure Timing (default)
-        torch.cuda.synchronize()
-        t0 = time()
-        results = c['ppo'].evaluate(
-            c['queries'][:args.n_queries].to(device),
-            c['sampler'], n_corruptions=args.n_corruptions,
-            corruption_modes=('head', 'tail'), verbose=True,
-        )
-        torch.cuda.synchronize()
-        runtime = time() - t0
-
-        ms_cand = (runtime / total) * 1000
-        print(f"\n{'='*50}")
-        print(f"Runtime:      {runtime:.4f}s")
-        print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
-        print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
-        print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        log_file.close()
 
 
 if __name__ == '__main__':
