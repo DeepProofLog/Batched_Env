@@ -1,0 +1,902 @@
+nohup: ignoring input
+==============================================
+Starting KGE Integration Experiments
+Dataset: wn18rr
+Timesteps: 500000
+Eval: 100 queries, 10 corruptions
+Test: 500 queries, 100 corruptions
+Started at: Thu Jan  8 01:42:46 CET 2026
+==============================================
+
+[1/10] Running: RL Only (no KGE)
+==============================================
+W0108 01:43:05.074000 47890 site-packages/torch/_inductor/utils.py:1613] [0/0] Not enough SMs to use max_autotune_gemm mode
+Grid search: 1 params, 1 experiments.
+
+============================================================
+Experiment 1/1
+============================================================
+
+
+============================================================
+Seed 0
+============================================================
+Run signature: wn18rr-250-128-torchrl
+======================================================================
+Training: wn18rr
+Envs: 128, Steps: 256, Timesteps: 500000
+Seed: 0
+======================================================================
+
+[1/3] Creating components...
+[UnificationEngine] Capping max_fact_pairs from 34796 to 1000
+[EnvOptimal] Compiled with mode=reduce-overhead, fullgraph=True
+
+[2/3] Running training...
+[PPO] Compiled ranking_step with mode=default
+
+[Checkpoint] Loading existing model at start of training (load_model=True)...
+Restoring best EVAL model (MRR) from /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/best_model_eval_2026_01_07_17_27_08.pt
+
+============================================================
+Initial evaluation (untrained model)
+============================================================
+Evaluating 100 queries and 10 negatives
+Chunk 0-100
+  Took: 28.91s | Rolling MRR: 0.6010 | ms/cand: 26.28
+[Eval] Took 28.91 seconds
+
+[Ranking] MRR: current=0.601, best=0.601 (iter 0)
+----------------------------------------------------
+| eval/                   |                          |
+|    Hits@1               | 0.485                    |
+|    Hits@10              | 0.950                    |
+|    Hits@3               | 0.605                    |
+|    MRR                  | 0.601                    |
+|    len_d_-1_pos         | 12.542                   |
+|    len_d_1_pos          | 1.977                    |
+|    len_d_2_pos          | 17.500                   |
+|    len_d_3_pos          | 20.000                   |
+|    len_d_4_pos          | 20.000                   |
+|    len_neg              | 7.766                    |
+|    len_pos              | 8.390                    |
+|    mrr_mean             | 0.601                    |
+|    proven_d_-1_pos      | 0.021                    |
+|    proven_d_1_pos       | 0.932                    |
+|    proven_d_2_pos       | 0.000                    |
+|    proven_d_3_pos       | 0.000                    |
+|    proven_d_4_pos       | 0.000                    |
+|    proven_neg           | 0.010                    |
+|    proven_pos           | 0.420                    |
+|    reward_d_-1_pos      | 0.021                    |
+|    reward_d_1_pos       | 0.932                    |
+|    reward_d_2_pos       | 0.000                    |
+|    reward_d_3_pos       | 0.000                    |
+|    reward_d_4_pos       | 0.000                    |
+|    reward_label_neg     | 0.010                    |
+|    reward_label_pos     | 0.420                    |
+----------------------------------------------------
+
+============================================================
+
+[PPO] Rollout collected in 24.53s. FPS: 1335.84
+Epoch 1/5. 
+Losses: total 0.07134, value 0.17021, policy 0.00048, entropy -0.00052, approx_kl 0.00950 clip_fraction 0.00143. 
+Epoch 2/5. 
+Losses: total 0.04225, value 0.13401, policy 0.00046, entropy -0.00054, approx_kl 0.02564 clip_fraction 0.00182. 
+Epoch 3/5. 
+Losses: total 0.03669, value 0.11582, policy 0.00032, entropy -0.00052, approx_kl 0.04355 clip_fraction 0.00218. 
+Epoch 4/5. 
+Losses: total 0.03168, value 0.10459, policy 0.00019, entropy -0.00052, approx_kl 0.06144 clip_fraction 0.00240. 
+Epoch 5/5. 
+Losses: total 0.02944, value 0.09643, policy 0.00014, entropy -0.00052, approx_kl 0.07765 clip_fraction 0.00264. 
+[PPO] Training completed in 33.96s
+[Metrics] Reward (train): current=0.745, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.269                    |
+|    ep_rew_mean          | 0.745                    |
+|    explained_variance   | 0.610                    |
+|    len                  | 5.269 +/- 7.15 (5958)    |
+|    len_d_1_pos          | 4.787 +/- 7.19 (2286)    |
+|    len_d_2_pos          | 5.056 +/- 7.21 (213)     |
+|    len_d_3_pos          | 4.922 +/- 7.28 (230)     |
+|    len_d_4_pos          | 5.140 +/- 7.52 (136)     |
+|    len_d_unknown_neg    | 5.671 +/- 7.07 (3093)    |
+|    len_neg              | 5.671 +/- 7.07 (3093)    |
+|    len_pos              | 4.834 +/- 7.21 (2865)    |
+|    proven_d_1_pos       | 0.743 +/- 0.44 (2286)    |
+|    proven_d_2_pos       | 0.742 +/- 0.44 (213)     |
+|    proven_d_3_pos       | 0.739 +/- 0.44 (230)     |
+|    proven_d_4_pos       | 0.721 +/- 0.45 (136)     |
+|    proven_d_unknown_neg | 0.006 +/- 0.08 (3093)    |
+|    proven_neg           | 0.006 +/- 0.08 (3093)    |
+|    proven_pos           | 0.742 +/- 0.44 (2865)    |
+|    reward               | 0.745 +/- 0.67 (5958)    |
+|    reward_d_1_pos       | 0.486 +/- 0.87 (2286)    |
+|    reward_d_2_pos       | 0.484 +/- 0.88 (213)     |
+|    reward_d_3_pos       | 0.478 +/- 0.88 (230)     |
+|    reward_d_4_pos       | 0.441 +/- 0.90 (136)     |
+|    reward_d_unknown_neg | 0.988 +/- 0.16 (3093)    |
+|    reward_neg           | 0.988 +/- 0.16 (3093)    |
+|    reward_pos           | 0.483 +/- 0.88 (2865)    |
+|    success_rate         | 0.360                    |
+|    time/elapsed         | 99                       |
+|    time/fps             | 330                      |
+|    total_timesteps      | 32768                    |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.77s. FPS: 8702.49
+Epoch 1/5. 
+Losses: total 0.06740, value 0.17331, policy 0.00070, entropy -0.00039, approx_kl 0.01151 clip_fraction 0.00128. 
+Epoch 2/5. 
+Losses: total 0.05195, value 0.13584, policy 0.00077, entropy -0.00037, approx_kl 0.01712 clip_fraction 0.00154. 
+Epoch 3/5. 
+Losses: total 0.03730, value 0.11745, policy 0.00072, entropy -0.00037, approx_kl 0.02873 clip_fraction 0.00178. 
+Epoch 4/5. 
+Losses: total 0.03563, value 0.10601, policy 0.00074, entropy -0.00035, approx_kl 0.05389 clip_fraction 0.00209. 
+Epoch 5/5. 
+Losses: total 0.03907, value 0.09780, policy 0.00076, entropy -0.00032, approx_kl 0.07531 clip_fraction 0.00224. 
+[PPO] Training completed in 22.99s
+[Metrics] Reward (train): current=0.728, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.410                    |
+|    ep_rew_mean          | 0.728                    |
+|    explained_variance   | 0.623                    |
+|    len                  | 5.410 +/- 7.25 (11784)   |
+|    len_d_1_pos          | 5.207 +/- 7.49 (4509)    |
+|    len_d_2_pos          | 4.815 +/- 7.15 (427)     |
+|    len_d_3_pos          | 5.310 +/- 7.60 (429)     |
+|    len_d_4_pos          | 4.961 +/- 7.31 (282)     |
+|    len_d_unknown_neg    | 5.627 +/- 7.04 (6137)    |
+|    len_neg              | 5.627 +/- 7.04 (6137)    |
+|    len_pos              | 5.173 +/- 7.47 (5647)    |
+|    proven_d_1_pos       | 0.723 +/- 0.45 (4509)    |
+|    proven_d_2_pos       | 0.754 +/- 0.43 (427)     |
+|    proven_d_3_pos       | 0.720 +/- 0.45 (429)     |
+|    proven_d_4_pos       | 0.723 +/- 0.45 (282)     |
+|    proven_d_unknown_neg | 0.007 +/- 0.09 (6137)    |
+|    proven_neg           | 0.007 +/- 0.09 (6137)    |
+|    proven_pos           | 0.725 +/- 0.45 (5647)    |
+|    reward               | 0.728 +/- 0.69 (11784)   |
+|    reward_d_1_pos       | 0.445 +/- 0.90 (4509)    |
+|    reward_d_2_pos       | 0.508 +/- 0.86 (427)     |
+|    reward_d_3_pos       | 0.441 +/- 0.90 (429)     |
+|    reward_d_4_pos       | 0.447 +/- 0.89 (282)     |
+|    reward_d_unknown_neg | 0.985 +/- 0.17 (6137)    |
+|    reward_neg           | 0.985 +/- 0.17 (6137)    |
+|    reward_pos           | 0.450 +/- 0.89 (5647)    |
+|    success_rate         | 0.351                    |
+|    time/elapsed         | 126                      |
+|    time/fps             | 1221                     |
+|    total_timesteps      | 65536                    |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.85s. FPS: 8520.97
+Epoch 1/5. 
+Losses: total 0.06470, value 0.17569, policy 0.00098, entropy -0.00045, approx_kl 0.01025 clip_fraction 0.00101. 
+Epoch 2/5. 
+Losses: total 0.05230, value 0.13997, policy 0.00132, entropy -0.00043, approx_kl 0.01486 clip_fraction 0.00124. 
+Epoch 3/5. 
+Losses: total 0.03881, value 0.12139, policy 0.00098, entropy -0.00040, approx_kl 0.03012 clip_fraction 0.00148. 
+Epoch 4/5. 
+Losses: total 0.04167, value 0.10956, policy 0.00078, entropy -0.00040, approx_kl 0.03968 clip_fraction 0.00166. 
+Epoch 5/5. 
+Losses: total 0.02985, value 0.10123, policy 0.00066, entropy -0.00037, approx_kl 0.04285 clip_fraction 0.00170. 
+[PPO] Training completed in 23.09s
+[Metrics] Reward (train): current=0.726, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.480                    |
+|    ep_rew_mean          | 0.726                    |
+|    explained_variance   | 0.620                    |
+|    len                  | 5.480 +/- 7.32 (17527)   |
+|    len_d_1_pos          | 5.267 +/- 7.55 (6696)    |
+|    len_d_2_pos          | 5.341 +/- 7.60 (621)     |
+|    len_d_3_pos          | 5.194 +/- 7.56 (635)     |
+|    len_d_4_pos          | 5.128 +/- 7.48 (414)     |
+|    len_d_unknown_neg    | 5.681 +/- 7.09 (9161)    |
+|    len_neg              | 5.681 +/- 7.09 (9161)    |
+|    len_pos              | 5.260 +/- 7.55 (8366)    |
+|    proven_d_1_pos       | 0.720 +/- 0.45 (6696)    |
+|    proven_d_2_pos       | 0.731 +/- 0.44 (621)     |
+|    proven_d_3_pos       | 0.726 +/- 0.45 (635)     |
+|    proven_d_4_pos       | 0.725 +/- 0.45 (414)     |
+|    proven_d_unknown_neg | 0.007 +/- 0.09 (9161)    |
+|    proven_neg           | 0.007 +/- 0.09 (9161)    |
+|    proven_pos           | 0.721 +/- 0.45 (8366)    |
+|    reward               | 0.726 +/- 0.69 (17527)   |
+|    reward_d_1_pos       | 0.440 +/- 0.90 (6696)    |
+|    reward_d_2_pos       | 0.462 +/- 0.89 (621)     |
+|    reward_d_3_pos       | 0.452 +/- 0.89 (635)     |
+|    reward_d_4_pos       | 0.449 +/- 0.89 (414)     |
+|    reward_d_unknown_neg | 0.985 +/- 0.17 (9161)    |
+|    reward_neg           | 0.985 +/- 0.17 (9161)    |
+|    reward_pos           | 0.443 +/- 0.90 (8366)    |
+|    success_rate         | 0.348                    |
+|    time/elapsed         | 153                      |
+|    time/fps             | 1211                     |
+|    total_timesteps      | 98304                    |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.78s. FPS: 8674.63
+Epoch 1/5. 
+Losses: total 0.07107, value 0.18397, policy 0.00034, entropy -0.00053, approx_kl 0.01701 clip_fraction 0.00165. 
+Epoch 2/5. 
+Losses: total 0.05031, value 0.14379, policy 0.00026, entropy -0.00048, approx_kl 0.02823 clip_fraction 0.00168. 
+Epoch 3/5. 
+Losses: total 0.04559, value 0.12337, policy 0.00027, entropy -0.00046, approx_kl 0.03583 clip_fraction 0.00175. 
+Epoch 4/5. 
+Losses: total 0.03351, value 0.11044, policy 0.00024, entropy -0.00041, approx_kl 0.05169 clip_fraction 0.00191. 
+Epoch 5/5. 
+Losses: total 0.03610, value 0.10128, policy 0.00023, entropy -0.00040, approx_kl 0.06367 clip_fraction 0.00204. 
+[PPO] Training completed in 23.16s
+[Metrics] Reward (train): current=0.728, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.490                    |
+|    ep_rew_mean          | 0.728                    |
+|    explained_variance   | 0.602                    |
+|    len                  | 5.490 +/- 7.33 (23373)   |
+|    len_d_1_pos          | 5.250 +/- 7.55 (8878)    |
+|    len_d_2_pos          | 5.322 +/- 7.61 (833)     |
+|    len_d_3_pos          | 5.170 +/- 7.54 (866)     |
+|    len_d_4_pos          | 5.163 +/- 7.48 (566)     |
+|    len_d_unknown_neg    | 5.715 +/- 7.12 (12230)   |
+|    len_neg              | 5.715 +/- 7.12 (12230)   |
+|    len_pos              | 5.245 +/- 7.55 (11143)   |
+|    proven_d_1_pos       | 0.721 +/- 0.45 (8878)    |
+|    proven_d_2_pos       | 0.729 +/- 0.44 (833)     |
+|    proven_d_3_pos       | 0.727 +/- 0.45 (866)     |
+|    proven_d_4_pos       | 0.721 +/- 0.45 (566)     |
+|    proven_d_unknown_neg | 0.006 +/- 0.08 (12230)   |
+|    proven_neg           | 0.006 +/- 0.08 (12230)   |
+|    proven_pos           | 0.722 +/- 0.45 (11143)   |
+|    reward               | 0.728 +/- 0.69 (23373)   |
+|    reward_d_1_pos       | 0.442 +/- 0.90 (8878)    |
+|    reward_d_2_pos       | 0.457 +/- 0.89 (833)     |
+|    reward_d_3_pos       | 0.455 +/- 0.89 (866)     |
+|    reward_d_4_pos       | 0.442 +/- 0.90 (566)     |
+|    reward_d_unknown_neg | 0.987 +/- 0.16 (12230)   |
+|    reward_neg           | 0.987 +/- 0.16 (12230)   |
+|    reward_pos           | 0.444 +/- 0.90 (11143)   |
+|    success_rate         | 0.347                    |
+|    time/elapsed         | 180                      |
+|    time/fps             | 1211                     |
+|    total_timesteps      | 131072                   |
+----------------------------------------------------
+
+Evaluating 100 queries and 10 negatives
+Chunk 0-100
+  Took: 3.19s | Rolling MRR: 0.6046 | ms/cand: 2.90
+[Eval] Took 3.19 seconds
+
+[Ranking] MRR: current=0.605, best=0.605 (iter 4)
+----------------------------------------------------
+| eval/                   |                          |
+|    Hits@1               | 0.485                    |
+|    Hits@10              | 0.920                    |
+|    Hits@3               | 0.620                    |
+|    MRR                  | 0.605                    |
+|    len_d_-1_pos         | 11.333                   |
+|    len_d_1_pos          | 1.977                    |
+|    len_d_2_pos          | 17.500                   |
+|    len_d_3_pos          | 20.000                   |
+|    len_d_4_pos          | 20.000                   |
+|    len_neg              | 7.695                    |
+|    len_pos              | 7.810                    |
+|    mrr_mean             | 0.605                    |
+|    proven_d_-1_pos      | 0.021                    |
+|    proven_d_1_pos       | 0.932                    |
+|    proven_d_2_pos       | 0.000                    |
+|    proven_d_3_pos       | 0.000                    |
+|    proven_d_4_pos       | 0.000                    |
+|    proven_neg           | 0.007                    |
+|    proven_pos           | 0.420                    |
+|    reward_d_-1_pos      | 0.021                    |
+|    reward_d_1_pos       | 0.932                    |
+|    reward_d_2_pos       | 0.000                    |
+|    reward_d_3_pos       | 0.000                    |
+|    reward_d_4_pos       | 0.000                    |
+|    reward_label_neg     | 0.007                    |
+|    reward_label_pos     | 0.420                    |
+----------------------------------------------------
+
+[Checkpoint] New best eval model saved to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/best_model_eval_2026_01_08_01_42_55.pt (mrr_mean=0.6046)
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.87s. FPS: 8467.33
+Epoch 1/5. 
+Losses: total 0.09230, value 0.26715, policy 0.00023, entropy -0.00055, approx_kl 0.01619 clip_fraction 0.00165. 
+Epoch 2/5. 
+Losses: total 0.06262, value 0.20429, policy 0.00016, entropy -0.00048, approx_kl 0.03531 clip_fraction 0.00220. 
+Epoch 3/5. 
+Losses: total 0.04847, value 0.16987, policy 0.00009, entropy -0.00047, approx_kl 0.04267 clip_fraction 0.00243. 
+Epoch 4/5. 
+Losses: total 0.03879, value 0.14824, policy 0.00005, entropy -0.00045, approx_kl 0.04844 clip_fraction 0.00258. 
+Epoch 5/5. 
+Losses: total 0.04006, value 0.13323, policy -0.00003, entropy -0.00043, approx_kl 0.05788 clip_fraction 0.00278. 
+[PPO] Training completed in 23.12s
+[Metrics] Reward (train): current=0.726, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.535                    |
+|    ep_rew_mean          | 0.726                    |
+|    explained_variance   | 0.400                    |
+|    len                  | 5.535 +/- 7.36 (29052)   |
+|    len_d_1_pos          | 5.282 +/- 7.56 (11010)   |
+|    len_d_2_pos          | 5.279 +/- 7.59 (1034)    |
+|    len_d_3_pos          | 5.176 +/- 7.54 (1079)    |
+|    len_d_4_pos          | 5.179 +/- 7.50 (698)     |
+|    len_d_unknown_neg    | 5.778 +/- 7.17 (15231)   |
+|    len_neg              | 5.778 +/- 7.17 (15231)   |
+|    len_pos              | 5.269 +/- 7.56 (13821)   |
+|    proven_d_1_pos       | 0.719 +/- 0.45 (11010)   |
+|    proven_d_2_pos       | 0.726 +/- 0.45 (1034)    |
+|    proven_d_3_pos       | 0.726 +/- 0.45 (1079)    |
+|    proven_d_4_pos       | 0.721 +/- 0.45 (698)     |
+|    proven_d_unknown_neg | 0.007 +/- 0.08 (15231)   |
+|    proven_neg           | 0.007 +/- 0.08 (15231)   |
+|    proven_pos           | 0.720 +/- 0.45 (13821)   |
+|    reward               | 0.726 +/- 0.69 (29052)   |
+|    reward_d_1_pos       | 0.437 +/- 0.90 (11010)   |
+|    reward_d_2_pos       | 0.453 +/- 0.89 (1034)    |
+|    reward_d_3_pos       | 0.451 +/- 0.89 (1079)    |
+|    reward_d_4_pos       | 0.441 +/- 0.90 (698)     |
+|    reward_d_unknown_neg | 0.986 +/- 0.16 (15231)   |
+|    reward_neg           | 0.986 +/- 0.16 (15231)   |
+|    reward_pos           | 0.440 +/- 0.90 (13821)   |
+|    success_rate         | 0.346                    |
+|    time/elapsed         | 210                      |
+|    time/fps             | 1079                     |
+|    total_timesteps      | 163840                   |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.77s. FPS: 8685.82
+Epoch 1/5. 
+Losses: total 0.10480, value 0.27467, policy 0.00024, entropy -0.00030, approx_kl 0.00716 clip_fraction 0.00095. 
+Epoch 2/5. 
+Losses: total 0.06896, value 0.21226, policy 0.00038, entropy -0.00035, approx_kl 0.03053 clip_fraction 0.00151. 
+Epoch 3/5. 
+Losses: total 0.05134, value 0.17623, policy 0.00035, entropy -0.00032, approx_kl 0.03644 clip_fraction 0.00155. 
+Epoch 4/5. 
+Losses: total 0.03773, value 0.15308, policy 0.00031, entropy -0.00030, approx_kl 0.03997 clip_fraction 0.00162. 
+Epoch 5/5. 
+Losses: total 0.03411, value 0.13716, policy 0.00032, entropy -0.00033, approx_kl 0.04745 clip_fraction 0.00182. 
+[PPO] Training completed in 22.98s
+[Metrics] Reward (train): current=0.729, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.522                    |
+|    ep_rew_mean          | 0.729                    |
+|    explained_variance   | 0.381                    |
+|    len                  | 5.522 +/- 7.35 (34948)   |
+|    len_d_1_pos          | 5.239 +/- 7.54 (13235)   |
+|    len_d_2_pos          | 5.266 +/- 7.58 (1262)    |
+|    len_d_3_pos          | 5.120 +/- 7.52 (1291)    |
+|    len_d_4_pos          | 5.177 +/- 7.49 (837)     |
+|    len_d_unknown_neg    | 5.788 +/- 7.17 (18323)   |
+|    len_neg              | 5.788 +/- 7.17 (18323)   |
+|    len_pos              | 5.229 +/- 7.54 (16625)   |
+|    proven_d_1_pos       | 0.721 +/- 0.45 (13235)   |
+|    proven_d_2_pos       | 0.722 +/- 0.45 (1262)    |
+|    proven_d_3_pos       | 0.730 +/- 0.44 (1291)    |
+|    proven_d_4_pos       | 0.724 +/- 0.45 (837)     |
+|    proven_d_unknown_neg | 0.007 +/- 0.08 (18323)   |
+|    proven_neg           | 0.007 +/- 0.08 (18323)   |
+|    proven_pos           | 0.722 +/- 0.45 (16625)   |
+|    reward               | 0.729 +/- 0.68 (34948)   |
+|    reward_d_1_pos       | 0.443 +/- 0.90 (13235)   |
+|    reward_d_2_pos       | 0.444 +/- 0.90 (1262)    |
+|    reward_d_3_pos       | 0.459 +/- 0.89 (1291)    |
+|    reward_d_4_pos       | 0.448 +/- 0.89 (837)     |
+|    reward_d_unknown_neg | 0.986 +/- 0.16 (18323)   |
+|    reward_neg           | 0.986 +/- 0.16 (18323)   |
+|    reward_pos           | 0.444 +/- 0.90 (16625)   |
+|    success_rate         | 0.347                    |
+|    time/elapsed         | 237                      |
+|    time/fps             | 1220                     |
+|    total_timesteps      | 196608                   |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.85s. FPS: 8520.80
+Epoch 1/5. 
+Losses: total 0.09651, value 0.27646, policy 0.00050, entropy -0.00069, approx_kl 0.04830 clip_fraction 0.00256. 
+Epoch 2/5. 
+Losses: total 0.05598, value 0.21441, policy 0.00039, entropy -0.00066, approx_kl 0.05444 clip_fraction 0.00272. 
+Epoch 3/5. 
+Losses: total 0.04922, value 0.17792, policy 0.00032, entropy -0.00057, approx_kl 0.06989 clip_fraction 0.00285. 
+Epoch 4/5. 
+Losses: total 0.04516, value 0.15465, policy 0.00029, entropy -0.00053, approx_kl 0.09246 clip_fraction 0.00300. 
+Epoch 5/5. 
+Losses: total 0.03615, value 0.13852, policy 0.00024, entropy -0.00055, approx_kl 0.10384 clip_fraction 0.00319. 
+[PPO] Training completed in 23.38s
+[Metrics] Reward (train): current=0.728, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.507                    |
+|    ep_rew_mean          | 0.728                    |
+|    explained_variance   | 0.393                    |
+|    len                  | 5.507 +/- 7.35 (40896)   |
+|    len_d_1_pos          | 5.234 +/- 7.54 (15487)   |
+|    len_d_2_pos          | 5.285 +/- 7.61 (1479)    |
+|    len_d_3_pos          | 5.193 +/- 7.57 (1515)    |
+|    len_d_4_pos          | 5.062 +/- 7.43 (988)     |
+|    len_d_unknown_neg    | 5.763 +/- 7.16 (21427)   |
+|    len_neg              | 5.763 +/- 7.16 (21427)   |
+|    len_pos              | 5.226 +/- 7.54 (19469)   |
+|    proven_d_1_pos       | 0.722 +/- 0.45 (15487)   |
+|    proven_d_2_pos       | 0.721 +/- 0.45 (1479)    |
+|    proven_d_3_pos       | 0.724 +/- 0.45 (1515)    |
+|    proven_d_4_pos       | 0.731 +/- 0.44 (988)     |
+|    proven_d_unknown_neg | 0.007 +/- 0.08 (21427)   |
+|    proven_neg           | 0.007 +/- 0.08 (21427)   |
+|    proven_pos           | 0.722 +/- 0.45 (19469)   |
+|    reward               | 0.728 +/- 0.69 (40896)   |
+|    reward_d_1_pos       | 0.443 +/- 0.90 (15487)   |
+|    reward_d_2_pos       | 0.442 +/- 0.90 (1479)    |
+|    reward_d_3_pos       | 0.448 +/- 0.89 (1515)    |
+|    reward_d_4_pos       | 0.462 +/- 0.89 (988)     |
+|    reward_d_unknown_neg | 0.987 +/- 0.16 (21427)   |
+|    reward_neg           | 0.987 +/- 0.16 (21427)   |
+|    reward_pos           | 0.444 +/- 0.90 (19469)   |
+|    success_rate         | 0.347                    |
+|    time/elapsed         | 264                      |
+|    time/fps             | 1192                     |
+|    total_timesteps      | 229376                   |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.84s. FPS: 8529.64
+Epoch 1/5. 
+Losses: total 0.11063, value 0.28128, policy -0.00004, entropy -0.00039, approx_kl 0.00894 clip_fraction 0.00113. 
+Epoch 2/5. 
+Losses: total 0.08062, value 0.22378, policy 0.00004, entropy -0.00040, approx_kl 0.01936 clip_fraction 0.00153. 
+Epoch 3/5. 
+Losses: total 0.04975, value 0.18901, policy 0.00006, entropy -0.00042, approx_kl 0.02341 clip_fraction 0.00160. 
+Epoch 4/5. 
+Losses: total 0.05378, value 0.16544, policy 0.00003, entropy -0.00041, approx_kl 0.03034 clip_fraction 0.00172. 
+Epoch 5/5. 
+Losses: total 0.03672, value 0.14858, policy -0.00001, entropy -0.00037, approx_kl 0.03695 clip_fraction 0.00179. 
+[PPO] Training completed in 22.99s
+[Metrics] Reward (train): current=0.729, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.513                    |
+|    ep_rew_mean          | 0.729                    |
+|    explained_variance   | 0.400                    |
+|    len                  | 5.513 +/- 7.35 (46716)   |
+|    len_d_1_pos          | 5.217 +/- 7.53 (17645)   |
+|    len_d_2_pos          | 5.305 +/- 7.64 (1707)    |
+|    len_d_3_pos          | 5.234 +/- 7.57 (1745)    |
+|    len_d_4_pos          | 5.117 +/- 7.48 (1124)    |
+|    len_d_unknown_neg    | 5.778 +/- 7.16 (24495)   |
+|    len_neg              | 5.778 +/- 7.16 (24495)   |
+|    len_pos              | 5.220 +/- 7.54 (22221)   |
+|    proven_d_1_pos       | 0.723 +/- 0.45 (17645)   |
+|    proven_d_2_pos       | 0.720 +/- 0.45 (1707)    |
+|    proven_d_3_pos       | 0.718 +/- 0.45 (1745)    |
+|    proven_d_4_pos       | 0.730 +/- 0.44 (1124)    |
+|    proven_d_unknown_neg | 0.007 +/- 0.08 (24495)   |
+|    proven_neg           | 0.007 +/- 0.08 (24495)   |
+|    proven_pos           | 0.722 +/- 0.45 (22221)   |
+|    reward               | 0.729 +/- 0.69 (46716)   |
+|    reward_d_1_pos       | 0.445 +/- 0.90 (17645)   |
+|    reward_d_2_pos       | 0.440 +/- 0.90 (1707)    |
+|    reward_d_3_pos       | 0.436 +/- 0.90 (1745)    |
+|    reward_d_4_pos       | 0.459 +/- 0.89 (1124)    |
+|    reward_d_unknown_neg | 0.986 +/- 0.17 (24495)   |
+|    reward_neg           | 0.986 +/- 0.17 (24495)   |
+|    reward_pos           | 0.445 +/- 0.90 (22221)   |
+|    success_rate         | 0.347                    |
+|    time/elapsed         | 291                      |
+|    time/fps             | 1214                     |
+|    total_timesteps      | 262144                   |
+----------------------------------------------------
+
+Evaluating 100 queries and 10 negatives
+Chunk 0-100
+  Took: 3.26s | Rolling MRR: 0.6014 | ms/cand: 2.97
+[Eval] Took 3.27 seconds
+
+[Ranking] MRR: current=0.601, best=0.605 (iter 4)
+----------------------------------------------------
+| eval/                   |                          |
+|    Hits@1               | 0.485                    |
+|    Hits@10              | 0.940                    |
+|    Hits@3               | 0.620                    |
+|    MRR                  | 0.601                    |
+|    len_d_-1_pos         | 12.062                   |
+|    len_d_1_pos          | 1.977                    |
+|    len_d_2_pos          | 17.500                   |
+|    len_d_3_pos          | 20.000                   |
+|    len_d_4_pos          | 20.000                   |
+|    len_neg              | 7.684                    |
+|    len_pos              | 8.160                    |
+|    mrr_mean             | 0.601                    |
+|    proven_d_-1_pos      | 0.021                    |
+|    proven_d_1_pos       | 0.932                    |
+|    proven_d_2_pos       | 0.000                    |
+|    proven_d_3_pos       | 0.000                    |
+|    proven_d_4_pos       | 0.000                    |
+|    proven_neg           | 0.008                    |
+|    proven_pos           | 0.420                    |
+|    reward_d_-1_pos      | 0.021                    |
+|    reward_d_1_pos       | 0.932                    |
+|    reward_d_2_pos       | 0.000                    |
+|    reward_d_3_pos       | 0.000                    |
+|    reward_d_4_pos       | 0.000                    |
+|    reward_label_neg     | 0.008                    |
+|    reward_label_pos     | 0.420                    |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.85s. FPS: 8509.09
+Epoch 1/5. 
+Losses: total 0.11464, value 0.28385, policy 0.00041, entropy -0.00053, approx_kl 0.00566 clip_fraction 0.00125. 
+Epoch 2/5. 
+Losses: total 0.06739, value 0.22894, policy 0.00040, entropy -0.00046, approx_kl 0.02283 clip_fraction 0.00148. 
+Epoch 3/5. 
+Losses: total 0.05499, value 0.19253, policy 0.00041, entropy -0.00042, approx_kl 0.03028 clip_fraction 0.00158. 
+Epoch 4/5. 
+Losses: total 0.04901, value 0.16851, policy 0.00037, entropy -0.00041, approx_kl 0.03544 clip_fraction 0.00171. 
+Epoch 5/5. 
+Losses: total 0.03833, value 0.15137, policy 0.00033, entropy -0.00041, approx_kl 0.04447 clip_fraction 0.00186. 
+[PPO] Training completed in 23.34s
+[Metrics] Reward (train): current=0.728, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.530                    |
+|    ep_rew_mean          | 0.728                    |
+|    explained_variance   | 0.405                    |
+|    len                  | 5.530 +/- 7.36 (52427)   |
+|    len_d_1_pos          | 5.272 +/- 7.57 (19774)   |
+|    len_d_2_pos          | 5.266 +/- 7.62 (1918)    |
+|    len_d_3_pos          | 5.274 +/- 7.60 (1976)    |
+|    len_d_4_pos          | 5.067 +/- 7.45 (1263)    |
+|    len_d_unknown_neg    | 5.773 +/- 7.16 (27496)   |
+|    len_neg              | 5.773 +/- 7.16 (27496)   |
+|    len_pos              | 5.261 +/- 7.57 (24931)   |
+|    proven_d_1_pos       | 0.720 +/- 0.45 (19774)   |
+|    proven_d_2_pos       | 0.724 +/- 0.45 (1918)    |
+|    proven_d_3_pos       | 0.718 +/- 0.45 (1976)    |
+|    proven_d_4_pos       | 0.733 +/- 0.44 (1263)    |
+|    proven_d_unknown_neg | 0.007 +/- 0.08 (27496)   |
+|    proven_neg           | 0.007 +/- 0.08 (27496)   |
+|    proven_pos           | 0.721 +/- 0.45 (24931)   |
+|    reward               | 0.728 +/- 0.69 (52427)   |
+|    reward_d_1_pos       | 0.441 +/- 0.90 (19774)   |
+|    reward_d_2_pos       | 0.448 +/- 0.89 (1918)    |
+|    reward_d_3_pos       | 0.436 +/- 0.90 (1976)    |
+|    reward_d_4_pos       | 0.466 +/- 0.88 (1263)    |
+|    reward_d_unknown_neg | 0.987 +/- 0.16 (27496)   |
+|    reward_neg           | 0.987 +/- 0.16 (27496)   |
+|    reward_pos           | 0.442 +/- 0.90 (24931)   |
+|    success_rate         | 0.346                    |
+|    time/elapsed         | 322                      |
+|    time/fps             | 1071                     |
+|    total_timesteps      | 294912                   |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.96s. FPS: 8282.88
+Epoch 1/5. 
+Losses: total 0.10874, value 0.27079, policy 0.00026, entropy -0.00034, approx_kl 0.00402 clip_fraction 0.00089. 
+Epoch 2/5. 
+Losses: total 0.09045, value 0.22055, policy 0.00018, entropy -0.00033, approx_kl 0.00513 clip_fraction 0.00096. 
+Epoch 3/5. 
+Losses: total 0.05399, value 0.18868, policy 0.00019, entropy -0.00036, approx_kl 0.00959 clip_fraction 0.00115. 
+Epoch 4/5. 
+Losses: total 0.04880, value 0.16687, policy 0.00017, entropy -0.00034, approx_kl 0.01379 clip_fraction 0.00130. 
+Epoch 5/5. 
+Losses: total 0.04768, value 0.15097, policy 0.00014, entropy -0.00033, approx_kl 0.01673 clip_fraction 0.00135. 
+[PPO] Training completed in 23.28s
+[Metrics] Reward (train): current=0.727, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.555                    |
+|    ep_rew_mean          | 0.727                    |
+|    explained_variance   | 0.447                    |
+|    len                  | 5.555 +/- 7.38 (57996)   |
+|    len_d_1_pos          | 5.307 +/- 7.59 (21841)   |
+|    len_d_2_pos          | 5.246 +/- 7.60 (2141)    |
+|    len_d_3_pos          | 5.383 +/- 7.67 (2188)    |
+|    len_d_4_pos          | 5.026 +/- 7.43 (1408)    |
+|    len_d_unknown_neg    | 5.791 +/- 7.18 (30418)   |
+|    len_neg              | 5.791 +/- 7.18 (30418)   |
+|    len_pos              | 5.294 +/- 7.59 (27578)   |
+|    proven_d_1_pos       | 0.719 +/- 0.45 (21841)   |
+|    proven_d_2_pos       | 0.724 +/- 0.45 (2141)    |
+|    proven_d_3_pos       | 0.714 +/- 0.45 (2188)    |
+|    proven_d_4_pos       | 0.739 +/- 0.44 (1408)    |
+|    proven_d_unknown_neg | 0.007 +/- 0.08 (30418)   |
+|    proven_neg           | 0.007 +/- 0.08 (30418)   |
+|    proven_pos           | 0.720 +/- 0.45 (27578)   |
+|    reward               | 0.727 +/- 0.69 (57996)   |
+|    reward_d_1_pos       | 0.438 +/- 0.90 (21841)   |
+|    reward_d_2_pos       | 0.449 +/- 0.89 (2141)    |
+|    reward_d_3_pos       | 0.428 +/- 0.90 (2188)    |
+|    reward_d_4_pos       | 0.479 +/- 0.88 (1408)    |
+|    reward_d_unknown_neg | 0.987 +/- 0.16 (30418)   |
+|    reward_neg           | 0.987 +/- 0.16 (30418)   |
+|    reward_pos           | 0.440 +/- 0.90 (27578)   |
+|    success_rate         | 0.346                    |
+|    time/elapsed         | 349                      |
+|    time/fps             | 1196                     |
+|    total_timesteps      | 327680                   |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.75s. FPS: 8748.72
+Epoch 1/5. 
+Losses: total 0.10356, value 0.29573, policy 0.00036, entropy -0.00069, approx_kl 0.00662 clip_fraction 0.00125. 
+Epoch 2/5. 
+Losses: total 0.09057, value 0.24810, policy 0.00038, entropy -0.00062, approx_kl 0.01876 clip_fraction 0.00175. 
+Epoch 3/5. 
+Losses: total 0.06572, value 0.21521, policy 0.00031, entropy -0.00054, approx_kl 0.02755 clip_fraction 0.00205. 
+Epoch 4/5. 
+Losses: total 0.05109, value 0.19064, policy 0.00026, entropy -0.00049, approx_kl 0.03428 clip_fraction 0.00222. 
+Epoch 5/5. 
+Losses: total 0.04290, value 0.17231, policy 0.00024, entropy -0.00047, approx_kl 0.04750 clip_fraction 0.00248. 
+[PPO] Training completed in 22.90s
+[Metrics] Reward (train): current=0.728, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.557                    |
+|    ep_rew_mean          | 0.728                    |
+|    explained_variance   | 0.389                    |
+|    len                  | 5.557 +/- 7.38 (63814)   |
+|    len_d_1_pos          | 5.294 +/- 7.58 (24030)   |
+|    len_d_2_pos          | 5.258 +/- 7.61 (2358)    |
+|    len_d_3_pos          | 5.310 +/- 7.61 (2438)    |
+|    len_d_4_pos          | 5.168 +/- 7.53 (1520)    |
+|    len_d_unknown_neg    | 5.803 +/- 7.19 (33468)   |
+|    len_neg              | 5.803 +/- 7.19 (33468)   |
+|    len_pos              | 5.286 +/- 7.59 (30346)   |
+|    proven_d_1_pos       | 0.721 +/- 0.45 (24030)   |
+|    proven_d_2_pos       | 0.724 +/- 0.45 (2358)    |
+|    proven_d_3_pos       | 0.718 +/- 0.45 (2438)    |
+|    proven_d_4_pos       | 0.732 +/- 0.44 (1520)    |
+|    proven_d_unknown_neg | 0.006 +/- 0.08 (33468)   |
+|    proven_neg           | 0.006 +/- 0.08 (33468)   |
+|    proven_pos           | 0.721 +/- 0.45 (30346)   |
+|    reward               | 0.728 +/- 0.69 (63814)   |
+|    reward_d_1_pos       | 0.441 +/- 0.90 (24030)   |
+|    reward_d_2_pos       | 0.448 +/- 0.89 (2358)    |
+|    reward_d_3_pos       | 0.436 +/- 0.90 (2438)    |
+|    reward_d_4_pos       | 0.463 +/- 0.89 (1520)    |
+|    reward_d_unknown_neg | 0.987 +/- 0.16 (33468)   |
+|    reward_neg           | 0.987 +/- 0.16 (33468)   |
+|    reward_pos           | 0.442 +/- 0.90 (30346)   |
+|    success_rate         | 0.346                    |
+|    time/elapsed         | 376                      |
+|    time/fps             | 1222                     |
+|    total_timesteps      | 360448                   |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.85s. FPS: 8510.81
+Epoch 1/5. 
+Losses: total 0.11579, value 0.29328, policy 0.00048, entropy -0.00075, approx_kl 0.00261 clip_fraction 0.00119. 
+Epoch 2/5. 
+Losses: total 0.08450, value 0.24961, policy 0.00023, entropy -0.00065, approx_kl 0.01410 clip_fraction 0.00156. 
+Epoch 3/5. 
+Losses: total 0.06449, value 0.21893, policy 0.00008, entropy -0.00061, approx_kl 0.01991 clip_fraction 0.00182. 
+Epoch 4/5. 
+Losses: total 0.05762, value 0.19659, policy 0.00001, entropy -0.00058, approx_kl 0.02337 clip_fraction 0.00198. 
+Epoch 5/5. 
+Losses: total 0.04688, value 0.17933, policy -0.00006, entropy -0.00054, approx_kl 0.02782 clip_fraction 0.00211. 
+[PPO] Training completed in 23.13s
+[Metrics] Reward (train): current=0.729, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.551                    |
+|    ep_rew_mean          | 0.729                    |
+|    explained_variance   | 0.433                    |
+|    len                  | 5.551 +/- 7.38 (69719)   |
+|    len_d_1_pos          | 5.287 +/- 7.58 (26255)   |
+|    len_d_2_pos          | 5.327 +/- 7.65 (2551)    |
+|    len_d_3_pos          | 5.289 +/- 7.59 (2667)    |
+|    len_d_4_pos          | 5.089 +/- 7.47 (1668)    |
+|    len_d_unknown_neg    | 5.796 +/- 7.18 (36578)   |
+|    len_neg              | 5.796 +/- 7.18 (36578)   |
+|    len_pos              | 5.280 +/- 7.58 (33141)   |
+|    proven_d_1_pos       | 0.721 +/- 0.45 (26255)   |
+|    proven_d_2_pos       | 0.720 +/- 0.45 (2551)    |
+|    proven_d_3_pos       | 0.721 +/- 0.45 (2667)    |
+|    proven_d_4_pos       | 0.736 +/- 0.44 (1668)    |
+|    proven_d_unknown_neg | 0.006 +/- 0.08 (36578)   |
+|    proven_neg           | 0.006 +/- 0.08 (36578)   |
+|    proven_pos           | 0.722 +/- 0.45 (33141)   |
+|    reward               | 0.729 +/- 0.68 (69719)   |
+|    reward_d_1_pos       | 0.442 +/- 0.90 (26255)   |
+|    reward_d_2_pos       | 0.440 +/- 0.90 (2551)    |
+|    reward_d_3_pos       | 0.441 +/- 0.90 (2667)    |
+|    reward_d_4_pos       | 0.472 +/- 0.88 (1668)    |
+|    reward_d_unknown_neg | 0.987 +/- 0.16 (36578)   |
+|    reward_neg           | 0.987 +/- 0.16 (36578)   |
+|    reward_pos           | 0.444 +/- 0.90 (33141)   |
+|    success_rate         | 0.346                    |
+|    time/elapsed         | 403                      |
+|    time/fps             | 1207                     |
+|    total_timesteps      | 393216                   |
+----------------------------------------------------
+
+Evaluating 100 queries and 10 negatives
+Chunk 0-100
+  Took: 3.21s | Rolling MRR: 0.6076 | ms/cand: 2.92
+[Eval] Took 3.22 seconds
+
+[Ranking] MRR: current=0.608, best=0.608 (iter 12)
+----------------------------------------------------
+| eval/                   |                          |
+|    Hits@1               | 0.485                    |
+|    Hits@10              | 0.955                    |
+|    Hits@3               | 0.635                    |
+|    MRR                  | 0.608                    |
+|    len_d_-1_pos         | 11.917                   |
+|    len_d_1_pos          | 1.977                    |
+|    len_d_2_pos          | 17.500                   |
+|    len_d_3_pos          | 20.000                   |
+|    len_d_4_pos          | 20.000                   |
+|    len_neg              | 7.689                    |
+|    len_pos              | 8.090                    |
+|    mrr_mean             | 0.608                    |
+|    proven_d_-1_pos      | 0.021                    |
+|    proven_d_1_pos       | 0.932                    |
+|    proven_d_2_pos       | 0.000                    |
+|    proven_d_3_pos       | 0.000                    |
+|    proven_d_4_pos       | 0.000                    |
+|    proven_neg           | 0.010                    |
+|    proven_pos           | 0.420                    |
+|    reward_d_-1_pos      | 0.021                    |
+|    reward_d_1_pos       | 0.932                    |
+|    reward_d_2_pos       | 0.000                    |
+|    reward_d_3_pos       | 0.000                    |
+|    reward_d_4_pos       | 0.000                    |
+|    reward_label_neg     | 0.010                    |
+|    reward_label_pos     | 0.420                    |
+----------------------------------------------------
+
+[Checkpoint] New best eval model saved to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/best_model_eval_2026_01_08_01_42_55.pt (mrr_mean=0.6076)
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 4.08s. FPS: 8024.54
+Epoch 1/5. 
+Losses: total 0.13671, value 0.29958, policy 0.00033, entropy -0.00059, approx_kl 0.00235 clip_fraction 0.00095. 
+Epoch 2/5. 
+Losses: total 0.09038, value 0.25758, policy 0.00026, entropy -0.00054, approx_kl 0.00540 clip_fraction 0.00111. 
+Epoch 3/5. 
+Losses: total 0.08798, value 0.22730, policy 0.00019, entropy -0.00053, approx_kl 0.00941 clip_fraction 0.00126. 
+Epoch 4/5. 
+Losses: total 0.07860, value 0.20466, policy 0.00014, entropy -0.00052, approx_kl 0.01138 clip_fraction 0.00138. 
+Epoch 5/5. 
+Losses: total 0.06169, value 0.18695, policy 0.00007, entropy -0.00052, approx_kl 0.01419 clip_fraction 0.00144. 
+[PPO] Training completed in 23.33s
+[Metrics] Reward (train): current=0.728, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.559                    |
+|    ep_rew_mean          | 0.728                    |
+|    explained_variance   | 0.441                    |
+|    len                  | 5.559 +/- 7.39 (75448)   |
+|    len_d_1_pos          | 5.313 +/- 7.60 (28382)   |
+|    len_d_2_pos          | 5.390 +/- 7.67 (2748)    |
+|    len_d_3_pos          | 5.178 +/- 7.52 (2924)    |
+|    len_d_4_pos          | 5.156 +/- 7.53 (1801)    |
+|    len_d_unknown_neg    | 5.793 +/- 7.18 (39593)   |
+|    len_neg              | 5.793 +/- 7.18 (39593)   |
+|    len_pos              | 5.300 +/- 7.60 (35855)   |
+|    proven_d_1_pos       | 0.720 +/- 0.45 (28382)   |
+|    proven_d_2_pos       | 0.715 +/- 0.45 (2748)    |
+|    proven_d_3_pos       | 0.726 +/- 0.45 (2924)    |
+|    proven_d_4_pos       | 0.732 +/- 0.44 (1801)    |
+|    proven_d_unknown_neg | 0.007 +/- 0.08 (39593)   |
+|    proven_neg           | 0.007 +/- 0.08 (39593)   |
+|    proven_pos           | 0.721 +/- 0.45 (35855)   |
+|    reward               | 0.728 +/- 0.69 (75448)   |
+|    reward_d_1_pos       | 0.440 +/- 0.90 (28382)   |
+|    reward_d_2_pos       | 0.431 +/- 0.90 (2748)    |
+|    reward_d_3_pos       | 0.453 +/- 0.89 (2924)    |
+|    reward_d_4_pos       | 0.465 +/- 0.89 (1801)    |
+|    reward_d_unknown_neg | 0.987 +/- 0.16 (39593)   |
+|    reward_neg           | 0.987 +/- 0.16 (39593)   |
+|    reward_pos           | 0.441 +/- 0.90 (35855)   |
+|    success_rate         | 0.346                    |
+|    time/elapsed         | 434                      |
+|    time/fps             | 1059                     |
+|    total_timesteps      | 425984                   |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.96s. FPS: 8277.62
+Epoch 1/5. 
+Losses: total 0.14706, value 0.30373, policy 0.00025, entropy -0.00071, approx_kl 0.00255 clip_fraction 0.00101. 
+Epoch 2/5. 
+Losses: total 0.11840, value 0.27118, policy 0.00003, entropy -0.00063, approx_kl 0.00391 clip_fraction 0.00124. 
+Epoch 3/5. 
+Losses: total 0.09115, value 0.24602, policy -0.00007, entropy -0.00053, approx_kl 0.00445 clip_fraction 0.00129. 
+Epoch 4/5. 
+Losses: total 0.07603, value 0.22607, policy -0.00014, entropy -0.00050, approx_kl 0.00491 clip_fraction 0.00135. 
+Epoch 5/5. 
+Losses: total 0.06901, value 0.20996, policy -0.00018, entropy -0.00050, approx_kl 0.00538 clip_fraction 0.00141. 
+[PPO] Training completed in 23.25s
+[Metrics] Reward (train): current=0.727, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.567                    |
+|    ep_rew_mean          | 0.727                    |
+|    explained_variance   | 0.440                    |
+|    len                  | 5.567 +/- 7.39 (81116)   |
+|    len_d_1_pos          | 5.315 +/- 7.60 (30574)   |
+|    len_d_2_pos          | 5.461 +/- 7.72 (2929)    |
+|    len_d_3_pos          | 5.193 +/- 7.54 (3121)    |
+|    len_d_4_pos          | 5.183 +/- 7.56 (1913)    |
+|    len_d_unknown_neg    | 5.800 +/- 7.19 (42579)   |
+|    len_neg              | 5.800 +/- 7.19 (42579)   |
+|    len_pos              | 5.310 +/- 7.61 (38537)   |
+|    proven_d_1_pos       | 0.720 +/- 0.45 (30574)   |
+|    proven_d_2_pos       | 0.713 +/- 0.45 (2929)    |
+|    proven_d_3_pos       | 0.725 +/- 0.45 (3121)    |
+|    proven_d_4_pos       | 0.733 +/- 0.44 (1913)    |
+|    proven_d_unknown_neg | 0.006 +/- 0.08 (42579)   |
+|    proven_neg           | 0.006 +/- 0.08 (42579)   |
+|    proven_pos           | 0.720 +/- 0.45 (38537)   |
+|    reward               | 0.727 +/- 0.69 (81116)   |
+|    reward_d_1_pos       | 0.439 +/- 0.90 (30574)   |
+|    reward_d_2_pos       | 0.425 +/- 0.91 (2929)    |
+|    reward_d_3_pos       | 0.451 +/- 0.89 (3121)    |
+|    reward_d_4_pos       | 0.467 +/- 0.88 (1913)    |
+|    reward_d_unknown_neg | 0.987 +/- 0.16 (42579)   |
+|    reward_neg           | 0.987 +/- 0.16 (42579)   |
+|    reward_pos           | 0.440 +/- 0.90 (38537)   |
+|    success_rate         | 0.346                    |
+|    time/elapsed         | 462                      |
+|    time/fps             | 1192                     |
+|    total_timesteps      | 458752                   |
+----------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env/kge_experiments/models/wn18rr-250-128-torchrl/last_model_train_2026_01_08_01_42_55.pt
+[PPO] Rollout collected in 3.91s. FPS: 8386.96
+Epoch 1/5. 
+Losses: total 0.15965, value 0.31339, policy 0.00002, entropy -0.00068, approx_kl 0.00090 clip_fraction 0.00067. 
+Epoch 2/5. 
+Losses: total 0.12301, value 0.29060, policy -0.00003, entropy -0.00067, approx_kl 0.00190 clip_fraction 0.00092. 
+Epoch 3/5. 
+Losses: total 0.12403, value 0.27203, policy -0.00009, entropy -0.00065, approx_kl 0.00372 clip_fraction 0.00111. 
+Epoch 4/5. 
+Losses: total 0.10498, value 0.25630, policy -0.00014, entropy -0.00067, approx_kl 0.00412 clip_fraction 0.00122. 
+Epoch 5/5. 
+Losses: total 0.09326, value 0.24281, policy -0.00018, entropy -0.00068, approx_kl 0.00476 clip_fraction 0.00133. 
+[PPO] Training completed in 23.12s
+[Metrics] Reward (train): current=0.728, best=0.745 (iter 1)
+----------------------------------------------------
+| rollout/                |                          |
+|    ep_len_mean          | 5.559                    |
+|    ep_rew_mean          | 0.728                    |
+|    explained_variance   | 0.443                    |
+|    len                  | 5.559 +/- 7.39 (87065)   |
+|    len_d_1_pos          | 5.306 +/- 7.60 (32827)   |
+|    len_d_2_pos          | 5.423 +/- 7.71 (3145)    |
+|    len_d_3_pos          | 5.165 +/- 7.51 (3353)    |
+|    len_d_4_pos          | 5.183 +/- 7.57 (2038)    |
+|    len_d_unknown_neg    | 5.796 +/- 7.19 (45702)   |
+|    len_neg              | 5.796 +/- 7.19 (45702)   |
+|    len_pos              | 5.298 +/- 7.60 (41363)   |
+|    proven_d_1_pos       | 0.720 +/- 0.45 (32827)   |
+|    proven_d_2_pos       | 0.715 +/- 0.45 (3145)    |
+|    proven_d_3_pos       | 0.727 +/- 0.45 (3353)    |
+|    proven_d_4_pos       | 0.733 +/- 0.44 (2038)    |
+|    proven_d_unknown_neg | 0.006 +/- 0.08 (45702)   |
+|    proven_neg           | 0.006 +/- 0.08 (45702)   |
+|    proven_pos           | 0.721 +/- 0.45 (41363)   |
+|    reward               | 0.728 +/- 0.69 (87065)   |
+|    reward_d_1_pos       | 0.441 +/- 0.90 (32827)   |
+|    reward_d_2_pos       | 0.431 +/- 0.90 (3145)    |
+|    reward_d_3_pos       | 0.454 +/- 0.89 (3353)    |
+|    reward_d_4_pos       | 0.466 +/- 0.88 (2038)    |
+|    reward_d_unknown_neg | 0.987 +/- 0.16 (45702)   |

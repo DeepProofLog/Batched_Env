@@ -47,9 +47,9 @@ from callbacks import (
 )
 
 from utils import seed_all
-from kge_inference import build_kge_inference
-from kge_pbrs import create_pbrs_module, PBRSWrapper
-from kge_neural_bridge import create_neural_bridge
+from kge_module import build_kge_inference
+from kge_module.pbrs import create_pbrs_module, PBRSWrapper
+from kge_module import create_neural_bridge
 
 
 def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str = None):

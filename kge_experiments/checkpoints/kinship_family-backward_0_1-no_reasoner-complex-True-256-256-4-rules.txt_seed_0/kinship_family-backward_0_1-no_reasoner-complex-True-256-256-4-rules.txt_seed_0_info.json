@@ -1,8 +1,0 @@
-{
-  "best_epoch": 54,
-  "best_value": 0.960999071598053,
-  "metric": "val_task_mrr",
-  "timestamp": "2026-01-06T15:20:35.087095",
-  "maximize": true,
-  "train_time": 327.42
-}

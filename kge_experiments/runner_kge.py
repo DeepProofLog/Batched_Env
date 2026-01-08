@@ -30,7 +30,7 @@ if torch.cuda.is_available():
     
 from train import run_experiment
 from config import TrainConfig
-from kge_inference import normalize_backend, default_checkpoint_dir
+from kge_module import normalize_backend, default_checkpoint_dir
 from utils import FileLogger, parse_scalar, coerce_config_value, update_config_value, parse_assignment
 
 
@@ -103,7 +103,7 @@ if __name__ == "__main__":
         'kge_inference': True,
         'kge_inference_success': True,
         'kge_engine': 'pytorch',
-        'kge_checkpoint_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kge_pytorch', 'models'),
+        'kge_checkpoint_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kge_module', 'pytorch', 'models'),
 
         'kge_scores_file': None,
         'kge_eval_kge_weight': 2.0,  # Hybrid weight for KGE scores
@@ -124,14 +124,43 @@ if __name__ == "__main__":
 
         # KGE Integration: Neural Bridge
         'neural_bridge': False,
+        'neural_bridge_type': 'linear',  # 'linear', 'gated', or 'mlp'
         'neural_bridge_init_alpha': 0.5,
+        'neural_bridge_init_alpha_success': 0.7,  # For gated bridge
+        'neural_bridge_init_alpha_fail': 0.2,  # For gated bridge
         'neural_bridge_train_epochs': 100,
         'neural_bridge_lr': 0.01,
+        'neural_bridge_hidden_dim': 32,  # For MLP bridge
+
+        # KGE Integration: KGE-Filtered Candidates
+        'kge_filter_candidates': False,
+        'kge_filter_top_k': 100,
+
+        # KGE Integration: KGE-Initialized Embeddings
+        'kge_init_embeddings': False,
+
+        # KGE Integration: Ensemble KGE Models
+        'kge_ensemble': False,
+        'kge_ensemble_signatures': None,
+        'kge_ensemble_method': 'mean',
+
+        # KGE Integration: Joint KGE-RL Training
+        'kge_joint_training': False,
+        'kge_joint_lambda': 0.1,
+        'kge_joint_margin': 1.0,
 
         # KGE Integration: Unification Scoring
         'unification_scoring': False,
         'unification_scoring_mode': 'offline',
         'unification_top_k': None,
+
+        # KGE Integration: Rule Attention
+        'kge_rule_attention': False,
+        'kge_rule_attention_weight': 0.5,
+        'kge_rule_attention_temperature': 1.0,
+
+        # KGE Benchmarking
+        'kge_benchmark': False,
 
         # LR decay
         'lr_decay': True,

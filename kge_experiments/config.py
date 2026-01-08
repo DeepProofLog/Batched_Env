@@ -132,14 +132,43 @@ class TrainConfig:
 
     # KGE Integration: Neural Bridge (learned RL+KGE fusion)
     neural_bridge: bool = False  # Enable learned combination of RL and KGE logprobs
+    neural_bridge_type: str = 'linear'  # 'linear', 'gated', or 'mlp'
     neural_bridge_init_alpha: float = 0.5  # Initial alpha value (α*RL + (1-α)*KGE)
+    neural_bridge_init_alpha_success: float = 0.7  # Gated bridge: alpha for successful proofs
+    neural_bridge_init_alpha_fail: float = 0.2  # Gated bridge: alpha for failed proofs
     neural_bridge_train_epochs: int = 100  # Epochs to train bridge on validation
     neural_bridge_lr: float = 0.01  # Learning rate for bridge training
+    neural_bridge_hidden_dim: int = 32  # MLP bridge hidden dimension
+
+    # KGE Integration: KGE-Filtered Candidates (query-level filtering)
+    kge_filter_candidates: bool = False  # Pre-filter candidates by KGE score before proofs
+    kge_filter_top_k: int = 100  # Keep top-k candidates per query by KGE score
+
+    # KGE Integration: KGE-Initialized Embeddings
+    kge_init_embeddings: bool = False  # Initialize policy embeddings from KGE model
+
+    # KGE Integration: Ensemble KGE Models
+    kge_ensemble: bool = False  # Use ensemble of KGE models
+    kge_ensemble_signatures: Optional[str] = None  # Comma-separated run signatures
+    kge_ensemble_method: str = 'mean'  # 'mean', 'max', or 'learned'
+
+    # KGE Integration: Joint KGE-RL Training
+    kge_joint_training: bool = False  # Fine-tune KGE embeddings alongside RL
+    kge_joint_lambda: float = 0.1  # Weight for KGE contrastive loss in total loss
+    kge_joint_margin: float = 1.0  # Margin for contrastive loss
 
     # KGE Integration: Unification Scoring
     unification_scoring: bool = False  # Enable KGE scoring of derived states
     unification_scoring_mode: str = 'offline'  # 'offline' (pre-computed) or 'online' (runtime)
     unification_top_k: Optional[int] = None  # Filter to top-k scored states
+
+    # KGE Integration: Rule Attention
+    kge_rule_attention: bool = False  # Use KGE scores to weight rule selection
+    kge_rule_attention_weight: float = 0.5  # Weight for adding KGE attention to logits
+    kge_rule_attention_temperature: float = 1.0  # Temperature for softmax (lower = sharper)
+
+    # KGE Benchmarking
+    kge_benchmark: bool = False  # Enable timing collection for KGE modules
 
     # Misc
     seed: int = 42

@@ -26,3 +26,6 @@ kge_experiments/checkpoints/
 kge_experiments/cudagraphs/
 kge_experiments/kge_pytorch/models/
 kge_experiments/kge_pykeen/models/
+kge_experiments/kge_module/pytorch/models
+*.pth
+*.pth

@@ -434,7 +434,7 @@ class DataHandler:
         
         # Try to find probabilistic facts file
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        prob_facts_path = os.path.join(base_dir, "top_k_scores", "files", f"kge_top_{dataset_name}.txt")
+        prob_facts_path = os.path.join(base_dir, "kge_module", "top_k_scores", "files", f"kge_top_{dataset_name}.txt")
         
         if not os.path.exists(prob_facts_path):
             print(f"Warning: Probabilistic facts file {prob_facts_path} not found")

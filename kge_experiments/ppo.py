@@ -1452,7 +1452,7 @@ class PPO:
             print("[NeuralBridge] No bridge module configured, skipping training")
             return {}
 
-        from kge_neural_bridge import NeuralBridgeTrainer
+        from kge_module.neural_bridge import NeuralBridgeTrainer
 
         trainer = NeuralBridgeTrainer(
             bridge=self.neural_bridge,
