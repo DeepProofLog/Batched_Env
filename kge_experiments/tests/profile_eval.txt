@@ -1,0 +1,33 @@
+Profile Eval Results
+Date: 2026-01-08 03:41:24
+Device: cuda
+Dataset: family
+
+Configuration:
+  N queries: 100
+  N corruptions: 100
+  Batch size: 100
+  Padding states: 130
+  Max depth: 20
+  Shuffle facts: False (seed=42)
+  Total candidates: 20200
+
+Setup...
+[EnvOptimal] Compiled with mode=reduce-overhead, fullgraph=True
+[PPO] Compiled ranking_step (double-buffered) with mode=reduce-overhead
+Compile + warmup...
+[EnvOptimal] Compiled with mode=reduce-overhead, fullgraph=True
+Warmup: 26.43s
+Profiling...
+Evaluating 100 queries and 100 negatives
+Chunk 0-100
+  Took: 7.94s | Rolling MRR: 0.6153 | ms/cand: 0.79
+
+==================================================
+TIMING SUMMARY
+==================================================
+Runtime:      7.9440s
+ms/candidate: 0.3933 
+MRR:          0.6153
+
+Results saved to /home/castellanoontiv/Batched_Env/kge_experiments/tests/profile_eval.txt

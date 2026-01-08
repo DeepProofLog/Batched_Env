@@ -35,47 +35,47 @@ echo "Test: $TEST_QUERIES queries, $TEST_NEG corruptions"
 echo "Started at: $(date)"
 echo "=============================================="
 
-# 1. RL Only (No KGE at evaluation)
-echo ""
-echo "[1/10] Running: RL Only (no KGE)"
-echo "=============================================="
-$PYTHON $RUNNER $COMMON_ARGS \
-    --set kge_inference=False \
-    --set neural_bridge=False
+# # 1. RL Only (No KGE at evaluation)
+# echo ""
+# echo "[1/10] Running: RL Only (no KGE)"
+# echo "=============================================="
+# $PYTHON $RUNNER $COMMON_ARGS \
+#     --set kge_inference=False \
+#     --set neural_bridge=False
 
-# 2. KGE Only (Pure KGE ranking, no proofs, no RL)
-echo ""
-echo "[2/10] Running: KGE Only"
-echo "=============================================="
-$PYTHON $RUNNER \
-    --set total_timesteps=0 \
-    --set n_eval_queries=$EVAL_QUERIES \
-    --set eval_neg_samples=$EVAL_NEG \
-    --set n_test_queries=$TEST_QUERIES \
-    --set test_neg_samples=$TEST_NEG \
-    --set dataset=$DATASET \
-    --set kge_inference=True \
-    --set kge_only_eval=True \
-    --set neural_bridge=False \
-    --eval
+# # 2. KGE Only (Pure KGE ranking, no proofs, no RL)
+# echo ""
+# echo "[2/10] Running: KGE Only"
+# echo "=============================================="
+# $PYTHON $RUNNER \
+#     --set total_timesteps=0 \
+#     --set n_eval_queries=$EVAL_QUERIES \
+#     --set eval_neg_samples=$EVAL_NEG \
+#     --set n_test_queries=$TEST_QUERIES \
+#     --set test_neg_samples=$TEST_NEG \
+#     --set dataset=$DATASET \
+#     --set kge_inference=True \
+#     --set kge_only_eval=True \
+#     --set neural_bridge=False \
+#     --eval
 
-# 3. Hybrid Baseline (Fixed weights: KGE + RL)
-echo ""
-echo "[3/10] Running: Hybrid Baseline (KGE + RL fixed weights)"
-echo "=============================================="
-$PYTHON $RUNNER $COMMON_ARGS \
-    --set kge_inference=True \
-    --set kge_only_eval=False \
-    --set neural_bridge=False
+# # 3. Hybrid Baseline (Fixed weights: KGE + RL)
+# echo ""
+# echo "[3/10] Running: Hybrid Baseline (KGE + RL fixed weights)"
+# echo "=============================================="
+# $PYTHON $RUNNER $COMMON_ARGS \
+#     --set kge_inference=True \
+#     --set kge_only_eval=False \
+#     --set neural_bridge=False
 
-# 4. Neural Bridge - Linear
-echo ""
-echo "[4/10] Running: Neural Bridge (Linear)"
-echo "=============================================="
-$PYTHON $RUNNER $COMMON_ARGS \
-    --set kge_inference=True \
-    --set neural_bridge=True \
-    --set neural_bridge_type=linear
+# # 4. Neural Bridge - Linear
+# echo ""
+# echo "[4/10] Running: Neural Bridge (Linear)"
+# echo "=============================================="
+# $PYTHON $RUNNER $COMMON_ARGS \
+#     --set kge_inference=True \
+#     --set neural_bridge=True \
+#     --set neural_bridge_type=linear
 
 # 5. Neural Bridge - Gated
 echo ""

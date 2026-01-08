@@ -1082,4 +1082,3 @@ class EnvVec:
                          per_slot_lengths: Optional[Tensor] = None):
         """Compatibility method for eval_corruptions. Simply calls eval()."""
         self.eval(queries)
-

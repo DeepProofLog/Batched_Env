@@ -50,6 +50,8 @@ def _pack_triples_64(atoms: Tensor, base: int) -> Tensor:
     cache_key = (base, atoms.device)
     if cache_key not in _pack_base_cache:
         _pack_base_cache[cache_key] = torch.tensor(base, dtype=torch.int64, device=atoms.device)
+        if hasattr(torch, "_dynamo"):
+            torch._dynamo.mark_static_address(_pack_base_cache[cache_key])
     base_t = _pack_base_cache[cache_key]
     
     return ((p * base_t) + a) * base_t + b
@@ -344,6 +346,7 @@ def standardize_vars(
     padding_idx: int,
     input_states: Optional[Tensor] = None, # [B, A, 3] Input states used to determine variable offset
     extra_new_vars: int = 15, # Safe upper bound for new variables per step
+    out_of_place: bool = False,
     **kwargs
 ) -> Tuple[Tensor, Tensor]:
     """
@@ -404,10 +407,14 @@ def standardize_vars(
         args
     )
     
-    # In-place update (states is fresh from pack_results)
-    # Removing .clone() saves 100MB+ per step and significant bandwidth
-    states[:, :, :, 1:3] = standardized_args
-    standardized = states
+    if out_of_place:
+        standardized = states.clone()
+        standardized[:, :, :, 1:3] = standardized_args
+    else:
+        # In-place update (states is fresh from pack_results)
+        # Removing .clone() saves 100MB+ per step and significant bandwidth
+        states[:, :, :, 1:3] = standardized_args
+        standardized = states
     
     # 3. Compute New Next Var (Fast Estimation)
     # We need to bound the MAX variable used.
@@ -426,8 +433,46 @@ def standardize_vars(
     
     current_max_new = torch.maximum(max_in_shifted, max_gen_shifted)
     new_next_var = current_max_new + 1
-    
+
     return standardized, new_next_var
+
+
+def standardize_vars_parity(
+    states: Tensor,           # [B, K, M, 3]
+    counts: Tensor,           # [B] valid count per batch
+    next_var_indices: Tensor, # [B] starting variable index per batch
+    constant_no: int,
+    runtime_var_end_index: int,
+    padding_idx: int,
+) -> Tuple[Tensor, Tensor]:
+    """Parity-safe variable standardization (matches tensor engine behavior)."""
+    if states.numel() == 0:
+        return states, next_var_indices
+
+    device = states.device
+    B, K, M, _ = states.shape
+    if B == 0 or K == 0:
+        return states, next_var_indices
+
+    flat_states = states.view(B * K, M, 3)
+    owners = torch.arange(B, device=device).repeat_interleave(K)
+    flat_counts = (flat_states[:, :, 0] != padding_idx).sum(dim=1)
+
+    from tensor.tensor_unification import standardize_derived_states
+
+    std_states, next_end_B = standardize_derived_states(
+        flat_states,
+        flat_counts,
+        owners,
+        next_var_indices,
+        constant_no,
+        runtime_var_end_index,
+        padding_idx,
+    )
+    std_derived = std_states.view(B, K, M, 3)
+    new_next_var = torch.maximum(next_var_indices, next_end_B)
+
+    return std_derived, new_next_var
 
 
 def pairs_via_predicate_ranges(
@@ -832,6 +877,70 @@ def pack_results(
     return derived, counts
 
 
+def pack_results_parity(
+    fact_states: Tensor,        # [B, K_f, G, 3]
+    fact_mask: Tensor,          # [B, K_f]
+    rule_states: Tensor,        # [B, K_r, M, 3]
+    rule_mask: Tensor,          # [B, K_r]
+    K_max: int,
+    M_max: int,
+    padding_idx: int,
+) -> Tuple[Tensor, Tensor]:
+    """Combine fact and rule results using stable order for parity."""
+    B = fact_states.shape[0]
+    device = fact_states.device
+    pad = padding_idx
+    K_f = fact_states.shape[1]
+    K_r = rule_states.shape[1]
+    G = fact_states.shape[2]
+    M_r = rule_states.shape[2]
+
+    if G < M_max:
+        fact_pad = torch.full((B, K_f, M_max - G, 3), pad, dtype=fact_states.dtype, device=device)
+        fact_states = torch.cat([fact_states, fact_pad], dim=2)
+    elif G > M_max:
+        fact_states = fact_states[:, :, :M_max, :]
+
+    if M_r < M_max:
+        rule_pad = torch.full((B, K_r, M_max - M_r, 3), pad, dtype=rule_states.dtype, device=device)
+        rule_states = torch.cat([rule_states, rule_pad], dim=2)
+    elif M_r > M_max:
+        rule_states = rule_states[:, :, :M_max, :]
+
+    all_states = torch.cat([rule_states, fact_states], dim=1)  # [B, K_r+K_f, M_max, 3]
+    all_masks = torch.cat([rule_mask, fact_mask], dim=1)  # [B, K_r+K_f]
+
+    counts = all_masks.sum(dim=1).clamp(max=K_max)
+
+    sorted_idx = torch.argsort(all_masks.int(), dim=1, descending=True, stable=True)
+    top_idx = sorted_idx[:, :K_max]
+    top_idx_exp = top_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, M_max, 3)
+    derived = torch.gather(all_states, 1, top_idx_exp)
+
+    return derived, counts
+
+
+def compact_atoms(
+    states: Tensor,             # [B, K, M, 3]
+    padding_idx: int,
+) -> Tensor:
+    """Left-align atoms by removing gaps after pruning (parity behavior)."""
+    if states.numel() == 0:
+        return states
+
+    B, K, M, _ = states.shape
+    device = states.device
+    pad = padding_idx
+
+    valid_atom = (states[:, :, :, 0] != pad)
+    pos = torch.cumsum(valid_atom.long(), dim=2) - 1
+    sort_key = torch.where(valid_atom, pos, torch.tensor(M, dtype=pos.dtype, device=device))
+
+    sorted_indices = torch.argsort(sort_key, dim=2, stable=True)
+    sorted_indices_exp = sorted_indices.unsqueeze(-1).expand(-1, -1, -1, 3)
+    return torch.gather(states, 2, sorted_indices_exp)
+
+
 # ============================================================================
 # Main Vectorized Engine Class
 # ============================================================================
@@ -869,8 +978,10 @@ class UnificationEngineVectorized:
         padding_atoms: int = None,
         end_pred_idx: Optional[int] = None,
         end_proof_action: bool = False,
-        shuffle_facts: bool = False,  # Random sampling - disabled by default until debugged
+        shuffle_facts: bool = False,  # Random sampling of facts per predicate when capped
         shuffle_seed: int = 42,
+        parity_mode: bool = False,
+        compile_standardize: bool = True,
     ):
         """
         Initialize the Vectorized Unification Engine.
@@ -885,6 +996,8 @@ class UnificationEngineVectorized:
         self.false_pred_idx = false_pred_idx
         self.end_pred_idx = end_pred_idx
         self.end_proof_action = bool(end_proof_action)
+        self.parity_mode = bool(parity_mode)
+        self.compile_standardize = bool(compile_standardize)
         self.max_derived_per_state = int(max_derived_per_state) if max_derived_per_state is not None else 120
         self.K_max = self.max_derived_per_state
 
@@ -919,6 +1032,29 @@ class UnificationEngineVectorized:
         # Build Fact Index and Hash Cache
         self.fact_index = GPUFactIndex(self.facts_idx, self.pack_base)
         self.fact_hashes = self.fact_index.fact_hashes
+
+        # Optional compiled standardization (non-parity CUDA path)
+        self._standardize_vars_fn = None
+        self._standardize_compiled = False
+        if not self.parity_mode:
+            extra_new_vars = self.max_rule_body_size + 2
+
+            def _std_fn(states: Tensor, counts: Tensor, next_var_indices: Tensor, input_states: Tensor):
+                return standardize_vars(
+                    states,
+                    counts,
+                    next_var_indices,
+                    self.constant_no,
+                    self.padding_idx,
+                    input_states=input_states,
+                    extra_new_vars=extra_new_vars,
+                    out_of_place=True,
+                )
+
+            self._standardize_vars_fn = _std_fn
+            if self.compile_standardize and self.device.type == "cuda":
+                self._standardize_vars_fn = torch.compile(_std_fn, mode="reduce-overhead", fullgraph=True)
+                self._standardize_compiled = True
         
         # Sort rules by predicate
         if self.rules_heads_idx.numel() > 0:
@@ -991,6 +1127,7 @@ class UnificationEngineVectorized:
         # This ensures that when capped, we get a random sample instead of biased truncation
         if shuffle_facts and self.facts_idx is not None and self.facts_idx.numel() > 0:
             self._shuffle_facts_per_predicate(seed=shuffle_seed)
+        self._mark_static_buffers()
 
     def _shuffle_facts_per_predicate(self, seed: int = 42) -> None:
         """
@@ -1013,6 +1150,10 @@ class UnificationEngineVectorized:
         # Get predicate for each fact
         preds = self.facts_idx[:, 0]
         num_preds = int(preds.max().item()) + 1 if preds.numel() > 0 else 1
+        if hasattr(self, "fact_seg_lens") and isinstance(self.fact_seg_lens, torch.Tensor):
+            num_preds = max(num_preds, int(self.fact_seg_lens.numel()))
+        if self.predicate_no is not None:
+            num_preds = max(num_preds, int(self.predicate_no + 1))
 
         # Sort facts by predicate to get contiguous groups
         order = torch.argsort(preds, stable=True)
@@ -1046,6 +1187,31 @@ class UnificationEngineVectorized:
         self.fact_seg_lens = counts
 
         print(f"[UnificationEngine] Shuffled facts per predicate (seed={seed})")
+
+    def _mark_static_buffers(self) -> None:
+        """Mark persistent buffers as static to reduce cudagraph input copies."""
+        if not hasattr(torch, "_dynamo"):
+            return
+
+        buffers = [
+            self.facts_idx,
+            self.rules_idx,
+            self.rule_lens,
+            self.rules_heads_idx,
+            self.rules_heads_sorted,
+            self.rules_idx_sorted,
+            self.rule_lens_sorted,
+            self.rule_seg_starts,
+            self.rule_seg_lens,
+            self.fact_seg_starts,
+            self.fact_seg_lens,
+            self.fact_hashes,
+            self.true_atom,
+            self.false_atom,
+        ]
+        for buf in buffers:
+            if isinstance(buf, torch.Tensor):
+                torch._dynamo.mark_static_address(buf)
 
     def _create_block_sparse_index(self, seed: int = 42, use_random_sampling: bool = True) -> None:
         """
@@ -1243,8 +1409,9 @@ class UnificationEngineVectorized:
         padding_atoms: int = None,
         max_derived_per_state: Optional[int] = None,
         end_proof_action: bool = False,
-        shuffle_facts: bool = False,  # Disabled until index bounds issue is fixed
+        shuffle_facts: bool = False,
         shuffle_seed: int = 42,
+        parity_mode: bool = False,
         # kept for compatibility with train caller signature
         **kwargs
     ):
@@ -1275,6 +1442,7 @@ class UnificationEngineVectorized:
             end_proof_action=end_proof_action,
             shuffle_facts=shuffle_facts,
             shuffle_seed=shuffle_seed,
+            parity_mode=parity_mode,
         )
     
 
@@ -1465,11 +1633,18 @@ class UnificationEngineVectorized:
         # ---------------------------------------------------------------------
         # 4. Combine Results
         # ---------------------------------------------------------------------
-        combined, combined_counts = pack_results(
-            fact_states, fact_success,
-            rule_states, rule_success,
-            self.K_max, self.M_max, pad,
-        )
+        if self.parity_mode:
+            combined, combined_counts = pack_results_parity(
+                fact_states, fact_success,
+                rule_states, rule_success,
+                self.K_max, self.M_max, pad,
+            )
+        else:
+            combined, combined_counts = pack_results(
+                fact_states, fact_success,
+                rule_states, rule_success,
+                self.K_max, self.M_max, pad,
+            )
         
         # ---------------------------------------------------------------------
         # 5. Prune Ground Facts
@@ -1483,6 +1658,8 @@ class UnificationEngineVectorized:
             true_pred_idx=self.true_pred_idx,
             excluded_queries=excluded_queries
         )
+        if self.parity_mode:
+            pruned = compact_atoms(pruned, pad)
 
         # Handle proofs - combine fact-based proofs with prune-detected proofs
         prune_proof_batch = is_proof.sum(dim=1) > 0  # [B]
@@ -1546,12 +1723,25 @@ class UnificationEngineVectorized:
         # Renumber runtime variables to start from next_var_indices
         # This matches the original engine's standardize_derived_states step
         # ---------------------------------------------------------------------
-        std_derived, std_new_vars = standardize_vars(
-            final_derived, final_counts, next_var_indices,
-            self.constant_no, pad,
-            input_states=current_states,
-            extra_new_vars=self.max_rule_body_size + 2  # Safe margin for new vars
-        )
+        if self.parity_mode:
+            std_derived, std_new_vars = standardize_vars_parity(
+                final_derived, final_counts, next_var_indices,
+                self.constant_no, self.runtime_var_end_index, pad
+            )
+        else:
+            if self._standardize_vars_fn is not None:
+                std_derived, std_new_vars = self._standardize_vars_fn(
+                    final_derived,
+                    final_counts,
+                    next_var_indices,
+                    current_states,
+                )
+            else:
+                std_derived, std_new_vars = standardize_vars(
+                    final_derived, final_counts, next_var_indices,
+                    self.constant_no, pad,
+                    input_states=current_states,
+                    extra_new_vars=self.max_rule_body_size + 2  # Safe margin for new vars
+                )
         
         return std_derived, final_counts, std_new_vars
-

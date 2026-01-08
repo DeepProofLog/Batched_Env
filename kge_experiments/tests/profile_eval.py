@@ -4,10 +4,6 @@ Profile the PPO.evaluate() function.
 This script profiles the  evaluation to verify performance
 matches or exceeds the V10 implementation.
 
-Targets:
-- ms/candidate: ≤0.88 (matching V10)
-- MRR: ≈0.16 (correctness)
-
 Usage:
     conda activate rl
     python tests/profile_eval.py
@@ -98,6 +94,8 @@ def setup(device, config):
         im, padding_atoms=config.padding_atoms,
         max_derived_per_state=config.padding_states, end_proof_action=True,
         max_fact_pairs_cap=config.max_fact_pairs_cap,
+        shuffle_facts=getattr(config, "shuffle_facts", False),
+        shuffle_seed=getattr(config, "shuffle_seed", 42),
     )
     
     def convert_queries_unpadded(queries):
@@ -154,6 +152,7 @@ def setup(device, config):
         compile=config.compile,
         fixed_batch_size=config.batch_size,
         ranking_compile_mode='reduce-overhead',
+        ranking_unroll=getattr(config, 'ranking_unroll', 1),
     )
     
     # Use PPO
@@ -169,9 +168,9 @@ def setup(device, config):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='wn18rr')
-    parser.add_argument('--n-queries', type=int, default=10)
-    parser.add_argument('--n-corruptions', type=int, default=10)
+    parser.add_argument('--dataset', type=str, default='family')
+    parser.add_argument('--n-queries', type=int, default=100)
+    parser.add_argument('--n-corruptions', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=100)
     parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false')
     parser.add_argument('--gpu-profile', action='store_true',  help='Run GPU profiler')
@@ -180,6 +179,9 @@ def main():
     parser.add_argument('--max-fact-pairs-cap', type=int, default=None, help='Cap max_fact_pairs to limit tensor sizes')
     parser.add_argument('--eval-padding-states', type=int, default=None, help='Padding states for evaluation (default: same as padding_states)')
     parser.add_argument('--max-depth', type=int, default=20, help='Max steps per episode')
+    parser.add_argument('--ranking-unroll', type=int, default=1, help='Unroll factor for ranking_step (>=1)')
+    parser.add_argument('--shuffle-facts', action='store_true', help='Shuffle facts per predicate before capping')
+    parser.add_argument('--shuffle-seed', type=int, default=42, help='Seed for shuffle-facts')
     args = parser.parse_args()
 
     # Setup output file for logging results
@@ -193,11 +195,11 @@ def main():
     try:
         if args.max_fact_pairs_cap is None and args.dataset == 'wn18rr':
             print("Setting max_fact_pairs_cap to 1000 for wn18rr")
-            args.max_fact_pairs_cap = 1000
+            args.max_fact_pairs_cap = 24000
 
         # Default eval_padding_states based on dataset
         if args.eval_padding_states is None:
-            args.eval_padding_states = {'wn18rr': 120, 'fb15k237': 120, 'family': 130}.get(args.dataset, 262)
+            args.eval_padding_states = {'wn18rr': 130, 'fb15k237': 120, 'family': 130}.get(args.dataset, 262)
 
         config = SimpleNamespace(
             dataset=args.dataset,
@@ -205,6 +207,9 @@ def main():
             padding_atoms=6, padding_states=args.eval_padding_states, max_depth=args.max_depth,
             batch_size=args.batch_size, compile=args.compile,
             max_fact_pairs_cap=args.max_fact_pairs_cap,
+            ranking_unroll=args.ranking_unroll,
+            shuffle_facts=args.shuffle_facts,
+            shuffle_seed=args.shuffle_seed,
         )
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -220,6 +225,7 @@ def main():
         print(f"  Batch size: {config.batch_size}")
         print(f"  Padding states: {config.padding_states}")
         print(f"  Max depth: {config.max_depth}")
+        print(f"  Shuffle facts: {config.shuffle_facts} (seed={config.shuffle_seed})")
         print(f"  Total candidates: {total}")
         print(f"")
 
@@ -257,9 +263,8 @@ def main():
             print(f"TIMING SUMMARY")
             print(f"{'='*50}")
             print(f"Runtime:      {runtime:.4f}s")
-            print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
-            print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
-            print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
+            print(f"ms/candidate: {ms_cand:.4f}")
+            print(f"MRR:          {results['MRR']:.4f}")
 
             print(f"\n=== GPU PROFILE: Top 30 by CUDA time ===")
             print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=30))
@@ -286,9 +291,8 @@ def main():
             print(f"TIMING SUMMARY")
             print(f"{'='*50}")
             print(f"Runtime:      {runtime:.4f}s")
-            print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
-            print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
-            print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
+            print(f"ms/candidate: {ms_cand:.4f}")
+            print(f"MRR:          {results['MRR']:.4f}")
 
             print(f"\nTop 20:")
             s = io.StringIO()
@@ -311,9 +315,8 @@ def main():
             print(f"TIMING SUMMARY")
             print(f"{'='*50}")
             print(f"Runtime:      {runtime:.4f}s")
-            print(f"ms/candidate: {ms_cand:.4f}  (target: ≤0.88)")
-            print(f"MRR:          {results['MRR']:.4f}  (target: ≈0.16)")
-            print(f"\nStatus: {'PASS ✓' if ms_cand <= 0.88 else 'REVIEW'}")
+            print(f"ms/candidate: {ms_cand:.4f} ")
+            print(f"MRR:          {results['MRR']:.4f}")
 
         print(f"\nResults saved to {output_path}")
 
