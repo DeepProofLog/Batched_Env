@@ -1145,7 +1145,8 @@ class PPO:
 
     def evaluate(self, queries: Tensor, sampler, n_corruptions: int = 50, corruption_modes: Sequence[str] = ('head', 'tail'), *,
                  chunk_queries: int = None, verbose: bool = False, deterministic: bool = True,
-                 query_depths: Optional[Tensor] = None, debug: bool = False, log_every: int = 1):
+                 query_depths: Optional[Tensor] = None, debug: bool = False, log_every: int = 1,
+                 bridge_trainer: Optional[Any] = None):
         """Fast corruption ranking evaluation with slot recycling (production use)."""
         self._uncompiled_policy.eval()
         N, device = queries.shape[0], self.device
@@ -1285,6 +1286,15 @@ class PPO:
                         )
                         # kge_scores: [CQ, K]
                         kge_log_scores = torch.log(kge_scores.clamp(min=self._kge_log_eps))
+                        if bridge_trainer is not None:
+                            masked_logprobs = logprobs.masked_fill(~is_valid, -1e9)
+                            masked_kge = kge_log_scores.masked_fill(~is_valid, -1e9)
+                            masked_success = success & is_valid
+                            bridge_trainer.add_validation_batch(
+                                masked_logprobs,
+                                masked_kge,
+                                masked_success,
+                            )
                         
                         if self.kge_only_eval:
                             # KGE-only mode: use pure KGE scores (matches paper evaluation)
@@ -1360,6 +1370,9 @@ class PPO:
         if self.neural_bridge is None:
             print("[NeuralBridge] No bridge module configured, skipping training")
             return {}
+        if not self.kge_inference or self.kge_inference_engine is None or self.kge_index_manager is None:
+            print("[NeuralBridge] KGE inference not available, skipping training")
+            return {}
 
         from kge_module.neural_bridge import NeuralBridgeTrainer
 
@@ -1372,7 +1385,15 @@ class PPO:
 
         # Run evaluation to collect training data (simplified - just use evaluate)
         print(f"[NeuralBridge] Training neural bridge on {queries.shape[0]} queries...")
-        result = trainer.train(queries, sampler, n_corruptions, corruption_modes, self)
+        self.evaluate(
+            queries=queries,
+            sampler=sampler,
+            n_corruptions=n_corruptions,
+            corruption_modes=corruption_modes,
+            verbose=False,
+            bridge_trainer=trainer,
+        )
+        result = trainer.train()
         
         if hasattr(self.neural_bridge, 'effective_alpha'):
             print(f"[NeuralBridge] Trained alpha: {self.neural_bridge.effective_alpha:.4f}")

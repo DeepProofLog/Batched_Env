@@ -77,14 +77,14 @@ echo "=============================================="
 #     --set neural_bridge=True \
 #     --set neural_bridge_type=linear
 
-# 5. Neural Bridge - Gated
-echo ""
-echo "[5/10] Running: Neural Bridge (Gated)"
-echo "=============================================="
-$PYTHON $RUNNER $COMMON_ARGS \
-    --set kge_inference=True \
-    --set neural_bridge=True \
-    --set neural_bridge_type=gated
+# # 5. Neural Bridge - Gated
+# echo ""
+# echo "[5/10] Running: Neural Bridge (Gated)"
+# echo "=============================================="
+# $PYTHON $RUNNER $COMMON_ARGS \
+#     --set kge_inference=True \
+#     --set neural_bridge=True \
+#     --set neural_bridge_type=gated
 
 # 6. Neural Bridge - Per-Predicate
 echo ""

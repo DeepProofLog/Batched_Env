@@ -339,6 +339,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         neural_bridge = create_neural_bridge(
             config=config,
             device=torch.device(config.device),
+            n_predicates=im.predicate_no,
         )
 
     ppo = PPO(
