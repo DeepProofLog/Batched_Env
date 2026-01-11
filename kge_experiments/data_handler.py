@@ -232,6 +232,10 @@ class DataHandler:
             test_total = self._load_queries_from_file(test_path, 'test', n_test_queries, test_depth, load_depth_info=load_depth_info)
         
         # Filter queries by rules if requested
+        # IMPORTANT: Store unfiltered train queries for all_known_triples_idx (negative sampling)
+        # The filtered queries are only used for RL training, not for determining known positives
+        self._unfiltered_train_queries_str = list(self.train_queries_str)  # Copy before filtering
+        
         if filter_queries_by_rules and self.rules:
             self._filter_queries_by_rules()
             # Re-apply limits after filtering to mimic SB3 behavior
@@ -617,12 +621,24 @@ class DataHandler:
                 depths=depths_tensor,
             )
 
-        # Build all_known_triples_idx - ONLY from queries, NOT facts
-        # SB3 behavior: self.all_known_triples = self.train_queries + self.valid_queries + self.test_queries
+        # Build all_known_triples_idx - from ALL queries (including unfiltered train queries)
+        # This is critical for proper negative sampling: we must filter out ALL known positives,
+        # not just the filtered subset used for RL training.
         ak = []
-        for split in splits.values():
-            if split.queries.numel() > 0:
-                ak.append(split.queries[:, 0].detach().to('cpu'))
+        
+        # Use unfiltered train queries if available, otherwise fall back to current train queries
+        if hasattr(self, '_unfiltered_train_queries_str') and self._unfiltered_train_queries_str:
+            unfiltered_train_qs = im.state_to_tensor(self._unfiltered_train_queries_str)
+            ak.append(unfiltered_train_qs.detach().to('cpu'))
+        elif splits['train'].queries.numel() > 0:
+            ak.append(splits['train'].queries[:, 0].detach().to('cpu'))
+        
+        # Always include valid and test queries
+        if splits['valid'].queries.numel() > 0:
+            ak.append(splits['valid'].queries[:, 0].detach().to('cpu'))
+        if splits['test'].queries.numel() > 0:
+            ak.append(splits['test'].queries[:, 0].detach().to('cpu'))
+        
         self.all_known_triples_idx = torch.vstack(ak) if ak else torch.empty((0, 3), dtype=torch.long)
 
         self._materialized_splits = splits

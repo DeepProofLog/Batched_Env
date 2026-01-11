@@ -190,6 +190,9 @@ class TrainConfig:
     use_checkpoint_callback: bool = True
     use_annealing_callback: bool = True
     
+    # Query Filtering
+    filter_queries_by_rules: bool = True
+
     def __post_init__(self):
         # Default corruption scheme logic
         if self.corruption_scheme is None:

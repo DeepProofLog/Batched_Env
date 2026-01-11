@@ -37,7 +37,9 @@ def normalize_backend(backend: Optional[str]) -> str:
 def default_checkpoint_dir(backend: str) -> str:
     """Return default checkpoint directory for a backend."""
     base_dir = Path(__file__).resolve().parent
-    folder = "pytorch" if backend == "pytorch" else "pykeen"
+    if backend == "pytorch":
+        return str(base_dir / "kge_trainer" / "models")
+    folder = "pykeen" # fallback
     return str(base_dir / folder / "models")
 
 
@@ -59,7 +61,7 @@ def _get_backend_class(backend: str) -> Tuple[type, str]:
     """Load the appropriate KGE backend class based on the specified backend."""
     backend = normalize_backend(backend)
     if backend == "pytorch":
-        from kge_module.pytorch.kge_inference_torch import KGEInference as BackendKGEInference
+        from kge_module.kge_trainer.kge_inference_torch import KGEInference as BackendKGEInference
         return BackendKGEInference, "pytorch"
     if backend == "pykeen":
         from kge_pykeen.kge_inference_pykeen import KGEInference as BackendKGEInference

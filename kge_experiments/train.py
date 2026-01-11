@@ -166,6 +166,7 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         facts_file=config.facts_file,
         train_depth=config.train_depth,
         corruption_mode="dynamic",
+        filter_queries_by_rules=getattr(config, 'filter_queries_by_rules', True),
         # KGE Integration: Probabilistic Facts
         prob_facts=config.prob_facts,
         topk_facts=config.prob_facts_topk,

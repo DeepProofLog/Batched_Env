@@ -84,6 +84,7 @@ if __name__ == "__main__":
         'use_exact_memory': False,
         'max_total_vars': 100,
         'max_fact_pairs_cap': None,  # Auto-set per dataset in config_from_dict
+        'filter_queries_by_rules': True,
         
         # Depths
         'train_depth': {1,2,3,4,5,6},
@@ -103,7 +104,7 @@ if __name__ == "__main__":
         'kge_inference': True,
         'kge_inference_success': True,
         'kge_engine': 'pytorch',
-        'kge_checkpoint_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kge_module', 'pytorch', 'models'),
+        'kge_checkpoint_dir': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kge_module', 'kge_trainer', 'models'),
 
         'kge_scores_file': None,
         'kge_eval_kge_weight': 2.0,  # Hybrid weight for KGE scores
@@ -222,7 +223,13 @@ if __name__ == "__main__":
         update_config_value(base_config, key, parsed_value, DEFAULT_CONFIG)
 
     if args.eval:
-        base_config['load_model'] = True
+        # Only load RL model if NOT in KGE-only evaluation mode
+        if not base_config.get('kge_only_eval', False):
+            base_config['load_model'] = True
+        else:
+            base_config['load_model'] = False
+            print("Evaluate with KGE-only mode: RL model loading disabled.")
+            
         base_config['total_timesteps'] = 0
 
     base_config['profile'] = args.profile
@@ -270,6 +277,7 @@ if __name__ == "__main__":
             padding_map = {
                 "countries_s3": 20, "countries_s2": 20, "countries_s1": 20,
                 "family": 130, "wn18rr": 262, "fb15k237": 358,
+                "nations": 64, "umls": 64, "pharmkg_full": 358,
             }
             cfg_dict['padding_states'] = padding_map.get(dataset, 64)
 
@@ -280,6 +288,7 @@ if __name__ == "__main__":
             cap_map = {
                 "wn18rr": 1000,     # hypernym has 35k facts, cap for 7x speedup
                 "fb15k237": 1000,   # similar issue expected
+                "pharmkg_full": 1000,
                 # family, countries: no cap needed (max ~2.5k facts per predicate)
             }
             cfg_dict['max_fact_pairs_cap'] = cap_map.get(dataset, None)
@@ -296,8 +305,43 @@ if __name__ == "__main__":
                 cfg_dict['kge_run_signature'] = 'torch_wn18rr_RotatE_1024_20260107_125531_s42'
             elif cfg_dict.get('kge_run_signature') is None and cfg_dict.get('dataset') == 'family':
                 cfg_dict['kge_run_signature'] = 'torch_family_RotatE_1024_20260107_124531_s42'
-            else:
-                raise ValueError("kge_run_signature must be specified for dataset: {}".format(cfg_dict.get('dataset')))
+            elif cfg_dict.get('kge_run_signature') is None and cfg_dict.get('dataset') == 'fb15k237':
+                cfg_dict['kge_run_signature'] = 'torch_fb15k237_TuckER_512_20260111_002222_s42'
+            elif cfg_dict.get('kge_run_signature') is None and cfg_dict.get('dataset') == 'pharmkg_full':
+                cfg_dict['kge_run_signature'] = 'torch_pharmkg_full_ComplEx_1024_20260111_054518_s42'
+            elif cfg_dict.get('kge_run_signature') is None and cfg_dict.get('dataset') == 'umls':
+                cfg_dict['kge_run_signature'] = 'torch_umls_ComplEx_1024_20260110_223751_s42'
+            elif cfg_dict.get('kge_run_signature') is None and cfg_dict.get('dataset') == 'nations':
+                cfg_dict['kge_run_signature'] = 'torch_nations_TuckER_512_20260110_224506_s42'
+            elif cfg_dict.get('kge_run_signature') is None:
+                # Attempt to find the latest model for this dataset
+                if not cfg_dict.get('kge_checkpoint_dir'):
+                     # We need to resolve the default dir first if not set
+                     engine = normalize_backend(cfg_dict.get('kge_engine', 'pytorch'))
+                     cfg_dict['kge_checkpoint_dir'] = default_checkpoint_dir(engine)
+                
+                ckpt_dir = cfg_dict['kge_checkpoint_dir']
+                dataset_name = cfg_dict.get('dataset')
+                # Pattern: torch_{dataset}_*
+                prefix = f"torch_{dataset_name}_"
+                
+                if os.path.isdir(ckpt_dir):
+                    candidates = [d for d in os.listdir(ckpt_dir) 
+                                  if d.startswith(prefix) and os.path.isdir(os.path.join(ckpt_dir, d))]
+                    if candidates:
+                        # Sort by name (which includes timestamp and hence is chronological)
+                        # Format: torch_{dataset}_{model}_{dim}_{timestamp}_s{seed}
+                        # Timestamps are YYYYMMDD_HHMMSS, so ASCII sort works for finding latest.
+                        candidates.sort(reverse=True)
+                        best_candidate = candidates[0]
+                        print(f"Auto-discovered latest KGE model for {dataset_name}: {best_candidate}")
+                        cfg_dict['kge_run_signature'] = best_candidate
+                    else:
+                        # Fallback to raising error if no model found
+                         raise ValueError(f"kge_run_signature not specified and no auto-discovered model found for dataset: {dataset_name} in {ckpt_dir}")
+                else:
+                     raise ValueError(f"kge_run_signature not specified and checkpoint dir does not exist: {ckpt_dir}")
+
             if cfg_dict.get('kge_inference'):
                 engine = normalize_backend(cfg_dict.get('kge_engine', 'pytorch'))
                 cfg_dict['kge_engine'] = engine
@@ -311,7 +355,20 @@ if __name__ == "__main__":
         else:
             cfg_dict['corruption_scheme'] = ['head', 'tail']
         
-        # File names based on depth
+        # File names based on depth - only use if they exist
+        data_path = cfg_dict.get('data_path', base_config['data_path'])
+        dataset_dir = os.path.join(data_path, dataset)
+        
+        def sanitize_depth_config(base_name, depth_key):
+            if cfg_dict.get(depth_key):
+                 depth_file = f"{base_name}_depths.txt"
+                 if not os.path.exists(os.path.join(dataset_dir, depth_file)):
+                      cfg_dict[depth_key] = None
+
+        sanitize_depth_config('train', 'train_depth')
+        sanitize_depth_config('valid', 'valid_depth')
+        sanitize_depth_config('test', 'test_depth')
+
         cfg_dict['train_file'] = "train_depths.txt" if cfg_dict.get('train_depth') else "train.txt"
         cfg_dict['valid_file'] = "valid_depths.txt" if cfg_dict.get('valid_depth') else "valid.txt"
         cfg_dict['test_file'] = "test_depths.txt" if cfg_dict.get('test_depth') else "test.txt"
