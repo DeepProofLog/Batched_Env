@@ -104,15 +104,25 @@ class TrainParityConfig:
     seed: int = 42
     device: str = "cpu"
     verbose: bool = True
+    parity: bool = False  # Enable deterministic mode for parity testing
+    sample_deterministic_per_env: bool = True  # For parity testing
 
-def seed_all(seed: int):
-    """Set all random seeds."""
+def seed_all(seed: int, deterministic: bool = False):
+    """Set all random seeds. If deterministic=True, enables torch.use_deterministic_algorithms."""
     import random
+    import os
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    
+    if deterministic:
+        # Set CUBLAS_WORKSPACE_CONFIG for deterministic CUDA matmul operations
+        if torch.cuda.is_available():
+            os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+        torch.use_deterministic_algorithms(True, warn_only=False)
+        print('ensuring determinism in the torch algorithm')
 
 def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
     """Create SB3 training components (data handler, index manager, env, model)."""
@@ -317,7 +327,7 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     
     # Create SB3 components
     print("\n[1/3] Creating SB3 components...")
-    seed_all(config.seed)
+    seed_all(config.seed, deterministic=config.parity)
     sb3_comp = create_sb3_components(config)
     
     # [PARITY] Output IndexManager info
@@ -351,7 +361,7 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     
     # SB3 training
     print("\n[2/3] Running training...")
-    seed_all(config.seed)
+    seed_all(config.seed, deterministic=config.parity)
     sb3_comp['model'].learn(total_timesteps=config.total_timesteps, progress_bar=False, callback=callback)
     
     # Restore best model if we tracked it
@@ -365,7 +375,7 @@ def run_experiment(config: TrainParityConfig) -> Dict[str, float]:
     
     # SB3 evaluation
     print("\n[3/3] Running evaluation...")
-    seed_all(config.seed + 1000)
+    seed_all(config.seed + 1000, deterministic=config.parity)
     
     # [PARITY] Output RNG state before eval
     print(f"[PARITY] RNG before eval: {torch.get_rng_state().sum().item():.0f}")

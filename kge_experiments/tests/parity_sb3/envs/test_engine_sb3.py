@@ -6,7 +6,8 @@ Simple and modular testing for the string-based unification engine.
 import os
 import sys
 
-root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# Navigate from tests/parity_sb3/envs/ to kge_experiments/
+root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sb3_path = os.path.join(root_path, 'sb3')
 # Ensure all SB3 modules resolve to the SAME top-level module paths.
 # Mixing package and top-level imports creates distinct Term classes and breaks parity.
@@ -75,7 +76,7 @@ def setup_sb3_engine(
     return dh_str, im_str, fact_index_str, rules_by_pred, facts_set_str
 
 
-def test_sb3_engine_single_query(
+def run_sb3_engine_single_query(
     query_tuple: Tuple[str, str, str],
     engine_data: Tuple,
     split: str = 'train',
@@ -253,7 +254,7 @@ def run_sb3_engine(
     for idx, (split, query_tuple) in enumerate(queries):
         # Get max_derived_states from config if available, else use default
         max_derived_states = getattr(config, 'max_derived_per_state', 200)
-        result = test_sb3_engine_single_query(
+        result = run_sb3_engine_single_query(
             query_tuple, engine_data, split=split, 
             deterministic=deterministic, max_depth=max_depth,
             verbose=verbose and idx < 3, seed=seed + idx,

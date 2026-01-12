@@ -14,6 +14,8 @@ from .tensor_utils import (
     get_device,
     save_profile_results,
     FileLogger,
+    sort_candidates_by_str_order,
+    canonical_state_to_str,
 )
 from .tensor_utils_config import (
     parse_scalar,

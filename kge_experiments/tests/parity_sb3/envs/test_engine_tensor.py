@@ -91,7 +91,7 @@ def setup_tensor_engine(
     return dh_non, im_non, engine, stringifier_params, next_var_start_for_proofs
 
 
-def test_tensor_engine_single_query(
+def run_tensor_engine_single_query(
     query_tuple: Tuple[str, str, str],
     engine_data: Tuple,
     split: str = 'train',

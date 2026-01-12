@@ -43,7 +43,7 @@ if str(SB3_ROOT) not in sys.path:
 
 # Import tensor-based components
 from nn.embeddings import EmbedderLearnable
-from model import ActorCriticPolicy
+from policy import ActorCriticPolicy
 
 # Try to import SB3 components for parity testing
 try:
@@ -403,7 +403,7 @@ def test_evaluate_actions_parity():
     
     # Evaluate actions
     with torch.no_grad():
-        tensor_values, tensor_log_probs, tensor_entropy = tensor_policy.evaluate_actions(obs_td, actions)
+        tensor_values, tensor_log_probs, tensor_entropy = tensor_policy.forward(obs_td, actions=actions)
         sb3_values, sb3_log_probs, sb3_entropy = sb3_policy.evaluate_actions(obs_sb3, actions)
     
     sb3_values = sb3_values.flatten()

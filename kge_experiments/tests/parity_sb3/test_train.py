@@ -991,7 +991,7 @@ def run_train_parity(
 # Test Functions (callable from __main__)
 # ============================================================
 
-def test_train_parity(dataset: str, n_envs: int, n_steps: int, total_timesteps: int,
+def run_train_parity_test(dataset: str, n_envs: int, n_steps: int, total_timesteps: int,
                      n_corruptions: int, batch_size: int, n_epochs: int, 
                      lr: float, ent_coef: float) -> bool:
     """Test that SB3 and tensor training produce similar results."""
@@ -1027,7 +1027,7 @@ def test_train_parity(dataset: str, n_envs: int, n_steps: int, total_timesteps: 
     return passed and results.overall_success
 
 
-def test_single_rollout_parity(dataset: str) -> bool:
+def run_single_rollout_parity_test(dataset: str) -> bool:
     """Test that a single rollout produces identical traces."""
     config = TrainParityConfig(
         dataset=dataset,
@@ -1114,21 +1114,21 @@ def run_all_tests(args) -> bool:
         print(f"Running test_train_parity[{dataset}-{n_envs}-{n_steps}-{total_timesteps}]")
         print(f"{'='*70}")
         
-        if test_train_parity(dataset, n_envs, n_steps, total_timesteps, n_corruptions, batch_size, n_epochs, lr, ent_coef):
-            print(f"✓ PASSED: test_train_parity[{dataset}-{n_envs}-{n_steps}-{total_timesteps}]")
+        if run_train_parity_test(dataset, n_envs, n_steps, total_timesteps, n_corruptions, batch_size, n_epochs, lr, ent_coef):
+            print(f"✓ PASSED: run_train_parity_test[{dataset}-{n_envs}-{n_steps}-{total_timesteps}]")
         else:
-            print(f"✗ FAILED: test_train_parity[{dataset}-{n_envs}-{n_steps}-{total_timesteps}]")
+            print(f"✗ FAILED: run_train_parity_test[{dataset}-{n_envs}-{n_steps}-{total_timesteps}]")
             all_passed = False
     
-    # Test 2: test_single_rollout_parity
+    # Test 2: run_single_rollout_parity_test
     print(f"\n{'='*70}")
-    print(f"Running test_single_rollout_parity[{args.dataset}]")
+    print(f"Running run_single_rollout_parity_test[{args.dataset}]")
     print(f"{'='*70}")
     
-    if test_single_rollout_parity(args.dataset):
-        print(f"✓ PASSED: test_single_rollout_parity[{args.dataset}]")
+    if run_single_rollout_parity_test(args.dataset):
+        print(f"✓ PASSED: run_single_rollout_parity_test[{args.dataset}]")
     else:
-        print(f"✗ FAILED: test_single_rollout_parity[{args.dataset}]")
+        print(f"✗ FAILED: run_single_rollout_parity_test[{args.dataset}]")
         all_passed = False
     
     return all_passed
