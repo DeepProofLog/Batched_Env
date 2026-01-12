@@ -73,6 +73,8 @@ def parity_config_to_train_config(parity_config: ParityConfig) -> TensorConfig:
         target_kl=parity_config.target_kl,
         total_timesteps=parity_config.total_timesteps,
         n_corruptions=parity_config.n_corruptions,
+        train_neg_ratio=parity_config.negative_ratio,
+        corruption_scheme=[parity_config.corruption_mode] if parity_config.corruption_mode != 'both' else ['head', 'tail'],
         atom_embedding_size=parity_config.embed_dim,
         seed=parity_config.seed,
         device=parity_config.device,

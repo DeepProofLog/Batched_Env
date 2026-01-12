@@ -53,6 +53,7 @@ class TrainParityConfig:
     rules_file: str = "rules.txt"
     facts_file: str = "train.txt"
     train_depth: Any = None
+    train_neg_ratio: float = 1.0
     
     # Environment / padding
     padding_atoms: int = 6
@@ -104,7 +105,7 @@ class TrainParityConfig:
     seed: int = 42
     device: str = "cpu"
     verbose: bool = True
-    parity: bool = False  # Enable deterministic mode for parity testing
+    parity: bool = True  # Enable deterministic mode for parity testing
     sample_deterministic_per_env: bool = True  # For parity testing
 
 def seed_all(seed: int, deterministic: bool = False):
@@ -173,6 +174,9 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
         corruption_mode=True,
     )
     
+    # Attach sampler to data handler for SB3Env
+    dh.sampler = sampler
+    
     # Embedder - use reasonable n_vars to avoid massive memory usage
     n_vars_for_embedder = 1000
     torch.manual_seed(config.seed)
@@ -196,6 +200,11 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
         def _init():
             queries = dh.train_queries if mode == "train" else dh.test_queries
             labels = [1] * len(queries)  # All queries are positive examples
+            
+            # Use corruption mode if train_neg_ratio > 0 (match tensor)
+            # Default to "dynamic" if enabling corruption
+            corruption_mode = "dynamic" if (mode == "train" and config.train_neg_ratio > 0) else None
+            
             env = SB3Env(
                 index_manager=im,
                 data_handler=dh,
@@ -204,6 +213,9 @@ def create_sb3_components(config: TrainParityConfig) -> Dict[str, Any]:
                 query_depths=None,
                 facts=facts_set,
                 mode=mode,
+                corruption_mode=corruption_mode,
+                corruption_scheme=config.corruption_scheme,
+                train_neg_ratio=int(config.train_neg_ratio),
                 sample_deterministic=True,  # Round-robin for parity
                 seed=config.seed,
                 max_depth=config.max_steps,

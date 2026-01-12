@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from tensordict import NonTensorData, TensorDict
 
+from pykeen.constants import TARGET_TO_INDEX
 try:
     # Try relative import first (when sb3/ is in sys.path)
     from sb3_dataset import DataHandler
@@ -342,9 +343,21 @@ class LogicEnv_gym(gym.Env):
             # Retry sampling if negative generation fails
             max_retries = 5
             for attempt in range(max_retries):
-                negative_samples = self.sampler.get_negatives_from_states(
-                    state, self.device, num_negs=num_to_generate
-                )
+                # Force sampler usage of our specific corruption scheme
+                original_scheme = self.sampler.corruption_scheme
+                original_indices = self.sampler._corruption_indices
+                
+                try:
+                    self.sampler.corruption_scheme = self.corruption_scheme
+                    self.sampler._corruption_indices = [TARGET_TO_INDEX[c] for c in self.corruption_scheme]
+                    
+                    negative_samples = self.sampler.get_negatives_from_states(
+                        state, self.device, num_negs=num_to_generate
+                    )
+                finally:
+                    # Restore original scheme
+                    self.sampler.corruption_scheme = original_scheme
+                    self.sampler._corruption_indices = original_indices
                 selected = negative_samples
                 if not isinstance(selected, list):
                     selected = [selected]
