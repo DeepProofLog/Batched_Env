@@ -659,17 +659,20 @@ class BatchedEnv(EnvBase):
                 # Sequential corruption for parity with SB3
                 # Loop allows RNG consumption order to match sequential env execution
                 corrupted_list = []
+                mode = self.corruption_scheme[0]
                 for i in range(num_negs):
                      atom_i = atoms_to_corrupt[i:i+1] # [1, D]
-                     c = self.sampler.corrupt(atom_i, num_negatives=1, device=device)
+                     c = self.sampler.corrupt(atom_i, num_negatives=1, mode=mode, device=device)
                      if c.dim() == 3: c = c[:, 0, :]
                      corrupted_list.append(c)
                 corrupted_atoms = torch.cat(corrupted_list, dim=0) # [M, D]
             else:
                 # Vectorized corruption (standard)
+                mode = self.corruption_scheme[0]
                 corrupted_atoms = self.sampler.corrupt(
                     atoms_to_corrupt, 
                     num_negatives=1,
+                    mode=mode,
                     device=device
                 )
                 if corrupted_atoms.dim() == 3:

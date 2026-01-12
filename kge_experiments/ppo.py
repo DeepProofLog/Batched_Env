@@ -204,7 +204,7 @@ class PPO:
         self._eval_result_depths = torch.zeros(self.fixed_batch_size, dtype=torch.long, device=self.device)
 
         # AMP
-        use_amp = kwargs.get('use_amp', True)
+        use_amp = kwargs.get('use_amp', getattr(config, 'use_amp', True))
         self.use_amp = use_amp and (self.device.type == "cuda")
         self.amp_dtype = torch.bfloat16 if self.use_amp and torch.cuda.is_bf16_supported() else torch.float32
 
@@ -215,6 +215,7 @@ class PPO:
                 gamma=self.gamma, gae_lambda=self.gae_lambda,
                 padding_atoms=self.padding_atoms, padding_states=self.padding_states,
                 batch_size=self.batch_size,
+                parity=getattr(config, 'parity', False),  # Use parity mode for identical batch permutations
             )
             A, S = self.padding_atoms, self.padding_states
             self._train_sub_index = torch.zeros((self.batch_size, 1, A, 3), dtype=torch.long, device=self.device)
@@ -249,19 +250,24 @@ class PPO:
 
     def _compile_all(self):
         """Compile all functions using uncompiled policy in fused steps."""
-        # Compile loss module
-        self.loss_module = torch.compile(PPOLossModule(self._uncompiled_policy), mode=self._compile_mode, fullgraph=True)
+        if getattr(self.config, 'compile', True):
+            # Compile loss module
+            self.loss_module = torch.compile(PPOLossModule(self._uncompiled_policy), mode=self._compile_mode, fullgraph=True)
+            
+            # Warmup gradients
+            self._warmup_gradients()
 
-        # Warmup gradients
-        self._warmup_gradients()
-
-        # Compile policy for standalone use
-        self._compiled_policy_fn = torch.compile(self._uncompiled_policy.get_logits, mode=self._compile_mode, fullgraph=True)
-        self.policy = torch.compile(self._uncompiled_policy, mode=self._compile_mode, fullgraph=True)
-
-        # Setup fused steps (uses _uncompiled_policy!)
-        if self.config.compile:
+            # Compile policy for standalone use
+            self._compiled_policy_fn = torch.compile(self._uncompiled_policy.get_logits, mode=self._compile_mode, fullgraph=True)
+            self.policy = torch.compile(self._uncompiled_policy, mode=self._compile_mode, fullgraph=True)
+            
+            # Setup fused steps (uses _uncompiled_policy!)
             self._setup_fused_rollout_step()
+        else:
+            # Eager mode
+            self.loss_module = PPOLossModule(self._uncompiled_policy)
+            self._compiled_policy_fn = self._uncompiled_policy.get_logits
+            self.policy = self._uncompiled_policy
 
     def _warmup_gradients(self):
         """Pre-allocate gradients for CUDA graph stability."""
@@ -431,7 +437,7 @@ class PPO:
         # Use configurable mode. 'default' is safer for interleaved training/eval.
         # 'reduce-overhead' makes profile_eval faster but risks stale weights if not careful.
         mode = getattr(self, 'ranking_compile_mode', 'default')
-        compile_eval = True
+        compile_eval = getattr(self.config, 'compile', True)  # Respect config.compile setting
         unroll = self._ranking_unroll
         if compile_eval and unroll > 1:
             if self.verbose:
@@ -586,6 +592,8 @@ class PPO:
     def collect_rollouts(self, current_state, current_obs, episode_starts, current_episode_reward, current_episode_length,
                          episode_rewards, episode_lengths, iteration, return_traces=False, on_step_callback=None):
         """Collect experiences using compiled fused step (parity-compatible)."""
+        if return_traces:
+             print(f"DEBUG: PPO collect_rollouts called with return_traces={return_traces}")
         self.policy.eval()
         self.rollout_buffer.reset()
         n_collected, traces = 0, [] if return_traces else None
@@ -635,6 +643,8 @@ class PPO:
 
                 # Collect traces if requested (for parity testing)
                 if return_traces:
+                    if n_collected == 0:
+                        print(f"DEBUG: Starting trace collection in loop. Batch size: {self.batch_size_env}")
                     for idx in range(self.batch_size_env):
                         trace_entry = {
                             "step": n_collected,
@@ -702,6 +712,8 @@ class PPO:
             last_values = self._uncompiled_policy.predict_values(obs)
 
         self.rollout_buffer.compute_returns_and_advantage(last_values=last_values, dones=new_state['step_dones'].float())
+        if return_traces:
+            print(f"DEBUG: Returning traces with length {len(traces) if traces else 'None'}")
         return state, obs, episode_starts, current_episode_reward, current_episode_length, n_collected * self.batch_size_env, traces
 
 
@@ -848,6 +860,8 @@ class PPO:
         curr_ep_len = torch.zeros(self.batch_size_env, dtype=torch.long, device=self.device)
         ep_rews, ep_lens = [], []
         iteration = 0
+        all_rollout_traces = [] if return_traces else None
+        all_train_traces = [] if return_traces else None
 
         while self.num_timesteps < total_timesteps:
             iteration += 1
@@ -868,9 +882,13 @@ class PPO:
             # Collect rollouts
             rollout_start_time = time.time()
             result = self.collect_rollouts(state, obs, ep_starts, curr_ep_rew, curr_ep_len, ep_rews, ep_lens, iteration, return_traces, step_cb)
-            state, obs, ep_starts, curr_ep_rew, curr_ep_len, n_steps, _ = result
+            state, obs, ep_starts, curr_ep_rew, curr_ep_len, n_steps, rollout_traces = result
             state = state.clone()
             obs = {k: v.clone() for k, v in obs.items()}
+            
+            if return_traces and rollout_traces:
+                all_rollout_traces.append({'iteration': iteration, 'traces': rollout_traces})
+                
             self.num_timesteps += n_steps
 
             rollout_time = time.time() - rollout_start_time
@@ -897,7 +915,17 @@ class PPO:
         # Retrieve final metrics from callback manager if available, else fallback to instance variable
         final_metrics = getattr(self.callback, 'last_metrics', self.last_train_metrics) if self.callback else self.last_train_metrics
 
-        return {'num_timesteps': self.num_timesteps, 'episode_rewards': ep_rews, 'episode_lengths': ep_lens, 'last_train_metrics': final_metrics}
+        results = {
+            'num_timesteps': self.num_timesteps,
+            'episode_rewards': ep_rews,
+            'episode_lengths': ep_lens,
+            'last_train_metrics': final_metrics
+        }
+        if return_traces:
+            results['rollout_traces'] = all_rollout_traces
+            results['train_traces'] = all_train_traces
+            
+        return results
 
     # -------------------------------------------------------------------------
     # EVALUATION
@@ -1146,10 +1174,18 @@ class PPO:
     def evaluate(self, queries: Tensor, sampler, n_corruptions: int = 50, corruption_modes: Sequence[str] = ('head', 'tail'), *,
                  chunk_queries: int = None, verbose: bool = False, deterministic: bool = True,
                  query_depths: Optional[Tensor] = None, debug: bool = False, log_every: int = 1,
-                 bridge_trainer: Optional[Any] = None):
-        """Fast corruption ranking evaluation with slot recycling (production use)."""
+                 bridge_trainer: Optional[Any] = None, parity: bool = False):
+        """Fast corruption ranking evaluation with slot recycling (production use).
+        
+        Args:
+            parity: If True, use numpy RNG for tie-breaking to match tensor_eval_corruptions.
+        """
         self._uncompiled_policy.eval()
         N, device = queries.shape[0], self.device
+        
+        # Parity mode: use numpy RNG for tie-breaking (matches tensor_eval_corruptions)
+        parity_rng = np.random.RandomState(0) if parity else None
+        
         # If n_corruptions is None (exhaustive), use sampler info for safer K estimate
         # Use a better K estimate for exhaustive ranking to guide chunking
         if n_corruptions is None:
@@ -1320,7 +1356,15 @@ class PPO:
                     scores = scores.masked_fill(~is_valid, -1e9)
 
                     pos, neg = scores[:, 0:1], scores[:, 1:]
-                    rnd = torch.rand((CQ, K), generator=tie_generator, device=device)  # [CQ, K]
+                    
+                    # Parity mode: use numpy RNG to match tensor_eval_corruptions tie-breaking
+                    if parity_rng is not None:
+                        # Match tensor_eval_corruptions pattern: generate (CQ, 1+K) then slice
+                        full_rnd = parity_rng.rand(CQ, 1 + (K - 1))  # K includes positive, so K-1 negatives
+                        rnd = torch.as_tensor(full_rnd, device=device, dtype=torch.float32)
+                    else:
+                        rnd = torch.rand((CQ, K), generator=tie_generator, device=device)  # [CQ, K]
+                    
                     better = (neg > pos)
                     tied = (neg == pos) & (rnd[:, 1:] > rnd[:, 0:1])
                     all_ranks[mode].append(1 + better.sum(1) + tied.sum(1))

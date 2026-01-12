@@ -83,13 +83,31 @@ class SharedBody(nn.Module):
     Residual MLP backbone [E] -> [H] -> [H] shared by policy and value heads.
     Uses fused Linear+ReLU+LayerNorm modules for better performance.
     """
-    def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, num_layers: int = 8):
+    def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, num_layers: int = 8, parity: bool = False):
         super().__init__()
-        # Optimized: fused Linear+ReLU+LayerNorm
-        self.input_transform = FusedLinearReluLayerNorm(embed_dim, hidden_dim)
-        self.res_blocks = nn.ModuleList([
-            FusedLinearReluLayerNorm(hidden_dim, hidden_dim) for _ in range(num_layers)
-        ])
+        
+        if parity:
+            # Match tensor_model.py structure exactly for initialization parity
+            self.input_transform = nn.Sequential(
+                nn.Linear(embed_dim, hidden_dim),
+                nn.ReLU(),
+                nn.LayerNorm(hidden_dim),
+                nn.Dropout(0.0) # Explicit 0.0 dropout to match tensor_model
+            )
+            self.res_blocks = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.LayerNorm(hidden_dim),
+                    nn.Dropout(0.0)
+                ) for _ in range(num_layers)
+            ])
+        else:
+            # Optimized: fused Linear+ReLU+LayerNorm
+            self.input_transform = FusedLinearReluLayerNorm(embed_dim, hidden_dim)
+            self.res_blocks = nn.ModuleList([
+                FusedLinearReluLayerNorm(hidden_dim, hidden_dim) for _ in range(num_layers)
+            ])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -98,10 +116,18 @@ class SharedBody(nn.Module):
         Returns:
             Features [..., H]
         """
-        x = self.input_transform(x)
-        for block in self.res_blocks:
-            x = x + block(x)
-        return x
+        if isinstance(self.input_transform, nn.Sequential):
+             # Sequential block behavior
+             x = self.input_transform(x)
+             for block in self.res_blocks:
+                 x = block(x) + x # Residual connection (match tensor_model order)
+             return x
+        else:
+            # Fused block behavior
+            x = self.input_transform(x)
+            for block in self.res_blocks:
+                x = x + block(x)
+            return x
 
 
 class SharedPolicyValueNetwork(nn.Module):
@@ -110,25 +136,44 @@ class SharedPolicyValueNetwork(nn.Module):
     Merges former CustomNetwork and SharedPolicyValueNetwork functionality.
     """
     def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, num_layers: int = 8,
-                 temperature: Optional[float] = None, use_l2_norm: bool = False, sqrt_scale: bool = True):
+                 temperature: Optional[float] = None, use_l2_norm: bool = False, sqrt_scale: bool = True,
+                 parity: bool = False):
         super().__init__()
         self.embed_dim = embed_dim
         self.temperature = temperature
         self.use_l2_norm = use_l2_norm
         self.sqrt_scale = sqrt_scale
+        self.parity = parity
 
-        self.shared_body = SharedBody(embed_dim, hidden_dim, num_layers)
+        self.shared_body = SharedBody(embed_dim, hidden_dim, num_layers, parity=parity)
 
-        # Optimized: fused layers
-        # Policy head: Projects shared features back to embedding space for dot-product attention
-        # First layer: fused Linear+ReLU, second layer: plain Linear (no activation after)
-        self.policy_head_fused = FusedLinearRelu(hidden_dim, hidden_dim)
-        self.policy_head_final = nn.Linear(hidden_dim, embed_dim)
+        if parity:
+            # Match tensor_model.py PolicyHead/ValueHead structure
+            # Policy Head: Sequential(Linear, ReLU, Linear)
+            # Note: tensor_model.py uses separate PolicyHead class but structure is sequential
+            self.policy_head_fused = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU()
+            )
+            self.policy_head_final = nn.Linear(hidden_dim, embed_dim)
+            
+            # Value Head: Sequential(Linear, ReLU, Linear)
+            self.value_head_fused = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.ReLU()
+            )
+            self.value_head_final = nn.Linear(hidden_dim // 2, 1)
+        else:
+            # Optimized: fused layers
+            # Policy head: Projects shared features back to embedding space for dot-product attention
+            # First layer: fused Linear+ReLU, second layer: plain Linear (no activation after)
+            self.policy_head_fused = FusedLinearRelu(hidden_dim, hidden_dim)
+            self.policy_head_final = nn.Linear(hidden_dim, embed_dim)
 
-        # Value head: Projects shared features to a scalar state-value estimate
-        # First layer: fused Linear+ReLU, second layer: plain Linear (no activation after)
-        self.value_head_fused = FusedLinearRelu(hidden_dim, hidden_dim // 2)
-        self.value_head_final = nn.Linear(hidden_dim // 2, 1)
+            # Value head: Projects shared features to a scalar state-value estimate
+            # First layer: fused Linear+ReLU, second layer: plain Linear (no activation after)
+            self.value_head_fused = FusedLinearRelu(hidden_dim, hidden_dim // 2)
+            self.value_head_final = nn.Linear(hidden_dim // 2, 1)
 
         # SB3 scaffold compatibility
         self.latent_dim_pi = 1
@@ -193,9 +238,10 @@ class ActorCriticPolicy(nn.Module):
     Main Policy class orchestrating extraction, architecture, and action distribution.
     """
     def __init__(self, embedder, embed_dim: int, hidden_dim: int, num_layers: int,
-                 device: torch.device, action_dim: int = None, **kwargs):
+                 device: torch.device, action_dim: int = None, parity: bool = False, **kwargs):
         super().__init__()
         self.device = device
+        self.parity = parity
         self.features_extractor = CustomCombinedExtractor(embedder)
         self.pi_features_extractor = self.features_extractor
         self.vf_features_extractor = self.features_extractor
@@ -207,6 +253,7 @@ class ActorCriticPolicy(nn.Module):
             temperature=kwargs.get('temperature'),
             use_l2_norm=kwargs.get('use_l2_norm', False),
             sqrt_scale=kwargs.get('sqrt_scale', True),
+            parity=parity,
         )
         
         # Action distribution
@@ -231,9 +278,10 @@ class ActorCriticPolicy(nn.Module):
         for module, gain in module_gains.items():
             module.apply(partial(BasePolicy.init_weights, gain=gain))
 
-        # Refine value head for better initial stability
-        self.mlp_extractor.value_head_fused.apply(partial(BasePolicy.init_weights, gain=1.0))
-        self.mlp_extractor.value_head_final.apply(partial(BasePolicy.init_weights, gain=1.0))
+        if not self.parity:
+            # Refine value head for better initial stability
+            self.mlp_extractor.value_head_fused.apply(partial(BasePolicy.init_weights, gain=1.0))
+            self.mlp_extractor.value_head_final.apply(partial(BasePolicy.init_weights, gain=1.0))
 
     def forward(self, obs: Union[dict, TensorDict], deterministic: bool = False, 
                 actions: Optional[torch.Tensor] = None) -> Union[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:

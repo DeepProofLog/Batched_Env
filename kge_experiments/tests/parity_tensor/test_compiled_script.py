@@ -1,6 +1,8 @@
 """
 Script Compiled Parity Tests (In-Process).
 
+ python -m pytest tests/parity_tensor/ -v
+
 Tests verifying that train_parity.py and train_compiled.py produce IDENTICAL results
 when run with the same configuration.
 
@@ -42,7 +44,7 @@ from tests.test_utils.parity_config import ParityConfig, TOLERANCE, create_parse
 
 # Import train functions directly from train files - must be after setting env vars
 from tensor.tensor_train_parity import run_experiment as tensor_run_experiment, TrainParityConfig as TensorConfig
-from train_parity import run_experiment as compiled_run_experiment, TrainConfig as CompiledConfig
+from tests.test_utils.train_parity import run_experiment as compiled_run_experiment, TrainConfig as CompiledConfig
 
 
 def parity_config_to_tensor_config(parity_config: ParityConfig) -> TensorConfig:
@@ -82,6 +84,7 @@ def parity_config_to_tensor_config(parity_config: ParityConfig) -> TensorConfig:
         vf_coef=parity_config.vf_coef,
         max_grad_norm=parity_config.max_grad_norm,
         train_neg_ratio=parity_config.negative_ratio,
+        corruption_scheme=[parity_config.corruption_mode],
     )
 
 
@@ -123,6 +126,7 @@ def parity_config_to_compiled_config(parity_config: ParityConfig) -> CompiledCon
         vf_coef=parity_config.vf_coef,
         max_grad_norm=parity_config.max_grad_norm,
         negative_ratio=parity_config.negative_ratio,
+        corruption_scheme=[parity_config.corruption_mode],
         compile=False,  # Disable compilation for parity testing
     )
 
@@ -209,6 +213,8 @@ def compare_traces(tensor_results: Dict, compiled_results: Dict):
     print("-" * 80)
     
     # Compare rollout traces
+    print(f"DEBUG: Tensor rollout iterations: {len(tensor_rollout)}")
+    print(f"DEBUG: Compiled rollout iterations: {len(compiled_rollout)}")
     min_iterations = min(len(tensor_rollout), len(compiled_rollout))
     
     for iter_idx in range(min_iterations):
@@ -361,10 +367,12 @@ def test_script_compiled_parity(config: ParityConfig = None):
     assert tensor_mrr > 0, f"Tensor run failed to produce MRR (got {tensor_mrr})"
     assert compiled_mrr > 0, f"Compiled run failed to produce MRR (got {compiled_mrr})"
     
-    # Relaxed tolerance for MRR since environments differ
-    # The primary goal is that compiled training works correctly, not identically
-    MRR_TOL = 0.01  # Relaxed: different envs produce different trajectories
+
+    MRR_TOL = 0.01 
     mrr_diff = abs(tensor_mrr - compiled_mrr)
+    
+    # Compare traces if available
+    compare_traces(tensor_results, compiled_results)
 
     if mrr_diff > MRR_TOL:
         print(f"\n❌ FAILED: MRR difference too large ({mrr_diff:.4f} > {MRR_TOL})")

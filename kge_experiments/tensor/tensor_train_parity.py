@@ -27,6 +27,7 @@ from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
 from tensor.tensor_ppo import PPO as TensorPPO
 from tensor.tensor_model_eval import eval_corruptions as tensor_eval_corruptions
 from tensor.tensor_sampler import Sampler
+from utils import seed_all
 
 @dataclass
 class TrainParityConfig:
@@ -95,14 +96,7 @@ class TrainParityConfig:
     verbose: bool = True
     parity: bool = False
 
-def seed_all(seed: int):
-    """Set all random seeds."""
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    
 
 
 def make_eval_callback(
@@ -299,6 +293,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         sample_deterministic_per_env=config.sample_deterministic_per_env,
         train_neg_ratio=config.train_neg_ratio,
         corruption_mode=(config.train_neg_ratio > 0),
+        corruption_scheme=config.corruption_scheme,
         sampler=sampler,
     )
     
@@ -326,6 +321,7 @@ def create_tensor_components(config: TrainParityConfig) -> Dict[str, Any]:
         runtime_var_start_index=im.constant_no + 1,
         total_vocab_size=im.constant_no + config.max_total_vars,
         sample_deterministic_per_env=config.sample_deterministic_per_env,
+        corruption_scheme=config.corruption_scheme,
     )
     
     # Create embedder with fixed seed - match SB3 exactly
@@ -392,7 +388,7 @@ def run_experiment(config: TrainParityConfig, return_traces: bool = False) -> Di
     
     # Create tensor components
     print("\n[1/3] Creating tensor components...")
-    seed_all(config.seed)
+    seed_all(config.seed, deterministic=config.parity)
     tensor_comp = create_tensor_components(config)
     
     # [PARITY] Output IndexManager info
@@ -445,7 +441,7 @@ def run_experiment(config: TrainParityConfig, return_traces: bool = False) -> Di
     
     # Tensor training
     print("\n[2/3] Running training...")
-    seed_all(config.seed)
+    seed_all(config.seed, deterministic=config.parity)
     tensor_ppo = TensorPPO(
         policy=tensor_comp['policy'],
         env=tensor_comp['train_env'],
@@ -474,7 +470,8 @@ def run_experiment(config: TrainParityConfig, return_traces: bool = False) -> Di
     
     # Tensor evaluation
     print("\n[3/3] Running evaluation...")
-    seed_all(config.seed + 1000)
+    print("\n[3/3] Running evaluation...")
+    seed_all(config.seed + 1000, deterministic=config.parity)
     
     # [PARITY] Output RNG state before eval
     print(f"[PARITY] RNG before eval: {torch.get_rng_state().sum().item():.0f}")

@@ -296,6 +296,7 @@ def create_tensor_ppo(config: SimpleNamespace, env_data: Dict, queries: List):
         device=device,
         verbose=False,
         parity=True,  # Enable parity mode for consistent shuffling
+        target_kl=config.target_kl,
     )
     
     return ppo, env, im, engine, queries_tensor
@@ -373,32 +374,14 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
         temperature=None,
     ).to(device)
     
-    # Load tensor policy weights for exact parity
-    # Strip _orig_mod prefix if present (from torch.compile)
-    cleaned_state = {}
-    for k, v in tensor_policy_state.items():
-        # Handle torch.compile prefix
-        key = k.replace('_orig_mod.', '')
-        
-        # Handle structural changes: mlp_extractor.shared_network.X -> mlp_extractor.X
-        if key.startswith('mlp_extractor.shared_network.'):
-            key = key.replace('mlp_extractor.shared_network.', 'mlp_extractor.')
-        
-        # Handle head restructuring: policy_head.out_transform.X -> policy_head.X
-        if 'policy_head.out_transform.' in key:
-            key = key.replace('policy_head.out_transform.', 'policy_head.')
-            
-        # Handle value head restructuring: value_head.output_layer.X -> value_head.X
-        if 'value_head.output_layer.' in key:
-            key = key.replace('value_head.output_layer.', 'value_head.')
-            
-        cleaned_state[key] = v
-    
+    # Load tensor policy weights for exact parity using shared mapping utility
+    from tests.test_utils.weight_mapping import map_tensor_to_optimized_state_dict
+    cleaned_state = map_tensor_to_optimized_state_dict(tensor_policy_state)
     policy.load_state_dict(cleaned_state)
     
     # Create PPO with fixed seed
     torch.manual_seed(config.seed)
-    ppo = PPOOptimized(policy, env, config)
+    ppo = PPOOptimized(policy, env, config, use_amp=False)
     
     # Convert queries to tensor format [N, 3]
     # IMPORTANT: Only use the first n_envs queries to match tensor env's query cycling

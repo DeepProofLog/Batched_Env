@@ -265,6 +265,7 @@ def create_compiled_env(
         device=device,
         memory_pruning=config.memory_pruning,
         use_exact_memory=config.use_exact_memory,  # Enable exact memory matching for parity tests
+        compile=False,  # Disable torch.compile for parity tests (parity_mode has data-dependent branching)
     )
 
 

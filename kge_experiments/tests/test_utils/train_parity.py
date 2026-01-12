@@ -158,6 +158,10 @@ def build_callbacks(
 
 def create_compiled_components(config: TrainConfig) -> Dict[str, Any]:
     """Create compiled training components (data handler, index manager, env, model)."""
+    # Enable dynamic shape operators for boolean masking/nonzero
+    import torch._dynamo
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
+    
     device = torch.device(config.device)
     
     # Data handler
@@ -240,12 +244,17 @@ def create_compiled_components(config: TrainConfig) -> Dict[str, Any]:
         sampler=sampler,
         order=getattr(config, 'parity', False),
         negative_ratio=config.negative_ratio,
+        corruption_scheme=config.corruption_scheme,
         compile=not getattr(config, 'parity', False),
         compile_mode='reduce-overhead',
         compile_fullgraph=True,
     )
 
-    
+
+
+    # -------------------------------------------------------------------------
+    # 2. Main Loop
+    # -------------------------------------------------------------------------
     # Create embedder
     torch.manual_seed(config.seed)
     embedder = TensorEmbedder(
@@ -343,12 +352,15 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         total_timesteps=config.total_timesteps,
         return_traces=return_traces,
     )
+    if return_traces:
+        print(f"DEBUG: learn_result keys: {list(learn_result.keys())}")
+        print(f"DEBUG: learn_result['rollout_traces'] length: {len(learn_result.get('rollout_traces', []))}")
     
     policy_checksum_trained = sum(p.sum().item() for p in policy.parameters())
     print(f"[PARITY] Policy checksum after training: {policy_checksum_trained:.6f}")
 
     
-    # Evaluation (always use PPOOptimized.evaluate)
+    # Evaluation
     print("\n[3/3] Running evaluation...")
     seed_all(config.seed + 1000, deterministic=getattr(config, 'parity', False))
     policy.eval()
@@ -356,7 +368,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
     test_queries = comp['dh'].test_queries[:config.n_envs * 4]
     queries_tensor = im.queries_to_tensor(test_queries, device)
 
-    
+    # Use parity mode in evaluate() if config.parity=True
     eval_results = ppo.evaluate(
         queries=queries_tensor,
         sampler=comp['sampler'],
@@ -367,6 +379,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
             dtype=torch.long, device=device
         ),
         verbose=False,
+        parity=getattr(config, 'parity', False),
     )
 
 
