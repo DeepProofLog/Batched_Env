@@ -179,11 +179,6 @@ class TrainConfig:
     profile: bool = False
     use_callbacks: bool = True  # Enable callbacks in run_experiment
 
-    # Compilation settings
-    compile: bool = True  # Auto-compile environment functions
-    compile_mode: str = 'reduce-overhead'
-    compile_fullgraph: bool = True
-    
     # Callback control (individual toggles)
     use_metrics_callback: bool = True
     use_ranking_callback: bool = True

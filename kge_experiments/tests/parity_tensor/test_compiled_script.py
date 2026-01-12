@@ -127,7 +127,6 @@ def parity_config_to_compiled_config(parity_config: ParityConfig) -> CompiledCon
         max_grad_norm=parity_config.max_grad_norm,
         negative_ratio=parity_config.negative_ratio,
         corruption_scheme=[parity_config.corruption_mode],
-        compile=False,  # Disable compilation for parity testing
     )
 
 

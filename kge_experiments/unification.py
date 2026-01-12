@@ -1053,7 +1053,8 @@ class UnificationEngineVectorized:
 
             self._standardize_vars_fn = _std_fn
             if self.compile_standardize and self.device.type == "cuda":
-                self._standardize_vars_fn = torch.compile(_std_fn, mode="reduce-overhead", fullgraph=True)
+                # Use 'default' mode to avoid CUDA graph conflicts with PPO's compilation
+                self._standardize_vars_fn = torch.compile(_std_fn, mode="default", fullgraph=True)
                 self._standardize_compiled = True
         
         # Sort rules by predicate

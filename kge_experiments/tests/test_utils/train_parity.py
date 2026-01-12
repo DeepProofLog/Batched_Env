@@ -245,9 +245,6 @@ def create_compiled_components(config: TrainConfig) -> Dict[str, Any]:
         order=getattr(config, 'parity', False),
         negative_ratio=config.negative_ratio,
         corruption_scheme=config.corruption_scheme,
-        compile=not getattr(config, 'parity', False),
-        compile_mode='reduce-overhead',
-        compile_fullgraph=True,
     )
 
 

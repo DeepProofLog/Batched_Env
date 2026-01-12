@@ -55,8 +55,6 @@ def setup(device, config):
     from env import EnvVec
     from ppo import PPO
     
-    import unification
-    unification.COMPILE_MODE = config.compile
     torch.set_float32_matmul_precision('high')
     
     dh = DataHandler(
@@ -149,7 +147,6 @@ def setup(device, config):
         seed=42,
         parity=False,
         eval_only=True,
-        compile=config.compile,
         fixed_batch_size=config.batch_size,
         ranking_compile_mode='reduce-overhead',
         ranking_unroll=getattr(config, 'ranking_unroll', 1),
@@ -205,11 +202,13 @@ def main():
             dataset=args.dataset,
             data_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data'),
             padding_atoms=6, padding_states=args.eval_padding_states, max_depth=args.max_depth,
-            batch_size=args.batch_size, compile=args.compile,
+            batch_size=args.batch_size,
             max_fact_pairs_cap=args.max_fact_pairs_cap,
             ranking_unroll=args.ranking_unroll,
             shuffle_facts=args.shuffle_facts,
             shuffle_seed=args.shuffle_seed,
+            compile=args.compile,
+            parity=False,  # Production mode - enable compilation
         )
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -232,10 +231,9 @@ def main():
         print("Setup...")
         c = setup(device, config)
 
-        print("Compile + warmup...")
+        print("Warmup (PPO compiles internally)...")
         t0 = time()
-        c['env'].compile(mode='reduce-overhead', fullgraph=True)
-        # Warmup with small evaluation
+        # Warmup with small evaluation - PPO compiles internally in __init__
         c['ppo'].evaluate(c['queries'][:5].to(device), c['sampler'], n_corruptions=5, corruption_modes=('head',))
         torch.cuda.synchronize()
         warmup = time() - t0

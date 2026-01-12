@@ -434,7 +434,6 @@ def main():
         max_total_vars=100,
         atom_embedding_size=250,
         seed=0,
-        compile=args.compile,
         use_amp=args.amp,
     )
     

@@ -1,18 +1,13 @@
 """
-Optimal Vectorized Knowledge Graph Environment.
-
-Optimized implementation combining best practices from deep dive documents:
-- TensorDict state management
-- Buffer-copy pattern for CUDA graph stability
-- Separate _step_core (eval) and _step_and_reset_core (train)
-- torch.compile with mode='reduce-overhead', fullgraph=True
+Vectorized Knowledge Graph Environment.
 
 Public API:
-    compile() - Compile step functions (required before use)
-    train()   - Switch to training mode
-    eval()    - Switch to evaluation mode  
-    reset()   - Initialize environment state
-    step()    - Take one step (with optional auto-reset)
+    train()           - Switch to training mode
+    eval()            - Switch to evaluation mode
+    reset()           - Initialize environment state
+    step()            - Take one step (no auto-reset)
+    step_and_reset()  - Fused step + reset for training
+    reset_from_queries() - Create initial state from queries
 """
 from __future__ import annotations
 
@@ -53,9 +48,6 @@ class EnvVec:
         reward_type: int = 0,
         order: bool = False,
         sample_deterministic_per_env: bool = False,
-        compile: bool = True,
-        compile_mode: str = 'reduce-overhead',
-        compile_fullgraph: bool = True,
         use_exact_memory: bool = False,  # For parity tests: use exact atom matching instead of hashes
         skip_unary_actions: bool = False,  # Auto-advance when only 1 action available (AAAI26 parity)
     ) -> None:
@@ -138,25 +130,21 @@ class EnvVec:
         self._query_pool = None
         self._per_env_ptrs = None
 
-        # Compiled function placeholders
-        self._reset_fn = None
-        self._step_fn = None
-        self._step_and_reset_fn = None
-
-        # State buffer for CUDA graph stability
-        self._state_buffer = None
         self._allocate_buffers()
-
-        # Auto-compile if requested (now works with exact memory too - fully vectorized)
-        # Note: skip_unary_actions loop is expensive to compile - disable compilation for now
-        if compile and not skip_unary_actions:
-            self.compile(mode=compile_mode, fullgraph=compile_fullgraph)
-        elif skip_unary_actions:
-            print(f"[EnvOptimal] skip_unary_actions enabled - skipping torch.compile for compatibility")
 
     @property
     def batch_size(self) -> int:
         return self._batch_size
+
+    @property
+    def query_pool(self) -> Optional[Tensor]:
+        """Current query pool for training/eval."""
+        return self._query_pool
+
+    @property
+    def per_env_ptrs(self) -> Optional[Tensor]:
+        """Per-environment query pointers for state tracking."""
+        return self._per_env_ptrs
 
     # =========================================================================
     # PUBLIC API
@@ -182,23 +170,12 @@ class EnvVec:
         self.order = True
         self.rejection_weight = 1.0
 
-    def compile(self, mode: str = 'reduce-overhead', fullgraph: bool = True) -> None:
-        """Compile step functions for CUDA graph optimization."""
-        self._reset_fn = torch.compile(self._reset_from_queries, mode=mode, fullgraph=fullgraph, dynamic=False)
-        self._step_fn = torch.compile(self._step_core, mode=mode, fullgraph=fullgraph, dynamic=False)
-        self._step_and_reset_fn = torch.compile(self._step_and_reset_core, mode=mode, fullgraph=fullgraph, dynamic=False)
-        print(f"[EnvOptimal] Compiled with mode={mode}, fullgraph={fullgraph}")
-
     def reset(self, queries: Optional[Tensor] = None) -> Tuple[EnvObs, EnvState]:
         """Initialize environment state."""
         B, device = self.batch_size, self.device
 
         if queries is not None:
-            torch.compiler.cudagraph_mark_step_begin()
-            if self._reset_fn is not None:
-                state = self._reset_fn(queries.to(device), torch.ones(B, dtype=torch.long, device=device))
-            else:
-                state = self._reset_from_queries(queries.to(device), torch.ones(B, dtype=torch.long, device=device))
+            state = self.reset_from_queries(queries.to(device), torch.ones(B, dtype=torch.long, device=device))
             return self._state_to_obs(state), state
 
         if self._query_pool is None:
@@ -212,64 +189,28 @@ class EnvVec:
         init_q, init_labels, new_counters = self._sample_negatives(init_q, init_labels, self._reset_mask_true, self._reset_zeros_B)
         self._per_env_ptrs = (self._per_env_ptrs + 1) % pool_size
 
-        torch.compiler.cudagraph_mark_step_begin()
-        if self._reset_fn is not None:
-            state = self._reset_fn(init_q, init_labels)
-        else:
-            state = self._reset_from_queries(init_q, init_labels)
+        state = self.reset_from_queries(init_q, init_labels)
         state['per_env_ptrs'].copy_(self._per_env_ptrs)
         state['neg_counters'].copy_(new_counters)
 
         return self._state_to_obs(state), state
 
-    def step(self, state: EnvState, actions: Tensor, auto_reset: bool = True) -> Tuple[EnvObs, EnvState]:
-        """Take one step."""
-        torch.compiler.cudagraph_mark_step_begin()
-
-        if auto_reset and self._query_pool is not None:
-            self._copy_state_to_buffer(state)
-            if self._step_and_reset_fn is not None:
-                new_obs, new_state = self._step_and_reset_fn(self._state_buffer, actions, self._query_pool, self._per_env_ptrs)
-            else:
-                new_obs, new_state = self._step_and_reset_core(self._state_buffer, actions, self._query_pool, self._per_env_ptrs)
-            new_obs = self._clone_obs(new_obs)
-            self._copy_state_from_buffer(state, new_state)
-            return new_obs, state
-        else:
-            # Fallback to uncompiled version if compile() wasn't called
-            if self._step_fn is not None:
-                return self._step_fn(state, actions)
-            else:
-                return self._step_core(state, actions)
-
     # =========================================================================
     # STEP LOGIC
     # =========================================================================
 
-    def _reset_from_queries(self, queries: Tensor, labels: Optional[Tensor] = None) -> EnvState:
-        """Create initial state from queries."""
+    def reset_from_queries(self, queries: Tensor, labels: Optional[Tensor] = None) -> EnvState:
+        """Create initial state from queries. Expects queries shape [B, 3]."""
         device = self.device
         A, S, H, pad = self.padding_atoms, self.padding_states, self.max_history_size, self.padding_idx
+        B = queries.shape[0]
 
-        # Handle input shape - can be [B, 3], [B, 1, 3], or [B, A, 3]
-        if queries.ndim == 2:
-            # [B, 3] -> [B, A, 3]
-            B = queries.shape[0]
-            padded = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
-            padded[:, 0, :] = queries.to(device)
-            queries = padded
-        elif queries.ndim == 3 and queries.shape[1] == 1:
-            # [B, 1, 3] -> [B, A, 3]  
-            B = queries.shape[0]
-            padded = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
-            padded[:, 0, :] = queries.squeeze(1).to(device)
-            queries = padded
-        else:
-            # Assume [B, A, 3]
-            queries = queries.to(device)
-            B = queries.shape[0]
+        # Pad [B, 3] -> [B, A, 3]
+        padded = torch.full((B, A, 3), pad, dtype=torch.long, device=device)
+        padded[:, 0, :] = queries.to(device)
+        queries = padded
 
-        # Handle None labels - default to all positive (1)
+        # Default labels to positive (1)
         if labels is None:
             labels = torch.ones(B, dtype=torch.long, device=device)
         else:
@@ -322,8 +263,8 @@ class EnvVec:
             "neg_counters": torch.zeros(B, dtype=torch.int64, device=device),
         }, batch_size=[B], device=device)
 
-    def _step_core(self, state: EnvState, actions: Tensor) -> Tuple[EnvObs, EnvState]:
-        """Single step without auto-reset (for evaluation)."""
+    def step(self, state: EnvState, actions: Tensor) -> Tuple[EnvObs, EnvState]:
+        """Execute single environment step. No auto-reset."""
         B, device = self.batch_size, self.device
         was_done = state['done'].bool()
         active = ~was_done
@@ -391,20 +332,11 @@ class EnvVec:
 
         return self._state_to_obs(new_state), new_state
 
-    def _step_and_reset_core(self, state: EnvState, actions: Tensor, query_pool: Tensor, per_env_ptrs: Tensor,
-                              slot_lengths: Optional[Tensor] = None, slot_offsets: Optional[Tensor] = None,
-                              ) -> Tuple[EnvObs, EnvState]:
-        """Fused step + reset for training and evaluation.
-        
-        Query selection modes:
-        - Training (slot_lengths=None): 
-            - self.order=True: round-robin through query_pool (parity tests)
-            - self.order=False: random selection from query_pool (production)
-        - Evaluation (slot_lengths provided):
-            - Per-slot scheduling: query_idx = slot_offsets + (per_env_ptrs % slot_lengths)
-            - Each slot processes its own sequence of queries (positive + corruptions)
-        """
-        _, next_state = self._step_core(state, actions)
+    def step_and_reset(self, state: EnvState, actions: Tensor, query_pool: Tensor, per_env_ptrs: Tensor,
+                        slot_lengths: Optional[Tensor] = None, slot_offsets: Optional[Tensor] = None,
+                        ) -> Tuple[EnvObs, EnvState]:
+        """Fused step + reset for done environments. Used in training."""
+        _, next_state = self.step(state, actions)
         rewards = next_state['step_rewards']
         done_mask = next_state['step_dones'].bool()
         B, device = state['current_states'].shape[0], self.device
@@ -435,7 +367,7 @@ class EnvVec:
 
         labels = torch.ones(B, dtype=torch.long, device=device)
         reset_q, labels, new_counters = self._sample_negatives(reset_q, labels, done_mask, state['neg_counters'])
-        reset_state = self._reset_from_queries(reset_q, labels)
+        reset_state = self.reset_from_queries(reset_q, labels)
 
         m_A3 = done_mask.view(-1, 1, 1).expand(-1, self.padding_atoms, 3)
         m_SA3 = done_mask.view(-1, 1, 1, 1).expand(-1, self.padding_states, self.padding_atoms, 3)
@@ -1019,40 +951,18 @@ class EnvVec:
         self._per_env_ptrs = torch.arange(self.batch_size, dtype=torch.long, device=self.device)
 
     def _allocate_buffers(self):
-        """Pre-allocate CUDA graph buffers."""
+        """Pre-allocate buffers."""
         B, A, S, H = self.batch_size, self.padding_atoms, self.padding_states, self.max_history_size
         device = self.device
         flat_dim = A * 3
 
         # State history buffer for vectorized exact memory
-        # Stores actual states [B, H, A, 3] for collision-free matching
         self._state_history = torch.full((B, H, A, 3), self.padding_idx, dtype=torch.long, device=device)
         self._state_history_count = torch.zeros(B, dtype=torch.long, device=device)
 
-        # Pre-allocated buffers for _compute_derived to avoid allocation per step
+        # Pre-allocated buffers for _compute_derived
         self._compact_zeros = torch.zeros(B, S, flat_dim, dtype=torch.long, device=device)
         self._compact_full = torch.full((B, S, flat_dim), self.padding_idx, dtype=torch.long, device=device)
-        
-        self._state_buffer = TensorDict({
-            "current_states": torch.zeros(B, A, 3, dtype=torch.long, device=device),
-            "derived_states": torch.zeros(B, S, A, 3, dtype=torch.long, device=device),
-            "derived_counts": torch.zeros(B, dtype=torch.long, device=device),
-            "original_queries": torch.zeros(B, A, 3, dtype=torch.long, device=device),
-            "next_var_indices": torch.zeros(B, dtype=torch.long, device=device),
-            "depths": torch.zeros(B, dtype=torch.long, device=device),
-            "done": torch.zeros(B, dtype=torch.uint8, device=device),
-            "success": torch.zeros(B, dtype=torch.uint8, device=device),
-            "current_labels": torch.zeros(B, dtype=torch.long, device=device),
-            "history_hashes": torch.zeros(B, H, dtype=torch.long, device=device),
-            "history_count": torch.zeros(B, dtype=torch.long, device=device),
-            "step_rewards": torch.zeros(B, dtype=torch.float32, device=device),
-            "step_dones": torch.zeros(B, dtype=torch.uint8, device=device),
-            "step_successes": torch.zeros(B, dtype=torch.uint8, device=device),
-            "step_labels": torch.zeros(B, dtype=torch.long, device=device),
-            "cumulative_rewards": torch.zeros(B, dtype=torch.float32, device=device),
-            "per_env_ptrs": torch.zeros(B, dtype=torch.long, device=device),
-            "neg_counters": torch.zeros(B, dtype=torch.int64, device=device),
-        }, batch_size=[B], device=device)
 
     def _state_to_obs(self, state):
         """Convert state to observation dict."""
@@ -1062,21 +972,6 @@ class EnvVec:
             'derived_sub_indices': state['derived_states'],
             'action_mask': mask.to(torch.uint8),
         }, batch_size=[self.batch_size], device=self.device)
-
-    def _copy_state_to_buffer(self, state):
-        """Copy state to pre-allocated buffer."""
-        for k in self._state_buffer.keys():
-            self._state_buffer[k].copy_(state[k])
-
-    def _copy_state_from_buffer(self, target, source):
-        """Copy from source state to target."""
-        for k in target.keys():
-            if k in source.keys():
-                target[k].copy_(source[k])
-
-    def _clone_obs(self, obs):
-        """Clone observation tensors."""
-        return TensorDict({k: v.clone() for k, v in obs.items()}, batch_size=obs.batch_size, device=self.device)
 
     def set_eval_dataset(self, queries: Tensor, labels: Tensor, query_depths: Tensor,
                          per_slot_lengths: Optional[Tensor] = None):
