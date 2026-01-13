@@ -170,6 +170,11 @@ class PPO:
         self.neural_bridge = kwargs.get('neural_bridge', None)
         self.neural_bridge_enabled = bool(getattr(config, 'neural_bridge', False))
 
+        # Predicate-Type Bridge (different weights for symmetric vs chain predicates)
+        # Use PredicateTypeBridge from kge_module for cleaner separation
+        self.predicate_type_bridge = kwargs.get('predicate_type_bridge', None)
+        self.predicate_aware_scoring = bool(getattr(config, 'predicate_aware_scoring', False))
+
         # Metrics info (CPU-only to avoid synchronization) - copied from PPOOld
         query_labels = kwargs.get('query_labels', None)
         query_depths = kwargs.get('query_depths', None)
@@ -250,7 +255,9 @@ class PPO:
 
     def _compile_all(self):
         """Compile all functions using uncompiled policy in fused steps."""
-        if getattr(self.config, 'compile', True):
+        # Disable compilation in parity mode (dynamic shapes cause issues)
+        should_compile = getattr(self.config, 'compile', True) and not getattr(self.config, 'parity', False)
+        if should_compile:
             # Compile loss module
             self.loss_module = torch.compile(PPOLossModule(self._uncompiled_policy), mode=self._compile_mode, fullgraph=True)
             
@@ -306,8 +313,8 @@ class PPO:
             # Log probabilities for PPO (no masking for done states - matches TensorPPO)
             log_probs = torch.log_softmax(masked, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1)
             
-            # Environment step with auto-reset
-            new_obs, new_state = env._step_and_reset_core(state, actions, env._query_pool, env._per_env_ptrs)
+            # Environment step with auto-reset (uses internal query_pool/per_env_ptrs)
+            new_obs, new_state = env.step_and_reset(state, actions, env.query_pool, env.per_env_ptrs)
             
             return new_obs, new_state, actions, log_probs
 
@@ -334,7 +341,7 @@ class PPO:
             logits = self._uncompiled_policy.get_logits(obs)
             masked = logits.masked_fill(obs['action_mask'] == 0, -3.4e38)
             actions = masked.argmax(dim=-1)
-            new_obs, new_state = env._step_core(state, actions)
+            new_obs, new_state = env.step(state, actions)
             return new_obs, new_state
 
         # Use 'default' mode instead of 'reduce-overhead' to avoid CUDA graph caching of weights
@@ -434,10 +441,8 @@ class PPO:
             for buf in static_buffers:
                 torch._dynamo.mark_static_address(buf)
 
-        # Use configurable mode. 'default' is safer for interleaved training/eval.
-        # 'reduce-overhead' makes profile_eval faster but risks stale weights if not careful.
-        mode = getattr(self, 'ranking_compile_mode', 'default')
-        compile_eval = getattr(self.config, 'compile', True)  # Respect config.compile setting
+        mode = getattr(self, 'ranking_compile_mode', 'reduce-overhead')
+        compile_eval = getattr(self.config, 'compile', True) and not getattr(self.config, 'parity', False)
         unroll = self._ranking_unroll
         if compile_eval and unroll > 1:
             if self.verbose:
@@ -504,7 +509,7 @@ class PPO:
                 active = ~cur_done
                 new_ep_logprob = torch.where(active, cur_ep_logprob + log_probs, cur_ep_logprob)
 
-                _, new_state = env._step_core(cur_state, actions)
+                _, new_state = env.step(cur_state, actions)
 
                 new_current = new_state['current_states']
                 new_derived = new_state['derived_states']
@@ -527,7 +532,7 @@ class PPO:
 
                 safe_idx = new_ptr.clamp(0, max_pool - 1)
                 reset_queries_raw = self._ranking_pool[safe_idx]
-                reset_state = env._reset_from_queries(reset_queries_raw, self._ranking_reset_labels)
+                reset_state = env.reset_from_queries(reset_queries_raw, self._ranking_reset_labels)
                 reset_done = reset_state['done'].bool()
 
                 m1 = needs_reset.view(B, 1, 1)
@@ -606,8 +611,8 @@ class PPO:
         state, obs = current_state, current_obs
 
         # Initialize query indices tracking (per_env_ptrs always present in EnvOptimal state)
-        if self.current_query_indices is None and hasattr(self.env, '_per_env_ptrs') and self.env._per_env_ptrs is not None:
-            self.current_query_indices = self.env._per_env_ptrs.cpu().numpy()
+        if self.current_query_indices is None and self.env.per_env_ptrs is not None:
+            self.current_query_indices = self.env.per_env_ptrs.cpu().numpy()
 
         with torch.no_grad():
             while n_collected < self.n_steps:
@@ -622,7 +627,7 @@ class PPO:
                 else:
                     # Uncompiled fallback
                     actions, values, log_probs = self._uncompiled_policy(obs_snap, deterministic=False)
-                    new_obs, new_state = self.env._step_and_reset_core(state, actions, self.env._query_pool, self.env._per_env_ptrs)
+                    new_obs, new_state = self.env.step_and_reset(state, actions, self.env.query_pool, self.env.per_env_ptrs)
 
                 # Apply PBRS reward shaping if enabled
                 step_rewards = new_state['step_rewards']
@@ -649,7 +654,7 @@ class PPO:
                         trace_entry = {
                             "step": n_collected,
                             "env": idx,
-                            "pointer": int(self.env._per_env_ptrs[idx]) if hasattr(self.env, '_per_env_ptrs') else None,
+                            "pointer": int(self.env.per_env_ptrs[idx]) if self.env.per_env_ptrs is not None else None,
                             "query_idx": int(self.current_query_indices[idx]) if self.current_query_indices is not None else None,
                             "state_obs": {
                                 "sub_index": obs_snap['sub_index'][idx].cpu().numpy().copy(),
@@ -669,7 +674,7 @@ class PPO:
                 n_collected += 1
 
                 # Update per-env pointers from state (critical for query cycling parity)
-                self.env._per_env_ptrs.copy_(new_state['per_env_ptrs'])
+                self.env.per_env_ptrs.copy_(new_state['per_env_ptrs'])
 
                 # Handle callbacks for done episodes
                 done_indices = torch.nonzero(new_state['step_dones']).flatten()
@@ -993,13 +998,13 @@ class PPO:
         self._ranking_result_rewards.zero_()
         self._ranking_stride.fill_(N)
         
-        # Initialize loop buffers using env._reset_from_queries for proper derived computation
+        # Initialize loop buffers using reset_from_queries for proper derived computation
         init_idx = self._ranking_arange_B.clamp(max=max(0, N - 1))
         initial_queries_raw = self._ranking_pool[init_idx]  # [B, 3]
 
         # Use env's reset logic to get proper initial state with correct derived states
         env = self.env.env if hasattr(self.env, 'env') and not isinstance(self.env, EnvVec) else self.env
-        init_state = env._reset_from_queries(initial_queries_raw, self._ranking_reset_labels)
+        init_state = env.reset_from_queries(initial_queries_raw, self._ranking_reset_labels)
 
         buf0 = self._ranking_buffers[0]
         self._ranking_buf_idx = 0
@@ -1338,6 +1343,12 @@ class PPO:
                         elif self.neural_bridge is not None:
                             # Neural Bridge mode: learned combination of RL and KGE
                             scores = self.neural_bridge(logprobs, kge_log_scores, success)
+                        elif self.predicate_type_bridge is not None:
+                            # Predicate-Type Bridge: different RL weights per predicate type
+                            # Symmetric predicates (proof success ~95%): use higher RL weight
+                            # Chain-only predicates (proof success <5%): use lower RL weight (or pure KGE)
+                            pred_indices = queries_batch[:, 0, 0]  # [CQ] predicate index for each query
+                            scores = self.predicate_type_bridge(logprobs, kge_log_scores, success, pred_indices)
                         else:
                             # Hybrid mode: KGE scores + binary bonus for proofs
                             # Successful: kge_weight * kge_log_scores + rl_weight (bonus)

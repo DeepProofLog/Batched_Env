@@ -140,6 +140,11 @@ class TrainConfig:
     neural_bridge_lr: float = 0.01  # Learning rate for bridge training
     neural_bridge_hidden_dim: int = 32  # MLP bridge hidden dimension
 
+    # KGE Integration: Predicate-Aware Scoring
+    predicate_aware_scoring: bool = False  # Use different weights for symmetric vs chain predicates
+    predicate_aware_symmetric_weight: float = 0.7  # RL weight for symmetric predicates (high = trust RL)
+    predicate_aware_chain_weight: float = 0.0  # RL weight for chain-only predicates (0 = pure KGE)
+
     # KGE Integration: KGE-Filtered Candidates (query-level filtering)
     kge_filter_candidates: bool = False  # Pre-filter candidates by KGE score before proofs
     kge_filter_top_k: int = 100  # Keep top-k candidates per query by KGE score
@@ -179,11 +184,6 @@ class TrainConfig:
     profile: bool = False
     use_callbacks: bool = True  # Enable callbacks in run_experiment
 
-    # Compilation settings
-    compile: bool = True  # Auto-compile environment functions
-    compile_mode: str = 'reduce-overhead'
-    compile_fullgraph: bool = True
-    
     # Callback control (individual toggles)
     use_metrics_callback: bool = True
     use_ranking_callback: bool = True

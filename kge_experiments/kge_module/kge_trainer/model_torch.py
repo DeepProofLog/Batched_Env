@@ -72,6 +72,88 @@ class RotatE(nn.Module):
         neg_scores = self.score_triples(n_h, n_r, n_t)
         return pos_scores, neg_scores
 
+    def score_all_tails_batch(self, h: torch.Tensor, r: torch.Tensor, entity_chunk_size: int = 0) -> torch.Tensor:
+        """Score ALL entities as tails for batch of heads. Returns [batch, num_entities].
+
+        Args:
+            h: Head entity indices [batch]
+            r: Relation index (scalar)
+            entity_chunk_size: If >0, process entities in chunks to reduce memory. 0=no chunking.
+        """
+        h_re = self.ent_re(h); h_im = self.ent_im(h)  # [batch, dim]
+        phase = torch.remainder(self.rel_phase(r), 2 * math.pi)
+        c, s = torch.cos(phase), torch.sin(phase)
+        hr_re = h_re * c - h_im * s  # [batch, dim]
+        hr_im = h_re * s + h_im * c  # [batch, dim]
+        all_t_re = self.ent_re.weight  # [num_entities, dim]
+        all_t_im = self.ent_im.weight  # [num_entities, dim]
+        num_entities = all_t_re.size(0)
+
+        if entity_chunk_size > 0 and entity_chunk_size < num_entities:
+            # Chunked scoring to reduce peak memory
+            scores = torch.empty(h.size(0), num_entities, device=h.device, dtype=hr_re.dtype)
+            for start in range(0, num_entities, entity_chunk_size):
+                end = min(start + entity_chunk_size, num_entities)
+                t_re_chunk = all_t_re[start:end]  # [chunk, dim]
+                t_im_chunk = all_t_im[start:end]  # [chunk, dim]
+                if self.p == 1:
+                    dist = (hr_re.unsqueeze(1) - t_re_chunk.unsqueeze(0)).abs() + \
+                           (hr_im.unsqueeze(1) - t_im_chunk.unsqueeze(0)).abs()
+                else:
+                    dist = torch.sqrt(((hr_re.unsqueeze(1) - t_re_chunk.unsqueeze(0)) ** 2 +
+                                       (hr_im.unsqueeze(1) - t_im_chunk.unsqueeze(0)) ** 2) + 1e-9)
+                scores[:, start:end] = self.gamma - dist.sum(dim=-1)
+            return scores
+        else:
+            # Original non-chunked version
+            if self.p == 1:
+                dist = (hr_re.unsqueeze(1) - all_t_re.unsqueeze(0)).abs() + (hr_im.unsqueeze(1) - all_t_im.unsqueeze(0)).abs()
+            else:
+                dist = torch.sqrt(((hr_re.unsqueeze(1) - all_t_re.unsqueeze(0)) ** 2 + (hr_im.unsqueeze(1) - all_t_im.unsqueeze(0)) ** 2) + 1e-9)
+            return self.gamma - dist.sum(dim=-1)  # [batch, num_entities]
+
+    def score_all_heads_batch(self, r: torch.Tensor, t: torch.Tensor, entity_chunk_size: int = 0) -> torch.Tensor:
+        """Score ALL entities as heads for batch of tails. Returns [batch, num_entities].
+
+        Args:
+            r: Relation index (scalar)
+            t: Tail entity indices [batch]
+            entity_chunk_size: If >0, process entities in chunks to reduce memory. 0=no chunking.
+        """
+        t_re = self.ent_re(t); t_im = self.ent_im(t)  # [batch, dim]
+        phase = torch.remainder(self.rel_phase(r), 2 * math.pi)
+        c, s = torch.cos(phase), torch.sin(phase)
+        all_h_re = self.ent_re.weight  # [num_entities, dim]
+        all_h_im = self.ent_im.weight  # [num_entities, dim]
+        num_entities = all_h_re.size(0)
+
+        if entity_chunk_size > 0 and entity_chunk_size < num_entities:
+            # Chunked scoring to reduce peak memory
+            scores = torch.empty(t.size(0), num_entities, device=t.device, dtype=t_re.dtype)
+            for start in range(0, num_entities, entity_chunk_size):
+                end = min(start + entity_chunk_size, num_entities)
+                h_re_chunk = all_h_re[start:end]  # [chunk, dim]
+                h_im_chunk = all_h_im[start:end]  # [chunk, dim]
+                hr_re = h_re_chunk * c - h_im_chunk * s  # [chunk, dim]
+                hr_im = h_re_chunk * s + h_im_chunk * c  # [chunk, dim]
+                if self.p == 1:
+                    dist = (hr_re.unsqueeze(0) - t_re.unsqueeze(1)).abs() + \
+                           (hr_im.unsqueeze(0) - t_im.unsqueeze(1)).abs()
+                else:
+                    dist = torch.sqrt(((hr_re.unsqueeze(0) - t_re.unsqueeze(1)) ** 2 +
+                                       (hr_im.unsqueeze(0) - t_im.unsqueeze(1)) ** 2) + 1e-9)
+                scores[:, start:end] = self.gamma - dist.sum(dim=-1)
+            return scores
+        else:
+            # Original non-chunked version
+            hr_re = all_h_re * c - all_h_im * s  # [num_entities, dim]
+            hr_im = all_h_re * s + all_h_im * c  # [num_entities, dim]
+            if self.p == 1:
+                dist = (hr_re.unsqueeze(0) - t_re.unsqueeze(1)).abs() + (hr_im.unsqueeze(0) - t_im.unsqueeze(1)).abs()
+            else:
+                dist = torch.sqrt(((hr_re.unsqueeze(0) - t_re.unsqueeze(1)) ** 2 + (hr_im.unsqueeze(0) - t_im.unsqueeze(1)) ** 2) + 1e-9)
+            return self.gamma - dist.sum(dim=-1)  # [batch, num_entities]
+
 
 # ------------------------- ComplEx -------------------------
 class ComplEx(nn.Module):
@@ -119,6 +201,34 @@ class ComplEx(nn.Module):
         pos_scores = self.score_triples(p_h, p_r, p_t)
         neg_scores = self.score_triples(n_h, n_r, n_t)
         return pos_scores, neg_scores
+
+    def score_all_tails_batch(self, h: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
+        """Score ALL entities as tails for batch of heads. Returns [batch, num_entities]."""
+        h_re = self.ent_re(h); h_im = self.ent_im(h)  # [batch, dim]
+        r_re = self.rel_re(r); r_im = self.rel_im(r)  # [dim]
+        all_t_re = self.ent_re.weight  # [num_entities, dim]
+        all_t_im = self.ent_im.weight  # [num_entities, dim]
+        # Compute hr terms: [batch, dim]
+        hr_re_re = h_re * r_re; hr_im_re = h_im * r_re
+        hr_re_im = h_re * r_im; hr_im_im = h_im * r_im
+        # [batch, dim] @ [dim, num_entities] -> [batch, num_entities]
+        scores = (hr_re_re @ all_t_re.T + hr_im_re @ all_t_im.T +
+                  hr_re_im @ all_t_im.T - hr_im_im @ all_t_re.T)
+        return scores
+
+    def score_all_heads_batch(self, r: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Score ALL entities as heads for batch of tails. Returns [batch, num_entities]."""
+        t_re = self.ent_re(t); t_im = self.ent_im(t)  # [batch, dim]
+        r_re = self.rel_re(r); r_im = self.rel_im(r)  # [dim]
+        all_h_re = self.ent_re.weight  # [num_entities, dim]
+        all_h_im = self.ent_im.weight  # [num_entities, dim]
+        # Compute rt terms: [batch, dim]
+        rt_re_re = r_re * t_re; rt_re_im = r_re * t_im
+        rt_im_im = r_im * t_im; rt_im_re = r_im * t_re
+        # [batch, dim] @ [dim, num_entities] -> [batch, num_entities]
+        scores = (rt_re_re @ all_h_re.T + rt_re_im @ all_h_im.T +
+                  rt_im_im @ all_h_re.T - rt_im_re @ all_h_im.T)
+        return scores
 
 
 # ------------------------- TuckER -------------------------
@@ -186,6 +296,31 @@ class TuckER(nn.Module):
         return pos_scores, neg_scores
 
 
+    def score_all_tails_batch(self, h: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
+        """Score ALL entities as tails for batch of heads. Returns [batch, num_entities]."""
+        e_h = self.ent(h)  # [batch, d_e]
+        e_r = self.rel(r)  # [d_r]
+        all_t = self.ent.weight  # [num_entities, d_e]
+        # W x2 r -> [d_e, d_e]
+        Wr = torch.tensordot(e_r, self.W, dims=([0], [0]))  # [d_e, d_e]
+        # (e_h @ Wr) -> [batch, d_e]
+        x = e_h @ Wr  # [batch, d_e]
+        # Score all tails: [batch, d_e] @ [d_e, num_entities] -> [batch, num_entities]
+        return x @ all_t.T
+
+    def score_all_heads_batch(self, r: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Score ALL entities as heads for batch of tails. Returns [batch, num_entities]."""
+        e_t = self.ent(t)  # [batch, d_e]
+        e_r = self.rel(r)  # [d_r]
+        all_h = self.ent.weight  # [num_entities, d_e]
+        # W x2 r -> [d_e, d_e]
+        Wr = torch.tensordot(e_r, self.W, dims=([0], [0]))  # [d_e, d_e]
+        # (Wr @ e_t.T) -> [d_e, batch]
+        y = Wr @ e_t.T  # [d_e, batch]
+        # Score all heads: [num_entities, d_e] @ [d_e, batch] -> [num_entities, batch]
+        return (all_h @ y).T  # [batch, num_entities]
+
+
 # ------------------------- TransE -------------------------
 class TransE(nn.Module):
     """TransE: Translating Embeddings for Modeling Multi-relational Data.
@@ -243,6 +378,29 @@ class TransE(nn.Module):
         return pos_scores, neg_scores
 
 
+    def score_all_tails_batch(self, h: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
+        """Score ALL entities as tails for batch of heads. Returns [batch, num_entities]."""
+        h_emb = self.entity_embeddings(h)  # [batch, dim]
+        r_emb = self.relation_embeddings(r)  # [dim]
+        hr = h_emb + r_emb.unsqueeze(0)  # [batch, dim]
+        all_t = self.entity_embeddings.weight  # [num_entities, dim]
+        # -||hr - t||_p for all t: [batch, 1, dim] - [1, num_entities, dim] -> [batch, num_entities, dim]
+        diff = hr.unsqueeze(1) - all_t.unsqueeze(0)  # [batch, num_entities, dim]
+        dist = torch.norm(diff, p=self.p, dim=-1)  # [batch, num_entities]
+        return -dist
+
+    def score_all_heads_batch(self, r: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Score ALL entities as heads for batch of tails. Returns [batch, num_entities]."""
+        t_emb = self.entity_embeddings(t)  # [batch, dim]
+        r_emb = self.relation_embeddings(r)  # [dim]
+        rt = t_emb - r_emb.unsqueeze(0)  # [batch, dim] (h + r = t -> h = t - r)
+        all_h = self.entity_embeddings.weight  # [num_entities, dim]
+        # -||h - rt||_p for all h: [1, num_entities, dim] - [batch, 1, dim] -> [batch, num_entities, dim]
+        diff = all_h.unsqueeze(0) - rt.unsqueeze(1)  # [batch, num_entities, dim]
+        dist = torch.norm(diff, p=self.p, dim=-1)  # [batch, num_entities]
+        return -dist
+
+
 # ------------------------- DistMult -------------------------
 class DistMult(nn.Module):
     """DistMult: Embedding Entities and Relations for Learning and Inference.
@@ -278,6 +436,22 @@ class DistMult(nn.Module):
         pos_scores = self.score_triples(p_h, p_r, p_t)
         neg_scores = self.score_triples(n_h, n_r, n_t)
         return pos_scores, neg_scores
+
+    def score_all_tails_batch(self, h: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
+        """Score ALL entities as tails for batch of heads. Returns [batch, num_entities]."""
+        h_emb = self.entity_embeddings(h)  # [batch, dim]
+        r_emb = self.relation_embeddings(r)  # [dim]
+        hr = h_emb * r_emb.unsqueeze(0)  # [batch, dim]
+        all_t = self.entity_embeddings.weight  # [num_entities, dim]
+        return hr @ all_t.T  # [batch, num_entities]
+
+    def score_all_heads_batch(self, r: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Score ALL entities as heads for batch of tails. Returns [batch, num_entities]."""
+        t_emb = self.entity_embeddings(t)  # [batch, dim]
+        r_emb = self.relation_embeddings(r)  # [dim]
+        rt = t_emb * r_emb.unsqueeze(0)  # [batch, dim]
+        all_h = self.entity_embeddings.weight  # [num_entities, dim]
+        return rt @ all_h.T  # [batch, num_entities]
 
 
 # ------------------------- ConvE -------------------------
@@ -370,6 +544,23 @@ class ConvE(nn.Module):
         pos_scores = self.score_triples(p_h, p_r, p_t)
         neg_scores = self.score_triples(n_h, n_r, n_t)
         return pos_scores, neg_scores
+
+    def _conv_forward(self, h: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
+        """Run conv layers on (h, r) pair. Returns projected embedding [dim]."""
+        h_emb = self.entity_embeddings(h)  # [dim]
+        r_emb = self.relation_embeddings(r)  # [dim]
+        h_emb = h_emb.view(1, 1, self.embedding_height, self.embedding_width)
+        r_emb = r_emb.view(1, 1, self.embedding_height, self.embedding_width)
+        stacked = torch.cat([h_emb, r_emb], dim=2)  # [1, 1, 2*height, width]
+        stacked = self.bn0(stacked)
+        x = self.conv1(stacked)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = x.view(1, -1)
+        x = self.fc(x)
+        x = F.relu(x)
+        return x.squeeze(0)  # [dim]
+
 
 
 # ------------------------- Factory -------------------------

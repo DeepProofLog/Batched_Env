@@ -247,6 +247,216 @@ class PerPredicateBridge(nn.Module):
         return f"PerPredicateBridge(n_predicates={self.n_predicates}, alphas_range=[{alphas.min():.3f}, {alphas.max():.3f}])"
 
 
+class PredicateTypeBridge(nn.Module):
+    """Fixed-weight bridge based on predicate type (symmetric vs chain).
+
+    Symmetric predicates have rules: p(x,y) <- p(y,x) with ~95% proof success.
+    Chain predicates require intermediate facts and have <5% proof success.
+
+    Uses fixed weights (not learned) based on predicate classification.
+
+    Attributes:
+        symmetric_weight: RL weight for symmetric predicates.
+        chain_weight: RL weight for chain-only predicates.
+        symmetric_mask: [n_predicates] boolean mask identifying symmetric predicates.
+    """
+
+    def __init__(
+        self,
+        symmetric_mask: Tensor,  # [n_predicates] bool
+        symmetric_weight: float = 0.7,
+        chain_weight: float = 0.0,
+        kge_weight: float = 1.0,
+        fail_penalty: float = 0.5,
+        device: Optional[torch.device] = None,
+    ) -> None:
+        """Initialize predicate-type bridge.
+
+        Args:
+            symmetric_mask: [n_predicates] boolean mask for symmetric predicates.
+            symmetric_weight: RL weight for symmetric predicates (bonus/penalty scale).
+            chain_weight: RL weight for chain-only predicates (0 = pure KGE).
+            kge_weight: KGE log score weight.
+            fail_penalty: Penalty for failed proofs.
+            device: Target device.
+        """
+        super().__init__()
+        self.symmetric_weight = symmetric_weight
+        self.chain_weight = chain_weight
+        self.kge_weight = kge_weight
+        self.fail_penalty = fail_penalty
+
+        self.register_buffer('symmetric_mask', symmetric_mask.bool())
+
+        if device is not None:
+            self.to(device)
+
+    @property
+    def effective_alpha(self) -> float:
+        """Return average alpha for compatibility."""
+        return (self.symmetric_weight + self.chain_weight) / 2
+
+    def forward(
+        self,
+        rl_logprobs: Tensor,  # [B, K] RL log probabilities (unused, use success_mask)
+        kge_logprobs: Tensor,  # [B, K] KGE log scores
+        success_mask: Tensor,  # [B, K] proof success mask
+        pred_indices: Optional[Tensor] = None,  # [B] predicate index per query
+    ) -> Tensor:
+        """Compute combined scores with predicate-type-aware weighting.
+
+        Formula: score = kge_weight * kge_log + rl_weight * (bonus if success else -penalty)
+        where rl_weight = symmetric_weight for symmetric predicates, chain_weight otherwise.
+
+        Args:
+            rl_logprobs: [B, K] RL log probabilities (unused in this bridge).
+            kge_logprobs: [B, K] KGE log scores.
+            success_mask: [B, K] boolean mask for proof success.
+            pred_indices: [B] predicate indices for each query.
+
+        Returns:
+            [B, K] combined scores.
+        """
+        B, K = kge_logprobs.shape
+
+        # Base score from KGE
+        scores = self.kge_weight * kge_logprobs
+
+        if pred_indices is None:
+            # Fallback to uniform chain weight (conservative)
+            rl_weight = self.chain_weight
+            rl_adjustment = torch.where(
+                success_mask,
+                torch.full_like(scores, rl_weight),
+                torch.full_like(scores, -rl_weight * self.fail_penalty),
+            )
+            return scores + rl_adjustment
+
+        # Look up predicate type: [B]
+        safe_indices = pred_indices.clamp(0, len(self.symmetric_mask) - 1)
+        is_symmetric = self.symmetric_mask[safe_indices]  # [B]
+
+        # Expand to [B, K] for broadcasting
+        is_symmetric = is_symmetric.unsqueeze(1).expand(B, K)
+
+        # Compute RL weight per query
+        rl_weight = torch.where(
+            is_symmetric,
+            torch.full_like(scores, self.symmetric_weight),
+            torch.full_like(scores, self.chain_weight),
+        )
+
+        # RL adjustment: bonus for success, penalty for failure
+        rl_adjustment = torch.where(
+            success_mask,
+            rl_weight,  # Bonus for proven
+            -rl_weight * self.fail_penalty,  # Scaled penalty for failed
+        )
+
+        return scores + rl_adjustment
+
+    def __repr__(self) -> str:
+        n_sym = self.symmetric_mask.sum().item()
+        n_total = len(self.symmetric_mask)
+        return (f"PredicateTypeBridge(symmetric={n_sym}/{n_total}, "
+                f"sym_weight={self.symmetric_weight}, chain_weight={self.chain_weight})")
+
+
+def identify_symmetric_predicates(
+    rules_str: list,
+    predicate_str2idx: dict,
+    n_predicates: int,
+    device: torch.device,
+    verbose: bool = True,
+) -> Tensor:
+    """Identify symmetric predicates from rules.
+
+    Symmetric predicates have rules of the form: p(x,y) <- p(y,x)
+    For these predicates, RL proofs succeed ~95% of the time (if inverse fact exists).
+    For chain-only predicates, proofs rarely succeed (<5%).
+
+    Args:
+        rules_str: List of (head, body) tuples from data_handler.
+        predicate_str2idx: Predicate name to index mapping from index_manager.
+        n_predicates: Total number of predicates.
+        device: Target device.
+        verbose: Print identified predicates.
+
+    Returns:
+        [n_predicates] boolean mask identifying symmetric predicates.
+    """
+    symmetric_preds = set()
+
+    for (head_pred, head_arg1, head_arg2), body in rules_str:
+        # Check if symmetric: p(x,y) <- p(y,x) with swapped arguments
+        is_symmetric = (
+            len(body) == 1
+            and body[0][0] == head_pred
+            and body[0][1] == head_arg2
+            and body[0][2] == head_arg1
+        )
+        if is_symmetric:
+            symmetric_preds.add(head_pred)
+
+    # Convert to index mask
+    mask = torch.zeros(n_predicates, dtype=torch.bool, device=device)
+    for pred in symmetric_preds:
+        if pred in predicate_str2idx:
+            mask[predicate_str2idx[pred]] = True
+
+    if verbose:
+        n_symmetric = mask.sum().item()
+        print(f"[PredicateTypeBridge] Identified {n_symmetric}/{n_predicates} symmetric predicates: "
+              f"{', '.join(sorted(symmetric_preds))}")
+
+    return mask
+
+
+def create_predicate_type_bridge(
+    rules_str: list,
+    predicate_str2idx: dict,
+    n_predicates: int,
+    symmetric_weight: float = 0.7,
+    chain_weight: float = 0.0,
+    kge_weight: float = 1.0,
+    fail_penalty: float = 0.5,
+    device: Optional[torch.device] = None,
+    verbose: bool = True,
+) -> PredicateTypeBridge:
+    """Factory function to create PredicateTypeBridge from rules.
+
+    Args:
+        rules_str: List of (head, body) tuples from data_handler.
+        predicate_str2idx: Predicate name to index mapping.
+        n_predicates: Total number of predicates.
+        symmetric_weight: RL weight for symmetric predicates.
+        chain_weight: RL weight for chain-only predicates.
+        kge_weight: KGE log score weight.
+        fail_penalty: Penalty for failed proofs.
+        device: Target device.
+        verbose: Print debug info.
+
+    Returns:
+        Configured PredicateTypeBridge instance.
+    """
+    symmetric_mask = identify_symmetric_predicates(
+        rules_str=rules_str,
+        predicate_str2idx=predicate_str2idx,
+        n_predicates=n_predicates,
+        device=device or torch.device('cpu'),
+        verbose=verbose,
+    )
+
+    return PredicateTypeBridge(
+        symmetric_mask=symmetric_mask,
+        symmetric_weight=symmetric_weight,
+        chain_weight=chain_weight,
+        kge_weight=kge_weight,
+        fail_penalty=fail_penalty,
+        device=device,
+    )
+
+
 class MLPBridge(nn.Module):
     """MLP-based combination of RL and KGE features.
 

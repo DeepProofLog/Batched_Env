@@ -482,7 +482,7 @@ if __name__ == "__main__":
 
     # Set mode to 'depth_check' to run the exhaustive search with branching factor analysis
     # Set mode to 'random_agent' to run the simplified random walk simulation
-    mode = 'random_agent' 
+    mode = 'depth_check' 
 
     for set_file in ['train']:
         queries, rules, facts_set, index_manager = load_queries(

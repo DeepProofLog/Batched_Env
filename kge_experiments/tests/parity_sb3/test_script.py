@@ -74,7 +74,7 @@ def parity_config_to_train_config(parity_config: ParityConfig) -> TensorConfig:
         total_timesteps=parity_config.total_timesteps,
         n_corruptions=parity_config.n_corruptions,
         train_neg_ratio=parity_config.negative_ratio,
-        corruption_scheme=[parity_config.corruption_mode] if parity_config.corruption_mode != 'both' else ['head', 'tail'],
+        corruption_scheme=[parity_config.corruption_mode],
         atom_embedding_size=parity_config.embed_dim,
         seed=parity_config.seed,
         device=parity_config.device,
@@ -82,7 +82,6 @@ def parity_config_to_train_config(parity_config: ParityConfig) -> TensorConfig:
         parity=parity_config.parity,
         # Note: sampler_default_mode defaults to 'both' in TrainParityConfig,
         # allowing the sampler to generate all corruption types.
-        # The actual corruption_scheme used during evaluation is set by __post_init__.
     )
 
 

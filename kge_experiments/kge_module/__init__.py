@@ -33,10 +33,13 @@ from kge_module.neural_bridge import (
     LinearBridge,
     GatedBridge,
     PerPredicateBridge,
+    PredicateTypeBridge,
     MLPBridge,
     NeuralBridgeTrainer,
     create_neural_bridge,
     create_bridge_trainer,
+    create_predicate_type_bridge,
+    identify_symmetric_predicates,
 )
 
 # Embedding initialization
@@ -99,10 +102,13 @@ __all__ = [
     "LinearBridge",
     "GatedBridge",
     "PerPredicateBridge",
+    "PredicateTypeBridge",
     "MLPBridge",
     "NeuralBridgeTrainer",
     "create_neural_bridge",
     "create_bridge_trainer",
+    "create_predicate_type_bridge",
+    "identify_symmetric_predicates",
     # Embedding init
     "initialize_embeddings_from_kge",
     "apply_kge_init",

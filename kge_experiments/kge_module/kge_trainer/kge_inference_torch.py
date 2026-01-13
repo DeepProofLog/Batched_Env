@@ -68,7 +68,7 @@ class KGEInference:
         dataset_name: str,
         base_path: str,
         run_signature: str,
-        checkpoint_dir: str = './checkpoints/',
+        checkpoint_dir: str = "./../kge_trainer/models/",
         seed: int = 0,
         scores_file_path: Optional[str] = None,
         runtime_cache_max_entries: Optional[int] = None,
@@ -280,6 +280,90 @@ class KGEInference:
             return torch.cat(scores, dim=0).tolist()
         return []
     
+    def get_topk_tails(
+        self,
+        head: str,
+        relation: str,
+        k: int,
+        return_scores: bool = True,
+    ) -> List[Tuple[str, float]]:
+        """Get top-k tail entities for (head, relation) using vectorized scoring.
+
+        Args:
+            head: Head entity name
+            relation: Relation/predicate name
+            k: Number of top entities to return
+            return_scores: If True, return (entity, score) tuples
+
+        Returns:
+            List of (entity_name, score) tuples sorted by score descending
+        """
+        if self.model is None:
+            self.model = self._build_and_load_model()
+
+        if head not in self.entity2id or relation not in self.relation2id:
+            return []
+
+        h_idx = torch.tensor(self.entity2id[head], device=self.device)
+        r_idx = torch.tensor(self.relation2id[relation], device=self.device)
+
+        with torch.no_grad():
+            if torch.cuda.is_available():
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    scores = self.model.score_all_tails_batch(h_idx, r_idx)
+            else:
+                scores = self.model.score_all_tails_batch(h_idx, r_idx)
+
+            scores = torch.sigmoid(scores.float())
+            # Exclude self-prediction (head == tail)
+            scores[h_idx] = float('-inf')
+            top_scores, top_indices = torch.topk(scores, min(k, scores.size(0)))
+
+        id2entity = {v: k for k, v in self.entity2id.items()}
+        return [(id2entity[i.item()], s.item()) for i, s in zip(top_indices, top_scores)]
+
+    def get_topk_heads(
+        self,
+        relation: str,
+        tail: str,
+        k: int,
+        return_scores: bool = True,
+    ) -> List[Tuple[str, float]]:
+        """Get top-k head entities for (relation, tail) using vectorized scoring.
+
+        Args:
+            relation: Relation/predicate name
+            tail: Tail entity name
+            k: Number of top entities to return
+            return_scores: If True, return (entity, score) tuples
+
+        Returns:
+            List of (entity_name, score) tuples sorted by score descending
+        """
+        if self.model is None:
+            self.model = self._build_and_load_model()
+
+        if tail not in self.entity2id or relation not in self.relation2id:
+            return []
+
+        r_idx = torch.tensor(self.relation2id[relation], device=self.device)
+        t_idx = torch.tensor(self.entity2id[tail], device=self.device)
+
+        with torch.no_grad():
+            if torch.cuda.is_available():
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    scores = self.model.score_all_heads_batch(r_idx, t_idx)
+            else:
+                scores = self.model.score_all_heads_batch(r_idx, t_idx)
+
+            scores = torch.sigmoid(scores.float())
+            # Exclude self-prediction (head == tail)
+            scores[t_idx] = float('-inf')
+            top_scores, top_indices = torch.topk(scores, min(k, scores.size(0)))
+
+        id2entity = {v: k for k, v in self.entity2id.items()}
+        return [(id2entity[i.item()], s.item()) for i, s in zip(top_indices, top_scores)]
+
     def predict_batch(self, atoms_for_ranking: Sequence[Union[str, Tuple]]) -> List[float]:
         """
         Score a batch of atoms. First atom is assumed to be the positive sample.

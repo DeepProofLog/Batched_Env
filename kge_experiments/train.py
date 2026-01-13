@@ -1,17 +1,10 @@
 """
-Training script for Neural-Guided Logical Reasoning (Production).
-
-This module provides the run_experiment function for training using optimized components:
-- EnvVec for vectorized environments
-- PPO for PPO training
-- UnificationEngineVectorized for compiled unification
+Training script for Neural-Guided Logical Reasoning.
 
 Usage:
     from train import run_experiment
     from config import TrainConfig
-    
-    config = TrainConfig(dataset="countries_s3", total_timesteps=1000)
-    results = run_experiment(config)
+    results = run_experiment(TrainConfig(dataset="countries_s3", total_timesteps=1000))
 """
 
 import os
@@ -49,18 +42,11 @@ from callbacks import (
 from utils import seed_all
 from kge_module import build_kge_inference
 from kge_module.pbrs import create_pbrs_module, PBRSWrapper
-from kge_module import create_neural_bridge
+from kge_module import create_neural_bridge, create_predicate_type_bridge
 
 
 def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str = None):
-    """Build callbacks for training.
-    
-    Callbacks included:
-    - MetricsCallback: Always included for logging
-    - RankingCallback: If eval_freq > 0 and eval_env provided
-    - CheckpointCallback: If save_model is True
-    - ScalarAnnealingCallback: If lr_decay or ent_coef_decay enabled
-    """
+    """Build callbacks: MetricsCallback, RankingCallback, CheckpointCallback, ScalarAnnealingCallback."""
     callbacks = [MetricsCallback(
         log_interval=1, 
         verbose=getattr(config, 'verbose', True), 
@@ -78,7 +64,6 @@ def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str =
         best_model_path_train = save_path / "best_model_train.pt"
         best_model_path_eval = save_path / "best_model_eval.pt"
         
-    # 1. CheckpointCallback for saving/loading
     if save_model:
         best_metric = getattr(config, 'eval_best_metric', 'mrr_mean')
         if best_metric == 'mrr':
@@ -92,7 +77,6 @@ def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str =
             load_model=getattr(config, 'load_model', False)
         ))
 
-    # 2. RankingCallback for evaluation
     if eval_freq > 0 and eval_env is not None:
         valid_split = dh.get_materialized_split('valid')
         valid_queries = valid_split.queries.squeeze(1)
@@ -111,7 +95,6 @@ def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str =
             corruption_scheme=tuple(scheme), ppo_agent=ppo
         ))
     
-    # 3. ScalarAnnealingCallback for lr/entropy decay
     annealing_targets = []
     total_timesteps = getattr(config, 'timesteps_train', getattr(config, 'total_timesteps', 0))
     
@@ -233,9 +216,6 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         order=False,  # Random query selection (production)
         negative_ratio=config.negative_ratio,
         reward_type=config.reward_type,
-        compile=True,
-        compile_mode='reduce-overhead',
-        compile_fullgraph=True,
         skip_unary_actions=config.skip_unary_actions,  # AAAI26 parity: auto-advance when only 1 action
     )
     
@@ -280,15 +260,7 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
 
 
 def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str, Any]:
-    """Run full training experiment and return evaluation metrics.
-    
-    Args:
-        config: Training configuration (TrainConfig dataclass).
-        return_traces: If True, return detailed traces for debugging.
-        
-    Returns:
-        Dict containing evaluation metrics and optionally traces.
-    """
+    """Run training experiment and return evaluation metrics."""
     print("=" * 70)
     print(f"Training: {config.dataset}")
     print(f"Envs: {config.n_envs}, Steps: {config.n_steps}, Timesteps: {config.total_timesteps}")
@@ -298,7 +270,9 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
     # Create components
     print("\n[1/3] Creating components...")
     comp = create_components(config)
-    
+
+    config._components = comp
+
     im = comp['im']
     policy = comp['policy']
     env = comp['env']
@@ -343,6 +317,21 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
             n_predicates=im.predicate_no,
         )
 
+    # Create predicate-type bridge if enabled (different weights for symmetric vs chain predicates)
+    predicate_type_bridge = None
+    if getattr(config, 'predicate_aware_scoring', False):
+        predicate_type_bridge = create_predicate_type_bridge(
+            rules_str=dh.rules_str,
+            predicate_str2idx=im.predicate_str2idx,
+            n_predicates=im.predicate_no,
+            symmetric_weight=getattr(config, 'predicate_aware_symmetric_weight', 0.7),
+            chain_weight=getattr(config, 'predicate_aware_chain_weight', 0.0),
+            kge_weight=getattr(config, 'kge_eval_kge_weight', 1.0),
+            fail_penalty=getattr(config, 'kge_fail_penalty', 0.5),
+            device=torch.device(config.device),
+            verbose=getattr(config, 'verbose', True),
+        )
+
     ppo = PPO(
         policy,
         env,
@@ -353,6 +342,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         kge_index_manager=im,
         pbrs_wrapper=pbrs_wrapper,
         neural_bridge=neural_bridge,
+        predicate_type_bridge=predicate_type_bridge,
     )
     
     # Build callbacks

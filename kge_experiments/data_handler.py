@@ -435,15 +435,31 @@ class DataHandler:
         """Load probabilistic facts from KGE scores."""
         import os
         from collections import defaultdict
-        
-        # Try to find probabilistic facts file
+
+        # Try to find probabilistic facts file (check multiple patterns)
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        prob_facts_path = os.path.join(base_dir, "kge_module", "top_k_scores", "files", f"kge_top_{dataset_name}.txt")
-        
-        if not os.path.exists(prob_facts_path):
-            print(f"Warning: Probabilistic facts file {prob_facts_path} not found")
+        files_dir = os.path.join(base_dir, "kge_module", "top_k_scores", "files")
+
+        # Check patterns in order of preference (larger files first for more coverage)
+        patterns = [
+            f"kge_top_{dataset_name}_facts.txt",  # Larger file with more facts
+            f"kge_top5_{dataset_name}_facts.txt",
+            f"kge_top_{dataset_name}.txt",  # Original smaller file
+        ]
+
+        prob_facts_path = None
+        for pattern in patterns:
+            candidate = os.path.join(files_dir, pattern)
+            if os.path.exists(candidate):
+                prob_facts_path = candidate
+                break
+
+        if prob_facts_path is None:
+            print(f"Warning: No probabilistic facts file found for {dataset_name}")
             return
-        
+
+        print(f"Loading probabilistic facts from: {os.path.basename(prob_facts_path)}")
+
         loaded_facts = []
         seen = set()
         

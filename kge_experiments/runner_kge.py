@@ -133,6 +133,11 @@ if __name__ == "__main__":
         'neural_bridge_lr': 0.01,
         'neural_bridge_hidden_dim': 32,  # For MLP bridge
 
+        # KGE Integration: Predicate-Aware Scoring
+        'predicate_aware_scoring': False,
+        'predicate_aware_symmetric_weight': 0.7,  # RL weight for symmetric predicates
+        'predicate_aware_chain_weight': 0.0,  # RL weight for chain-only predicates (0 = pure KGE)
+
         # KGE Integration: KGE-Filtered Candidates
         'kge_filter_candidates': False,
         'kge_filter_top_k': 100,
