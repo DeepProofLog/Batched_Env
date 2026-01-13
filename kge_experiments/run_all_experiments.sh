@@ -9,7 +9,8 @@ set -e
 # Common parameters
 # Configuration
 FAST_DEV_RUN=false  # Set to false for full training
-DATASETS=("nations" "umls" "fb15k237" "pharmkg_full")
+DATASETS=("wn18rr")
+# DATASETS=("nations" "umls" "fb15k237" "pharmkg_full")
 
 if [ "$FAST_DEV_RUN" = true ]; then
     echo "!!! FAST_DEV_RUN ENABLED - Running truncated experiments !!!"

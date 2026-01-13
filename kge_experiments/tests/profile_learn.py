@@ -65,8 +65,6 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from env import EnvVec
     from ppo import PPO
     
-    import unification
-    unification.COMPILE_MODE = config.compile
     
     dh = DataHandler(
         dataset_name=config.dataset,
@@ -184,16 +182,13 @@ def setup_components(device: torch.device, config: SimpleNamespace):
 
 
 def compile_and_warmup(components, config) -> float:
-    """Compile the environment and run warmup."""
+    """Run warmup to compile graphs. PPO handles compilation internally."""
     ppo = components['ppo']
-    env = components['train_env']
-    
+
     warmup_start = time()
-    
-    # Compile environment
-    env.compile(mode=config.compile_mode, fullgraph=config.fullgraph)
-    
+
     # Warmup: run learn() iteration to compile all graphs
+    # PPO compiles in its __init__, this just ensures graphs are ready
     print("Warmup: Running learn() iteration to compile all graphs...")
     ppo.learn(total_timesteps=config.n_steps)
     
@@ -241,9 +236,6 @@ def profile_cprofile(config: SimpleNamespace):
         print(f"  N steps per rollout: {config.n_steps}")
         print(f"  N epochs: {config.n_epochs}")
         print(f"  Minibatch size: {config.batch_size}")
-        print(f"  Compile mode: {config.compile_mode}")
-        print(f"  Fullgraph: {config.fullgraph}")
-        print(f"")
         
         print("\nSetting up components...")
         init_start = time()
@@ -417,9 +409,8 @@ def main():
     parser.add_argument('--batch-size', type=int, default=1024,
                         help='PPO minibatch size')
     
-    parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false')
-    parser.add_argument('--compile-mode', type=str, default='reduce-overhead')
-    parser.add_argument('--fullgraph', default=True, type=lambda x: x.lower() != 'false')
+    parser.add_argument('--compile', default=True, type=lambda x: x.lower() != 'false',
+                        help='Enable torch.compile for PPO and unification')
     parser.add_argument('--amp', default=True, type=lambda x: x.lower() != 'false')
     
     args = parser.parse_args()
@@ -459,13 +450,11 @@ def main():
         max_total_vars=100,
         atom_embedding_size=250,
         seed=42,
-        compile=args.compile,
-        compile_mode=args.compile_mode,
-        fullgraph=args.fullgraph,
         use_amp=args.amp,
         verbose=True,
         parity=False,
         use_callbacks=False,
+        compile=args.compile,
     )
     
     print(f"Using padding_states={config.padding_states} for dataset={config.dataset}")

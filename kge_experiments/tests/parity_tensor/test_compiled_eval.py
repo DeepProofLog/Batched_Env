@@ -126,12 +126,8 @@ def create_default_config() -> SimpleNamespace:
         hidden_dim=256,
         num_layers=8,
         
-        # Compilation
-        compile=False,
-        compile_mode='default',
-        fullgraph=True,
         vram_gb=6.0,
-        
+
         seed=42,
         verbose=False,
         
@@ -150,6 +146,7 @@ def create_default_config() -> SimpleNamespace:
         max_steps=20,  # Alias for max_depth
         use_callbacks=False,
         eval_only=True,  # Skip rollout buffer allocation
+        compile=False,  # Disable torch.compile for parity tests
     )
 
 
@@ -164,8 +161,8 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
     
-    # Enable/disable compile mode
-    set_compile_mode(config.compile)
+    # Disable compile mode for parity tests
+    set_compile_mode(False)
     
     # Load data
     dh = DataHandler(
@@ -372,7 +369,6 @@ def create_optimized_env(components: Dict, config: SimpleNamespace, device: torc
         device=device,
         memory_pruning=config.memory_pruning,
         valid_queries=test_queries_padded,
-        compile=False,  # Let run_optimized_eval handle compilation to avoid double compile
     )
 
 
@@ -421,13 +417,9 @@ def run_optimized_eval(
     policy = components['policy_opt']
     queries = components['test_queries_unpadded'][:config.n_queries].to(env.device)
     
-    # Configure compilation
-    if config.compile:
-        compile_mode = config.compile_mode
-        fullgraph = config.fullgraph
-    else:
-        compile_mode = 'default'
-        fullgraph = False
+    # Configure compilation (disabled for parity tests)
+    compile_mode = 'default'
+    fullgraph = False
     
     # CRITICAL: Seed BEFORE creating PPO and warmup to ensure deterministic compilation
     # torch.compile can produce different results based on RNG state during tracing
@@ -444,17 +436,11 @@ def run_optimized_eval(
     # Create PPOOptimized instance for evaluation - use new config-based API
     ppo = PPOOptimized(policy, env, config)
     
-    # Component warmup and compilation
+    # Component warmup
     warmup_start = time.time()
     effective_chunk_queries = min(int(config.chunk_queries), int(queries.shape[0]))
-    
-    # Compile environment (policy is compiled separately now)
-    env.compile(
-        mode=compile_mode,
-        fullgraph=fullgraph,
-    )
-    
-    # Re-seed after compile to ensure warmup doesn't affect main evaluation RNG
+
+    # Re-seed to ensure warmup doesn't affect main evaluation RNG
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
@@ -586,7 +572,6 @@ def run_parity_test(
     print(f"Dataset: {config.dataset}")
     print(f"Queries: {config.n_queries}, Corruptions: {config.n_corruptions}")
     print(f"skip_unary_actions: {config.skip_unary_actions}")
-    print(f"Compile mode: {config.compile} ({config.compile_mode})")
     print("=" * 70)
     
     # Ensure device is in config for PPO
@@ -697,7 +682,6 @@ class TestEvalCompiledParity:
         """Test MRR parity in eager mode (no compilation)."""
         config = SimpleNamespace(**vars(base_config))
         config.dataset = dataset
-        config.compile = False
         config.n_queries = n_queries
         config.n_corruptions = n_corruptions
         config.corruption_modes = [corruption_mode]
@@ -726,9 +710,6 @@ if __name__ == "__main__":
     parser.add_argument('--corruption-mode', type=str, default='tail',
                         choices=['head', 'tail'], help="Corruption mode (default: tail)")
     parser.add_argument('--chunk-queries', type=int, default=100, help='Queries per chunk')
-    parser.add_argument('--compile', action='store_true', help='Enable torch.compile')
-    parser.add_argument('--compile-mode', type=str, default='default', 
-                        choices=['default', 'reduce-overhead', 'max-autotune'])
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
     
@@ -740,8 +721,6 @@ if __name__ == "__main__":
     config.n_corruptions = args.n_corruptions
     config.corruption_modes = [args.corruption_mode]
     config.chunk_queries = args.chunk_queries
-    config.compile = args.compile
-    config.compile_mode = args.compile_mode
     config.seed = args.seed
     config.verbose = args.verbose
     

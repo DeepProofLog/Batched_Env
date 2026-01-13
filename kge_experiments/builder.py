@@ -162,9 +162,6 @@ def create_env(config: KGEConfig) -> EnvVec:
         sampler=sampler,
         order=True if config.parity else False,
         negative_ratio=config.negative_ratio,
-        compile=not config.parity,
-        compile_mode='reduce-overhead',
-        compile_fullgraph=True,
     )
     
     # Cache components for policy creation and evaluation

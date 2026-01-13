@@ -524,7 +524,6 @@ def main():
         max_total_vars=100,
         atom_embedding_size=250,
         seed=0,
-        compile=args.compile,
         warmup_runs=args.warmup_runs,
         cuda_graphs=args.cuda_graphs,
         bucket_size=args.padding_states,

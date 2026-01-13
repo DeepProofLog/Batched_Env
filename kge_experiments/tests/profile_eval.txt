@@ -1,5 +1,5 @@
 Profile Eval Results
-Date: 2026-01-12 18:03:31
+Date: 2026-01-12 22:29:39
 Device: cuda
 Dataset: family
 
@@ -13,21 +13,19 @@ Configuration:
   Total candidates: 20200
 
 Setup...
-[EnvOptimal] Compiled with mode=reduce-overhead, fullgraph=True
 [PPO] Compiled ranking_step (double-buffered) with mode=reduce-overhead
-Compile + warmup...
-[EnvOptimal] Compiled with mode=reduce-overhead, fullgraph=True
-Warmup: 6.87s
+Warmup (PPO compiles internally)...
+Warmup: 7.30s
 Profiling...
 Evaluating 100 queries and 100 negatives
 Chunk 0-100
-  Took: 10.09s | Rolling MRR: 0.6053 | ms/cand: 1.00
+  Took: 19.05s | Rolling MRR: 0.6083 | ms/cand: 1.89
 
 ==================================================
 TIMING SUMMARY
 ==================================================
-Runtime:      10.0893s
-ms/candidate: 0.4995 
-MRR:          0.6053
+Runtime:      19.0499s
+ms/candidate: 0.9431 
+MRR:          0.6083
 
-Results saved to /home/castellanoontiv/Batched_Env/kge_experiments/tests/profile_eval.txt
+Results saved to /home/castellanoontiv/Batched_env/kge_experiments/tests/profile_eval.txt

@@ -478,7 +478,7 @@ def collect_optimized_rollout_with_traces(
     init_queries, init_labels, updated_counters = ppo.env.sample_negatives(init_queries, init_labels, reset_mask, counters)
     
     # Initialize state
-    state = ppo.env._reset_from_queries(init_queries, init_labels)
+    state = ppo.env.reset_from_queries(init_queries, init_labels)
     # [PARITY FIX] Manually restore counters after reset (as reset_from_queries defaults to 0)
     state['neg_counters'] = updated_counters
     

@@ -1,17 +1,9 @@
 """
 Production-ready Policy and Value Networks for Actor-Critic RL.
 
-CONVENTIONS:
-    B: Batch size (number of parallel environments)
-    S: Action space size (number of successor states)
-    E: Embedding dimension 
-    H: Hidden dimension (MLP width)
-    A: Number of atoms (aggregated before reaching the network)
-
-Standard Flow:
-    1. CustomCombinedExtractor: Indices [B, S, A, 3] -> Embeddings [B, S, E]
-    2. SharedPolicyValueNetwork: Embeddings [B, S, E] -> Logits [B, S] & Values [B]
-    3. ActorCriticPolicy: Orchestrates extraction, forward pass, and action distribution
+Tensor conventions:
+    B: Batch size, S: Action space size, E: Embedding dim, H: Hidden dim, A: Atoms
+    Flow: Indices [B, S, A, 3] -> Embeddings [B, S, E] -> Logits [B, S] & Values [B]
 """
 
 import math
@@ -19,26 +11,60 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from functools import partial
-from typing import Tuple, Optional, Dict, Union
+from typing import Tuple, Optional, Union
 from tensordict import TensorDict
-import os
 
-# Use FastCategorical if available for better performance in compiled mode
-if os.environ.get("USE_FAST_CATEGORICAL", "1") == "1":
-    try:
-        from utils.distributions import FastCategoricalDistribution as CategoricalDistribution
-    except ImportError:
-        from stable_baselines3.common.distributions import CategoricalDistribution
-else:
-    from stable_baselines3.common.distributions import CategoricalDistribution
-
+from stable_baselines3.common.distributions import CategoricalDistribution
 from stable_baselines3.common.policies import BasePolicy
 
-# Handle both relative and absolute imports
-try:
-    from .kernels import FusedLinearReluLayerNorm, FusedLinearRelu
-except ImportError:
-    from kernels import FusedLinearReluLayerNorm, FusedLinearRelu
+
+# =============================================================================
+# FUSED KERNELS (merged from kernels.py)
+# =============================================================================
+
+class FusedLinearReluLayerNorm(nn.Module):
+    """Fused Linear + ReLU + LayerNorm for kernel optimization."""
+    def __init__(self, in_features: int, out_features: int, eps: float = 1e-5):
+        super().__init__()
+        self.out_features = out_features
+        self.eps = eps
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        self.bias = nn.Parameter(torch.empty(out_features))
+        self.ln_weight = nn.Parameter(torch.empty(out_features))
+        self.ln_bias = nn.Parameter(torch.empty(out_features))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.weight, a=0, mode='fan_in', nonlinearity='relu')
+        nn.init.zeros_(self.bias)
+        nn.init.ones_(self.ln_weight)
+        nn.init.zeros_(self.ln_bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.linear(x, self.weight, self.bias)
+        x = F.relu(x, inplace=True)
+        return F.layer_norm(x, (self.out_features,), self.ln_weight, self.ln_bias, self.eps)
+
+
+class FusedLinearRelu(nn.Module):
+    """Fused Linear + ReLU for cases without LayerNorm."""
+    def __init__(self, in_features: int, out_features: int):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        self.bias = nn.Parameter(torch.empty(out_features))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.weight, a=0, mode='fan_in', nonlinearity='relu')
+        nn.init.zeros_(self.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.relu(F.linear(x, self.weight, self.bias), inplace=True)
+
+
+# =============================================================================
+# POLICY COMPONENTS
+# =============================================================================
 
 
 class CustomCombinedExtractor(nn.Module):

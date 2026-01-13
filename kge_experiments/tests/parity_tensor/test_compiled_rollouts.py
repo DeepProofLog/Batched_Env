@@ -99,7 +99,7 @@ def create_default_config() -> SimpleNamespace:
         max_steps=20,  # Alias for max_depth
         parity=True,
         use_callbacks=False,
-        compile=False,  # Whether to use torch.compile for rollouts
+        compile=False,  # Disable torch.compile for parity tests
     )
 
 
@@ -445,7 +445,7 @@ def collect_optimized_rollout_traces(
     init_queries, state_labels, new_cnt = ppo.env.sample_negatives(init_queries, init_labels, reset_mask, temp_counters)
     
     # Now create initial state from the (potentially corrupted) queries
-    state = ppo.env._reset_from_queries(init_queries, state_labels)
+    state = ppo.env.reset_from_queries(init_queries, state_labels)
     state['neg_counters'] = new_cnt
     
     # Initialize per-env pointers to match tensor env's round-robin
