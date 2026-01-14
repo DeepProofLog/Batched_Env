@@ -64,6 +64,8 @@ class TrainConfig:
     max_total_vars: int = 100
     max_fact_pairs_cap: Optional[int] = None  # Cap for large predicates (auto-set to eval_padding_states if None)
     eval_batch_size: int = 75  # Optimized batch size for evaluation (75 for best speed)
+    fixed_batch_size: Optional[int] = None  # Fixed batch size for evaluation (defaults to n_envs if None)
+    ranking_compile_mode: str = 'reduce-overhead'  # torch.compile mode for ranking_step
     sample_deterministic_per_env: bool = False  # False for fullgraph compilation compatibility
     
     # Model Architecture

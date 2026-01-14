@@ -373,6 +373,13 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
             ppo.callback.on_training_start(total_timesteps=0)
         learn_result = {}
     
+    # Normalize corruption_scheme: handle both list/tuple and string
+    corruption_scheme = config.corruption_scheme
+    if isinstance(corruption_scheme, str):
+        corruption_scheme = (corruption_scheme,)
+    else:
+        corruption_scheme = tuple(corruption_scheme)
+
     # Train neural bridge on validation data if enabled
     if neural_bridge is not None and getattr(config, 'neural_bridge', False):
         print("\n[2.5/3] Training neural bridge on validation data...")
@@ -384,7 +391,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
             queries=valid_queries_tensor,
             sampler=comp['sampler'],
             n_corruptions=getattr(config, 'eval_neg_samples', 10),
-            corruption_modes=tuple(config.corruption_scheme),
+            corruption_modes=corruption_scheme,
             epochs=getattr(config, 'neural_bridge_train_epochs', 100),
             lr=getattr(config, 'neural_bridge_lr', 0.01),
         )
@@ -392,6 +399,18 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
     # Evaluation
     print("\n[3/3] Running evaluation...")
     policy.eval()
+
+    # Warmup evaluation (needed for reduce-overhead compile mode)
+    print("Warmup...")
+    ppo.evaluate(
+        queries=im.queries_to_tensor(comp['dh'].test_queries[:5], device),
+        sampler=comp['sampler'],
+        n_corruptions=5,
+        corruption_modes=('head',),
+        verbose=False,
+    )
+    torch.cuda.synchronize() if torch.cuda.is_available() else None
+    print("Warmup complete")
 
     n_test = getattr(config, 'n_test_queries', None)
     if n_test:
@@ -408,12 +427,12 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         queries=queries_tensor,
         sampler=comp['sampler'],
         n_corruptions=config.test_neg_samples,
-        corruption_modes=tuple(config.corruption_scheme),
+        corruption_modes=corruption_scheme,
         query_depths=torch.as_tensor(
-            test_depths, 
+            test_depths,
             dtype=torch.long, device=device
         ),
-        verbose=False,
+        verbose=True,
     )
     
     # Extract results

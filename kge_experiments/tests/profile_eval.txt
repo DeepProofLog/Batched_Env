@@ -1,31 +1,31 @@
 Profile Eval Results
-Date: 2026-01-13 22:30:19
+Date: 2026-01-15 00:37:17
 Device: cuda
 Dataset: family
 
 Configuration:
-  N queries: 50
-  N corruptions: 50
+  N queries: 100
+  N corruptions: 100
   Batch size: 100
   Padding states: 130
   Max depth: 20
   Shuffle facts: False (seed=42)
-  Total candidates: 5100
+  Total candidates: 20200
 
 Setup...
 [PPO] Compiled ranking_step (double-buffered) with mode=reduce-overhead
 Warmup (PPO compiles internally)...
-Warmup: 7.20s
+Warmup: 6.74s
 Profiling...
-Evaluating 50 queries and 50 negatives
-Chunk 0-50
-  Took: 4.15s | Rolling MRR: 0.5691 | ms/cand: 1.63
+Evaluating 100 queries and 100 negatives
+Chunk 0-100
+  Took: 7.99s | Rolling MRR: 0.6031 | ms/cand: 0.79
 
 ==================================================
 TIMING SUMMARY
 ==================================================
-Runtime:      4.1499s
-ms/candidate: 0.8137 
-MRR:          0.5691
+Runtime:      7.9916s
+ms/candidate: 0.3956 
+MRR:          0.6031
 
-Results saved to /home/castellanoontiv/Batched_env-swarm/agent2/kge_experiments/tests/profile_eval.txt
+Results saved to /home/castellanoontiv/Batched_env-swarm/main/kge_experiments/tests/profile_eval.txt
