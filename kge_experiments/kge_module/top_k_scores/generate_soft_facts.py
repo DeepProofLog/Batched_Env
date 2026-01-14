@@ -1618,7 +1618,7 @@ Examples:
         """
     )
 
-    parser.add_argument("--dataset", default="nations,family",
+    parser.add_argument("--dataset", default="nations,family,umls,fb15k237,pharmkg_full,wn18rr",
                         help="Dataset name(s): single name, comma-separated list, or 'all'")
     parser.add_argument("--data-path", default="./data", help="Base path with dataset folders")
     parser.add_argument("--checkpoint-dir", default=DEFAULT_CHECKPOINT_DIR, help="KGE checkpoints directory")

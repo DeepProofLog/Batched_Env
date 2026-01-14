@@ -28,20 +28,17 @@ def check_provability_bfs(
     rules: Dict,
     facts: FrozenSet[Term],
     index_manager: IndexManager,
-    is_train_data: bool = False,
     max_depth: int = 7,
     max_atoms: int = 20,
 ) -> int:
     """
     Check provability using true BFS with deduplication.
     Returns minimum proof depth, or -1 if not provable within max_depth.
-    """
-    # Depth 0: check if query is a direct fact
-    if not is_train_data and initial_query in facts:
-        return 0
 
-    # Cache for speed
-    excluded_fact = initial_query if is_train_data else None
+    Always excludes the query itself from facts to test actual reasoning.
+    """
+    # Always exclude query from facts - we want to test reasoning, not lookup
+    excluded_fact = initial_query
     fact_index = index_manager.fact_index
     var_start = index_manager.variable_start_index
     _frozenset = frozenset  # Local reference
@@ -177,25 +174,24 @@ def generate_depths_for_dataset(
             continue
 
         num_queries = len(queries)
-        is_train = (split == 'train')
         output_file = os.path.join(root_dir, f'{split}_depths.txt')
 
         if incremental:
             _generate_incremental(
                 queries, rules, facts_set, index_manager,
-                is_train, max_depth_check, max_atoms,
+                max_depth_check, max_atoms,
                 output_file, start_time
             )
         else:
             _generate_full_bfs(
                 queries, rules, facts_set, index_manager,
-                is_train, max_depth_check, max_atoms,
+                max_depth_check, max_atoms,
                 output_file, start_time
             )
 
 
 def _generate_full_bfs(queries, rules, facts_set, index_manager,
-                       is_train, max_depth, max_atoms, output_file, start_time):
+                       max_depth, max_atoms, output_file, start_time):
     """Original full BFS mode - process all queries to max depth."""
     num_queries = len(queries)
     depths = []
@@ -204,7 +200,6 @@ def _generate_full_bfs(queries, rules, facts_set, index_manager,
     for i, query in enumerate(queries):
         depth = check_provability_bfs(
             query, rules, facts_set, index_manager,
-            is_train_data=is_train,
             max_depth=max_depth,
             max_atoms=max_atoms,
         )
@@ -222,22 +217,13 @@ def _generate_full_bfs(queries, rules, facts_set, index_manager,
 
 
 def _generate_incremental(queries, rules, facts_set, index_manager,
-                          is_train, max_depth, max_atoms, output_file, start_time):
+                          max_depth, max_atoms, output_file, start_time):
     """Incremental mode - process depth-by-depth with saves at each level."""
     num_queries = len(queries)
     depths = [-1] * num_queries  # -1 = not yet proven
     unproven_indices = set(range(num_queries))
 
-    # Check depth 0 (direct facts) first
-    if not is_train:
-        for i in list(unproven_indices):
-            if queries[i] in facts_set:
-                depths[i] = 0
-                unproven_indices.discard(i)
-        if num_queries - len(unproven_indices) > 0:
-            print(f"Depth 0: {num_queries - len(unproven_indices)} direct facts")
-
-    # Process depth by depth
+    # Process depth by depth (no depth-0 check - query always excluded from facts)
     for target_depth in range(1, max_depth + 1):
         if not unproven_indices:
             print(f"All queries proven! Stopping at depth {target_depth - 1}")
@@ -251,7 +237,6 @@ def _generate_incremental(queries, rules, facts_set, index_manager,
             query = queries[i]
             result = check_provability_bfs(
                 query, rules, facts_set, index_manager,
-                is_train_data=is_train,
                 max_depth=target_depth,
                 max_atoms=max_atoms,
             )
@@ -326,12 +311,14 @@ def check_provability_at_depth(
     rules: Dict,
     facts: FrozenSet[Term],
     index_manager: IndexManager,
-    is_train_data: bool = False,
     max_atoms: int = 20,
     verbose: bool = False
 ) -> Tuple[str, List[Tuple[int, int]]]:
-    """Legacy function - check provability at specific depth."""
-    excluded_fact = state[0] if is_train_data else None
+    """Legacy function - check provability at specific depth.
+
+    Always excludes the query itself from facts to test actual reasoning.
+    """
+    excluded_fact = state[0]  # Always exclude query from facts
 
     if verbose:
         print(f"\nChecking query {state} at depth {n}...")
@@ -407,7 +394,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description='Generate depth files using optimized SB3 BFS')
-    parser.add_argument('--datasets', nargs='+', default=['wn18rr'],
+    parser.add_argument('--datasets', nargs='+', default=['countries_s3', 'nations', 'umls'],
                         help='Datasets to process')
     parser.add_argument('--splits', nargs='+', default=['train', 'valid', 'test'],
                         help='Splits to process')

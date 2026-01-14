@@ -1,13 +1,38 @@
 import os
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Any, Optional, Set
+from typing import List, Any, Optional
+
+# Default KGE run signatures per dataset (for kge_inference)
+KGE_RUN_SIGNATURES = {
+    'wn18rr': 'torch_wn18rr_RotatE_1024_20260107_125531_s42',
+    'family': 'torch_family_RotatE_1024_20260107_124531_s42',
+    'fb15k237': 'torch_fb15k237_TuckER_512_20260111_002222_s42',
+    'pharmkg_full': 'torch_pharmkg_full_ComplEx_1024_20260111_054518_s42',
+    'umls': 'torch_umls_ComplEx_1024_20260110_223751_s42',
+    'nations': 'torch_nations_TuckER_512_20260110_224506_s42',
+}
+
+# Default padding_states per dataset
+PADDING_STATES_MAP = {
+    'countries_s3': 20, 'countries_s2': 20, 'countries_s1': 20,
+    'family': 130, 'wn18rr': 262, 'fb15k237': 358,
+    'nations': 64, 'umls': 64, 'pharmkg_full': 358,
+}
+
+# Default max_fact_pairs_cap per dataset (for large predicates)
+MAX_FACT_PAIRS_CAP_MAP = {
+    'wn18rr': 1000,      # hypernym has 35k facts, cap for 7x speedup
+    'fb15k237': 1000,    # similar issue expected
+    'pharmkg_full': 1000,
+    # family, countries: no cap needed (max ~2.5k facts per predicate)
+}
 
 @dataclass
 class TrainConfig:
     """Configuration for training (unified for runner and compiled scripts)."""
     
     # Dataset / Paths
-    dataset: str = "countries_s3"
+    dataset: str = "wn18rr"
     data_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     train_file: str = "train.txt"
     valid_file: str = "valid.txt"
@@ -16,27 +41,27 @@ class TrainConfig:
     facts_file: str = "train.txt"
     
     # Depths (can be specific integers or None)
-    train_depth: Any = None
+    train_depth: Any = field(default_factory=lambda: {1,2,3,4,5,6})
     valid_depth: Any = None
     test_depth: Any = None
     
     # Sample counts (None means use all)
     n_train_queries: Optional[int] = None
     n_eval_queries: Optional[int] = 100
-    n_test_queries: Optional[int] = 100
+    n_test_queries: Optional[int] = None
     
     # Environment / Logic
     padding_atoms: int = 6
-    padding_states: int = 64
+    padding_states: int = 120
     eval_padding_states: int = 120  # Optimized: 16 gives ~0.87 ms/candidate for WN18RR
     eval_max_depth: int = 14  # Optimized: 14 steps sufficient for most proofs
     max_steps: int = 20 # max_depth in runner
-    use_exact_memory: bool = True
+    use_exact_memory: bool = False
     memory_pruning: bool = True
-    skip_unary_actions: bool = True
+    skip_unary_actions: bool = False
     end_proof_action: bool = True
-    reward_type: int = 0
-    max_total_vars: int = 1000
+    reward_type: int = 4
+    max_total_vars: int = 100
     max_fact_pairs_cap: Optional[int] = None  # Cap for large predicates (auto-set to eval_padding_states if None)
     eval_batch_size: int = 75  # Optimized batch size for evaluation (75 for best speed)
     sample_deterministic_per_env: bool = False  # False for fullgraph compilation compatibility
@@ -44,51 +69,51 @@ class TrainConfig:
     # Model Architecture
     algorithm_type: str = "ppo"  # Algorithm to use (ppo, etc.)
     model_name: str = "PPO"
-    atom_embedding_size: int = 64
+    atom_embedding_size: int = 250
     state_embedding_size: int = 64 # derived
     hidden_dim: int = 256
     num_layers: int = 8
-    dropout_prob: float = 0.0
+    dropout_prob: float = 0.1
     use_l2_norm: bool = True
     sqrt_scale: bool = False
-    temperature: float = 1.0
+    temperature: float = 0.1
     atom_embedder: str = 'transe'
     state_embedder: str = 'mean'
     
     # PPO / Training Hyperparams
-    n_envs: int = 3
-    n_steps: int = 20
-    n_epochs: int = 4
-    batch_size: int = 20
-    learning_rate: float = 3e-4
+    n_envs: int = 128
+    n_steps: int = 256
+    n_epochs: int = 5
+    batch_size: int = 512
+    learning_rate: float = 1e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_range: float = 0.2
     clip_range_vf: Optional[float] = None
-    ent_coef: float = 0.2
-    vf_coef: float = 0.5
+    ent_coef: float = 0.1
+    vf_coef: float = 1
     max_grad_norm: float = 0.5
     target_kl: Optional[float] = None
-    total_timesteps: int = 120
+    total_timesteps: int = 0
     
     # Sampling / Corruption
     negative_ratio: float = 1.0 # train_neg_ratio
-    eval_neg_samples: Optional[int] = 4
-    test_neg_samples: Optional[int] = 10  # Default to non-exhaustive evaluation
+    eval_neg_samples: Optional[int] = 10
+    test_neg_samples: Optional[int] = 100  # Default to non-exhaustive evaluation
     n_corruptions: Optional[int] = 10 # test_neg_samples alias
     corruption_scheme: List[str] = field(default_factory=lambda: ['head', 'tail'])
     sampler_default_mode: str = "both"
     
     # LR Decay
-    lr_decay: bool = False
-    lr_init_value: float = 3e-4
+    lr_decay: bool = True
+    lr_init_value: float = 1e-4
     lr_final_value: float = 1e-6
     lr_start: float = 0.0
     lr_end: float = 1.0
     lr_transform: str = 'linear'
     
     # Entropy Decay
-    ent_coef_decay: bool = False
+    ent_coef_decay: bool = True
     ent_coef_init_value: float = 0.01
     ent_coef_final_value: float = 0.01
     ent_coef_start: float = 0.0
@@ -97,27 +122,27 @@ class TrainConfig:
     
     # Model Saving / Logging
     save_model: bool = True
-    load_model: Any = False # False or 'last_epoch' or path
+    load_model: Any = True # False or 'last_epoch' or path
     restore_best: bool = True # restore_best_val_model
     load_best_metric: str = 'eval'
     models_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-    eval_freq: int = 0
+    eval_freq: int = 4
     eval_best_metric: str = 'mrr'
     ranking_tie_seed: int = 0
-    use_logger: bool = False
+    use_logger: bool = True
     logger_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
     run_signature: str = "compiled_run"
 
     # KGE inference (evaluation-time fusion)
-    kge_inference: bool = False
+    kge_inference: bool = True
     kge_inference_success: bool = True
-    kge_engine: Optional[str] = None
+    kge_engine: Optional[str] = "pytorch"
     kge_checkpoint_dir: Optional[str] = None
     kge_run_signature: Optional[str] = None
     kge_scores_file: Optional[str] = None
     kge_eval_kge_weight: float = 2.0
     kge_eval_rl_weight: float = 1.0
-    kge_fail_penalty: float = 100.0  # Penalty for failed proofs in hybrid mode
+    kge_fail_penalty: float = 0.5  # Penalty for failed proofs in hybrid mode
     kge_only_eval: bool = False  # If True, use KGE-only scoring at test time (matches paper)
 
     # KGE Integration: Probabilistic Facts
@@ -176,13 +201,14 @@ class TrainConfig:
     kge_benchmark: bool = False  # Enable timing collection for KGE modules
 
     # Misc
-    seed: int = 42
-    seed_run_i: int = 42 # specific run seed
-    device: str = "cpu"
+    seed: int = 0
+    seed_run_i: int = 0 # specific run seed
+    device: str = "cuda"
     verbose: bool = True
     parity: bool = False
     profile: bool = False
     use_callbacks: bool = True  # Enable callbacks in run_experiment
+    augment_train: bool = True  # For countries dataset
 
     # Callback control (individual toggles)
     use_metrics_callback: bool = True
@@ -225,3 +251,15 @@ class TrainConfig:
             import datetime
             date_str = datetime.datetime.now().strftime("%Y%m%d")
             self.run_signature = f"{self.dataset}-{self.seed}-{date_str}"
+
+        # Auto-configure padding_states per dataset
+        if self.padding_states == 120:  # default value, auto-configure
+            self.padding_states = PADDING_STATES_MAP.get(self.dataset, 64)
+
+        # Auto-configure max_fact_pairs_cap for large datasets
+        if self.max_fact_pairs_cap is None:
+            self.max_fact_pairs_cap = MAX_FACT_PAIRS_CAP_MAP.get(self.dataset, None)
+
+        # KGE inference: auto-set kge_run_signature if not provided
+        if self.kge_inference and self.kge_run_signature is None:
+            self.kge_run_signature = KGE_RUN_SIGNATURES.get(self.dataset, None)
