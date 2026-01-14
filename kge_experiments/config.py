@@ -21,9 +21,9 @@ PADDING_STATES_MAP = {
 
 # Default max_fact_pairs_cap per dataset (for large predicates)
 MAX_FACT_PAIRS_CAP_MAP = {
-    'wn18rr': 1000,      # hypernym has 35k facts, cap for 7x speedup
-    'fb15k237': 1000,    # similar issue expected
-    'pharmkg_full': 1000,
+    'wn18rr': 8000,      # hypernym has 35k facts, cap to 1000 for 7x speedup, but mind the limitations
+    'fb15k237': 8000,    # similar issue expected
+    'pharmkg_full': 8000,
     # family, countries: no cap needed (max ~2.5k facts per predicate)
 }
 
@@ -32,7 +32,7 @@ class TrainConfig:
     """Configuration for training (unified for runner and compiled scripts)."""
     
     # Dataset / Paths
-    dataset: str = "wn18rr"
+    dataset: str = "family"
     data_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     train_file: str = "train.txt"
     valid_file: str = "valid.txt"
@@ -41,20 +41,20 @@ class TrainConfig:
     facts_file: str = "train.txt"
     
     # Depths (can be specific integers or None)
-    train_depth: Any = field(default_factory=lambda: {1,2,3,4,5,6})
+    train_depth: Any = field(default_factory=lambda: {1,2,3,4,5,6,7,8,9,10,11,12,13,14})
     valid_depth: Any = None
     test_depth: Any = None
     
     # Sample counts (None means use all)
     n_train_queries: Optional[int] = None
-    n_eval_queries: Optional[int] = 100
+    n_eval_queries: Optional[int] = 20
     n_test_queries: Optional[int] = None
     
     # Environment / Logic
     padding_atoms: int = 6
     padding_states: int = 120
-    eval_padding_states: int = 120  # Optimized: 16 gives ~0.87 ms/candidate for WN18RR
-    eval_max_depth: int = 14  # Optimized: 14 steps sufficient for most proofs
+    eval_padding_states: int = 120
+    eval_max_depth: int = 20
     max_steps: int = 20 # max_depth in runner
     use_exact_memory: bool = False
     memory_pruning: bool = True
@@ -98,14 +98,13 @@ class TrainConfig:
     
     # Sampling / Corruption
     negative_ratio: float = 1.0 # train_neg_ratio
-    eval_neg_samples: Optional[int] = 10
+    eval_neg_samples: Optional[int] = 100
     test_neg_samples: Optional[int] = 100  # Default to non-exhaustive evaluation
-    n_corruptions: Optional[int] = 10 # test_neg_samples alias
     corruption_scheme: List[str] = field(default_factory=lambda: ['head', 'tail'])
     sampler_default_mode: str = "both"
     
     # LR Decay
-    lr_decay: bool = True
+    lr_decay: bool = False
     lr_init_value: float = 1e-4
     lr_final_value: float = 1e-6
     lr_start: float = 0.0
@@ -113,7 +112,7 @@ class TrainConfig:
     lr_transform: str = 'linear'
     
     # Entropy Decay
-    ent_coef_decay: bool = True
+    ent_coef_decay: bool = False
     ent_coef_init_value: float = 0.01
     ent_coef_final_value: float = 0.01
     ent_coef_start: float = 0.0
@@ -134,7 +133,7 @@ class TrainConfig:
     run_signature: str = "compiled_run"
 
     # KGE inference (evaluation-time fusion)
-    kge_inference: bool = True
+    kge_inference: bool = False
     kge_inference_success: bool = True
     kge_engine: Optional[str] = "pytorch"
     kge_checkpoint_dir: Optional[str] = None
@@ -241,10 +240,6 @@ class TrainConfig:
                  self.state_embedding_size = self.atom_embedding_size
              else:
                  self.state_embedding_size = self.atom_embedding_size * self.padding_atoms
-
-        # Aliases / Compatibility
-        if self.n_corruptions is None:
-            self.n_corruptions = 10 # default
 
         # Dynamic Run Signature
         if self.run_signature in [None, "run_v1", "compiled_run"]:
