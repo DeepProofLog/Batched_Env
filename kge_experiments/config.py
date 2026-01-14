@@ -48,7 +48,7 @@ class TrainConfig:
     # Sample counts (None means use all)
     n_train_queries: Optional[int] = None
     n_eval_queries: Optional[int] = 20
-    n_test_queries: Optional[int] = None
+    n_test_queries: Optional[int] = 100
     
     # Environment / Logic
     padding_atoms: int = 6

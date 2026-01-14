@@ -1505,16 +1505,21 @@ class PPO:
                     all_ranks[mode].append(1 + better.sum(1) + tied.sum(1))
                     offset += CQ * K
 
-                # Calculate rolling MRR for display
+                # Calculate current chunk and rolling MRR for display
                 if verbose and log_every > 0 and (chunk_idx % log_every == 0 or start + chunk_queries >= N):
-                    mode_mrrs = []
+                    chunk_mrrs, rolling_mrrs = [], []
                     for m in corruption_modes:
                         if all_ranks[m]:
-                            ranks = torch.cat(all_ranks[m])
-                            mode_mrrs.append((1.0 / ranks.float()).mean().item())
-                    rolling_mrr = np.mean(mode_mrrs) if mode_mrrs else 0.0
+                            # Current chunk MRR (last appended ranks)
+                            chunk_ranks = all_ranks[m][-1]
+                            chunk_mrrs.append((1.0 / chunk_ranks.float()).mean().item())
+                            # Rolling MRR (all ranks so far)
+                            all_ranks_cat = torch.cat(all_ranks[m])
+                            rolling_mrrs.append((1.0 / all_ranks_cat.float()).mean().item())
+                    chunk_mrr = np.mean(chunk_mrrs) if chunk_mrrs else 0.0
+                    rolling_mrr = np.mean(rolling_mrrs) if rolling_mrrs else 0.0
                     elapsed = time.time() - t_start
-                    print(f"  Took: {elapsed:.2f}s | Rolling MRR: {rolling_mrr:.4f} | ms/cand: {1000 * elapsed / (CQ * K):.2f}")
+                    print(f"  Took: {elapsed:.2f}s | Chunk MRR: {chunk_mrr:.4f} | Rolling MRR: {rolling_mrr:.4f} | ms/cand: {1000 * elapsed / (CQ * K):.2f}")
 
         # Metric Aggregation
         res = self._aggregate_metrics(all_stats, query_depths, N, chunk_queries, corruption_modes, all_ranks=all_ranks)

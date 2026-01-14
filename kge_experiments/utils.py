@@ -317,7 +317,14 @@ class FileLogger:
         """
         Log run results and finalize log file.
         """
-        logged_data = copy.deepcopy(args)
+        # Create a clean copy excluding non-serializable attributes (like _components with tensors)
+        if hasattr(args, '__dict__'):
+            clean_dict = {k: v for k, v in args.__dict__.items()
+                         if not k.startswith('_') and not hasattr(v, 'parameters')}
+            logged_data = type(args).__new__(type(args))
+            logged_data.__dict__.update(copy.deepcopy(clean_dict))
+        else:
+            logged_data = copy.deepcopy(args)
         dicts_to_log = {
             'train': train_metrics,
             'valid': valid_metrics,
