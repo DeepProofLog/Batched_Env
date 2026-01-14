@@ -20,8 +20,8 @@ else
 fi
 
 # Common parameters (static)
-EVAL_QUERIES=100
-EVAL_NEG=10
+EVAL_QUERIES=20
+EVAL_NEG=100
 TEST_QUERIES=None
 TEST_NEG=100
 
