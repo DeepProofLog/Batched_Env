@@ -1,0 +1,153 @@
+Profile  Learn GPU Results
+Date: 2026-01-13 22:30:42
+Device: cuda
+
+Setting up components...
+/home/castellanoontiv/miniconda3/envs/rl/lib/python3.13/site-packages/torch/__init__.py:1617: UserWarning: Please use the new API settings to control TF32 behavior, such as torch.backends.cudnn.conv.fp32_precision = 'tf32' or torch.backends.cuda.matmul.fp32_precision = 'ieee'. Old settings, e.g, torch.backends.cuda.matmul.allow_tf32 = True, torch.backends.cudnn.allow_tf32 = True, allowTF32CuDNN() and allowTF32CuBLAS() will be deprecated after Pytorch 2.9. Please see https://pytorch.org/docs/main/notes/cuda.html#tensorfloat-32-tf32-on-ampere-and-later-devices (Triggered internally at /pytorch/aten/src/ATen/Context.cpp:80.)
+  _C._set_float32_matmul_precision(precision)
+[PPO] Compiled ranking_step (double-buffered) with mode=default
+Initialization time: 2.70s
+
+Running warmup...
+Warmup: Running learn() iteration to compile all graphs...
+[PPO] Rollout collected in 10.94s. FPS: 1498.09
+Epoch 1/5. 
+Losses: total 1.29321, value 3.06687, policy 0.01251, entropy -0.03456, approx_kl 0.03003 clip_fraction 0.03302. 
+Epoch 2/5. 
+Losses: total 0.76094, value 2.44158, policy 0.00955, entropy -0.03409, approx_kl 0.06838 clip_fraction 0.04456. 
+Epoch 3/5. 
+Losses: total 0.55315, value 2.05182, policy 0.00831, entropy -0.03430, approx_kl 0.09997 clip_fraction 0.05172. 
+Epoch 4/5. 
+Losses: total 0.43265, value 1.78354, policy 0.00732, entropy -0.03468, approx_kl 0.12511 clip_fraction 0.05649. 
+Epoch 5/5. 
+Losses: total 0.39317, value 1.58220, policy 0.00646, entropy -0.03531, approx_kl 0.14716 clip_fraction 0.06023. 
+[PPO] Training completed in 7.13s
+Warmup time: 19.95s
+
+GPU Profiling training...
+[PPO] Rollout collected in 2.50s. FPS: 6565.10
+Epoch 1/5. 
+Losses: total 0.47027, value 0.96254, policy 0.00456, entropy -0.04231, approx_kl 0.01865 clip_fraction 0.02814. 
+Epoch 2/5. 
+Losses: total 0.34972, value 0.87538, policy 0.00175, entropy -0.04160, approx_kl 0.04656 clip_fraction 0.03732. 
+Epoch 3/5. 
+Losses: total 0.28484, value 0.79631, policy 0.00002, entropy -0.04183, approx_kl 0.08109 clip_fraction 0.04506. 
+Epoch 4/5. 
+Losses: total 0.22173, value 0.72736, policy -0.00098, entropy -0.04248, approx_kl 0.10973 clip_fraction 0.05052. 
+Epoch 5/5. 
+Losses: total 0.18820, value 0.66809, policy -0.00203, entropy -0.04307, approx_kl 0.12533 clip_fraction 0.05421. 
+[PPO] Training completed in 6.00s
+
+================================================================================
+TIMING SUMMARY
+================================================================================
+Warmup time:       19.9498s
+Runtime:           8.5627s
+Steps/second:      1913.4
+
+Target: Runtime ≤ 16s
+Status: PASS ✓
+
+================================================================================
+GPU PROFILING - Top CUDA Time
+================================================================================
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+## Call CompiledFxGraph f2izvmtovcnzwegthsn4pthtsy3q...         0.00%       0.000us         0.00%       0.000us       0.000us        1.960s        91.03%        1.960s      17.341ms           113  
+                             Torch-Compiled Region: 1/0         0.12%      10.276ms         2.20%     182.470ms       1.426ms        1.951s        90.61%        1.957s      15.287ms           128  
+void at::native::_scatter_gather_elementwise_kernel<...         0.00%       0.000us         0.00%       0.000us       0.000us     567.393ms        26.36%     567.393ms     107.318us          5287  
+triton_poi_fused_bitwise_not_index_put_lift_fresh_vi...         0.00%       0.000us         0.00%       0.000us       0.000us     106.250ms         4.94%     106.250ms      94.866us          1120  
+triton_poi_fused_all_arange_bitwise_and_bitwise_not_...         0.00%       0.000us         0.00%       0.000us       0.000us     105.534ms         4.90%     105.534ms     314.088us           336  
+void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_...         0.00%       0.000us         0.00%       0.000us       0.000us      92.398ms         4.29%      92.398ms      91.665us          1008  
+void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us      80.095ms         3.72%      80.095ms     178.784us           448  
+triton_poi_fused_arange_bitwise_and_cat_expand_full_...         0.00%       0.000us         0.00%       0.000us       0.000us      69.051ms         3.21%      69.051ms     308.264us           224  
+triton_poi_fused_all_bitwise_and_bitwise_not_bitwise...         0.00%       0.000us         0.00%       0.000us       0.000us      68.990ms         3.20%      68.990ms     307.993us           224  
+triton_poi_fused_cat_expand_full_full_like_unsqueeze...         0.00%       0.000us         0.00%       0.000us       0.000us      68.863ms         3.20%      68.863ms     307.423us           224  
+triton_per_fused_add_addmm_native_layer_norm_relu_vi...         0.00%       0.000us         0.00%       0.000us       0.000us      55.996ms         2.60%      55.996ms      62.496us           896  
+triton_red_fused__unsafe_view_all_bitwise_and_bitwis...         0.00%       0.000us         0.00%       0.000us       0.000us      49.771ms         2.31%      49.771ms      74.064us           672  
+                                              aten::add        39.45%        3.270s        39.64%        3.286s     773.158us      46.107ms         2.14%      46.107ms      10.849us          4250  
+                                        aten::embedding         0.04%       3.185ms         0.43%      35.558ms      68.910us       0.000us         0.00%      44.624ms      86.481us           516  
+                                           aten::gather         2.45%     202.972ms         2.49%     206.410ms     385.093us      43.597ms         2.03%      43.597ms      81.338us           536  
+                                     aten::index_select         0.07%       5.764ms         2.62%     217.303ms     409.234us       0.000us         0.00%      43.585ms      82.081us           531  
+void at::native::_scatter_gather_elementwise_kernel<...         0.00%       0.000us         0.00%       0.000us       0.000us      43.585ms         2.02%      43.585ms      97.288us           448  
+triton_poi_fused_bitwise_and_bitwise_not_bitwise_or_...         0.00%       0.000us         0.00%       0.000us       0.000us      43.289ms         2.01%      43.289ms      96.627us           448  
+                                              aten::sub         0.15%      12.800ms         0.17%      13.942ms      22.272us      40.089ms         1.86%      40.089ms      64.039us           626  
+triton_poi_fused__to_copy__unsafe_view_add_all_arang...         0.00%       0.000us         0.00%       0.000us       0.000us      38.966ms         1.81%      38.966ms      57.985us           672  
+triton_poi_fused_add_all_bitwise_and_clamp_eq_index_...         0.00%       0.000us         0.00%       0.000us       0.000us      38.923ms         1.81%      38.923ms      57.921us           672  
+triton_poi_fused_all_bitwise_and_bitwise_not_bitwise...         0.00%       0.000us         0.00%       0.000us       0.000us      34.529ms         1.60%      34.529ms     308.290us           112  
+triton_poi_fused__to_copy_arange_bitwise_and_bitwise...         0.00%       0.000us         0.00%       0.000us       0.000us      34.527ms         1.60%      34.527ms     308.274us           112  
+triton_poi_fused__to_copy_arange_bitwise_and_bitwise...         0.00%       0.000us         0.00%       0.000us       0.000us      34.489ms         1.60%      34.489ms     307.941us           112  
+triton_poi_fused_bitwise_and_bitwise_not_cat_clone_e...         0.00%       0.000us         0.00%       0.000us       0.000us      34.424ms         1.60%      34.424ms      61.471us           560  
+triton_per_fused_add_all_bitwise_and_bitwise_not_bit...         0.00%       0.000us         0.00%       0.000us       0.000us      21.612ms         1.00%      21.612ms      32.161us           672  
+triton_per_fused__to_copy_add_all_arange_bitwise_and...         0.00%       0.000us         0.00%       0.000us       0.000us      21.467ms         1.00%      21.467ms      31.945us           672  
+triton_poi_fused_bitwise_and_bitwise_not_cat_clone_e...         0.00%       0.000us         0.00%       0.000us       0.000us      21.041ms         0.98%      21.041ms      93.933us           224  
+triton_poi_fused_bitwise_and_bitwise_not_bitwise_or_...         0.00%       0.000us         0.00%       0.000us       0.000us      18.944ms         0.88%      18.944ms      42.286us           448  
+triton_poi_fused_clamp_expand_full_scatter_unsqueeze...         0.00%       0.000us         0.00%       0.000us       0.000us      17.017ms         0.79%      17.017ms      12.661us          1344  
+                                             aten::mean         0.12%       9.909ms         0.14%      11.554ms      31.396us      15.978ms         0.74%      15.978ms      43.418us           368  
+void at::native::reduce_kernel<256, 2, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us      15.978ms         0.74%      15.978ms      71.329us           224  
+triton_poi_fused__to_copy_arange_bitwise_and_bitwise...         0.00%       0.000us         0.00%       0.000us       0.000us      15.759ms         0.73%      15.759ms     140.705us           112  
+triton_poi_fused_bitwise_and_bitwise_not_cat_clone_e...         0.00%       0.000us         0.00%       0.000us       0.000us      15.674ms         0.73%      15.674ms     139.943us           112  
+void cutlass::Kernel2<cutlass_80_simt_sgemm_128x256_...         0.00%       0.000us         0.00%       0.000us       0.000us      15.359ms         0.71%      15.359ms     137.136us           112  
+triton_poi_fused_add_bitwise_and_bitwise_not_bitwise...         0.00%       0.000us         0.00%       0.000us       0.000us      14.394ms         0.67%      14.394ms      25.704us           560  
+triton_poi_fused_copy_expand_select_unsqueeze_where_...         0.00%       0.000us         0.00%       0.000us       0.000us      14.339ms         0.67%      14.339ms      25.605us           560  
+triton_poi_fused_bitwise_and_bitwise_not_bitwise_or_...         0.00%       0.000us         0.00%       0.000us       0.000us      13.801ms         0.64%      13.801ms      24.644us           560  
+                                            aten::copy_        20.14%        1.670s        20.59%        1.707s     195.600us      11.770ms         0.55%      11.776ms       1.350us          8726  
+triton_poi_fused_bitwise_and_bitwise_not_bitwise_or_...         0.00%       0.000us         0.00%       0.000us       0.000us      11.364ms         0.53%      11.364ms      25.367us           448  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 8.289s
+Self CUDA time total: 2.153s
+
+
+================================================================================
+GPU PROFILING - Top CPU Time
+================================================================================
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                              aten::add        39.45%        3.270s        39.64%        3.286s     773.158us      46.107ms         2.14%      46.107ms      10.849us          4250  
+                                            aten::copy_        20.14%        1.670s        20.59%        1.707s     195.600us      11.770ms         0.55%      11.776ms       1.350us          8726  
+                                            aten::relu_         0.06%       4.881ms        19.80%        1.641s       1.272ms       0.000us         0.00%       1.730ms       1.341us          1290  
+                                       aten::clamp_min_         2.77%     229.622ms        19.74%        1.636s       1.268ms       1.467ms         0.07%       1.730ms       1.341us          1290  
+                                       cudaLaunchKernel         0.75%      62.125ms        18.28%        1.515s     122.583us       0.000us         0.00%       1.706ms       0.138us         12359  
+                                    Command Buffer Full        17.54%        1.454s        17.54%        1.454s       2.625ms       2.017ms         0.09%       2.017ms       3.641us           554  
+                                               aten::to         0.01%       1.015ms        17.22%        1.427s       1.903ms       0.000us         0.00%       1.204ms       1.605us           750  
+                                         aten::_to_copy         0.03%       2.094ms        17.20%        1.426s       2.996ms       0.000us         0.00%       1.204ms       2.529us           476  
+                               Optimizer.step#Adam.step         0.42%      34.504ms         5.12%     424.675ms       5.308ms       0.000us         0.00%       0.000us       0.000us            80  
+                                     aten::_fused_adam_         4.58%     379.648ms         4.58%     379.648ms       4.746ms       0.000us         0.00%       0.000us       0.000us            80  
+                                     aten::index_select         0.07%       5.764ms         2.62%     217.303ms     409.234us       0.000us         0.00%      43.585ms      82.081us           531  
+                                           aten::gather         2.45%     202.972ms         2.49%     206.410ms     385.093us      43.597ms         2.03%      43.597ms      81.338us           536  
+                             Torch-Compiled Region: 1/0         0.12%      10.276ms         2.20%     182.470ms       1.426ms        1.951s        90.61%        1.957s      15.287ms           128  
+## Call CompiledFxGraph f2izvmtovcnzwegthsn4pthtsy3q...         0.48%      39.963ms         2.05%     170.219ms       1.330ms       0.000us         0.00%       6.065ms      47.382us           128  
+autograd::engine::evaluate_function: CompiledFunctio...         0.08%       6.676ms         2.04%     169.343ms       2.117ms       0.000us         0.00%       0.000us       0.000us            80  
+                               CompiledFunctionBackward         0.29%      24.090ms         1.96%     162.666ms       2.033ms       0.000us         0.00%       0.000us       0.000us            80  
+                                           aten::linear         0.11%       9.094ms         1.71%     141.636ms      99.814us       0.000us         0.00%       9.951ms       7.013us          1419  
+                                          aten::nonzero         1.60%     132.708ms         1.60%     132.784ms     132.784ms       0.000us         0.00%       0.000us       0.000us             1  
+                                            aten::addmm         0.63%      52.108ms         1.43%     118.783ms      83.709us       8.198ms         0.38%       9.951ms       7.013us          1419  
+                             Torch-Compiled Region: 2/0         0.15%      12.842ms         1.12%      93.175ms       1.165ms       0.000us         0.00%       0.000us       0.000us            80  
+                                        cudaGraphLaunch         1.02%      84.905ms         1.07%      89.063ms     795.202us       0.000us         0.00%       0.000us       0.000us           112  
+## Call CompiledFxGraph fa5u6odzdtzrhx6qd4aiip56vzuw...         0.92%      76.153ms         0.97%      80.211ms       1.003ms       0.000us         0.00%       0.000us       0.000us            80  
+                                       CompiledFunction         0.21%      17.755ms         0.94%      77.727ms     971.593us       0.000us         0.00%       0.000us       0.000us            80  
+## Call CompiledFxGraph fgggtt44ltaaamqb244wo6tgf5wh...         0.54%      45.057ms         0.72%      59.973ms     749.660us       0.000us         0.00%       0.000us       0.000us            80  
+                                            aten::zeros         0.04%       3.103ms         0.71%      59.222ms     133.986us       0.000us         0.00%      49.791us       0.113us           442  
+                                            aten::fill_         0.65%      54.168ms         0.69%      57.430ms      47.859us       2.571ms         0.12%       2.571ms       2.143us          1200  
+                                   aten::_foreach_copy_         0.15%      12.645ms         0.69%      57.189ms     198.574us       0.000us         0.00%       5.823ms      20.219us           288  
+                                            aten::zero_         0.06%       4.799ms         0.67%      55.677ms      77.222us       0.000us         0.00%     680.167us       0.943us           721  
+autograd::engine::evaluate_function: torch::autograd...         0.31%      26.093ms         0.65%      53.491ms      14.535us       0.000us         0.00%       0.000us       0.000us          3680  
+                                       aten::layer_norm         0.04%       3.264ms         0.49%      40.427ms      34.821us       0.000us         0.00%       3.586ms       3.089us          1161  
+                                aten::native_layer_norm         0.20%      16.259ms         0.45%      37.163ms      32.009us       3.586ms         0.17%       3.586ms       3.089us          1161  
+                                     aten::_foreach_add         0.04%       3.537ms         0.43%      35.816ms     277.641us       0.000us         0.00%       3.304ms      25.615us           129  
+                                        aten::embedding         0.04%       3.185ms         0.43%      35.558ms      68.910us       0.000us         0.00%      44.624ms      86.481us           516  
+                                            aten::clone         0.05%       3.755ms         0.42%      34.727ms      31.484us       0.000us         0.00%       3.351ms       3.038us          1103  
+                                        cudaMemcpyAsync         0.37%      30.795ms         0.37%      30.795ms       6.437us       0.000us         0.00%       0.000us       0.000us          4784  
+                        torch::autograd::AccumulateGrad         0.14%      11.267ms         0.33%      27.398ms       7.445us       0.000us         0.00%       0.000us       0.000us          3680  
+                               TorchDynamo Cache Lookup         0.32%      26.490ms         0.32%      26.490ms     123.783us       0.000us         0.00%       0.000us       0.000us           214  
+                                            aten::empty         0.31%      25.996ms         0.31%      25.996ms       4.692us       0.000us         0.00%       0.000us       0.000us          5541  
+                                           aten::detach         0.10%       8.390ms         0.22%      18.375ms       4.463us       0.000us         0.00%       0.000us       0.000us          4117  
+                                          aten::reshape         0.06%       4.892ms         0.22%      18.344ms       7.403us       0.000us         0.00%       1.170ms       0.472us          2478  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 8.289s
+Self CUDA time total: 2.153s
+
+
+Results saved to /home/castellanoontiv/Batched_env-swarm/agent2/kge_experiments/tests/profile_learn_gpu.txt

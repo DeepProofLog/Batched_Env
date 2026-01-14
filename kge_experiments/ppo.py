@@ -35,10 +35,61 @@ if torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
 
+    # Note: cudnn.benchmark=True can cause slowdowns with varying input sizes
+    # Keep it disabled for better consistency in evaluation
+
+    # Enable flash attention if available (faster attention computation)
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+
 
 # =============================================================================
 # HELPERS
 # =============================================================================
+
+def fused_clip_grad_norm_(
+    parameters: List[Tensor],
+    max_norm: float,
+    norm_type: float = 2.0,
+) -> Tensor:
+    """
+    Fused gradient clipping that avoids GPU-CPU synchronization.
+
+    This version concatenates all gradients into a single tensor for a fused
+    norm computation, which is faster than computing individual norms.
+
+    Args:
+        parameters: List of parameters with gradients to clip
+        max_norm: Maximum gradient norm
+        norm_type: Type of norm (default: 2.0 for L2 norm)
+
+    Returns:
+        Total gradient norm (as a GPU tensor, no sync)
+    """
+    if len(parameters) == 0:
+        return torch.tensor(0.0)
+
+    # Collect gradients (filter out None)
+    grads = [p.grad for p in parameters if p.grad is not None]
+    if len(grads) == 0:
+        return torch.tensor(0.0)
+
+    # Fused norm: concatenate all gradients and compute single norm (faster than foreach_norm)
+    # This avoids the overhead of computing many individual norms
+    total_norm = torch.cat([g.flatten() for g in grads]).norm(norm_type)
+
+    # Compute clip coefficient on GPU using in-place scalar operations (no tensor creation)
+    # clip_coef = max_norm / (total_norm + eps)
+    clip_coef = (total_norm + 1e-6).reciprocal_().mul_(max_norm)
+
+    # Clamp to max 1.0 (no clipping if norm <= max_norm)
+    clip_coef.clamp_(max=1.0)
+
+    # Apply clipping using foreach operations (no sync)
+    torch._foreach_mul_(grads, clip_coef)
+
+    return total_norm
+
 
 def compute_metrics_from_ranks(ranks: Tensor) -> Dict[str, float]:
     if ranks.numel() == 0:
@@ -62,7 +113,7 @@ def explained_variance(y_pred: Tensor, y_true: Tensor) -> Tensor:
 
 class PPOLossModule(nn.Module):
     """Fused policy forward + loss computation."""
-    
+
     def __init__(self, policy: nn.Module):
         super().__init__()
         self.policy = policy
@@ -92,7 +143,8 @@ class PPOLossModule(nn.Module):
         loss = policy_loss + ent_coef * entropy_loss + vf_coef * value_loss
         approx_kl = ((ratio - 1.0) - log_ratio).mean()
 
-        return torch.stack([loss, policy_loss, value_loss, entropy_loss, approx_kl.detach(), clip_fraction])
+        # Return individual tensors instead of stacking (avoids torch.stack synchronization)
+        return loss, policy_loss, value_loss, entropy_loss, approx_kl.detach(), clip_fraction
 
 
 # =============================================================================
@@ -234,10 +286,13 @@ class PPO:
 
             self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.learning_rate, eps=1e-5, fused=(self.device.type == 'cuda'))
             self._compile_all()
+            # Cache parameter list for gradient clipping (avoids list() call each iteration)
+            self._cached_params = list(self.policy.parameters())
         else:
             self.rollout_buffer = None
             self.optimizer = None
-        
+            self._cached_params = None
+
         # Ensure evaluation is also set up (buffers and kernels)
         self._setup_fused_eval_step()
 
@@ -671,23 +726,25 @@ class PPO:
 
                 current_episode_reward += new_state['step_rewards']
                 current_episode_length += 1
-                n_collected += 1
 
                 # Update per-env pointers from state (critical for query cycling parity)
                 self.env.per_env_ptrs.copy_(new_state['per_env_ptrs'])
 
-                # Handle callbacks for done episodes
-                done_indices = torch.nonzero(new_state['step_dones']).flatten()
-                num_dones = done_indices.numel()
-                if num_dones > 0:
-                    done_idx_cpu = done_indices.cpu().numpy()
-                    batch_rs = current_episode_reward[done_indices].float().cpu().numpy()
-                    batch_ls = current_episode_length[done_indices].cpu().numpy().astype(int)
-                    episode_rewards.extend(batch_rs.tolist())
-                    episode_lengths.extend(batch_ls.tolist())
+                # Get done mask - use bool() conversion which is fast
+                done_mask = new_state['step_dones'].bool()
 
-                    if on_step_callback is not None:
-                        # Extract success and labels from step (before reset overwrites them)
+                # Handle callbacks for done episodes - only if callback is provided
+                if on_step_callback is not None:
+                    # Callback path: need immediate processing (sync required)
+                    num_dones_t = done_mask.sum()
+                    if num_dones_t > 0:
+                        done_indices = done_mask.nonzero(as_tuple=False).flatten()
+                        done_idx_cpu = done_indices.cpu().numpy()
+                        batch_rs = current_episode_reward[done_indices].float().cpu().numpy()
+                        batch_ls = current_episode_length[done_indices].cpu().numpy().astype(int)
+                        episode_rewards.extend(batch_rs.tolist())
+                        episode_lengths.extend(batch_ls.tolist())
+
                         batch_successes = new_state['step_successes'][done_indices].bool().cpu().numpy()
                         batch_labels = new_state['step_labels'][done_indices].cpu().numpy()
                         on_step_callback(
@@ -698,23 +755,51 @@ class PPO:
                             query_labels=self.query_labels,
                             query_depths=self.query_depths,
                             successes=batch_successes,
-                            step_labels=batch_labels,  # Actual labels with negative sampling
+                            step_labels=batch_labels,
                         )
 
-                    # Update pointers
-                    if self.current_query_indices is not None:
-                         # Use per_env_ptrs from new_state (which is the next query index)
-                         self.current_query_indices[done_idx_cpu] = new_state['per_env_ptrs'][done_indices].cpu().numpy()
-                    
-                    # Manual masking is still needed for accumulators
-                    current_episode_reward.masked_fill_(new_state['step_dones'].bool(), 0.0)
-                    current_episode_length.masked_fill_(new_state['step_dones'].bool(), 0)
+                        if self.current_query_indices is not None:
+                             self.current_query_indices[done_idx_cpu] = new_state['per_env_ptrs'][done_indices].cpu().numpy()
+                else:
+                    # No callback: use fixed-size buffers to defer ALL sync to end of rollout
+                    # Store episode rewards/lengths at done positions (GPU-only, no sync)
+                    if not hasattr(self, '_step_dones_buffer') or self._step_dones_buffer is None:
+                        # Fixed-size buffers: [n_steps, batch_size_env]
+                        self._step_dones_buffer = torch.zeros(self.n_steps, self.batch_size_env, device=self.device, dtype=torch.bool)
+                        self._step_rewards_buffer = torch.zeros(self.n_steps, self.batch_size_env, device=self.device, dtype=torch.float32)
+                        self._step_lengths_buffer = torch.zeros(self.n_steps, self.batch_size_env, device=self.device, dtype=torch.long)
+
+                    # Store done mask and final rewards/lengths for this step (GPU-only)
+                    self._step_dones_buffer[n_collected] = done_mask
+                    # Store episode totals BEFORE reset - only for done envs (masked write)
+                    self._step_rewards_buffer[n_collected] = torch.where(done_mask, current_episode_reward, torch.zeros_like(current_episode_reward))
+                    self._step_lengths_buffer[n_collected] = torch.where(done_mask, current_episode_length, torch.zeros_like(current_episode_length))
+
+                n_collected += 1
+
+                # Always reset accumulators for done episodes (fast masked op, no sync)
+                current_episode_reward.masked_fill_(done_mask, 0.0)
+                current_episode_length.masked_fill_(done_mask, 0)
 
 
                 episode_starts = new_state['step_dones'].float()
                 state, obs = new_state, new_obs
 
             last_values = self._uncompiled_policy.predict_values(obs)
+
+        # Extract deferred episode stats (single sync point at end of rollout)
+        if on_step_callback is None and hasattr(self, '_step_dones_buffer') and self._step_dones_buffer is not None:
+            # Single nonzero call for ALL done episodes across the rollout
+            flat_dones = self._step_dones_buffer[:n_collected].flatten()
+            done_indices = flat_dones.nonzero(as_tuple=False).flatten()
+            if done_indices.numel() > 0:
+                flat_rewards = self._step_rewards_buffer[:n_collected].flatten()
+                flat_lengths = self._step_lengths_buffer[:n_collected].flatten()
+                # Single CPU transfer
+                done_rewards_cpu = flat_rewards[done_indices].cpu().numpy()
+                done_lengths_cpu = flat_lengths[done_indices].cpu().numpy().astype(int)
+                episode_rewards.extend(done_rewards_cpu.tolist())
+                episode_lengths.extend(done_lengths_cpu.tolist())
 
         self.rollout_buffer.compute_returns_and_advantage(last_values=last_values, dones=new_state['step_dones'].float())
         if return_traces:
@@ -761,85 +846,124 @@ class PPO:
                     self._train_advantages.copy_(advantages)
 
                 with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
-                    metrics = self.loss_module(
+                    loss, policy_loss, value_loss, entropy_loss, approx_kl_div, clip_fraction = self.loss_module(
                         self._train_sub_index, self._train_derived, self._train_mask,
                         self._train_actions, self._train_advantages, self._train_returns,
                         self._train_old_log_probs, self._train_old_values,
                         self.clip_range, self.clip_range_vf or 0.0, self.ent_coef, self.vf_coef,
                     )
 
-                loss = metrics[0]
-                policy_loss = metrics[1]
-                value_loss = metrics[2]
-                entropy_loss = metrics[3]
-                approx_kl_div = metrics[4]
-                clip_fraction = metrics[5]
-                
-                pg_losses[batch_count] = policy_loss.detach().clone()
-                vl_losses[batch_count] = value_loss.detach().clone()
-                ent_losses[batch_count] = entropy_loss.detach().clone()
-                kls[batch_count] = approx_kl_div.detach().clone()
-                clips[batch_count] = clip_fraction.detach().clone()
-                
-                # Collect training traces if requested
+                pg_losses[batch_count] = policy_loss.detach()
+                vl_losses[batch_count] = value_loss.detach()
+                ent_losses[batch_count] = entropy_loss.detach()
+                kls[batch_count] = approx_kl_div.detach()
+                clips[batch_count] = clip_fraction.detach()
+
+                # Collect training traces if requested (deferred .item() to avoid sync)
                 if return_traces:
                     train_traces.append({
                         "epoch": epoch,
                         "batch_size": len(actions),
-                        "policy_loss": policy_loss.item(),
-                        "value_loss": value_loss.item(),
-                        "entropy_loss": entropy_loss.item(),
-                        "clip_fraction": clip_fraction.item(),
+                        "policy_loss_idx": batch_count,  # Store index, extract later
+                        "value_loss_idx": batch_count,
+                        "entropy_loss_idx": batch_count,
+                        "clip_fraction_idx": batch_count,
                     })
-                
+
                 batch_count += 1
 
-                # Check KL divergence BEFORE optimizer step (matching TensorPPO/SB3)
-                if self.target_kl and approx_kl_div.item() > 1.5 * self.target_kl:
-                    if self.verbose:
-                        print(f"[PPO] Early stopping at step {epoch} due to reaching max kl: {approx_kl_div.item():.2f}")
-                    continue_training = False
-                    break
-                
+                # Check KL divergence BEFORE optimizer step using tensor comparison (no .item())
+                if self.target_kl is not None:
+                    kl_threshold = 1.5 * self.target_kl
+                    if approx_kl_div > kl_threshold:
+                        if self.verbose:
+                            # Single sync point for early stopping message
+                            print(f"[PPO] Early stopping at step {epoch} due to reaching max kl: {approx_kl_div.item():.2f}")
+                        continue_training = False
+                        break
+
                 # Apply optimizer step only if KL check passed
-                self.optimizer.zero_grad(set_to_none=False)
+                # set_to_none=True is faster (avoids zeroing memory)
+                self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 if self.max_grad_norm:
-                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm, foreach=True)
+                    # Use fused gradient clipping to avoid GPU-CPU sync
+                    # Uses cached parameter list to avoid list() call each iteration
+                    fused_clip_grad_norm_(self._cached_params, self.max_grad_norm)
                 self.optimizer.step()
 
             if not continue_training:
                 break
-            
-            # Print epoch stats (matching TensorPPO)
+
+            # Store epoch end index for deferred verbose output (no sync during training)
             if self.verbose:
-                print(f"Epoch {epoch+1}/{self.n_epochs}. ")
-                mean_pg = pg_losses[:batch_count].mean().item()
-                mean_val = vl_losses[:batch_count].mean().item()
-                mean_ent = ent_losses[:batch_count].mean().item()
-                mean_kl = kls[:batch_count].mean().item()
-                mean_clip = clips[:batch_count].mean().item()
-                print(f"Losses: total {loss.item():.5f}, value {mean_val:.5f}, "
-                      f"policy {mean_pg:.5f}, entropy {mean_ent:.5f}, "
-                      f"approx_kl {mean_kl:.5f} clip_fraction {mean_clip:.5f}. ")
+                # Store info for deferred printing (GPU tensors, no sync)
+                if not hasattr(self, '_epoch_end_indices'):
+                    self._epoch_end_indices = []
+                self._epoch_end_indices.append((epoch, batch_count, loss.detach().clone()))
 
         with torch.no_grad():
             values = self.rollout_buffer.values.flatten()
             returns = self.rollout_buffer.returns.flatten()
             ev = explained_variance(values, returns)
-        
+
+            # Batch all metric computations on GPU, single CPU transfer
+            final_metrics = torch.stack([
+                pg_losses[:batch_count].mean(),
+                vl_losses[:batch_count].mean(),
+                -ent_losses[:batch_count].mean(),
+                clips[:batch_count].mean(),
+                kls[last_epoch_start:batch_count].mean(),
+                ev,
+            ]).cpu()
+
+        # Deferred verbose output - compute all stats on GPU, single CPU transfer
+        if self.verbose and hasattr(self, '_epoch_end_indices') and self._epoch_end_indices:
+            n_epochs_done = len(self._epoch_end_indices)
+            # Stack all losses and compute all stats on GPU
+            epoch_losses = torch.stack([info[2] for info in self._epoch_end_indices])
+            all_stats = []
+            for _, end_idx, _ in self._epoch_end_indices:
+                all_stats.append(torch.stack([
+                    vl_losses[:end_idx].mean(),
+                    pg_losses[:end_idx].mean(),
+                    ent_losses[:end_idx].mean(),
+                    kls[:end_idx].mean(),
+                    clips[:end_idx].mean(),
+                ]))
+            all_stats_tensor = torch.stack(all_stats)  # [n_epochs, 5]
+            # Single CPU transfer for all epoch data
+            all_data = torch.cat([epoch_losses.unsqueeze(1), all_stats_tensor], dim=1).cpu()  # [n_epochs, 6]
+            for i, (epoch, _, _) in enumerate(self._epoch_end_indices):
+                print(f"Epoch {epoch+1}/{self.n_epochs}. ")
+                print(f"Losses: total {all_data[i, 0]:.5f}, value {all_data[i, 1]:.5f}, "
+                      f"policy {all_data[i, 2]:.5f}, entropy {all_data[i, 3]:.5f}, "
+                      f"approx_kl {all_data[i, 4]:.5f} clip_fraction {all_data[i, 5]:.5f}. ")
+            self._epoch_end_indices = []  # Clear for next train() call
+
         result = {
-            "policy_loss": pg_losses[:batch_count].mean().item(),
-            "value_loss": vl_losses[:batch_count].mean().item(),
-            "entropy": -ent_losses[:batch_count].mean().item(),
-            "clip_fraction": clips[:batch_count].mean().item(),
-            "approx_kl": kls[last_epoch_start:batch_count].mean().item(),
-            "explained_var": ev.item(),
+            "policy_loss": float(final_metrics[0]),
+            "value_loss": float(final_metrics[1]),
+            "entropy": float(final_metrics[2]),
+            "clip_fraction": float(final_metrics[3]),
+            "approx_kl": float(final_metrics[4]),
+            "explained_var": float(final_metrics[5]),
         }
-        
+
         if return_traces:
+            # Batch extract trace values (single sync point)
+            pg_cpu = pg_losses[:batch_count].cpu()
+            vl_cpu = vl_losses[:batch_count].cpu()
+            ent_cpu = ent_losses[:batch_count].cpu()
+            clip_cpu = clips[:batch_count].cpu()
+            for trace in train_traces:
+                idx = trace.pop("policy_loss_idx")
+                trace["policy_loss"] = float(pg_cpu[idx])
+                trace["value_loss"] = float(vl_cpu[trace.pop("value_loss_idx")])
+                trace["entropy_loss"] = float(ent_cpu[trace.pop("entropy_loss_idx")])
+                trace["clip_fraction"] = float(clip_cpu[trace.pop("clip_fraction_idx")])
             result["traces"] = train_traces
-        
+
         return result
 
     def learn(self, total_timesteps, queries=None, reset_num_timesteps=True, on_iteration_start_callback=None, on_step_callback=None, return_traces=False):
