@@ -32,7 +32,7 @@ class TrainConfig:
     """Configuration for training (unified for runner and compiled scripts)."""
     
     # Dataset / Paths
-    dataset: str = "countries_s3"
+    dataset: str = "family"
     data_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     train_file: str = "train.txt"
     valid_file: str = "valid.txt"
@@ -48,7 +48,7 @@ class TrainConfig:
     # Sample counts (None means use all)
     n_train_queries: Optional[int] = None
     n_eval_queries: Optional[int] = 20
-    n_test_queries: Optional[int] = 100
+    n_test_queries: Optional[int] = None
     
     # Environment / Logic
     padding_atoms: int = 6
@@ -123,7 +123,7 @@ class TrainConfig:
     
     # Model Saving / Logging
     save_model: bool = True
-    load_model: Any = False # False or 'last_epoch' or path
+    load_model: Any = True # False or 'last_epoch' or path
     restore_best: bool = True # restore_best_val_model
     load_best_metric: str = 'eval'
     models_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
@@ -135,7 +135,7 @@ class TrainConfig:
     run_signature: str = "compiled_run"
 
     # KGE inference (evaluation-time fusion)
-    kge_inference: bool = False
+    kge_inference: bool = True
     kge_inference_success: bool = True
     kge_engine: Optional[str] = "pytorch"
     kge_checkpoint_dir: Optional[str] = None

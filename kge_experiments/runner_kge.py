@@ -88,10 +88,11 @@ if __name__ == "__main__":
     # Prepare grid search
     grid_spec = {}
 
-    # Automatically add list-valued parameters to grid search (excluding seed)
+    # Automatically add list-valued parameters to grid search (excluding seed and known list configs)
     # This allows setting e.g. 'dataset': ['wn18rr', 'family'] in DEFAULT_CONFIG
+    EXCLUDE_FROM_GRID = {'seed', 'corruption_scheme', 'train_depth'}
     for key, value in base_config.items():
-        if isinstance(value, list) and key != 'seed' and key not in grid_spec:
+        if isinstance(value, list) and key not in EXCLUDE_FROM_GRID and key not in grid_spec:
             grid_spec[key] = value
 
     if args.grid:

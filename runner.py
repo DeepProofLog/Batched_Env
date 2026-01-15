@@ -11,11 +11,11 @@ import torch
 
 def parse_args():
     parser = argparse.ArgumentParser(description="KGE Experiment Runner")
-    parser.add_argument("--dataset", type=str, default="countries_s3", help="Dataset name")
+    parser.add_argument("--dataset", type=str, default="family", help="Dataset name")
     parser.add_argument("--n_envs", type=int, default=128, help="Number of environments")
     parser.add_argument("--n_steps", type=int, default=128, help="Steps per rollout")
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size")
-    parser.add_argument("--total_timesteps", type=int, default=500000, help="Total training timesteps")
+    parser.add_argument("--total_timesteps", type=int, default=10000, help="Total training timesteps")
     parser.add_argument("--eval_freq", type=int, default=1, help="Evaluation frequency (iterations)")
     parser.add_argument("--device", type=str, default=None, help="cpu/cuda")
     parser.add_argument("--experiment", type=str, default="kge", help="Experiment type (e.g., kge)")
