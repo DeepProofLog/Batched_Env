@@ -523,10 +523,12 @@ class FileLogger:
                             if isinstance(value, (int, float, np.number)):
                                 avg_results[name].append(value)
 
-        len_keys = [len(v) for v in avg_results.values()]
-        assert all([l == len_keys[0] for l in len_keys]), f'Not all the keys in avg_results have the same length! {[(k, len(v)) for k, v in avg_results.items()], avg_results}'                  
+        # Filter out metrics with incomplete data (e.g., depth-specific metrics not present in all seeds)
+        expected_len = len(seeds)
+        avg_results = {k: v for k, v in avg_results.items() if len(v) == expected_len}
+
         assert len(seeds_found) == len(seeds), f'Number of seeds {seeds_found} found in the experiments is different from the number of seeds {seeds}!'
-        
+
         avg_results = {key: [np.mean(values), np.std(values)] for key, values in avg_results.items()}
         self.write_avg_results(args_dict, avg_results)
 

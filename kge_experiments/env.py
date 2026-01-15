@@ -357,7 +357,7 @@ class EnvVec:
         else:
             # Random selection for production training
             safe_idx = torch.randint(0, pool_size, (B,), device=device)
-            next_ptrs = per_env_ptrs
+            next_ptrs = safe_idx  # Track actual sampled indices for depth metrics
 
         reset_q = query_pool[safe_idx]
         new_ptrs = torch.where(done_mask, next_ptrs, per_env_ptrs)

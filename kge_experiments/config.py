@@ -32,7 +32,7 @@ class TrainConfig:
     """Configuration for training (unified for runner and compiled scripts)."""
     
     # Dataset / Paths
-    dataset: str = "family"
+    dataset: str = "countries_s3"
     data_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     train_file: str = "train.txt"
     valid_file: str = "valid.txt"
@@ -96,7 +96,7 @@ class TrainConfig:
     vf_coef: float = 1
     max_grad_norm: float = 0.5
     target_kl: Optional[float] = None
-    total_timesteps: int = 0
+    total_timesteps: int = 500000
     
     # Sampling / Corruption
     negative_ratio: float = 1.0 # train_neg_ratio
@@ -123,7 +123,7 @@ class TrainConfig:
     
     # Model Saving / Logging
     save_model: bool = True
-    load_model: Any = True # False or 'last_epoch' or path
+    load_model: Any = False # False or 'last_epoch' or path
     restore_best: bool = True # restore_best_val_model
     load_best_metric: str = 'eval'
     models_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")

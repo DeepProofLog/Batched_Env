@@ -28,8 +28,8 @@ from torch.utils.data import DataLoader, Dataset
 # Make repo root importable if running from scripts/
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from kge_module.pytorch.data_utils import load_dataset_split, load_triples, load_triples_with_mappings
-from kge_module.pytorch.model_torch import build_model
+from data_utils import load_dataset_split, load_triples, load_triples_with_mappings
+from model_torch import build_model
 
 
 class TripleDataset(Dataset):
@@ -118,6 +118,8 @@ class TrainConfig:
     grad_clip: float = 2.0
     warmup_ratio: float = 0.1         # fraction of total steps
     scheduler: str = "cosine"         # "cosine" or "none"
+    sampled_eval: bool = True         # use sampled negatives for evaluation
+    sampled_negatives: int = 100      # number of negative samples for evaluation
 
 
 @dataclass
@@ -219,6 +221,25 @@ def build_filter_maps(
     return dict(head_filter), dict(tail_filter)
 
 
+def build_relation_domains(
+    triples: Sequence[Tuple[int, int, int]]
+) -> Tuple[Dict[int, Set[int]], Dict[int, Set[int]]]:
+    """Build per-relation domain constraints: which entities can appear as head/tail.
+
+    Returns:
+        head_domain: {relation_id: set of valid head entities}
+        tail_domain: {relation_id: set of valid tail entities}
+    """
+    head_domain: Dict[int, Set[int]] = defaultdict(set)
+    tail_domain: Dict[int, Set[int]] = defaultdict(set)
+
+    for h, r, t in triples:
+        head_domain[r].add(h)
+        tail_domain[r].add(t)
+
+    return dict(head_domain), dict(tail_domain)
+
+
 def _rank_candidates(
     model: torch.nn.Module,
     all_entities: torch.Tensor,
@@ -231,36 +252,77 @@ def _rank_candidates(
     device: torch.device,
     predict_head: bool,
     rank_mode: str,
+    domain_candidates: Optional[Set[int]] = None,
 ) -> float:
-    """Return the 1-indexed rank of the true entity under filtered evaluation."""
+    """Return the 1-indexed rank of the true entity under filtered evaluation.
+
+    Args:
+        domain_candidates: If provided, only rank against these entities (domain-aware eval).
+    """
     # Access the underlying model if wrapped in DataParallel
     actual_model = model.module if isinstance(model, torch.nn.DataParallel) else model
-    
-    for i,chunk in enumerate(torch.split(all_entities, chunk_size)):
-        # chunk: [C]
-        size = chunk.size(0)
-        if predict_head:
-            h_chunk = chunk  # [C]
-            r_chunk = torch.full((size,), relation, dtype=torch.long, device=device)  # [C]
-            t_chunk = torch.full((size,), anchor_entity, dtype=torch.long, device=device)  # [C]
-        else:
-            h_chunk = torch.full((size,), anchor_entity, dtype=torch.long, device=device)  # [C]
-            r_chunk = torch.full((size,), relation, dtype=torch.long, device=device)  # [C]
-            t_chunk = chunk  # [C]
-        scores_buffer[chunk] = actual_model.score_triples(h_chunk, r_chunk, t_chunk)
 
-    if filtered_candidates:
-        mask = [idx for idx in filtered_candidates if idx != true_entity]
-        if mask:
-            mask_tensor = torch.tensor(mask, dtype=torch.long, device=device)
-            scores_buffer[mask_tensor] = float("-inf")
+    # If domain constraints provided, only evaluate against valid candidates
+    if domain_candidates is not None:
+        candidates = torch.tensor(sorted(domain_candidates), dtype=torch.long, device=device)
+        num_candidates = len(candidates)
+        scores = torch.full((num_candidates,), float("-inf"), dtype=scores_buffer.dtype, device=device)
 
-    target_score = scores_buffer[true_entity]
+        for i, chunk in enumerate(torch.split(candidates, chunk_size)):
+            size = chunk.size(0)
+            if predict_head:
+                h_chunk = chunk
+                r_chunk = torch.full((size,), relation, dtype=torch.long, device=device)
+                t_chunk = torch.full((size,), anchor_entity, dtype=torch.long, device=device)
+            else:
+                h_chunk = torch.full((size,), anchor_entity, dtype=torch.long, device=device)
+                r_chunk = torch.full((size,), relation, dtype=torch.long, device=device)
+                t_chunk = chunk
+            start_idx = i * chunk_size
+            end_idx = start_idx + size
+            scores[start_idx:end_idx] = actual_model.score_triples(h_chunk, r_chunk, t_chunk)
+
+        # Find index of true entity in candidates
+        true_idx = (candidates == true_entity).nonzero(as_tuple=True)[0]
+        if len(true_idx) == 0:
+            raise RuntimeError(f"True entity {true_entity} not in domain candidates")
+        true_idx = true_idx[0].item()
+        target_score = scores[true_idx]
+
+        # Apply filtering (mask out other known true answers)
+        if filtered_candidates:
+            for idx, ent in enumerate(candidates.tolist()):
+                if ent in filtered_candidates and ent != true_entity:
+                    scores[idx] = float("-inf")
+
+        greater = float((scores > target_score).sum().item())
+        equal = float((scores == target_score).sum().item())
+    else:
+        # Original exhaustive evaluation
+        for i, chunk in enumerate(torch.split(all_entities, chunk_size)):
+            size = chunk.size(0)
+            if predict_head:
+                h_chunk = chunk
+                r_chunk = torch.full((size,), relation, dtype=torch.long, device=device)
+                t_chunk = torch.full((size,), anchor_entity, dtype=torch.long, device=device)
+            else:
+                h_chunk = torch.full((size,), anchor_entity, dtype=torch.long, device=device)
+                r_chunk = torch.full((size,), relation, dtype=torch.long, device=device)
+                t_chunk = chunk
+            scores_buffer[chunk] = actual_model.score_triples(h_chunk, r_chunk, t_chunk)
+
+        if filtered_candidates:
+            mask = [idx for idx in filtered_candidates if idx != true_entity]
+            if mask:
+                mask_tensor = torch.tensor(mask, dtype=torch.long, device=device)
+                scores_buffer[mask_tensor] = float("-inf")
+
+        target_score = scores_buffer[true_entity]
+        greater = float((scores_buffer > target_score).sum().item())
+        equal = float((scores_buffer == target_score).sum().item())
+
     if not torch.isfinite(target_score):
         raise RuntimeError("True triple masked during evaluation; check filtering logic.")
-
-    greater = float((scores_buffer > target_score).sum().item())
-    equal = float((scores_buffer == target_score).sum().item())
 
     if rank_mode == "optimistic":
         return float(greater + 1.0)
@@ -281,8 +343,15 @@ def evaluate_ranking(
     chunk_size: int,
     rank_mode: str = "realistic",
     verbose: bool = False,
+    head_domain: Optional[Dict[int, Set[int]]] = None,
+    tail_domain: Optional[Dict[int, Set[int]]] = None,
 ) -> Dict[str, float]:
-    """Compute filtered MRR/Hits@K for a split using exhaustive negative corruption."""
+    """Compute filtered MRR/Hits@K for a split.
+
+    Args:
+        head_domain: If provided, only rank head predictions against valid entities per relation.
+        tail_domain: If provided, only rank tail predictions against valid entities per relation.
+    """
     if not triples:
         return {"MRR": float("nan"), "Hits@1": float("nan"), "Hits@3": float("nan"), "Hits@10": float("nan")}
 
@@ -305,6 +374,10 @@ def evaluate_ranking(
         count = 0
         for i,(h, r, t) in enumerate(triples):
             print(f"Evaluating triple {i+1}/{len(triples)}", end="\r") if verbose else None
+            # Get domain constraints for this relation (if provided)
+            head_domain_for_r = head_domain.get(r) if head_domain else None
+            tail_domain_for_r = tail_domain.get(r) if tail_domain else None
+
             head_rank = _rank_candidates(
                 model,
                 all_entities,
@@ -317,6 +390,7 @@ def evaluate_ranking(
                 device=device,
                 predict_head=True,
                 rank_mode=rank_mode,
+                domain_candidates=head_domain_for_r,
             )
             tail_rank = _rank_candidates(
                 model,
@@ -330,6 +404,7 @@ def evaluate_ranking(
                 device=device,
                 predict_head=False,
                 rank_mode=rank_mode,
+                domain_candidates=tail_domain_for_r,
             )
             for rank in (head_rank, tail_rank):
                 total_rr += 1.0 / rank
@@ -430,6 +505,16 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
 
     # Build filters from original-relation triples
     head_filter, tail_filter = build_filter_maps(triples, valid_triples, test_triples)
+
+    # Build relation domain constraints for domain-aware evaluation (e.g., countries datasets)
+    # Use domains if dataset name contains "countries" (small KG with strict type constraints)
+    use_domain_eval = cfg.dataset and "countries" in cfg.dataset.lower()
+    head_domain, tail_domain = None, None
+    if use_domain_eval:
+        head_domain, tail_domain = build_relation_domains(triples + valid_triples + test_triples)
+        print(f"Domain-aware evaluation enabled for '{cfg.dataset}'")
+        for r_id in sorted(head_domain.keys()):
+            print(f"  Relation {r_id}: {len(head_domain.get(r_id, set()))} head candidates, {len(tail_domain.get(r_id, set()))} tail candidates")
 
     # Optionally add reciprocal training data
     if cfg.use_reciprocal:
@@ -614,6 +699,8 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
                 cfg.eval_chunk_size,
                 rank_mode=cfg.eval_rank_mode,
                 verbose=True,
+                head_domain=head_domain,
+                tail_domain=tail_domain,
             )
             record_metrics("train", train_metrics)
 
@@ -631,6 +718,8 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
                 cfg.eval_chunk_size,
                 rank_mode=cfg.eval_rank_mode,
                 verbose=True,
+                head_domain=head_domain,
+                tail_domain=tail_domain,
             )
             record_metrics("valid", valid_metrics)
 
@@ -646,6 +735,8 @@ def train_model(cfg: TrainConfig) -> TrainArtifacts:
             cfg.eval_chunk_size,
             rank_mode=cfg.eval_rank_mode,
             verbose=True,
+            head_domain=head_domain,
+            tail_domain=tail_domain,
         )
         record_metrics("test", test_metrics)
 

@@ -20,7 +20,7 @@ class BaseKGEConfig:
     """Base configuration for KGE experiments."""
     
     # Dataset
-    dataset: str = "nations,umls,fb15k237,pharmkg_full,family,wn18rr"
+    dataset: str = 'countries_s3' #"nations,umls,fb15k237,pharmkg_full,family,wn18rr"
     data_root: str = "/home/castellanoontiv/Batched_Env/kge_experiments/data"
     train_split: str = "train.txt"
     valid_split: str = "valid.txt"
@@ -68,7 +68,7 @@ class BaseKGERunner:
         parser = argparse.ArgumentParser(description="KGE Experiment Runner")
         
         # Dataset args
-        parser.add_argument("--dataset", type=str, default="nations,umls,fb15k237,pharmkg_full", help="Dataset name")
+        parser.add_argument("--dataset", type=str, default="countries_s3", help="Dataset name")
         parser.add_argument("--data_root", type=str, default="/home/castellanoontiv/Batched_Env/kge_experiments/data", help="Root directory for data")
         parser.add_argument("--train_split", type=str, default="train.txt", help="Training split name")
         parser.add_argument("--valid_split", type=str, default="valid.txt", help="Validation split name")
@@ -77,10 +77,10 @@ class BaseKGERunner:
         
         # Models to run
         parser.add_argument("--model", type=str, default="TransE", help="Single model to run")
-        parser.add_argument("--models", type=str, default=None, help="Comma-separated list of models to run")
+        parser.add_argument("--models", type=str, default="RotatE,ComplEx", help="Comma-separated list of models to run")
         
         # Training args
-        parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+        parser.add_argument("--epochs", type=int, default=1500, help="Number of training epochs")
         parser.add_argument("--batch_size", type=int, default=512, help="Batch size")
         parser.add_argument("--seed", type=int, default=42, help="Random seed")
         parser.add_argument("--lr", type=float, default=None, help="Learning rate (overrides model default)")

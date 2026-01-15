@@ -836,6 +836,7 @@ class RankingCallback:
         
         self.mrr_tracker = MRRTracker(patience=20)
         self.last_eval_step = 0
+        self.best_model_state = None  # Store best model state in memory
         
     def on_training_start(self, total_timesteps: Optional[int] = None) -> None:
         """Run initial evaluation before training starts."""
@@ -890,15 +891,19 @@ class RankingCallback:
         mrr_mean = eval_metrics.get("MRR", eval_metrics.get("mrr_mean", 0.0))
         eval_metrics["mrr_mean"] = mrr_mean
         
-        # Track
-        self.mrr_tracker.update(mrr_mean, iteration)
+        # Track and save best model state
+        is_best = self.mrr_tracker.update(mrr_mean, iteration)
+        if is_best:
+            self.best_model_state = {k: v.clone() for k, v in self.policy.state_dict().items()}
+
+        # Always print eval summary (controlled by verbose for detailed metrics)
+        print(f"[Ranking] {self.mrr_tracker.get_summary()}")
         if self.verbose:
-             print(f"[Ranking] {self.mrr_tracker.get_summary()}")
-             Display.print_formatted_metrics(
-                 metrics=eval_metrics,
-                 prefix="eval",
-             )
-        
+            Display.print_formatted_metrics(
+                metrics=eval_metrics,
+                prefix="eval",
+            )
+
         return eval_metrics
 
 

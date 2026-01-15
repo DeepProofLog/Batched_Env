@@ -62,48 +62,42 @@ def build_policy(config, env=None):
     return builder.create_policy(config, env)
 
 
-def get_sampler(config):
-    """Get the sampler for evaluation (after build_env)."""
-    exp_type = getattr(config, 'experiment_type', None)
-    if exp_type is None:
-        raise ValueError("Config must have 'experiment_type' attribute.")
-    builder = get_builder(exp_type)
-    return builder.get_sampler(config)
-
-
-def get_test_queries(config):
-    """Get test queries tensor for evaluation (after build_env)."""
-    exp_type = getattr(config, 'experiment_type', None)
-    if exp_type is None:
-        raise ValueError("Config must have 'experiment_type' attribute.")
-    builder = get_builder(exp_type)
-    return builder.get_test_queries(config)
-
-
 def get_algorithm(policy, env, config):
     """
     Create algorithm instance based on experiment type.
-    
+    Also sets up callbacks for training.
+
     Args:
         policy: Policy network
         env: Environment
         config: Configuration object with experiment_type attribute
-        
+
     Returns:
         Algorithm instance (e.g., PPO for KGE experiments)
     """
     exp_type = getattr(config, 'experiment_type', None)
     if exp_type is None:
         raise ValueError("Config must have 'experiment_type' attribute. Use load_config() first.")
-    
-    if exp_type == 'kge':
-        from kge_experiments.ppo import PPO
-        return PPO(policy, env, config)
-    else:
-        raise ValueError(
-            f"Unknown experiment type: '{exp_type}'. "
-            f"Supported types: ['kge']"
-        )
+    builder = get_builder(exp_type)
+    return builder.create_algorithm(policy, env, config)
+
+
+def run_evaluation(algorithm, config):
+    """
+    Run evaluation using experiment-specific logic.
+
+    Args:
+        algorithm: Trained algorithm instance
+        config: Configuration object with experiment_type attribute
+
+    Returns:
+        Dictionary of evaluation results
+    """
+    exp_type = getattr(config, 'experiment_type', None)
+    if exp_type is None:
+        raise ValueError("Config must have 'experiment_type' attribute.")
+    builder = get_builder(exp_type)
+    return builder.run_evaluation(algorithm, config)
 
 
 # =============================================================================

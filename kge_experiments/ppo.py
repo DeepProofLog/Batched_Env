@@ -640,7 +640,8 @@ class PPO:
             self._compiled_ranking_step_ab = step_ab
             self._compiled_ranking_step_ba = step_ba
         if compile_eval:
-            print(f"[PPO] Compiled ranking_step (double-buffered) with mode={mode}")
+            # print(f"[PPO] Compiled ranking_step (double-buffered) with mode={mode}")
+            pass
         else:
             if self.verbose:
                 print("[PPO] parity mode - ranking_step running eagerly")
@@ -1010,19 +1011,23 @@ class PPO:
 
             # Collect rollouts
             rollout_start_time = time.time()
+            n_ep_before = len(ep_rews)
             result = self.collect_rollouts(state, obs, ep_starts, curr_ep_rew, curr_ep_len, ep_rews, ep_lens, iteration, return_traces, step_cb)
             state, obs, ep_starts, curr_ep_rew, curr_ep_len, n_steps, rollout_traces = result
             state = state.clone()
             obs = {k: v.clone() for k, v in obs.items()}
-            
+
             if return_traces and rollout_traces:
                 all_rollout_traces.append({'iteration': iteration, 'traces': rollout_traces})
-                
+
             self.num_timesteps += n_steps
 
             rollout_time = time.time() - rollout_start_time
             if self.verbose:
-                print(f"[PPO] Rollout collected in {rollout_time:.2f}s. FPS: {n_steps/rollout_time:.2f}")
+                # Compute mean reward for episodes completed in this rollout
+                new_rews = ep_rews[n_ep_before:]
+                mean_rew = sum(new_rews) / len(new_rews) if new_rews else 0.0
+                print(f"[PPO] Rollout collected in {rollout_time:.2f}s. FPS: {n_steps/rollout_time:.2f}. Reward: {mean_rew:.3f}. Timesteps: {self.num_timesteps}")
 
             train_start_time = time.time()
             train_metrics = self.train(return_traces)
@@ -1030,7 +1035,7 @@ class PPO:
             train_time = time.time() - train_start_time
             if self.verbose:
                 print(f"[PPO] Training completed in {train_time:.2f}s")
-            
+
             # Callback: End of iteration (logs metrics)
             if self.callback:
                 # Prepare locals for callback manager
@@ -1053,7 +1058,7 @@ class PPO:
         if return_traces:
             results['rollout_traces'] = all_rollout_traces
             results['train_traces'] = all_train_traces
-            
+
         return results
 
     # -------------------------------------------------------------------------

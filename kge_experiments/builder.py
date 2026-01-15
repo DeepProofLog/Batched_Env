@@ -82,6 +82,7 @@ def create_env(config: KGEConfig) -> EnvVec:
         facts_file=config.facts_file,
         train_depth=config.train_depth,
         corruption_mode="dynamic",
+        filter_queries_by_rules=getattr(config, 'filter_queries_by_rules', True),
     )
     
     # =========================================================================
@@ -122,6 +123,7 @@ def create_env(config: KGEConfig) -> EnvVec:
         parity_mode=config.parity,
         max_derived_per_state=config.padding_states,
         end_proof_action=config.end_proof_action,
+        max_fact_pairs_cap=getattr(config, 'max_fact_pairs_cap', None),
     )
     
     # Clean up index manager tensors (already transferred to engine)
@@ -134,10 +136,15 @@ def create_env(config: KGEConfig) -> EnvVec:
     # Convert queries to tensor format
     # =========================================================================
     train_queries = torch.stack([
-        im.atom_to_tensor(q.predicate, q.args[0], q.args[1]) 
+        im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
         for q in dh.train_queries
     ], dim=0)
-    
+
+    valid_queries = torch.stack([
+        im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
+        for q in dh.valid_queries
+    ], dim=0) if dh.valid_queries else None
+
     test_queries = torch.stack([
         im.atom_to_tensor(q.predicate, q.args[0], q.args[1])
         for q in dh.test_queries
@@ -157,11 +164,13 @@ def create_env(config: KGEConfig) -> EnvVec:
         device=device,
         memory_pruning=config.memory_pruning,
         train_queries=train_queries,
-        valid_queries=test_queries,
+        valid_queries=valid_queries if valid_queries is not None else test_queries,
         sample_deterministic_per_env=config.parity,  # Only use parity path when testing
         sampler=sampler,
         order=True if config.parity else False,
         negative_ratio=config.negative_ratio,
+        reward_type=getattr(config, 'reward_type', 4),
+        skip_unary_actions=getattr(config, 'skip_unary_actions', False),
     )
     
     # Cache components for policy creation and evaluation
@@ -171,6 +180,7 @@ def create_env(config: KGEConfig) -> EnvVec:
         'sampler': sampler,
         'vec_engine': vec_engine,
         'train_queries': train_queries,
+        'valid_queries': valid_queries if valid_queries is not None else test_queries,
         'test_queries': test_queries,
         'device': device,
     }
@@ -203,7 +213,7 @@ def create_policy(config: KGEConfig, env: Optional[EnvVec] = None) -> Policy:
     embedder = Embedder(
         n_constants=im.constant_no,
         n_predicates=im.predicate_no,
-        n_vars=config.max_total_vars,
+        n_vars=1000,  # Fixed to match train.py
         max_arity=dh.max_arity,
         padding_atoms=config.padding_atoms,
         atom_embedder=config.atom_embedder,
@@ -221,49 +231,157 @@ def create_policy(config: KGEConfig, env: Optional[EnvVec] = None) -> Policy:
         embedder=embedder,
         embed_dim=config.atom_embedding_size,
         action_dim=config.padding_states,
-        hidden_dim=config.hidden_dim,
-        num_layers=config.num_layers,
+        hidden_dim=getattr(config, 'hidden_dim', 256),
+        num_layers=getattr(config, 'num_layers', 8),
+        dropout_prob=getattr(config, 'dropout_prob', 0.0),
         device=device,
-        parity=True,  # Use SB3-identical initialization
+        parity=config.parity,  # Use parity when in parity mode, otherwise not
     ).to(device)
     
     return policy
 
 
+def create_algorithm(policy: Policy, env: EnvVec, config: KGEConfig):
+    """
+    Create PPO algorithm and set up callbacks for training.
+
+    Args:
+        policy: Policy network
+        env: Environment
+        config: KGEConfig with _components populated
+
+    Returns:
+        PPO algorithm instance with callbacks configured
+    """
+    from ppo import PPO
+    from callbacks import TorchRLCallbackManager, RankingCallback
+
+    # Create PPO
+    algorithm = PPO(policy, env, config)
+
+    # Set up callbacks if eval_freq > 0
+    eval_freq = getattr(config, 'eval_freq', 0)
+    if eval_freq > 0 and config._components:
+        sampler = config._components['sampler']
+        valid_queries = config._components.get('valid_queries', config._components['test_queries'])
+
+        # Limit eval queries
+        n_eval = getattr(config, 'n_eval_queries', 20)
+        if n_eval is not None and n_eval < len(valid_queries):
+            valid_queries = valid_queries[:n_eval]
+
+        # Get corruption scheme
+        corruption_scheme = getattr(config, 'corruption_scheme', ['head', 'tail'])
+        if isinstance(corruption_scheme, str):
+            corruption_scheme = (corruption_scheme,)
+        else:
+            corruption_scheme = tuple(corruption_scheme)
+
+        n_corruptions = getattr(config, 'eval_neg_samples', 100)
+
+        callbacks = [RankingCallback(
+            eval_env=env,
+            policy=algorithm._uncompiled_policy,
+            sampler=sampler,
+            eval_data=valid_queries,
+            eval_data_depths=None,
+            eval_freq=int(eval_freq),
+            n_corruptions=n_corruptions,
+            corruption_scheme=corruption_scheme,
+            ppo_agent=algorithm,
+            verbose=False,  # No detailed metrics tables
+        )]
+
+        algorithm.callback = TorchRLCallbackManager(callbacks=callbacks)
+
+    return algorithm
+
+
 # =============================================================================
-# Helper accessors for evaluation and callbacks
+# Helper accessors (internal use)
 # =============================================================================
 
-def get_sampler(config: KGEConfig) -> Sampler:
-    """Get the sampler (for evaluation callbacks)."""
+def run_evaluation(algorithm, config: KGEConfig) -> dict:
+    """
+    Run evaluation with all KGE-specific logic.
+
+    Handles warmup, test queries, sampler, corruption scheme, etc.
+
+    Args:
+        algorithm: PPO algorithm instance
+        config: KGEConfig with _components populated
+
+    Returns:
+        Dictionary of evaluation results (MRR, Hits@K, etc.)
+    """
+    import time
+
     if not config._components:
         raise RuntimeError("create_env() must be called first")
-    return config._components['sampler']
 
+    # Restore best model if available (from RankingCallback during training)
+    if algorithm.callback is not None:
+        # Find RankingCallback in the callback manager
+        from callbacks import RankingCallback
+        for cb in getattr(algorithm.callback, 'callbacks', []):
+            if isinstance(cb, RankingCallback) and cb.best_model_state is not None:
+                best_mrr = cb.mrr_tracker.best_mrr
+                best_iter = cb.mrr_tracker.best_iteration
+                print(f"[Eval] Restoring best model from iter {best_iter} (MRR={best_mrr:.3f})")
+                algorithm._uncompiled_policy.load_state_dict(cb.best_model_state)
+                break
 
-def get_data_handler(config: KGEConfig) -> DataHandler:
-    """Get the data handler (for callbacks that need query info)."""
-    if not config._components:
-        raise RuntimeError("create_env() must be called first")
-    return config._components['dh']
+    # Get components
+    sampler = config._components['sampler']
+    test_queries = config._components['test_queries']
 
+    # Limit test queries if specified (None or >= total means full evaluation)
+    n_test = getattr(config, 'n_test_queries', None)
+    if n_test is not None and n_test < len(test_queries):
+        test_queries = test_queries[:n_test]
 
-def get_index_manager(config: KGEConfig) -> IndexManager:
-    """Get the index manager (for advanced usage)."""
-    if not config._components:
-        raise RuntimeError("create_env() must be called first")
-    return config._components['im']
+    # Get corruption scheme
+    corruption_scheme = getattr(config, 'corruption_scheme', ['head', 'tail'])
+    if isinstance(corruption_scheme, str):
+        corruption_scheme = (corruption_scheme,)
+    else:
+        corruption_scheme = tuple(corruption_scheme)
 
+    # Get negative samples
+    test_neg_samples = getattr(config, 'test_neg_samples', 100)
 
-def get_test_queries(config: KGEConfig) -> torch.Tensor:
-    """Get test queries tensor (for evaluation)."""
-    if not config._components:
-        raise RuntimeError("create_env() must be called first")
-    return config._components['test_queries']
+    # Warmup evaluation for torch.compile
+    print("Warmup...")
+    algorithm.evaluate(
+        queries=test_queries[:5],
+        sampler=sampler,
+        n_corruptions=5,
+        corruption_modes=('head',),
+        verbose=False,
+    )
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    print("Warmup complete")
 
+    # Run evaluation
+    eval_start = time.time()
+    results = algorithm.evaluate(
+        queries=test_queries,
+        sampler=sampler,
+        n_corruptions=test_neg_samples,
+        corruption_modes=corruption_scheme,
+        verbose=True,
+    )
+    eval_time = time.time() - eval_start
 
-def get_train_queries(config: KGEConfig) -> torch.Tensor:
-    """Get training queries tensor."""
-    if not config._components:
-        raise RuntimeError("create_env() must be called first")
-    return config._components['train_queries']
+    print(f"\n[Eval] Took {eval_time:.2f} seconds")
+
+    # Print ranking metrics
+    mrr = results.get('MRR', 0.0)
+    hits1 = results.get('Hits@1', 0.0)
+    hits3 = results.get('Hits@3', 0.0)
+    hits10 = results.get('Hits@10', 0.0)
+
+    print(f"\n[Ranking] MRR: {mrr:.3f}, Hits@1: {hits1:.3f}, Hits@3: {hits3:.3f}, Hits@10: {hits10:.3f}")
+
+    return results
