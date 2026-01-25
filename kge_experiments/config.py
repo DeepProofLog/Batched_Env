@@ -47,8 +47,8 @@ class TrainConfig:
     
     # Sample counts (None means use all)
     n_train_queries: Optional[int] = None
-    n_eval_queries: Optional[int] = 20
-    n_test_queries: Optional[int] = None
+    n_eval_queries: Optional[int] = 200  # Increased from 20 to reduce val-test gap
+    n_test_queries: Optional[int] = 500
     
     # Environment / Logic
     padding_atoms: int = 6
@@ -60,7 +60,7 @@ class TrainConfig:
     memory_pruning: bool = True
     skip_unary_actions: bool = False
     end_proof_action: bool = True
-    reward_type: int = 4
+    reward_type: int = 5
     max_total_vars: int = 100
     max_fact_pairs_cap: Optional[int] = None  # Cap for large predicates (auto-set to eval_padding_states if None)
     eval_batch_size: int = 75  # Optimized batch size for evaluation (75 for best speed)
@@ -91,39 +91,39 @@ class TrainConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_range: float = 0.2
-    clip_range_vf: Optional[float] = None
+    clip_range_vf: Optional[float] = 0.2  # Stabilize value updates
     ent_coef: float = 0.1
     vf_coef: float = 1
     max_grad_norm: float = 0.5
-    target_kl: Optional[float] = None
-    total_timesteps: int = 5000000
+    target_kl: Optional[float] = 0.07  # Stop epoch when policy diverges too much (0.07 optimal for family)
+    total_timesteps: int = 3000000
     
     # Sampling / Corruption
     negative_ratio: float = 1.0 # train_neg_ratio
     eval_neg_samples: Optional[int] = 100
-    test_neg_samples: Optional[int] = 100  # Default to non-exhaustive evaluation
+    test_neg_samples: Optional[int] = 100
     corruption_scheme: List[str] = field(default_factory=lambda: ['head', 'tail'])
     sampler_default_mode: str = "both"
     
     # LR Decay
-    lr_decay: bool = False
+    lr_decay: bool = True  # Reduce step size over training
     lr_init_value: float = 1e-4
-    lr_final_value: float = 1e-6
+    lr_final_value: float = 1e-6  # 100x reduction at end
     lr_start: float = 0.0
     lr_end: float = 1.0
-    lr_transform: str = 'linear'
+    lr_transform: str = 'cos'  # Smooth cosine decay
     
     # Entropy Decay
-    ent_coef_decay: bool = False
-    ent_coef_init_value: float = 0.01
-    ent_coef_final_value: float = 0.01
+    ent_coef_decay: bool = True  # Prevent entropy collapse
+    ent_coef_init_value: float = 0.15  # Start with more exploration
+    ent_coef_final_value: float = 0.02  # Maintain some exploration
     ent_coef_start: float = 0.0
-    ent_coef_end: float = 1.0
-    ent_coef_transform: str = 'linear'
+    ent_coef_end: float = 0.8  # Finish decay at 80% training
+    ent_coef_transform: str = 'cos'  # Smooth cosine decay
     
     # Model Saving / Logging
     save_model: bool = True
-    load_model: Any = True # False or 'last_epoch' or path
+    load_model: Any = False # False or 'last_epoch' or path
     restore_best: bool = True # restore_best_val_model
     load_best_metric: str = 'eval'
     models_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
@@ -135,8 +135,8 @@ class TrainConfig:
     run_signature: str = "compiled_run"
 
     # KGE inference (evaluation-time fusion)
-    kge_inference: bool = True
-    kge_inference_success: bool = True
+    kge_inference: bool = False
+    kge_inference_success: bool = False
     kge_engine: Optional[str] = "pytorch"
     kge_checkpoint_dir: Optional[str] = None
     kge_run_signature: Optional[str] = None
