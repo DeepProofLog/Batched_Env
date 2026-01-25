@@ -64,12 +64,11 @@ class DataHandler:
         topk_facts: Optional[int] = None,
         topk_facts_threshold: Optional[float] = None,
         filter_queries_by_rules: bool = True,
-        corruption_mode: bool = False,
         deterministic: bool = False,
     ) -> None:
         """
         Initialize DataHandler and optionally load data from files.
-        
+
         Args:
             dataset_name: Name of dataset (e.g., 'wn18rr', 'family')
             base_path: Base directory containing dataset folders
@@ -89,7 +88,6 @@ class DataHandler:
             topk_facts: Top K probabilistic facts to load
             topk_facts_threshold: Score threshold for probabilistic facts
             filter_queries_by_rules: Filter queries whose predicates don't match rule heads
-            corruption_mode: Enable domain mapping for countries/ablation datasets
         """
         # Raw (strings). These are optional after materialization.
         self.facts_str: List[Tuple[str, str, str]] = []
@@ -159,7 +157,6 @@ class DataHandler:
                 topk_facts=topk_facts,
                 topk_facts_threshold=topk_facts_threshold,
                 filter_queries_by_rules=filter_queries_by_rules,
-                corruption_mode=corruption_mode,
             )
 
     # -----------------------------
@@ -186,7 +183,6 @@ class DataHandler:
         topk_facts: Optional[int] = None,
         topk_facts_threshold: Optional[float] = None,
         filter_queries_by_rules: bool = False,
-        corruption_mode: bool = False,
     ) -> None:
         """Load dataset from files."""
         dataset_path = join(base_path, dataset_name)
@@ -246,7 +242,7 @@ class DataHandler:
                 self.train_labels = self.train_labels[:n_train_queries]
         
         # Load domain mapping for countries/ablation datasets
-        if corruption_mode and ('countries' in dataset_name or 'ablation' in dataset_name):
+        if 'countries' in dataset_name or 'ablation' in dataset_name:
             self._load_domain_mapping(dataset_path)
 
         # print(f"Queries loaded - Train: {len(self.train_queries)}/{train_total}, Valid: {len(self.valid_queries)}, Test: {len(self.test_queries)}")

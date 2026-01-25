@@ -45,12 +45,19 @@ from kge_module.pbrs import create_pbrs_module, PBRSWrapper
 from kge_module import create_neural_bridge, create_predicate_type_bridge
 
 
-def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str = None):
+def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str = None, im=None):
     """Build callbacks: MetricsCallback, RankingCallback, CheckpointCallback, ScalarAnnealingCallback."""
+    # Build predicate vocabulary for per-predicate metrics (index -> name)
+    predicate_vocab = None
+    if im is not None and hasattr(im, 'idx2predicate'):
+        predicate_vocab = {i: name for i, name in enumerate(im.idx2predicate)}
+
     callbacks = [MetricsCallback(
-        log_interval=1, 
-        verbose=getattr(config, 'verbose', True), 
-        collect_detailed=True
+        log_interval=1,
+        verbose=getattr(config, 'verbose', True),
+        predicate_vocab=predicate_vocab,
+        log_per_depth=getattr(config, 'log_per_depth', True),
+        log_per_predicate=getattr(config, 'log_per_predicate', True),
     )]
     best_model_path_train, best_model_path_eval = None, None
     
@@ -148,7 +155,6 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         rules_file=config.rules_file,
         facts_file=config.facts_file,
         train_depth=config.train_depth,
-        corruption_mode="dynamic",
         filter_queries_by_rules=getattr(config, 'filter_queries_by_rules', True),
         # KGE Integration: Probabilistic Facts
         prob_facts=config.prob_facts,
@@ -226,8 +232,8 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         n_vars=1000,
         max_arity=dh.max_arity,
         padding_atoms=config.padding_atoms,
-        atom_embedder='transe',
-        state_embedder='sum',
+        atom_embedder=config.atom_embedder,
+        state_embedder=config.state_embedder,
         constant_embedding_size=config.atom_embedding_size,
         predicate_embedding_size=config.atom_embedding_size,
         atom_embedding_size=config.atom_embedding_size,
@@ -240,11 +246,11 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         embedder=embedder,
         embed_dim=config.atom_embedding_size,
         action_dim=config.padding_states,
-        hidden_dim=256,
-        num_layers=8,
-        dropout_prob=0.0,
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+        dropout_prob=config.dropout_prob,
         device=device,
-        parity=False,
+        parity=config.parity,
     ).to(device)
     
     return {
@@ -356,8 +362,8 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
         eval_env = env 
         
         callback_manager, _, _ = build_callbacks(
-            config, ppo, policy, comp['sampler'], comp['dh'], 
-            eval_env=eval_env, date=date
+            config, ppo, policy, comp['sampler'], comp['dh'],
+            eval_env=eval_env, date=date, im=comp['im']
         )
         ppo.callback = callback_manager
      

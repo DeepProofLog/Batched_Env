@@ -64,8 +64,9 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     from nn.sampler import Sampler
     from env import EnvVec
     from ppo import PPO
-    
-    
+    from train import build_callbacks
+
+
     dh = DataHandler(
         dataset_name=config.dataset,
         base_path=config.data_path,
@@ -74,7 +75,6 @@ def setup_components(device: torch.device, config: SimpleNamespace):
         test_file="test.txt",
         rules_file="rules.txt",
         facts_file="train.txt",
-        corruption_mode='dynamic',
     )
     
     im = IndexManager(
@@ -167,7 +167,15 @@ def setup_components(device: torch.device, config: SimpleNamespace):
     
     # Use PPO instead of PPO
     ppo = PPO(policy, train_env, config, device=device)
-    
+
+    # Build callbacks if enabled
+    if getattr(config, 'use_callbacks', False):
+        callback_manager, _, _ = build_callbacks(
+            config, ppo, policy, sampler, dh,
+            eval_env=train_env, date=None, im=im
+        )
+        ppo.callback = callback_manager
+
     return {
         'ppo': ppo,
         'policy': policy,
@@ -453,7 +461,9 @@ def main():
         use_amp=args.amp,
         verbose=True,
         parity=False,
-        use_callbacks=False,
+        use_callbacks=True,  # Enable callbacks to test their impact
+        log_per_depth=True,
+        log_per_predicate=True,
         compile=args.compile,
     )
     

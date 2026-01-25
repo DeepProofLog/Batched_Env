@@ -258,6 +258,7 @@ class EnvVec:
             "step_dones": torch.zeros(B, dtype=torch.uint8, device=device),
             "step_successes": torch.zeros(B, dtype=torch.uint8, device=device),
             "step_labels": torch.zeros(B, dtype=torch.long, device=device),
+            "step_original_queries": queries.clone(),  # Initialize with current queries
             "cumulative_rewards": torch.zeros(B, dtype=torch.float32, device=device),
             "per_env_ptrs": torch.zeros(B, dtype=torch.long, device=device),
             "neg_counters": torch.zeros(B, dtype=torch.int64, device=device),
@@ -373,9 +374,10 @@ class EnvVec:
         m_SA3 = done_mask.view(-1, 1, 1, 1).expand(-1, self.padding_states, self.padding_atoms, 3)
         m_H = done_mask.view(-1, 1).expand(-1, self.max_history_size)
 
-        # Capture step success and labels BEFORE reset overwrites them (for callback tracking)
+        # Capture step success, labels, and original queries BEFORE reset overwrites them (for callback tracking)
         step_successes = next_state['success']
         step_labels = next_state['current_labels']
+        step_original_queries = next_state['original_queries']
 
         mixed = TensorDict({
             "current_states": torch.where(m_A3, reset_state['current_states'], next_state['current_states']),
@@ -393,6 +395,7 @@ class EnvVec:
             "step_dones": done_mask.to(torch.uint8),
             "step_successes": step_successes,  # Success from completed step, not reset
             "step_labels": step_labels,  # Labels from completed step, not reset
+            "step_original_queries": step_original_queries,  # Original queries from completed step, not reset
             "cumulative_rewards": torch.where(done_mask, reset_state['cumulative_rewards'], next_state['cumulative_rewards']),
             "per_env_ptrs": new_ptrs,
             "neg_counters": new_counters,
@@ -878,7 +881,23 @@ class EnvVec:
             rewards = torch.where(fn, self._reward_neg, rewards)
             rewards = torch.where(fp, self._reward_neg, rewards)
             rewards = torch.where(tn, self._reward_rejection, rewards)
-            
+
+        elif self.reward_type == 5:
+            # Phase 3: Same as type 4, but with ENDF bonus for negatives
+            # This incentivizes the agent to use ENDF (end proof) early on negative queries
+            # rather than exploring further (which wastes steps)
+            tp = done & is_success & pos
+            fn = done & ~is_success & pos
+            fp = done & is_success & neg
+            tn_endf = done & is_end & neg       # Used ENDF on negative - best outcome!
+            tn_regular = done & ~is_success & neg & ~is_end  # Rejected without ENDF
+            rewards = torch.where(tp, self._reward_pos, rewards)
+            rewards = torch.where(fn, self._reward_neg, rewards)
+            rewards = torch.where(fp, self._reward_neg, rewards)
+            # ENDF bonus: rejection_weight + 0.3 for early termination on negatives
+            rewards = torch.where(tn_endf, self._reward_rejection + 0.3, rewards)
+            rewards = torch.where(tn_regular, self._reward_rejection, rewards)
+
         return rewards, terminated, truncated, is_success
 
     # =========================================================================

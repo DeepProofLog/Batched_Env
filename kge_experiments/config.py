@@ -96,7 +96,7 @@ class TrainConfig:
     vf_coef: float = 1
     max_grad_norm: float = 0.5
     target_kl: Optional[float] = None
-    total_timesteps: int = 500000
+    total_timesteps: int = 5000000
     
     # Sampling / Corruption
     negative_ratio: float = 1.0 # train_neg_ratio
@@ -210,6 +210,10 @@ class TrainConfig:
     profile: bool = False
     use_callbacks: bool = True  # Enable callbacks in run_experiment
     augment_train: bool = True  # For countries dataset
+
+    # Logging control
+    log_per_depth: bool = True  # Enable per-depth metrics in logs (e.g., proven_d_2_pos, proven_d_3_pos)
+    log_per_predicate: bool = True  # Enable per-predicate metrics in logs (e.g., proven_d_2_pos_brother)
 
     # Callback control (individual toggles)
     use_metrics_callback: bool = True

@@ -748,6 +748,9 @@ class PPO:
 
                         batch_successes = new_state['step_successes'][done_indices].bool().cpu().numpy()
                         batch_labels = new_state['step_labels'][done_indices].cpu().numpy()
+                        # Phase 1: Extract predicate indices from original queries for per-predicate tracking
+                        # Use step_original_queries which captures the query BEFORE reset (not the new query)
+                        batch_preds = new_state['step_original_queries'][done_indices, 0, 0].cpu().numpy()
                         on_step_callback(
                             rewards=batch_rs,
                             lengths=batch_ls,
@@ -757,6 +760,7 @@ class PPO:
                             query_depths=self.query_depths,
                             successes=batch_successes,
                             step_labels=batch_labels,
+                            predicate_indices=batch_preds,
                         )
 
                         if self.current_query_indices is not None:
@@ -1027,7 +1031,7 @@ class PPO:
                 # Compute mean reward for episodes completed in this rollout
                 new_rews = ep_rews[n_ep_before:]
                 mean_rew = sum(new_rews) / len(new_rews) if new_rews else 0.0
-                print(f"[PPO] Rollout collected in {rollout_time:.2f}s. FPS: {n_steps/rollout_time:.2f}. Reward: {mean_rew:.3f}. Timesteps: {self.num_timesteps}")
+                print(f"[PPO] Rollout collected in {rollout_time:.2f}s. Rollout FPS: {n_steps/rollout_time:.2f}. Reward: {mean_rew:.3f}. Timesteps: {self.num_timesteps}")
 
             train_start_time = time.time()
             train_metrics = self.train(return_traces)

@@ -38,33 +38,36 @@ class Display:
         global_step: Optional[int] = None,
     ) -> None:
         """Print metrics in a formatted table."""
-        print("-" * 52)
-        
         final_output = {}
-        
+
         if metrics:
             for k, v in metrics.items():
                 if isinstance(v, (float, int, np.number)):
                     final_output[k] = f"{v:.3f}" if isinstance(v, (float, np.floating)) else str(v)
                 else:
                     final_output[k] = str(v)
-        
+
         if extra_metrics:
             for k, v in extra_metrics.items():
                 if isinstance(v, (float, int, np.number)):
                     final_output[k] = f"{v:.3f}" if isinstance(v, (float, np.floating)) else str(v)
                 else:
                     final_output[k] = str(v)
-        
+
         if global_step is not None and "total_timesteps" not in final_output:
             final_output["total_timesteps"] = str(global_step)
-        
+
+        # Fixed widths to accommodate longest metric names (e.g., proven_d_unknown_neg_brother)
+        key_width = 35
+        val_width = 26
+        line_width = key_width + val_width + 7  # 7 for "| " + " | " + " |"
+
+        print("-" * line_width)
         if final_output:
-            print(f"| {prefix + '/':<23} | {'':<24} |")
+            print(f"| {prefix + '/':<{key_width-1}} | {'':<{val_width}} |")
             for key in sorted(final_output.keys()):
-                print(f"|    {key:<20} | {final_output[key]:<24} |")
-        
-        print("-" * 52)
+                print(f"|    {key:<{key_width-5}} | {final_output[key]:<{val_width}} |")
+        print("-" * line_width)
         print()
 
     @staticmethod
@@ -156,31 +159,36 @@ class RewardTracker:
 
 class DetailedMetricsCollector:
     """
-    Common module for collecting detailed episode metrics by label and depth.
+    Common module for collecting detailed episode metrics by label, depth, and predicate.
     """
-    
-    def __init__(self, collect_detailed: bool = True, verbose: bool = False):
+
+    def __init__(self, collect_detailed: bool = True, verbose: bool = False,
+                 collect_per_predicate: bool = True, predicate_vocab: Optional[Dict[int, str]] = None):
         self.collect_detailed = collect_detailed
         self.verbose = verbose
+        self.collect_per_predicate = collect_per_predicate
+        self.predicate_vocab = predicate_vocab or {}  # Maps predicate index -> name
         self.reset()
-    
+
     def reset(self) -> None:
         self._episode_stats: defaultdict[Tuple[int, str], List[Dict[str, float]]] = defaultdict(list)
         self._last_episode_id: Dict[int, int] = {}
+        # Per-predicate stats: keyed by (label, depth_key, predicate_idx)
+        self._predicate_stats: defaultdict[Tuple[int, str, int], List[Dict[str, float]]] = defaultdict(list)
     
     def accumulate(self, infos: List[Dict[str, Any]]) -> None:
         for env_idx, info in enumerate(infos):
             if not info or "episode" not in info:
                 continue
-            
+
             label = info.get("label")
             if label is None:
                 continue
-            
+
             episode_data = info.get("episode")
             if not isinstance(episode_data, dict):
                 continue
-            
+
             # Check duplicate
             episode_idx = info.get("episode_idx")
             if episode_idx is not None:
@@ -192,7 +200,7 @@ class DetailedMetricsCollector:
                 if self._last_episode_id.get(env_idx) == episode_id:
                     continue
                 self._last_episode_id[env_idx] = episode_id
-            
+
             try:
                 label_value = int(label)
             except (TypeError, ValueError):
@@ -203,11 +211,12 @@ class DetailedMetricsCollector:
             length = episode_data.get("l")
             depth_value = info.get("query_depth")
             if label_value == 0:
-                depth_value = -1 # Bucket negatives to unknown/none
+                depth_value = -1  # Bucket negatives to unknown/none
             success_flag = bool(info.get("is_success", False))
-            
+            predicate_idx = info.get("predicate_idx")  # New: target predicate index
+
             depth_key = Display._format_depth_key(depth_value)
-            
+
             stats = {
                 "reward": float(reward) if reward is not None else None,
                 "length": float(length) if length is not None else None,
@@ -215,6 +224,14 @@ class DetailedMetricsCollector:
                 "depth_raw": depth_value,
             }
             self._episode_stats[(label_value, depth_key)].append(stats)
+
+            # Per-predicate tracking (Phase 1 enhancement)
+            if self.collect_per_predicate and predicate_idx is not None:
+                try:
+                    pred_idx_int = int(predicate_idx)
+                    self._predicate_stats[(label_value, depth_key, pred_idx_int)].append(stats)
+                except (TypeError, ValueError):
+                    pass
     
     def compute_metrics(self) -> Dict[str, str]:
         metrics = {}
@@ -299,6 +316,27 @@ class DetailedMetricsCollector:
                         np.mean(rewards), np.std(rewards), len(rewards)
                     )
 
+        # 4. Per-predicate metrics (Phase 1 enhancement)
+        if self.collect_per_predicate and self._predicate_stats:
+            def _pred_order_key(item):
+                (label, depth_key, pred_idx), _ = item
+                label_order = 0 if label == 1 else 1 if label == 0 else 2
+                try:
+                    depth_order = int(depth_key) if depth_key != "unknown" else float('inf')
+                except ValueError:
+                    depth_order = float('inf')
+                return (label_order, depth_order, pred_idx)
+
+            for (label, depth_key, pred_idx), episodes in sorted(self._predicate_stats.items(), key=_pred_order_key):
+                label_str = "pos" if label == 1 else "neg" if label == 0 else f"label{label}"
+                pred_name = self.predicate_vocab.get(pred_idx, str(pred_idx))
+
+                successes = [ep["success"] for ep in episodes if "success" in ep]
+                if successes:
+                    metrics[f"proven_d_{depth_key}_{label_str}_{pred_name}"] = Display._format_stat_string(
+                        np.mean(successes), np.std(successes), len(successes)
+                    )
+
         return metrics
 
 
@@ -352,6 +390,7 @@ class TorchRLCallbackManager:
         query_depths: Any,
         successes: Optional[Any] = None,
         step_labels: Optional[Any] = None,  # Actual labels with negative sampling
+        predicate_indices: Optional[Any] = None,  # Phase 1: target predicate indices
     ) -> None:
         """Helper to construct rich infos from raw rollout stats and call on_step."""
         num_dones = len(rewards)
@@ -369,6 +408,7 @@ class TorchRLCallbackManager:
 
         batch_lbls = None
         batch_depths = None
+        batch_preds = None  # Phase 1: predicate indices for per-predicate tracking
 
         # Use step_labels directly if provided (actual labels with negative sampling)
         if step_labels is not None:
@@ -386,26 +426,32 @@ class TorchRLCallbackManager:
             if n_depths > 0:
                 safe_idx = torch.as_tensor(batch_q_idxs, dtype=torch.long) % n_depths
                 batch_depths = query_depths[safe_idx].numpy()
-        
+
+        # Phase 1: Get predicate indices for completed episodes
+        if predicate_indices is not None:
+            batch_preds = predicate_indices
+
         # Construct infos using efficient zipping
         iterators = [
             rewards, lengths, batch_succ,
             batch_q_idxs if batch_q_idxs is not None else [None] * num_dones,
             batch_lbls if batch_lbls is not None else [None] * num_dones,
-            batch_depths if batch_depths is not None else [None] * num_dones
+            batch_depths if batch_depths is not None else [None] * num_dones,
+            batch_preds if batch_preds is not None else [None] * num_dones,
         ]
-        
+
         batch_infos = [
             {
                 "episode": {"r": float(r), "l": int(l)},
                 "is_success": bool(s),
-                **({ "episode_idx": int(q) } if q is not None else {}),
-                **({ "label": int(lbl) } if lbl is not None else {}),
-                **({ "query_depth": int(d) } if d is not None else {})
+                **({"episode_idx": int(q)} if q is not None else {}),
+                **({"label": int(lbl)} if lbl is not None else {}),
+                **({"query_depth": int(d)} if d is not None else {}),
+                **({"predicate_idx": int(p)} if p is not None else {}),
             }
-            for r, l, s, q, lbl, d in zip(*iterators)
+            for r, l, s, q, lbl, d, p in zip(*iterators)
         ]
-        
+
         self.on_step(batch_infos)
 
     def on_iteration_end(self, iteration: int, global_step: int, train_metrics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -456,11 +502,17 @@ class TorchRLCallbackManager:
 
 class MetricsCallback:
     """Collects and displays training metrics."""
-    
-    def __init__(self, log_interval: int = 1, verbose: bool = True, collect_detailed: bool = True):
+
+    def __init__(self, log_interval: int = 1, verbose: bool = True,
+                 predicate_vocab: Optional[Dict[int, str]] = None,
+                 log_per_depth: bool = True, log_per_predicate: bool = False):
         self.log_interval = log_interval
         self.verbose = verbose
-        self.collector = DetailedMetricsCollector(collect_detailed=collect_detailed)
+        self.collector = DetailedMetricsCollector(
+            collect_detailed=log_per_depth,
+            collect_per_predicate=log_per_predicate,
+            predicate_vocab=predicate_vocab,
+        )
         self.reward_tracker = RewardTracker(patience=20)
         self.train_start_time = None
         self.last_time = None
@@ -491,7 +543,7 @@ class MetricsCallback:
         self.last_step = global_step
         
         timing = {
-            "time/fps": fps,
+            "time/iteration_fps": fps,
             "time/elapsed": int(current_time - self.train_start_time),
             "total_timesteps": global_step,
         }
