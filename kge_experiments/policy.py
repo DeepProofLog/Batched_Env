@@ -108,29 +108,34 @@ class SharedBody(nn.Module):
     """
     Residual MLP backbone [E] -> [H] -> [H] shared by policy and value heads.
     Uses fused Linear+ReLU+LayerNorm modules for better performance.
+    Includes CUDA-graph-safe dropout (nn.Dropout module, not F.dropout).
     """
-    def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, num_layers: int = 8, parity: bool = False):
+    def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, num_layers: int = 8,
+                 dropout_prob: float = 0.1, parity: bool = False):
         super().__init__()
-        
+        self.dropout_prob = dropout_prob
+        self.parity = parity
+
         if parity:
             # Match tensor_model.py structure exactly for initialization parity
             self.input_transform = nn.Sequential(
                 nn.Linear(embed_dim, hidden_dim),
                 nn.ReLU(),
                 nn.LayerNorm(hidden_dim),
-                nn.Dropout(0.0) # Explicit 0.0 dropout to match tensor_model
+                nn.Dropout(dropout_prob)  # NOW USES CONFIG VALUE!
             )
             self.res_blocks = nn.ModuleList([
                 nn.Sequential(
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.ReLU(),
                     nn.LayerNorm(hidden_dim),
-                    nn.Dropout(0.0)
+                    nn.Dropout(dropout_prob)  # NOW USES CONFIG VALUE!
                 ) for _ in range(num_layers)
             ])
         else:
-            # Optimized: fused Linear+ReLU+LayerNorm
+            # Optimized: fused Linear+ReLU+LayerNorm + CUDA-graph-safe dropout
             self.input_transform = FusedLinearReluLayerNorm(embed_dim, hidden_dim)
+            self.dropout = nn.Dropout(dropout_prob)  # Single dropout instance, reused
             self.res_blocks = nn.ModuleList([
                 FusedLinearReluLayerNorm(hidden_dim, hidden_dim) for _ in range(num_layers)
             ])
@@ -142,17 +147,18 @@ class SharedBody(nn.Module):
         Returns:
             Features [..., H]
         """
-        if isinstance(self.input_transform, nn.Sequential):
-             # Sequential block behavior
-             x = self.input_transform(x)
-             for block in self.res_blocks:
-                 x = block(x) + x # Residual connection (match tensor_model order)
-             return x
-        else:
-            # Fused block behavior
+        if self.parity:
+            # Sequential block behavior (dropout in Sequential)
             x = self.input_transform(x)
             for block in self.res_blocks:
-                x = x + block(x)
+                x = block(x) + x  # Residual connection (match tensor_model order)
+            return x
+        else:
+            # Fused block behavior with dropout
+            x = self.input_transform(x)
+            x = self.dropout(x)  # Apply after input transform
+            for block in self.res_blocks:
+                x = x + self.dropout(block(x))  # Apply to residual branch
             return x
 
 
@@ -163,7 +169,7 @@ class SharedPolicyValueNetwork(nn.Module):
     """
     def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, num_layers: int = 8,
                  temperature: Optional[float] = None, use_l2_norm: bool = False, sqrt_scale: bool = True,
-                 parity: bool = False):
+                 dropout_prob: float = 0.1, parity: bool = False):
         super().__init__()
         self.embed_dim = embed_dim
         self.temperature = temperature
@@ -171,7 +177,8 @@ class SharedPolicyValueNetwork(nn.Module):
         self.sqrt_scale = sqrt_scale
         self.parity = parity
 
-        self.shared_body = SharedBody(embed_dim, hidden_dim, num_layers, parity=parity)
+        self.shared_body = SharedBody(embed_dim, hidden_dim, num_layers,
+                                      dropout_prob=dropout_prob, parity=parity)
 
         if parity:
             # Match tensor_model.py PolicyHead/ValueHead structure
@@ -183,12 +190,12 @@ class SharedPolicyValueNetwork(nn.Module):
             )
             self.policy_head_final = nn.Linear(hidden_dim, embed_dim)
             
-            # Value Head: Sequential(Linear, ReLU, Linear)
+            # Value Head: Sequential(Linear, ReLU, Linear) - LARGER to match policy head capacity
             self.value_head_fused = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.Linear(hidden_dim, hidden_dim),
                 nn.ReLU()
             )
-            self.value_head_final = nn.Linear(hidden_dim // 2, 1)
+            self.value_head_final = nn.Linear(hidden_dim, 1)
         else:
             # Optimized: fused layers
             # Policy head: Projects shared features back to embedding space for dot-product attention
@@ -198,8 +205,9 @@ class SharedPolicyValueNetwork(nn.Module):
 
             # Value head: Projects shared features to a scalar state-value estimate
             # First layer: fused Linear+ReLU, second layer: plain Linear (no activation after)
-            self.value_head_fused = FusedLinearRelu(hidden_dim, hidden_dim // 2)
-            self.value_head_final = nn.Linear(hidden_dim // 2, 1)
+            # LARGER to match policy head capacity (was hidden_dim//2, now hidden_dim)
+            self.value_head_fused = FusedLinearRelu(hidden_dim, hidden_dim)
+            self.value_head_final = nn.Linear(hidden_dim, 1)
 
         # SB3 scaffold compatibility
         self.latent_dim_pi = 1
@@ -264,14 +272,15 @@ class ActorCriticPolicy(nn.Module):
     Main Policy class orchestrating extraction, architecture, and action distribution.
     """
     def __init__(self, embedder, embed_dim: int, hidden_dim: int, num_layers: int,
-                 device: torch.device, action_dim: int = None, parity: bool = False, **kwargs):
+                 device: torch.device, action_dim: int = None, dropout_prob: float = 0.1,
+                 parity: bool = False, **kwargs):
         super().__init__()
         self.device = device
         self.parity = parity
         self.features_extractor = CustomCombinedExtractor(embedder)
         self.pi_features_extractor = self.features_extractor
         self.vf_features_extractor = self.features_extractor
-        
+
         self.mlp_extractor = SharedPolicyValueNetwork(
             embed_dim=embed_dim,
             hidden_dim=hidden_dim,
@@ -279,6 +288,7 @@ class ActorCriticPolicy(nn.Module):
             temperature=kwargs.get('temperature'),
             use_l2_norm=kwargs.get('use_l2_norm', False),
             sqrt_scale=kwargs.get('sqrt_scale', True),
+            dropout_prob=dropout_prob,
             parity=parity,
         )
         

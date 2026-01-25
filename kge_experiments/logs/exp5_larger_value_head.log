@@ -1,0 +1,2367 @@
+
+============================================================
+Experiment 1/1
+============================================================
+
+
+============================================================
+Seed 0
+============================================================
+Run signature: family-250-128-torchrl
+======================================================================
+Training: family
+Envs: 128, Steps: 256, Timesteps: 2000000
+Seed: 0
+======================================================================
+
+[1/3] Creating components...
+
+[2/3] Running training...
+
+============================================================
+Initial evaluation (untrained model)
+============================================================
+[Eval] Took 45.33 seconds
+
+[Ranking] MRR: current=0.596, best=0.596 (iter 0)
+--------------------------------------------------------------------
+| eval/                              |                            |
+|    Hits@1                         | 0.580                      |
+|    Hits@10                        | 0.610                      |
+|    Hits@3                         | 0.590                      |
+|    MRR                            | 0.596                      |
+|    len_d_-1_pos                   | 8.300                      |
+|    len_d_2_pos                    | 4.736                      |
+|    len_d_4_pos                    | 8.571                      |
+|    len_d_6_pos                    | 8.000                      |
+|    len_neg                        | 7.943                      |
+|    len_pos                        | 5.065                      |
+|    mrr_mean                       | 0.596                      |
+|    proven_d_-1_pos                | 0.050                      |
+|    proven_d_2_pos                 | 0.673                      |
+|    proven_d_4_pos                 | 0.286                      |
+|    proven_d_6_pos                 | 0.000                      |
+|    proven_neg                     | 0.106                      |
+|    proven_pos                     | 0.625                      |
+|    reward_d_-1_pos                | 0.050                      |
+|    reward_d_2_pos                 | 0.673                      |
+|    reward_d_4_pos                 | 0.286                      |
+|    reward_d_6_pos                 | 0.000                      |
+|    reward_label_neg               | 0.106                      |
+|    reward_label_pos               | 0.625                      |
+--------------------------------------------------------------------
+
+============================================================
+
+[PPO] Rollout collected in 24.14s. Rollout FPS: 1357.34. Reward: 0.384. Timesteps: 32768
+Epoch 1/5. 
+Losses: total 10.80917, value 11.47549, policy 0.03342, entropy -1.71365, approx_kl 0.05304 clip_fraction 0.45486. 
+Epoch 2/5. 
+Losses: total 11.74063, value 11.48599, policy 0.03327, entropy -1.71362, approx_kl 0.05324 clip_fraction 0.45357. 
+Epoch 3/5. 
+Losses: total 11.74225, value 11.49108, policy 0.03228, entropy -1.71350, approx_kl 0.05324 clip_fraction 0.45409. 
+Epoch 4/5. 
+Losses: total 11.35071, value 11.48984, policy 0.03218, entropy -1.71343, approx_kl 0.05320 clip_fraction 0.45412. 
+Epoch 5/5. 
+Losses: total 11.99571, value 11.48785, policy 0.03229, entropy -1.71344, approx_kl 0.05317 clip_fraction 0.45389. 
+[PPO] Training completed in 26.28s
+[Metrics] Reward (train): current=0.384, best=0.384 (iter 1)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.723                      |
+|    ep_rew_mean                    | 0.384                      |
+|    explained_variance             | -3.132                     |
+|    len                            | 4.723 +/- 3.16 (6871)      |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (236)       |
+|    len_d_2_pos                    | 4.170 +/- 3.29 (3177)      |
+|    len_d_4_pos                    | 5.617 +/- 2.96 (60)        |
+|    len_d_6_pos                    | 8.000 +/- 0.00 (1)         |
+|    len_d_unknown_neg              | 5.483 +/- 2.86 (3397)      |
+|    len_neg                        | 5.483 +/- 2.86 (3397)      |
+|    len_pos                        | 3.981 +/- 3.27 (3474)      |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (236)       |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (118)       |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (118)       |
+|    proven_d_2_pos                 | 0.697 +/- 0.46 (3177)      |
+|    proven_d_2_pos_aunt            | 0.719 +/- 0.45 (562)       |
+|    proven_d_2_pos_brother         | 0.791 +/- 0.41 (177)       |
+|    proven_d_2_pos_daughter        | 0.724 +/- 0.45 (170)       |
+|    proven_d_2_pos_father          | 0.767 +/- 0.42 (172)       |
+|    proven_d_2_pos_husband         | 0.462 +/- 0.50 (13)        |
+|    proven_d_2_pos_mother          | 0.834 +/- 0.37 (169)       |
+|    proven_d_2_pos_nephew          | 0.563 +/- 0.50 (535)       |
+|    proven_d_2_pos_niece           | 0.679 +/- 0.47 (430)       |
+|    proven_d_2_pos_sister          | 0.839 +/- 0.37 (211)       |
+|    proven_d_2_pos_son             | 0.600 +/- 0.49 (220)       |
+|    proven_d_2_pos_uncle           | 0.713 +/- 0.45 (501)       |
+|    proven_d_2_pos_wife            | 0.471 +/- 0.50 (17)        |
+|    proven_d_4_pos                 | 0.517 +/- 0.50 (60)        |
+|    proven_d_4_pos_aunt            | 0.562 +/- 0.50 (16)        |
+|    proven_d_4_pos_brother         | 0.500 +/- 0.50 (8)         |
+|    proven_d_4_pos_daughter        | 1.000 +/- 0.00 (1)         |
+|    proven_d_4_pos_father          | 0.400 +/- 0.49 (5)         |
+|    proven_d_4_pos_mother          | 0.750 +/- 0.43 (4)         |
+|    proven_d_4_pos_nephew          | 0.286 +/- 0.45 (7)         |
+|    proven_d_4_pos_niece           | 0.429 +/- 0.49 (7)         |
+|    proven_d_4_pos_sister          | 0.333 +/- 0.47 (3)         |
+|    proven_d_4_pos_son             | 0.333 +/- 0.47 (3)         |
+|    proven_d_4_pos_uncle           | 0.833 +/- 0.37 (6)         |
+|    proven_d_6_pos                 | 0.000 +/- 0.00 (1)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (1)         |
+|    proven_d_unknown_neg           | 0.364 +/- 0.48 (3397)      |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (4)         |
+|    proven_d_unknown_neg_aunt      | 0.546 +/- 0.50 (474)       |
+|    proven_d_unknown_neg_brother   | 0.121 +/- 0.33 (198)       |
+|    proven_d_unknown_neg_daughter  | 0.509 +/- 0.50 (173)       |
+|    proven_d_unknown_neg_father    | 0.471 +/- 0.50 (204)       |
+|    proven_d_unknown_neg_husband   | 0.246 +/- 0.43 (142)       |
+|    proven_d_unknown_neg_mother    | 0.529 +/- 0.50 (172)       |
+|    proven_d_unknown_neg_nephew    | 0.156 +/- 0.36 (500)       |
+|    proven_d_unknown_neg_niece     | 0.506 +/- 0.50 (403)       |
+|    proven_d_unknown_neg_sister    | 0.403 +/- 0.49 (211)       |
+|    proven_d_unknown_neg_son       | 0.058 +/- 0.23 (240)       |
+|    proven_d_unknown_neg_uncle     | 0.414 +/- 0.49 (519)       |
+|    proven_d_unknown_neg_wife      | 0.299 +/- 0.46 (157)       |
+|    proven_neg                     | 0.364 +/- 0.48 (3397)      |
+|    proven_pos                     | 0.714 +/- 0.45 (3474)      |
+|    reward                         | 0.384 +/- 0.96 (6871)      |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (236)       |
+|    reward_d_2_pos                 | 0.393 +/- 0.92 (3177)      |
+|    reward_d_4_pos                 | 0.033 +/- 1.00 (60)        |
+|    reward_d_6_pos                 | -1.000 +/- 0.00 (1)        |
+|    reward_d_unknown_neg           | 0.339 +/- 1.02 (3397)      |
+|    reward_neg                     | 0.339 +/- 1.02 (3397)      |
+|    reward_pos                     | 0.428 +/- 0.90 (3474)      |
+|    success_rate                   | 0.541                      |
+|    time/elapsed                   | 95                         |
+|    time/iteration_fps             | 342                        |
+|    total_timesteps                | 32768                      |
+--------------------------------------------------------------------cudagraph partition due to non gpu ops
+cudagraph partition due to DeviceCopy ops
+cudagraph partition into 2 partitions
+cudagraph partition due to non gpu ops
+cudagraph partition due to DeviceCopy ops
+cudagraph partition into 2 partitions
+
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.80s. Rollout FPS: 18255.06. Reward: 0.383. Timesteps: 65536
+Epoch 1/5. 
+Losses: total 10.49544, value 10.99767, policy 0.03350, entropy -1.72480, approx_kl 0.05404 clip_fraction 0.45874. 
+Epoch 2/5. 
+Losses: total 10.05109, value 10.87691, policy 0.03374, entropy -1.72608, approx_kl 0.05448 clip_fraction 0.46135. 
+Epoch 3/5. 
+Losses: total 11.45009, value 10.82781, policy 0.03387, entropy -1.72737, approx_kl 0.05479 clip_fraction 0.46120. 
+Epoch 4/5. 
+Losses: total 10.19260, value 10.79968, policy 0.03356, entropy -1.72846, approx_kl 0.05503 clip_fraction 0.46136. 
+Epoch 5/5. 
+Losses: total 9.96963, value 10.78195, policy 0.03352, entropy -1.72937, approx_kl 0.05527 clip_fraction 0.46183. 
+[PPO] Training completed in 26.21s
+[Metrics] Reward (train): current=0.384, best=0.384 (iter 1)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.775                      |
+|    ep_rew_mean                    | 0.384                      |
+|    explained_variance             | -3.276                     |
+|    len                            | 4.775 +/- 3.20 (13636)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (480)       |
+|    len_d_2_pos                    | 4.219 +/- 3.30 (6251)      |
+|    len_d_4_pos                    | 5.730 +/- 3.46 (122)       |
+|    len_d_6_pos                    | 8.000 +/- 0.00 (3)         |
+|    len_d_unknown_neg              | 5.537 +/- 2.90 (6780)      |
+|    len_neg                        | 5.537 +/- 2.90 (6780)      |
+|    len_pos                        | 4.022 +/- 3.30 (6856)      |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (480)       |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (238)       |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (242)       |
+|    proven_d_2_pos                 | 0.686 +/- 0.46 (6251)      |
+|    proven_d_2_pos_aunt            | 0.725 +/- 0.45 (1034)      |
+|    proven_d_2_pos_brother         | 0.730 +/- 0.44 (370)       |
+|    proven_d_2_pos_daughter        | 0.749 +/- 0.43 (335)       |
+|    proven_d_2_pos_father          | 0.761 +/- 0.43 (360)       |
+|    proven_d_2_pos_husband         | 0.500 +/- 0.50 (34)        |
+|    proven_d_2_pos_mother          | 0.830 +/- 0.38 (342)       |
+|    proven_d_2_pos_nephew          | 0.560 +/- 0.50 (1092)      |
+|    proven_d_2_pos_niece           | 0.671 +/- 0.47 (848)       |
+|    proven_d_2_pos_sister          | 0.812 +/- 0.39 (382)       |
+|    proven_d_2_pos_son             | 0.611 +/- 0.49 (414)       |
+|    proven_d_2_pos_uncle           | 0.675 +/- 0.47 (1004)      |
+|    proven_d_2_pos_wife            | 0.528 +/- 0.50 (36)        |
+|    proven_d_4_pos                 | 0.508 +/- 0.50 (122)       |
+|    proven_d_4_pos_aunt            | 0.613 +/- 0.49 (31)        |
+|    proven_d_4_pos_brother         | 0.474 +/- 0.50 (19)        |
+|    proven_d_4_pos_daughter        | 0.500 +/- 0.50 (2)         |
+|    proven_d_4_pos_father          | 0.429 +/- 0.49 (7)         |
+|    proven_d_4_pos_mother          | 0.615 +/- 0.49 (13)        |
+|    proven_d_4_pos_nephew          | 0.250 +/- 0.43 (12)        |
+|    proven_d_4_pos_niece           | 0.500 +/- 0.50 (8)         |
+|    proven_d_4_pos_sister          | 0.500 +/- 0.50 (6)         |
+|    proven_d_4_pos_son             | 0.417 +/- 0.49 (12)        |
+|    proven_d_4_pos_uncle           | 0.583 +/- 0.49 (12)        |
+|    proven_d_6_pos                 | 0.333 +/- 0.47 (3)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 1.000 +/- 0.00 (1)         |
+|    proven_d_unknown_neg           | 0.355 +/- 0.48 (6780)      |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (7)         |
+|    proven_d_unknown_neg_aunt      | 0.552 +/- 0.50 (921)       |
+|    proven_d_unknown_neg_brother   | 0.088 +/- 0.28 (398)       |
+|    proven_d_unknown_neg_daughter  | 0.488 +/- 0.50 (342)       |
+|    proven_d_unknown_neg_father    | 0.465 +/- 0.50 (404)       |
+|    proven_d_unknown_neg_husband   | 0.228 +/- 0.42 (294)       |
+|    proven_d_unknown_neg_mother    | 0.526 +/- 0.50 (361)       |
+|    proven_d_unknown_neg_nephew    | 0.150 +/- 0.36 (1027)      |
+|    proven_d_unknown_neg_niece     | 0.485 +/- 0.50 (819)       |
+|    proven_d_unknown_neg_sister    | 0.390 +/- 0.49 (395)       |
+|    proven_d_unknown_neg_son       | 0.067 +/- 0.25 (475)       |
+|    proven_d_unknown_neg_uncle     | 0.412 +/- 0.49 (1026)      |
+|    proven_d_unknown_neg_wife      | 0.293 +/- 0.45 (311)       |
+|    proven_neg                     | 0.355 +/- 0.48 (6780)      |
+|    proven_pos                     | 0.704 +/- 0.46 (6856)      |
+|    reward                         | 0.384 +/- 0.96 (13636)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (480)       |
+|    reward_d_2_pos                 | 0.371 +/- 0.93 (6251)      |
+|    reward_d_4_pos                 | 0.016 +/- 1.00 (122)       |
+|    reward_d_6_pos                 | -0.333 +/- 0.94 (3)        |
+|    reward_d_unknown_neg           | 0.358 +/- 1.01 (6780)      |
+|    reward_neg                     | 0.358 +/- 1.01 (6780)      |
+|    reward_pos                     | 0.409 +/- 0.91 (6856)      |
+|    success_rate                   | 0.531                      |
+|    time/elapsed                   | 123                        |
+|    time/iteration_fps             | 1168                       |
+|    total_timesteps                | 65536                      |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.79s. Rollout FPS: 18330.32. Reward: 0.412. Timesteps: 98304
+Epoch 1/5. 
+Losses: total 3.31582, value 3.42881, policy 0.04192, entropy -1.72568, approx_kl 0.04770 clip_fraction 0.44156. 
+Epoch 2/5. 
+Losses: total 3.18826, value 3.39624, policy 0.04183, entropy -1.72341, approx_kl 0.04747 clip_fraction 0.43774. 
+Epoch 3/5. 
+Losses: total 3.01141, value 3.37614, policy 0.04081, entropy -1.72185, approx_kl 0.04681 clip_fraction 0.43581. 
+Epoch 4/5. 
+Losses: total 2.87030, value 3.36111, policy 0.04023, entropy -1.72036, approx_kl 0.04614 clip_fraction 0.43260. 
+Epoch 5/5. 
+Losses: total 2.92463, value 3.34858, policy 0.03914, entropy -1.71888, approx_kl 0.04539 clip_fraction 0.43004. 
+[PPO] Training completed in 12.79s
+[Metrics] Reward (train): current=0.393, best=0.393 (iter 3)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.731                      |
+|    ep_rew_mean                    | 0.393                      |
+|    explained_variance             | -3.724                     |
+|    len                            | 4.731 +/- 3.19 (20700)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (726)       |
+|    len_d_2_pos                    | 4.192 +/- 3.29 (9468)      |
+|    len_d_4_pos                    | 5.514 +/- 3.36 (183)       |
+|    len_d_6_pos                    | 8.000 +/- 0.00 (3)         |
+|    len_d_unknown_neg              | 5.473 +/- 2.90 (10320)     |
+|    len_neg                        | 5.473 +/- 2.90 (10320)     |
+|    len_pos                        | 3.993 +/- 3.29 (10380)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (726)       |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (347)       |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (379)       |
+|    proven_d_2_pos                 | 0.683 +/- 0.47 (9468)      |
+|    proven_d_2_pos_aunt            | 0.724 +/- 0.45 (1472)      |
+|    proven_d_2_pos_brother         | 0.718 +/- 0.45 (554)       |
+|    proven_d_2_pos_daughter        | 0.752 +/- 0.43 (533)       |
+|    proven_d_2_pos_father          | 0.749 +/- 0.43 (558)       |
+|    proven_d_2_pos_husband         | 0.456 +/- 0.50 (57)        |
+|    proven_d_2_pos_mother          | 0.825 +/- 0.38 (514)       |
+|    proven_d_2_pos_nephew          | 0.574 +/- 0.49 (1641)      |
+|    proven_d_2_pos_niece           | 0.669 +/- 0.47 (1301)      |
+|    proven_d_2_pos_sister          | 0.796 +/- 0.40 (598)       |
+|    proven_d_2_pos_son             | 0.590 +/- 0.49 (653)       |
+|    proven_d_2_pos_uncle           | 0.672 +/- 0.47 (1528)      |
+|    proven_d_2_pos_wife            | 0.525 +/- 0.50 (59)        |
+|    proven_d_4_pos                 | 0.530 +/- 0.50 (183)       |
+|    proven_d_4_pos_aunt            | 0.595 +/- 0.49 (42)        |
+|    proven_d_4_pos_brother         | 0.571 +/- 0.49 (28)        |
+|    proven_d_4_pos_daughter        | 0.667 +/- 0.47 (3)         |
+|    proven_d_4_pos_father          | 0.500 +/- 0.50 (10)        |
+|    proven_d_4_pos_mother          | 0.679 +/- 0.47 (28)        |
+|    proven_d_4_pos_nephew          | 0.250 +/- 0.43 (16)        |
+|    proven_d_4_pos_niece           | 0.500 +/- 0.50 (12)        |
+|    proven_d_4_pos_sister          | 0.667 +/- 0.47 (9)         |
+|    proven_d_4_pos_son             | 0.300 +/- 0.46 (20)        |
+|    proven_d_4_pos_uncle           | 0.533 +/- 0.50 (15)        |
+|    proven_d_6_pos                 | 0.333 +/- 0.47 (3)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 1.000 +/- 0.00 (1)         |
+|    proven_d_unknown_neg           | 0.345 +/- 0.48 (10320)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (9)         |
+|    proven_d_unknown_neg_aunt      | 0.525 +/- 0.50 (1402)      |
+|    proven_d_unknown_neg_brother   | 0.072 +/- 0.26 (639)       |
+|    proven_d_unknown_neg_daughter  | 0.473 +/- 0.50 (522)       |
+|    proven_d_unknown_neg_father    | 0.481 +/- 0.50 (599)       |
+|    proven_d_unknown_neg_husband   | 0.197 +/- 0.40 (463)       |
+|    proven_d_unknown_neg_mother    | 0.538 +/- 0.50 (559)       |
+|    proven_d_unknown_neg_nephew    | 0.140 +/- 0.35 (1557)      |
+|    proven_d_unknown_neg_niece     | 0.470 +/- 0.50 (1269)      |
+|    proven_d_unknown_neg_sister    | 0.386 +/- 0.49 (586)       |
+|    proven_d_unknown_neg_son       | 0.070 +/- 0.26 (698)       |
+|    proven_d_unknown_neg_uncle     | 0.414 +/- 0.49 (1548)      |
+|    proven_d_unknown_neg_wife      | 0.267 +/- 0.44 (469)       |
+|    proven_neg                     | 0.345 +/- 0.48 (10320)     |
+|    proven_pos                     | 0.702 +/- 0.46 (10380)     |
+|    reward                         | 0.393 +/- 0.96 (20700)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (726)       |
+|    reward_d_2_pos                 | 0.365 +/- 0.93 (9468)      |
+|    reward_d_4_pos                 | 0.060 +/- 1.00 (183)       |
+|    reward_d_6_pos                 | -0.333 +/- 0.94 (3)        |
+|    reward_d_unknown_neg           | 0.382 +/- 1.01 (10320)     |
+|    reward_neg                     | 0.382 +/- 1.01 (10320)     |
+|    reward_pos                     | 0.404 +/- 0.91 (10380)     |
+|    success_rate                   | 0.524                      |
+|    time/elapsed                   | 138                        |
+|    time/iteration_fps             | 2240                       |
+|    total_timesteps                | 98304                      |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 2.43s. Rollout FPS: 13459.94. Reward: 0.406. Timesteps: 131072
+Epoch 1/5. 
+Losses: total 1.51136, value 1.83843, policy 0.03757, entropy -1.71199, approx_kl 0.04686 clip_fraction 0.42838. 
+Epoch 2/5. 
+Losses: total 1.80796, value 1.81993, policy 0.03675, entropy -1.71113, approx_kl 0.04596 clip_fraction 0.42708. 
+Epoch 3/5. 
+Losses: total 1.36519, value 1.80713, policy 0.03659, entropy -1.71007, approx_kl 0.04545 clip_fraction 0.42461. 
+Epoch 4/5. 
+Losses: total 1.51063, value 1.79735, policy 0.03583, entropy -1.70933, approx_kl 0.04496 clip_fraction 0.42337. 
+Epoch 5/5. 
+Losses: total 1.51458, value 1.78857, policy 0.03520, entropy -1.70893, approx_kl 0.04450 clip_fraction 0.42143. 
+[PPO] Training completed in 12.80s
+[Metrics] Reward (train): current=0.396, best=0.396 (iter 4)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.729                      |
+|    ep_rew_mean                    | 0.396                      |
+|    explained_variance             | -2.059                     |
+|    len                            | 4.729 +/- 3.20 (27640)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (987)       |
+|    len_d_2_pos                    | 4.194 +/- 3.29 (12618)     |
+|    len_d_4_pos                    | 5.518 +/- 3.28 (247)       |
+|    len_d_6_pos                    | 8.000 +/- 0.00 (4)         |
+|    len_d_unknown_neg              | 5.471 +/- 2.93 (13784)     |
+|    len_neg                        | 5.471 +/- 2.93 (13784)     |
+|    len_pos                        | 3.991 +/- 3.28 (13856)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (987)       |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (481)       |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (506)       |
+|    proven_d_2_pos                 | 0.685 +/- 0.46 (12618)     |
+|    proven_d_2_pos_aunt            | 0.728 +/- 0.44 (1929)      |
+|    proven_d_2_pos_brother         | 0.716 +/- 0.45 (754)       |
+|    proven_d_2_pos_daughter        | 0.765 +/- 0.42 (722)       |
+|    proven_d_2_pos_father          | 0.756 +/- 0.43 (770)       |
+|    proven_d_2_pos_husband         | 0.418 +/- 0.49 (79)        |
+|    proven_d_2_pos_mother          | 0.823 +/- 0.38 (671)       |
+|    proven_d_2_pos_nephew          | 0.582 +/- 0.49 (2233)      |
+|    proven_d_2_pos_niece           | 0.666 +/- 0.47 (1729)      |
+|    proven_d_2_pos_sister          | 0.798 +/- 0.40 (783)       |
+|    proven_d_2_pos_son             | 0.607 +/- 0.49 (870)       |
+|    proven_d_2_pos_uncle           | 0.668 +/- 0.47 (1997)      |
+|    proven_d_2_pos_wife            | 0.506 +/- 0.50 (81)        |
+|    proven_d_4_pos                 | 0.538 +/- 0.50 (247)       |
+|    proven_d_4_pos_aunt            | 0.558 +/- 0.50 (52)        |
+|    proven_d_4_pos_brother         | 0.611 +/- 0.49 (36)        |
+|    proven_d_4_pos_daughter        | 0.800 +/- 0.40 (5)         |
+|    proven_d_4_pos_father          | 0.643 +/- 0.48 (14)        |
+|    proven_d_4_pos_husband         | 0.000 +/- 0.00 (1)         |
+|    proven_d_4_pos_mother          | 0.676 +/- 0.47 (34)        |
+|    proven_d_4_pos_nephew          | 0.292 +/- 0.45 (24)        |
+|    proven_d_4_pos_niece           | 0.562 +/- 0.50 (16)        |
+|    proven_d_4_pos_sister          | 0.643 +/- 0.48 (14)        |
+|    proven_d_4_pos_son             | 0.231 +/- 0.42 (26)        |
+|    proven_d_4_pos_uncle           | 0.600 +/- 0.49 (25)        |
+|    proven_d_6_pos                 | 0.500 +/- 0.50 (4)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 1.000 +/- 0.00 (2)         |
+|    proven_d_unknown_neg           | 0.345 +/- 0.48 (13784)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (12)        |
+|    proven_d_unknown_neg_aunt      | 0.531 +/- 0.50 (1864)      |
+|    proven_d_unknown_neg_brother   | 0.070 +/- 0.26 (840)       |
+|    proven_d_unknown_neg_daughter  | 0.476 +/- 0.50 (695)       |
+|    proven_d_unknown_neg_father    | 0.475 +/- 0.50 (813)       |
+|    proven_d_unknown_neg_husband   | 0.180 +/- 0.38 (622)       |
+|    proven_d_unknown_neg_mother    | 0.537 +/- 0.50 (732)       |
+|    proven_d_unknown_neg_nephew    | 0.137 +/- 0.34 (2059)      |
+|    proven_d_unknown_neg_niece     | 0.469 +/- 0.50 (1711)      |
+|    proven_d_unknown_neg_sister    | 0.383 +/- 0.49 (784)       |
+|    proven_d_unknown_neg_son       | 0.072 +/- 0.26 (933)       |
+|    proven_d_unknown_neg_uncle     | 0.419 +/- 0.49 (2120)      |
+|    proven_d_unknown_neg_wife      | 0.249 +/- 0.43 (599)       |
+|    proven_neg                     | 0.345 +/- 0.48 (13784)     |
+|    proven_pos                     | 0.705 +/- 0.46 (13856)     |
+|    reward                         | 0.396 +/- 0.96 (27640)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (987)       |
+|    reward_d_2_pos                 | 0.370 +/- 0.93 (12618)     |
+|    reward_d_4_pos                 | 0.077 +/- 1.00 (247)       |
+|    reward_d_6_pos                 | 0.000 +/- 1.00 (4)         |
+|    reward_d_unknown_neg           | 0.383 +/- 1.01 (13784)     |
+|    reward_neg                     | 0.383 +/- 1.01 (13784)     |
+|    reward_pos                     | 0.409 +/- 0.91 (13856)     |
+|    success_rate                   | 0.525                      |
+|    time/elapsed                   | 153                        |
+|    time/iteration_fps             | 2141                       |
+|    total_timesteps                | 131072                     |
+--------------------------------------------------------------------
+
+[Eval] Took 20.55 seconds
+
+[Ranking] MRR: current=0.617, best=0.617 (iter 4)
+--------------------------------------------------------------------
+| eval/                              |                            |
+|    Hits@1                         | 0.605                      |
+|    Hits@10                        | 0.630                      |
+|    Hits@3                         | 0.607                      |
+|    MRR                            | 0.617                      |
+|    len_d_-1_pos                   | 8.000                      |
+|    len_d_2_pos                    | 4.434                      |
+|    len_d_4_pos                    | 8.857                      |
+|    len_d_6_pos                    | 8.000                      |
+|    len_neg                        | 7.831                      |
+|    len_pos                        | 4.785                      |
+|    mrr_mean                       | 0.617                      |
+|    proven_d_-1_pos                | 0.250                      |
+|    proven_d_2_pos                 | 0.698                      |
+|    proven_d_4_pos                 | 0.000                      |
+|    proven_d_6_pos                 | 0.000                      |
+|    proven_neg                     | 0.070                      |
+|    proven_pos                     | 0.647                      |
+|    reward_d_-1_pos                | 0.250                      |
+|    reward_d_2_pos                 | 0.698                      |
+|    reward_d_4_pos                 | 0.000                      |
+|    reward_d_6_pos                 | 0.000                      |
+|    reward_label_neg               | 0.070                      |
+|    reward_label_pos               | 0.647                      |
+--------------------------------------------------------------------
+
+[Checkpoint] New best eval model saved to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/best_model_eval_2026_01_25_16_59_46.pt (mrr_mean=0.6175)
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.80s. Rollout FPS: 18218.14. Reward: 0.392. Timesteps: 163840
+Epoch 1/5. 
+Losses: total 1.02717, value 1.23936, policy 0.03204, entropy -1.69731, approx_kl 0.03661 clip_fraction 0.37854. 
+Epoch 2/5. 
+Losses: total 0.88865, value 1.22514, policy 0.03061, entropy -1.69405, approx_kl 0.03566 clip_fraction 0.37512. 
+Epoch 3/5. 
+Losses: total 1.00668, value 1.21547, policy 0.02927, entropy -1.69250, approx_kl 0.03479 clip_fraction 0.37108. 
+Epoch 4/5. 
+Losses: total 1.01838, value 1.20749, policy 0.02828, entropy -1.69138, approx_kl 0.03436 clip_fraction 0.36788. 
+Epoch 5/5. 
+Losses: total 1.13975, value 1.20127, policy 0.02724, entropy -1.69095, approx_kl 0.03402 clip_fraction 0.36620. 
+[PPO] Training completed in 12.82s
+[Metrics] Reward (train): current=0.395, best=0.396 (iter 4)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.728                      |
+|    ep_rew_mean                    | 0.395                      |
+|    explained_variance             | -1.140                     |
+|    len                            | 4.728 +/- 3.20 (34572)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (1237)      |
+|    len_d_2_pos                    | 4.183 +/- 3.28 (15770)     |
+|    len_d_4_pos                    | 5.516 +/- 3.32 (310)       |
+|    len_d_6_pos                    | 8.000 +/- 0.00 (4)         |
+|    len_d_unknown_neg              | 5.479 +/- 2.94 (17251)     |
+|    len_neg                        | 5.479 +/- 2.94 (17251)     |
+|    len_pos                        | 3.980 +/- 3.27 (17321)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (1237)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (617)       |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (620)       |
+|    proven_d_2_pos                 | 0.686 +/- 0.46 (15770)     |
+|    proven_d_2_pos_aunt            | 0.727 +/- 0.45 (2376)      |
+|    proven_d_2_pos_brother         | 0.713 +/- 0.45 (938)       |
+|    proven_d_2_pos_daughter        | 0.766 +/- 0.42 (897)       |
+|    proven_d_2_pos_father          | 0.764 +/- 0.42 (979)       |
+|    proven_d_2_pos_husband         | 0.444 +/- 0.50 (99)        |
+|    proven_d_2_pos_mother          | 0.814 +/- 0.39 (850)       |
+|    proven_d_2_pos_nephew          | 0.587 +/- 0.49 (2757)      |
+|    proven_d_2_pos_niece           | 0.667 +/- 0.47 (2179)      |
+|    proven_d_2_pos_sister          | 0.803 +/- 0.40 (968)       |
+|    proven_d_2_pos_son             | 0.609 +/- 0.49 (1099)      |
+|    proven_d_2_pos_uncle           | 0.666 +/- 0.47 (2519)      |
+|    proven_d_2_pos_wife            | 0.477 +/- 0.50 (109)       |
+|    proven_d_4_pos                 | 0.539 +/- 0.50 (310)       |
+|    proven_d_4_pos_aunt            | 0.507 +/- 0.50 (67)        |
+|    proven_d_4_pos_brother         | 0.628 +/- 0.48 (43)        |
+|    proven_d_4_pos_daughter        | 0.833 +/- 0.37 (6)         |
+|    proven_d_4_pos_father          | 0.550 +/- 0.50 (20)        |
+|    proven_d_4_pos_husband         | 0.000 +/- 0.00 (1)         |
+|    proven_d_4_pos_mother          | 0.643 +/- 0.48 (42)        |
+|    proven_d_4_pos_nephew          | 0.333 +/- 0.47 (27)        |
+|    proven_d_4_pos_niece           | 0.571 +/- 0.49 (21)        |
+|    proven_d_4_pos_sister          | 0.750 +/- 0.43 (24)        |
+|    proven_d_4_pos_son             | 0.286 +/- 0.45 (28)        |
+|    proven_d_4_pos_uncle           | 0.516 +/- 0.50 (31)        |
+|    proven_d_6_pos                 | 0.500 +/- 0.50 (4)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 1.000 +/- 0.00 (2)         |
+|    proven_d_unknown_neg           | 0.347 +/- 0.48 (17251)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (16)        |
+|    proven_d_unknown_neg_aunt      | 0.531 +/- 0.50 (2315)      |
+|    proven_d_unknown_neg_brother   | 0.068 +/- 0.25 (1037)      |
+|    proven_d_unknown_neg_daughter  | 0.482 +/- 0.50 (863)       |
+|    proven_d_unknown_neg_father    | 0.475 +/- 0.50 (1016)      |
+|    proven_d_unknown_neg_husband   | 0.190 +/- 0.39 (774)       |
+|    proven_d_unknown_neg_mother    | 0.536 +/- 0.50 (914)       |
+|    proven_d_unknown_neg_nephew    | 0.137 +/- 0.34 (2640)      |
+|    proven_d_unknown_neg_niece     | 0.472 +/- 0.50 (2137)      |
+|    proven_d_unknown_neg_sister    | 0.377 +/- 0.48 (983)       |
+|    proven_d_unknown_neg_son       | 0.072 +/- 0.26 (1151)      |
+|    proven_d_unknown_neg_uncle     | 0.431 +/- 0.50 (2638)      |
+|    proven_d_unknown_neg_wife      | 0.240 +/- 0.43 (767)       |
+|    proven_neg                     | 0.347 +/- 0.48 (17251)     |
+|    proven_pos                     | 0.706 +/- 0.46 (17321)     |
+|    reward                         | 0.395 +/- 0.96 (34572)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (1237)      |
+|    reward_d_2_pos                 | 0.372 +/- 0.93 (15770)     |
+|    reward_d_4_pos                 | 0.077 +/- 1.00 (310)       |
+|    reward_d_6_pos                 | 0.000 +/- 1.00 (4)         |
+|    reward_d_unknown_neg           | 0.380 +/- 1.01 (17251)     |
+|    reward_neg                     | 0.380 +/- 1.01 (17251)     |
+|    reward_pos                     | 0.411 +/- 0.91 (17321)     |
+|    success_rate                   | 0.526                      |
+|    time/elapsed                   | 189                        |
+|    time/iteration_fps             | 929                        |
+|    total_timesteps                | 163840                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.82s. Rollout FPS: 18026.24. Reward: 0.392. Timesteps: 196608
+Epoch 1/5. 
+Losses: total 0.73751, value 0.95841, policy 0.02051, entropy -1.69625, approx_kl 0.02774 clip_fraction 0.30780. 
+Epoch 2/5. 
+Losses: total 0.71264, value 0.94731, policy 0.01949, entropy -1.69548, approx_kl 0.02708 clip_fraction 0.30423. 
+Epoch 3/5. 
+Losses: total 0.68390, value 0.94038, policy 0.01847, entropy -1.69505, approx_kl 0.02660 clip_fraction 0.30145. 
+Epoch 4/5. 
+Losses: total 0.70754, value 0.93456, policy 0.01771, entropy -1.69447, approx_kl 0.02628 clip_fraction 0.29984. 
+Epoch 5/5. 
+Losses: total 0.60124, value 0.92874, policy 0.01685, entropy -1.69473, approx_kl 0.02617 clip_fraction 0.29944. 
+[PPO] Training completed in 12.82s
+[Metrics] Reward (train): current=0.395, best=0.396 (iter 4)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.745                      |
+|    ep_rew_mean                    | 0.395                      |
+|    explained_variance             | -0.702                     |
+|    len                            | 4.745 +/- 3.22 (41370)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (1481)      |
+|    len_d_2_pos                    | 4.208 +/- 3.31 (18861)     |
+|    len_d_4_pos                    | 5.610 +/- 3.31 (374)       |
+|    len_d_6_pos                    | 8.000 +/- 0.00 (4)         |
+|    len_d_unknown_neg              | 5.488 +/- 2.95 (20650)     |
+|    len_neg                        | 5.488 +/- 2.95 (20650)     |
+|    len_pos                        | 4.005 +/- 3.30 (20720)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (1481)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (731)       |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (750)       |
+|    proven_d_2_pos                 | 0.687 +/- 0.46 (18861)     |
+|    proven_d_2_pos_aunt            | 0.731 +/- 0.44 (2810)      |
+|    proven_d_2_pos_brother         | 0.713 +/- 0.45 (1145)      |
+|    proven_d_2_pos_daughter        | 0.768 +/- 0.42 (1064)      |
+|    proven_d_2_pos_father          | 0.768 +/- 0.42 (1172)      |
+|    proven_d_2_pos_husband         | 0.413 +/- 0.49 (126)       |
+|    proven_d_2_pos_mother          | 0.815 +/- 0.39 (1001)      |
+|    proven_d_2_pos_nephew          | 0.593 +/- 0.49 (3305)      |
+|    proven_d_2_pos_niece           | 0.662 +/- 0.47 (2619)      |
+|    proven_d_2_pos_sister          | 0.799 +/- 0.40 (1152)      |
+|    proven_d_2_pos_son             | 0.601 +/- 0.49 (1319)      |
+|    proven_d_2_pos_uncle           | 0.674 +/- 0.47 (3009)      |
+|    proven_d_2_pos_wife            | 0.460 +/- 0.50 (139)       |
+|    proven_d_4_pos                 | 0.556 +/- 0.50 (374)       |
+|    proven_d_4_pos_aunt            | 0.524 +/- 0.50 (84)        |
+|    proven_d_4_pos_brother         | 0.617 +/- 0.49 (47)        |
+|    proven_d_4_pos_daughter        | 0.833 +/- 0.37 (6)         |
+|    proven_d_4_pos_father          | 0.609 +/- 0.49 (23)        |
+|    proven_d_4_pos_husband         | 0.000 +/- 0.00 (1)         |
+|    proven_d_4_pos_mother          | 0.686 +/- 0.46 (51)        |
+|    proven_d_4_pos_nephew          | 0.406 +/- 0.49 (32)        |
+|    proven_d_4_pos_niece           | 0.586 +/- 0.49 (29)        |
+|    proven_d_4_pos_sister          | 0.750 +/- 0.43 (28)        |
+|    proven_d_4_pos_son             | 0.294 +/- 0.46 (34)        |
+|    proven_d_4_pos_uncle           | 0.513 +/- 0.50 (39)        |
+|    proven_d_6_pos                 | 0.500 +/- 0.50 (4)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 1.000 +/- 0.00 (2)         |
+|    proven_d_unknown_neg           | 0.348 +/- 0.48 (20650)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (18)        |
+|    proven_d_unknown_neg_aunt      | 0.534 +/- 0.50 (2769)      |
+|    proven_d_unknown_neg_brother   | 0.073 +/- 0.26 (1256)      |
+|    proven_d_unknown_neg_daughter  | 0.489 +/- 0.50 (1035)      |
+|    proven_d_unknown_neg_father    | 0.493 +/- 0.50 (1194)      |
+|    proven_d_unknown_neg_husband   | 0.181 +/- 0.39 (895)       |
+|    proven_d_unknown_neg_mother    | 0.536 +/- 0.50 (1069)      |
+|    proven_d_unknown_neg_nephew    | 0.135 +/- 0.34 (3188)      |
+|    proven_d_unknown_neg_niece     | 0.478 +/- 0.50 (2567)      |
+|    proven_d_unknown_neg_sister    | 0.371 +/- 0.48 (1160)      |
+|    proven_d_unknown_neg_son       | 0.070 +/- 0.26 (1391)      |
+|    proven_d_unknown_neg_uncle     | 0.434 +/- 0.50 (3181)      |
+|    proven_d_unknown_neg_wife      | 0.235 +/- 0.42 (927)       |
+|    proven_neg                     | 0.348 +/- 0.48 (20650)     |
+|    proven_pos                     | 0.707 +/- 0.46 (20720)     |
+|    reward                         | 0.395 +/- 0.96 (41370)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (1481)      |
+|    reward_d_2_pos                 | 0.374 +/- 0.93 (18861)     |
+|    reward_d_4_pos                 | 0.112 +/- 0.99 (374)       |
+|    reward_d_6_pos                 | 0.000 +/- 1.00 (4)         |
+|    reward_d_unknown_neg           | 0.376 +/- 1.01 (20650)     |
+|    reward_neg                     | 0.376 +/- 1.01 (20650)     |
+|    reward_pos                     | 0.414 +/- 0.91 (20720)     |
+|    success_rate                   | 0.528                      |
+|    time/elapsed                   | 203                        |
+|    time/iteration_fps             | 2224                       |
+|    total_timesteps                | 196608                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.80s. Rollout FPS: 18235.23. Reward: 0.424. Timesteps: 229376
+Epoch 1/5. 
+Losses: total 0.57791, value 0.79592, policy 0.01592, entropy -1.69213, approx_kl 0.02044 clip_fraction 0.23938. 
+Epoch 2/5. 
+Losses: total 0.56013, value 0.78692, policy 0.01480, entropy -1.69191, approx_kl 0.02027 clip_fraction 0.23470. 
+Epoch 3/5. 
+Losses: total 0.54915, value 0.78047, policy 0.01381, entropy -1.69146, approx_kl 0.02017 clip_fraction 0.23306. 
+Epoch 4/5. 
+Losses: total 0.56004, value 0.77564, policy 0.01287, entropy -1.69080, approx_kl 0.01989 clip_fraction 0.23153. 
+Epoch 5/5. 
+Losses: total 0.48980, value 0.77180, policy 0.01220, entropy -1.69074, approx_kl 0.01979 clip_fraction 0.23018. 
+[PPO] Training completed in 12.74s
+[Metrics] Reward (train): current=0.399, best=0.399 (iter 7)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.753                      |
+|    ep_rew_mean                    | 0.399                      |
+|    explained_variance             | -0.387                     |
+|    len                            | 4.753 +/- 3.24 (48186)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (1723)      |
+|    len_d_2_pos                    | 4.199 +/- 3.32 (21958)     |
+|    len_d_4_pos                    | 5.562 +/- 3.31 (445)       |
+|    len_d_6_pos                    | 8.000 +/- 0.00 (4)         |
+|    len_d_unknown_neg              | 5.511 +/- 2.97 (24056)     |
+|    len_neg                        | 5.511 +/- 2.97 (24056)     |
+|    len_pos                        | 3.996 +/- 3.31 (24130)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (1723)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (875)       |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (848)       |
+|    proven_d_2_pos                 | 0.692 +/- 0.46 (21958)     |
+|    proven_d_2_pos_aunt            | 0.727 +/- 0.45 (3272)      |
+|    proven_d_2_pos_brother         | 0.722 +/- 0.45 (1337)      |
+|    proven_d_2_pos_daughter        | 0.766 +/- 0.42 (1258)      |
+|    proven_d_2_pos_father          | 0.772 +/- 0.42 (1370)      |
+|    proven_d_2_pos_husband         | 0.408 +/- 0.49 (147)       |
+|    proven_d_2_pos_mother          | 0.823 +/- 0.38 (1181)      |
+|    proven_d_2_pos_nephew          | 0.607 +/- 0.49 (3808)      |
+|    proven_d_2_pos_niece           | 0.666 +/- 0.47 (3031)      |
+|    proven_d_2_pos_sister          | 0.797 +/- 0.40 (1345)      |
+|    proven_d_2_pos_son             | 0.607 +/- 0.49 (1540)      |
+|    proven_d_2_pos_uncle           | 0.680 +/- 0.47 (3517)      |
+|    proven_d_2_pos_wife            | 0.441 +/- 0.50 (152)       |
+|    proven_d_4_pos                 | 0.557 +/- 0.50 (445)       |
+|    proven_d_4_pos_aunt            | 0.530 +/- 0.50 (100)       |
+|    proven_d_4_pos_brother         | 0.630 +/- 0.48 (54)        |
+|    proven_d_4_pos_daughter        | 0.833 +/- 0.37 (6)         |
+|    proven_d_4_pos_father          | 0.607 +/- 0.49 (28)        |
+|    proven_d_4_pos_husband         | 0.000 +/- 0.00 (1)         |
+|    proven_d_4_pos_mother          | 0.694 +/- 0.46 (62)        |
+|    proven_d_4_pos_nephew          | 0.378 +/- 0.48 (37)        |
+|    proven_d_4_pos_niece           | 0.571 +/- 0.49 (35)        |
+|    proven_d_4_pos_sister          | 0.750 +/- 0.43 (36)        |
+|    proven_d_4_pos_son             | 0.263 +/- 0.44 (38)        |
+|    proven_d_4_pos_uncle           | 0.521 +/- 0.50 (48)        |
+|    proven_d_6_pos                 | 0.500 +/- 0.50 (4)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 1.000 +/- 0.00 (2)         |
+|    proven_d_unknown_neg           | 0.348 +/- 0.48 (24056)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (21)        |
+|    proven_d_unknown_neg_aunt      | 0.540 +/- 0.50 (3213)      |
+|    proven_d_unknown_neg_brother   | 0.075 +/- 0.26 (1486)      |
+|    proven_d_unknown_neg_daughter  | 0.489 +/- 0.50 (1223)      |
+|    proven_d_unknown_neg_father    | 0.490 +/- 0.50 (1411)      |
+|    proven_d_unknown_neg_husband   | 0.167 +/- 0.37 (1037)      |
+|    proven_d_unknown_neg_mother    | 0.544 +/- 0.50 (1236)      |
+|    proven_d_unknown_neg_nephew    | 0.134 +/- 0.34 (3705)      |
+|    proven_d_unknown_neg_niece     | 0.480 +/- 0.50 (2968)      |
+|    proven_d_unknown_neg_sister    | 0.377 +/- 0.48 (1351)      |
+|    proven_d_unknown_neg_son       | 0.072 +/- 0.26 (1621)      |
+|    proven_d_unknown_neg_uncle     | 0.434 +/- 0.50 (3699)      |
+|    proven_d_unknown_neg_wife      | 0.223 +/- 0.42 (1085)      |
+|    proven_neg                     | 0.348 +/- 0.48 (24056)     |
+|    proven_pos                     | 0.711 +/- 0.45 (24130)     |
+|    reward                         | 0.399 +/- 0.96 (48186)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (1723)      |
+|    reward_d_2_pos                 | 0.384 +/- 0.92 (21958)     |
+|    reward_d_4_pos                 | 0.115 +/- 0.99 (445)       |
+|    reward_d_6_pos                 | 0.000 +/- 1.00 (4)         |
+|    reward_d_unknown_neg           | 0.375 +/- 1.01 (24056)     |
+|    reward_neg                     | 0.375 +/- 1.01 (24056)     |
+|    reward_pos                     | 0.423 +/- 0.91 (24130)     |
+|    success_rate                   | 0.530                      |
+|    time/elapsed                   | 218                        |
+|    time/iteration_fps             | 2234                       |
+|    total_timesteps                | 229376                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.83s. Rollout FPS: 17890.29. Reward: 0.425. Timesteps: 262144
+Epoch 1/5. 
+Losses: total 0.49213, value 0.71444, policy 0.01091, entropy -1.67971, approx_kl 0.01567 clip_fraction 0.18811. 
+Epoch 2/5. 
+Losses: total 0.46805, value 0.70423, policy 0.01090, entropy -1.68070, approx_kl 0.01580 clip_fraction 0.18863. 
+Epoch 3/5. 
+Losses: total 0.50818, value 0.69810, policy 0.01027, entropy -1.68081, approx_kl 0.01564 clip_fraction 0.18730. 
+Epoch 4/5. 
+Losses: total 0.43360, value 0.69455, policy 0.00932, entropy -1.68078, approx_kl 0.01565 clip_fraction 0.18687. 
+Epoch 5/5. 
+Losses: total 0.45796, value 0.69095, policy 0.00848, entropy -1.68053, approx_kl 0.01563 clip_fraction 0.18657. 
+[PPO] Training completed in 12.88s
+[Metrics] Reward (train): current=0.402, best=0.402 (iter 8)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.750                      |
+|    ep_rew_mean                    | 0.402                      |
+|    explained_variance             | -0.271                     |
+|    len                            | 4.750 +/- 3.24 (55094)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (1969)      |
+|    len_d_2_pos                    | 4.186 +/- 3.32 (25108)     |
+|    len_d_4_pos                    | 5.625 +/- 3.32 (499)       |
+|    len_d_6_pos                    | 8.400 +/- 0.80 (5)         |
+|    len_d_unknown_neg              | 5.517 +/- 2.98 (27513)     |
+|    len_neg                        | 5.517 +/- 2.98 (27513)     |
+|    len_pos                        | 3.986 +/- 3.31 (27581)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (1969)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (991)       |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (978)       |
+|    proven_d_2_pos                 | 0.696 +/- 0.46 (25108)     |
+|    proven_d_2_pos_aunt            | 0.730 +/- 0.44 (3747)      |
+|    proven_d_2_pos_brother         | 0.727 +/- 0.45 (1518)      |
+|    proven_d_2_pos_daughter        | 0.773 +/- 0.42 (1446)      |
+|    proven_d_2_pos_father          | 0.771 +/- 0.42 (1565)      |
+|    proven_d_2_pos_husband         | 0.367 +/- 0.48 (177)       |
+|    proven_d_2_pos_mother          | 0.823 +/- 0.38 (1347)      |
+|    proven_d_2_pos_nephew          | 0.620 +/- 0.49 (4337)      |
+|    proven_d_2_pos_niece           | 0.668 +/- 0.47 (3435)      |
+|    proven_d_2_pos_sister          | 0.803 +/- 0.40 (1547)      |
+|    proven_d_2_pos_son             | 0.607 +/- 0.49 (1784)      |
+|    proven_d_2_pos_uncle           | 0.683 +/- 0.47 (4027)      |
+|    proven_d_2_pos_wife            | 0.449 +/- 0.50 (178)       |
+|    proven_d_4_pos                 | 0.549 +/- 0.50 (499)       |
+|    proven_d_4_pos_aunt            | 0.536 +/- 0.50 (110)       |
+|    proven_d_4_pos_brother         | 0.603 +/- 0.49 (58)        |
+|    proven_d_4_pos_daughter        | 0.714 +/- 0.45 (7)         |
+|    proven_d_4_pos_father          | 0.633 +/- 0.48 (30)        |
+|    proven_d_4_pos_husband         | 0.000 +/- 0.00 (2)         |
+|    proven_d_4_pos_mother          | 0.685 +/- 0.46 (73)        |
+|    proven_d_4_pos_nephew          | 0.349 +/- 0.48 (43)        |
+|    proven_d_4_pos_niece           | 0.550 +/- 0.50 (40)        |
+|    proven_d_4_pos_sister          | 0.757 +/- 0.43 (37)        |
+|    proven_d_4_pos_son             | 0.256 +/- 0.44 (43)        |
+|    proven_d_4_pos_uncle           | 0.536 +/- 0.50 (56)        |
+|    proven_d_6_pos                 | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 0.667 +/- 0.47 (3)         |
+|    proven_d_unknown_neg           | 0.349 +/- 0.48 (27513)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (23)        |
+|    proven_d_unknown_neg_aunt      | 0.536 +/- 0.50 (3656)      |
+|    proven_d_unknown_neg_brother   | 0.079 +/- 0.27 (1681)      |
+|    proven_d_unknown_neg_daughter  | 0.498 +/- 0.50 (1393)      |
+|    proven_d_unknown_neg_father    | 0.484 +/- 0.50 (1611)      |
+|    proven_d_unknown_neg_husband   | 0.159 +/- 0.37 (1185)      |
+|    proven_d_unknown_neg_mother    | 0.548 +/- 0.50 (1422)      |
+|    proven_d_unknown_neg_nephew    | 0.134 +/- 0.34 (4284)      |
+|    proven_d_unknown_neg_niece     | 0.488 +/- 0.50 (3407)      |
+|    proven_d_unknown_neg_sister    | 0.375 +/- 0.48 (1542)      |
+|    proven_d_unknown_neg_son       | 0.075 +/- 0.26 (1859)      |
+|    proven_d_unknown_neg_uncle     | 0.436 +/- 0.50 (4222)      |
+|    proven_d_unknown_neg_wife      | 0.216 +/- 0.41 (1228)      |
+|    proven_neg                     | 0.349 +/- 0.48 (27513)     |
+|    proven_pos                     | 0.715 +/- 0.45 (27581)     |
+|    reward                         | 0.402 +/- 0.96 (55094)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (1969)      |
+|    reward_d_2_pos                 | 0.392 +/- 0.92 (25108)     |
+|    reward_d_4_pos                 | 0.098 +/- 1.00 (499)       |
+|    reward_d_6_pos                 | -0.200 +/- 0.98 (5)        |
+|    reward_d_unknown_neg           | 0.374 +/- 1.01 (27513)     |
+|    reward_neg                     | 0.374 +/- 1.01 (27513)     |
+|    reward_pos                     | 0.430 +/- 0.90 (27581)     |
+|    success_rate                   | 0.532                      |
+|    time/elapsed                   | 233                        |
+|    time/iteration_fps             | 2206                       |
+|    total_timesteps                | 262144                     |
+--------------------------------------------------------------------
+
+[Eval] Took 24.41 seconds
+
+[Ranking] MRR: current=0.616, best=0.617 (iter 4)
+--------------------------------------------------------------------
+| eval/                              |                            |
+|    Hits@1                         | 0.600                      |
+|    Hits@10                        | 0.630                      |
+|    Hits@3                         | 0.615                      |
+|    MRR                            | 0.616                      |
+|    len_d_-1_pos                   | 8.400                      |
+|    len_d_2_pos                    | 4.434                      |
+|    len_d_4_pos                    | 8.000                      |
+|    len_d_6_pos                    | 8.000                      |
+|    len_neg                        | 7.934                      |
+|    len_pos                        | 4.775                      |
+|    mrr_mean                       | 0.616                      |
+|    proven_d_-1_pos                | 0.100                      |
+|    proven_d_2_pos                 | 0.676                      |
+|    proven_d_4_pos                 | 0.143                      |
+|    proven_d_6_pos                 | 0.000                      |
+|    proven_neg                     | 0.051                      |
+|    proven_pos                     | 0.625                      |
+|    reward_d_-1_pos                | 0.100                      |
+|    reward_d_2_pos                 | 0.676                      |
+|    reward_d_4_pos                 | 0.143                      |
+|    reward_d_6_pos                 | 0.000                      |
+|    reward_label_neg               | 0.051                      |
+|    reward_label_pos               | 0.625                      |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.80s. Rollout FPS: 18182.62. Reward: 0.391. Timesteps: 294912
+Epoch 1/5. 
+Losses: total 0.39248, value 0.66552, policy 0.00930, entropy -1.68457, approx_kl 0.01321 clip_fraction 0.15741. 
+Epoch 2/5. 
+Losses: total 0.39726, value 0.65825, policy 0.00872, entropy -1.68338, approx_kl 0.01290 clip_fraction 0.15451. 
+Epoch 3/5. 
+Losses: total 0.46476, value 0.65425, policy 0.00821, entropy -1.68223, approx_kl 0.01281 clip_fraction 0.15359. 
+Epoch 4/5. 
+Losses: total 0.40422, value 0.65169, policy 0.00745, entropy -1.68155, approx_kl 0.01267 clip_fraction 0.15254. 
+Epoch 5/5. 
+Losses: total 0.37274, value 0.64861, policy 0.00702, entropy -1.68107, approx_kl 0.01260 clip_fraction 0.15208. 
+[PPO] Training completed in 12.78s
+[Metrics] Reward (train): current=0.401, best=0.402 (iter 8)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.741                      |
+|    ep_rew_mean                    | 0.401                      |
+|    explained_variance             | -0.135                     |
+|    len                            | 4.741 +/- 3.24 (62128)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (2223)      |
+|    len_d_2_pos                    | 4.177 +/- 3.32 (28313)     |
+|    len_d_4_pos                    | 5.724 +/- 3.43 (558)       |
+|    len_d_6_pos                    | 8.400 +/- 0.80 (5)         |
+|    len_d_unknown_neg              | 5.506 +/- 2.99 (31029)     |
+|    len_neg                        | 5.506 +/- 2.99 (31029)     |
+|    len_pos                        | 3.978 +/- 3.31 (31099)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (2223)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (1124)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (1099)      |
+|    proven_d_2_pos                 | 0.696 +/- 0.46 (28313)     |
+|    proven_d_2_pos_aunt            | 0.728 +/- 0.45 (4224)      |
+|    proven_d_2_pos_brother         | 0.723 +/- 0.45 (1707)      |
+|    proven_d_2_pos_daughter        | 0.777 +/- 0.42 (1602)      |
+|    proven_d_2_pos_father          | 0.775 +/- 0.42 (1772)      |
+|    proven_d_2_pos_husband         | 0.342 +/- 0.47 (193)       |
+|    proven_d_2_pos_mother          | 0.816 +/- 0.39 (1494)      |
+|    proven_d_2_pos_nephew          | 0.621 +/- 0.49 (4907)      |
+|    proven_d_2_pos_niece           | 0.667 +/- 0.47 (3885)      |
+|    proven_d_2_pos_sister          | 0.808 +/- 0.39 (1742)      |
+|    proven_d_2_pos_son             | 0.604 +/- 0.49 (2014)      |
+|    proven_d_2_pos_uncle           | 0.689 +/- 0.46 (4572)      |
+|    proven_d_2_pos_wife            | 0.428 +/- 0.49 (201)       |
+|    proven_d_4_pos                 | 0.539 +/- 0.50 (558)       |
+|    proven_d_4_pos_aunt            | 0.524 +/- 0.50 (124)       |
+|    proven_d_4_pos_brother         | 0.591 +/- 0.49 (66)        |
+|    proven_d_4_pos_daughter        | 0.600 +/- 0.49 (10)        |
+|    proven_d_4_pos_father          | 0.636 +/- 0.48 (33)        |
+|    proven_d_4_pos_husband         | 0.000 +/- 0.00 (3)         |
+|    proven_d_4_pos_mother          | 0.699 +/- 0.46 (83)        |
+|    proven_d_4_pos_nephew          | 0.314 +/- 0.46 (51)        |
+|    proven_d_4_pos_niece           | 0.537 +/- 0.50 (41)        |
+|    proven_d_4_pos_sister          | 0.756 +/- 0.43 (41)        |
+|    proven_d_4_pos_son             | 0.250 +/- 0.43 (48)        |
+|    proven_d_4_pos_uncle           | 0.534 +/- 0.50 (58)        |
+|    proven_d_6_pos                 | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 0.667 +/- 0.47 (3)         |
+|    proven_d_unknown_neg           | 0.350 +/- 0.48 (31029)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (27)        |
+|    proven_d_unknown_neg_aunt      | 0.542 +/- 0.50 (4144)      |
+|    proven_d_unknown_neg_brother   | 0.081 +/- 0.27 (1857)      |
+|    proven_d_unknown_neg_daughter  | 0.503 +/- 0.50 (1550)      |
+|    proven_d_unknown_neg_father    | 0.485 +/- 0.50 (1801)      |
+|    proven_d_unknown_neg_husband   | 0.148 +/- 0.36 (1376)      |
+|    proven_d_unknown_neg_mother    | 0.552 +/- 0.50 (1603)      |
+|    proven_d_unknown_neg_nephew    | 0.133 +/- 0.34 (4833)      |
+|    proven_d_unknown_neg_niece     | 0.488 +/- 0.50 (3890)      |
+|    proven_d_unknown_neg_sister    | 0.373 +/- 0.48 (1744)      |
+|    proven_d_unknown_neg_son       | 0.073 +/- 0.26 (2082)      |
+|    proven_d_unknown_neg_uncle     | 0.440 +/- 0.50 (4737)      |
+|    proven_d_unknown_neg_wife      | 0.205 +/- 0.40 (1385)      |
+|    proven_neg                     | 0.350 +/- 0.48 (31029)     |
+|    proven_pos                     | 0.715 +/- 0.45 (31099)     |
+|    reward                         | 0.401 +/- 0.96 (62128)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (2223)      |
+|    reward_d_2_pos                 | 0.392 +/- 0.92 (28313)     |
+|    reward_d_4_pos                 | 0.079 +/- 1.00 (558)       |
+|    reward_d_6_pos                 | -0.200 +/- 0.98 (5)        |
+|    reward_d_unknown_neg           | 0.372 +/- 1.01 (31029)     |
+|    reward_neg                     | 0.372 +/- 1.01 (31029)     |
+|    reward_pos                     | 0.430 +/- 0.90 (31099)     |
+|    success_rate                   | 0.533                      |
+|    time/elapsed                   | 272                        |
+|    time/iteration_fps             | 837                        |
+|    total_timesteps                | 294912                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.80s. Rollout FPS: 18166.39. Reward: 0.438. Timesteps: 327680
+Epoch 1/5. 
+Losses: total 0.38225, value 0.63082, policy 0.00880, entropy -1.68157, approx_kl 0.01168 clip_fraction 0.13477. 
+Epoch 2/5. 
+Losses: total 0.36943, value 0.62364, policy 0.00702, entropy -1.68287, approx_kl 0.01170 clip_fraction 0.13625. 
+Epoch 3/5. 
+Losses: total 0.36333, value 0.62009, policy 0.00655, entropy -1.68467, approx_kl 0.01187 clip_fraction 0.13736. 
+Epoch 4/5. 
+Losses: total 0.36315, value 0.61779, policy 0.00574, entropy -1.68471, approx_kl 0.01187 clip_fraction 0.13779. 
+Epoch 5/5. 
+Losses: total 0.35968, value 0.61536, policy 0.00526, entropy -1.68502, approx_kl 0.01192 clip_fraction 0.13836. 
+[PPO] Training completed in 12.83s
+[Metrics] Reward (train): current=0.405, best=0.405 (iter 10)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.740                      |
+|    ep_rew_mean                    | 0.405                      |
+|    explained_variance             | -0.121                     |
+|    len                            | 4.740 +/- 3.25 (69056)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (2492)      |
+|    len_d_2_pos                    | 4.175 +/- 3.32 (31450)     |
+|    len_d_4_pos                    | 5.872 +/- 3.52 (615)       |
+|    len_d_6_pos                    | 8.400 +/- 0.80 (5)         |
+|    len_d_unknown_neg              | 5.504 +/- 2.99 (34494)     |
+|    len_neg                        | 5.504 +/- 2.99 (34494)     |
+|    len_pos                        | 3.977 +/- 3.31 (34562)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (2492)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (1251)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (1241)      |
+|    proven_d_2_pos                 | 0.698 +/- 0.46 (31450)     |
+|    proven_d_2_pos_aunt            | 0.726 +/- 0.45 (4663)      |
+|    proven_d_2_pos_brother         | 0.730 +/- 0.44 (1915)      |
+|    proven_d_2_pos_daughter        | 0.774 +/- 0.42 (1807)      |
+|    proven_d_2_pos_father          | 0.777 +/- 0.42 (1955)      |
+|    proven_d_2_pos_husband         | 0.338 +/- 0.47 (204)       |
+|    proven_d_2_pos_mother          | 0.810 +/- 0.39 (1665)      |
+|    proven_d_2_pos_nephew          | 0.627 +/- 0.48 (5462)      |
+|    proven_d_2_pos_niece           | 0.670 +/- 0.47 (4315)      |
+|    proven_d_2_pos_sister          | 0.806 +/- 0.40 (1932)      |
+|    proven_d_2_pos_son             | 0.604 +/- 0.49 (2235)      |
+|    proven_d_2_pos_uncle           | 0.694 +/- 0.46 (5080)      |
+|    proven_d_2_pos_wife            | 0.396 +/- 0.49 (217)       |
+|    proven_d_4_pos                 | 0.535 +/- 0.50 (615)       |
+|    proven_d_4_pos_aunt            | 0.515 +/- 0.50 (132)       |
+|    proven_d_4_pos_brother         | 0.571 +/- 0.49 (77)        |
+|    proven_d_4_pos_daughter        | 0.636 +/- 0.48 (11)        |
+|    proven_d_4_pos_father          | 0.658 +/- 0.47 (38)        |
+|    proven_d_4_pos_husband         | 0.250 +/- 0.43 (4)         |
+|    proven_d_4_pos_mother          | 0.674 +/- 0.47 (92)        |
+|    proven_d_4_pos_nephew          | 0.309 +/- 0.46 (55)        |
+|    proven_d_4_pos_niece           | 0.568 +/- 0.50 (44)        |
+|    proven_d_4_pos_sister          | 0.767 +/- 0.42 (43)        |
+|    proven_d_4_pos_son             | 0.273 +/- 0.45 (55)        |
+|    proven_d_4_pos_uncle           | 0.500 +/- 0.50 (64)        |
+|    proven_d_6_pos                 | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 0.667 +/- 0.47 (3)         |
+|    proven_d_unknown_neg           | 0.348 +/- 0.48 (34494)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (33)        |
+|    proven_d_unknown_neg_aunt      | 0.541 +/- 0.50 (4633)      |
+|    proven_d_unknown_neg_brother   | 0.080 +/- 0.27 (2059)      |
+|    proven_d_unknown_neg_daughter  | 0.498 +/- 0.50 (1728)      |
+|    proven_d_unknown_neg_father    | 0.481 +/- 0.50 (1976)      |
+|    proven_d_unknown_neg_husband   | 0.138 +/- 0.34 (1532)      |
+|    proven_d_unknown_neg_mother    | 0.553 +/- 0.50 (1774)      |
+|    proven_d_unknown_neg_nephew    | 0.135 +/- 0.34 (5354)      |
+|    proven_d_unknown_neg_niece     | 0.490 +/- 0.50 (4325)      |
+|    proven_d_unknown_neg_sister    | 0.376 +/- 0.48 (1935)      |
+|    proven_d_unknown_neg_son       | 0.076 +/- 0.27 (2335)      |
+|    proven_d_unknown_neg_uncle     | 0.439 +/- 0.50 (5252)      |
+|    proven_d_unknown_neg_wife      | 0.190 +/- 0.39 (1558)      |
+|    proven_neg                     | 0.348 +/- 0.48 (34494)     |
+|    proven_pos                     | 0.717 +/- 0.45 (34562)     |
+|    reward                         | 0.405 +/- 0.96 (69056)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (2492)      |
+|    reward_d_2_pos                 | 0.397 +/- 0.92 (31450)     |
+|    reward_d_4_pos                 | 0.070 +/- 1.00 (615)       |
+|    reward_d_6_pos                 | -0.200 +/- 0.98 (5)        |
+|    reward_d_unknown_neg           | 0.375 +/- 1.01 (34494)     |
+|    reward_neg                     | 0.375 +/- 1.01 (34494)     |
+|    reward_pos                     | 0.434 +/- 0.90 (34562)     |
+|    success_rate                   | 0.533                      |
+|    time/elapsed                   | 287                        |
+|    time/iteration_fps             | 2212                       |
+|    total_timesteps                | 327680                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.82s. Rollout FPS: 17970.87. Reward: 0.429. Timesteps: 360448
+Epoch 1/5. 
+Losses: total 0.36788, value 0.60914, policy 0.00749, entropy -1.67755, approx_kl 0.00967 clip_fraction 0.11346. 
+Epoch 2/5. 
+Losses: total 0.36771, value 0.60101, policy 0.00633, entropy -1.67667, approx_kl 0.00966 clip_fraction 0.11395. 
+Epoch 3/5. 
+Losses: total 0.33496, value 0.59766, policy 0.00611, entropy -1.67773, approx_kl 0.00970 clip_fraction 0.11419. 
+Epoch 4/5. 
+Losses: total 0.42621, value 0.59559, policy 0.00542, entropy -1.67771, approx_kl 0.00972 clip_fraction 0.11440. 
+Epoch 5/5. 
+Losses: total 0.36807, value 0.59367, policy 0.00484, entropy -1.67795, approx_kl 0.00974 clip_fraction 0.11516. 
+[PPO] Training completed in 12.80s
+[Metrics] Reward (train): current=0.407, best=0.407 (iter 11)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.743                      |
+|    ep_rew_mean                    | 0.407                      |
+|    explained_variance             | -0.072                     |
+|    len                            | 4.743 +/- 3.25 (75913)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (2734)      |
+|    len_d_2_pos                    | 4.171 +/- 3.31 (34584)     |
+|    len_d_4_pos                    | 5.852 +/- 3.56 (670)       |
+|    len_d_6_pos                    | 8.667 +/- 0.94 (6)         |
+|    len_d_unknown_neg              | 5.515 +/- 3.00 (37919)     |
+|    len_neg                        | 5.515 +/- 3.00 (37919)     |
+|    len_pos                        | 3.973 +/- 3.31 (37994)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (2734)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (1358)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (1376)      |
+|    proven_d_2_pos                 | 0.698 +/- 0.46 (34584)     |
+|    proven_d_2_pos_aunt            | 0.725 +/- 0.45 (5100)      |
+|    proven_d_2_pos_brother         | 0.734 +/- 0.44 (2128)      |
+|    proven_d_2_pos_daughter        | 0.774 +/- 0.42 (1978)      |
+|    proven_d_2_pos_father          | 0.773 +/- 0.42 (2148)      |
+|    proven_d_2_pos_husband         | 0.316 +/- 0.47 (234)       |
+|    proven_d_2_pos_mother          | 0.811 +/- 0.39 (1824)      |
+|    proven_d_2_pos_nephew          | 0.631 +/- 0.48 (6000)      |
+|    proven_d_2_pos_niece           | 0.668 +/- 0.47 (4717)      |
+|    proven_d_2_pos_sister          | 0.803 +/- 0.40 (2127)      |
+|    proven_d_2_pos_son             | 0.606 +/- 0.49 (2462)      |
+|    proven_d_2_pos_uncle           | 0.696 +/- 0.46 (5628)      |
+|    proven_d_2_pos_wife            | 0.374 +/- 0.48 (238)       |
+|    proven_d_4_pos                 | 0.540 +/- 0.50 (670)       |
+|    proven_d_4_pos_aunt            | 0.524 +/- 0.50 (145)       |
+|    proven_d_4_pos_brother         | 0.581 +/- 0.49 (86)        |
+|    proven_d_4_pos_daughter        | 0.667 +/- 0.47 (12)        |
+|    proven_d_4_pos_father          | 0.667 +/- 0.47 (42)        |
+|    proven_d_4_pos_husband         | 0.250 +/- 0.43 (4)         |
+|    proven_d_4_pos_mother          | 0.677 +/- 0.47 (99)        |
+|    proven_d_4_pos_nephew          | 0.310 +/- 0.46 (58)        |
+|    proven_d_4_pos_niece           | 0.543 +/- 0.50 (46)        |
+|    proven_d_4_pos_sister          | 0.755 +/- 0.43 (49)        |
+|    proven_d_4_pos_son             | 0.295 +/- 0.46 (61)        |
+|    proven_d_4_pos_uncle           | 0.500 +/- 0.50 (68)        |
+|    proven_d_6_pos                 | 0.333 +/- 0.47 (6)         |
+|    proven_d_6_pos_aunt            | 0.000 +/- 0.00 (1)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_nephew          | 0.667 +/- 0.47 (3)         |
+|    proven_d_unknown_neg           | 0.346 +/- 0.48 (37919)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (36)        |
+|    proven_d_unknown_neg_aunt      | 0.540 +/- 0.50 (5052)      |
+|    proven_d_unknown_neg_brother   | 0.079 +/- 0.27 (2263)      |
+|    proven_d_unknown_neg_daughter  | 0.492 +/- 0.50 (1911)      |
+|    proven_d_unknown_neg_father    | 0.481 +/- 0.50 (2180)      |
+|    proven_d_unknown_neg_husband   | 0.133 +/- 0.34 (1684)      |
+|    proven_d_unknown_neg_mother    | 0.553 +/- 0.50 (1949)      |
+|    proven_d_unknown_neg_nephew    | 0.133 +/- 0.34 (5945)      |
+|    proven_d_unknown_neg_niece     | 0.489 +/- 0.50 (4723)      |
+|    proven_d_unknown_neg_sister    | 0.379 +/- 0.49 (2108)      |
+|    proven_d_unknown_neg_son       | 0.078 +/- 0.27 (2576)      |
+|    proven_d_unknown_neg_uncle     | 0.437 +/- 0.50 (5794)      |
+|    proven_d_unknown_neg_wife      | 0.178 +/- 0.38 (1698)      |
+|    proven_neg                     | 0.346 +/- 0.48 (37919)     |
+|    proven_pos                     | 0.717 +/- 0.45 (37994)     |
+|    reward                         | 0.407 +/- 0.96 (75913)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (2734)      |
+|    reward_d_2_pos                 | 0.396 +/- 0.92 (34584)     |
+|    reward_d_4_pos                 | 0.081 +/- 1.00 (670)       |
+|    reward_d_6_pos                 | -0.333 +/- 0.94 (6)        |
+|    reward_d_unknown_neg           | 0.379 +/- 1.01 (37919)     |
+|    reward_neg                     | 0.379 +/- 1.01 (37919)     |
+|    reward_pos                     | 0.434 +/- 0.90 (37994)     |
+|    success_rate                   | 0.532                      |
+|    time/elapsed                   | 302                        |
+|    time/iteration_fps             | 2211                       |
+|    total_timesteps                | 360448                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.81s. Rollout FPS: 18093.72. Reward: 0.443. Timesteps: 393216
+Epoch 1/5. 
+Losses: total 0.39331, value 0.58779, policy 0.00569, entropy -1.67034, approx_kl 0.00916 clip_fraction 0.10406. 
+Epoch 2/5. 
+Losses: total 0.37194, value 0.58332, policy 0.00544, entropy -1.67099, approx_kl 0.00927 clip_fraction 0.10451. 
+Epoch 3/5. 
+Losses: total 0.31199, value 0.58023, policy 0.00503, entropy -1.67096, approx_kl 0.00931 clip_fraction 0.10572. 
+Epoch 4/5. 
+Losses: total 0.37070, value 0.57825, policy 0.00451, entropy -1.67115, approx_kl 0.00936 clip_fraction 0.10694. 
+Epoch 5/5. 
+Losses: total 0.30077, value 0.57686, policy 0.00395, entropy -1.67094, approx_kl 0.00939 clip_fraction 0.10717. 
+[PPO] Training completed in 12.80s
+[Metrics] Reward (train): current=0.410, best=0.410 (iter 12)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.744                      |
+|    ep_rew_mean                    | 0.410                      |
+|    explained_variance             | -0.039                     |
+|    len                            | 4.744 +/- 3.25 (82799)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (2973)      |
+|    len_d_2_pos                    | 4.162 +/- 3.31 (37727)     |
+|    len_d_4_pos                    | 5.884 +/- 3.61 (734)       |
+|    len_d_6_pos                    | 8.857 +/- 0.99 (7)         |
+|    len_d_unknown_neg              | 5.523 +/- 3.01 (41358)     |
+|    len_neg                        | 5.523 +/- 3.01 (41358)     |
+|    len_pos                        | 3.967 +/- 3.30 (41441)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (2973)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (1474)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (1499)      |
+|    proven_d_2_pos                 | 0.700 +/- 0.46 (37727)     |
+|    proven_d_2_pos_aunt            | 0.726 +/- 0.45 (5537)      |
+|    proven_d_2_pos_brother         | 0.735 +/- 0.44 (2344)      |
+|    proven_d_2_pos_daughter        | 0.772 +/- 0.42 (2166)      |
+|    proven_d_2_pos_father          | 0.772 +/- 0.42 (2320)      |
+|    proven_d_2_pos_husband         | 0.298 +/- 0.46 (252)       |
+|    proven_d_2_pos_mother          | 0.811 +/- 0.39 (1996)      |
+|    proven_d_2_pos_nephew          | 0.635 +/- 0.48 (6538)      |
+|    proven_d_2_pos_niece           | 0.672 +/- 0.47 (5155)      |
+|    proven_d_2_pos_sister          | 0.805 +/- 0.40 (2333)      |
+|    proven_d_2_pos_son             | 0.612 +/- 0.49 (2679)      |
+|    proven_d_2_pos_uncle           | 0.696 +/- 0.46 (6149)      |
+|    proven_d_2_pos_wife            | 0.357 +/- 0.48 (258)       |
+|    proven_d_4_pos                 | 0.537 +/- 0.50 (734)       |
+|    proven_d_4_pos_aunt            | 0.526 +/- 0.50 (156)       |
+|    proven_d_4_pos_brother         | 0.573 +/- 0.49 (96)        |
+|    proven_d_4_pos_daughter        | 0.714 +/- 0.45 (14)        |
+|    proven_d_4_pos_father          | 0.667 +/- 0.47 (45)        |
+|    proven_d_4_pos_husband         | 0.200 +/- 0.40 (5)         |
+|    proven_d_4_pos_mother          | 0.670 +/- 0.47 (103)       |
+|    proven_d_4_pos_nephew          | 0.299 +/- 0.46 (67)        |
+|    proven_d_4_pos_niece           | 0.558 +/- 0.50 (52)        |
+|    proven_d_4_pos_sister          | 0.750 +/- 0.43 (56)        |
+|    proven_d_4_pos_son             | 0.309 +/- 0.46 (68)        |
+|    proven_d_4_pos_uncle           | 0.486 +/- 0.50 (72)        |
+|    proven_d_6_pos                 | 0.286 +/- 0.45 (7)         |
+|    proven_d_6_pos_aunt            | 0.000 +/- 0.00 (1)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (3)         |
+|    proven_d_6_pos_nephew          | 0.667 +/- 0.47 (3)         |
+|    proven_d_unknown_neg           | 0.345 +/- 0.48 (41358)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (39)        |
+|    proven_d_unknown_neg_aunt      | 0.538 +/- 0.50 (5485)      |
+|    proven_d_unknown_neg_brother   | 0.078 +/- 0.27 (2449)      |
+|    proven_d_unknown_neg_daughter  | 0.490 +/- 0.50 (2100)      |
+|    proven_d_unknown_neg_father    | 0.482 +/- 0.50 (2387)      |
+|    proven_d_unknown_neg_husband   | 0.127 +/- 0.33 (1829)      |
+|    proven_d_unknown_neg_mother    | 0.544 +/- 0.50 (2130)      |
+|    proven_d_unknown_neg_nephew    | 0.131 +/- 0.34 (6531)      |
+|    proven_d_unknown_neg_niece     | 0.492 +/- 0.50 (5132)      |
+|    proven_d_unknown_neg_sister    | 0.380 +/- 0.49 (2303)      |
+|    proven_d_unknown_neg_son       | 0.080 +/- 0.27 (2828)      |
+|    proven_d_unknown_neg_uncle     | 0.436 +/- 0.50 (6310)      |
+|    proven_d_unknown_neg_wife      | 0.168 +/- 0.37 (1835)      |
+|    proven_neg                     | 0.345 +/- 0.48 (41358)     |
+|    proven_pos                     | 0.718 +/- 0.45 (41441)     |
+|    reward                         | 0.410 +/- 0.96 (82799)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (2973)      |
+|    reward_d_2_pos                 | 0.400 +/- 0.92 (37727)     |
+|    reward_d_4_pos                 | 0.074 +/- 1.00 (734)       |
+|    reward_d_6_pos                 | -0.429 +/- 0.90 (7)        |
+|    reward_d_unknown_neg           | 0.383 +/- 1.01 (41358)     |
+|    reward_neg                     | 0.383 +/- 1.01 (41358)     |
+|    reward_pos                     | 0.437 +/- 0.90 (41441)     |
+|    success_rate                   | 0.532                      |
+|    time/elapsed                   | 316                        |
+|    time/iteration_fps             | 2210                       |
+|    total_timesteps                | 393216                     |
+--------------------------------------------------------------------
+
+[Eval] Took 24.41 seconds
+
+[Ranking] MRR: current=0.628, best=0.628 (iter 12)
+--------------------------------------------------------------------
+| eval/                              |                            |
+|    Hits@1                         | 0.618                      |
+|    Hits@10                        | 0.642                      |
+|    Hits@3                         | 0.620                      |
+|    MRR                            | 0.628                      |
+|    len_d_-1_pos                   | 8.600                      |
+|    len_d_2_pos                    | 4.511                      |
+|    len_d_4_pos                    | 9.857                      |
+|    len_d_6_pos                    | 8.000                      |
+|    len_neg                        | 8.177                      |
+|    len_pos                        | 4.920                      |
+|    mrr_mean                       | 0.628                      |
+|    proven_d_-1_pos                | 0.100                      |
+|    proven_d_2_pos                 | 0.695                      |
+|    proven_d_4_pos                 | 0.071                      |
+|    proven_d_6_pos                 | 0.000                      |
+|    proven_neg                     | 0.070                      |
+|    proven_pos                     | 0.640                      |
+|    reward_d_-1_pos                | 0.100                      |
+|    reward_d_2_pos                 | 0.695                      |
+|    reward_d_4_pos                 | 0.071                      |
+|    reward_d_6_pos                 | 0.000                      |
+|    reward_label_neg               | 0.070                      |
+|    reward_label_pos               | 0.640                      |
+--------------------------------------------------------------------
+
+[Checkpoint] New best eval model saved to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/best_model_eval_2026_01_25_16_59_46.pt (mrr_mean=0.6281)
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.80s. Rollout FPS: 18209.82. Reward: 0.442. Timesteps: 425984
+Epoch 1/5. 
+Losses: total 0.33153, value 0.57516, policy 0.00674, entropy -1.68531, approx_kl 0.00781 clip_fraction 0.08798. 
+Epoch 2/5. 
+Losses: total 0.30621, value 0.57084, policy 0.00484, entropy -1.67991, approx_kl 0.00762 clip_fraction 0.08812. 
+Epoch 3/5. 
+Losses: total 0.37126, value 0.56862, policy 0.00458, entropy -1.67965, approx_kl 0.00763 clip_fraction 0.08929. 
+Epoch 4/5. 
+Losses: total 0.33036, value 0.56723, policy 0.00423, entropy -1.67971, approx_kl 0.00764 clip_fraction 0.08915. 
+Epoch 5/5. 
+Losses: total 0.34342, value 0.56587, policy 0.00364, entropy -1.67893, approx_kl 0.00764 clip_fraction 0.08950. 
+[PPO] Training completed in 12.84s
+[Metrics] Reward (train): current=0.412, best=0.412 (iter 13)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.748                      |
+|    ep_rew_mean                    | 0.412                      |
+|    explained_variance             | -0.010                     |
+|    len                            | 4.748 +/- 3.26 (89626)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (3231)      |
+|    len_d_2_pos                    | 4.173 +/- 3.32 (40830)     |
+|    len_d_4_pos                    | 5.877 +/- 3.61 (782)       |
+|    len_d_6_pos                    | 8.857 +/- 0.99 (7)         |
+|    len_d_unknown_neg              | 5.523 +/- 3.01 (44776)     |
+|    len_neg                        | 5.523 +/- 3.01 (44776)     |
+|    len_pos                        | 3.975 +/- 3.31 (44850)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (3231)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (1607)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (1624)      |
+|    proven_d_2_pos                 | 0.700 +/- 0.46 (40830)     |
+|    proven_d_2_pos_aunt            | 0.724 +/- 0.45 (5953)      |
+|    proven_d_2_pos_brother         | 0.732 +/- 0.44 (2551)      |
+|    proven_d_2_pos_daughter        | 0.770 +/- 0.42 (2346)      |
+|    proven_d_2_pos_father          | 0.768 +/- 0.42 (2522)      |
+|    proven_d_2_pos_husband         | 0.289 +/- 0.45 (270)       |
+|    proven_d_2_pos_mother          | 0.808 +/- 0.39 (2165)      |
+|    proven_d_2_pos_nephew          | 0.637 +/- 0.48 (7070)      |
+|    proven_d_2_pos_niece           | 0.675 +/- 0.47 (5576)      |
+|    proven_d_2_pos_sister          | 0.803 +/- 0.40 (2513)      |
+|    proven_d_2_pos_son             | 0.617 +/- 0.49 (2921)      |
+|    proven_d_2_pos_uncle           | 0.696 +/- 0.46 (6664)      |
+|    proven_d_2_pos_wife            | 0.337 +/- 0.47 (279)       |
+|    proven_d_4_pos                 | 0.533 +/- 0.50 (782)       |
+|    proven_d_4_pos_aunt            | 0.524 +/- 0.50 (168)       |
+|    proven_d_4_pos_brother         | 0.547 +/- 0.50 (106)       |
+|    proven_d_4_pos_daughter        | 0.714 +/- 0.45 (14)        |
+|    proven_d_4_pos_father          | 0.674 +/- 0.47 (46)        |
+|    proven_d_4_pos_husband         | 0.200 +/- 0.40 (5)         |
+|    proven_d_4_pos_mother          | 0.664 +/- 0.47 (110)       |
+|    proven_d_4_pos_nephew          | 0.301 +/- 0.46 (73)        |
+|    proven_d_4_pos_niece           | 0.536 +/- 0.50 (56)        |
+|    proven_d_4_pos_sister          | 0.767 +/- 0.42 (60)        |
+|    proven_d_4_pos_son             | 0.300 +/- 0.46 (70)        |
+|    proven_d_4_pos_uncle           | 0.500 +/- 0.50 (74)        |
+|    proven_d_6_pos                 | 0.286 +/- 0.45 (7)         |
+|    proven_d_6_pos_aunt            | 0.000 +/- 0.00 (1)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (3)         |
+|    proven_d_6_pos_nephew          | 0.667 +/- 0.47 (3)         |
+|    proven_d_unknown_neg           | 0.342 +/- 0.47 (44776)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (42)        |
+|    proven_d_unknown_neg_aunt      | 0.538 +/- 0.50 (5935)      |
+|    proven_d_unknown_neg_brother   | 0.077 +/- 0.27 (2639)      |
+|    proven_d_unknown_neg_daughter  | 0.488 +/- 0.50 (2275)      |
+|    proven_d_unknown_neg_father    | 0.478 +/- 0.50 (2584)      |
+|    proven_d_unknown_neg_husband   | 0.119 +/- 0.32 (1978)      |
+|    proven_d_unknown_neg_mother    | 0.543 +/- 0.50 (2295)      |
+|    proven_d_unknown_neg_nephew    | 0.132 +/- 0.34 (7076)      |
+|    proven_d_unknown_neg_niece     | 0.487 +/- 0.50 (5566)      |
+|    proven_d_unknown_neg_sister    | 0.381 +/- 0.49 (2493)      |
+|    proven_d_unknown_neg_son       | 0.079 +/- 0.27 (3056)      |
+|    proven_d_unknown_neg_uncle     | 0.432 +/- 0.50 (6837)      |
+|    proven_d_unknown_neg_wife      | 0.155 +/- 0.36 (2000)      |
+|    proven_neg                     | 0.342 +/- 0.47 (44776)     |
+|    proven_pos                     | 0.718 +/- 0.45 (44850)     |
+|    reward                         | 0.412 +/- 0.96 (89626)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (3231)      |
+|    reward_d_2_pos                 | 0.399 +/- 0.92 (40830)     |
+|    reward_d_4_pos                 | 0.066 +/- 1.00 (782)       |
+|    reward_d_6_pos                 | -0.429 +/- 0.90 (7)        |
+|    reward_d_unknown_neg           | 0.388 +/- 1.01 (44776)     |
+|    reward_neg                     | 0.388 +/- 1.01 (44776)     |
+|    reward_pos                     | 0.437 +/- 0.90 (44850)     |
+|    success_rate                   | 0.530                      |
+|    time/elapsed                   | 356                        |
+|    time/iteration_fps             | 833                        |
+|    total_timesteps                | 425984                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.79s. Rollout FPS: 18264.71. Reward: 0.443. Timesteps: 458752
+Epoch 1/5. 
+Losses: total 0.39271, value 0.57551, policy 0.00620, entropy -1.68205, approx_kl 0.00771 clip_fraction 0.08850. 
+Epoch 2/5. 
+Losses: total 0.35587, value 0.57074, policy 0.00557, entropy -1.68151, approx_kl 0.00774 clip_fraction 0.08763. 
+Epoch 3/5. 
+Losses: total 0.34427, value 0.56893, policy 0.00504, entropy -1.68143, approx_kl 0.00779 clip_fraction 0.08779. 
+Epoch 4/5. 
+Losses: total 0.32962, value 0.56720, policy 0.00452, entropy -1.68150, approx_kl 0.00783 clip_fraction 0.08794. 
+Epoch 5/5. 
+Losses: total 0.35304, value 0.56591, policy 0.00413, entropy -1.68192, approx_kl 0.00792 clip_fraction 0.08863. 
+[PPO] Training completed in 12.83s
+[Metrics] Reward (train): current=0.414, best=0.414 (iter 14)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.750                      |
+|    ep_rew_mean                    | 0.414                      |
+|    explained_variance             | 0.002                      |
+|    len                            | 4.750 +/- 3.26 (96498)     |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (3503)      |
+|    len_d_2_pos                    | 4.177 +/- 3.32 (43933)     |
+|    len_d_4_pos                    | 5.833 +/- 3.57 (840)       |
+|    len_d_6_pos                    | 8.857 +/- 0.99 (7)         |
+|    len_d_unknown_neg              | 5.525 +/- 3.01 (48215)     |
+|    len_neg                        | 5.525 +/- 3.01 (48215)     |
+|    len_pos                        | 3.976 +/- 3.31 (48283)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (3503)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (1738)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (1765)      |
+|    proven_d_2_pos                 | 0.700 +/- 0.46 (43933)     |
+|    proven_d_2_pos_aunt            | 0.724 +/- 0.45 (6401)      |
+|    proven_d_2_pos_brother         | 0.732 +/- 0.44 (2727)      |
+|    proven_d_2_pos_daughter        | 0.772 +/- 0.42 (2506)      |
+|    proven_d_2_pos_father          | 0.769 +/- 0.42 (2715)      |
+|    proven_d_2_pos_husband         | 0.269 +/- 0.44 (290)       |
+|    proven_d_2_pos_mother          | 0.803 +/- 0.40 (2333)      |
+|    proven_d_2_pos_nephew          | 0.639 +/- 0.48 (7610)      |
+|    proven_d_2_pos_niece           | 0.676 +/- 0.47 (5996)      |
+|    proven_d_2_pos_sister          | 0.803 +/- 0.40 (2711)      |
+|    proven_d_2_pos_son             | 0.615 +/- 0.49 (3142)      |
+|    proven_d_2_pos_uncle           | 0.698 +/- 0.46 (7207)      |
+|    proven_d_2_pos_wife            | 0.319 +/- 0.47 (295)       |
+|    proven_d_4_pos                 | 0.536 +/- 0.50 (840)       |
+|    proven_d_4_pos_aunt            | 0.523 +/- 0.50 (174)       |
+|    proven_d_4_pos_brother         | 0.536 +/- 0.50 (112)       |
+|    proven_d_4_pos_daughter        | 0.714 +/- 0.45 (14)        |
+|    proven_d_4_pos_father          | 0.694 +/- 0.46 (49)        |
+|    proven_d_4_pos_husband         | 0.167 +/- 0.37 (6)         |
+|    proven_d_4_pos_mother          | 0.672 +/- 0.47 (125)       |
+|    proven_d_4_pos_nephew          | 0.338 +/- 0.47 (80)        |
+|    proven_d_4_pos_niece           | 0.567 +/- 0.50 (60)        |
+|    proven_d_4_pos_sister          | 0.742 +/- 0.44 (62)        |
+|    proven_d_4_pos_son             | 0.316 +/- 0.47 (79)        |
+|    proven_d_4_pos_uncle           | 0.481 +/- 0.50 (79)        |
+|    proven_d_6_pos                 | 0.286 +/- 0.45 (7)         |
+|    proven_d_6_pos_aunt            | 0.000 +/- 0.00 (1)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (3)         |
+|    proven_d_6_pos_nephew          | 0.667 +/- 0.47 (3)         |
+|    proven_d_unknown_neg           | 0.341 +/- 0.47 (48215)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (46)        |
+|    proven_d_unknown_neg_aunt      | 0.538 +/- 0.50 (6372)      |
+|    proven_d_unknown_neg_brother   | 0.079 +/- 0.27 (2851)      |
+|    proven_d_unknown_neg_daughter  | 0.489 +/- 0.50 (2443)      |
+|    proven_d_unknown_neg_father    | 0.474 +/- 0.50 (2787)      |
+|    proven_d_unknown_neg_husband   | 0.112 +/- 0.32 (2133)      |
+|    proven_d_unknown_neg_mother    | 0.543 +/- 0.50 (2474)      |
+|    proven_d_unknown_neg_nephew    | 0.132 +/- 0.34 (7604)      |
+|    proven_d_unknown_neg_niece     | 0.484 +/- 0.50 (6001)      |
+|    proven_d_unknown_neg_sister    | 0.382 +/- 0.49 (2687)      |
+|    proven_d_unknown_neg_son       | 0.079 +/- 0.27 (3289)      |
+|    proven_d_unknown_neg_uncle     | 0.428 +/- 0.49 (7395)      |
+|    proven_d_unknown_neg_wife      | 0.147 +/- 0.35 (2133)      |
+|    proven_neg                     | 0.341 +/- 0.47 (48215)     |
+|    proven_pos                     | 0.719 +/- 0.45 (48283)     |
+|    reward                         | 0.414 +/- 0.95 (96498)     |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (3503)      |
+|    reward_d_2_pos                 | 0.400 +/- 0.92 (43933)     |
+|    reward_d_4_pos                 | 0.071 +/- 1.00 (840)       |
+|    reward_d_6_pos                 | -0.429 +/- 0.90 (7)        |
+|    reward_d_unknown_neg           | 0.391 +/- 1.01 (48215)     |
+|    reward_neg                     | 0.391 +/- 1.01 (48215)     |
+|    reward_pos                     | 0.438 +/- 0.90 (48283)     |
+|    success_rate                   | 0.530                      |
+|    time/elapsed                   | 371                        |
+|    time/iteration_fps             | 2204                       |
+|    total_timesteps                | 458752                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.83s. Rollout FPS: 17872.42. Reward: 0.458. Timesteps: 491520
+Epoch 1/5. 
+Losses: total 0.37645, value 0.56596, policy 0.00591, entropy -1.67970, approx_kl 0.00738 clip_fraction 0.08630. 
+Epoch 2/5. 
+Losses: total 0.34272, value 0.56468, policy 0.00403, entropy -1.67723, approx_kl 0.00742 clip_fraction 0.08658. 
+Epoch 3/5. 
+Losses: total 0.37517, value 0.56280, policy 0.00301, entropy -1.67618, approx_kl 0.00739 clip_fraction 0.08566. 
+Epoch 4/5. 
+Losses: total 0.37998, value 0.56094, policy 0.00230, entropy -1.67639, approx_kl 0.00737 clip_fraction 0.08559. 
+Epoch 5/5. 
+Losses: total 0.33090, value 0.55955, policy 0.00199, entropy -1.67664, approx_kl 0.00736 clip_fraction 0.08549. 
+[PPO] Training completed in 12.78s
+[Metrics] Reward (train): current=0.417, best=0.417 (iter 15)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.752                      |
+|    ep_rew_mean                    | 0.417                      |
+|    explained_variance             | 0.009                      |
+|    len                            | 4.752 +/- 3.26 (103336)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (3766)      |
+|    len_d_2_pos                    | 4.180 +/- 3.32 (47028)     |
+|    len_d_4_pos                    | 5.839 +/- 3.56 (903)       |
+|    len_d_6_pos                    | 9.778 +/- 2.15 (9)         |
+|    len_d_unknown_neg              | 5.528 +/- 3.01 (51630)     |
+|    len_neg                        | 5.528 +/- 3.01 (51630)     |
+|    len_pos                        | 3.978 +/- 3.32 (51706)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (3766)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (1868)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (1898)      |
+|    proven_d_2_pos                 | 0.700 +/- 0.46 (47028)     |
+|    proven_d_2_pos_aunt            | 0.724 +/- 0.45 (6811)      |
+|    proven_d_2_pos_brother         | 0.731 +/- 0.44 (2906)      |
+|    proven_d_2_pos_daughter        | 0.773 +/- 0.42 (2649)      |
+|    proven_d_2_pos_father          | 0.771 +/- 0.42 (2926)      |
+|    proven_d_2_pos_husband         | 0.254 +/- 0.44 (311)       |
+|    proven_d_2_pos_mother          | 0.802 +/- 0.40 (2500)      |
+|    proven_d_2_pos_nephew          | 0.643 +/- 0.48 (8157)      |
+|    proven_d_2_pos_niece           | 0.676 +/- 0.47 (6426)      |
+|    proven_d_2_pos_sister          | 0.799 +/- 0.40 (2932)      |
+|    proven_d_2_pos_son             | 0.613 +/- 0.49 (3369)      |
+|    proven_d_2_pos_uncle           | 0.697 +/- 0.46 (7716)      |
+|    proven_d_2_pos_wife            | 0.289 +/- 0.45 (325)       |
+|    proven_d_4_pos                 | 0.545 +/- 0.50 (903)       |
+|    proven_d_4_pos_aunt            | 0.524 +/- 0.50 (187)       |
+|    proven_d_4_pos_brother         | 0.581 +/- 0.49 (124)       |
+|    proven_d_4_pos_daughter        | 0.714 +/- 0.45 (14)        |
+|    proven_d_4_pos_father          | 0.719 +/- 0.45 (57)        |
+|    proven_d_4_pos_husband         | 0.167 +/- 0.37 (6)         |
+|    proven_d_4_pos_mother          | 0.674 +/- 0.47 (132)       |
+|    proven_d_4_pos_nephew          | 0.333 +/- 0.47 (84)        |
+|    proven_d_4_pos_niece           | 0.565 +/- 0.50 (62)        |
+|    proven_d_4_pos_sister          | 0.742 +/- 0.44 (66)        |
+|    proven_d_4_pos_son             | 0.314 +/- 0.46 (86)        |
+|    proven_d_4_pos_uncle           | 0.494 +/- 0.50 (85)        |
+|    proven_d_6_pos                 | 0.222 +/- 0.42 (9)         |
+|    proven_d_6_pos_aunt            | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_daughter        | 0.000 +/- 0.00 (3)         |
+|    proven_d_6_pos_nephew          | 0.500 +/- 0.50 (4)         |
+|    proven_d_unknown_neg           | 0.338 +/- 0.47 (51630)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (48)        |
+|    proven_d_unknown_neg_aunt      | 0.535 +/- 0.50 (6846)      |
+|    proven_d_unknown_neg_brother   | 0.080 +/- 0.27 (3044)      |
+|    proven_d_unknown_neg_daughter  | 0.483 +/- 0.50 (2595)      |
+|    proven_d_unknown_neg_father    | 0.474 +/- 0.50 (2999)      |
+|    proven_d_unknown_neg_husband   | 0.107 +/- 0.31 (2284)      |
+|    proven_d_unknown_neg_mother    | 0.540 +/- 0.50 (2633)      |
+|    proven_d_unknown_neg_nephew    | 0.130 +/- 0.34 (8159)      |
+|    proven_d_unknown_neg_niece     | 0.485 +/- 0.50 (6403)      |
+|    proven_d_unknown_neg_sister    | 0.378 +/- 0.48 (2891)      |
+|    proven_d_unknown_neg_son       | 0.080 +/- 0.27 (3526)      |
+|    proven_d_unknown_neg_uncle     | 0.422 +/- 0.49 (7905)      |
+|    proven_d_unknown_neg_wife      | 0.138 +/- 0.35 (2297)      |
+|    proven_neg                     | 0.338 +/- 0.47 (51630)     |
+|    proven_pos                     | 0.719 +/- 0.45 (51706)     |
+|    reward                         | 0.417 +/- 0.95 (103336)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (3766)      |
+|    reward_d_2_pos                 | 0.400 +/- 0.92 (47028)     |
+|    reward_d_4_pos                 | 0.090 +/- 1.00 (903)       |
+|    reward_d_6_pos                 | -0.556 +/- 0.83 (9)        |
+|    reward_d_unknown_neg           | 0.397 +/- 1.00 (51630)     |
+|    reward_neg                     | 0.397 +/- 1.00 (51630)     |
+|    reward_pos                     | 0.438 +/- 0.90 (51706)     |
+|    success_rate                   | 0.528                      |
+|    time/elapsed                   | 385                        |
+|    time/iteration_fps             | 2203                       |
+|    total_timesteps                | 491520                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.83s. Rollout FPS: 17907.92. Reward: 0.454. Timesteps: 524288
+Epoch 1/5. 
+Losses: total 0.36345, value 0.55667, policy 0.00558, entropy -1.66712, approx_kl 0.00648 clip_fraction 0.07462. 
+Epoch 2/5. 
+Losses: total 0.33355, value 0.55352, policy 0.00449, entropy -1.66679, approx_kl 0.00644 clip_fraction 0.07483. 
+Epoch 3/5. 
+Losses: total 0.36108, value 0.55124, policy 0.00385, entropy -1.66559, approx_kl 0.00641 clip_fraction 0.07414. 
+Epoch 4/5. 
+Losses: total 0.31643, value 0.54925, policy 0.00323, entropy -1.66489, approx_kl 0.00640 clip_fraction 0.07395. 
+Epoch 5/5. 
+Losses: total 0.34214, value 0.54795, policy 0.00267, entropy -1.66465, approx_kl 0.00640 clip_fraction 0.07381. 
+[PPO] Training completed in 12.78s
+[Metrics] Reward (train): current=0.420, best=0.420 (iter 16)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.758                      |
+|    ep_rew_mean                    | 0.420                      |
+|    explained_variance             | 0.008                      |
+|    len                            | 4.758 +/- 3.27 (110104)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (4012)      |
+|    len_d_2_pos                    | 4.186 +/- 3.33 (50106)     |
+|    len_d_4_pos                    | 5.825 +/- 3.56 (959)       |
+|    len_d_6_pos                    | 8.333 +/- 3.14 (12)        |
+|    len_d_unknown_neg              | 5.533 +/- 3.01 (55015)     |
+|    len_neg                        | 5.533 +/- 3.01 (55015)     |
+|    len_pos                        | 3.983 +/- 3.32 (55089)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (4012)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (1987)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (2025)      |
+|    proven_d_2_pos                 | 0.700 +/- 0.46 (50106)     |
+|    proven_d_2_pos_aunt            | 0.722 +/- 0.45 (7273)      |
+|    proven_d_2_pos_brother         | 0.736 +/- 0.44 (3108)      |
+|    proven_d_2_pos_daughter        | 0.772 +/- 0.42 (2790)      |
+|    proven_d_2_pos_father          | 0.772 +/- 0.42 (3123)      |
+|    proven_d_2_pos_husband         | 0.239 +/- 0.43 (331)       |
+|    proven_d_2_pos_mother          | 0.798 +/- 0.40 (2642)      |
+|    proven_d_2_pos_nephew          | 0.646 +/- 0.48 (8701)      |
+|    proven_d_2_pos_niece           | 0.675 +/- 0.47 (6813)      |
+|    proven_d_2_pos_sister          | 0.801 +/- 0.40 (3131)      |
+|    proven_d_2_pos_son             | 0.614 +/- 0.49 (3594)      |
+|    proven_d_2_pos_uncle           | 0.696 +/- 0.46 (8248)      |
+|    proven_d_2_pos_wife            | 0.270 +/- 0.44 (352)       |
+|    proven_d_4_pos                 | 0.547 +/- 0.50 (959)       |
+|    proven_d_4_pos_aunt            | 0.531 +/- 0.50 (196)       |
+|    proven_d_4_pos_brother         | 0.591 +/- 0.49 (127)       |
+|    proven_d_4_pos_daughter        | 0.688 +/- 0.46 (16)        |
+|    proven_d_4_pos_father          | 0.694 +/- 0.46 (62)        |
+|    proven_d_4_pos_husband         | 0.167 +/- 0.37 (6)         |
+|    proven_d_4_pos_mother          | 0.669 +/- 0.47 (139)       |
+|    proven_d_4_pos_nephew          | 0.333 +/- 0.47 (90)        |
+|    proven_d_4_pos_niece           | 0.543 +/- 0.50 (70)        |
+|    proven_d_4_pos_sister          | 0.753 +/- 0.43 (73)        |
+|    proven_d_4_pos_son             | 0.337 +/- 0.47 (92)        |
+|    proven_d_4_pos_uncle           | 0.500 +/- 0.50 (88)        |
+|    proven_d_6_pos                 | 0.417 +/- 0.49 (12)        |
+|    proven_d_6_pos_aunt            | 0.000 +/- 0.00 (2)         |
+|    proven_d_6_pos_daughter        | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_nephew          | 0.600 +/- 0.49 (5)         |
+|    proven_d_unknown_neg           | 0.335 +/- 0.47 (55015)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (51)        |
+|    proven_d_unknown_neg_aunt      | 0.532 +/- 0.50 (7310)      |
+|    proven_d_unknown_neg_brother   | 0.079 +/- 0.27 (3246)      |
+|    proven_d_unknown_neg_daughter  | 0.481 +/- 0.50 (2766)      |
+|    proven_d_unknown_neg_father    | 0.474 +/- 0.50 (3228)      |
+|    proven_d_unknown_neg_husband   | 0.102 +/- 0.30 (2433)      |
+|    proven_d_unknown_neg_mother    | 0.541 +/- 0.50 (2799)      |
+|    proven_d_unknown_neg_nephew    | 0.130 +/- 0.34 (8674)      |
+|    proven_d_unknown_neg_niece     | 0.483 +/- 0.50 (6784)      |
+|    proven_d_unknown_neg_sister    | 0.376 +/- 0.48 (3065)      |
+|    proven_d_unknown_neg_son       | 0.080 +/- 0.27 (3770)      |
+|    proven_d_unknown_neg_uncle     | 0.415 +/- 0.49 (8443)      |
+|    proven_d_unknown_neg_wife      | 0.130 +/- 0.34 (2446)      |
+|    proven_neg                     | 0.335 +/- 0.47 (55015)     |
+|    proven_pos                     | 0.719 +/- 0.45 (55089)     |
+|    reward                         | 0.420 +/- 0.95 (110104)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (4012)      |
+|    reward_d_2_pos                 | 0.399 +/- 0.92 (50106)     |
+|    reward_d_4_pos                 | 0.095 +/- 1.00 (959)       |
+|    reward_d_6_pos                 | -0.167 +/- 0.99 (12)       |
+|    reward_d_unknown_neg           | 0.402 +/- 1.00 (55015)     |
+|    reward_neg                     | 0.402 +/- 1.00 (55015)     |
+|    reward_pos                     | 0.437 +/- 0.90 (55089)     |
+|    success_rate                   | 0.527                      |
+|    time/elapsed                   | 400                        |
+|    time/iteration_fps             | 2201                       |
+|    total_timesteps                | 524288                     |
+--------------------------------------------------------------------
+
+[Eval] Took 24.41 seconds
+
+[Ranking] MRR: current=0.634, best=0.634 (iter 16)
+--------------------------------------------------------------------
+| eval/                              |                            |
+|    Hits@1                         | 0.620                      |
+|    Hits@10                        | 0.650                      |
+|    Hits@3                         | 0.632                      |
+|    MRR                            | 0.634                      |
+|    len_d_-1_pos                   | 7.400                      |
+|    len_d_2_pos                    | 4.363                      |
+|    len_d_4_pos                    | 10.714                     |
+|    len_d_6_pos                    | 8.000                      |
+|    len_neg                        | 8.230                      |
+|    len_pos                        | 4.755                      |
+|    mrr_mean                       | 0.634                      |
+|    proven_d_-1_pos                | 0.000                      |
+|    proven_d_2_pos                 | 0.714                      |
+|    proven_d_4_pos                 | 0.071                      |
+|    proven_d_6_pos                 | 0.000                      |
+|    proven_neg                     | 0.085                      |
+|    proven_pos                     | 0.652                      |
+|    reward_d_-1_pos                | 0.000                      |
+|    reward_d_2_pos                 | 0.714                      |
+|    reward_d_4_pos                 | 0.071                      |
+|    reward_d_6_pos                 | 0.000                      |
+|    reward_label_neg               | 0.085                      |
+|    reward_label_pos               | 0.652                      |
+--------------------------------------------------------------------
+
+[Checkpoint] New best eval model saved to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/best_model_eval_2026_01_25_16_59_46.pt (mrr_mean=0.6338)
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.79s. Rollout FPS: 18285.57. Reward: 0.471. Timesteps: 557056
+Epoch 1/5. 
+Losses: total 0.41320, value 0.55172, policy 0.00386, entropy -1.67279, approx_kl 0.00700 clip_fraction 0.08047. 
+Epoch 2/5. 
+Losses: total 0.34971, value 0.54861, policy 0.00386, entropy -1.67201, approx_kl 0.00698 clip_fraction 0.07979. 
+Epoch 3/5. 
+Losses: total 0.35610, value 0.54640, policy 0.00350, entropy -1.67173, approx_kl 0.00698 clip_fraction 0.07996. 
+Epoch 4/5. 
+Losses: total 0.34877, value 0.54516, policy 0.00304, entropy -1.67187, approx_kl 0.00700 clip_fraction 0.07913. 
+Epoch 5/5. 
+Losses: total 0.32472, value 0.54385, policy 0.00281, entropy -1.67174, approx_kl 0.00707 clip_fraction 0.07956. 
+[PPO] Training completed in 12.77s
+[Metrics] Reward (train): current=0.423, best=0.423 (iter 17)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.769                      |
+|    ep_rew_mean                    | 0.423                      |
+|    explained_variance             | 0.004                      |
+|    len                            | 4.769 +/- 3.28 (116726)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (4249)      |
+|    len_d_2_pos                    | 4.194 +/- 3.34 (53116)     |
+|    len_d_4_pos                    | 5.819 +/- 3.54 (1022)      |
+|    len_d_6_pos                    | 8.688 +/- 3.44 (16)        |
+|    len_d_unknown_neg              | 5.549 +/- 3.02 (58323)     |
+|    len_neg                        | 5.549 +/- 3.02 (58323)     |
+|    len_pos                        | 3.991 +/- 3.33 (58403)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (4249)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (2123)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (2126)      |
+|    proven_d_2_pos                 | 0.700 +/- 0.46 (53116)     |
+|    proven_d_2_pos_aunt            | 0.722 +/- 0.45 (7698)      |
+|    proven_d_2_pos_brother         | 0.739 +/- 0.44 (3284)      |
+|    proven_d_2_pos_daughter        | 0.772 +/- 0.42 (2961)      |
+|    proven_d_2_pos_father          | 0.773 +/- 0.42 (3304)      |
+|    proven_d_2_pos_husband         | 0.227 +/- 0.42 (353)       |
+|    proven_d_2_pos_mother          | 0.798 +/- 0.40 (2835)      |
+|    proven_d_2_pos_nephew          | 0.648 +/- 0.48 (9249)      |
+|    proven_d_2_pos_niece           | 0.676 +/- 0.47 (7214)      |
+|    proven_d_2_pos_sister          | 0.802 +/- 0.40 (3294)      |
+|    proven_d_2_pos_son             | 0.618 +/- 0.49 (3800)      |
+|    proven_d_2_pos_uncle           | 0.692 +/- 0.46 (8752)      |
+|    proven_d_2_pos_wife            | 0.255 +/- 0.44 (372)       |
+|    proven_d_4_pos                 | 0.552 +/- 0.50 (1022)      |
+|    proven_d_4_pos_aunt            | 0.533 +/- 0.50 (212)       |
+|    proven_d_4_pos_brother         | 0.609 +/- 0.49 (133)       |
+|    proven_d_4_pos_daughter        | 0.647 +/- 0.48 (17)        |
+|    proven_d_4_pos_father          | 0.672 +/- 0.47 (67)        |
+|    proven_d_4_pos_husband         | 0.167 +/- 0.37 (6)         |
+|    proven_d_4_pos_mother          | 0.656 +/- 0.48 (151)       |
+|    proven_d_4_pos_nephew          | 0.355 +/- 0.48 (93)        |
+|    proven_d_4_pos_niece           | 0.566 +/- 0.50 (76)        |
+|    proven_d_4_pos_sister          | 0.734 +/- 0.44 (79)        |
+|    proven_d_4_pos_son             | 0.344 +/- 0.47 (96)        |
+|    proven_d_4_pos_uncle           | 0.511 +/- 0.50 (92)        |
+|    proven_d_6_pos                 | 0.500 +/- 0.50 (16)        |
+|    proven_d_6_pos_aunt            | 0.333 +/- 0.47 (3)         |
+|    proven_d_6_pos_daughter        | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_nephew          | 0.625 +/- 0.48 (8)         |
+|    proven_d_unknown_neg           | 0.333 +/- 0.47 (58323)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (56)        |
+|    proven_d_unknown_neg_aunt      | 0.530 +/- 0.50 (7756)      |
+|    proven_d_unknown_neg_brother   | 0.081 +/- 0.27 (3437)      |
+|    proven_d_unknown_neg_daughter  | 0.479 +/- 0.50 (2929)      |
+|    proven_d_unknown_neg_father    | 0.473 +/- 0.50 (3413)      |
+|    proven_d_unknown_neg_husband   | 0.096 +/- 0.29 (2576)      |
+|    proven_d_unknown_neg_mother    | 0.537 +/- 0.50 (2964)      |
+|    proven_d_unknown_neg_nephew    | 0.130 +/- 0.34 (9212)      |
+|    proven_d_unknown_neg_niece     | 0.482 +/- 0.50 (7197)      |
+|    proven_d_unknown_neg_sister    | 0.370 +/- 0.48 (3246)      |
+|    proven_d_unknown_neg_son       | 0.081 +/- 0.27 (4014)      |
+|    proven_d_unknown_neg_uncle     | 0.409 +/- 0.49 (8948)      |
+|    proven_d_unknown_neg_wife      | 0.123 +/- 0.33 (2575)      |
+|    proven_neg                     | 0.333 +/- 0.47 (58323)     |
+|    proven_pos                     | 0.719 +/- 0.45 (58403)     |
+|    reward                         | 0.423 +/- 0.95 (116726)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (4249)      |
+|    reward_d_2_pos                 | 0.400 +/- 0.92 (53116)     |
+|    reward_d_4_pos                 | 0.104 +/- 0.99 (1022)      |
+|    reward_d_6_pos                 | 0.000 +/- 1.00 (16)        |
+|    reward_d_unknown_neg           | 0.407 +/- 1.00 (58323)     |
+|    reward_neg                     | 0.407 +/- 1.00 (58323)     |
+|    reward_pos                     | 0.438 +/- 0.90 (58403)     |
+|    success_rate                   | 0.526                      |
+|    time/elapsed                   | 440                        |
+|    time/iteration_fps             | 834                        |
+|    total_timesteps                | 557056                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.81s. Rollout FPS: 18077.68. Reward: 0.457. Timesteps: 589824
+Epoch 1/5. 
+Losses: total 0.35687, value 0.55660, policy 0.00437, entropy -1.68487, approx_kl 0.00657 clip_fraction 0.07626. 
+Epoch 2/5. 
+Losses: total 0.36268, value 0.55323, policy 0.00360, entropy -1.68489, approx_kl 0.00668 clip_fraction 0.07726. 
+Epoch 3/5. 
+Losses: total 0.32957, value 0.55089, policy 0.00312, entropy -1.68357, approx_kl 0.00674 clip_fraction 0.07860. 
+Epoch 4/5. 
+Losses: total 0.32349, value 0.54952, policy 0.00259, entropy -1.68339, approx_kl 0.00679 clip_fraction 0.07944. 
+Epoch 5/5. 
+Losses: total 0.37534, value 0.54781, policy 0.00217, entropy -1.68353, approx_kl 0.00681 clip_fraction 0.07961. 
+[PPO] Training completed in 12.75s
+[Metrics] Reward (train): current=0.424, best=0.424 (iter 18)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.773                      |
+|    ep_rew_mean                    | 0.424                      |
+|    explained_variance             | 0.012                      |
+|    len                            | 4.773 +/- 3.28 (123500)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (4479)      |
+|    len_d_2_pos                    | 4.199 +/- 3.34 (56220)     |
+|    len_d_4_pos                    | 5.821 +/- 3.52 (1069)      |
+|    len_d_6_pos                    | 8.647 +/- 3.34 (17)        |
+|    len_d_unknown_neg              | 5.550 +/- 3.02 (61715)     |
+|    len_neg                        | 5.550 +/- 3.02 (61715)     |
+|    len_pos                        | 3.996 +/- 3.34 (61785)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (4479)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (2233)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (2246)      |
+|    proven_d_2_pos                 | 0.700 +/- 0.46 (56220)     |
+|    proven_d_2_pos_aunt            | 0.722 +/- 0.45 (8134)      |
+|    proven_d_2_pos_brother         | 0.739 +/- 0.44 (3456)      |
+|    proven_d_2_pos_daughter        | 0.772 +/- 0.42 (3132)      |
+|    proven_d_2_pos_father          | 0.775 +/- 0.42 (3462)      |
+|    proven_d_2_pos_husband         | 0.217 +/- 0.41 (374)       |
+|    proven_d_2_pos_mother          | 0.797 +/- 0.40 (2981)      |
+|    proven_d_2_pos_nephew          | 0.650 +/- 0.48 (9816)      |
+|    proven_d_2_pos_niece           | 0.678 +/- 0.47 (7646)      |
+|    proven_d_2_pos_sister          | 0.802 +/- 0.40 (3489)      |
+|    proven_d_2_pos_son             | 0.617 +/- 0.49 (4046)      |
+|    proven_d_2_pos_uncle           | 0.689 +/- 0.46 (9294)      |
+|    proven_d_2_pos_wife            | 0.246 +/- 0.43 (390)       |
+|    proven_d_4_pos                 | 0.554 +/- 0.50 (1069)      |
+|    proven_d_4_pos_aunt            | 0.525 +/- 0.50 (221)       |
+|    proven_d_4_pos_brother         | 0.616 +/- 0.49 (138)       |
+|    proven_d_4_pos_daughter        | 0.632 +/- 0.48 (19)        |
+|    proven_d_4_pos_father          | 0.690 +/- 0.46 (71)        |
+|    proven_d_4_pos_husband         | 0.167 +/- 0.37 (6)         |
+|    proven_d_4_pos_mother          | 0.665 +/- 0.47 (161)       |
+|    proven_d_4_pos_nephew          | 0.365 +/- 0.48 (96)        |
+|    proven_d_4_pos_niece           | 0.554 +/- 0.50 (83)        |
+|    proven_d_4_pos_sister          | 0.734 +/- 0.44 (79)        |
+|    proven_d_4_pos_son             | 0.356 +/- 0.48 (101)       |
+|    proven_d_4_pos_uncle           | 0.500 +/- 0.50 (94)        |
+|    proven_d_6_pos                 | 0.529 +/- 0.50 (17)        |
+|    proven_d_6_pos_aunt            | 0.500 +/- 0.50 (4)         |
+|    proven_d_6_pos_daughter        | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_nephew          | 0.625 +/- 0.48 (8)         |
+|    proven_d_unknown_neg           | 0.331 +/- 0.47 (61715)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (61)        |
+|    proven_d_unknown_neg_aunt      | 0.526 +/- 0.50 (8217)      |
+|    proven_d_unknown_neg_brother   | 0.081 +/- 0.27 (3614)      |
+|    proven_d_unknown_neg_daughter  | 0.475 +/- 0.50 (3075)      |
+|    proven_d_unknown_neg_father    | 0.474 +/- 0.50 (3596)      |
+|    proven_d_unknown_neg_husband   | 0.091 +/- 0.29 (2718)      |
+|    proven_d_unknown_neg_mother    | 0.536 +/- 0.50 (3145)      |
+|    proven_d_unknown_neg_nephew    | 0.130 +/- 0.34 (9782)      |
+|    proven_d_unknown_neg_niece     | 0.482 +/- 0.50 (7639)      |
+|    proven_d_unknown_neg_sister    | 0.368 +/- 0.48 (3466)      |
+|    proven_d_unknown_neg_son       | 0.081 +/- 0.27 (4233)      |
+|    proven_d_unknown_neg_uncle     | 0.404 +/- 0.49 (9444)      |
+|    proven_d_unknown_neg_wife      | 0.118 +/- 0.32 (2725)      |
+|    proven_neg                     | 0.331 +/- 0.47 (61715)     |
+|    proven_pos                     | 0.719 +/- 0.45 (61785)     |
+|    reward                         | 0.424 +/- 0.95 (123500)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (4479)      |
+|    reward_d_2_pos                 | 0.399 +/- 0.92 (56220)     |
+|    reward_d_4_pos                 | 0.108 +/- 0.99 (1069)      |
+|    reward_d_6_pos                 | 0.059 +/- 1.00 (17)        |
+|    reward_d_unknown_neg           | 0.411 +/- 1.00 (61715)     |
+|    reward_neg                     | 0.411 +/- 1.00 (61715)     |
+|    reward_pos                     | 0.438 +/- 0.90 (61785)     |
+|    success_rate                   | 0.525                      |
+|    time/elapsed                   | 454                        |
+|    time/iteration_fps             | 2204                       |
+|    total_timesteps                | 589824                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.83s. Rollout FPS: 17929.32. Reward: 0.468. Timesteps: 622592
+Epoch 1/5. 
+Losses: total 0.41622, value 0.55725, policy 0.00442, entropy -1.66910, approx_kl 0.00653 clip_fraction 0.07541. 
+Epoch 2/5. 
+Losses: total 0.36444, value 0.55341, policy 0.00356, entropy -1.66885, approx_kl 0.00653 clip_fraction 0.07635. 
+Epoch 3/5. 
+Losses: total 0.38168, value 0.55246, policy 0.00300, entropy -1.66836, approx_kl 0.00658 clip_fraction 0.07748. 
+Epoch 4/5. 
+Losses: total 0.35861, value 0.55122, policy 0.00258, entropy -1.66826, approx_kl 0.00663 clip_fraction 0.07790. 
+Epoch 5/5. 
+Losses: total 0.39833, value 0.54997, policy 0.00203, entropy -1.66799, approx_kl 0.00665 clip_fraction 0.07848. 
+[PPO] Training completed in 12.80s
+[Metrics] Reward (train): current=0.427, best=0.427 (iter 19)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.775                      |
+|    ep_rew_mean                    | 0.427                      |
+|    explained_variance             | 0.026                      |
+|    len                            | 4.775 +/- 3.28 (130301)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (4734)      |
+|    len_d_2_pos                    | 4.199 +/- 3.34 (59295)     |
+|    len_d_4_pos                    | 5.805 +/- 3.51 (1138)      |
+|    len_d_6_pos                    | 8.500 +/- 3.30 (18)        |
+|    len_d_unknown_neg              | 5.554 +/- 3.03 (65116)     |
+|    len_neg                        | 5.554 +/- 3.03 (65116)     |
+|    len_pos                        | 3.996 +/- 3.34 (65185)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (4734)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (2355)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (2379)      |
+|    proven_d_2_pos                 | 0.699 +/- 0.46 (59295)     |
+|    proven_d_2_pos_aunt            | 0.721 +/- 0.45 (8583)      |
+|    proven_d_2_pos_brother         | 0.741 +/- 0.44 (3641)      |
+|    proven_d_2_pos_daughter        | 0.770 +/- 0.42 (3288)      |
+|    proven_d_2_pos_father          | 0.773 +/- 0.42 (3659)      |
+|    proven_d_2_pos_husband         | 0.206 +/- 0.40 (393)       |
+|    proven_d_2_pos_mother          | 0.798 +/- 0.40 (3171)      |
+|    proven_d_2_pos_nephew          | 0.653 +/- 0.48 (10359)     |
+|    proven_d_2_pos_niece           | 0.678 +/- 0.47 (8041)      |
+|    proven_d_2_pos_sister          | 0.801 +/- 0.40 (3683)      |
+|    proven_d_2_pos_son             | 0.617 +/- 0.49 (4254)      |
+|    proven_d_2_pos_uncle           | 0.686 +/- 0.46 (9814)      |
+|    proven_d_2_pos_wife            | 0.237 +/- 0.43 (409)       |
+|    proven_d_4_pos                 | 0.548 +/- 0.50 (1138)      |
+|    proven_d_4_pos_aunt            | 0.521 +/- 0.50 (234)       |
+|    proven_d_4_pos_brother         | 0.622 +/- 0.48 (143)       |
+|    proven_d_4_pos_daughter        | 0.632 +/- 0.48 (19)        |
+|    proven_d_4_pos_father          | 0.688 +/- 0.46 (77)        |
+|    proven_d_4_pos_husband         | 0.167 +/- 0.37 (6)         |
+|    proven_d_4_pos_mother          | 0.651 +/- 0.48 (175)       |
+|    proven_d_4_pos_nephew          | 0.356 +/- 0.48 (101)       |
+|    proven_d_4_pos_niece           | 0.560 +/- 0.50 (91)        |
+|    proven_d_4_pos_sister          | 0.726 +/- 0.45 (84)        |
+|    proven_d_4_pos_son             | 0.343 +/- 0.47 (105)       |
+|    proven_d_4_pos_uncle           | 0.476 +/- 0.50 (103)       |
+|    proven_d_6_pos                 | 0.500 +/- 0.50 (18)        |
+|    proven_d_6_pos_aunt            | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_daughter        | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_nephew          | 0.625 +/- 0.48 (8)         |
+|    proven_d_unknown_neg           | 0.329 +/- 0.47 (65116)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (66)        |
+|    proven_d_unknown_neg_aunt      | 0.522 +/- 0.50 (8664)      |
+|    proven_d_unknown_neg_brother   | 0.083 +/- 0.28 (3827)      |
+|    proven_d_unknown_neg_daughter  | 0.473 +/- 0.50 (3235)      |
+|    proven_d_unknown_neg_father    | 0.473 +/- 0.50 (3753)      |
+|    proven_d_unknown_neg_husband   | 0.087 +/- 0.28 (2886)      |
+|    proven_d_unknown_neg_mother    | 0.531 +/- 0.50 (3327)      |
+|    proven_d_unknown_neg_nephew    | 0.131 +/- 0.34 (10337)     |
+|    proven_d_unknown_neg_niece     | 0.480 +/- 0.50 (8045)      |
+|    proven_d_unknown_neg_sister    | 0.373 +/- 0.48 (3687)      |
+|    proven_d_unknown_neg_son       | 0.082 +/- 0.27 (4459)      |
+|    proven_d_unknown_neg_uncle     | 0.397 +/- 0.49 (9957)      |
+|    proven_d_unknown_neg_wife      | 0.112 +/- 0.32 (2873)      |
+|    proven_neg                     | 0.329 +/- 0.47 (65116)     |
+|    proven_pos                     | 0.719 +/- 0.45 (65185)     |
+|    reward                         | 0.427 +/- 0.95 (130301)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (4734)      |
+|    reward_d_2_pos                 | 0.399 +/- 0.92 (59295)     |
+|    reward_d_4_pos                 | 0.097 +/- 1.00 (1138)      |
+|    reward_d_6_pos                 | 0.000 +/- 1.00 (18)        |
+|    reward_d_unknown_neg           | 0.416 +/- 1.00 (65116)     |
+|    reward_neg                     | 0.416 +/- 1.00 (65116)     |
+|    reward_pos                     | 0.437 +/- 0.90 (65185)     |
+|    success_rate                   | 0.524                      |
+|    time/elapsed                   | 469                        |
+|    time/iteration_fps             | 2192                       |
+|    total_timesteps                | 622592                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.79s. Rollout FPS: 18259.04. Reward: 0.466. Timesteps: 655360
+Epoch 1/5. 
+Losses: total 0.34576, value 0.55203, policy 0.00545, entropy -1.66132, approx_kl 0.00690 clip_fraction 0.08026. 
+Epoch 2/5. 
+Losses: total 0.35017, value 0.54926, policy 0.00467, entropy -1.65907, approx_kl 0.00686 clip_fraction 0.08017. 
+Epoch 3/5. 
+Losses: total 0.39681, value 0.54780, policy 0.00405, entropy -1.65932, approx_kl 0.00699 clip_fraction 0.08171. 
+Epoch 4/5. 
+Losses: total 0.33000, value 0.54698, policy 0.00343, entropy -1.65961, approx_kl 0.00698 clip_fraction 0.08192. 
+Epoch 5/5. 
+Losses: total 0.34294, value 0.54597, policy 0.00311, entropy -1.66025, approx_kl 0.00701 clip_fraction 0.08207. 
+[PPO] Training completed in 12.77s
+[Metrics] Reward (train): current=0.429, best=0.429 (iter 20)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.777                      |
+|    ep_rew_mean                    | 0.429                      |
+|    explained_variance             | 0.027                      |
+|    len                            | 4.777 +/- 3.28 (137102)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (5004)      |
+|    len_d_2_pos                    | 4.202 +/- 3.35 (62386)     |
+|    len_d_4_pos                    | 5.808 +/- 3.53 (1180)      |
+|    len_d_6_pos                    | 8.500 +/- 3.30 (18)        |
+|    len_d_unknown_neg              | 5.558 +/- 3.02 (68514)     |
+|    len_neg                        | 5.558 +/- 3.02 (68514)     |
+|    len_pos                        | 3.997 +/- 3.34 (68588)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (5004)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (2489)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (2515)      |
+|    proven_d_2_pos                 | 0.699 +/- 0.46 (62386)     |
+|    proven_d_2_pos_aunt            | 0.720 +/- 0.45 (9039)      |
+|    proven_d_2_pos_brother         | 0.743 +/- 0.44 (3832)      |
+|    proven_d_2_pos_daughter        | 0.767 +/- 0.42 (3435)      |
+|    proven_d_2_pos_father          | 0.772 +/- 0.42 (3862)      |
+|    proven_d_2_pos_husband         | 0.200 +/- 0.40 (414)       |
+|    proven_d_2_pos_mother          | 0.796 +/- 0.40 (3342)      |
+|    proven_d_2_pos_nephew          | 0.654 +/- 0.48 (10890)     |
+|    proven_d_2_pos_niece           | 0.678 +/- 0.47 (8462)      |
+|    proven_d_2_pos_sister          | 0.801 +/- 0.40 (3865)      |
+|    proven_d_2_pos_son             | 0.619 +/- 0.49 (4468)      |
+|    proven_d_2_pos_uncle           | 0.684 +/- 0.46 (10353)     |
+|    proven_d_2_pos_wife            | 0.233 +/- 0.42 (424)       |
+|    proven_d_4_pos                 | 0.549 +/- 0.50 (1180)      |
+|    proven_d_4_pos_aunt            | 0.521 +/- 0.50 (240)       |
+|    proven_d_4_pos_brother         | 0.624 +/- 0.48 (149)       |
+|    proven_d_4_pos_daughter        | 0.632 +/- 0.48 (19)        |
+|    proven_d_4_pos_father          | 0.683 +/- 0.47 (82)        |
+|    proven_d_4_pos_husband         | 0.143 +/- 0.35 (7)         |
+|    proven_d_4_pos_mother          | 0.650 +/- 0.48 (180)       |
+|    proven_d_4_pos_nephew          | 0.364 +/- 0.48 (107)       |
+|    proven_d_4_pos_niece           | 0.559 +/- 0.50 (93)        |
+|    proven_d_4_pos_sister          | 0.736 +/- 0.44 (87)        |
+|    proven_d_4_pos_son             | 0.355 +/- 0.48 (110)       |
+|    proven_d_4_pos_uncle           | 0.472 +/- 0.50 (106)       |
+|    proven_d_6_pos                 | 0.500 +/- 0.50 (18)        |
+|    proven_d_6_pos_aunt            | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_daughter        | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_nephew          | 0.625 +/- 0.48 (8)         |
+|    proven_d_unknown_neg           | 0.327 +/- 0.47 (68514)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (70)        |
+|    proven_d_unknown_neg_aunt      | 0.518 +/- 0.50 (9134)      |
+|    proven_d_unknown_neg_brother   | 0.082 +/- 0.27 (4017)      |
+|    proven_d_unknown_neg_daughter  | 0.473 +/- 0.50 (3428)      |
+|    proven_d_unknown_neg_father    | 0.468 +/- 0.50 (3965)      |
+|    proven_d_unknown_neg_husband   | 0.082 +/- 0.27 (3034)      |
+|    proven_d_unknown_neg_mother    | 0.526 +/- 0.50 (3524)      |
+|    proven_d_unknown_neg_nephew    | 0.129 +/- 0.34 (10831)     |
+|    proven_d_unknown_neg_niece     | 0.481 +/- 0.50 (8439)      |
+|    proven_d_unknown_neg_sister    | 0.374 +/- 0.48 (3875)      |
+|    proven_d_unknown_neg_son       | 0.085 +/- 0.28 (4704)      |
+|    proven_d_unknown_neg_uncle     | 0.392 +/- 0.49 (10478)     |
+|    proven_d_unknown_neg_wife      | 0.107 +/- 0.31 (3015)      |
+|    proven_neg                     | 0.327 +/- 0.47 (68514)     |
+|    proven_pos                     | 0.718 +/- 0.45 (68588)     |
+|    reward                         | 0.429 +/- 0.95 (137102)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (5004)      |
+|    reward_d_2_pos                 | 0.398 +/- 0.92 (62386)     |
+|    reward_d_4_pos                 | 0.098 +/- 1.00 (1180)      |
+|    reward_d_6_pos                 | 0.000 +/- 1.00 (18)        |
+|    reward_d_unknown_neg           | 0.421 +/- 1.00 (68514)     |
+|    reward_neg                     | 0.421 +/- 1.00 (68514)     |
+|    reward_pos                     | 0.437 +/- 0.90 (68588)     |
+|    success_rate                   | 0.523                      |
+|    time/elapsed                   | 484                        |
+|    time/iteration_fps             | 2198                       |
+|    total_timesteps                | 655360                     |
+--------------------------------------------------------------------
+
+[Eval] Took 24.42 seconds
+
+[Ranking] MRR: current=0.635, best=0.635 (iter 20)
+--------------------------------------------------------------------
+| eval/                              |                            |
+|    Hits@1                         | 0.623                      |
+|    Hits@10                        | 0.648                      |
+|    Hits@3                         | 0.630                      |
+|    MRR                            | 0.635                      |
+|    len_d_-1_pos                   | 7.900                      |
+|    len_d_2_pos                    | 4.503                      |
+|    len_d_4_pos                    | 9.857                      |
+|    len_d_6_pos                    | 10.000                     |
+|    len_neg                        | 8.351                      |
+|    len_pos                        | 4.887                      |
+|    mrr_mean                       | 0.635                      |
+|    proven_d_-1_pos                | 0.050                      |
+|    proven_d_2_pos                 | 0.728                      |
+|    proven_d_4_pos                 | 0.214                      |
+|    proven_d_6_pos                 | 0.000                      |
+|    proven_neg                     | 0.093                      |
+|    proven_pos                     | 0.673                      |
+|    reward_d_-1_pos                | 0.050                      |
+|    reward_d_2_pos                 | 0.728                      |
+|    reward_d_4_pos                 | 0.214                      |
+|    reward_d_6_pos                 | 0.000                      |
+|    reward_label_neg               | 0.093                      |
+|    reward_label_pos               | 0.673                      |
+--------------------------------------------------------------------
+
+[Checkpoint] New best eval model saved to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/best_model_eval_2026_01_25_16_59_46.pt (mrr_mean=0.6348)
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.90s. Rollout FPS: 17284.36. Reward: 0.472. Timesteps: 688128
+Epoch 1/5. 
+Losses: total 0.39933, value 0.53974, policy 0.00442, entropy -1.65194, approx_kl 0.00665 clip_fraction 0.07669. 
+Epoch 2/5. 
+Losses: total 0.38843, value 0.53811, policy 0.00387, entropy -1.65367, approx_kl 0.00675 clip_fraction 0.07889. 
+Epoch 3/5. 
+Losses: total 0.38942, value 0.53614, policy 0.00313, entropy -1.65271, approx_kl 0.00676 clip_fraction 0.07940. 
+Epoch 4/5. 
+Losses: total 0.38136, value 0.53499, policy 0.00258, entropy -1.65257, approx_kl 0.00682 clip_fraction 0.08025. 
+Epoch 5/5. 
+Losses: total 0.38806, value 0.53392, policy 0.00213, entropy -1.65252, approx_kl 0.00683 clip_fraction 0.08061. 
+[PPO] Training completed in 12.87s
+[Metrics] Reward (train): current=0.431, best=0.431 (iter 21)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.780                      |
+|    ep_rew_mean                    | 0.431                      |
+|    explained_variance             | 0.035                      |
+|    len                            | 4.780 +/- 3.29 (143862)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (5252)      |
+|    len_d_2_pos                    | 4.201 +/- 3.35 (65455)     |
+|    len_d_4_pos                    | 5.867 +/- 3.56 (1242)      |
+|    len_d_6_pos                    | 8.684 +/- 3.31 (19)        |
+|    len_d_unknown_neg              | 5.564 +/- 3.02 (71894)     |
+|    len_neg                        | 5.564 +/- 3.02 (71894)     |
+|    len_pos                        | 3.997 +/- 3.35 (71968)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (5252)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (2627)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (2625)      |
+|    proven_d_2_pos                 | 0.699 +/- 0.46 (65455)     |
+|    proven_d_2_pos_aunt            | 0.720 +/- 0.45 (9472)      |
+|    proven_d_2_pos_brother         | 0.745 +/- 0.44 (4004)      |
+|    proven_d_2_pos_daughter        | 0.767 +/- 0.42 (3598)      |
+|    proven_d_2_pos_father          | 0.772 +/- 0.42 (4041)      |
+|    proven_d_2_pos_husband         | 0.193 +/- 0.39 (435)       |
+|    proven_d_2_pos_mother          | 0.791 +/- 0.41 (3510)      |
+|    proven_d_2_pos_nephew          | 0.658 +/- 0.47 (11408)     |
+|    proven_d_2_pos_niece           | 0.679 +/- 0.47 (8871)      |
+|    proven_d_2_pos_sister          | 0.802 +/- 0.40 (4046)      |
+|    proven_d_2_pos_son             | 0.621 +/- 0.49 (4703)      |
+|    proven_d_2_pos_uncle           | 0.682 +/- 0.47 (10923)     |
+|    proven_d_2_pos_wife            | 0.223 +/- 0.42 (444)       |
+|    proven_d_4_pos                 | 0.543 +/- 0.50 (1242)      |
+|    proven_d_4_pos_aunt            | 0.526 +/- 0.50 (253)       |
+|    proven_d_4_pos_brother         | 0.609 +/- 0.49 (156)       |
+|    proven_d_4_pos_daughter        | 0.619 +/- 0.49 (21)        |
+|    proven_d_4_pos_father          | 0.674 +/- 0.47 (86)        |
+|    proven_d_4_pos_husband         | 0.143 +/- 0.35 (7)         |
+|    proven_d_4_pos_mother          | 0.630 +/- 0.48 (189)       |
+|    proven_d_4_pos_nephew          | 0.365 +/- 0.48 (115)       |
+|    proven_d_4_pos_niece           | 0.559 +/- 0.50 (93)        |
+|    proven_d_4_pos_sister          | 0.742 +/- 0.44 (93)        |
+|    proven_d_4_pos_son             | 0.342 +/- 0.47 (117)       |
+|    proven_d_4_pos_uncle           | 0.473 +/- 0.50 (112)       |
+|    proven_d_6_pos                 | 0.474 +/- 0.50 (19)        |
+|    proven_d_6_pos_aunt            | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_daughter        | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_nephew          | 0.556 +/- 0.50 (9)         |
+|    proven_d_unknown_neg           | 0.325 +/- 0.47 (71894)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (72)        |
+|    proven_d_unknown_neg_aunt      | 0.513 +/- 0.50 (9570)      |
+|    proven_d_unknown_neg_brother   | 0.082 +/- 0.27 (4204)      |
+|    proven_d_unknown_neg_daughter  | 0.469 +/- 0.50 (3626)      |
+|    proven_d_unknown_neg_father    | 0.472 +/- 0.50 (4154)      |
+|    proven_d_unknown_neg_husband   | 0.079 +/- 0.27 (3168)      |
+|    proven_d_unknown_neg_mother    | 0.525 +/- 0.50 (3693)      |
+|    proven_d_unknown_neg_nephew    | 0.128 +/- 0.33 (11357)     |
+|    proven_d_unknown_neg_niece     | 0.481 +/- 0.50 (8837)      |
+|    proven_d_unknown_neg_sister    | 0.375 +/- 0.48 (4093)      |
+|    proven_d_unknown_neg_son       | 0.085 +/- 0.28 (4930)      |
+|    proven_d_unknown_neg_uncle     | 0.387 +/- 0.49 (11037)     |
+|    proven_d_unknown_neg_wife      | 0.103 +/- 0.30 (3153)      |
+|    proven_neg                     | 0.325 +/- 0.47 (71894)     |
+|    proven_pos                     | 0.719 +/- 0.45 (71968)     |
+|    reward                         | 0.431 +/- 0.95 (143862)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (5252)      |
+|    reward_d_2_pos                 | 0.399 +/- 0.92 (65455)     |
+|    reward_d_4_pos                 | 0.087 +/- 1.00 (1242)      |
+|    reward_d_6_pos                 | -0.053 +/- 1.00 (19)       |
+|    reward_d_unknown_neg           | 0.424 +/- 1.00 (71894)     |
+|    reward_neg                     | 0.424 +/- 1.00 (71894)     |
+|    reward_pos                     | 0.437 +/- 0.90 (71968)     |
+|    success_rate                   | 0.522                      |
+|    time/elapsed                   | 524                        |
+|    time/iteration_fps             | 827                        |
+|    total_timesteps                | 688128                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.81s. Rollout FPS: 18078.57. Reward: 0.483. Timesteps: 720896
+Epoch 1/5. 
+Losses: total 0.35534, value 0.54167, policy 0.00512, entropy -1.65561, approx_kl 0.00722 clip_fraction 0.08493. 
+Epoch 2/5. 
+Losses: total 0.37264, value 0.53921, policy 0.00434, entropy -1.65329, approx_kl 0.00713 clip_fraction 0.08447. 
+Epoch 3/5. 
+Losses: total 0.34953, value 0.53728, policy 0.00377, entropy -1.65368, approx_kl 0.00722 clip_fraction 0.08518. 
+Epoch 4/5. 
+Losses: total 0.40369, value 0.53614, policy 0.00350, entropy -1.65384, approx_kl 0.00730 clip_fraction 0.08556. 
+Epoch 5/5. 
+Losses: total 0.34758, value 0.53494, policy 0.00261, entropy -1.65315, approx_kl 0.00731 clip_fraction 0.08608. 
+[PPO] Training completed in 12.83s
+[Metrics] Reward (train): current=0.433, best=0.433 (iter 22)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.784                      |
+|    ep_rew_mean                    | 0.433                      |
+|    explained_variance             | 0.028                      |
+|    len                            | 4.784 +/- 3.29 (150579)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (5502)      |
+|    len_d_2_pos                    | 4.205 +/- 3.36 (68517)     |
+|    len_d_4_pos                    | 5.877 +/- 3.56 (1289)      |
+|    len_d_6_pos                    | 8.684 +/- 3.31 (19)        |
+|    len_d_unknown_neg              | 5.569 +/- 3.03 (75252)     |
+|    len_neg                        | 5.569 +/- 3.03 (75252)     |
+|    len_pos                        | 4.000 +/- 3.35 (75327)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (5502)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (2752)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (2750)      |
+|    proven_d_2_pos                 | 0.699 +/- 0.46 (68517)     |
+|    proven_d_2_pos_aunt            | 0.720 +/- 0.45 (9918)      |
+|    proven_d_2_pos_brother         | 0.745 +/- 0.44 (4210)      |
+|    proven_d_2_pos_daughter        | 0.767 +/- 0.42 (3786)      |
+|    proven_d_2_pos_father          | 0.771 +/- 0.42 (4227)      |
+|    proven_d_2_pos_husband         | 0.187 +/- 0.39 (454)       |
+|    proven_d_2_pos_mother          | 0.791 +/- 0.41 (3678)      |
+|    proven_d_2_pos_nephew          | 0.661 +/- 0.47 (11932)     |
+|    proven_d_2_pos_niece           | 0.681 +/- 0.47 (9251)      |
+|    proven_d_2_pos_sister          | 0.799 +/- 0.40 (4241)      |
+|    proven_d_2_pos_son             | 0.621 +/- 0.49 (4930)      |
+|    proven_d_2_pos_uncle           | 0.679 +/- 0.47 (11424)     |
+|    proven_d_2_pos_wife            | 0.212 +/- 0.41 (466)       |
+|    proven_d_4_pos                 | 0.541 +/- 0.50 (1289)      |
+|    proven_d_4_pos_aunt            | 0.521 +/- 0.50 (261)       |
+|    proven_d_4_pos_brother         | 0.602 +/- 0.49 (161)       |
+|    proven_d_4_pos_daughter        | 0.619 +/- 0.49 (21)        |
+|    proven_d_4_pos_father          | 0.678 +/- 0.47 (90)        |
+|    proven_d_4_pos_husband         | 0.125 +/- 0.33 (8)         |
+|    proven_d_4_pos_mother          | 0.632 +/- 0.48 (193)       |
+|    proven_d_4_pos_nephew          | 0.367 +/- 0.48 (120)       |
+|    proven_d_4_pos_niece           | 0.553 +/- 0.50 (94)        |
+|    proven_d_4_pos_sister          | 0.742 +/- 0.44 (97)        |
+|    proven_d_4_pos_son             | 0.339 +/- 0.47 (124)       |
+|    proven_d_4_pos_uncle           | 0.475 +/- 0.50 (120)       |
+|    proven_d_6_pos                 | 0.474 +/- 0.50 (19)        |
+|    proven_d_6_pos_aunt            | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_daughter        | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_nephew          | 0.556 +/- 0.50 (9)         |
+|    proven_d_unknown_neg           | 0.323 +/- 0.47 (75252)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (79)        |
+|    proven_d_unknown_neg_aunt      | 0.508 +/- 0.50 (10016)     |
+|    proven_d_unknown_neg_brother   | 0.083 +/- 0.28 (4385)      |
+|    proven_d_unknown_neg_daughter  | 0.471 +/- 0.50 (3801)      |
+|    proven_d_unknown_neg_father    | 0.471 +/- 0.50 (4350)      |
+|    proven_d_unknown_neg_husband   | 0.076 +/- 0.26 (3332)      |
+|    proven_d_unknown_neg_mother    | 0.524 +/- 0.50 (3880)      |
+|    proven_d_unknown_neg_nephew    | 0.127 +/- 0.33 (11871)     |
+|    proven_d_unknown_neg_niece     | 0.479 +/- 0.50 (9264)      |
+|    proven_d_unknown_neg_sister    | 0.371 +/- 0.48 (4288)      |
+|    proven_d_unknown_neg_son       | 0.086 +/- 0.28 (5166)      |
+|    proven_d_unknown_neg_uncle     | 0.383 +/- 0.49 (11547)     |
+|    proven_d_unknown_neg_wife      | 0.099 +/- 0.30 (3273)      |
+|    proven_neg                     | 0.323 +/- 0.47 (75252)     |
+|    proven_pos                     | 0.719 +/- 0.45 (75327)     |
+|    reward                         | 0.433 +/- 0.95 (150579)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (5502)      |
+|    reward_d_2_pos                 | 0.399 +/- 0.92 (68517)     |
+|    reward_d_4_pos                 | 0.081 +/- 1.00 (1289)      |
+|    reward_d_6_pos                 | -0.053 +/- 1.00 (19)       |
+|    reward_d_unknown_neg           | 0.429 +/- 0.99 (75252)     |
+|    reward_neg                     | 0.429 +/- 0.99 (75252)     |
+|    reward_pos                     | 0.437 +/- 0.90 (75327)     |
+|    success_rate                   | 0.521                      |
+|    time/elapsed                   | 539                        |
+|    time/iteration_fps             | 2182                       |
+|    total_timesteps                | 720896                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.80s. Rollout FPS: 18174.24. Reward: 0.504. Timesteps: 753664
+Epoch 1/5. 
+Losses: total 0.40235, value 0.53932, policy 0.00450, entropy -1.64903, approx_kl 0.00758 clip_fraction 0.09079. 
+Epoch 2/5. 
+Losses: total 0.36167, value 0.53724, policy 0.00384, entropy -1.64647, approx_kl 0.00752 clip_fraction 0.09010. 
+Epoch 3/5. 
+Losses: total 0.36512, value 0.53549, policy 0.00296, entropy -1.64738, approx_kl 0.00759 clip_fraction 0.09065. 
+Epoch 4/5. 
+Losses: total 0.37077, value 0.53399, policy 0.00236, entropy -1.64617, approx_kl 0.00764 clip_fraction 0.09147. 
+Epoch 5/5. 
+Losses: total 0.35880, value 0.53258, policy 0.00173, entropy -1.64564, approx_kl 0.00764 clip_fraction 0.09175. 
+[PPO] Training completed in 12.85s
+[Metrics] Reward (train): current=0.436, best=0.436 (iter 23)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.788                      |
+|    ep_rew_mean                    | 0.436                      |
+|    explained_variance             | 0.028                      |
+|    len                            | 4.788 +/- 3.29 (157315)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (5725)      |
+|    len_d_2_pos                    | 4.202 +/- 3.36 (71589)     |
+|    len_d_4_pos                    | 5.878 +/- 3.55 (1359)      |
+|    len_d_6_pos                    | 8.684 +/- 3.31 (19)        |
+|    len_d_unknown_neg              | 5.577 +/- 3.03 (78623)     |
+|    len_neg                        | 5.577 +/- 3.03 (78623)     |
+|    len_pos                        | 3.999 +/- 3.35 (78692)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (5725)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (2866)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (2859)      |
+|    proven_d_2_pos                 | 0.700 +/- 0.46 (71589)     |
+|    proven_d_2_pos_aunt            | 0.721 +/- 0.45 (10350)     |
+|    proven_d_2_pos_brother         | 0.746 +/- 0.44 (4401)      |
+|    proven_d_2_pos_daughter        | 0.769 +/- 0.42 (3955)      |
+|    proven_d_2_pos_father          | 0.770 +/- 0.42 (4405)      |
+|    proven_d_2_pos_husband         | 0.180 +/- 0.38 (473)       |
+|    proven_d_2_pos_mother          | 0.791 +/- 0.41 (3854)      |
+|    proven_d_2_pos_nephew          | 0.662 +/- 0.47 (12470)     |
+|    proven_d_2_pos_niece           | 0.682 +/- 0.47 (9685)      |
+|    proven_d_2_pos_sister          | 0.798 +/- 0.40 (4432)      |
+|    proven_d_2_pos_son             | 0.623 +/- 0.48 (5145)      |
+|    proven_d_2_pos_uncle           | 0.678 +/- 0.47 (11934)     |
+|    proven_d_2_pos_wife            | 0.210 +/- 0.41 (485)       |
+|    proven_d_4_pos                 | 0.536 +/- 0.50 (1359)      |
+|    proven_d_4_pos_aunt            | 0.502 +/- 0.50 (277)       |
+|    proven_d_4_pos_brother         | 0.595 +/- 0.49 (173)       |
+|    proven_d_4_pos_daughter        | 0.609 +/- 0.49 (23)        |
+|    proven_d_4_pos_father          | 0.667 +/- 0.47 (93)        |
+|    proven_d_4_pos_husband         | 0.125 +/- 0.33 (8)         |
+|    proven_d_4_pos_mother          | 0.623 +/- 0.48 (204)       |
+|    proven_d_4_pos_nephew          | 0.379 +/- 0.49 (124)       |
+|    proven_d_4_pos_niece           | 0.557 +/- 0.50 (97)        |
+|    proven_d_4_pos_sister          | 0.740 +/- 0.44 (104)       |
+|    proven_d_4_pos_son             | 0.346 +/- 0.48 (130)       |
+|    proven_d_4_pos_uncle           | 0.468 +/- 0.50 (126)       |
+|    proven_d_6_pos                 | 0.474 +/- 0.50 (19)        |
+|    proven_d_6_pos_aunt            | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_daughter        | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_nephew          | 0.556 +/- 0.50 (9)         |
+|    proven_d_unknown_neg           | 0.320 +/- 0.47 (78623)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (82)        |
+|    proven_d_unknown_neg_aunt      | 0.503 +/- 0.50 (10452)     |
+|    proven_d_unknown_neg_brother   | 0.083 +/- 0.28 (4582)      |
+|    proven_d_unknown_neg_daughter  | 0.471 +/- 0.50 (4001)      |
+|    proven_d_unknown_neg_father    | 0.466 +/- 0.50 (4535)      |
+|    proven_d_unknown_neg_husband   | 0.073 +/- 0.26 (3467)      |
+|    proven_d_unknown_neg_mother    | 0.519 +/- 0.50 (4056)      |
+|    proven_d_unknown_neg_nephew    | 0.127 +/- 0.33 (12385)     |
+|    proven_d_unknown_neg_niece     | 0.476 +/- 0.50 (9685)      |
+|    proven_d_unknown_neg_sister    | 0.370 +/- 0.48 (4494)      |
+|    proven_d_unknown_neg_son       | 0.085 +/- 0.28 (5397)      |
+|    proven_d_unknown_neg_uncle     | 0.378 +/- 0.48 (12077)     |
+|    proven_d_unknown_neg_wife      | 0.096 +/- 0.29 (3410)      |
+|    proven_neg                     | 0.320 +/- 0.47 (78623)     |
+|    proven_pos                     | 0.719 +/- 0.45 (78692)     |
+|    reward                         | 0.436 +/- 0.95 (157315)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (5725)      |
+|    reward_d_2_pos                 | 0.400 +/- 0.92 (71589)     |
+|    reward_d_4_pos                 | 0.071 +/- 1.00 (1359)      |
+|    reward_d_6_pos                 | -0.053 +/- 1.00 (19)       |
+|    reward_d_unknown_neg           | 0.434 +/- 0.99 (78623)     |
+|    reward_neg                     | 0.434 +/- 0.99 (78623)     |
+|    reward_pos                     | 0.438 +/- 0.90 (78692)     |
+|    success_rate                   | 0.520                      |
+|    time/elapsed                   | 554                        |
+|    time/iteration_fps             | 2178                       |
+|    total_timesteps                | 753664                     |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt
+[PPO] Rollout collected in 1.85s. Rollout FPS: 17707.63. Reward: 0.494. Timesteps: 786432
+Epoch 1/5. 
+Losses: total 0.40636, value 0.54337, policy 0.00538, entropy -1.64090, approx_kl 0.00758 clip_fraction 0.09140. 
+Epoch 2/5. 
+Losses: total 0.41623, value 0.54104, policy 0.00458, entropy -1.64050, approx_kl 0.00754 clip_fraction 0.09033. 
+Epoch 3/5. 
+Losses: total 0.37929, value 0.53929, policy 0.00360, entropy -1.63992, approx_kl 0.00752 clip_fraction 0.08893. 
+Epoch 4/5. 
+Losses: total 0.35975, value 0.53812, policy 0.00269, entropy -1.63963, approx_kl 0.00756 clip_fraction 0.08977. 
+Epoch 5/5. 
+Losses: total 0.40517, value 0.53693, policy 0.00238, entropy -1.63951, approx_kl 0.00764 clip_fraction 0.09045. 
+[PPO] Training completed in 12.78s
+[Metrics] Reward (train): current=0.438, best=0.438 (iter 24)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 4.788                      |
+|    ep_rew_mean                    | 0.438                      |
+|    explained_variance             | 0.035                      |
+|    len                            | 4.788 +/- 3.29 (164166)    |
+|    len_d_1_pos                    | 1.000 +/- 0.00 (5969)      |
+|    len_d_2_pos                    | 4.200 +/- 3.36 (74708)     |
+|    len_d_4_pos                    | 5.886 +/- 3.56 (1424)      |
+|    len_d_6_pos                    | 8.400 +/- 3.46 (20)        |
+|    len_d_unknown_neg              | 5.579 +/- 3.04 (82045)     |
+|    len_neg                        | 5.579 +/- 3.04 (82045)     |
+|    len_pos                        | 3.998 +/- 3.35 (82121)     |
+|    proven_d_1_pos                 | 1.000 +/- 0.00 (5969)      |
+|    proven_d_1_pos_husband         | 1.000 +/- 0.00 (2991)      |
+|    proven_d_1_pos_wife            | 1.000 +/- 0.00 (2978)      |
+|    proven_d_2_pos                 | 0.699 +/- 0.46 (74708)     |
+|    proven_d_2_pos_aunt            | 0.720 +/- 0.45 (10805)     |
+|    proven_d_2_pos_brother         | 0.746 +/- 0.44 (4598)      |
+|    proven_d_2_pos_daughter        | 0.768 +/- 0.42 (4116)      |
+|    proven_d_2_pos_father          | 0.768 +/- 0.42 (4596)      |
+|    proven_d_2_pos_husband         | 0.173 +/- 0.38 (496)       |
+|    proven_d_2_pos_mother          | 0.790 +/- 0.41 (4005)      |
+|    proven_d_2_pos_nephew          | 0.661 +/- 0.47 (12991)     |
+|    proven_d_2_pos_niece           | 0.685 +/- 0.46 (10104)     |
+|    proven_d_2_pos_sister          | 0.798 +/- 0.40 (4628)      |
+|    proven_d_2_pos_son             | 0.622 +/- 0.48 (5387)      |
+|    proven_d_2_pos_uncle           | 0.675 +/- 0.47 (12486)     |
+|    proven_d_2_pos_wife            | 0.206 +/- 0.40 (496)       |
+|    proven_d_4_pos                 | 0.534 +/- 0.50 (1424)      |
+|    proven_d_4_pos_aunt            | 0.500 +/- 0.50 (296)       |
+|    proven_d_4_pos_brother         | 0.606 +/- 0.49 (180)       |
+|    proven_d_4_pos_daughter        | 0.583 +/- 0.49 (24)        |
+|    proven_d_4_pos_father          | 0.670 +/- 0.47 (97)        |
+|    proven_d_4_pos_husband         | 0.111 +/- 0.31 (9)         |
+|    proven_d_4_pos_mother          | 0.627 +/- 0.48 (217)       |
+|    proven_d_4_pos_nephew          | 0.378 +/- 0.48 (127)       |
+|    proven_d_4_pos_niece           | 0.539 +/- 0.50 (102)       |
+|    proven_d_4_pos_sister          | 0.738 +/- 0.44 (107)       |
+|    proven_d_4_pos_son             | 0.341 +/- 0.47 (135)       |
+|    proven_d_4_pos_uncle           | 0.462 +/- 0.50 (130)       |
+|    proven_d_6_pos                 | 0.500 +/- 0.50 (20)        |
+|    proven_d_6_pos_aunt            | 0.400 +/- 0.49 (5)         |
+|    proven_d_6_pos_daughter        | 0.500 +/- 0.50 (6)         |
+|    proven_d_6_pos_nephew          | 0.556 +/- 0.50 (9)         |
+|    proven_d_unknown_neg           | 0.318 +/- 0.47 (82045)     |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (85)        |
+|    proven_d_unknown_neg_aunt      | 0.498 +/- 0.50 (10871)     |
+|    proven_d_unknown_neg_brother   | 0.082 +/- 0.27 (4763)      |
+|    proven_d_unknown_neg_daughter  | 0.468 +/- 0.50 (4146)      |
+|    proven_d_unknown_neg_father    | 0.465 +/- 0.50 (4753)      |
+|    proven_d_unknown_neg_husband   | 0.070 +/- 0.25 (3623)      |
+|    proven_d_unknown_neg_mother    | 0.517 +/- 0.50 (4249)      |
+|    proven_d_unknown_neg_nephew    | 0.128 +/- 0.33 (12950)     |
+|    proven_d_unknown_neg_niece     | 0.473 +/- 0.50 (10106)     |
+|    proven_d_unknown_neg_sister    | 0.363 +/- 0.48 (4709)      |
+|    proven_d_unknown_neg_son       | 0.084 +/- 0.28 (5661)      |
+|    proven_d_unknown_neg_uncle     | 0.374 +/- 0.48 (12578)     |
+|    proven_d_unknown_neg_wife      | 0.092 +/- 0.29 (3551)      |
+|    proven_neg                     | 0.318 +/- 0.47 (82045)     |
+|    proven_pos                     | 0.718 +/- 0.45 (82121)     |
+|    reward                         | 0.438 +/- 0.95 (164166)    |
+|    reward_d_1_pos                 | 1.000 +/- 0.00 (5969)      |
+|    reward_d_2_pos                 | 0.399 +/- 0.92 (74708)     |
+|    reward_d_4_pos                 | 0.069 +/- 1.00 (1424)      |
+|    reward_d_6_pos                 | 0.000 +/- 1.00 (20)        |
+|    reward_d_unknown_neg           | 0.440 +/- 0.99 (82045)     |
+|    reward_neg                     | 0.440 +/- 0.99 (82045)     |
+|    reward_pos                     | 0.437 +/- 0.90 (82121)     |
+|    success_rate                   | 0.518                      |
+|    time/elapsed                   | 569                        |
+|    time/iteration_fps             | 2178                       |
+|    total_timesteps                | 786432                     |
+--------------------------------------------------------------------
+
+[Eval] Took 24.42 seconds
+
+[Ranking] MRR: current=0.631, best=0.635 (iter 20)
+--------------------------------------------------------------------
+| eval/                              |                            |
+|    Hits@1                         | 0.620                      |
+|    Hits@10                        | 0.640                      |
+|    Hits@3                         | 0.623                      |
+|    MRR                            | 0.631                      |
+|    len_d_-1_pos                   | 7.400                      |
+|    len_d_2_pos                    | 4.448                      |
+|    len_d_4_pos                    | 9.429                      |
+|    len_d_6_pos                    | 10.000                     |
+|    len_neg                        | 8.166                      |
+|    len_pos                        | 4.797                      |
+|    mrr_mean                       | 0.631                      |
+|    proven_d_-1_pos                | 0.100                      |
+|    proven_d_2_pos                 | 0.703                      |
+|    proven_d_4_pos                 | 0.071                      |
+|    proven_d_6_pos                 | 0.000                      |
+|    proven_neg                     | 0.077                      |
+|    proven_pos                     | 0.647                      |
+|    reward_d_-1_pos                | 0.100                      |
+|    reward_d_2_pos                 | 0.703                      |
+|    reward_d_4_pos                 | 0.071                      |
+|    reward_d_6_pos                 | 0.000                      |
+|    reward_label_neg               | 0.077                      |
+|    reward_label_pos               | 0.647                      |
+--------------------------------------------------------------------
+
+[Checkpoint] Saved last train model to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/models/family-250-128-torchrl/last_model_train_2026_01_25_16_59_46.pt

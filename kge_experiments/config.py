@@ -75,7 +75,7 @@ class TrainConfig:
     state_embedding_size: int = 64 # derived
     hidden_dim: int = 256
     num_layers: int = 8
-    dropout_prob: float = 0.1
+    dropout_prob: float = 0.0  # Set to 0.0 to avoid train/eval mode issues with PPO value function learning
     use_l2_norm: bool = True
     sqrt_scale: bool = False
     temperature: float = 0.1
@@ -105,6 +105,10 @@ class TrainConfig:
     corruption_scheme: List[str] = field(default_factory=lambda: ['head', 'tail'])
     sampler_default_mode: str = "both"
     
+    # LR Warmup
+    lr_warmup: bool = True  # Enable LR warmup to prevent early KL divergence
+    lr_warmup_steps: float = 0.1  # Warmup for first 10% of training
+
     # LR Decay
     lr_decay: bool = True  # Reduce step size over training
     lr_init_value: float = 1e-4

@@ -1,0 +1,46 @@
+[I 2026-01-25 12:44:32,366] A new study created in memory with name: hyperparam_search_family_20260125_124432
+  0%|          | 0/10 [00:00<?, ?it/s]                                        0%|          | 0/10 [00:00<?, ?it/s]Best trial: 0. Best value: 0:   0%|          | 0/10 [00:00<?, ?it/s]                                                                    Best trial: 0. Best value: 0:  10%|█         | 1/10 [00:00<00:00, 391.22it/s]Best trial: 0. Best value: 0:  10%|█         | 1/10 [00:00<00:00, 350.08it/s]                                                                             Best trial: 0. Best value: 0:  20%|██        | 2/10 [00:00<00:00, 525.93it/s]Best trial: 0. Best value: 0:  20%|██        | 2/10 [00:00<00:00, 485.48it/s]                                                                             Best trial: 0. Best value: 0:  30%|███       | 3/10 [00:00<00:00, 592.64it/s]Best trial: 0. Best value: 0:  30%|███       | 3/10 [00:00<00:00, 561.11it/s]                                                                             Best trial: 0. Best value: 0:  40%|████      | 4/10 [00:00<00:00, 637.82it/s]Best trial: 0. Best value: 0:  40%|████      | 4/10 [00:00<00:00, 609.86it/s]                                                                             Best trial: 0. Best value: 0:  50%|█████     | 5/10 [00:00<00:00, 676.68it/s]Best trial: 0. Best value: 0:  50%|█████     | 5/10 [00:00<00:00, 651.43it/s]                                                                             Best trial: 0. Best value: 0:  60%|██████    | 6/10 [00:00<00:00, 699.09it/s]Best trial: 0. Best value: 0:  60%|██████    | 6/10 [00:00<00:00, 675.36it/s]                                                                             Best trial: 0. Best value: 0:  70%|███████   | 7/10 [00:00<00:00, 714.32it/s]Best trial: 0. Best value: 0:  70%|███████   | 7/10 [00:00<00:00, 694.09it/s]                                                                             Best trial: 0. Best value: 0:  80%|████████  | 8/10 [00:00<00:00, 726.65it/s]Best trial: 0. Best value: 0:  80%|████████  | 8/10 [00:00<00:00, 708.50it/s]                                                                             Best trial: 0. Best value: 0:  90%|█████████ | 9/10 [00:00<00:00, 737.38it/s]Best trial: 0. Best value: 0:  90%|█████████ | 9/10 [00:00<00:00, 720.82it/s]Best trial: 0. Best value: 0: 100%|██████████| 10/10 [00:00<00:00, 796.84it/s]
+Trial 0 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,368] Trial 0 finished with value: 0.0 and parameters: {'hidden_dim': 256, 'num_layers': 4, 'atom_embedding_size': 250, 'dropout_prob': 0.2, 'learning_rate': 5e-05, 'batch_size': 512, 'n_epochs': 5, 'target_kl': 0.2, 'clip_range': 0.3, 'gae_lambda': 0.95, 'vf_coef': 2.0, 'ent_coef_init_value': 0.1, 'ent_coef_final_value': 0.05, 'temperature': 0.1, 'lr_warmup_steps': 0.11625222843539819, 'lr_final_value': 1e-05}. Best is trial 0 with value: 0.0.
+Trial 1 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,369] Trial 1 finished with value: 0.0 and parameters: {'hidden_dim': 256, 'num_layers': 4, 'atom_embedding_size': 128, 'dropout_prob': 0.2, 'learning_rate': 5e-05, 'batch_size': 1024, 'n_epochs': 5, 'target_kl': 0.15, 'clip_range': 0.2, 'gae_lambda': 0.99, 'vf_coef': 0.5, 'ent_coef_init_value': 0.2, 'ent_coef_final_value': 0.01, 'temperature': 0.1, 'lr_warmup_steps': 0.12709671799545608, 'lr_final_value': 1e-06}. Best is trial 0 with value: 0.0.
+Trial 2 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,370] Trial 2 finished with value: 0.0 and parameters: {'hidden_dim': 256, 'num_layers': 4, 'atom_embedding_size': 128, 'dropout_prob': 0.0, 'learning_rate': 0.0001, 'batch_size': 512, 'n_epochs': 5, 'target_kl': 0.1, 'clip_range': 0.3, 'gae_lambda': 0.9, 'vf_coef': 0.5, 'ent_coef_init_value': 0.15, 'ent_coef_final_value': 0.05, 'temperature': 0.05, 'lr_warmup_steps': 0.08008783098167696, 'lr_final_value': 1e-05}. Best is trial 0 with value: 0.0.
+Trial 3 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,372] Trial 3 finished with value: 0.0 and parameters: {'hidden_dim': 128, 'num_layers': 4, 'atom_embedding_size': 250, 'dropout_prob': 0.1, 'learning_rate': 0.0002, 'batch_size': 1024, 'n_epochs': 3, 'target_kl': 0.1, 'clip_range': 0.2, 'gae_lambda': 0.99, 'vf_coef': 1.0, 'ent_coef_init_value': 0.1, 'ent_coef_final_value': 0.01, 'temperature': 0.2, 'lr_warmup_steps': 0.14004180571633304, 'lr_final_value': 1e-07}. Best is trial 0 with value: 0.0.
+Trial 4 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,373] Trial 4 finished with value: 0.0 and parameters: {'hidden_dim': 256, 'num_layers': 4, 'atom_embedding_size': 250, 'dropout_prob': 0.2, 'learning_rate': 0.0002, 'batch_size': 1024, 'n_epochs': 10, 'target_kl': 0.1, 'clip_range': 0.2, 'gae_lambda': 0.95, 'vf_coef': 0.5, 'ent_coef_init_value': 0.15, 'ent_coef_final_value': 0.01, 'temperature': 0.2, 'lr_warmup_steps': 0.14539285770025873, 'lr_final_value': 1e-07}. Best is trial 0 with value: 0.0.
+Trial 5 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,374] Trial 5 finished with value: 0.0 and parameters: {'hidden_dim': 512, 'num_layers': 4, 'atom_embedding_size': 250, 'dropout_prob': 0.2, 'learning_rate': 0.0002, 'batch_size': 256, 'n_epochs': 3, 'target_kl': 0.2, 'clip_range': 0.3, 'gae_lambda': 0.99, 'vf_coef': 2.0, 'ent_coef_init_value': 0.1, 'ent_coef_final_value': 0.01, 'temperature': 0.2, 'lr_warmup_steps': 0.053050024993904946, 'lr_final_value': 1e-06}. Best is trial 0 with value: 0.0.
+Trial 6 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,375] Trial 6 finished with value: 0.0 and parameters: {'hidden_dim': 512, 'num_layers': 6, 'atom_embedding_size': 512, 'dropout_prob': 0.2, 'learning_rate': 0.0001, 'batch_size': 256, 'n_epochs': 3, 'target_kl': 0.05, 'clip_range': 0.2, 'gae_lambda': 0.95, 'vf_coef': 1.0, 'ent_coef_init_value': 0.2, 'ent_coef_final_value': 0.01, 'temperature': 0.05, 'lr_warmup_steps': 0.05978341606510015, 'lr_final_value': 1e-07}. Best is trial 0 with value: 0.0.
+Trial 7 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,376] Trial 7 finished with value: 0.0 and parameters: {'hidden_dim': 512, 'num_layers': 4, 'atom_embedding_size': 512, 'dropout_prob': 0.0, 'learning_rate': 0.0002, 'batch_size': 1024, 'n_epochs': 10, 'target_kl': 0.1, 'clip_range': 0.2, 'gae_lambda': 0.95, 'vf_coef': 1.0, 'ent_coef_init_value': 0.1, 'ent_coef_final_value': 0.02, 'temperature': 0.05, 'lr_warmup_steps': 0.12506147516408583, 'lr_final_value': 1e-06}. Best is trial 0 with value: 0.0.
+Trial 8 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,377] Trial 8 finished with value: 0.0 and parameters: {'hidden_dim': 256, 'num_layers': 4, 'atom_embedding_size': 250, 'dropout_prob': 0.0, 'learning_rate': 5e-05, 'batch_size': 256, 'n_epochs': 5, 'target_kl': 0.05, 'clip_range': 0.3, 'gae_lambda': 0.9, 'vf_coef': 1.0, 'ent_coef_init_value': 0.1, 'ent_coef_final_value': 0.01, 'temperature': 0.1, 'lr_warmup_steps': 0.13218600592903562, 'lr_final_value': 1e-07}. Best is trial 0 with value: 0.0.
+Trial 9 failed with error: TrainConfig.__init__() got an unexpected keyword argument 'weight_decay'
+[I 2026-01-25 12:44:32,379] Trial 9 finished with value: 0.0 and parameters: {'hidden_dim': 128, 'num_layers': 8, 'atom_embedding_size': 128, 'dropout_prob': 0.3, 'learning_rate': 0.0001, 'batch_size': 256, 'n_epochs': 10, 'target_kl': 0.1, 'clip_range': 0.3, 'gae_lambda': 0.95, 'vf_coef': 2.0, 'ent_coef_init_value': 0.2, 'ent_coef_final_value': 0.02, 'temperature': 0.2, 'lr_warmup_steps': 0.05454463803414579, 'lr_final_value': 1e-06}. Best is trial 0 with value: 0.0.
+
+============================================================
+Optimization complete!
+============================================================
+Best Test MRR: 0.0000
+Best Parameters:
+  hidden_dim: 256
+  num_layers: 4
+  atom_embedding_size: 250
+  dropout_prob: 0.2
+  learning_rate: 5e-05
+  batch_size: 512
+  n_epochs: 5
+  target_kl: 0.2
+  clip_range: 0.3
+  gae_lambda: 0.95
+  vf_coef: 2.0
+  ent_coef_init_value: 0.1
+  ent_coef_final_value: 0.05
+  temperature: 0.1
+  lr_warmup_steps: 0.11625222843539819
+  lr_final_value: 1e-05
+============================================================
+Results saved to /home/castellanoontiv/Batched_env-swarm/family_training/kge_experiments/logs/hyperparam_search/hyperparam_search_family_20260125_124432_results.json

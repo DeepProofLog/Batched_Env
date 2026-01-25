@@ -969,10 +969,11 @@ class AnnealingTarget:
     setter: Callable[[float], None]
     initial: float
     final: float
-    start_point: float = 0.0          
-    end_point: float = 1.0            
-    transform: str = 'linear'         
-    value_type: str = 'float' 
+    start_point: float = 0.0
+    end_point: float = 1.0
+    transform: str = 'linear'
+    value_type: str = 'float'
+    warmup_steps: float = 0.0  # Warmup for first N% of training (0 to warmup_steps: 0 -> initial) 
 
 class ScalarAnnealingCallback:
     """Anneals scalars (lr, ent_coef) over training."""
@@ -984,18 +985,26 @@ class ScalarAnnealingCallback:
         
     def on_iteration_start(self, iteration: int, global_step: int) -> None:
         progress = min(1.0, max(0.0, global_step / self.total_timesteps))
-        
+
         for tgt in self.targets:
-            # Determine effective progress for this target
-            if progress < tgt.start_point:
+            # Phase 1: Warmup (0 -> initial)
+            if tgt.warmup_steps > 0 and progress < tgt.warmup_steps:
+                warmup_progress = progress / tgt.warmup_steps
+                current_val = warmup_progress * tgt.initial
+                if self.verbose > 1:
+                    print(f"[Anneal] {tgt.name} = {current_val:.6f} (warmup progress={warmup_progress:.2f})")
+            # Phase 2: Decay (initial -> final)
+            elif progress < tgt.start_point:
                 current_val = tgt.initial
             elif progress > tgt.end_point:
                 current_val = tgt.final
             else:
                 # Local progress between start_point and end_point
-                p = (progress - tgt.start_point) / (tgt.end_point - tgt.start_point + 1e-9)
+                # Adjust start_point to account for warmup
+                effective_start = max(tgt.start_point, tgt.warmup_steps)
+                p = (progress - effective_start) / (tgt.end_point - effective_start + 1e-9)
                 p = max(0.0, min(1.0, p))
-                
+
                 if tgt.transform == 'linear':
                     current_val = tgt.initial + p * (tgt.final - tgt.initial)
                 elif tgt.transform == 'exp':
@@ -1007,10 +1016,10 @@ class ScalarAnnealingCallback:
 
             if tgt.value_type == 'int':
                 current_val = int(current_val)
-            
+
             # Apply
             tgt.setter(current_val)
-            
+
             if self.verbose > 1:
                 print(f"[Anneal] {tgt.name} = {current_val:.6f} (progress={progress:.2f})")
 

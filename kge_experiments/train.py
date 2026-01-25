@@ -108,7 +108,8 @@ def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str =
     if getattr(config, 'lr_decay', False):
         lr_init = getattr(config, 'lr_init_value', getattr(config, 'lr', getattr(config, 'learning_rate', 3e-4)))
         lr_final = getattr(config, 'lr_final_value', 1e-6)
-        def _set_lr(v): 
+        lr_warmup_steps = getattr(config, 'lr_warmup_steps', 0.0) if getattr(config, 'lr_warmup', False) else 0.0
+        def _set_lr(v):
             for pg in ppo.optimizer.param_groups:
                 pg['lr'] = float(v)
             ppo.learning_rate = float(v)
@@ -117,6 +118,7 @@ def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str =
             start_point=float(getattr(config, 'lr_start', 0.0)),
             end_point=float(getattr(config, 'lr_end', 1.0)),
             transform=getattr(config, 'lr_transform', 'linear'), value_type='float',
+            warmup_steps=float(lr_warmup_steps),
         ))
     
     if getattr(config, 'ent_coef_decay', False):
@@ -251,6 +253,10 @@ def create_components(config: TrainConfig) -> Dict[str, Any]:
         dropout_prob=config.dropout_prob,
         device=device,
         parity=config.parity,
+        # Critical: pass use_l2_norm and temperature to control logit magnitudes
+        use_l2_norm=config.use_l2_norm,
+        temperature=config.temperature,
+        sqrt_scale=config.sqrt_scale,
     ).to(device)
     
     return {
