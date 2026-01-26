@@ -247,6 +247,8 @@ def create_policy(config: KGEConfig, env: Optional[EnvVec] = None) -> Policy:
         hidden_dim=getattr(config, 'hidden_dim', 256),
         num_layers=getattr(config, 'num_layers', 8),
         dropout_prob=getattr(config, 'dropout_prob', 0.0),
+        separate_value_network=getattr(config, 'separate_value_network', False),
+        value_head_scale=getattr(config, 'value_head_scale', 1.0),
         device=device,
         parity=config.parity,  # Use parity when in parity mode, otherwise not
     ).to(device)
@@ -342,7 +344,7 @@ def create_algorithm(policy: Policy, env: EnvVec, config: KGEConfig):
             symmetric_weight=getattr(config, 'predicate_aware_symmetric_weight', 0.7),
             chain_weight=getattr(config, 'predicate_aware_chain_weight', 0.0),
             kge_weight=getattr(config, 'kge_eval_kge_weight', 1.0),
-            fail_penalty=getattr(config, 'kge_fail_penalty', 0.5),
+            fail_penalty=getattr(config, 'kge_fail_penalty', 100),
             device=device,
             verbose=getattr(config, 'verbose', True),
         )

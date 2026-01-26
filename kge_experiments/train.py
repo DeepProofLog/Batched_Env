@@ -109,9 +109,22 @@ def build_callbacks(config, ppo, policy, sampler, dh, eval_env=None, date: str =
         lr_init = getattr(config, 'lr_init_value', getattr(config, 'lr', getattr(config, 'learning_rate', 3e-4)))
         lr_final = getattr(config, 'lr_final_value', 1e-6)
         lr_warmup_steps = getattr(config, 'lr_warmup_steps', 0.0) if getattr(config, 'lr_warmup', False) else 0.0
+
+        # Capture initial value LR for separate scaling (must be done before warmup modifies it)
+        value_lr_init = getattr(ppo, 'separate_value_lr', None)
+
         def _set_lr(v):
-            for pg in ppo.optimizer.param_groups:
-                pg['lr'] = float(v)
+            # Scale factor relative to initial policy LR
+            scale = float(v) / float(lr_init) if float(lr_init) > 0 else 1.0
+
+            if value_lr_init is not None and len(ppo.optimizer.param_groups) > 1:
+                # Separate value LR: scale both proportionally from their initial values
+                ppo.optimizer.param_groups[0]['lr'] = float(v)  # Policy LR
+                ppo.optimizer.param_groups[1]['lr'] = float(value_lr_init) * scale  # Value LR
+            else:
+                # No separate value LR: set all param groups to the same LR
+                for pg in ppo.optimizer.param_groups:
+                    pg['lr'] = float(v)
             ppo.learning_rate = float(v)
         annealing_targets.append(AnnealingTarget(
             name='lr', setter=_set_lr, initial=float(lr_init), final=float(lr_final),
@@ -339,7 +352,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
             symmetric_weight=getattr(config, 'predicate_aware_symmetric_weight', 0.7),
             chain_weight=getattr(config, 'predicate_aware_chain_weight', 0.0),
             kge_weight=getattr(config, 'kge_eval_kge_weight', 1.0),
-            fail_penalty=getattr(config, 'kge_fail_penalty', 0.5),
+            fail_penalty=getattr(config, 'kge_fail_penalty', 100),
             device=torch.device(config.device),
             verbose=getattr(config, 'verbose', True),
         )

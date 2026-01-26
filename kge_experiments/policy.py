@@ -62,6 +62,29 @@ class FusedLinearRelu(nn.Module):
         return F.relu(F.linear(x, self.weight, self.bias), inplace=True)
 
 
+class AlwaysDropout(nn.Module):
+    """
+    Dropout that stays active in eval mode (for PPO train/eval consistency).
+
+    In PPO, old_log_probs are computed in eval mode during rollout, but new_log_probs
+    are computed in train mode during optimization. Standard nn.Dropout would cause
+    different outputs for the same input, corrupting the importance sampling ratio.
+
+    This module applies dropout regardless of training mode, ensuring consistent
+    behavior and is CUDA graph safe (no data-dependent control flow).
+    """
+    def __init__(self, p: float = 0.1):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.p == 0.0:
+            return x
+        # Always apply dropout regardless of training mode
+        # training=True is a constant, ensuring CUDA graph compatibility
+        return F.dropout(x, p=self.p, training=True)
+
+
 # =============================================================================
 # POLICY COMPONENTS
 # =============================================================================
@@ -108,7 +131,7 @@ class SharedBody(nn.Module):
     """
     Residual MLP backbone [E] -> [H] -> [H] shared by policy and value heads.
     Uses fused Linear+ReLU+LayerNorm modules for better performance.
-    Includes CUDA-graph-safe dropout (nn.Dropout module, not F.dropout).
+    Includes AlwaysDropout for consistent train/eval behavior (CUDA-graph-safe).
     """
     def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, num_layers: int = 8,
                  dropout_prob: float = 0.1, parity: bool = False):
@@ -122,20 +145,20 @@ class SharedBody(nn.Module):
                 nn.Linear(embed_dim, hidden_dim),
                 nn.ReLU(),
                 nn.LayerNorm(hidden_dim),
-                nn.Dropout(dropout_prob)  # NOW USES CONFIG VALUE!
+                AlwaysDropout(dropout_prob)  # Consistent train/eval behavior
             )
             self.res_blocks = nn.ModuleList([
                 nn.Sequential(
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.ReLU(),
                     nn.LayerNorm(hidden_dim),
-                    nn.Dropout(dropout_prob)  # NOW USES CONFIG VALUE!
+                    AlwaysDropout(dropout_prob)  # Consistent train/eval behavior
                 ) for _ in range(num_layers)
             ])
         else:
-            # Optimized: fused Linear+ReLU+LayerNorm + CUDA-graph-safe dropout
+            # Optimized: fused Linear+ReLU+LayerNorm + AlwaysDropout for train/eval consistency
             self.input_transform = FusedLinearReluLayerNorm(embed_dim, hidden_dim)
-            self.dropout = nn.Dropout(dropout_prob)  # Single dropout instance, reused
+            self.dropout = AlwaysDropout(dropout_prob)  # Single dropout instance, reused
             self.res_blocks = nn.ModuleList([
                 FusedLinearReluLayerNorm(hidden_dim, hidden_dim) for _ in range(num_layers)
             ])
@@ -166,19 +189,42 @@ class SharedPolicyValueNetwork(nn.Module):
     """
     Unified network architecture for policy and value estimation.
     Merges former CustomNetwork and SharedPolicyValueNetwork functionality.
+
+    When separate_value_network=True, the value network uses its own backbone
+    (no gradient interference from policy), which can improve value learning.
     """
     def __init__(self, embed_dim: int = 64, hidden_dim: int = 256, num_layers: int = 8,
                  temperature: Optional[float] = None, use_l2_norm: bool = False, sqrt_scale: bool = True,
-                 dropout_prob: float = 0.1, parity: bool = False):
+                 dropout_prob: float = 0.1, parity: bool = False, separate_value_network: bool = False,
+                 value_head_scale: float = 1.0):
         super().__init__()
         self.embed_dim = embed_dim
         self.temperature = temperature
         self.use_l2_norm = use_l2_norm
         self.sqrt_scale = sqrt_scale
         self.parity = parity
+        self.separate_value_network = separate_value_network
+        self.value_head_scale = value_head_scale
 
+        # Compute scaled value head dimension
+        value_hidden_dim = int(hidden_dim * value_head_scale)
+
+        # Policy backbone
         self.shared_body = SharedBody(embed_dim, hidden_dim, num_layers,
                                       dropout_prob=dropout_prob, parity=parity)
+
+        # Value backbone: separate if enabled, otherwise share with policy
+        if separate_value_network:
+            # Independent backbone for value function (no policy gradient interference)
+            # Note: dropout_prob=0.0 for value backbone to reduce variance in value estimates
+            self.value_body = SharedBody(embed_dim, hidden_dim, num_layers,
+                                         dropout_prob=0.0, parity=parity)
+        else:
+            # Share backbone (original behavior)
+            self.value_body = self.shared_body
+
+        # Store value_hidden_dim for use in head construction
+        self._value_hidden_dim = value_hidden_dim
 
         if parity:
             # Match tensor_model.py PolicyHead/ValueHead structure
@@ -189,13 +235,13 @@ class SharedPolicyValueNetwork(nn.Module):
                 nn.ReLU()
             )
             self.policy_head_final = nn.Linear(hidden_dim, embed_dim)
-            
-            # Value Head: Sequential(Linear, ReLU, Linear) - LARGER to match policy head capacity
+
+            # Value Head: Sequential(Linear, ReLU, Linear) - scaled by value_head_scale
             self.value_head_fused = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
+                nn.Linear(hidden_dim, value_hidden_dim),
                 nn.ReLU()
             )
-            self.value_head_final = nn.Linear(hidden_dim, 1)
+            self.value_head_final = nn.Linear(value_hidden_dim, 1)
         else:
             # Optimized: fused layers
             # Policy head: Projects shared features back to embedding space for dot-product attention
@@ -204,18 +250,21 @@ class SharedPolicyValueNetwork(nn.Module):
             self.policy_head_final = nn.Linear(hidden_dim, embed_dim)
 
             # Value head: Projects shared features to a scalar state-value estimate
-            # First layer: fused Linear+ReLU, second layer: plain Linear (no activation after)
-            # LARGER to match policy head capacity (was hidden_dim//2, now hidden_dim)
-            self.value_head_fused = FusedLinearRelu(hidden_dim, hidden_dim)
-            self.value_head_final = nn.Linear(hidden_dim, 1)
+            # Scaled by value_head_scale for more capacity (default 1.0 = same as policy)
+            self.value_head_fused = FusedLinearRelu(hidden_dim, value_hidden_dim)
+            self.value_head_final = nn.Linear(value_hidden_dim, 1)
 
         # SB3 scaffold compatibility
         self.latent_dim_pi = 1
         self.latent_dim_vf = 1
 
     def _get_shared_features(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """[..., E] -> [..., H]"""
+        """Policy backbone: [..., E] -> [..., H]"""
         return self.shared_body(embeddings)
+
+    def _get_value_features(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """Value backbone: [..., E] -> [..., H] (may be separate from policy)"""
+        return self.value_body(embeddings)
 
     def forward(self, features: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -227,13 +276,15 @@ class SharedPolicyValueNetwork(nn.Module):
             values: [B]
         """
         obs_emb, act_emb, act_mask = features
-        shared_obs = self._get_shared_features(obs_emb)  # [B, 1, H]
-        shared_act = self._get_shared_features(act_emb)  # [B, S, H]
+
+        # Policy features (for logits)
+        policy_obs = self._get_shared_features(obs_emb)  # [B, 1, H]
+        policy_act = self._get_shared_features(act_emb)  # [B, S, H]
 
         # Compute Logits
-        p_obs = self.policy_head_fused(shared_obs)  # [B, 1, H]
+        p_obs = self.policy_head_fused(policy_obs)  # [B, 1, H]
         p_obs = self.policy_head_final(p_obs)  # [B, 1, E]
-        p_act = self.policy_head_fused(shared_act)  # [B, S, H]
+        p_act = self.policy_head_fused(policy_act)  # [B, S, H]
         p_act = self.policy_head_final(p_act)  # [B, S, E]
 
         if self.use_l2_norm:
@@ -249,8 +300,9 @@ class SharedPolicyValueNetwork(nn.Module):
 
         logits = logits.masked_fill(~act_mask.bool(), float("-inf"))
 
-        # Compute Values
-        values = self.value_head_fused(shared_obs)  # [B, 1, H//2]
+        # Compute Values (using separate or shared backbone)
+        value_obs = self._get_value_features(obs_emb)  # [B, 1, H]
+        values = self.value_head_fused(value_obs)  # [B, 1, H]
         values = self.value_head_final(values).squeeze(-1).squeeze(-1)  # [B]
 
         return logits, values
@@ -262,8 +314,8 @@ class SharedPolicyValueNetwork(nn.Module):
 
     def forward_critic(self, obs_embeddings: torch.Tensor) -> torch.Tensor:
         """Critic-only pass [B]"""
-        shared_obs = self._get_shared_features(obs_embeddings)
-        values = self.value_head_fused(shared_obs)
+        value_obs = self._get_value_features(obs_embeddings)
+        values = self.value_head_fused(value_obs)
         return self.value_head_final(values).squeeze(-1).squeeze(-1)
 
 
@@ -273,7 +325,8 @@ class ActorCriticPolicy(nn.Module):
     """
     def __init__(self, embedder, embed_dim: int, hidden_dim: int, num_layers: int,
                  device: torch.device, action_dim: int = None, dropout_prob: float = 0.1,
-                 parity: bool = False, **kwargs):
+                 parity: bool = False, separate_value_network: bool = False,
+                 value_head_scale: float = 1.0, **kwargs):
         super().__init__()
         self.device = device
         self.parity = parity
@@ -290,6 +343,8 @@ class ActorCriticPolicy(nn.Module):
             sqrt_scale=kwargs.get('sqrt_scale', True),
             dropout_prob=dropout_prob,
             parity=parity,
+            separate_value_network=separate_value_network,
+            value_head_scale=value_head_scale,
         )
         
         # Action distribution

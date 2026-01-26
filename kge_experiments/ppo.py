@@ -131,9 +131,14 @@ class PPOLossModule(nn.Module):
         clip_fraction = (torch.abs(ratio - 1) > clip_range).float().mean()
 
         # Value loss
+        # Note: Use Python if/else instead of torch.where with torch.tensor() to avoid
+        # CPU-GPU tensor creation inside compiled function (causes CUDA graph partitioning)
         value_diff = values - old_values
-        clipped_diff = torch.clamp(value_diff, -clip_range_vf, clip_range_vf)
-        values_pred = torch.where(torch.tensor(clip_range_vf > 0, device=values.device), old_values + clipped_diff, values)
+        if clip_range_vf > 0:
+            clipped_diff = torch.clamp(value_diff, -clip_range_vf, clip_range_vf)
+            values_pred = old_values + clipped_diff
+        else:
+            values_pred = values
         value_loss = F.mse_loss(returns, values_pred)
 
         # Entropy
@@ -179,6 +184,8 @@ class PPO:
         self.clip_range = kwargs.get('clip_range', config.clip_range)
         self.clip_range_vf = kwargs.get('clip_range_vf', getattr(config, 'clip_range_vf', None))
         self.normalize_advantage = kwargs.get('normalize_advantage', getattr(config, 'normalize_advantage', True))
+        self.normalize_returns = kwargs.get('normalize_returns', getattr(config, 'normalize_returns', False))
+        self.separate_value_lr = kwargs.get('separate_value_lr', getattr(config, 'separate_value_lr', None))
         self.ent_coef = kwargs.get('ent_coef', config.ent_coef)
         self.vf_coef = kwargs.get('vf_coef', getattr(config, 'vf_coef', 0.5))
         self.max_grad_norm = kwargs.get('max_grad_norm', getattr(config, 'max_grad_norm', 0.5))
@@ -284,7 +291,27 @@ class PPO:
             self._train_old_log_probs = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
             self._train_old_values = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
 
-            self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.learning_rate, eps=1e-5, fused=(self.device.type == 'cuda'))
+            # Create optimizer with optional separate learning rate for value network
+            if self.separate_value_lr is not None and hasattr(self.policy, 'mlp_extractor'):
+                # Separate parameter groups for policy and value
+                policy_params = []
+                value_params = []
+                for name, param in self.policy.named_parameters():
+                    if 'value_body' in name or 'value_head' in name:
+                        value_params.append(param)
+                    else:
+                        policy_params.append(param)
+
+                param_groups = [
+                    {'params': policy_params, 'lr': self.learning_rate},
+                    {'params': value_params, 'lr': self.separate_value_lr}
+                ]
+                self.optimizer = torch.optim.Adam(param_groups, eps=1e-5, fused=(self.device.type == 'cuda'))
+                if self.verbose:
+                    print(f"[PPO] Using separate value LR: policy={self.learning_rate}, value={self.separate_value_lr}")
+            else:
+                self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.learning_rate, eps=1e-5, fused=(self.device.type == 'cuda'))
+
             self._compile_all()
             # Cache parameter list for gradient clipping (avoids list() call each iteration)
             self._cached_params = list(self.policy.parameters())
@@ -552,6 +579,7 @@ class PPO:
                 "cumulative_rewards": self._ranking_zero_float,
                 "per_env_ptrs": cur_pool_ptr,
                 "neg_counters": self._ranking_zero_int64,
+                "corruption_mode_counters": self._ranking_zero_int64,
             }, batch_size=[B], device=device)
 
             def step():
@@ -686,14 +714,16 @@ class PPO:
                     new_obs, new_state = self.env.step_and_reset(state, actions, self.env.query_pool, self.env.per_env_ptrs)
 
                 # Apply PBRS reward shaping if enabled
+                # PBRS fix: Use terminal_states (actual state before reset) for potential calculation,
+                # not current_states (which is already the reset state for done envs)
                 step_rewards = new_state['step_rewards']
                 if self.pbrs_wrapper is not None:
                     step_rewards = self.pbrs_wrapper.shape_rewards(
                         rewards=step_rewards,
-                        next_states=new_state['current_states'],
+                        next_states=new_state['terminal_states'],  # FIXED: Use terminal state, not reset state
                         done_mask=new_state['step_dones'].bool(),
                         reset_mask=new_state['step_dones'].bool(),
-                        reset_states=new_state['current_states'],  # After auto-reset
+                        reset_states=new_state['current_states'],  # After auto-reset (for next step's phi_s)
                     )
 
                 self.rollout_buffer.add(
@@ -844,7 +874,12 @@ class PPO:
                 self._train_actions.copy_(actions)
                 self._train_old_values.copy_(old_values)
                 self._train_old_log_probs.copy_(old_lp)
-                self._train_returns.copy_(returns)
+                # Normalize returns if enabled (helps value function learning)
+                if self.normalize_returns and len(returns) > 1:
+                    self._train_returns.copy_((returns - returns.mean()) / (returns.std() + 1e-8))
+                else:
+                    self._train_returns.copy_(returns)
+                # Normalize advantages per batch
                 if self.normalize_advantage and len(advantages) > 1:
                     self._train_advantages.copy_((advantages - advantages.mean()) / (advantages.std() + 1e-8))
                 else:

@@ -76,6 +76,7 @@ class TrainConfig:
     hidden_dim: int = 256
     num_layers: int = 8
     dropout_prob: float = 0.0  # Set to 0.0 to avoid train/eval mode issues with PPO value function learning
+    separate_value_network: bool = False  # Use separate backbone for value network (independent from policy)
     use_l2_norm: bool = True
     sqrt_scale: bool = False
     temperature: float = 0.1
@@ -91,11 +92,17 @@ class TrainConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_range: float = 0.2
-    clip_range_vf: Optional[float] = 0.2  # Stabilize value updates
+    clip_range_vf: Optional[float] = 0.2  # Stabilize value updates (None to disable)
     ent_coef: float = 0.1
     vf_coef: float = 1
     max_grad_norm: float = 0.5
     target_kl: Optional[float] = 0.07  # Stop epoch when policy diverges too much (0.07 optimal for family)
+
+    # Value Function Learning Enhancements
+    separate_value_lr: Optional[float] = None  # Separate LR for value network (None = use learning_rate)
+    normalize_advantage: bool = False  # Normalize advantages per batch
+    normalize_returns: bool = False  # Normalize returns for value targets
+    value_head_scale: float = 1.0  # Scale factor for value head hidden dim (2.0 = 2x larger)
     total_timesteps: int = 3000000
     
     # Sampling / Corruption
@@ -147,7 +154,7 @@ class TrainConfig:
     kge_scores_file: Optional[str] = None
     kge_eval_kge_weight: float = 2.0
     kge_eval_rl_weight: float = 1.0
-    kge_fail_penalty: float = 0.5  # Penalty for failed proofs in hybrid mode
+    kge_fail_penalty: float = 100  # Penalty for failed proofs in hybrid mode
     kge_only_eval: bool = False  # If True, use KGE-only scoring at test time (matches paper)
 
     # KGE Integration: Probabilistic Facts

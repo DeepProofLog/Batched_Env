@@ -125,10 +125,11 @@ if __name__ == "__main__":
         """Convert config dict to TrainConfig dataclass."""
         dataset = cfg_dict.get('dataset', 'wn18rr')
 
-        # Build run signature
-        atom_size = cfg_dict.get('atom_embedding_size', 250)
-        n_envs = cfg_dict.get('n_envs', 128)
-        cfg_dict['run_signature'] = f"{dataset}-{atom_size}-{n_envs}-torchrl"
+        # Build run signature (only if not explicitly set)
+        if cfg_dict.get('run_signature') in [None, 'run_v1', 'compiled_run']:
+            atom_size = cfg_dict.get('atom_embedding_size', 250)
+            n_envs = cfg_dict.get('n_envs', 128)
+            cfg_dict['run_signature'] = f"{dataset}-{atom_size}-{n_envs}-torchrl"
 
         # KGE inference: normalize engine and set checkpoint_dir
         if cfg_dict.get('kge_inference', False):
@@ -184,7 +185,14 @@ if __name__ == "__main__":
             # Convert to TrainConfig
             config = config_from_dict(cfg_dict)
             print(f"Run signature: {config.run_signature}")
-            
+
+            # Print full configuration for reproducibility
+            print(f"\nConfiguration:")
+            for f in fields(config):
+                if f.name not in ('facts_graph', 'rules_graph', 'fact_cache', 'rule_cache'):
+                    print(f"  {f.name}: {getattr(config, f.name)}")
+            print()
+
             # Run experiment
             results = run_experiment(config)
             

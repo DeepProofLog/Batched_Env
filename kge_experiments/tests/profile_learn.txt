@@ -1,5 +1,5 @@
 Profile  Learn Results
-Date: 2026-01-14 11:16:37
+Date: 2026-01-26 00:31:34
 Device: cuda
 Dataset: family
 
@@ -13,164 +13,88 @@ Configuration:
 Setting up components...
 /home/castellanoontiv/miniconda3/envs/rl/lib/python3.13/site-packages/torch/__init__.py:1617: UserWarning: Please use the new API settings to control TF32 behavior, such as torch.backends.cudnn.conv.fp32_precision = 'tf32' or torch.backends.cuda.matmul.fp32_precision = 'ieee'. Old settings, e.g, torch.backends.cuda.matmul.allow_tf32 = True, torch.backends.cudnn.allow_tf32 = True, allowTF32CuDNN() and allowTF32CuBLAS() will be deprecated after Pytorch 2.9. Please see https://pytorch.org/docs/main/notes/cuda.html#tensorfloat-32-tf32-on-ampere-and-later-devices (Triggered internally at /pytorch/aten/src/ATen/Context.cpp:80.)
   _C._set_float32_matmul_precision(precision)
-[PPO] Compiled ranking_step (double-buffered) with mode=default
-Initialization time: 3.24s
+Initialization time: 2.74s
 
 Running warmup (compilation + first rollout)...
 Warmup: Running learn() iteration to compile all graphs...
-[PPO] Rollout collected in 14.59s. FPS: 1123.29
+[PPO] Rollout collected in 101.23s. Rollout FPS: 161.85. Reward: 0.347. Timesteps: 16384
 Epoch 1/5. 
-Losses: total 1.30303, value 2.99249, policy 0.01200, entropy -0.03200, approx_kl 0.05552 clip_fraction 0.03589. 
+Losses: total 1.17644, value 2.87640, policy 0.00883, entropy -0.09478, approx_kl 0.02466 clip_fraction 0.04395. 
 Epoch 2/5. 
-Losses: total 0.83153, value 2.38925, policy 0.00976, entropy -0.03226, approx_kl 0.09052 clip_fraction 0.04633. 
+Losses: total 0.74204, value 2.26734, policy 0.00623, entropy -0.09570, approx_kl 0.07258 clip_fraction 0.05994. 
 Epoch 3/5. 
-Losses: total 0.55802, value 2.00951, policy 0.00844, entropy -0.03253, approx_kl 0.12142 clip_fraction 0.05225. 
+Losses: total 0.45956, value 1.90059, policy 0.00478, entropy -0.09690, approx_kl 0.11156 clip_fraction 0.07048. 
 Epoch 4/5. 
-Losses: total 0.41064, value 1.74322, policy 0.00748, entropy -0.03291, approx_kl 0.14833 clip_fraction 0.05605. 
+Losses: total 0.44457, value 1.64839, policy 0.00309, entropy -0.09807, approx_kl 0.14246 clip_fraction 0.07762. 
 Epoch 5/5. 
-Losses: total 0.32105, value 1.54317, policy 0.00645, entropy -0.03334, approx_kl 0.17061 clip_fraction 0.05929. 
-[PPO] Training completed in 15.04s
-Warmup time: 31.63s
+Losses: total 0.32647, value 1.46170, policy 0.00148, entropy -0.09940, approx_kl 0.16713 clip_fraction 0.08348. 
+[PPO] Training completed in 20.44s
+[Metrics] Reward (train): current=0.347, best=0.347 (iter 1)
+--------------------------------------------------------------------
+| rollout/                           |                            |
+|    ep_len_mean                    | 5.472                      |
+|    ep_rew_mean                    | 0.347                      |
+|    explained_variance             | -12.525                    |
+|    len                            | 5.472 +/- 3.69 (2907)      |
+|    len_d_unknown_neg              | 6.406 +/- 3.20 (1413)      |
+|    len_d_unknown_pos              | 4.590 +/- 3.90 (1494)      |
+|    len_neg                        | 6.406 +/- 3.20 (1413)      |
+|    len_pos                        | 4.590 +/- 3.90 (1494)      |
+|    proven_d_unknown_neg           | 0.276 +/- 0.45 (1413)      |
+|    proven_d_unknown_neg_<PAD>     | 0.000 +/- 0.00 (3)         |
+|    proven_d_unknown_neg_aunt      | 0.052 +/- 0.22 (135)       |
+|    proven_d_unknown_neg_brother   | 0.051 +/- 0.22 (158)       |
+|    proven_d_unknown_neg_daughter  | 0.348 +/- 0.48 (69)        |
+|    proven_d_unknown_neg_father    | 0.357 +/- 0.48 (98)        |
+|    proven_d_unknown_neg_husband   | 0.415 +/- 0.49 (53)        |
+|    proven_d_unknown_neg_mother    | 0.544 +/- 0.50 (103)       |
+|    proven_d_unknown_neg_nephew    | 0.000 +/- 0.00 (200)       |
+|    proven_d_unknown_neg_niece     | 0.422 +/- 0.49 (147)       |
+|    proven_d_unknown_neg_sister    | 0.155 +/- 0.36 (116)       |
+|    proven_d_unknown_neg_son       | 0.117 +/- 0.32 (94)        |
+|    proven_d_unknown_neg_uncle     | 0.665 +/- 0.47 (185)       |
+|    proven_d_unknown_neg_wife      | 0.462 +/- 0.50 (52)        |
+|    proven_d_unknown_pos           | 0.675 +/- 0.47 (1494)      |
+|    proven_d_unknown_pos_aunt      | 0.669 +/- 0.47 (263)       |
+|    proven_d_unknown_pos_brother   | 0.656 +/- 0.47 (160)       |
+|    proven_d_unknown_pos_daughter  | 0.696 +/- 0.46 (92)        |
+|    proven_d_unknown_pos_father    | 0.614 +/- 0.49 (101)       |
+|    proven_d_unknown_pos_husband   | 0.808 +/- 0.39 (52)        |
+|    proven_d_unknown_pos_mother    | 0.772 +/- 0.42 (79)        |
+|    proven_d_unknown_pos_nephew    | 0.552 +/- 0.50 (183)       |
+|    proven_d_unknown_pos_niece     | 0.697 +/- 0.46 (119)       |
+|    proven_d_unknown_pos_sister    | 0.737 +/- 0.44 (118)       |
+|    proven_d_unknown_pos_son       | 0.398 +/- 0.49 (118)       |
+|    proven_d_unknown_pos_uncle     | 0.908 +/- 0.29 (152)       |
+|    proven_d_unknown_pos_wife      | 0.754 +/- 0.43 (57)        |
+|    proven_neg                     | 0.276 +/- 0.45 (1413)      |
+|    proven_pos                     | 0.675 +/- 0.47 (1494)      |
+|    reward                         | 0.347 +/- 0.48 (2907)      |
+|    reward_d_unknown_neg           | 0.000 +/- 0.00 (1413)      |
+|    reward_d_unknown_pos           | 0.675 +/- 0.47 (1494)      |
+|    reward_neg                     | 0.000 +/- 0.00 (1413)      |
+|    reward_pos                     | 0.675 +/- 0.47 (1494)      |
+|    success_rate                   | 0.481                      |
+|    time/elapsed                   | 123                        |
+|    time/iteration_fps             | 132                        |
+|    total_timesteps                | 16384                      |
+--------------------------------------------------------------------
+
+Warmup time: 123.52s
 
 Profiling training for 1 timesteps...
-[PPO] Rollout collected in 5.10s. FPS: 3214.41
+[PPO] Rollout collected in 2.60s. Rollout FPS: 6299.87. Reward: 0.357. Timesteps: 32768
 Epoch 1/5. 
-Losses: total 0.42064, value 0.93071, policy 0.00557, entropy -0.03848, approx_kl 0.00958 clip_fraction 0.02448. 
+Losses: total 0.45465, value 1.02868, policy 0.00359, entropy -0.10990, approx_kl 0.01140 clip_fraction 0.04010. 
 Epoch 2/5. 
-Losses: total 0.35489, value 0.84993, policy 0.00246, entropy -0.03781, approx_kl 0.03859 clip_fraction 0.03433. 
+Losses: total 0.36272, value 0.93074, policy 0.00236, entropy -0.11041, approx_kl 0.11368 clip_fraction 0.05704. 
 Epoch 3/5. 
-Losses: total 0.26658, value 0.77244, policy 0.00075, entropy -0.03811, approx_kl 0.06131 clip_fraction 0.04020. 
+Losses: total 0.27165, value 0.84391, policy -0.00054, entropy -0.11125, approx_kl 0.18052 clip_fraction 0.06744. 
 Epoch 4/5. 
-Losses: total 0.21806, value 0.70458, policy -0.00044, entropy -0.03871, approx_kl 0.08019 clip_fraction 0.04485. 
+Losses: total 0.21037, value 0.76805, policy -0.00269, entropy -0.11279, approx_kl 0.22107 clip_fraction 0.07594. 
 Epoch 5/5. 
-Losses: total 0.18237, value 0.64620, policy -0.00142, entropy -0.03956, approx_kl 0.09724 clip_fraction 0.04874. 
-[PPO] Training completed in 13.71s
-
-================================================================================
-TIMING SUMMARY
-================================================================================
-Init time:         3.2426s
-Warmup time:       31.6310s
-Runtime:           18.8566s
-Total time:        50.4876s
-Steps/second:      868.9
-Total timesteps:   32768 (Warmup: 16384, Profiled: 16384)
-
-Target: Runtime ≤ 16s
-Status: FAIL ✗
-
-Last training metrics:
-  policy_loss: -0.0014
-  value_loss: 0.6462
-  entropy: 0.0396
-  clip_fraction: 0.0487
-  approx_kl: 0.1654
-  explained_var: -7.9255
-
-================================================================================
-PROFILING RESULTS - Top by Cumulative Time
-================================================================================
-         433549 function calls (423356 primitive calls) in 11.153 seconds
-
-   Ordered by: cumulative time
-   List reduced from 551 to 40 due to restriction <40>
-
-   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
- 4159/596    0.007    0.000    4.662    0.008 module.py:1771(_wrapped_call_impl)
- 4159/596    0.030    0.000    4.661    0.008 module.py:1779(_call_impl)
-      129    0.001    0.000    4.491    0.035 policy.py:350(predict_values)
-      129    0.001    0.000    4.439    0.034 policy.py:255(forward_critic)
-      129    0.000    0.000    4.152    0.032 policy.py:208(_get_shared_features)
-      129    0.015    0.000    4.150    0.032 policy.py:138(forward)
-     1290    0.001    0.000    4.137    0.003 functional.py:1686(relu)
-     1290    4.135    0.003    4.135    0.003 {built-in method torch.relu_}
-     1161    0.004    0.000    4.109    0.004 policy.py:43(forward)
-        4    3.292    0.823    3.292    0.823 {method 'cpu' of 'torch._C.TensorBase' objects}
-      962    0.007    0.000    1.302    0.001 eval_frame.py:1039(_fn)
-       85    0.007    0.000    1.200    0.014 rollout.py:356(get)
-       80    0.002    0.000    0.957    0.012 optimizer.py:497(wrapper)
-       80    0.002    0.000    0.946    0.012 optimizer.py:62(_use_grad)
-       80    0.001    0.000    0.944    0.012 adam.py:213(step)
-       80    0.000    0.000    0.911    0.011 optimizer.py:133(maybe_fallback)
-       80    0.001    0.000    0.910    0.011 adam.py:885(adam)
-       80    0.001    0.000    0.905    0.011 adam.py:789(_fused_adam)
-       80    0.892    0.011    0.892    0.011 {built-in method torch._fused_adam_}
-     1440    0.711    0.000    0.711    0.000 {method 'copy_' of 'torch._C.TensorBase' objects}
-       15    0.466    0.031    0.466    0.031 {built-in method torch.index_select}
-  374/294    0.006    0.000    0.344    0.001 utils.py:119(call_func_at_runtime_with_args)
-        1    0.314    0.314    0.314    0.314 {method 'nonzero' of 'torch._C.TensorBase' objects}
-       80    0.000    0.000    0.304    0.004 __init__.py:243(backward)
-       80    0.001    0.000    0.304    0.004 graph.py:832(_engine_run_backward)
-       80    0.048    0.001    0.298    0.004 {method 'run_backward' of 'torch._C._EngineBase' objects}
-      294    0.004    0.000    0.297    0.001 output_code.py:590(__call__)
-       80    0.118    0.001    0.249    0.003 function.py:300(apply)
-      288    0.002    0.000    0.249    0.001 compile_fx.py:1767(run)
-      288    0.001    0.000    0.247    0.001 cudagraph_trees.py:378(deferred_cudagraphify)
-      294    0.002    0.000    0.247    0.001 utils.py:2958(run)
-      214    0.001    0.000    0.240    0.001 aot_autograd.py:1126(forward)
-  496/288    0.005    0.000    0.240    0.001 cudagraph_trees.py:2008(run)
-      214    0.002    0.000    0.239    0.001 runtime_wrappers.py:310(runtime_wrapper)
-  496/288    0.002    0.000    0.233    0.001 cudagraph_trees.py:2073(_run)
-     1419    0.219    0.000    0.219    0.000 {built-in method torch._C._nn.linear}
-      288    0.004    0.000    0.219    0.001 cudagraph_trees.py:2241(execute_node)
-      214    0.001    0.000    0.197    0.001 runtime_wrappers.py:512(wrapper)
-      129    0.000    0.000    0.185    0.001 policy.py:61(forward)
-       80    0.010    0.000    0.169    0.002 ppo.py:121(forward)
-
-
-
-
-================================================================================
-PROFILING RESULTS - Top by Total Time
-================================================================================
-         433549 function calls (423356 primitive calls) in 11.153 seconds
-
-   Ordered by: internal time
-   List reduced from 551 to 40 due to restriction <40>
-
-   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-     1290    4.135    0.003    4.135    0.003 {built-in method torch.relu_}
-        4    3.292    0.823    3.292    0.823 {method 'cpu' of 'torch._C.TensorBase' objects}
-       80    0.892    0.011    0.892    0.011 {built-in method torch._fused_adam_}
-     1440    0.711    0.000    0.711    0.000 {method 'copy_' of 'torch._C.TensorBase' objects}
-       15    0.466    0.031    0.466    0.031 {built-in method torch.index_select}
-        1    0.314    0.314    0.314    0.314 {method 'nonzero' of 'torch._C.TensorBase' objects}
-     1419    0.219    0.000    0.219    0.000 {built-in method torch._C._nn.linear}
-       80    0.118    0.001    0.249    0.003 function.py:300(apply)
-      288    0.073    0.000    0.073    0.000 {built-in method torch._foreach_copy_}
-       80    0.048    0.001    0.298    0.004 {method 'run_backward' of 'torch._C._EngineBase' objects}
-       25    0.040    0.002    0.040    0.002 {method 'contiguous' of 'torch._C.TensorBase' objects}
-      129    0.038    0.000    0.038    0.000 {built-in method torch._foreach_add}
-      288    0.032    0.000    0.032    0.000 graphs.py:139(replay)
- 4159/596    0.030    0.000    4.661    0.008 module.py:1779(_call_impl)
-     1161    0.025    0.000    0.025    0.000 {built-in method torch.layer_norm}
-      128    0.023    0.000    0.116    0.001 ppo.py:359(fused_step)
-      128    0.020    0.000    0.023    0.000 rollout.py:250(add)
-     8160    0.019    0.000    0.038    0.000 cudagraph_trees.py:534(expired)
-      578    0.017    0.000    0.017    0.000 {built-in method torch.where}
-       80    0.017    0.000    0.027    0.000 adam.py:138(_init_group)
-      516    0.017    0.000    0.017    0.000 {built-in method torch.embedding}
-      288    0.016    0.000    0.022    0.000 cudagraph_trees.py:1126(reconstruct_outputs)
-      129    0.015    0.000    4.150    0.032 policy.py:138(forward)
-      802    0.013    0.000    0.013    0.000 {method 'clone' of 'torch._C.TensorBase' objects}
-61138/61018    0.013    0.000    0.014    0.000 {built-in method builtins.isinstance}
-      256    0.012    0.000    0.012    0.000 {method 'masked_fill_' of 'torch._C.TensorBase' objects}
-      454    0.011    0.000    0.011    0.000 {built-in method torch._ops.profiler._record_function_enter_new}
-    45744    0.011    0.000    0.011    0.000 {method 'append' of 'list' objects}
-        1    0.010    0.010    0.010    0.010 ppo.py:105(explained_variance)
-       80    0.010    0.000    0.169    0.002 ppo.py:121(forward)
-      258    0.009    0.000    0.013    0.000 embeddings.py:771(forward)
-       80    0.009    0.000    0.033    0.000 ppo.py:50(fused_clip_grad_norm_)
-        1    0.009    0.009    0.010    0.010 rollout.py:296(compute_returns_and_advantage)
-       80    0.009    0.000    0.135    0.002 runtime_wrappers.py:2083(forward)
-      576    0.008    0.000    0.051    0.000 cudagraph_trees.py:1491(_check_liveness)
-     8160    0.008    0.000    0.014    0.000 cudagraph_trees.py:1432(check_refcount)
-      368    0.007    0.000    0.007    0.000 {method 'mean' of 'torch._C.TensorBase' objects}
- 4159/596    0.007    0.000    4.662    0.008 module.py:1771(_wrapped_call_impl)
-      288    0.007    0.000    0.083    0.000 cudagraph_trees.py:1057(_copy_inputs_and_remove_from_src)
-       80    0.007    0.000    0.149    0.002 {built-in method apply}
-
-
-
-
-Results saved to /home/castellanoontiv/Batched_env-swarm/agent2/kge_experiments/tests/profile_learn.txt
+Losses: total 0.19350, value 0.70407, policy -0.00417, entropy -0.11471, approx_kl 0.25171 clip_fraction 0.08341. 
+[PPO] Training completed in 5.92s
+[Metrics] Reward (train): current=0.352, best=0.352 (iter 1)
+--------------------------------------------------------------------
+| rollout/                           |                            |

@@ -77,7 +77,15 @@ class EnvVec:
         self.default_order = order
         self.order = order
         self.sample_deterministic_per_env = sample_deterministic_per_env
+
+        # Validate and store corruption scheme
+        if 'both' in corruption_scheme:
+            raise ValueError(
+                f"corruption_scheme cannot contain 'both'. Use ('head', 'tail') instead. "
+                f"Got: {corruption_scheme}"
+            )
         self.corruption_scheme = corruption_scheme
+        self._num_corruption_modes = len(corruption_scheme)
         self.reward_type = reward_type
         self.rejection_weight = 1.0 / negative_ratio if negative_ratio > 0 else 1.0
 
@@ -186,12 +194,15 @@ class EnvVec:
         init_q = self._query_pool[indices]
         init_labels = self._reset_ones_B
 
-        init_q, init_labels, new_counters = self._sample_negatives(init_q, init_labels, self._reset_mask_true, self._reset_zeros_B)
+        init_q, init_labels, new_counters, new_mode_counters = self._sample_negatives(
+            init_q, init_labels, self._reset_mask_true, self._reset_zeros_B, self._reset_zeros_B
+        )
         self._per_env_ptrs = (self._per_env_ptrs + 1) % pool_size
 
         state = self.reset_from_queries(init_q, init_labels)
         state['per_env_ptrs'].copy_(self._per_env_ptrs)
         state['neg_counters'].copy_(new_counters)
+        state['corruption_mode_counters'].copy_(new_mode_counters)
 
         return self._state_to_obs(state), state
 
@@ -262,6 +273,7 @@ class EnvVec:
             "cumulative_rewards": torch.zeros(B, dtype=torch.float32, device=device),
             "per_env_ptrs": torch.zeros(B, dtype=torch.long, device=device),
             "neg_counters": torch.zeros(B, dtype=torch.int64, device=device),
+            "corruption_mode_counters": torch.zeros(B, dtype=torch.int64, device=device),
         }, batch_size=[B], device=device)
 
     def step(self, state: EnvState, actions: Tensor) -> Tuple[EnvObs, EnvState]:
@@ -329,6 +341,7 @@ class EnvVec:
             "cumulative_rewards": new_cumulative,
             "per_env_ptrs": state['per_env_ptrs'],
             "neg_counters": state['neg_counters'],
+            "corruption_mode_counters": state['corruption_mode_counters'],
         }, batch_size=[B], device=device)
 
         return self._state_to_obs(new_state), new_state
@@ -367,7 +380,9 @@ class EnvVec:
         reset_q = torch.where(done_mask.unsqueeze(-1).expand(-1, 3), reset_q, padding)
 
         labels = torch.ones(B, dtype=torch.long, device=device)
-        reset_q, labels, new_counters = self._sample_negatives(reset_q, labels, done_mask, state['neg_counters'])
+        reset_q, labels, new_counters, new_mode_counters = self._sample_negatives(
+            reset_q, labels, done_mask, state['neg_counters'], state['corruption_mode_counters']
+        )
         reset_state = self.reset_from_queries(reset_q, labels)
 
         m_A3 = done_mask.view(-1, 1, 1).expand(-1, self.padding_atoms, 3)
@@ -378,6 +393,10 @@ class EnvVec:
         step_successes = next_state['success']
         step_labels = next_state['current_labels']
         step_original_queries = next_state['original_queries']
+
+        # PBRS fix: Preserve terminal states BEFORE reset overwrites them
+        # This is the actual state reached after step(), needed for correct PBRS potential calculation
+        terminal_states = next_state['current_states']  # [B, A, 3] - actual terminal state
 
         mixed = TensorDict({
             "current_states": torch.where(m_A3, reset_state['current_states'], next_state['current_states']),
@@ -396,9 +415,11 @@ class EnvVec:
             "step_successes": step_successes,  # Success from completed step, not reset
             "step_labels": step_labels,  # Labels from completed step, not reset
             "step_original_queries": step_original_queries,  # Original queries from completed step, not reset
+            "terminal_states": terminal_states,  # PBRS fix: actual terminal state before reset (for correct potential)
             "cumulative_rewards": torch.where(done_mask, reset_state['cumulative_rewards'], next_state['cumulative_rewards']),
             "per_env_ptrs": new_ptrs,
             "neg_counters": new_counters,
+            "corruption_mode_counters": new_mode_counters,
         }, batch_size=[B], device=device)
 
         return self._state_to_obs(mixed), mixed
@@ -904,28 +925,31 @@ class EnvVec:
     # NEGATIVE SAMPLING
     # =========================================================================
 
-    def _sample_negatives(self, queries, labels, mask, counters):
-        """Apply negative sampling for training.
-        
+    def _sample_negatives(self, queries, labels, mask, counters, corruption_mode_counters):
+        """Apply negative sampling for training with alternating corruption modes.
+
+        When corruption_scheme has multiple modes (e.g., ['head', 'tail']), alternates
+        between them based on corruption_mode_counters.
+
         When sample_deterministic_per_env=True, uses sequential corruption for RNG parity.
         Otherwise uses vectorized corruption for efficiency.
         """
         if self.negative_ratio <= 0.0 or self.sampler is None:
-            return queries, labels, counters
+            return queries, labels, counters, corruption_mode_counters
 
         B = queries.shape[0]
-        
+
         # Use same cycling logic as tensor env for parity
         # ratio=1 -> cycle=2
         # Counter 0=positive, counter 1=negative, counter 2=positive, etc.
         ratio = int(round(float(self.negative_ratio)))
         cycle = ratio + 1
-        
+
         # Check CURRENT counter to determine if negative (before incrementing)
         # This matches tensor env's logic: (local_counters % cycle) != 0
         should_neg = (counters % cycle) != 0
         should_neg = should_neg & mask
-        
+
         # Increment counters for next call
         new_counters = torch.where(mask, (counters + 1) % cycle, counters)
 
@@ -936,26 +960,63 @@ class EnvVec:
             if neg_indices.numel() > 0:
                 queries = queries.clone()
                 labels = labels.clone()
+                new_mode_counters = corruption_mode_counters.clone()
                 for idx in neg_indices:
                     atom_to_corrupt = queries[idx:idx+1]  # [1, 3]
-                    mode = self.corruption_scheme[0]
+                    # Alternate corruption mode based on per-env counter
+                    mode_idx = corruption_mode_counters[idx] % self._num_corruption_modes
+                    mode = self.corruption_scheme[mode_idx.item()]
                     corrupted = self.sampler.corrupt(atom_to_corrupt, num_negatives=1, mode=mode, device=self.device)
                     if corrupted.dim() == 3:
                         corrupted = corrupted[:, 0, :]
                     queries[idx] = corrupted.squeeze(0)
                     labels[idx] = 0
+                    new_mode_counters[idx] = (corruption_mode_counters[idx] + 1) % self._num_corruption_modes
+                corruption_mode_counters = new_mode_counters
         else:
-            # Vectorized corruption (efficient but not RNG-deterministic per env)
-            mode = self.corruption_scheme[0]
-            neg_queries = self.sampler.corrupt(queries, num_negatives=1, mode=mode, device=self.device).squeeze(1)
-            queries = torch.where(should_neg.unsqueeze(-1), neg_queries, queries)
-            labels = torch.where(should_neg, torch.zeros_like(labels), labels)
+            # Vectorized corruption with alternating modes
+            if self._num_corruption_modes == 1:
+                # Single mode: simple path
+                mode = self.corruption_scheme[0]
+                neg_queries = self.sampler.corrupt(queries, num_negatives=1, mode=mode, device=self.device).squeeze(1)
+                queries = torch.where(should_neg.unsqueeze(-1), neg_queries, queries)
+                labels = torch.where(should_neg, torch.zeros_like(labels), labels)
+                # Increment mode counters for envs that sampled negatives
+                corruption_mode_counters = torch.where(
+                    should_neg,
+                    (corruption_mode_counters + 1) % self._num_corruption_modes,
+                    corruption_mode_counters
+                )
+            else:
+                # Multiple modes: split by mode and corrupt separately
+                # Note: We corrupt for ALL modes and use masking to select results
+                # This avoids data-dependent branching for torch.compile compatibility
+                queries = queries.clone()
+                labels = labels.clone()
 
-        return queries, labels, new_counters
+                for mode_idx, mode in enumerate(self.corruption_scheme):
+                    # Select envs that should use this mode
+                    mode_mask = should_neg & ((corruption_mode_counters % self._num_corruption_modes) == mode_idx)
 
-    def sample_negatives(self, queries, labels, mask, counters):
+                    # Always compute corruption (torch.where handles masking)
+                    neg_queries = self.sampler.corrupt(queries, num_negatives=1, mode=mode, device=self.device).squeeze(1)
+                    queries = torch.where(mode_mask.unsqueeze(-1), neg_queries, queries)
+                    labels = torch.where(mode_mask, torch.zeros_like(labels), labels)
+
+                # Increment mode counters for envs that sampled negatives
+                corruption_mode_counters = torch.where(
+                    should_neg,
+                    (corruption_mode_counters + 1) % self._num_corruption_modes,
+                    corruption_mode_counters
+                )
+
+        return queries, labels, new_counters, corruption_mode_counters
+
+    def sample_negatives(self, queries, labels, mask, counters, corruption_mode_counters=None):
         """Public alias for _sample_negatives (for test compatibility)."""
-        return self._sample_negatives(queries, labels, mask, counters)
+        if corruption_mode_counters is None:
+            corruption_mode_counters = torch.zeros_like(counters)
+        return self._sample_negatives(queries, labels, mask, counters, corruption_mode_counters)
 
     # =========================================================================
     # BUFFER MANAGEMENT
