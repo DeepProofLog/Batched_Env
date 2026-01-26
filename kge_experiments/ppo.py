@@ -979,12 +979,11 @@ class PPO:
                 self.optimizer.step()
 
                 # Check KL divergence every batch for early stopping
-                if self.target_kl is not None:
-                    if approx_kl_div > 1.5 * self.target_kl:
-                        if self.verbose:
-                            print(f"[PPO] Early stopping at epoch {epoch}, batch {batch_count} due to KL: {approx_kl_div.item():.4f}")
-                        continue_training = False
-                        break
+                if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
+                    if self.verbose:
+                        print(f"[PPO] Early stopping at epoch {epoch}, batch {batch_count} due to KL: {approx_kl_div.item():.4f}")
+                    continue_training = False
+                    break
 
             if not continue_training:
                 break
