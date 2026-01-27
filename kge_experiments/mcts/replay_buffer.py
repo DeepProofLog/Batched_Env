@@ -233,14 +233,16 @@ class MCTSReplayBuffer:
                 f"Not enough transitions ({self.total_transitions}) for batch_size={batch_size}"
             )
 
-        # Sample positions
+        # Sample positions using torch.randint (GPU-friendly, avoids Python random)
+        n_trajectories = len(self.trajectories)
+        traj_indices = torch.randint(0, n_trajectories, (batch_size,), device='cpu')
+
         samples = []
-        for _ in range(batch_size):
-            # Uniform sampling over all positions
-            traj_idx = random.randint(0, len(self.trajectories) - 1)
+        for b_idx in range(batch_size):
+            traj_idx = traj_indices[b_idx].item()
             traj = self.trajectories[traj_idx]
             max_start = max(0, traj.length - sequence_length)
-            pos = random.randint(0, max_start)
+            pos = torch.randint(0, max_start + 1, (1,)).item() if max_start > 0 else 0
             samples.append((traj, pos))
 
         # Batch the samples

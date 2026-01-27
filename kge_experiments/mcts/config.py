@@ -11,7 +11,7 @@ Reference values from MuZero paper (Schrittwieser et al., 2020):
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Union
 
 
 @dataclass
@@ -134,6 +134,26 @@ class MCTSConfig:
     compile_mode: str = "reduce-overhead"
 
     # =========================================================================
+    # Batched MCTS Parameters (CUDA Graph Compatible)
+    # =========================================================================
+    # Batch size for batched MCTS operations (number of parallel environments)
+    # Should match n_envs from training config
+    mcts_batch_size: int = 100
+
+    # Fixed batch size for evaluation slot recycling
+    # If None, uses mcts_batch_size
+    fixed_batch_size: Optional[int] = None
+
+    # Maximum tree depth for tensor allocation (typically max_episode_steps + 1)
+    max_tree_depth: Optional[int] = None
+
+    # Maximum actions per state (padding_states from env, typically 120)
+    max_actions: int = 120
+
+    # Whether to use batched MCTS implementation
+    use_batched_mcts: bool = True
+
+    # =========================================================================
     # Logging and Checkpointing
     # =========================================================================
     log_interval: int = 10
@@ -164,6 +184,20 @@ class MCTSConfig:
                 f"root_exploration_fraction must be in [0, 1], "
                 f"got {self.root_exploration_fraction}"
             )
+
+        # Set defaults for batched MCTS parameters
+        if self.max_tree_depth is None:
+            self.max_tree_depth = self.max_episode_steps + 1
+
+        if self.fixed_batch_size is None:
+            self.fixed_batch_size = self.mcts_batch_size
+
+        # Validate batched parameters
+        if self.mcts_batch_size <= 0:
+            raise ValueError(f"mcts_batch_size must be positive, got {self.mcts_batch_size}")
+
+        if self.max_actions <= 0:
+            raise ValueError(f"max_actions must be positive, got {self.max_actions}")
 
     def get_temperature(self, timestep: int) -> float:
         """Get temperature for action selection at given timestep.
