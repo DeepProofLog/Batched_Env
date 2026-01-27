@@ -60,7 +60,7 @@ class TrainConfig:
     memory_pruning: bool = True
     skip_unary_actions: bool = False
     end_proof_action: bool = True
-    reward_type: int = 5
+    reward_type: int = 4
     max_total_vars: int = 100
     max_fact_pairs_cap: Optional[int] = None  # Cap for large predicates (auto-set to eval_padding_states if None)
     eval_batch_size: int = 75  # Optimized batch size for evaluation (75 for best speed)
@@ -73,10 +73,10 @@ class TrainConfig:
     model_name: str = "PPO"
     atom_embedding_size: int = 250
     state_embedding_size: int = 64 # derived
-    hidden_dim: int = 256
+    hidden_dim: int = 512
     num_layers: int = 8
-    dropout_prob: float = 0.0  # Set to 0.0 to avoid train/eval mode issues with PPO value function learning
-    separate_value_network: bool = False  # Use separate backbone for value network (independent from policy)
+    dropout_prob: float = 0.05  # Set to 0.0 to avoid train/eval mode issues with PPO value function learning
+    separate_value_network: bool = True  # Use separate backbone for value network (independent from policy)
     use_l2_norm: bool = True
     sqrt_scale: bool = False
     temperature: float = 0.1
@@ -85,9 +85,9 @@ class TrainConfig:
     
     # PPO / Training Hyperparams
     n_envs: int = 128
-    n_steps: int = 256
+    n_steps: int = 512  # Larger batches improve stability (exp4D)
     n_epochs: int = 5
-    batch_size: int = 512
+    batch_size: int = 1024  # Match n_steps increase (exp4D)
     learning_rate: float = 1e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -103,7 +103,7 @@ class TrainConfig:
     normalize_advantage: bool = False  # Normalize advantages per batch
     normalize_returns: bool = False  # Normalize returns for value targets
     value_head_scale: float = 1.0  # Scale factor for value head hidden dim (2.0 = 2x larger)
-    total_timesteps: int = 3000000
+    total_timesteps: int = 2000000  # Optimal for family dataset (longer training hurts)
     
     # Sampling / Corruption
     negative_ratio: float = 1.0 # train_neg_ratio
