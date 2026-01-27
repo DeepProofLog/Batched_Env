@@ -90,7 +90,6 @@ def create_env(config: KGEConfig) -> EnvVec:
         rules_file=config.rules_file,
         facts_file=config.facts_file,
         train_depth=config.train_depth,
-        corruption_mode="dynamic",
         filter_queries_by_rules=getattr(config, 'filter_queries_by_rules', True),
         # KGE Integration: Probabilistic Facts
         prob_facts=getattr(config, 'prob_facts', False),
