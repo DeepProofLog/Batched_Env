@@ -449,7 +449,7 @@ def main():
         n_envs=1,  # MCTS requires single-env
         max_steps=20,
         reward_type=4,
-        compile=False,  # Training doesn't need CUDA graphs
+        compile=True,  # Enable CUDA graph compilation for optimized MCTS
     )
 
     # Evaluation config with larger batch for fast evaluation

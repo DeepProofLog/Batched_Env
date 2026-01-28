@@ -66,7 +66,7 @@ def create_mcts_config_from_base(config, **overrides):
         episodes_per_iteration=20,
         max_episode_steps=config.max_steps,
         device=str(config.device),
-        compile=False,  # Disable for MCTS (sequential search is not compilable)
+        compile=True,  # Enable CUDA graph compilation for optimized MCTS
         log_interval=10,
         verbose=True,
     )
@@ -374,7 +374,7 @@ def main():
         n_envs=1,  # Single env for MCTS (sequential search)
         max_steps=20,
         reward_type=4,  # Same as PPO default
-        compile=False,  # Disable for MCTS compatibility
+        compile=True,  # Enable CUDA graph compilation for optimized MCTS
         verbose=True,
     )
 
