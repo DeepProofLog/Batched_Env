@@ -200,9 +200,13 @@ class MuZeroTrainer:
 
         # Helper tensors
         self._arange_B = torch.arange(B, device=device)
+        self._arange_A = torch.arange(A, device=device)
         self._zeros_B_float = torch.zeros(B, dtype=torch.float32, device=device)
         self._zeros_B_long = torch.zeros(B, dtype=torch.long, device=device)
         self._ones_B_long = torch.ones(B, dtype=torch.long, device=device)
+        # Pre-allocated tensors for terminal values (avoid allocation in hot loop)
+        self._terminal_pos = torch.ones(B, dtype=torch.float32, device=device)
+        self._terminal_neg = -torch.ones(B, dtype=torch.float32, device=device)
 
         # Mark static addresses for CUDA graph stability
         if hasattr(torch, "_dynamo"):
@@ -385,6 +389,7 @@ class MuZeroTrainer:
         obs: Dict[str, Tensor],
         action_mask: Tensor,
         add_noise: bool = True,
+        num_simulations: Optional[int] = None,
     ) -> Tuple[Tensor, Dict[str, Tensor]]:
         """Run MCTS search for B environments in parallel.
 
@@ -396,6 +401,7 @@ class MuZeroTrainer:
             obs: Batched observations dict.
             action_mask: [B, A] valid actions per environment.
             add_noise: Whether to add exploration noise at root.
+            num_simulations: Override number of simulations (uses config if None).
 
         Returns:
             actions: [B] selected actions.
@@ -432,7 +438,7 @@ class MuZeroTrainer:
             self.mcts_batched._add_dirichlet_noise_batched(action_mask)
 
         # Run N simulations
-        num_sims = self.config.num_simulations
+        num_sims = num_simulations if num_simulations is not None else self.config.num_simulations
 
         for sim_idx in range(num_sims):
             # Mark step for CUDA graph
@@ -505,18 +511,29 @@ class MuZeroTrainer:
                     leaf_priors = torch.softmax(masked_leaf, dim=-1)
 
             # Handle terminal states - use success/failure reward
-            done_mask = sim_state.get('done', sim_state.get('step_dones', torch.zeros(B, dtype=torch.bool, device=device))).bool()
-            success = sim_state.get('success', sim_state.get('step_successes', torch.zeros(B, dtype=torch.bool, device=device))).bool()
-            terminal_values = torch.where(success, torch.ones(B, device=device), -torch.ones(B, device=device))
+            done_mask = sim_state.get('done', sim_state.get('step_dones', self._zeros_B_long)).bool()
+            success = sim_state.get('success', sim_state.get('step_successes', self._zeros_B_long)).bool()
+            terminal_values = torch.where(success, self._terminal_pos, self._terminal_neg)
             leaf_values = torch.where(done_mask, terminal_values, leaf_values)
 
             # Store leaf priors in tree (expand leaf nodes)
-            # Only expand if not already expanded
+            # Vectorized: only expand if not already expanded
             leaf_depth = depth.clamp(max=self.max_depth - 1)
-            for b in range(B):
-                if not tree.expanded_mask[b, leaf_depth[b]].any():
-                    tree.priors[b, leaf_depth[b], :leaf_priors.shape[1]] = leaf_priors[b]
-                    tree.expanded_mask[b, leaf_depth[b]] = sim_mask[b]
+
+            # Check which envs need expansion (not already expanded at leaf depth)
+            # expanded_mask shape: [B, D, A]
+            already_expanded = tree.expanded_mask[self._arange_B, leaf_depth].any(dim=1)  # [B]
+            needs_expand = ~already_expanded  # [B]
+
+            if needs_expand.any():
+                # Use advanced indexing to expand all at once
+                expand_idx = needs_expand.nonzero(as_tuple=True)[0]  # indices of envs to expand
+                expand_depths = leaf_depth[expand_idx]  # [num_expand]
+
+                # Scatter priors and masks for envs that need expansion
+                A = leaf_priors.shape[1]
+                tree.priors[expand_idx.unsqueeze(1), expand_depths.unsqueeze(1), self._arange_A[:A]] = leaf_priors[expand_idx]
+                tree.expanded_mask[expand_idx.unsqueeze(1), expand_depths.unsqueeze(1), :] = sim_mask[expand_idx].unsqueeze(1)
 
             # Backpropagation
             self.mcts_batched._backpropagate_batched(
@@ -1326,14 +1343,16 @@ class MuZeroTrainer:
 
         return pool_size
 
-    def _build_eval_step(self, cur_buf: Dict, next_buf: Dict):
+    def _build_eval_step(self, cur_buf: Dict, next_buf: Dict, use_mcts_search: bool = False):
         """Build evaluation step function for slot recycling.
 
-        Similar to PPO's _build_step but uses MCTS search for action selection.
+        Similar to PPO's _build_step but can use MCTS search for action selection.
 
         Args:
             cur_buf: Current buffer dict.
             next_buf: Next buffer dict (for double-buffering).
+            use_mcts_search: If True, use full MCTS search for action selection.
+                            If False, use direct policy forward (faster, like PPO).
 
         Returns:
             Step function that returns done mask.
@@ -1405,17 +1424,31 @@ class MuZeroTrainer:
                 'action_mask': cur_mask,
             }
 
-            # Get policy logits and select greedy action (no MCTS search for now - too expensive per step)
-            # Use direct policy for efficiency, like PPO does
-            logits = self._uncompiled_policy.get_logits(cur_obs)
-            masked_logits = logits.masked_fill(~cur_mask, -3.4e38)
-            actions = masked_logits.argmax(dim=-1)
+            active = ~cur_done
 
-            # Get values for root value tracking
-            values = self._uncompiled_policy.predict_values(cur_obs).flatten()
+            if use_mcts_search:
+                # Use full MCTS search for action selection (more accurate, slower)
+                # Skip search entirely if all environments are done
+                if active.any():
+                    # Use eval_num_simulations for faster evaluation
+                    eval_sims = self.config.eval_num_simulations or self.config.num_simulations
+                    actions, search_stats = self.search_batched(
+                        cur_state, cur_obs, cur_mask, add_noise=False,
+                        num_simulations=eval_sims
+                    )
+                    values = search_stats['root_value']
+                else:
+                    # All done - use dummy actions (won't affect results)
+                    actions = self._eval_zero_long[:B]
+                    values = self._eval_zero_float[:B]
+            else:
+                # Use direct policy forward (faster, like PPO)
+                logits = self._uncompiled_policy.get_logits(cur_obs)
+                masked_logits = logits.masked_fill(~cur_mask, -3.4e38)
+                actions = masked_logits.argmax(dim=-1)
+                values = self._uncompiled_policy.predict_values(cur_obs).flatten()
 
             # Track root value on first step
-            active = ~cur_done
             new_root_value = torch.where(cur_first_step & active, values, cur_root_value)
 
             # Environment step
@@ -1501,6 +1534,7 @@ class MuZeroTrainer:
         n_corruptions: int = 50,
         corruption_modes: Tuple[str, ...] = ('head', 'tail'),
         verbose: bool = False,
+        use_mcts_search: bool = False,
         **kwargs,
     ) -> Dict[str, float]:
         """Batched evaluation with slot recycling for CUDA graph efficiency.
@@ -1517,6 +1551,8 @@ class MuZeroTrainer:
             n_corruptions: Number of negative samples per query.
             corruption_modes: Corruption modes to use ('head', 'tail').
             verbose: Whether to print progress.
+            use_mcts_search: If True, use full MCTS search for action selection.
+                            If False, use direct policy forward (faster, like PPO).
             **kwargs: Additional arguments (for compatibility).
 
         Returns:
@@ -1533,7 +1569,8 @@ class MuZeroTrainer:
         nm = len(corruption_modes)
 
         if verbose:
-            print(f"[MCTS] Evaluating {N} queries with {n_corruptions} corruptions per mode")
+            search_mode = "MCTS search" if use_mcts_search else "direct policy"
+            print(f"[MCTS] Evaluating {N} queries with {n_corruptions} corruptions per mode ({search_mode})")
 
         # Setup pool with strided layout
         pool_size = self._setup_eval_pool(queries, sampler, n_corruptions, corruption_modes)
@@ -1543,8 +1580,8 @@ class MuZeroTrainer:
 
         # Build step functions for double-buffering
         buf0, buf1 = self._eval_buffers
-        step_ab = self._build_eval_step(buf0, buf1)
-        step_ba = self._build_eval_step(buf1, buf0)
+        step_ab = self._build_eval_step(buf0, buf1, use_mcts_search=use_mcts_search)
+        step_ba = self._build_eval_step(buf1, buf0, use_mcts_search=use_mcts_search)
         cur_idx = self._eval_buf_idx
 
         # Main evaluation loop

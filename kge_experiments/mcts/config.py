@@ -133,6 +133,10 @@ class MCTSConfig:
     compile: bool = True
     compile_mode: str = "reduce-overhead"
 
+    # Number of simulations for evaluation (default: fewer for speed)
+    # If None, uses num_simulations
+    eval_num_simulations: Optional[int] = 10
+
     # =========================================================================
     # Batched MCTS Parameters (CUDA Graph Compatible)
     # =========================================================================
