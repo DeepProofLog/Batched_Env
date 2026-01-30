@@ -60,7 +60,7 @@ def setup(device, config):
     dh = DataHandler(
         dataset_name=config.dataset, base_path=config.data_path,
         train_file="train.txt", valid_file="valid.txt", test_file="test.txt",
-        rules_file="rules.txt", facts_file="train.txt", corruption_mode='dynamic',
+        rules_file="rules.txt", facts_file="train.txt",
     )
     
     im = IndexManager(

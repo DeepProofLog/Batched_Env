@@ -29,19 +29,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # Tensor/BatchedEnv imports
-from data_handler import DataHandler
-from index_manager import IndexManager
+from tensor_compiled.data_handler import DataHandler
+from tensor_compiled.index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
-from unification import UnificationEngineVectorized
+from tensor_compiled.unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
-from env import EnvVec, EnvObs, EnvState
+from tensor_compiled.env import EnvVec, EnvObs, EnvState
 from tensor.tensor_embeddings import EmbedderLearnable
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
-from policy import ActorCriticPolicy as OptimizedPolicy
+from tensor_compiled.policy import ActorCriticPolicy as OptimizedPolicy
 from tensor.tensor_ppo import PPO as TensorPPO
-from ppo import PPO as PPOOptimized
+from tensor_compiled.ppo import PPO as PPOOptimized
 from tensor.tensor_rollout import RolloutBuffer
-from rollout import RolloutBuffer as RolloutBufferOptimized
+from tensor_compiled.rollout import RolloutBuffer as RolloutBufferOptimized
 
 
 # ============================================================================
@@ -262,6 +262,7 @@ def create_optimized_env(env_data: Dict, config: SimpleNamespace) -> EnvVec:
         query_atoms.append(query_atom)
     train_queries = torch.stack(query_atoms, dim=0).to(device)
 
+    # NOTE: corruption_scheme=('head',) matches tensor env which always uses corruption_scheme[0]
     return EnvVec(
         vec_engine=vec_engine,
         batch_size=config.n_envs,
@@ -277,6 +278,7 @@ def create_optimized_env(env_data: Dict, config: SimpleNamespace) -> EnvVec:
         sampler=sampler,
         sample_deterministic_per_env=True,
         train_queries=train_queries,
+        corruption_scheme=('head',),
     )
 
 
@@ -310,6 +312,7 @@ def create_policy(env_data: Dict, config: SimpleNamespace, optimized: bool = Fal
             action_dim=config.padding_states,
             hidden_dim=256,
             num_layers=8,
+            dropout_prob=0.0,
             device=device,
             parity=True,
             use_l2_norm=False,
@@ -442,7 +445,7 @@ def collect_optimized_rollout_traces(
     reset_mask = torch.ones(ppo.batch_size_env, dtype=torch.bool, device=device)
     
     # Sample negatives BEFORE computing derived states
-    init_queries, state_labels, new_cnt = ppo.env.sample_negatives(init_queries, init_labels, reset_mask, temp_counters)
+    init_queries, state_labels, new_cnt, _ = ppo.env.sample_negatives(init_queries, init_labels, reset_mask, temp_counters)
     
     # Now create initial state from the (potentially corrupted) queries
     state = ppo.env.reset_from_queries(init_queries, state_labels)

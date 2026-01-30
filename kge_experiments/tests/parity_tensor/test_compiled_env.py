@@ -36,12 +36,12 @@ if str(ROOT) not in sys.path:
 if str(TEST_ENVS_ROOT) not in sys.path:
     sys.path.insert(1, str(TEST_ENVS_ROOT))
 
-from data_handler import DataHandler
-from index_manager import IndexManager
+from tensor_compiled.data_handler import DataHandler
+from tensor_compiled.index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
-from unification import UnificationEngineVectorized
+from tensor_compiled.unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
-from env import EnvVec
+from tensor_compiled.env import EnvVec
 import tensor.tensor_utils.tensor_utils as utils_funcs
 
 

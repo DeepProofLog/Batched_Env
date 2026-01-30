@@ -1,5 +1,5 @@
 Profile Eval Results
-Date: 2026-01-15 00:37:17
+Date: 2026-01-30 12:49:04
 Device: cuda
 Dataset: family
 
@@ -13,19 +13,4 @@ Configuration:
   Total candidates: 20200
 
 Setup...
-[PPO] Compiled ranking_step (double-buffered) with mode=reduce-overhead
 Warmup (PPO compiles internally)...
-Warmup: 6.74s
-Profiling...
-Evaluating 100 queries and 100 negatives
-Chunk 0-100
-  Took: 7.99s | Rolling MRR: 0.6031 | ms/cand: 0.79
-
-==================================================
-TIMING SUMMARY
-==================================================
-Runtime:      7.9916s
-ms/candidate: 0.3956 
-MRR:          0.6031
-
-Results saved to /home/castellanoontiv/Batched_env-swarm/main/kge_experiments/tests/profile_eval.txt

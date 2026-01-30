@@ -28,15 +28,15 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_handler import DataHandler
-from index_manager import IndexManager
-from unification import UnificationEngineVectorized
-from env import EnvVec
-from nn.embeddings import EmbedderLearnable as TensorEmbedder
-from policy import ActorCriticPolicy as TensorPolicy
-from ppo import PPO as PPOOptimized
-from nn.sampler import Sampler
-from config import TrainConfig
+from tensor_compiled.data_handler import DataHandler
+from tensor_compiled.index_manager import IndexManager
+from tensor_compiled.unification import UnificationEngineVectorized
+from tensor_compiled.env import EnvVec
+from tensor_compiled.nn.embeddings import EmbedderLearnable as TensorEmbedder
+from tensor_compiled.policy import ActorCriticPolicy as TensorPolicy
+from tensor_compiled.ppo import PPO as PPOOptimized
+from tensor_compiled.nn.sampler import Sampler
+from tensor_compiled.config import TrainConfig
 
 from callbacks import (
     TorchRLCallbackManager, 
@@ -47,7 +47,7 @@ from callbacks import (
     AnnealingTarget
 )
 
-from utils import seed_all
+from tensor_compiled.utils import seed_all
 
 
 # ==============================================================================
@@ -369,7 +369,7 @@ def run_experiment(config: TrainConfig, return_traces: bool = False) -> Dict[str
     eval_results = ppo.evaluate(
         queries=queries_tensor,
         sampler=comp['sampler'],
-        n_corruptions=config.n_corruptions,
+        n_corruptions=getattr(config, 'eval_neg_samples', getattr(config, 'n_corruptions', 50)),
         corruption_modes=tuple(config.corruption_scheme),
         query_depths=torch.as_tensor(
             comp['dh'].test_depths[:config.n_envs * 4],

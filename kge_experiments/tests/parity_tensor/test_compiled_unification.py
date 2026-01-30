@@ -31,11 +31,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_handler import DataHandler
-from index_manager import IndexManager
+from tensor_compiled.data_handler import DataHandler
+from tensor_compiled.index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
-from unification import UnificationEngineVectorized
-from unification import UnificationEngineVectorized
+from tensor_compiled.unification import UnificationEngineVectorized
 import tensor.tensor_utils.tensor_utils as utils_funcs
 import re
 

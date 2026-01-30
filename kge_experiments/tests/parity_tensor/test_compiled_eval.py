@@ -50,18 +50,18 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_handler import DataHandler
-from index_manager import IndexManager
+from tensor_compiled.data_handler import DataHandler
+from tensor_compiled.index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine, set_compile_mode
-from unification import UnificationEngineVectorized
+from tensor_compiled.unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
 from tensor.tensor_embeddings import EmbedderLearnable as TensorEmbedder
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
-from policy import ActorCriticPolicy as OptimizedPolicy
+from tensor_compiled.policy import ActorCriticPolicy as OptimizedPolicy
 from tensor.tensor_sampler import Sampler
 from tensor.tensor_model_eval import eval_corruptions
-from ppo import PPO as PPOOptimized
-from env import EnvVec
+from tensor_compiled.ppo import PPO as PPOOptimized
+from tensor_compiled.env import EnvVec
 
 # Simple batch size computation for tests
 def compute_optimal_batch_size(chunk_queries: int = None, n_corruptions: int = None, **kwargs) -> int:
@@ -173,7 +173,6 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
         test_file=config.test_file,
         rules_file=config.rules_file,
         facts_file=config.facts_file,
-        corruption_mode='dynamic',
     )
     
     # Index manager
@@ -293,6 +292,7 @@ def setup_shared_components(config: SimpleNamespace, device: torch.device) -> Di
         action_dim=action_size,
         hidden_dim=config.hidden_dim,
         num_layers=config.num_layers,
+        dropout_prob=0.0,
         device=device,
         parity=True,  # Enable parity mode for consistent initialization
     ).to(device)

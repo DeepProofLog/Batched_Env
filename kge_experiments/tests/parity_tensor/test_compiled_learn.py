@@ -41,20 +41,20 @@ from tensor.tensor_utils.tensor_seeding import ParityTestSeeder, ParityTestConfi
 from tests.test_utils.parity_config import ParityConfig, TOLERANCE, create_parser, config_from_args
 
 # Tensor imports
-from data_handler import DataHandler
-from index_manager import IndexManager
+from tensor_compiled.data_handler import DataHandler
+from tensor_compiled.index_manager import IndexManager
 from tensor.tensor_unification import UnificationEngine
-from unification import UnificationEngineVectorized
+from tensor_compiled.unification import UnificationEngineVectorized
 from tensor.tensor_env import BatchedEnv
-from env import EnvVec, EnvObs, EnvState
-from nn.sampler import Sampler
+from tensor_compiled.env import EnvVec, EnvObs, EnvState
+from tensor_compiled.nn.sampler import Sampler
 from tensor.tensor_embeddings import EmbedderLearnable as TensorEmbedder
 from tensor.tensor_model import ActorCriticPolicy as TensorPolicy
 from tensor.tensor_ppo import PPO as TensorPPO
-from ppo import PPO as PPOOptimized
-from policy import ActorCriticPolicy as OptimizedPolicy
+from tensor_compiled.ppo import PPO as PPOOptimized
+from tensor_compiled.policy import ActorCriticPolicy as OptimizedPolicy
 from tensor.tensor_rollout import RolloutBuffer as TensorRolloutBuffer
-from rollout import RolloutBuffer as RolloutBufferOptimized
+from tensor_compiled.rollout import RolloutBuffer as RolloutBufferOptimized
 
 
 # ============================================================================
@@ -324,6 +324,7 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
     query_pool = torch.stack(query_atoms, dim=0).to(device)
 
     # Create optimized environment
+    # NOTE: corruption_scheme=('head',) matches tensor env which always uses corruption_scheme[0]
     env = EnvVec(
         vec_engine=vec_engine,
         batch_size=config.n_envs,
@@ -339,6 +340,7 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
         negative_ratio=config.negative_ratio,
         order=True,
         sample_deterministic_per_env=True,
+        corruption_scheme=('head',),
     )
     
     # Create embedder with SAME fixed seed
@@ -367,6 +369,7 @@ def create_optimized_ppo(config: SimpleNamespace, env_data: Dict, queries: List,
         action_dim=action_size,
         hidden_dim=256,
         num_layers=8,
+        dropout_prob=0.0,
         device=device,
         parity=True,
         use_l2_norm=False,
@@ -475,7 +478,7 @@ def collect_optimized_rollout_with_traces(
     init_labels = torch.ones(n_envs, dtype=torch.long, device=device)
     reset_mask = torch.ones(n_envs, dtype=torch.bool, device=device)
     counters = torch.zeros(n_envs, dtype=torch.long, device=device)
-    init_queries, init_labels, updated_counters = ppo.env.sample_negatives(init_queries, init_labels, reset_mask, counters)
+    init_queries, init_labels, updated_counters, _ = ppo.env.sample_negatives(init_queries, init_labels, reset_mask, counters)
     
     # Initialize state
     state = ppo.env.reset_from_queries(init_queries, init_labels)

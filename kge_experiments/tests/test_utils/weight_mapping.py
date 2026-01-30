@@ -68,7 +68,18 @@ def map_tensor_to_optimized_state_dict(tensor_state: Dict[str, torch.Tensor]) ->
                         r'mlp_extractor.value_head_final.\1', new_key)
         
         mapped_state[new_key] = value
-    
+
+    # When separate_value_network=False, value_body is aliased to shared_body.
+    # PyTorch's state_dict() includes both shared_body.* and value_body.* keys
+    # (pointing to the same tensors). Loading requires both sets of keys.
+    # The tensor reference only has shared_body keys, so duplicate them as value_body.
+    value_body_keys = {}
+    for key, value in mapped_state.items():
+        if key.startswith('mlp_extractor.shared_body.'):
+            value_body_key = key.replace('mlp_extractor.shared_body.', 'mlp_extractor.value_body.')
+            value_body_keys[value_body_key] = value
+    mapped_state.update(value_body_keys)
+
     return mapped_state
 
 

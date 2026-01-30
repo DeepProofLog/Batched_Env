@@ -114,7 +114,7 @@ def parity_config_to_compiled_config(parity_config: ParityConfig) -> CompiledCon
         ent_coef=parity_config.ent_coef,
         target_kl=parity_config.target_kl,
         total_timesteps=parity_config.total_timesteps,
-        n_corruptions=parity_config.n_corruptions,
+        eval_neg_samples=parity_config.n_corruptions,
         atom_embedding_size=parity_config.embed_dim,
         seed=parity_config.seed,
         device=parity_config.device,
@@ -127,6 +127,11 @@ def parity_config_to_compiled_config(parity_config: ParityConfig) -> CompiledCon
         max_grad_norm=parity_config.max_grad_norm,
         negative_ratio=parity_config.negative_ratio,
         corruption_scheme=[parity_config.corruption_mode],
+        # Must match TensorPPO defaults for parity:
+        train_depth=None,  # Prevent __post_init__ from changing train_file to train_depths.txt
+        clip_range_vf=None,  # TensorPPO default (no VF clipping); TrainConfig default is 0.2
+        normalize_advantage=True,  # TensorPPO default; TrainConfig default is False
+        max_total_vars=parity_config.max_total_vars,  # Match tensor side (1000 vs TrainConfig default 100)
     )
 
 
